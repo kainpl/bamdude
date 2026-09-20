@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, RefreshCw, Trash2, CheckCircle2 } from 'lucide-react';
+import { RefreshCw, Trash2, CheckCircle2 } from 'lucide-react';
 
 import { useCalibrationHistory } from '../hooks/useCalibrationHistory';
 import type { FilamentCalibrationOut, PACalibHistoryEntryOut } from '../api/client';
+import { Modal } from './Modal';
+import { Select } from './Select';
 
 interface Props {
   isOpen: boolean;
@@ -43,96 +45,83 @@ export function CalibrationHistoryModal({ isOpen, onClose, printerId }: Props) {
   const printerGroups = groupByNozzle(h.printerSide);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center p-4 border-b border-bambu-dark-tertiary">
-          <h2 className="text-lg font-semibold text-white">{t('filamentCali.history.title')}</h2>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="p-1 text-bambu-gray hover:text-white rounded transition-colors"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="p-4 space-y-6">
-          <section>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-white">
-                {t('filamentCali.history.bamdudeSide')}
-              </h3>
-            </div>
-            {bamdudeGroups.size === 0 && (
-              <p className="text-sm text-bambu-gray">{t('filamentCali.history.empty')}</p>
-            )}
-            {Array.from(bamdudeGroups.entries()).map(([key, rows]) => {
-              const [dia, type] = key.split('-');
-              return (
-                <div key={key} className="mb-4">
-                  <h4 className="text-xs text-bambu-gray mb-2">
-                    {t('filamentCali.history.groupNozzle', { diameter: dia, type })}
-                  </h4>
-                  <div className="space-y-1">
-                    {rows.map((r) => (
-                      <BamDudeRow key={r.id} r={r} h={h} />
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </section>
-
-          <section>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-white">
-                {t('filamentCali.history.printerSide')}
-              </h3>
-              <div className="flex items-center gap-2">
-                <select
-                  value={refreshDia}
-                  onChange={(e) => setRefreshDia(parseFloat(e.target.value))}
-                  className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 text-xs text-white"
-                >
-                  {[0.2, 0.4, 0.6, 0.8].map((d) => (
-                    <option key={d} value={d}>
-                      {d} mm
-                    </option>
+    <Modal onClose={onClose} title={t('filamentCali.history.title')} size="3xl">
+      <div className="p-4 space-y-4">
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-white">
+              {t('filamentCali.history.bamdudeSide')}
+            </h3>
+          </div>
+          {bamdudeGroups.size === 0 && (
+            <p className="text-sm text-bambu-gray">{t('filamentCali.history.empty')}</p>
+          )}
+          {Array.from(bamdudeGroups.entries()).map(([key, rows]) => {
+            const [dia, type] = key.split('-');
+            return (
+              <div key={key} className="mb-4">
+                <h4 className="text-xs text-bambu-gray mb-2">
+                  {t('filamentCali.history.groupNozzle', { diameter: dia, type })}
+                </h4>
+                <div className="space-y-1">
+                  {rows.map((r) => (
+                    <BamDudeRow key={r.id} r={r} h={h} />
                   ))}
-                </select>
-                <button
-                  onClick={() => h.refreshFromPrinter(refreshDia)}
-                  disabled={h.isRefreshing}
-                  className="px-2 py-1 text-xs rounded border border-bambu-dark-tertiary text-bambu-gray hover:text-white flex items-center gap-1"
-                  title={t('filamentCali.history.refreshHint')}
-                >
-                  <RefreshCw className={`h-3 w-3 ${h.isRefreshing ? 'animate-spin' : ''}`} />
-                  {t('filamentCali.history.refresh')}
-                </button>
-              </div>
-            </div>
-            {printerGroups.size === 0 && (
-              <p className="text-sm text-bambu-gray">{t('filamentCali.history.empty')}</p>
-            )}
-            {Array.from(printerGroups.entries()).map(([key, rows]) => {
-              const [dia, type] = key.split('-');
-              return (
-                <div key={key} className="mb-4">
-                  <h4 className="text-xs text-bambu-gray mb-2">
-                    {t('filamentCali.history.groupNozzle', { diameter: dia, type })}
-                  </h4>
-                  <div className="space-y-1">
-                    {rows.map((r) => (
-                      <PrinterSideRow key={r.cali_idx} r={r} />
-                    ))}
-                  </div>
                 </div>
-              );
-            })}
-          </section>
-        </div>
+              </div>
+            );
+          })}
+        </section>
+
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-white">
+              {t('filamentCali.history.printerSide')}
+            </h3>
+            <div className="flex items-center gap-2">
+              <Select
+                size="xs"
+                value={refreshDia}
+                onChange={(e) => setRefreshDia(parseFloat(e.target.value))}
+              >
+                {[0.2, 0.4, 0.6, 0.8].map((d) => (
+                  <option key={d} value={d}>
+                    {d} mm
+                  </option>
+                ))}
+              </Select>
+              <button
+                onClick={() => h.refreshFromPrinter(refreshDia)}
+                disabled={h.isRefreshing}
+                className="px-2 py-1 text-xs rounded border border-bambu-dark-tertiary text-bambu-gray hover:text-white flex items-center gap-1"
+                title={t('filamentCali.history.refreshHint')}
+              >
+                <RefreshCw className={`h-3 w-3 ${h.isRefreshing ? 'animate-spin' : ''}`} />
+                {t('filamentCali.history.refresh')}
+              </button>
+            </div>
+          </div>
+          {printerGroups.size === 0 && (
+            <p className="text-sm text-bambu-gray">{t('filamentCali.history.empty')}</p>
+          )}
+          {Array.from(printerGroups.entries()).map(([key, rows]) => {
+            const [dia, type] = key.split('-');
+            return (
+              <div key={key} className="mb-4">
+                <h4 className="text-xs text-bambu-gray mb-2">
+                  {t('filamentCali.history.groupNozzle', { diameter: dia, type })}
+                </h4>
+                <div className="space-y-1">
+                  {rows.map((r) => (
+                    <PrinterSideRow key={r.cali_idx} r={r} />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </section>
       </div>
-    </div>
+    </Modal>
   );
 }
 

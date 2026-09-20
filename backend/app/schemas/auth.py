@@ -3,18 +3,28 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+MIN_PASSWORD_LENGTH = 8
+
 
 def _validate_password_complexity(v: str) -> str:
     """Enforce minimum password complexity (upstream §18.6 M-C).
 
-    Requires at least one uppercase letter, one lowercase letter, and one
-    digit in addition to the min_length=8 Field constraint. The special-
-    character rule was dropped — NIST SP 800-63B explicitly advises against
-    composition rules beyond length + a basic mix, and the friction was
-    causing real operators to just pick worse-remembered passwords.
-    Existing stored password hashes are not re-validated — only applies on
-    create / change / reset.
+    Requires 8 characters plus at least one uppercase letter, one lowercase
+    letter and one digit. The special-character rule was dropped — NIST SP
+    800-63B explicitly advises against composition rules beyond length + a
+    basic mix, and the friction was causing real operators to just pick
+    worse-remembered passwords. Existing stored password hashes are not
+    re-validated — only applies on create / change / reset.
+
+    ⚠️ The length lives HERE, not only in a ``Field(min_length=8)``.
+    ``ChangePasswordRequest`` and ``SetupRequest`` carry that constraint, but
+    ``UserCreate`` / ``UserUpdate`` never did, so admin-created accounts could
+    take a three-character password that the login form's own rules would then
+    refuse to reproduce. The order matches ``frontend/src/utils/password.ts``
+    so the user fixes the problem they were just told about.
     """
+    if len(v) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
     if not re.search(r"[A-Z]", v):
         raise ValueError("Password must contain at least one uppercase letter")
     if not re.search(r"[a-z]", v):
@@ -139,7 +149,7 @@ class LDAPProvisionRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., max_length=256)  # M-NEW-3: cap before pbkdf2
-    new_password: str = Field(..., min_length=8, max_length=256)
+    new_password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=256)
 
     @field_validator("new_password")
     @classmethod
@@ -149,7 +159,7 @@ class ChangePasswordRequest(BaseModel):
 
 class SetupRequest(BaseModel):
     admin_username: str = Field(..., max_length=150)
-    admin_password: str = Field(..., min_length=8, max_length=256)
+    admin_password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=256)
     admin_email: str | None = Field(default=None, max_length=254)
 
     @field_validator("admin_password")
@@ -171,6 +181,27 @@ class ForgotPasswordRequest(BaseModel):
 
 class ForgotPasswordResponse(BaseModel):
     message: str
+
+
+class ForgotPasswordConfirmRequest(BaseModel):
+    """Second half of self-service recovery: the token from the e-mail link.
+
+    The password is set HERE, not when the e-mail was requested. The old flow
+    generated a password at request time and mailed it, which meant anyone who
+    knew an address could rotate that account's password and lock its owner
+    out without ever reading the message.
+    """
+
+    # 128 is what the docs have always promised, and three times what
+    # ``secrets.token_urlsafe(32)`` produces — a public, unauthenticated
+    # endpoint has no reason to accept more.
+    token: str = Field(..., max_length=128)
+    new_password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=256)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, v: str) -> str:
+        return _validate_password_complexity(v)
 
 
 class ResetPasswordRequest(BaseModel):

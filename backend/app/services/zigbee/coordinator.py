@@ -17,6 +17,7 @@ is why the lifecycle is testable without hardware.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -177,7 +178,7 @@ class ZigbeeCoordinator:
         self._status = CoordinatorStatus(CoordinatorState.UP)
         logger.info("Zigbee coordinator up on %s", device)
 
-    async def stop(self) -> None:
+    async def stop(self, *, strict: bool = False) -> None:
         """Release everything. Safe without a start, and safe twice.
 
         Runs during application teardown, so a radio that has already gone away
@@ -189,7 +190,16 @@ class ZigbeeCoordinator:
             try:
                 with _quiet_dead_radio_disconnect(radio_is_gone):
                     await app.shutdown()
+            except asyncio.CancelledError:
+                self._app, self._radio_lost = app, radio_is_gone
+                raise
             except Exception as exc:  # noqa: BLE001 — teardown must complete
+                if strict:
+                    # Restore may replace zigpy's database only after a clean
+                    # shutdown. Keep ownership on failure so a retry can't
+                    # mistake the still-running app for an already stopped one.
+                    self._app, self._radio_lost = app, radio_is_gone
+                    raise
                 logger.warning("Zigbee shutdown raised, continuing: %s", describe_exception(exc))
         self._lock.release()
         self._status = CoordinatorStatus(CoordinatorState.DISABLED)

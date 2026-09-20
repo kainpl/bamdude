@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X } from 'lucide-react';
 
 import { useToast } from '../contexts/ToastContext';
 import { usePrinterSettings } from '../hooks/usePrinterSettings';
@@ -8,6 +7,7 @@ import { PrintOptionsTab } from './PrintOptionsTab';
 import { PrinterSafetyTab } from './PrinterSafetyTab';
 import { PrinterPartsTab } from './PrinterPartsTab';
 import { PrinterAddonsTab } from './PrinterAddonsTab';
+import { Modal } from './Modal';
 import type { PrinterSettingsPostBody } from '../api/client';
 
 type TabId = 'print_options' | 'safety' | 'parts' | 'addons';
@@ -35,57 +35,44 @@ export function PrinterSettingsModal({ isOpen, onClose, printerId }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center p-4 border-b border-bambu-dark-tertiary">
-          <h2 className="text-lg font-semibold text-white">{t('printerSettings.title')}</h2>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="p-1 text-bambu-gray hover:text-white rounded transition-colors"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="px-4 pt-3">
-          <div className="inline-flex gap-1 rounded-lg p-1 bg-bambu-dark">
-            <TabBtn id="print_options" active={activeTab} onClick={setActiveTab}>
-              {t('printerSettings.tab.printOptions')}
+    <Modal onClose={onClose} title={t('printerSettings.title')} size="2xl">
+      <div className="px-4 pt-3">
+        <div className="inline-flex gap-1 rounded-lg p-1 bg-bambu-dark">
+          <TabBtn id="print_options" active={activeTab} onClick={setActiveTab}>
+            {t('printerSettings.tab.printOptions')}
+          </TabBtn>
+          {data?.supports.safety_tab && (
+            <TabBtn id="safety" active={activeTab} onClick={setActiveTab}>
+              {t('printerSettings.tab.safety')}
             </TabBtn>
-            {data?.supports.safety_tab && (
-              <TabBtn id="safety" active={activeTab} onClick={setActiveTab}>
-                {t('printerSettings.tab.safety')}
-              </TabBtn>
-            )}
-            <TabBtn id="parts" active={activeTab} onClick={setActiveTab}>
-              {t('printerSettings.tab.parts')}
-            </TabBtn>
-            <TabBtn id="addons" active={activeTab} onClick={setActiveTab}>
-              {t('printerSettings.tab.addons')}
-            </TabBtn>
-          </div>
-        </div>
-
-        <div className="p-4">
-          {isLoading || !data ? (
-            <div className="space-y-3">
-              {[0, 1, 2, 3].map((i) => (
-                <div key={i} className="animate-pulse h-10 bg-bambu-dark rounded" />
-              ))}
-            </div>
-          ) : activeTab === 'print_options' ? (
-            <PrintOptionsTab data={data} onSubmit={onSubmit} isPending={isPending} />
-          ) : activeTab === 'safety' ? (
-            <PrinterSafetyTab data={data} onSubmit={onSubmit} isPending={isPending} />
-          ) : activeTab === 'parts' ? (
-            <PrinterPartsTab data={data} onRefetch={() => refetch()} />
-          ) : (
-            <PrinterAddonsTab data={data} onRefetch={() => refetch()} />
           )}
+          <TabBtn id="parts" active={activeTab} onClick={setActiveTab}>
+            {t('printerSettings.tab.parts')}
+          </TabBtn>
+          <TabBtn id="addons" active={activeTab} onClick={setActiveTab}>
+            {t('printerSettings.tab.addons')}
+          </TabBtn>
         </div>
       </div>
-    </div>
+
+      <div className="p-4">
+        {isLoading || !data ? (
+          <div className="space-y-3">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className="animate-pulse h-10 bg-bambu-dark rounded" />
+            ))}
+          </div>
+        ) : activeTab === 'print_options' ? (
+          <PrintOptionsTab data={data} onSubmit={onSubmit} isPending={isPending} />
+        ) : activeTab === 'safety' ? (
+          <PrinterSafetyTab data={data} onSubmit={onSubmit} isPending={isPending} />
+        ) : activeTab === 'parts' ? (
+          <PrinterPartsTab data={data} onRefetch={() => refetch()} />
+        ) : (
+          <PrinterAddonsTab data={data} onRefetch={() => refetch()} />
+        )}
+      </div>
+    </Modal>
   );
 }
 

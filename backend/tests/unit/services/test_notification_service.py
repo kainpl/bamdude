@@ -2576,6 +2576,288 @@ class TestBarkProvider:
         assert mock_send.call_count == 2
 
 
+class TestSignalProvider:
+    """Signal, via a self-hosted signal-cli-rest-api instance.
+
+    signal-cli-rest-api's /v2/send cannot mix individual recipient numbers
+    and a group ID in the same request, so recipient_type picks one shape
+    or the other rather than one generic recipients list.
+    """
+
+    @pytest.fixture
+    def service(self):
+        return NotificationService()
+
+    def _client_returning(self, status_code: int, text: str = ""):
+        mock_response = MagicMock()
+        mock_response.status_code = status_code
+        mock_response.text = text
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        return mock_client
+
+    @pytest.mark.asyncio
+    async def test_sends_to_multiple_numbers(self, service):
+        mock_client = self._client_returning(201)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, _ = await service._send_signal(
+                {
+                    "server": "http://localhost:8080",
+                    "sender_number": "+15550000000",
+                    "recipient_type": "numbers",
+                    "numbers": "+15551111111, +15552222222",
+                },
+                "Title",
+                "Body",
+            )
+
+        assert success is True
+        call_args = mock_client.post.call_args
+        assert call_args[0][0] == "http://localhost:8080/v2/send"
+        payload = call_args.kwargs.get("json")
+        assert payload["message"] == "Title\nBody"
+        assert payload["number"] == "+15550000000"
+        assert payload["recipients"] == ["+15551111111", "+15552222222"]
+
+    @pytest.mark.asyncio
+    async def test_sends_to_a_group_with_existing_prefix(self, service):
+        mock_client = self._client_returning(201)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, _ = await service._send_signal(
+                {
+                    "server": "http://localhost:8080",
+                    "sender_number": "+15550000000",
+                    "recipient_type": "group",
+                    "group_id": "group.abc123==",
+                },
+                "Title",
+                "Body",
+            )
+
+        assert success is True
+        payload = mock_client.post.call_args.kwargs.get("json")
+        assert payload["recipients"] == ["group.abc123=="]
+
+    @pytest.mark.asyncio
+    async def test_group_id_without_prefix_is_auto_prefixed(self, service):
+        mock_client = self._client_returning(201)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, _ = await service._send_signal(
+                {
+                    "server": "http://localhost:8080",
+                    "sender_number": "+15550000000",
+                    "recipient_type": "group",
+                    "group_id": "abc123==",
+                },
+                "Title",
+                "Body",
+            )
+
+        assert success is True
+        payload = mock_client.post.call_args.kwargs.get("json")
+        assert payload["recipients"] == ["group.abc123=="]
+
+    @pytest.mark.asyncio
+    async def test_full_send_endpoint_pasted_as_server_is_normalized(self, service):
+        """signal-cli-rest-api's own docs show the full /v2/send endpoint, so
+        pasting that whole URL into the server field is the natural mistake -
+        it must not double onto a 404 (signal-cli-rest-api is Go net/http and
+        answers an unmatched route with the literal "404 page not found")."""
+        mock_client = self._client_returning(201)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, _ = await service._send_signal(
+                {
+                    "server": "http://localhost:8080/v2/send",
+                    "sender_number": "+15550000000",
+                    "numbers": "+15551111111",
+                },
+                "Title",
+                "Body",
+            )
+
+        assert success is True
+        assert mock_client.post.call_args[0][0] == "http://localhost:8080/v2/send"
+
+    @pytest.mark.asyncio
+    async def test_missing_server_or_sender_fails_without_a_request(self, service):
+        mock_client = self._client_returning(201)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, message = await service._send_signal(
+                {"sender_number": "+15550000000", "numbers": "+15551111111"}, "Title", "Body"
+            )
+
+        assert success is False
+        assert "Signal API URL and sender number" in message
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_numbers_fails_in_numbers_mode(self, service):
+        mock_client = self._client_returning(201)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, message = await service._send_signal(
+                {"server": "http://localhost:8080", "sender_number": "+15550000000", "recipient_type": "numbers"},
+                "Title",
+                "Body",
+            )
+
+        assert success is False
+        assert "recipient number" in message
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_group_id_fails_in_group_mode(self, service):
+        mock_client = self._client_returning(201)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, message = await service._send_signal(
+                {"server": "http://localhost:8080", "sender_number": "+15550000000", "recipient_type": "group"},
+                "Title",
+                "Body",
+            )
+
+        assert success is False
+        assert "Group ID is required" in message
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_http_error_is_reported(self, service):
+        mock_client = self._client_returning(400, text="bad request")
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, message = await service._send_signal(
+                {"server": "http://localhost:8080", "sender_number": "+15550000000", "numbers": "+15551111111"},
+                "Title",
+                "Body",
+            )
+
+        assert success is False
+        assert "HTTP 400" in message
+
+    @pytest.mark.asyncio
+    async def test_client_exception_is_reported(self, service):
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=Exception("Connection refused"))
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, message = await service._send_signal(
+                {"server": "http://localhost:8080", "sender_number": "+15550000000", "numbers": "+15551111111"},
+                "Title",
+                "Body",
+            )
+
+        assert success is False
+        assert "Connection refused" in message
+
+    @pytest.mark.asyncio
+    async def test_photo_attachment_is_base64_encoded(self, service):
+        mock_client = self._client_returning(201)
+        image_bytes = b"\xff\xd8\xff\xe0fake-jpeg-data"
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, _ = await service._send_signal(
+                {"server": "http://localhost:8080", "sender_number": "+15550000000", "numbers": "+15551111111"},
+                "Title",
+                "Body",
+                image_data=image_bytes,
+            )
+
+        assert success is True
+        payload = mock_client.post.call_args.kwargs.get("json")
+
+        import base64
+
+        assert payload["base64_attachments"] == [base64.b64encode(image_bytes).decode("ascii")]
+
+    @pytest.mark.asyncio
+    async def test_no_attachment_field_when_no_image(self, service):
+        mock_client = self._client_returning(201)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, _ = await service._send_signal(
+                {"server": "http://localhost:8080", "sender_number": "+15550000000", "numbers": "+15551111111"},
+                "Title",
+                "Body",
+            )
+
+        assert success is True
+        payload = mock_client.post.call_args.kwargs.get("json")
+        assert "base64_attachments" not in payload
+
+    @pytest.mark.asyncio
+    async def test_the_server_url_goes_through_the_ssrf_gate(self, service):
+        """Every operator-supplied outbound URL is filtered by the LAN-service
+        policy, so ``file://`` and friends are rejected before any request."""
+        mock_client = self._client_returning(201)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, message = await service._send_signal(
+                {"server": "file:///etc/passwd", "sender_number": "+15550000000", "numbers": "+15551111111"},
+                "Title",
+                "Body",
+            )
+
+        assert success is False
+        assert "Signal API URL" in message
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_lan_server_is_allowed(self, service):
+        """The whole point of the LAN-service policy rather than a blanket
+        private-address block: self-hosting on the same network is the norm."""
+        mock_client = self._client_returning(201)
+
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            success, _ = await service._send_signal(
+                {
+                    "server": "http://192.168.1.50:8080",
+                    "sender_number": "+15550000000",
+                    "numbers": "+15551111111",
+                },
+                "Title",
+                "Body",
+            )
+
+        assert success is True
+        assert mock_client.post.call_args[0][0] == "http://192.168.1.50:8080/v2/send"
+
+    @pytest.mark.asyncio
+    async def test_both_dispatch_tables_know_signal(self, service):
+        """There are two of them — the live path and the test-notification path.
+        Adding a provider to one and not the other is the classic half-fix."""
+        provider = MagicMock()
+        provider.provider_type = "signal"
+        provider.config = json.dumps({"server": "http://localhost:8080", "sender_number": "+1", "numbers": "+2"})
+        provider.quiet_hours_enabled = False
+
+        with patch.object(service, "_send_signal", new_callable=AsyncMock) as mock_send:
+            mock_send.return_value = (True, "OK")
+            live_ok, _ = await service._send_to_provider(provider, "Title", "Message", db=AsyncMock())
+            test_ok, _ = await service.send_test_notification("signal", {"server": "http://localhost:8080"})
+
+        assert live_ok is True
+        assert test_ok is True
+        assert mock_send.call_count == 2
+
+
 class TestFilamentRunoutNotification:
     """The runout trigger: pause/external prompts to assign the replacement,
     autoswitch is informational, and providers gate on on_filament_runout."""

@@ -14,11 +14,10 @@ import {
 import { api, type PrinterStatus } from '../../api/client';
 import { getColorName } from '../../utils/colors';
 import {
-  normalizeColorForCompare,
-  colorsAreSimilar,
   autoMatchFilament,
   filterFilamentsByNozzle,
-  filamentTypesCompatible,
+  filamentColorMatches,
+  filamentRequirementMatches,
 } from '../../utils/amsHelpers';
 import type { PrinterSelectorProps } from './types';
 import type { PrinterMappingResult, PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
@@ -86,7 +85,7 @@ function InlineMappingEditor({
   // mapping this dialog pinned, so "prefer lowest remaining filament" has to be
   // applied at pin time or not at all.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
-  const preferLowest = settings?.prefer_lowest_filament ?? false;
+  const preferLowest = settings?.prefer_lowest_filament ?? true;
 
   // Compute current slot assignments
   const slotAssignments = filamentReqs.map((req) => {
@@ -98,6 +97,9 @@ function InlineMappingEditor({
 
     if (currentMapping !== undefined) {
       loaded = printerResult.loadedFilaments.find((f) => f.globalTrayId === currentMapping);
+      if (loaded && req.strict_color_match && !filamentColorMatches(req, loaded)) {
+        loaded = undefined;
+      }
       isManual = true;
     } else {
       const usedTrayIds = new Set<number>(Object.values(printerResult.config.manualMappings));
@@ -115,10 +117,8 @@ function InlineMappingEditor({
     // Determine status
     let status: 'match' | 'type_only' | 'mismatch' = 'mismatch';
     if (loaded) {
-      const typeMatch = filamentTypesCompatible(loaded.type, req.type);
-      const colorMatch =
-        normalizeColorForCompare(loaded.color) === normalizeColorForCompare(req.color) ||
-        colorsAreSimilar(loaded.color, req.color);
+      const typeMatch = filamentRequirementMatches(req, loaded);
+      const colorMatch = filamentColorMatches(req, loaded);
 
       if (typeMatch && colorMatch) {
         status = 'match';
@@ -220,6 +220,7 @@ export function PrinterSelector({
   onUpdatePrinterConfig,
   slicedForModel,
   swapCompatible,
+  pausedQueuePrinterIds,
 }: PrinterSelectorWithMappingProps) {
   const { t } = useTranslation();
   // State for showing all printers vs only matching model
@@ -227,6 +228,12 @@ export function PrinterSelector({
 
   // Filter printers based on showInactive flag
   const activePrinters = showInactive ? printers : printers.filter((p) => p.is_active);
+
+  // A paused queue is a wait, not a refusal: the item is accepted and sits in
+  // that printer's queue until somebody resumes it. So this only ever badges —
+  // it must not disable the row, or the dialog would be back to hiding a
+  // printer the "Print now" path takes without a word.
+  const pausedQueueIds = useMemo(() => new Set(pausedQueuePrinterIds ?? []), [pausedQueuePrinterIds]);
 
   // Fetch printer statuses to determine busy/idle state
   const statusQueries = useQueries({
@@ -373,7 +380,7 @@ export function PrinterSelector({
   };
 
   return (
-    <div className="space-y-2 mb-6">
+    <div className="space-y-2 mb-4">
       {/* Multi-select header */}
       {allowMultiple && displayPrinters.length > 1 && (
         <div className="flex items-center justify-between text-xs text-bambu-gray mb-2">
@@ -449,6 +456,14 @@ export function PrinterSelector({
                   {printer.model || t('printModal.unknownModel')} • {printer.ip_address}
                 </p>
               </div>
+              {pausedQueueIds.has(printer.id) && (
+                <span
+                  className="text-xs px-2 py-0.5 rounded-full whitespace-nowrap bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400"
+                  title={t('printModal.queuePausedHint')}
+                >
+                  {t('printModal.queuePaused')}
+                </span>
+              )}
               {stateLabel && (
                 <span className={`text-xs px-2 py-0.5 rounded-full ${
                   busy
@@ -468,7 +483,7 @@ export function PrinterSelector({
                       : 'border-bambu-gray/50'
                   }`}
                 >
-                  {selected && <Check className="w-3 h-3 text-white" />}
+                  {selected && <Check className="w-3 h-3 text-black" strokeWidth={3} />}
                 </div>
               )}
             </button>
@@ -486,7 +501,7 @@ export function PrinterSelector({
                       type="checkbox"
                       checked={hasOverride}
                       onChange={(e) => handleOverrideToggle(printer.id, e.target.checked, e as unknown as React.MouseEvent)}
-                      className="w-3.5 h-3.5 rounded border-bambu-gray/30 bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green focus:ring-offset-0"
+                      className="accent-bambu-green w-3.5 h-3.5 rounded border-bambu-gray/30 bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green focus:ring-offset-0"
                     />
                     <span className="text-xs text-bambu-gray">{t('printModal.customMapping')}</span>
                   </label>

@@ -21,13 +21,14 @@
  * Theme-aware via CSS variables, matching AMSHistoryModal — adapts to every
  * background variant the user has picked.
  */
-import { useEffect } from 'react';
-import { X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { Modal } from './Modal';
 import { Toggle } from './Toggle';
+import type { BackupCompatibilityApplyResult } from '../api/client';
 import {
-  computeBackupGroups,
+  resolveBackupGroups,
   normalizeColor,
   type AmsUnitLike,
   type BackupGroup,
@@ -38,11 +39,23 @@ interface AmsBackupModalProps {
   state: boolean | null;
   amsUnits: AmsUnitLike[] | undefined;
   amsExtruderMap: Record<string, number> | undefined;
+  firmwareGroups: Record<string, number[][]> | null | undefined;
   isDualNozzle: boolean;
   canToggle: boolean;
   pending: boolean;
   onToggle: (next: boolean) => void;
   onClose: () => void;
+  /**
+   * Bulk re-advertise of the slots the backup-compatibility policy covers.
+   * Absent whenever the caller has nothing to offer here — the dialog is
+   * complete without it.
+   */
+  compat?: {
+    policyEnabled: boolean;
+    canApply: boolean;
+    onPreview: () => Promise<BackupCompatibilityApplyResult>;
+    onApply: () => Promise<BackupCompatibilityApplyResult>;
+  };
 }
 
 /**
@@ -188,28 +201,38 @@ export function AmsBackupModal({
   state,
   amsUnits,
   amsExtruderMap,
+  firmwareGroups,
   isDualNozzle,
   canToggle,
   pending,
   onToggle,
   onClose,
+  compat,
 }: AmsBackupModalProps) {
   const { t } = useTranslation();
+  // Declared above the `isOpen` early return — rules of hooks.
+  const [preview, setPreview] = useState<BackupCompatibilityApplyResult | null>(null);
+  const [result, setResult] = useState<BackupCompatibilityApplyResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Which request the dialog is still interested in. Bumped on every call and
+  // on every close, so a round trip that lands late cannot paint a plan onto a
+  // dialog that has since been closed, reopened, or asked something newer.
+  const requestToken = useRef(0);
 
-  // Close on Escape key while the modal is open. Captures at the window
-  // level so it works even when focus isn't inside the modal subtree
-  // (e.g. after the Toggle is clicked).
+  // The dialog only stops RENDERING when it closes — the caller keeps it
+  // mounted — so a preview left behind would greet the next visitor as if it
+  // still described the slots, which have moved on since. `busy` goes with it:
+  // a request still in flight must not leave the reopened dialog inert.
   useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
+    if (!isOpen) {
+      requestToken.current += 1;
+      setPreview(null);
+      setResult(null);
+      setError(null);
+      setBusy(false);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -220,24 +243,27 @@ export function AmsBackupModal({
   const textPrimary = 'var(--text-primary)';
   const textSecondary = 'var(--text-secondary)';
 
-  // Effective dual-nozzle detection: only split per extruder if the map
-  // actually carries 2 distinct values across the AMS units we have data
-  // for. Empty / single-value maps collapse to a single section to avoid
-  // misleading badges.
+  // An explicit left-side AMS mapping or a firmware group for extruder 1 is
+  // enough to label a one-AMS X2D correctly; waiting for a second AMS would
+  // silently render that configuration as a single-nozzle printer.
   const effectiveDualNozzle = (() => {
     if (!isDualNozzle) return false;
-    if (!amsExtruderMap) return false;
     const distinctValues = new Set<number>();
     for (const ams of amsUnits || []) {
-      const raw = amsExtruderMap[String(ams.id)];
+      const raw = amsExtruderMap?.[String(ams.id)];
       if (raw === undefined) continue;
       distinctValues.add(Number(raw));
-      if (distinctValues.size > 1) return true;
     }
-    return false;
+    const reportedLeft = Object.keys(firmwareGroups || {}).some((extruder) => Number(extruder) === 1);
+    return distinctValues.size > 1 || distinctValues.has(1) || reportedLeft;
   })();
 
-  const groups = computeBackupGroups(amsUnits, amsExtruderMap, effectiveDualNozzle);
+  const { groups, usesFallback } = resolveBackupGroups(
+    amsUnits,
+    amsExtruderMap,
+    isDualNozzle,
+    firmwareGroups,
+  );
   const trayCountByAms = new Map<number, number>(
     (amsUnits || []).map((u) => [u.id, u.tray.length]),
   );
@@ -245,98 +271,162 @@ export function AmsBackupModal({
   // Only pairs are rendered — lone slots are deliberately suppressed.
   const pairs = groups.filter((g) => g.members.length >= 2);
 
+  // "The firmware did not merge these slots" is only sayable once the printer
+  // has actually told us its grouping. With no AMS reported at all there are no
+  // slots to have merged, and `usesFallback` answers false for want of an
+  // extruder to be missing a group for — so ask the payload directly.
+  const firmwareReportedGroups = Object.keys(firmwareGroups || {}).length > 0;
+
+  /**
+   * Run one backup-compatibility round trip, dropping its answer if the dialog
+   * has moved on — closed, reopened, or asked a newer question — since it left.
+   */
+  const runCompat = async (
+    call: () => Promise<BackupCompatibilityApplyResult>,
+    keep: (answer: BackupCompatibilityApplyResult) => void,
+  ) => {
+    const token = (requestToken.current += 1);
+    setBusy(true);
+    setError(null);
+    try {
+      const answer = await call();
+      if (requestToken.current === token) keep(answer);
+    } catch (e) {
+      if (requestToken.current === token) setError((e as Error).message);
+    } finally {
+      if (requestToken.current === token) setBusy(false);
+    }
+  };
+
   const isOn = state === true;
   const isUnknown = state === null;
 
   return (
-    <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-      onClick={onClose}
-      data-testid="ams-backup-modal"
-    >
+    <Modal onClose={onClose} title={t('printers.amsBackup.modalTitle')} size="2xl" bodyClassName="flex flex-col">
       <div
-        className="rounded-xl w-full max-w-2xl max-h-[90vh] overflow-hidden shadow-xl flex flex-col"
-        style={{ backgroundColor: modalBg }}
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="ams-backup-modal-title"
+        className="flex items-center justify-between px-4 py-3 border-b"
+        style={{ borderColor, backgroundColor: sectionBg }}
       >
-        <div
-          className="flex items-center justify-between px-5 py-3 border-b"
-          style={{ borderColor }}
-        >
-          <h2
-            id="ams-backup-modal-title"
-            className="text-base font-semibold"
-            style={{ color: textPrimary }}
-          >
-            {t('printers.amsBackup.modalTitle')}
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1 rounded-md transition-colors hover:bg-black/10"
-            style={{ color: textSecondary }}
-            aria-label={t('common.close')}
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div
-          className="flex items-center justify-between px-5 py-3 border-b"
-          style={{ borderColor, backgroundColor: sectionBg }}
-        >
-          <div className="min-w-0 mr-3">
-            <div className="text-sm font-medium" style={{ color: textPrimary }}>
-              {isUnknown
-                ? t('printers.amsBackup.stateUnknown')
-                : isOn
-                  ? t('printers.amsBackup.stateOn')
-                  : t('printers.amsBackup.stateOff')}
-            </div>
-            <p className="text-xs mt-0.5" style={{ color: textSecondary }}>
-              {t('printers.amsBackup.modalHelp')}
-            </p>
+        <div className="min-w-0 mr-3">
+          <div className="text-sm font-medium" style={{ color: textPrimary }}>
+            {isUnknown
+              ? t('printers.amsBackup.stateUnknown')
+              : isOn
+                ? t('printers.amsBackup.stateOn')
+                : t('printers.amsBackup.stateOff')}
           </div>
-          <Toggle
-            checked={isOn}
-            onChange={onToggle}
-            disabled={!canToggle || isUnknown || pending}
-          />
+          <p className="text-xs mt-0.5" style={{ color: textSecondary }}>
+            {t('printers.amsBackup.modalHelp')}
+          </p>
         </div>
-
-        <div className="flex-1 overflow-y-auto px-5 py-6">
-          {pairs.length === 0 ? (
-            <p
-              className="text-sm text-center py-8"
-              style={{ color: textSecondary }}
-            >
-              {t('printers.amsBackup.modalNoPairs')}
-            </p>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 justify-items-center">
-              {pairs.map((g) => (
-                <BackupRing
-                  key={g.key}
-                  group={g}
-                  trayCountByAms={trayCountByAms}
-                  innerBg={modalBg}
-                  textPrimary={textPrimary}
-                  textSecondary={textSecondary}
-                  showExtruderBadge={effectiveDualNozzle}
-                  extruderLabel={
-                    g.extruder === 0
-                      ? t('printers.amsBackup.extruderRightShort')
-                      : t('printers.amsBackup.extruderLeftShort')
-                  }
-                />
-              ))}
-            </div>
-          )}
-        </div>
+        <Toggle
+          checked={isOn}
+          onChange={onToggle}
+          disabled={!canToggle || isUnknown || pending}
+        />
       </div>
-    </div>
+
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        <p className="text-xs text-center mb-4" style={{ color: textSecondary }}>
+          {usesFallback
+            ? t('printers.amsBackup.firmwareEstimate')
+            : t('printers.amsBackup.firmwareReported')}
+        </p>
+        {pairs.length === 0 ? (
+          <p
+            className="text-sm text-center py-4"
+            style={{ color: textSecondary }}
+          >
+            {t('printers.amsBackup.modalNoPairs')}
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 justify-items-center">
+            {pairs.map((g) => (
+              <BackupRing
+                key={g.key}
+                group={g}
+                trayCountByAms={trayCountByAms}
+                innerBg={modalBg}
+                textPrimary={textPrimary}
+                textSecondary={textSecondary}
+                showExtruderBadge={effectiveDualNozzle}
+                extruderLabel={
+                  g.extruder === 0
+                    ? t('printers.amsBackup.extruderRightShort')
+                    : t('printers.amsBackup.extruderLeftShort')
+                }
+              />
+            ))}
+          </div>
+        )}
+
+        {compat?.policyEnabled && (
+          <div className="mt-4 border-t pt-4" style={{ borderColor }}>
+            {pairs.length === 0 && !usesFallback && firmwareReportedGroups && (
+              <p className="text-xs mb-3" style={{ color: textSecondary }}>{t('printers.amsCompat.firmwareDidNotMerge')}</p>
+            )}
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs" style={{ color: textSecondary }}>{t('printers.amsCompat.applyIntro')}</p>
+              <button
+                type="button"
+                disabled={!compat.canApply || busy}
+                className="px-3 py-1.5 text-sm rounded-lg bg-bambu-dark-tertiary text-white disabled:opacity-50 shrink-0"
+                onClick={() => {
+                  setResult(null);
+                  void runCompat(() => compat.onPreview(), setPreview);
+                }}
+              >
+                {t('printers.amsCompat.applyButton')}
+              </button>
+            </div>
+            {error && <p className="text-xs text-red-400 mt-2" role="alert">{error}</p>}
+            {(result ?? preview)?.spoolman_unavailable && (
+              <p className="text-xs text-amber-400 mt-2" role="status">{t('printers.amsCompat.spoolmanUnavailable')}</p>
+            )}
+            {preview && (
+              <div className="mt-3 space-y-1">
+                {/* Once the apply has answered, ITS rows are the truth: the
+                    backend recomputes each action against fresh candidates and
+                    marks `published: false` for a slot the printer refused. */}
+                {(result ?? preview).rows.map((r) => (
+                  <div key={`${r.ams_id}-${r.tray_id}`} className="flex items-center gap-2 text-xs" style={{ color: textPrimary }}>
+                    <span className="w-8 font-mono">{r.slot}</span>
+                    <span className="flex-1 truncate">{r.spool}</span>
+                    {/* A plan whose colour the builder left empty would render
+                        as `#` — an invalid colour that paints the swatch black,
+                        i.e. exactly the canonical colour this dialog is about. */}
+                    <span className="inline-block w-3 h-3 rounded-full border shrink-0" style={{ backgroundColor: r.actual.tray_color ? `#${r.actual.tray_color.slice(0, 6)}` : 'transparent' }} />
+                    <span>{r.actual.tray_info_idx}</span>
+                    <span style={{ color: textSecondary }}>→</span>
+                    <span className="inline-block w-3 h-3 rounded-full border shrink-0" style={{ backgroundColor: r.advertised.tray_color ? `#${r.advertised.tray_color.slice(0, 6)}` : 'transparent' }} />
+                    <span>{r.advertised.tray_info_idx}</span>
+                    <span style={{ color: textSecondary }}>
+                      {r.published === false
+                        ? t('printers.amsCompat.rowNotPublished')
+                        : r.action === 'apply'
+                          ? t('printers.amsCompat.rowApply')
+                          : r.action === 'revert'
+                            ? t('printers.amsCompat.rowRevert')
+                            : r.reasons.map((x) => t(`printers.amsCompat.reason.${x}`)).join(', ')}
+                    </span>
+                  </div>
+                ))}
+                {!result && (
+                  <button
+                    type="button"
+                    disabled={busy || (preview.would_apply ?? 0) === 0}
+                    className="mt-2 px-3 py-1.5 text-sm rounded-lg bg-bambu-green text-white disabled:opacity-50"
+                    onClick={() => void runCompat(() => compat.onApply(), setResult)}
+                  >
+                    {t('printers.amsCompat.confirmButton', { count: preview.would_apply ?? 0 })}
+                  </button>
+                )}
+                {result && <p className="text-xs mt-2" role="status" style={{ color: textPrimary }}>{t('printers.amsCompat.applied', { count: result.applied })}</p>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }

@@ -162,3 +162,21 @@ describe('ToastContext viewport on small screens (#2612)', () => {
   });
 
 });
+
+describe('ToastContext viewport placement', () => {
+  it('portals the viewport into document.body, outside the provider’s own tree', () => {
+    // While a modal is open the page (`#root`) is `inert` — see
+    // components/modalStack.ts. A viewport rendered inside the page would be
+    // unclickable under a modal, and the dispatch toast has buttons. Modals
+    // themselves live in body for the same reason.
+    const { container } = render(
+      <ToastProvider>
+        <div data-testid="page" />
+      </ToastProvider>,
+    );
+    const viewport = screen.getByTestId('toast-viewport');
+    expect(viewport.parentElement).toBe(document.body);
+    expect(container.contains(viewport)).toBe(false);
+    expect(container.querySelector('[data-testid="page"]')).not.toBeNull();
+  });
+});

@@ -87,6 +87,49 @@ export function filamentTypesCompatible(a: string | undefined, b: string | undef
   return canonicalFilamentType(a) === canonicalFilamentType(b);
 }
 
+/** The subset of a sliced-filament requirement which affects slot eligibility. */
+export interface FilamentMatchRequirement {
+  type?: string;
+  color?: string;
+  tray_info_idx?: string;
+  strict_profile_match?: boolean;
+  strict_color_match?: boolean;
+}
+
+/**
+ * Check the material/profile portion of a loaded-slot match.
+ *
+ * A family-derived material (for example PETG) can deliberately relax the
+ * profile-id comparison. Until that option is enabled, two known, different
+ * profile ids must not be silently treated as interchangeable.
+ */
+export function filamentRequirementMatches(
+  req: FilamentMatchRequirement,
+  loaded: { type?: string; trayInfoIdx?: string },
+): boolean {
+  return filamentTypesCompatible(loaded.type, req.type) && !(
+    req.strict_profile_match &&
+    req.tray_info_idx &&
+    loaded.trayInfoIdx &&
+    req.tray_info_idx !== loaded.trayInfoIdx
+  );
+}
+
+/**
+ * Compare the requested colour with a loaded slot. Strict colour policy is
+ * exact after normalisation; the ordinary matcher may still use its visual
+ * similarity fallback.
+ */
+export function filamentColorMatches(
+  req: Pick<FilamentMatchRequirement, 'color' | 'strict_color_match'>,
+  loaded: { color?: string },
+): boolean {
+  const required = normalizeColorForCompare(req.color);
+  if (!required) return true;
+  const actual = normalizeColorForCompare(loaded.color);
+  return actual === required || (!req.strict_color_match && colorsAreSimilar(actual, required));
+}
+
 /**
  * Check if two colors are visually similar within a threshold.
  * Uses RGB component comparison with configurable tolerance.
@@ -310,8 +353,8 @@ export function sortByRemainAscending<T extends { remain?: number }>(items: T[])
  * Add to queue path.
  */
 export function autoMatchFilament(
-  req: { type?: string; color?: string; nozzle_id?: number | null },
-  loadedFilaments: { globalTrayId: number; type?: string; color?: string; extruderId?: number; remain?: number }[],
+  req: FilamentMatchRequirement & { nozzle_id?: number | null },
+  loadedFilaments: { globalTrayId: number; type?: string; color?: string; trayInfoIdx?: string; extruderId?: number; remain?: number }[],
   usedTrayIds: Set<number>,
   preferredTrayId?: number | null,
   preferLowest = false,
@@ -327,37 +370,38 @@ export function autoMatchFilament(
       nozzleFilaments.filter((f) => !usedTrayIds.has(f.globalTrayId)),
       preferredTrayId,
     );
-    if (extruderTray) return extruderTray;
+    if (extruderTray && filamentColorMatches(req, extruderTray)) return extruderTray;
   }
 
   const exactMatch = nozzleFilaments.find(
     (f) =>
       !usedTrayIds.has(f.globalTrayId) &&
-      filamentTypesCompatible(f.type, req.type) &&
+      filamentRequirementMatches(req, f) &&
       normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
   );
   // ⚠️ `reduce`, not `find`: among the spools the tolerance admits, take the
   // one that LOOKS closest rather than the one that happens to sit first. The
   // scheduler does the same, and the two must agree or this dialog promises a
   // spool the dispatch would not pick.
-  const similarMatch = exactMatch
+  const similarMatch = exactMatch || req.strict_color_match
     ? undefined
     : nozzleFilaments
         .filter(
           (f) =>
             !usedTrayIds.has(f.globalTrayId) &&
-            filamentTypesCompatible(f.type, req.type) &&
-            colorsAreSimilar(f.color, req.color)
+            filamentRequirementMatches(req, f) &&
+            filamentColorMatches(req, f)
         )
         .reduce<typeof loadedFilaments[number] | undefined>(
           (best, f) => nearerColour(best, f, req.color),
           undefined
         );
-  const typeOnlyMatch =
-    exactMatch || similarMatch
+  const typeOnlyMatch = req.strict_color_match
+    ? undefined
+    : exactMatch || similarMatch
       ? undefined
       : nozzleFilaments.find(
-          (f) => !usedTrayIds.has(f.globalTrayId) && filamentTypesCompatible(f.type, req.type)
+          (f) => !usedTrayIds.has(f.globalTrayId) && filamentRequirementMatches(req, f)
         );
   return exactMatch ?? similarMatch ?? typeOnlyMatch;
 }
@@ -377,14 +421,14 @@ export function autoMatchFilament(
  * `candidates` must already be filtered to free + correct-nozzle trays.
  * `trayNow` 255 is the Bambu sentinel for "nothing loaded" and is ignored.
  */
-export function matchLoadedExtruderTray<T extends { globalTrayId: number; type?: string }>(
-  req: { type?: string },
+export function matchLoadedExtruderTray<T extends { globalTrayId: number; type?: string; trayInfoIdx?: string }>(
+  req: FilamentMatchRequirement,
   candidates: T[],
   trayNow: number | null | undefined,
 ): T | undefined {
   if (trayNow == null || trayNow === 255) return undefined;
   return candidates.find(
-    (f) => f.globalTrayId === trayNow && filamentTypesCompatible(f.type, req.type),
+    (f) => f.globalTrayId === trayNow && filamentRequirementMatches(req, f),
   );
 }
 
@@ -493,7 +537,7 @@ function normalizeColorForId(raw: string | null | undefined): string {
 }
 
 /**
- * Compute backup pairs for the AMS Backup modal (#1762).
+ * Compute a local fallback estimate for the AMS Backup modal (#1762).
  *
  * Strict identity rule (mirrors backend `_material_identity_internal` /
  * `_material_identity_spoolman`): slots pair ONLY when they share the same
@@ -512,6 +556,9 @@ function normalizeColorForId(raw: string | null | undefined): string {
  * On dual-extruder printers (H2D / H2C / X2D), pairs are scoped per extruder
  * side — the firmware can't cross extruders even with the global backup bit
  * set.
+ *
+ * Deliberately LIVE fields: this reconstructs what the FIRMWARE groups, and the
+ * firmware sees the advertised profile, not tray.actual.
  */
 export function computeBackupGroups(
   amsUnits: AmsUnitLike[] | undefined,
@@ -586,6 +633,95 @@ export function computeBackupGroups(
     if (a.displayName !== b.displayName) return a.displayName.localeCompare(b.displayName);
     return a.members[0].globalTrayId - b.members[0].globalTrayId;
   });
+}
+
+export interface BackupGroupsResolution {
+  groups: BackupGroup[];
+  /** True when at least one present extruder lacks a firmware ``filam_bak`` report. */
+  usesFallback: boolean;
+}
+
+/**
+ * Prefer the printer's ``filam_bak`` membership over our material heuristic.
+ *
+ * The protocol uses global tray ids, so this reconciles those ids with the
+ * current AMS payload only for labels/colour. An explicit empty array for an
+ * extruder is authoritative: do not silently invent a pair for it. The local
+ * identity calculation fills in only extruders the firmware did not report.
+ *
+ * Deliberately LIVE fields, the same note ``computeBackupGroups`` carries: the
+ * label and colour of a reported group describe what the FIRMWARE grouped, and
+ * the firmware sees the advertised profile, not ``tray.actual``.
+ */
+export function resolveBackupGroups(
+  amsUnits: AmsUnitLike[] | undefined,
+  amsExtruderMap: Record<string, number> | undefined,
+  isDualNozzle: boolean,
+  firmwareGroups: Record<string, number[][]> | null | undefined,
+): BackupGroupsResolution {
+  if (!amsUnits || amsUnits.length === 0) return { groups: [], usesFallback: false };
+
+  const slotByGlobalId = new Map<number, {
+    member: BackupGroup['members'][number];
+    tray: AmsTrayLike;
+  }>();
+  const activeExtruders = new Set<number>();
+  const seenAmsIds = new Set<number>();
+  for (const ams of amsUnits) {
+    if (seenAmsIds.has(ams.id)) continue;
+    seenAmsIds.add(ams.id);
+    const extruder = isDualNozzle ? Number(amsExtruderMap?.[String(ams.id)] ?? 0) : 0;
+    activeExtruders.add(extruder);
+    ams.tray.forEach((tray, slotIdx) => {
+      slotByGlobalId.set(getGlobalTrayId(ams.id, slotIdx, false), {
+        member: { amsId: ams.id, slotIdx, globalTrayId: getGlobalTrayId(ams.id, slotIdx, false) },
+        tray,
+      });
+    });
+  }
+
+  const authoritativeExtruders = new Set<number>();
+  const reported: BackupGroup[] = [];
+  if (firmwareGroups) {
+    for (const [rawExtruder, rawGroups] of Object.entries(firmwareGroups)) {
+      const extruder = Number(rawExtruder);
+      if (!Number.isInteger(extruder) || !Array.isArray(rawGroups)) continue;
+      authoritativeExtruders.add(extruder);
+      rawGroups.forEach((rawGroup, groupIndex) => {
+        if (!Array.isArray(rawGroup)) return;
+        const seenTrayIds = new Set<number>();
+        const slots: Array<NonNullable<ReturnType<typeof slotByGlobalId.get>>> = [];
+        for (const trayId of rawGroup) {
+          if (!Number.isInteger(trayId) || seenTrayIds.has(trayId)) continue;
+          seenTrayIds.add(trayId);
+          const slot = slotByGlobalId.get(trayId);
+          if (slot) slots.push(slot);
+        }
+        if (slots.length === 0) return;
+        const first = slots[0];
+        reported.push({
+          key: `firmware:${extruder}:${groupIndex}:${slots.map((slot) => slot.member.globalTrayId).join(',')}`,
+          presetId: first.tray.tray_info_idx || null,
+          extruder,
+          displayName: first.tray.tray_sub_brands || first.tray.tray_type || '',
+          trayColor: first.tray.tray_color || null,
+          members: slots.map((slot) => slot.member),
+        });
+      });
+    }
+  }
+
+  const fallback = computeBackupGroups(amsUnits, amsExtruderMap, isDualNozzle)
+    .filter((group) => !authoritativeExtruders.has(group.extruder));
+  const groups = [...reported, ...fallback].sort((a, b) => {
+    if (a.extruder !== b.extruder) return a.extruder - b.extruder;
+    if (a.members.length !== b.members.length) return b.members.length - a.members.length;
+    return a.members[0].globalTrayId - b.members[0].globalTrayId;
+  });
+  return {
+    groups,
+    usesFallback: [...activeExtruders].some((extruder) => !authoritativeExtruders.has(extruder)),
+  };
 }
 
 // --- Perceptual colour difference (CIEDE2000) --------------------------------

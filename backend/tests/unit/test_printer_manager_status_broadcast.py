@@ -144,6 +144,14 @@ class TestBroadcastStatusChange:
             patch.object(manager, "get_status", return_value=state),
             patch.object(manager, "get_model", return_value="P1S"),
             patch.object(manager, "get_drying_targets", return_value=None),
+            # d93977c8: the broadcast asks the plate-hold whether Repeat may be
+            # offered and threads the answer into the dict — a DB read this unit
+            # test has no database for.
+            patch(
+                "backend.app.services.plate_hold.repeat_available",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
             patch(
                 "backend.app.core.websocket.ws_manager.send_printer_status",
                 new_callable=AsyncMock,
@@ -156,8 +164,9 @@ class TestBroadcastStatusChange:
         printer_id_arg, payload_arg = send_status.await_args.args
         assert printer_id_arg == 7
         assert payload_arg == {"id": 7, "awaiting_plate_clear": False}
-        # Verify the dict was built from the right inputs (state + id + model + drying targets).
-        to_dict.assert_called_once_with(state, 7, "P1S", None)
+        # Verify the dict was built from the right inputs (state + id + model +
+        # drying targets + the Repeat answer).
+        to_dict.assert_called_once_with(state, 7, "P1S", None, repeat_available=False)
 
     @pytest.mark.asyncio
     async def test_skips_when_status_unknown(self, manager):

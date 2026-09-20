@@ -1,0 +1,135 @@
+# Publishes the code graph as a release asset.
+#
+# Why an asset and not a file in the repo: release assets live outside git
+# history entirely, so this adds nothing to anyone's clone. The graph is ~75 MB
+# of JSON that would otherwise be regenerated and re-committed on every change —
+# gigabytes of history within weeks, carried by every contributor, and by users
+# who install from a git clone. Compressed it is ~4 MB, and whoever does not use
+# an LLM assistant simply never downloads it.
+#
+# ⚠️ This is a CODE-ONLY graph, built with no LLM: `graphify update` extracts
+# structure deterministically, so communities keep their "Community N"
+# placeholders and documentation nodes are absent. That is deliberate — naming
+# them needs an API key in CI and costs money per run, and the structural graph
+# is the part external tooling actually consumes. The maintainer's local graph
+# has the labels.
+name: Publish code graph
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Least-privilege, as in windows-installer.yml: contents: write is what
+# softprops/action-gh-release needs to attach the asset to the tag's release.
+permissions:
+  contents: write
+
+concurrency:
+  group: code-graph-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish-graph:
+    # Deliberately NOT behind require-green-ci, unlike the installer and the
+    # Docker images. Those are what people run, so a red commit must not become
+    # the copy in their hands. This is a description OF a commit: built from a
+    # commit whose tests fail, it is still an accurate description of that
+    # commit, and withholding it helps nobody debugging exactly that state.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install graphify
+        # Pinned: the graph's shape is a published interface, and an unpinned
+        # tool could change it under consumers between two releases. Bump
+        # deliberately, and check `graphify --help` still has `update` when you
+        # do — that verb is the whole workflow.
+        run: pip install --no-cache-dir graphifyy==0.9.56
+
+      - name: Build the graph
+        # `update` bootstraps from nothing — a fresh checkout has no
+        # graphify-out/ — and needs no LLM. `.graphifyignore` is committed, so
+        # CI applies the same exclusions the maintainer's local graph does.
+        run: |
+          graphify update .
+          test -s graphify-out/graph.json
+
+      - name: Stage the assets
+        id: stage
+        run: |
+          set -euo pipefail
+          # A tag names the asset after its release. A manual dispatch has no
+          # tag, so branch + short SHA keeps the artifact self-identifying —
+          # a file called "…-dev.json.gz" says nothing a week later.
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${GITHUB_REF_NAME//\//-}-${GITHUB_SHA:0:7}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          mkdir -p dist
+          gzip -9 -c graphify-out/graph.json > "dist/bamdude-code-graph-${version}.json.gz"
+          cp graphify-out/GRAPH_REPORT.md "dist/bamdude-code-graph-${version}.report.md"
+          ls -lh dist/
+          # Sanity floor: a graph that extracted almost nothing compresses to a
+          # few KB, and an asset like that is worse than no asset — it looks
+          # like an answer. 500 KB is far below a real code-only build (2.3 MB
+          # measured 2026-09-11) and far above an empty one.
+          size=$(stat -c%s "dist/bamdude-code-graph-${version}.json.gz")
+          if [ "$size" -lt 500000 ]; then
+            echo "::error::graph compressed to ${size} bytes — extraction produced almost nothing"
+            exit 1
+          fi
+
+      # Beta tags are vX.Y.ZbN (or vX.Y.Z.WbN), stable is vX.Y.Z. The attach
+      # step below CREATES the GitHub release when it doesn't exist yet, and
+      # without an explicit prerelease flag it creates a full one — which then
+      # displaces the current stable as the repo's "Latest" release. In the
+      # documented flow the release is created by hand seconds after the tag
+      # push, long before this build finishes, and the flag is then ignored. It
+      # matters whenever that order does not hold — a tag pushed without
+      # `gh release create` behind it, a re-run, a dispatch on an old tag — and
+      # this is the first of the three tag workflows to reach an attach step
+      # (ungated, and it only builds a graph), so it is the one that would
+      # create the release. Decide the flag from the tag, as
+      # windows-installer.yml does.
+      - name: Classify tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: tagkind
+        run: |
+          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+(\.[0-9]+)+b[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          # Only meaningful when this step creates the release; editing an
+          # existing one keeps whatever flag it already has.
+          prerelease: ${{ steps.tagkind.outputs.prerelease }}
+
+      # A dispatch has no tag to attach to, and the action refuses a branch ref
+      # outright ("GitHub Releases requires a tag") — so without this the
+      # trigger this workflow advertises would always end red with nothing to
+      # show for the build. An artifact is what a dispatch is for: reading the
+      # graph CI produces off a branch, before a tag exists.
+      - name: Upload the graph as an artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: bamdude-code-graph-${{ steps.stage.outputs.version }}
+          path: dist/*
+          if-no-files-found: error

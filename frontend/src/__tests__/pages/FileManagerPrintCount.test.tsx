@@ -15,8 +15,8 @@ import { server } from '../mocks/server';
 import { FileManagerPage } from '../../pages/FileManagerPage';
 
 const navigateSpy = vi.fn();
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+vi.mock('react-router', async () => {
+  const actual = await vi.importActual<typeof import('react-router')>('react-router');
   return { ...actual, useNavigate: () => navigateSpy };
 });
 
@@ -31,6 +31,7 @@ const mockFiles = [
     file_size: 1048576,
     file_type: 'gcode',
     file_tags: ['gcode', '3mf', 'sliced'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: null,
     print_name: 'Benchy',
@@ -46,6 +47,7 @@ const mockFiles = [
     file_size: 524288,
     file_type: 'stl',
     file_tags: ['stl', 'geometry'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: null,
     print_name: null,
@@ -61,6 +63,7 @@ const mockFiles = [
     file_size: 2048576,
     file_type: 'gcode',
     file_tags: ['gcode', '3mf', 'sliced'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: null,
     print_name: 'Cube',
@@ -77,7 +80,28 @@ describe('library print count', () => {
     navigateSpy.mockClear();
     server.use(
       http.get('/api/v1/library/folders', () => HttpResponse.json([])),
-      http.get('/api/v1/library/files', () => HttpResponse.json(mockFiles)),
+      // Server-driven (task 2, 2026-08-29): `unprinted_only` and `file_type`
+      // are now server params rather than a client-side filter, and the
+      // "combines with" / "cleared by clear-filters" tests below depend on
+      // both actually narrowing the mock's result — mirror the backend's
+      // `print_count == 0` / exact-type-match rules here so those assertions
+      // still exercise real filtering rather than a fake that always echoes
+      // everything back.
+      http.get('/api/v1/library/files', ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        let items = mockFiles;
+        if (params.get('unprinted_only') === 'true') {
+          items = items.filter((f) => !f.print_count);
+        }
+        const fileType = params.get('file_type');
+        if (fileType) {
+          items = items.filter((f) => f.file_type === fileType);
+        }
+        return HttpResponse.json({
+          items,
+          meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+        });
+      }),
       http.get('/api/v1/library/stats', () =>
         HttpResponse.json({
           total_files: 3,

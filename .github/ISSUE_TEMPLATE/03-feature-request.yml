@@ -1,0 +1,99 @@
+name: Feature Request
+description: Suggest a feature or a change in how BamDude behaves.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. For anything that changes how the queue, dispatch, archives or auth behave, a [Discussion](https://github.com/kainpl/bamdude/discussions) first saves everyone a round-trip — BamDude has opinions there, and a design is easier to agree on before a PR exists. Small, self-contained requests are fine right here.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do on your farm and where BamDude gets in the way. The situation — not the solution yet.
+      placeholder: "Every morning I …"
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What you would like
+      description: How it should behave. Screens, buttons, messages — as concrete as you can.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead
+      description: Workarounds, other tools, or why nothing works.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of BamDude
+      options:
+        - Printers — status, camera, controls
+        - Print queue, auto-queue and scheduling
+        - Print archive and statistics
+        - Library — files, folders, slicing
+        - Projects — orders, products, customers
+        - Spool inventory and filament usage
+        - Spoolman integration
+        - Filament calibration and K-profiles
+        - Maintenance tracking
+        - Telegram bot
+        - Notifications — email, ntfy, Discord, webhooks, Home Assistant …
+        - Smart plugs, Zigbee and energy
+        - Labels
+        - Virtual printer and remote printing
+        - Authentication, users and API keys
+        - Installers, Docker and updates
+        - BamDude Cloud
+        - UI, translation and accessibility
+        - REST API and integrations
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scale
+    attributes:
+      label: Farm size
+      description: Helps judge what the feature has to cope with.
+      options:
+        - 1 printer
+        - 2–5 printers
+        - 6–20 printers
+        - More than 20
+
+  - type: input
+    id: upstream
+    attributes:
+      label: Does upstream Bambuddy have it?
+      description: Link the Bambuddy issue, PR or release note if so — ports go through a tracked audit, and a link saves a cycle.
+      placeholder: "https://github.com/maziggy/bambuddy/…"
+
+  - type: textarea
+    id: mockups
+    attributes:
+      label: Mockups or examples
+      description: Sketches, screenshots from other software, a sample file. Drag them into this box.
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to implement this myself (see CONTRIBUTING.md — we will help with the design)
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and Discussions
+          required: true

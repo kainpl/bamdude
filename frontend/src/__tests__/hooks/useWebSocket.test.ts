@@ -8,8 +8,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import React from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQueries } from '@tanstack/react-query';
 import { ToastProvider } from '../../contexts/ToastContext';
+import { forecastQueryKeys } from '../../utils/inventoryQueries';
+import { ORDER_VIEW_KEYS } from '../../utils/queryInvalidation';
+import { clearLiveStatusPriority, setLiveStatusPriority } from '../../utils/liveStatusPriority';
 
 // Track WebSocket instances created during tests
 let wsInstances: MockWebSocket[] = [];
@@ -120,7 +123,9 @@ function createWrapper(queryClient: QueryClient) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return React.createElement(
       ToastProvider,
-      {},
+      // `children` is filled by the variadic argument below; React prefers that
+      // over whatever the props object carries, so the null is never seen.
+      { children: null },
       React.createElement(
         QueryClientProvider,
         { client: queryClient },
@@ -169,6 +174,96 @@ describe('useWebSocket hook', () => {
     vi.restoreAllMocks();
     // Restore original WebSocket
     globalThis.WebSocket = originalWebSocket;
+  });
+
+  it('refreshes the affected queue immediately after auto-queue promotion', async () => {
+    const { useWebSocket } = await import('../../hooks/useWebSocket');
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+    const ws = await waitForWs();
+
+    act(() => {
+      ws.open();
+      ws.simulateMessage({ type: 'queue_changed', printer_id: 42 });
+    });
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 42] });
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 'all'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queues'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue-forecast'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['auto-queue'] });
+  });
+
+  it('refreshes the inbox when an item lands', async () => {
+    const { useWebSocket } = await import('../../hooks/useWebSocket');
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+    const ws = await waitForWs();
+
+    act(() => {
+      ws.open();
+      ws.simulateMessage({ type: 'inbox_item', data: { item: { id: 1 }, unread_count: 4 } });
+    });
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['inbox'] });
+    });
+  });
+
+  it('refreshes stagger capacity when the scheduler releases a slot', async () => {
+    const { useWebSocket } = await import('../../hooks/useWebSocket');
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+    const ws = await waitForWs();
+
+    act(() => {
+      ws.open();
+      ws.simulateMessage({ type: 'stagger_changed' });
+    });
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['stagger-state'] });
+    });
+  });
+
+  it('applies all 50 WS states and acknowledges them while every REST request is still pending', async () => {
+    const { useWebSocket } = await import('../../hooks/useWebSocket');
+    const reads = vi.fn(() => new Promise<Record<string, unknown>>(() => {}));
+    const { result, unmount } = renderHook(() => {
+      useWebSocket();
+      return useQueries({ queries: Array.from({ length: 50 }, (_, i) => ({
+        queryKey: ['printerStatus', i + 1], queryFn: reads,
+      })) });
+    }, { wrapper: createWrapper(queryClient) });
+    const ws = await waitForWs();
+    act(() => {
+      ws.open();
+      for (let id = 1; id <= 50; id++) {
+        ws.simulateMessage({ type: 'printer_status', printer_id: id, data: { connected: true, state: 'RUNNING', progress: id } });
+      }
+      ws.simulateMessage({ type: 'initial_status_complete', bootstrap_id: 'test-bootstrap' });
+    });
+    await waitFor(() => expect(result.current.every(q => q.data?.state === 'RUNNING')).toBe(true));
+    expect(result.current.every(q => q.isFetching && !q.isLoading)).toBe(true);
+    expect(ws.send.mock.calls.map(([data]) => JSON.parse(data))).toContainEqual(expect.objectContaining({
+      type: 'initial_status_applied', bootstrap_id: 'test-bootstrap', connect_ms: expect.any(Number),
+    }));
+    unmount();
+  });
+
+  it('does not refetch inactive pages when the tab becomes visible', async () => {
+    const { useWebSocket } = await import('../../hooks/useWebSocket');
+    const readInactive = vi.fn().mockResolvedValue([]);
+    await queryClient.fetchQuery({ queryKey: ['archives'], queryFn: readInactive });
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+    await waitForWs();
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(readInactive).toHaveBeenCalledTimes(1);
+    unmount();
   });
 
   describe('WebSocket Mock', () => {
@@ -258,6 +353,28 @@ describe('useWebSocket hook', () => {
   });
 
   describe('message handling', () => {
+    it('applies a mounted card status before offscreen status updates', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      const writes = vi.spyOn(queryClient, 'setQueryData');
+      setLiveStatusPriority('printers', [3]);
+
+      try {
+        renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+        const ws = await waitForWs();
+        act(() => {
+          ws.open();
+          ws.simulateMessage({ type: 'printer_status', printer_id: 1, data: { state: 'IDLE' } });
+          ws.simulateMessage({ type: 'printer_status', printer_id: 2, data: { state: 'IDLE' } });
+          ws.simulateMessage({ type: 'printer_status', printer_id: 3, data: { state: 'RUNNING' } });
+        });
+
+        await waitFor(() => expect(writes.mock.calls.filter(([key]) => key[0] === 'printerStatus')).toHaveLength(3));
+        expect(writes.mock.calls.filter(([key]) => key[0] === 'printerStatus').map(([key]) => key[1])).toEqual([3, 1, 2]);
+      } finally {
+        clearLiveStatusPriority('printers');
+      }
+    });
+
     it('updates printer status in query cache on printer_status message', async () => {
       // Test the printer status update logic directly using setQueryData
       // The WebSocket handler with throttling is complex to test with fake timers,
@@ -293,7 +410,7 @@ describe('useWebSocket hook', () => {
       queryClient.setQueryData(
         ['printerStatus', 1],
         (old: Record<string, unknown> | undefined) => {
-          const statusData = { state: 'RUNNING', wifi_signal: null };
+          const statusData: Record<string, unknown> = { state: 'RUNNING', wifi_signal: null };
           const merged = { ...old, ...statusData };
           // This is the preservation logic from useWebSocket
           if (merged.wifi_signal == null && old?.wifi_signal != null) {
@@ -381,6 +498,61 @@ describe('useWebSocket hook', () => {
 
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archives'] });
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archiveStats'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    // A print is the one thing that changes a project without anybody touching
+    // the project, and the archive events carry no project_id — so the whole
+    // project prefix has to go. Reported as "I start prints from a project and
+    // its Prints section stays empty": it was, until the page was re-entered.
+    it('refreshes the project views on archive_created', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket, INVALIDATION_DEBOUNCE_MS, INVALIDATION_STAGGER_MS } = await import(
+        '../../hooks/useWebSocket'
+      );
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'archive_created',
+          data: { id: 1, filename: 'test.3mf' },
+        });
+      });
+
+      // The burst is `debounce + one stagger per key`, and the keys are
+      // `ORDER_VIEW_KEYS` plus `project-timeline`. ⚠️ DERIVED, never a
+      // literal: the list grows, and the day `order-filament` /
+      // `orders-filament` joined it a hard-coded 10 s window fell 500 ms short
+      // of the last key and this test went red for no defect at all.
+      const keyCount = ORDER_VIEW_KEYS.length + 1; // + 'project-timeline'
+      await act(async () => {
+        vi.advanceTimersByTime(
+          INVALIDATION_DEBOUNCE_MS + keyCount * INVALIDATION_STAGGER_MS + INVALIDATION_STAGGER_MS,
+        );
+      });
+
+      for (const key of [
+        'project',
+        'project-archives',
+        'project-timeline',
+        'customer',
+        'projects',
+      ]) {
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: [key] });
+      }
 
       vi.useRealTimers();
       vi.unstubAllGlobals();
@@ -504,6 +676,82 @@ describe('useWebSocket hook', () => {
       });
 
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['zigbee-sensors'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    // Both inventory backends broadcast this one event, so it has to refresh
+    // both sets of cards. It used to touch only ['spool-assignments'] — the
+    // internal key — so once the Spoolman assign route learned to broadcast
+    // (spec 2026-09-13 §3.3) the message arrived and refreshed nothing on a
+    // Spoolman install. The two Spoolman keys are exactly the ones the printer
+    // page's own assign/unassign mutations invalidate.
+    it('a slot assignment change refreshes BOTH inventories', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket, INVALIDATION_DEBOUNCE_MS, INVALIDATION_STAGGER_MS } = await import(
+        '../../hooks/useWebSocket'
+      );
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      const ws = await waitForWs();
+
+      act(() => {
+        ws.open();
+      });
+
+      act(() => {
+        ws.simulateMessage({
+          type: 'spool_assignment_changed',
+          printer_id: 1,
+          ams_id: 0,
+          tray_id: 1,
+        });
+      });
+
+      // One stagger step per key, plus one to clear the last.
+      await act(async () => {
+        vi.advanceTimersByTime(INVALIDATION_DEBOUNCE_MS + 4 * INVALIDATION_STAGGER_MS);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-slot-assignments'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-inventory-spools'] });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    it('refreshes every forecast feed when inventory or usage changes arrive', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket, INVALIDATION_DEBOUNCE_MS, INVALIDATION_STAGGER_MS } = await import(
+        '../../hooks/useWebSocket'
+      );
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
+
+      act(() => {
+        ws.simulateMessage({ type: 'inventory_changed' });
+        ws.simulateMessage({ type: 'spool_usage_logged' });
+      });
+
+      // Both events name the same forecast keys. The debounce must dedupe them
+      // while preserving every distinct full query key.
+      await act(async () => {
+        vi.advanceTimersByTime(INVALIDATION_DEBOUNCE_MS + 9 * INVALIDATION_STAGGER_MS);
+      });
+
+      for (const queryKey of forecastQueryKeys) {
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey });
+      }
 
       vi.useRealTimers();
       vi.unstubAllGlobals();

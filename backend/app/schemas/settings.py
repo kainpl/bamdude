@@ -31,13 +31,26 @@ class AppSettings(BaseModel):
 
     save_thumbnails: bool = Field(default=True, description="Extract and save preview images from 3MF files")
     capture_finish_photo: bool = Field(
-        default=True,
+        default=False,
         description=(
-            "Capture photo from printer camera when print completes. BamDude records a "
-            "brief timelapse during the print so the photo can be sourced from the moment "
-            "before the bed drops; the timelapse file is kept if you enabled timelapse for "
-            "this print, otherwise it is deleted automatically after the photo is captured."
+            "Capture finish photos and notification images. BamDude may capture frames "
+            "in the background while printing to preserve the last view of the print; "
+            "this does not enable the printer's timelapse."
         ),
+    )
+    # The chamber light for the camera (services/camera_light). Off by
+    # default and the printer's own camera_light_auto can override either way;
+    # Obico is a separate yes because it polls the camera for the whole print.
+    camera_light_auto: bool = Field(
+        default=False,
+        description=(
+            "Switch the chamber light on for the camera when it is off, and back off afterwards. "
+            "Only a light BamDude switched on is switched off again."
+        ),
+    )
+    camera_light_auto_obico: bool = Field(
+        default=False,
+        description="Also switch the light on for Obico's failure-detection frames (the whole print).",
     )
     # ⚠️ Off by default, and it stays off unless somebody chooses it. "BamDude
     # has a copy" is not the same as "nobody needs it on the machine" — the
@@ -173,6 +186,9 @@ class AppSettings(BaseModel):
         default=35.0, description="Temperature threshold for fair (orange): <= this value, > is red"
     )
     ams_history_retention_days: int = Field(default=30, description="Number of days to keep AMS sensor history data")
+    inbox_retention_days: int = Field(
+        default=30, ge=1, le=365, description="Number of days to keep in-app inbox notifications"
+    )
     plug_power_history_retention_days: int = Field(
         default=30, description="Number of days to keep smart-plug power history"
     )
@@ -191,18 +207,38 @@ class AppSettings(BaseModel):
         le=365,
         description="Number of days to keep historical daily log archives (bamdude-YYYY-MM-DD.log).",
     )
+    slow_query_ms: int = Field(
+        default=0,
+        ge=0,
+        le=60000,
+        description="Log a warning for any SQL statement slower than this, in milliseconds. 0 disables.",
+    )
+    slow_request_ms: int = Field(
+        default=0,
+        ge=0,
+        le=600000,
+        description="Log a warning for any HTTP request slower than this, in milliseconds. 0 disables.",
+    )
 
     # Queue auto-drying settings
     queue_drying_enabled: bool = Field(
         default=False, description="Automatically dry AMS filament between queued prints"
     )
     prefer_lowest_filament: bool = Field(
-        default=False,
+        default=True,
         description="When multiple AMS trays match, prefer the one with lowest remaining filament",
     )
     queue_shortest_first: bool = Field(
         default=False,
         description="Auto-queue: prefer shorter print jobs first (with been_jumped starvation guard)",
+    )
+    auto_queue_rebalance_models: bool = Field(
+        default=False,
+        description="Auto-queue: move an order line's pending prints to idle printers of another model when that finishes sooner",
+    )
+    auto_order_for_batches: bool = Field(
+        default=True,
+        description="Print dialog: a submission of two or more prints proposes a new order for the batch (spec 2026-09-06, Decision 6)",
     )
     # Preheat / heat-soak before queued prints (#1468). The scheduler stage runs on the
     # idle printer between FTP upload and start_print. Three hardware tiers: chamber heater
@@ -305,6 +341,47 @@ class AppSettings(BaseModel):
     stagger_wait_for_bed: bool = Field(
         default=True,
         description="Slot frees when bed reaches target temp (±1°C). When off, frees immediately after start.",
+    )
+    # ETA forecast allowances (vault 60-specs/farm-forecast-v2-spec §7). Read only
+    # by ``services/farm_forecast.load_snapshot``; the queue never reads them.
+    forecast_upload_seconds: int = Field(
+        default=120,
+        ge=0,
+        le=3600,
+        description=(
+            "Seconds the ETA forecast adds before every print that has not started yet, for sending the file "
+            "to the printer. The preheat stage is added on top from its own settings."
+        ),
+    )
+    forecast_plate_clear_minutes: int = Field(
+        default=10,
+        ge=0,
+        le=1440,
+        description=(
+            "Minutes the ETA forecast allows for the plate-clear confirmation after every print on a printer "
+            "that requires it. 0 = assume the plate is cleared at once."
+        ),
+    )
+    # Staggered start by group — electrical phases. Design:
+    # docs/superpowers/specs/2026-09-05-stagger-groups-design.md. The id lists
+    # are JSON arrays kept as strings like every structured setting here;
+    # services/stagger_groups.py parses them.
+    stagger_split_by_tags: bool = Field(default=False, description="Cap concurrent starts per chosen printer tag")
+    stagger_group_tag_ids: str = Field(
+        default="[]", description="JSON array of printer tag ids that are stagger groups"
+    )
+    stagger_split_by_location: bool = Field(
+        default=False, description="Cap concurrent starts per chosen printer location (nearest picked ancestor)"
+    )
+    stagger_group_location_ids: str = Field(
+        default="[]", description="JSON array of printer location ids that are stagger groups"
+    )
+    # Per-group cap overrides (spec 2026-09-06): JSON objects of id → cap. An
+    # absent id means the global ``stagger_concurrent``. Kept beside the id
+    # lists because the override is a stagger concern, not a property of the tag.
+    stagger_tag_limits: str = Field(default="{}", description="JSON object: printer tag id → max concurrent starts")
+    stagger_location_limits: str = Field(
+        default="{}", description="JSON object: printer location id → max concurrent starts"
     )
 
     # Print modal settings
@@ -602,10 +679,14 @@ class AppSettingsUpdate(BaseModel):
 
     save_thumbnails: bool | None = None
     capture_finish_photo: bool | None = None
+    camera_light_auto: bool | None = None
+    camera_light_auto_obico: bool | None = None
     delete_timelapse_after_attach: bool | None = None
     archive_3mf_retention_enabled: bool | None = None
     archive_3mf_retention_days: int | None = Field(default=None, ge=1)
     log_retention_days: int | None = Field(default=None, ge=1, le=365)
+    slow_query_ms: int | None = Field(default=None, ge=0, le=60000)
+    slow_request_ms: int | None = Field(default=None, ge=0, le=600000)
     runout_zero_point_enabled: bool | None = None
     ams_sync_bidirectional: bool | None = None
     runout_purge_grams: int | None = Field(default=None, ge=0, le=500)
@@ -637,12 +718,15 @@ class AppSettingsUpdate(BaseModel):
     ams_temp_good: float | None = None
     ams_temp_fair: float | None = None
     ams_history_retention_days: int | None = None
+    inbox_retention_days: int | None = Field(default=None, ge=1, le=365)
     plug_power_history_retention_days: int | None = Field(default=None, ge=1, le=365)
     sensor_history_retention_days: int | None = Field(default=None, ge=1, le=365)
     plug_power_sample_seconds: int | None = Field(default=None, ge=10, le=3600)
     printer_sensor_history_retention_days: int | None = None
     prefer_lowest_filament: bool | None = None
     queue_shortest_first: bool | None = None
+    auto_queue_rebalance_models: bool | None = None
+    auto_order_for_batches: bool | None = None
     preheat_enabled: bool | None = None
     preheat_filament_targets: str | None = None
     preheat_max_wait_seconds: int | None = Field(default=None, ge=60, le=3600)
@@ -660,6 +744,14 @@ class AppSettingsUpdate(BaseModel):
     stagger_concurrent: int | None = None
     stagger_interval_minutes: int | None = None
     stagger_wait_for_bed: bool | None = None
+    forecast_upload_seconds: int | None = Field(default=None, ge=0, le=3600)
+    forecast_plate_clear_minutes: int | None = Field(default=None, ge=0, le=1440)
+    stagger_split_by_tags: bool | None = None
+    stagger_group_tag_ids: str | None = None
+    stagger_split_by_location: bool | None = None
+    stagger_group_location_ids: str | None = None
+    stagger_tag_limits: str | None = None
+    stagger_location_limits: str | None = None
     per_printer_mapping_expanded: bool | None = None
     date_format: str | None = None
     time_format: str | None = None
@@ -820,6 +912,42 @@ class AppSettingsUpdate(BaseModel):
         if not isinstance(parsed, list) or not all(isinstance(item, int) for item in parsed):
             raise ValueError("obico_enabled_printers must be a JSON array of printer IDs (integers)")
         return v
+
+    @field_validator("stagger_group_tag_ids", "stagger_group_location_ids")
+    @classmethod
+    def validate_stagger_group_ids(cls, v: str | None) -> str | None:
+        """A JSON array of integers, stored sorted and de-duplicated."""
+        if v is None:
+            return v
+        try:
+            parsed = json.loads(v or "[]")
+        except json.JSONDecodeError:
+            raise ValueError("stagger group ids must be a JSON array of integers")
+        if not isinstance(parsed, list) or not all(isinstance(i, int) and not isinstance(i, bool) for i in parsed):
+            raise ValueError("stagger group ids must be a JSON array of integers")
+        return json.dumps(sorted(set(parsed)))
+
+    @field_validator("stagger_tag_limits", "stagger_location_limits")
+    @classmethod
+    def validate_stagger_limits(cls, v: str | None) -> str | None:
+        """A JSON object of id → cap. Entries that are not ``int id: int >= 1`` are dropped; a non-object is refused."""
+        if v is None:
+            return v
+        try:
+            parsed = json.loads(v or "{}")
+        except json.JSONDecodeError:
+            raise ValueError("stagger limits must be a JSON object of id: cap")
+        if not isinstance(parsed, dict):
+            raise ValueError("stagger limits must be a JSON object of id: cap")
+        kept: dict[int, int] = {}
+        for key, value in parsed.items():
+            try:
+                ident = int(key)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+                kept[ident] = value
+        return json.dumps({str(k): kept[k] for k in sorted(kept)})
 
     @field_validator("obico_sensitivity")
     @classmethod

@@ -137,3 +137,33 @@ class TestMetricsAPI:
         settings = response.json()
 
         assert settings["prometheus_enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_database_gauges_are_exported(self, async_client: AsyncClient):
+        """Cheap probes only: a scrape can run every 15 seconds, so per-table
+        sizes are deliberately NOT here."""
+        await async_client.put("/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": ""})
+        body = (await async_client.get("/api/v1/metrics")).text
+
+        assert "# TYPE bamdude_db_info gauge" in body
+        assert "bamdude_db_info{" in body
+        assert "# TYPE bamdude_db_pool_checked_out gauge" in body
+        assert "bamdude_db_size_bytes" in body
+        # Per-table sizes must never be scraped.
+        assert "pg_total_relation_size" not in body
+
+    @pytest.mark.asyncio
+    async def test_a_failed_probe_emits_no_line_rather_than_a_zero(self, async_client: AsyncClient, monkeypatch):
+        """A gap in a time series is honest; a fabricated 0 is a claim that the
+        database has no size."""
+
+        async def boom(_db):
+            raise RuntimeError("nope")
+
+        monkeypatch.setattr("backend.app.services.db_health.probe_size_bytes", boom)
+        await async_client.put("/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": ""})
+        body = (await async_client.get("/api/v1/metrics")).text
+
+        assert "bamdude_db_size_bytes" not in body
+        # …and the rest of the block still shipped.
+        assert "bamdude_db_info{" in body

@@ -25,11 +25,64 @@ def state_emoji(state: str | None) -> str:
     return STATE_EMOJIS.get(state or "", "\u26aa")
 
 
+def refusal_text(exc: Exception, lang: str, fallback_key: str) -> str:
+    """The reason to show an operator for a refusal raised by a queue writer.
+
+    The queue's refusals travel as ``{"code", "params", "message"}`` \u2014 the shape
+    ``filament_intake.routing_detail`` builds and the one the frontend reacts to \u2014
+    and ``message`` is already in the system language, which is the only language
+    the bot has (``i18n.get_language`` reads the same setting). So there is
+    **nothing to map here and no table of reasons to keep in step**: the sentence
+    the HTTP route would have answered with is the sentence the chat gets.
+
+    Both scenes used to answer a flat "failed" for every exception, which read as
+    "the printer refused your print" for what was in fact "the file is being
+    copied right now, try again" or "the disk is full" (queue-source-spool \u00a76).
+    Anything that is not one of those refusals still falls back to that wording \u2014
+    an unexpected error is not something to paraphrase at an operator.
+    """
+    detail = getattr(exc, "detail", None)
+    message = detail.get("message") if isinstance(detail, dict) else None
+    return message or t(lang, NS, fallback_key)
+
+
 def has_perm(tg_chat: TelegramChat | None, perm: str) -> bool:
     """Check permission, allowing all if no tg_chat (auth disabled)."""
     if tg_chat is None:
         return True
     return tg_chat.has_permission(perm)
+
+
+async def deny_out_of_scope(callback, tg_chat: TelegramChat | None, printer_id: int | None) -> bool:
+    """Answer-and-refuse when the printer is outside the chat's scope.
+
+    Returns True when the caller must stop (the callback has been answered
+    with the refusal). One line at each direct-callback site:
+    ``if await deny_out_of_scope(callback, tg_chat, printer_id): return``
+    """
+    if chat_allows_printer(tg_chat, printer_id):
+        return False
+    from backend.app.i18n import get_language, t
+
+    lang = await get_language()
+    try:
+        await callback.answer(t(lang, NS, "auth.not_in_scope"), show_alert=True)
+    except Exception:  # noqa: BLE001 — refusing must never crash the handler
+        pass
+    return True
+
+
+def chat_allows_printer(tg_chat: TelegramChat | None, printer_id: int | None) -> bool:
+    """m157 printer scope, the CONTROL half.
+
+    Listings are already scoped by ``get_printers_data(tg_chat)``, so an
+    in-scope operator never sees out-of-scope buttons — this guards the
+    direct callbacks those listings can't cover: a keyboard rendered before
+    the chat's scope was narrowed, or callback data typed by hand.
+    """
+    if tg_chat is None:
+        return True
+    return tg_chat.allows_printer(printer_id)
 
 
 async def ensure_fresh(printer_id: int) -> bool:
@@ -51,15 +104,24 @@ def format_time(lang: str, minutes: int | None) -> str:
     return t(lang, NS, "printers.time_m", m=mins)
 
 
-async def get_printers_data() -> list[dict]:
-    """Get all printers with their status from printer_manager."""
+async def get_printers_data(tg_chat=None) -> list[dict]:
+    """Get printers with their status from printer_manager.
+
+    ``tg_chat`` scopes the answer to the chat's ``printer_ids`` (m157) —
+    notifications and bot CONTROL follow the same list, so a chat watching
+    two machines browses, prints to and commands exactly those two. None
+    (no chat in context) = unscoped, e.g. internal callers.
+    """
     from sqlalchemy import select
 
     from backend.app.core.database import async_session
     from backend.app.models.printer import Printer
 
     async with async_session() as db:
-        result = await db.execute(select(Printer).where(Printer.is_active == True).where(Printer.archived.is_(False)))  # noqa: E712
+        query = select(Printer).where(Printer.is_active == True).where(Printer.archived.is_(False))  # noqa: E712
+        if tg_chat is not None and tg_chat.printer_ids is not None:
+            query = query.where(Printer.id.in_(tg_chat.printer_ids))
+        result = await db.execute(query)
         printers = list(result.scalars().all())
 
     data = []

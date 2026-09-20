@@ -12,6 +12,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_host_process_census():
+    """Section tests must not enumerate the developer host's live sockets.
+
+    The Windows psutil probe can block in native code. Process diagnostics
+    have their own coverage in test_support_process_info.py.
+    """
+    with patch("backend.app.api.routes.support._collect_process_info", return_value={"available": False}):
+        yield
+
+
 class TestApplyLogLevel:
     """Tests for _apply_log_level() debug noise suppression."""
 

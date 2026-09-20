@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2, ChevronDown, ArrowRightLeft } from 'lucide-react';
+import { Loader2, ArrowRightLeft } from 'lucide-react';
 import { api, multiVirtualPrinterApi } from '../api/client';
-import { Card, CardContent } from './Card';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
+import { Select } from './Select';
 
 type Mode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 type DisplayMode = 'print_queue' | 'file_manager' | 'proxy';
@@ -56,137 +57,125 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
   });
 
   return (
-    <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-      onClick={onClose}
-    >
-      <Card
-        className="w-full max-w-md"
-        onClick={(e: React.MouseEvent) => e.stopPropagation()}
-      >
-        <CardContent className="p-6 space-y-4">
-          <h3 className="text-lg font-semibold text-white">{t('virtualPrinter.addDialog.title')}</h3>
+    <Modal onClose={onClose} title={t('virtualPrinter.addDialog.title')} size="md">
+      <div className="p-4 space-y-4">
+        {/* Name */}
+        <div>
+          <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.addDialog.name')}</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="BamDude"
+            className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-2 text-white text-sm placeholder-bambu-gray"
+            autoFocus
+          />
+        </div>
 
-          {/* Name */}
-          <div>
-            <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.addDialog.name')}</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="BamDude"
-              className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-2 text-white text-sm placeholder-bambu-gray"
-              autoFocus
-            />
-          </div>
-
-          {/* Mode */}
-          <div>
-            <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.mode.title')}</label>
-            <div className="grid grid-cols-2 gap-2">
-              {DISPLAY_MODES.map((m) => {
-                // Queue radio is highlighted for both print_queue and auto_queue;
-                // the toggle below splits between them.
-                const isSelected = m === 'print_queue'
-                  ? (mode === 'print_queue' || mode === 'auto_queue')
-                  : mode === m;
-                return (
-                  <button
-                    key={m}
-                    onClick={() => setMode(m)}
-                    className={`p-2 rounded-lg border text-left transition-colors ${
-                      isSelected
-                        ? m === 'proxy'
-                          ? 'border-blue-500 bg-blue-500/10'
-                          : 'border-bambu-green bg-bambu-green/10'
-                        : 'border-bambu-dark-tertiary hover:border-bambu-gray'
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5 text-white text-xs font-medium">
-                      {m === 'proxy' && <ArrowRightLeft className="w-3 h-3" />}
-                      {t(`virtualPrinter.mode.${MODE_LABELS[m]}`)}
-                    </div>
-                    <div className="text-[10px] text-bambu-gray">
-                      {t(`virtualPrinter.mode.${MODE_LABELS[m]}Desc`)}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Auto-select printer toggle — visible only when Queue mode is picked */}
-          {(mode === 'print_queue' || mode === 'auto_queue') && (
-            <div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-white text-sm font-medium">{t('virtualPrinter.autoSelectPrinter.title')}</div>
-                  <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.autoSelectPrinter.description')}</div>
-                </div>
+        {/* Mode */}
+        <div>
+          <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.mode.title')}</label>
+          <div className="grid grid-cols-2 gap-2">
+            {DISPLAY_MODES.map((m) => {
+              // Queue radio is highlighted for both print_queue and auto_queue;
+              // the toggle below splits between them.
+              const isSelected = m === 'print_queue'
+                ? (mode === 'print_queue' || mode === 'auto_queue')
+                : mode === m;
+              return (
                 <button
-                  type="button"
-                  onClick={() => setMode(mode === 'auto_queue' ? 'print_queue' : 'auto_queue')}
-                  className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
-                    mode === 'auto_queue' ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`p-2 rounded-lg border text-left transition-colors ${
+                    isSelected
+                      ? m === 'proxy'
+                        ? 'border-blue-500 bg-blue-500/10'
+                        : 'border-bambu-green bg-bambu-green/10'
+                      : 'border-bambu-dark-tertiary hover:border-bambu-gray'
                   }`}
                 >
-                  <span
-                    className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
-                      mode === 'auto_queue' ? 'translate-x-5' : ''
-                    }`}
-                  />
+                  <div className="flex items-center gap-1.5 text-white text-xs font-medium">
+                    {m === 'proxy' && <ArrowRightLeft className="w-3 h-3" />}
+                    {t(`virtualPrinter.mode.${MODE_LABELS[m]}`)}
+                  </div>
+                  <div className="text-[10px] text-bambu-gray">
+                    {t(`virtualPrinter.mode.${MODE_LABELS[m]}Desc`)}
+                  </div>
                 </button>
-              </div>
-            </div>
-          )}
-
-          {/* Target Printer - only for proxy mode */}
-          {mode === 'proxy' && (
-            <div>
-              <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.targetPrinter.title')}</label>
-              <div className="relative">
-                <select
-                  value={targetPrinterId ?? ''}
-                  onChange={(e) => {
-                    const id = parseInt(e.target.value, 10);
-                    setTargetPrinterId(isNaN(id) ? null : id);
-                  }}
-                  className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-2 text-white text-sm appearance-none cursor-pointer pr-10"
-                >
-                  <option value="">{t('virtualPrinter.targetPrinter.placeholder')}</option>
-                  {printers?.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name} ({p.ip_address})</option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-              </div>
-            </div>
-          )}
-
-          <p className="text-xs text-bambu-gray">
-            {t('virtualPrinter.addDialog.hint')}
-          </p>
-
-          {/* Actions */}
-          <div className="flex gap-3 pt-2">
-            <Button variant="secondary" onClick={onClose} className="flex-1" disabled={createMutation.isPending}>
-              {t('common.cancel')}
-            </Button>
-            <Button
-              variant="primary"
-              onClick={() => createMutation.mutate()}
-              className="flex-1"
-              disabled={createMutation.isPending}
-            >
-              {createMutation.isPending ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                t('virtualPrinter.addDialog.create')
-              )}
-            </Button>
+              );
+            })}
           </div>
-        </CardContent>
-      </Card>
-    </div>
+        </div>
+
+        {/* Auto-select printer toggle — visible only when Queue mode is picked */}
+        {(mode === 'print_queue' || mode === 'auto_queue') && (
+          <div>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-white text-sm font-medium">{t('virtualPrinter.autoSelectPrinter.title')}</div>
+                <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.autoSelectPrinter.description')}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMode(mode === 'auto_queue' ? 'print_queue' : 'auto_queue')}
+                className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+                  mode === 'auto_queue' ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                    mode === 'auto_queue' ? 'translate-x-5' : ''
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Target Printer - only for proxy mode */}
+        {mode === 'proxy' && (
+          <div>
+            <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.targetPrinter.title')}</label>
+            <Select
+              tone="raised"
+              className="w-full"
+              value={targetPrinterId ?? ''}
+              onChange={(e) => {
+                const id = parseInt(e.target.value, 10);
+                setTargetPrinterId(isNaN(id) ? null : id);
+              }}
+            >
+              <option value="">{t('virtualPrinter.targetPrinter.placeholder')}</option>
+              {printers?.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} ({p.ip_address})</option>
+              ))}
+            </Select>
+          </div>
+        )}
+
+        <p className="text-xs text-bambu-gray">
+          {t('virtualPrinter.addDialog.hint')}
+        </p>
+
+        {/* Actions */}
+        <div className="flex gap-3 pt-2">
+          <Button variant="secondary" onClick={onClose} className="flex-1" disabled={createMutation.isPending}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => createMutation.mutate()}
+            className="flex-1"
+            disabled={createMutation.isPending}
+          >
+            {createMutation.isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              t('virtualPrinter.addDialog.create')
+            )}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }

@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "type": "snapshot_chunk",
+  "id": "f-snapshot-chunk-chunk-zero",
+  "ts": "2026-08-24T12:00:00Z",
+  "data": {
+    "sync_id": "sync-9f2c",
+    "chunk": 0,
+    "of": 2,
+    "base_seq": 0,
+    "printers": [
+      {
+        "id": "p-001",
+        "name": "X2D Front-Left",
+        "model": "X2D",
+        "state": "printing",
+        "progress": 42,
+        "job_name": "bracket_v3.gcode.3mf",
+        "temps": {
+          "bed": 60,
+          "bed_target": 60,
+          "nozzle": 219.5,
+          "nozzle_target": 220,
+          "chamber": 38
+        },
+        "error": null
+      }
+    ]
+  }
+}

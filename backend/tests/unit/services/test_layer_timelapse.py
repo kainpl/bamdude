@@ -195,11 +195,11 @@ class TestLayerChangeLogic:
             with patch.object(Path, "mkdir"):
                 session = TimelapseSession(1, 100, "http://test/", "mjpeg")
 
-                # Mock capture_frame to return data
-                with patch(
-                    "backend.app.services.layer_timelapse.capture_frame", new_callable=AsyncMock
-                ) as mock_capture:
-                    mock_capture.return_value = b"\xff\xd8test\xff\xd9"
+                # Mock the runtime boundary to return capture evidence.
+                with patch("backend.app.services.layer_timelapse.capture", new_callable=AsyncMock) as mock_capture:
+                    from backend.app.services.camera_metrics import CameraCaptureResult
+
+                    mock_capture.return_value = CameraCaptureResult(b"\xff\xd8test\xff\xd9", "fresh")
 
                     with patch.object(Path, "write_bytes"):
                         # First layer should capture
@@ -235,11 +235,11 @@ class TestLayerChangeLogic:
             with patch.object(Path, "mkdir"):
                 session = TimelapseSession(1, 100, "http://test/", "mjpeg")
 
-                # Mock capture_frame to return None (failure)
-                with patch(
-                    "backend.app.services.layer_timelapse.capture_frame", new_callable=AsyncMock
-                ) as mock_capture:
-                    mock_capture.return_value = None
+                # Mock the runtime boundary to return no frame (failure).
+                with patch("backend.app.services.layer_timelapse.capture", new_callable=AsyncMock) as mock_capture:
+                    from backend.app.services.camera_metrics import CameraCaptureResult
+
+                    mock_capture.return_value = CameraCaptureResult(None, None)
 
                     result = await session.capture_layer(1)
 

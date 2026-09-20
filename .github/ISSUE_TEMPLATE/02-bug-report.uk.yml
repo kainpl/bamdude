@@ -1,0 +1,196 @@
+name: Звіт про помилку
+description: Щось у BamDude працює не так. Кнопка Bug усередині застосунку швидша; ця форма — коли нею не скористатися.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Найшвидший шлях — усередині BamDude
+
+        На кожній сторінці внизу справа є червона кнопка **Bug**. Вона сама створює цей issue і додає все, про що ми інакше питали б: версію, ОС, моделі принтерів і прошивки, стан підключень, скріншот і **санітизовані** debug-логи (назви принтерів, серійні номери, коди доступу та IP замінюються ще до того, як щось покине вашу інсталяцію). [Як це працює](https://docs.bamdude.top/uk/features/bug-report/).
+
+        Ця форма — на випадок, коли BamDude не стартує, інтерфейс недоступний або ви волієте написати все руками. Дякуємо в будь-якому разі.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Що сталося
+      description: Що ви побачили, і чого очікували натомість.
+      placeholder: "Черга відправила одну й ту саму пластину на два принтери …"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Кроки відтворення
+      placeholder: |
+        1. Відкрити …
+        2. Натиснути …
+        3. …
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Версія BamDude
+      description: Налаштування → Система → [Інформація про версію](https://docs.bamdude.top/uk/features/system-info/#version-info).
+      placeholder: "0.5.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Як встановлено BamDude
+      options:
+        - Docker (образ із Docker Hub або GHCR)
+        - Docker Compose, збірка з вихідників
+        - Нативно на Linux / macOS (install.sh)
+        - Інсталятор для Windows (.exe)
+        - Вручну (git clone, власний venv)
+        - Інше
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Платформа
+      description: На чому працює BamDude. Архітектура має значення — на ARM-платах були свої окремі баги.
+      options:
+        - Linux x86_64
+        - Linux ARM64 (Raspberry Pi 4/5, aarch64)
+        - Linux ARM 32-біт (armv7l)
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Інше
+    validations:
+      required: true
+
+  - type: dropdown
+    id: database
+    attributes:
+      label: База даних
+      options:
+        - SQLite (типово)
+        - PostgreSQL у комплекті з BamDude (DATABASE_URL=embedded)
+        - PostgreSQL, власний сервер
+        - Не знаю
+    validations:
+      required: true
+
+  - type: dropdown
+    id: printers
+    attributes:
+      label: Моделі принтерів, яких це стосується
+      description: Оберіть усі моделі, на яких проявляється помилка.
+      multiple: true
+      options:
+        - X1 Carbon
+        - X1
+        - X1E
+        - H2D
+        - H2D Pro
+        - H2C
+        - H2S
+        - P1S
+        - P1P
+        - P2S
+        - X2D
+        - A2L
+        - A1
+        - A1 Mini
+        - Принтера не стосується
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Прошивка принтера
+      description: З екрана принтера або Bambu Handy. Пропустіть, якщо принтера не стосується.
+      placeholder: "01.08.02.00"
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Яка частина BamDude
+      options:
+        - Принтери — стан, камера, керування
+        - Черга друку, авточерга та планування
+        - Архів друку та статистика
+        - Бібліотека — файли, теки, нарізка
+        - Проєкти — замовлення, продукти, клієнти
+        - Інвентар котушок і облік філаменту
+        - Інтеграція зі Spoolman
+        - Калібрування філаменту та K-профілі
+        - Облік обслуговування
+        - Telegram-бот
+        - Сповіщення — email, ntfy, Discord, вебхуки, Home Assistant …
+        - Розумні розетки, Zigbee та енергія
+        - Етикетки
+        - Віртуальний принтер і віддалений друк
+        - Автентифікація, користувачі та API-ключі
+        - Інсталятори, Docker та оновлення
+        - BamDude Cloud
+        - Інтерфейс, переклад і доступність
+        - REST API та інтеграції
+        - Інше / не знаю
+
+  - type: input
+    id: browser
+    attributes:
+      label: Браузер
+      description: Для помилок інтерфейсу — назва й версія, або «мобільний / PWA».
+      placeholder: "Firefox 140; Chrome 138 на Android"
+
+  - type: markdown
+    attributes:
+      value: |
+        ### Логи
+
+        Найкорисніший додаток — **Support Bundle**: Налаштування → Система → увімкнути **Debug Logging**, відтворити помилку, далі **Support Bundle** → завантажити, і перетягнути `.zip` у поле нижче. Чутливі значення в бандлі вирізані. [Подробиці](https://docs.bamdude.top/uk/features/system-info/#support-bundle).
+
+        Вставляєте рядки логу вручну? Вони **не** санітизовані — перевірте, чи нема там коду доступу, серійного номера та IP принтера. Файл логу — `logs/bamdude.log` поруч з інсталяцією (`docker logs bamdude` у Docker), а в Налаштування → Система є [переглядач логів](https://docs.bamdude.top/uk/features/system-info/#log-viewer) із завантаженням.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи / Support Bundle
+      description: Перетягніть .zip у це поле або вставте потрібні рядки.
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Скріншоти
+      description: Перетягніть зображення в це поле.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Щось іще
+      description: Задіяні інтеграції (Spoolman, Obico, Telegram, Home Assistant, Zigbee, Cloud Link), реверс-проксі, коли почалося, що вже пробували.
+
+  - type: checkboxes
+    id: printer-setup
+    attributes:
+      label: Налаштування принтера (лише якщо помилка стосується принтера)
+      description: Локальний доступ на актуальних прошивках потребує Developer Mode — див. [Перший принтер](https://docs.bamdude.top/uk/getting-started/first-printer/).
+      options:
+        - label: На принтері ввімкнено Developer Mode
+        - label: Принтер доступний з хоста BamDude (та сама мережа, без ізоляції клієнтів)
+        - label: BamDude хоча б раз показував цей принтер підключеним
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Перед надсиланням
+      options:
+        - label: Я пошукав(ла) серед наявних issues, відкритих і закритих
+          required: true
+        - label: У мене останній реліз або поточна бета
+          required: true

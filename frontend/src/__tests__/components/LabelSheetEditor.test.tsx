@@ -44,7 +44,14 @@ describe('LabelSheetEditor', () => {
   const show = async (sheets: unknown[]) => {
     vi.spyOn(api, 'getLabelSheets').mockResolvedValue(sheets as never);
     render(<LabelSheetEditor />);
-    await waitFor(() => expect(screen.getByText('Sheets of stickers')).toBeInTheDocument());
+    // ⚠️ The heading is NOT the load evidence — it renders before the sheets
+    // arrive. The panel's Name box is: it exists only once the query resolved,
+    // `selectedId` picked the first row and the `draft` effect built the form
+    // from it, which is three commits later. Reading a field synchronously
+    // after the heading therefore races that chain, and loses it only under
+    // load: this file went red both on the full parallel run and alone while
+    // the backend suite saturated the CPU, then 7/7 on an idle machine.
+    await screen.findByLabelText(/Name/);
   };
 
   it('still marks which ones came with BamDude', async () => {

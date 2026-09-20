@@ -124,8 +124,10 @@ async def test_inherit_global_off_skips():
 
 
 @pytest.mark.asyncio
-async def test_on_runs_despite_global_off():
+@pytest.mark.parametrize("observer_fails", [False, True])
+async def test_on_runs_despite_global_off(observer_fails):
     client = _make_client()
+    observer = AsyncMock(side_effect=RuntimeError("UI observer unavailable") if observer_fails else None)
     with (
         patch.object(preheat, "_get_bool_setting", AsyncMock(return_value=False)),
         patch.object(
@@ -137,9 +139,14 @@ async def test_on_runs_despite_global_off():
         patch.object(preheat.asyncio, "sleep", AsyncMock()),
     ):
         await preheat_and_soak(
-            _make_db(), _make_printer("H2D"), _make_archive(bed_temperature=100), options={"preheat_override": "on"}
+            _make_db(),
+            _make_printer("H2D"),
+            _make_archive(bed_temperature=100),
+            options={"preheat_override": "on"},
+            on_heating=observer,
         )
     client.set_bed_temperature.assert_called_once_with(100)
+    observer.assert_awaited_once()
 
 
 # --- preheat_and_soak: chamber target + tiers -------------------------------

@@ -24,6 +24,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
@@ -97,6 +98,19 @@ async def clean_up_finished_row(
         )
         return False
 
+    # A completed queue row is the last owner of its queue-source bytes until
+    # the archive has a separate, readable copy.  Do not make cleanup erase
+    # both representations while an archive download is still retrying.
+    if queue_item.queue_source_id is not None:
+        from backend.app.services.queue_source_release import independent_archive_bytes
+
+        missing = await independent_archive_bytes(db, queue_item.archive_id)
+        if missing is not None:
+            queue_item.waiting_reason = f"Keeping queued file while archive download retries: {missing}"
+            await db.commit()
+            logger.info("Keeping completed queue item %s: %s", queue_item.id, missing)
+            return False
+
     item_id, archive_id, queue_id = queue_item.id, queue_item.archive_id, queue_item.queue_id
     await detach_print_queue_refs(db, [item_id])
     await db.delete(queue_item)
@@ -145,36 +159,86 @@ async def answer_by_repeating(db: AsyncSession, printer_id: int) -> PrintQueueIt
     ⚠️ Does NOT release the plate gate — the callers do, because they are the
     ones that know a person pressed something. While it is armed
     ``_is_printer_idle`` is False and the re-armed row would never dispatch.
+
+    ⚠️ m173: a row that owns captured bytes is re-armed **under the storage guard**
+    and reads no original at all. Which of the two "has this row anything to send?"
+    questions is asked depends only on the row's own ``queue_source_id`` and the
+    blob's state — never on the routing intent's provenance, which records
+    ``id: None`` for a job whose original references were already NULL when it was
+    last edited, and so cannot answer it.
     """
-    from backend.app.services.queue_counters import update_queue_counters
-    from backend.app.services.queue_ops import bump_block_to_top
+    from backend.app.services.queue_source_capture import reusing_sources
+    from backend.app.services.queue_sources import QueueSourceError
 
     row = await waiting_row(db, printer_id)
     if row is None:
         return None
 
-    # ⚠️ Refuse before touching anything when the archive is the row's only
-    # source and has no file behind it. A print picked up from BambuStudio is
-    # archived at start with ``file_path=""`` and the 3MF fetched afterwards —
-    # and that fetch fails outright on P1S / A1 / P2S, whose firmware locks the
-    # file while printing (#1533).
-    #
-    # ``_dispatch_item`` would NOT catch it: it checks ``file_path.exists()``,
-    # and an empty path resolves to the data directory, which exists. The
-    # dispatch would proceed with a directory as its source. Worse, a failed
-    # dispatch errors the queue — the exact outcome this feature exists to
-    # avoid — so the refusal belongs here, where the operator is standing.
-    if row.library_file_id is None:
-        from backend.app.core.config import settings
-        from backend.app.models.archive import PrintArchive
-
-        archive = await db.get(PrintArchive, row.archive_id) if row.archive_id else None
-        path = (settings.base_dir / archive.file_path) if archive and archive.file_path else None
-        if path is None or not path.is_file():
+    if row.queue_source_id:
+        # Asked under the guard and re-armed under it: a Repeat puts this row back
+        # onto bytes the collector is entitled to release, and the state has to be
+        # read and acted on inside one acquisition (spec §9, Task 3's C1). Only the
+        # ``reusing_sources`` entry can raise ``QueueSourceError`` — the re-arm
+        # below touches no storage — so mapping it to the operator's own refusal
+        # here cannot swallow anything else.
+        try:
+            async with reusing_sources(db, [row.queue_source_id]):
+                await _rearm(db, row)
+        except QueueSourceError as exc:
             raise RepeatNotPossible(
-                "This print has no file to send again — it was picked up from the printer "
-                "and its 3MF was never retrieved."
-            )
+                "This print has no file to send again — the queue's saved copy of it is no longer readable."
+            ) from exc
+    else:
+        await _refuse_a_legacy_row_with_no_file(db, row)
+        await _rearm(db, row)
+    logger.info("Repeat requested on printer %s — re-armed queue row %s", printer_id, row.id)
+    return row
+
+
+async def _refuse_a_legacy_row_with_no_file(db: AsyncSession, row: PrintQueueItem) -> None:
+    """The pre-m173 question, for a row that never captured anything.
+
+    ⚠️ Refuse before touching anything when the archive is the row's only source
+    and has no file behind it. A print picked up from BambuStudio is archived at
+    start with ``file_path=""`` and the 3MF fetched afterwards — and that fetch
+    fails outright on P1S / A1 / P2S, whose firmware locks the file while printing
+    (#1533).
+
+    ``_dispatch_item`` would NOT catch it: it checks ``file_path.exists()``, and an
+    empty path resolves to the data directory, which exists. The dispatch would
+    proceed with a directory as its source. Worse, a failed dispatch errors the
+    queue — the exact outcome this feature exists to avoid — so the refusal belongs
+    here, where the operator is standing.
+
+    ⚠️ **Only for a row with no ``queue_source_id``.** It used to run for every row,
+    and for a snapshot-backed job whose archive had since been purged it refused a
+    Repeat the dispatcher would have printed perfectly: the operator standing at the
+    machine was told "no file" about a job that owns its own copy (T6 review m2).
+    What still refuses is a row with genuinely no bytes — this one, and a captured
+    row whose blob is broken or being collected.
+    """
+    if row.library_file_id is not None:
+        return
+    from backend.app.core.config import settings
+
+    archive = await db.get(PrintArchive, row.archive_id) if row.archive_id else None
+    path = (settings.base_dir / archive.file_path) if archive and archive.file_path else None
+    if path is None or not path.is_file():
+        raise RepeatNotPossible(
+            "This print has no file to send again — it was picked up from the printer and its 3MF was never retrieved."
+        )
+
+
+async def _rearm(db: AsyncSession, row: PrintQueueItem) -> None:
+    """Put the waiting row back into its queue, at the front. Commits.
+
+    Split out so the two answers to "does this row still have bytes?" —
+    ``reusing_sources`` for a captured job, :func:`_refuse_a_legacy_row_with_no_file`
+    for everything older — lead into the same re-arm rather than into two copies of
+    it that could drift.
+    """
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import bump_block_to_top
 
     row.status = "pending"
     # The archive belongs to the print that finished; this run will get its own.
@@ -188,6 +252,9 @@ async def answer_by_repeating(db: AsyncSession, printer_id: int) -> PrintQueueIt
     # dispatch it from whatever it was dispatched from the first time.
     if row.library_file_id is not None:
         row.archive_id = None
+    from backend.app.services.filament_policy import restore_routing_source
+
+    restore_routing_source(row)
     row.completed_at = None
     row.started_at = None
     row.error_message = None
@@ -203,8 +270,35 @@ async def answer_by_repeating(db: AsyncSession, printer_id: int) -> PrintQueueIt
     await update_queue_counters(db, row.queue_id)
     await db.commit()
     await db.refresh(row)
-    logger.info("Repeat requested on printer %s — re-armed queue row %s", printer_id, row.id)
-    return row
+
+
+async def has_waiting_row(db: AsyncSession, printer_id: int) -> bool:
+    """Whether Repeat has anything to re-arm — the card's question, asked
+    before it draws the button.
+
+    The gate alone is not the answer: it arms whenever ``require_plate_clear``
+    says so, row or no row — a print on a queue-less printer, one already
+    running when BamDude came up, or one whose completion handler is still busy
+    fetching the 3MF — and Repeat then answered ``409`` to a button the card had
+    itself put on screen (2026-09-04). Clear plate has no such question: it is
+    silent when nothing waits.
+    """
+    return await waiting_row(db, printer_id) is not None
+
+
+async def repeat_available(printer_id: int) -> bool:
+    """``has_waiting_row`` for callers without a session — the WebSocket
+    status broadcasts and the Telegram keyboards. Cheap when the gate is not
+    armed (no query at all), which is nearly always."""
+    from backend.app.core.database import async_session
+    from backend.app.services.printer_manager import printer_manager
+
+    # ``is True``, not truthiness: a test that hands the callbacks a MagicMock
+    # manager must not send this to the developer's real database.
+    if printer_manager.is_awaiting_plate_clear(printer_id) is not True:
+        return False
+    async with async_session() as db:
+        return await has_waiting_row(db, printer_id)
 
 
 async def waiting_row(db: AsyncSession, printer_id: int) -> PrintQueueItem | None:
@@ -227,3 +321,24 @@ async def waiting_row(db: AsyncSession, printer_id: int) -> PrintQueueItem | Non
         .scalars()
         .first()
     )
+
+
+async def waiting_archive(db: AsyncSession, printer_id: int) -> PrintArchive | None:
+    """The print the waiting row is about — what both answers may record defects on.
+
+    Resolved BEFORE the answer, because clearing deletes the row and repeating
+    re-arms it; afterwards there is nothing left to ask.
+
+    A trashed archive is no archive: every other reader of a print's defects
+    excludes ``deleted_at`` (``PrintArchive.active()`` on the order route,
+    Telegram's own loader), and without the same check here a queue row whose
+    archive went to the trash still answered ``GET /waiting-print`` with 200 and
+    still accepted a defect write.
+    """
+    row = await waiting_row(db, printer_id)
+    if row is None or row.archive_id is None:
+        return None
+    archive = await db.get(PrintArchive, row.archive_id)
+    if archive is None or archive.deleted_at is not None:
+        return None
+    return archive

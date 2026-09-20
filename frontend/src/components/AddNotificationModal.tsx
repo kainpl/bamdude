@@ -1,19 +1,23 @@
-import { useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Loader2, Send, CheckCircle, XCircle, MessageCircle, ExternalLink } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Save, Loader2, Send, CheckCircle, XCircle, MessageCircle, ExternalLink, Plus, Trash2 } from 'lucide-react';
+import { Link } from 'react-router';
 import { api } from '../api/client';
 import type { NotificationProvider, NotificationProviderCreate, NotificationProviderUpdate, ProviderType } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { Toggle } from './Toggle';
+import { ProviderEventToggles } from './ProviderEventToggles';
+import { useEventLabel, useProviderEvents } from './providerEvents';
+import { Select } from './Select';
 
 interface AddNotificationModalProps {
   provider?: NotificationProvider | null;
   onClose: () => void;
 }
 
-const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'bark', 'callmebot', 'webhook', 'homeassistant'];
+const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'bark', 'callmebot', 'webhook', 'homeassistant', 'signal'];
 
 export function AddNotificationModal({ provider, onClose }: AddNotificationModalProps) {
   const { t } = useTranslation();
@@ -22,7 +26,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
 
   const [name, setName] = useState(provider?.name || '');
   const [providerType, setProviderType] = useState<ProviderType>(provider?.provider_type || 'email');
-  const [printerId, setPrinterId] = useState<number | null>(provider?.printer_id || null);
+  // Printer scope (m157 3b): null = all printers, [ids] = only those.
+  const [printerIds, setPrinterIds] = useState<number[] | null>(provider?.printer_ids ?? null);
   const [quietHoursEnabled, setQuietHoursEnabled] = useState(provider?.quiet_hours_enabled || false);
   const [quietHoursStart, setQuietHoursStart] = useState(provider?.quiet_hours_start || '22:00');
   const [quietHoursEnd, setQuietHoursEnd] = useState(provider?.quiet_hours_end || '07:00');
@@ -31,27 +36,36 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [dailyDigestEnabled, setDailyDigestEnabled] = useState(provider?.daily_digest_enabled || false);
   const [dailyDigestTime, setDailyDigestTime] = useState(provider?.daily_digest_time || '08:00');
 
-  // Event toggles
-  const [onPrintStart, setOnPrintStart] = useState(provider?.on_print_start ?? false);
-  const [onPrintComplete, setOnPrintComplete] = useState(provider?.on_print_complete ?? true);
-  const [onPrintFailed, setOnPrintFailed] = useState(provider?.on_print_failed ?? true);
-  const [onPrintStopped, setOnPrintStopped] = useState(provider?.on_print_stopped ?? true);
-  const [onPrintProgress, setOnPrintProgress] = useState(provider?.on_print_progress ?? false);
-  const [onPrintPaused, setOnPrintPaused] = useState(provider?.on_print_paused ?? true);
-  const [onPrintResumed, setOnPrintResumed] = useState(provider?.on_print_resumed ?? true);
-  const [onPrinterOffline, setOnPrinterOffline] = useState(provider?.on_printer_offline ?? false);
-  const [onPrinterError, setOnPrinterError] = useState(provider?.on_printer_error ?? false);
-  const [onAiFailureDetection, setOnAiFailureDetection] = useState(provider?.on_ai_failure_detection ?? false);
-  const [onFilamentLow, setOnFilamentLow] = useState(provider?.on_filament_low ?? false);
-  const [onFilamentRunout, setOnFilamentRunout] = useState(provider?.on_filament_runout ?? false);
-  // Defaults ON: it fires only when the shortfall can be proved, so it is
-  // quiet by construction rather than by the operator remembering to enable it.
-  const [onFilamentDeficit, setOnFilamentDeficit] = useState(provider?.on_filament_deficit ?? true);
-  const [onMaintenanceDue, setOnMaintenanceDue] = useState(provider?.on_maintenance_due ?? false);
-  const [onStockReorderAlert, setOnStockReorderAlert] = useState(provider?.on_stock_reorder_alert ?? false);
-  const [onStockBreakAlert, setOnStockBreakAlert] = useState(provider?.on_stock_break_alert ?? false);
-  const [onBedCooled, setOnBedCooled] = useState(provider?.on_bed_cooled ?? false);
-  const [onFirstLayerComplete, setOnFirstLayerComplete] = useState(provider?.on_first_layer_complete ?? false);
+  // Event subscriptions, keyed by the provider flag.
+  //
+  // ⚠️ NOT a fixed list. It used to be eighteen `useState` written out by hand,
+  // and the backend grew to thirty-four flags without them: AMS alarms, the
+  // whole queue group, the sensor aggregates and two print events were simply
+  // missing from this form. Six of them default to ON, so a new provider began
+  // sending events its creator was never shown. The list now comes from
+  // `GET /notifications/events` (`useProviderEvents`), and an unset flag falls
+  // back to that row's `default` — see `applyEventDefaults` below.
+  const [events, setEvents] = useState<Record<string, boolean>>(() => {
+    if (!provider) return {};
+    const seeded: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(provider as unknown as Record<string, unknown>)) {
+      if (key.startsWith('on_') && typeof value === 'boolean') seeded[key] = value;
+    }
+    return seeded;
+  });
+  const { data: providerEvents, isSuccess: eventsReady } = useProviderEvents();
+  const eventLabel = useEventLabel();
+  // A NEW provider shows the defaults it would be saved with, rather than
+  // showing everything off and letting the backend quietly fill six of them in.
+  // An EXISTING one falls back to off instead: a flag its row does not carry is
+  // one nobody subscribed to, and opening the form must never switch it on.
+  const eventsWithDefaults = useMemo(() => {
+    const merged: Record<string, boolean> = {};
+    for (const event of providerEvents ?? []) {
+      merged[event.flag] = events[event.flag] ?? (provider ? false : event.default);
+    }
+    return merged;
+  }, [providerEvents, events, provider]);
 
   // Provider-specific config (scalar fields only — event_priorities is split out
   // into its own state because it's an object, not a string).
@@ -79,8 +93,44 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   })();
   const [eventPriorities, setEventPriorities] = useState<Record<string, number>>(initialEventPriorities);
 
+  // Signal recipients (recipient_type/numbers/group_id) don't fit the generic
+  // scalar-field config model: signal-cli-rest-api can't mix individual
+  // numbers and a group in one request, so this is a type switch rather than
+  // one generic recipients list.
+  const initialSignalNumbers = (() => {
+    const raw = provider?.config?.numbers;
+    if (typeof raw !== 'string' || !raw.trim()) return [''];
+    const parts = raw.split(',').map((n) => n.trim()).filter(Boolean);
+    return parts.length > 0 ? parts : [''];
+  })();
+  const [signalRecipientType, setSignalRecipientType] = useState<'numbers' | 'group'>(
+    provider?.config?.recipient_type === 'group' ? 'group' : 'numbers',
+  );
+  const [signalNumbers, setSignalNumbers] = useState<string[]>(initialSignalNumbers);
+  const [signalGroupId, setSignalGroupId] = useState(String(provider?.config?.group_id || ''));
+
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Merges the config fields that live outside the generic `config` blob
+  // (ntfy's event_priorities, Signal's recipient_type/numbers/group_id) back
+  // in. Shared by the test button and the actual save so a test always
+  // reflects what would be persisted.
+  const buildFinalConfig = (): Record<string, unknown> => {
+    if (providerType === 'ntfy' && Object.keys(eventPriorities).length > 0) {
+      return { ...config, event_priorities: eventPriorities };
+    }
+    if (providerType === 'signal') {
+      return {
+        ...config,
+        recipient_type: signalRecipientType,
+        ...(signalRecipientType === 'numbers'
+          ? { numbers: signalNumbers.map((n) => n.trim()).filter(Boolean).join(',') }
+          : { group_id: signalGroupId.trim() }),
+      };
+    }
+    return config;
+  };
 
   // Fetch printers for linking
   const { data: printers } = useQuery({
@@ -88,18 +138,9 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
     queryFn: api.getPrinters,
   });
 
-  // Close on Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
-
   // Test configuration mutation
   const testMutation = useMutation({
-    mutationFn: () => api.testNotificationConfig({ provider_type: providerType, config }),
+    mutationFn: () => api.testNotificationConfig({ provider_type: providerType, config: buildFinalConfig() }),
     onSuccess: (result) => {
       setTestResult(result);
       setError(null);
@@ -168,41 +209,36 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       }
     }
 
-    const finalConfig: Record<string, unknown> =
-      providerType === 'ntfy' && Object.keys(eventPriorities).length > 0
-        ? { ...config, event_priorities: eventPriorities }
-        : config;
+    // signal-cli-rest-api can't mix individual numbers and a group in one
+    // request, so exactly one recipient shape must be filled in.
+    if (providerType === 'signal') {
+      if (signalRecipientType === 'numbers') {
+        if (!signalNumbers.some((n) => n.trim())) {
+          setError(t('notifications.signalRecipientsRequired'));
+          return;
+        }
+      } else if (!signalGroupId.trim()) {
+        setError(t('notifications.signalGroupRequired'));
+        return;
+      }
+    }
+
+    const finalConfig = buildFinalConfig();
 
     const data = {
       name: name.trim(),
       provider_type: providerType,
       config: finalConfig,
-      printer_id: printerId,
+      printer_ids: printerIds,
       quiet_hours_enabled: quietHoursEnabled,
       quiet_hours_start: quietHoursEnabled ? quietHoursStart : null,
       quiet_hours_end: quietHoursEnabled ? quietHoursEnd : null,
       // Daily digest
       daily_digest_enabled: dailyDigestEnabled,
       daily_digest_time: dailyDigestEnabled ? dailyDigestTime : null,
-      // Event toggles
-      on_print_start: onPrintStart,
-      on_print_complete: onPrintComplete,
-      on_print_failed: onPrintFailed,
-      on_print_stopped: onPrintStopped,
-      on_print_progress: onPrintProgress,
-      on_print_paused: onPrintPaused,
-      on_print_resumed: onPrintResumed,
-      on_printer_offline: onPrinterOffline,
-      on_printer_error: onPrinterError,
-      on_ai_failure_detection: onAiFailureDetection,
-      on_filament_low: onFilamentLow,
-      on_filament_runout: onFilamentRunout,
-      on_filament_deficit: onFilamentDeficit,
-      on_maintenance_due: onMaintenanceDue,
-      on_stock_reorder_alert: onStockReorderAlert,
-      on_stock_break_alert: onStockBreakAlert,
-      on_bed_cooled: onBedCooled,
-      on_first_layer_complete: onFirstLayerComplete,
+      // Every flag the API knows about, so the backend never has to fill one
+      // in silently — that is how six events arrived switched on unseen.
+      ...eventsWithDefaults,
     };
 
     if (isEditing) {
@@ -308,6 +344,12 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           { key: 'service', label: 'Home Assistant Service', placeholder: 'notify.mobile_app_myphone', type: 'text', required: false },
           { key: 'data', label: t('notifications.haDataLabel'), placeholder: '{"priority": "high", "ttl": 0, "channel": "3D Printing"}', type: 'textarea', required: false },
         ];
+      case 'signal':
+        return [
+          { key: 'server', label: 'Signal API URL', placeholder: 'http://localhost:8080 (base URL, not /v2/send)', type: 'text', required: true },
+          { key: 'sender_number', label: 'Sender Number', placeholder: '+15551234567', type: 'text', required: true },
+          { key: 'auth_header', label: 'Authorization', placeholder: 'Bearer token (optional)', type: 'password', required: false },
+        ];
       default:
         return [];
     }
@@ -320,462 +362,440 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const configFields = getConfigFields(providerType);
 
   return (
-    <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 overflow-y-auto"
-      onClick={onClose}
+    <Modal
+      onClose={onClose}
+      title={isEditing ? t('notifications.editTitle') : t('notifications.addTitle')}
+      size="lg"
     >
-      <div
-        className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-lg my-8 max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
-          <h2 className="text-lg font-semibold text-white">
-            {isEditing ? t('notifications.editTitle') : t('notifications.addTitle')}
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-bambu-gray hover:text-white transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+      {/* Form */}
+      <form onSubmit={handleSubmit} className="p-4 space-y-4">
+        {error && (
+          <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
+            {error}
+          </div>
+        )}
+
+        {/* Name */}
+        <div>
+          <label className="block text-sm text-bambu-gray mb-1">{t('notifications.nameLabel')}</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t('notifications.namePlaceholder')}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+          />
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          {error && (
-            <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
-              {error}
-            </div>
-          )}
-
-          {/* Name */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">{t('notifications.nameLabel')}</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={t('notifications.namePlaceholder')}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-            />
-          </div>
-
-          {/* Provider Type */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">{t('notifications.providerTypeLabel')}</label>
-            <select
-              value={providerType}
-              onChange={(e) => {
-                setProviderType(e.target.value as ProviderType);
-                setConfig({}); // Reset config when changing type
-                setTestResult(null);
-              }}
-              disabled={isEditing}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-50"
-            >
-              {PROVIDER_VALUES.map((value) => (
-                <option key={value} value={value}>
-                  {t(`notifications.providerTypes.${value}`, value)}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-bambu-gray mt-1">
-              {t(`notifications.providerDescriptions.${providerType}`, '')}
-            </p>
-          </div>
-
-          {/* Provider-specific configuration */}
-          <div className="space-y-3">
-            <p className="text-sm text-bambu-gray">{t('notifications.configuration')}</p>
-            {configFields
-              .filter((field) => !('showIf' in field) || (field as { showIf?: (cfg: Record<string, string>) => boolean }).showIf?.(config) !== false)
-              .map((field) => (
-              <div key={field.key}>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {field.label} {field.required && '*'}
-                </label>
-                {field.type === 'select' && 'options' in field && field.options ? (
-                  <select
-                    value={config[field.key] || field.options[0]?.value || ''}
-                    onChange={(e) => {
-                      setConfig({ ...config, [field.key]: e.target.value });
-                      setTestResult(null);
-                    }}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  >
-                    {field.options.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                ) : field.type === 'textarea' ? (
-                  <textarea
-                    value={config[field.key] || ''}
-                    onChange={(e) => {
-                      setConfig({ ...config, [field.key]: e.target.value });
-                      setTestResult(null);
-                    }}
-                    placeholder={field.placeholder}
-                    rows={3}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none font-mono text-sm"
-                  />
-                ) : (
-                  <input
-                    type={field.type}
-                    value={config[field.key] || ''}
-                    onChange={(e) => {
-                      setConfig({ ...config, [field.key]: e.target.value });
-                      setTestResult(null);
-                    }}
-                    placeholder={field.placeholder}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  />
-                )}
-              </div>
+        {/* Provider Type */}
+        <div>
+          <label className="block text-sm text-bambu-gray mb-1">{t('notifications.providerTypeLabel')}</label>
+          <Select
+            className="w-full"
+            value={providerType}
+            onChange={(e) => {
+              setProviderType(e.target.value as ProviderType);
+              setConfig({}); // Reset config when changing type
+              setSignalRecipientType('numbers');
+              setSignalNumbers(['']);
+              setSignalGroupId('');
+              setTestResult(null);
+            }}
+            disabled={isEditing}
+          >
+            {PROVIDER_VALUES.map((value) => (
+              <option key={value} value={value}>
+                {t(`notifications.providerTypes.${value}`, value)}
+              </option>
             ))}
-          </div>
+          </Select>
+          <p className="text-xs text-bambu-gray mt-1">
+            {t(`notifications.providerDescriptions.${providerType}`, '')}
+          </p>
+        </div>
 
-          {/* Test Button (not shown for Telegram - bot restarts automatically) */}
-          {providerType !== 'telegram' && (
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => {
-                  setTestResult(null);
-                  testMutation.mutate();
-                }}
-                disabled={testMutation.isPending || (getRequiredFields(providerType).length > 0 && !config[getRequiredFields(providerType)[0]?.key])}
-                className="flex-1"
-              >
-                {testMutation.isPending ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Send className="w-4 h-4" />
-                )}
-                {t('notifications.testConfiguration')}
-              </Button>
-            </div>
-          )}
-
-          {/* Test Result */}
-          {testResult && (
-            <div className={`p-3 rounded-lg flex items-center gap-2 ${
-              testResult.success
-                ? 'bg-bambu-green/20 border border-bambu-green/50 text-bambu-green'
-                : 'bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 text-red-700 dark:text-red-400'
-            }`}>
-              {testResult.success ? (
-                <>
-                  <CheckCircle className="w-5 h-5" />
-                  <span>{testResult.message}</span>
-                </>
-              ) : (
-                <>
-                  <XCircle className="w-5 h-5" />
-                  <span>{testResult.message}</span>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Link to Printer */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">{t('notifications.printerFilter')}</label>
-            <select
-              value={printerId ?? ''}
-              onChange={(e) => setPrinterId(e.target.value ? Number(e.target.value) : null)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-            >
-              <option value="">{t('notifications.allPrinters')}</option>
-              {printers?.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-bambu-gray mt-1">
-              {t('notifications.onlyFromPrinter')}
-            </p>
-          </div>
-
-          {/* Telegram-only hint: per-event opt-ins and quiet hours live on
-              each chat now (m045). Provider keeps only enabled + digest. */}
-          {providerType === 'telegram' && (
-            <div className="p-3 bg-blue-50 dark:bg-blue-500/10 border border-blue-300 dark:border-blue-500/30 rounded-lg flex items-start gap-2">
-              <MessageCircle className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
-              <div className="text-xs text-bambu-gray space-y-1">
-                <p className="text-white">{t('notifications.telegram.perChatHintTitle')}</p>
-                <p>{t('notifications.telegram.perChatHintBody')}</p>
-                <Link to="/telegram" className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300">
-                  {t('notifications.telegram.openChatsPage')}
-                  <ExternalLink className="w-3 h-3" />
-                </Link>
-              </div>
-            </div>
-          )}
-
-          {/* Quiet Hours — provider-level. Telegram skips this; per-chat
-              quiet hours are configured on each TelegramChat row. */}
-          {providerType !== 'telegram' && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-sm text-white">{t('notifications.quietHoursDnd')}</label>
-                <Toggle
-                  checked={quietHoursEnabled}
-                  onChange={setQuietHoursEnabled}
+        {/* Provider-specific configuration */}
+        <div className="space-y-3">
+          <p className="text-sm text-bambu-gray">{t('notifications.configuration')}</p>
+          {configFields
+            .filter((field) => !('showIf' in field) || (field as { showIf?: (cfg: Record<string, string>) => boolean }).showIf?.(config) !== false)
+            .map((field) => (
+            <div key={field.key}>
+              <label className="block text-sm text-bambu-gray mb-1">
+                {field.label} {field.required && '*'}
+              </label>
+              {field.type === 'select' && 'options' in field && field.options ? (
+                <Select
+                  className="w-full"
+                  value={config[field.key] || field.options[0]?.value || ''}
+                  onChange={(e) => {
+                    setConfig({ ...config, [field.key]: e.target.value });
+                    setTestResult(null);
+                  }}
+                >
+                  {field.options.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </Select>
+              ) : field.type === 'textarea' ? (
+                <textarea
+                  value={config[field.key] || ''}
+                  onChange={(e) => {
+                    setConfig({ ...config, [field.key]: e.target.value });
+                    setTestResult(null);
+                  }}
+                  placeholder={field.placeholder}
+                  rows={3}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none font-mono text-sm"
                 />
-              </div>
-              {quietHoursEnabled && (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-bambu-gray mb-1">{t('notifications.quietStart')}</label>
-                    <input
-                      type="time"
-                      value={quietHoursStart}
-                      onChange={(e) => setQuietHoursStart(e.target.value)}
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-bambu-gray mb-1">{t('notifications.quietEnd')}</label>
-                    <input
-                      type="time"
-                      value={quietHoursEnd}
-                      onChange={(e) => setQuietHoursEnd(e.target.value)}
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Daily Digest */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <label className="text-sm text-white">{t('notifications.dailyDigestLabel')}</label>
-                <p className="text-xs text-bambu-gray">{t('notifications.batchNotifications')}</p>
-              </div>
-              <Toggle
-                checked={dailyDigestEnabled}
-                onChange={setDailyDigestEnabled}
-              />
-            </div>
-            {dailyDigestEnabled && (
-              <div>
-                <label className="block text-xs text-bambu-gray mb-1">{t('notifications.sendDigestAt')}</label>
+              ) : (
                 <input
-                  type="time"
-                  value={dailyDigestTime}
-                  onChange={(e) => setDailyDigestTime(e.target.value)}
+                  type={field.type}
+                  value={config[field.key] || ''}
+                  onChange={(e) => {
+                    setConfig({ ...config, [field.key]: e.target.value });
+                    setTestResult(null);
+                  }}
+                  placeholder={field.placeholder}
                   className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 />
-                <p className="text-xs text-bambu-gray mt-1">
-                  {t('notifications.digestCollected')}
-                </p>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Signal recipients - signal-cli-rest-api can't mix individual
+            numbers and a group in one request, so this is a type switch
+            rather than one generic recipients list. */}
+        {providerType === 'signal' && (
+          <div className="space-y-3 p-3 bg-bambu-dark rounded-lg">
+            <div>
+              <label className="block text-sm text-bambu-gray mb-1">{t('notifications.signalRecipientType')}</label>
+              <Select
+                tone="raised"
+                className="w-full"
+                value={signalRecipientType}
+                onChange={(e) => {
+                  setSignalRecipientType(e.target.value as 'numbers' | 'group');
+                  setTestResult(null);
+                }}
+              >
+                <option value="numbers">{t('notifications.signalRecipientTypeNumbers')}</option>
+                <option value="group">{t('notifications.signalRecipientTypeGroup')}</option>
+              </Select>
+            </div>
+
+            {signalRecipientType === 'numbers' ? (
+              <div className="space-y-2">
+                <label className="block text-sm text-bambu-gray">{t('notifications.signalNumbers')} *</label>
+                {signalNumbers.map((number, index) => (
+                  <div key={index} className="flex gap-2">
+                    <input
+                      type="text"
+                      value={number}
+                      onChange={(e) => {
+                        const next = [...signalNumbers];
+                        next[index] = e.target.value;
+                        setSignalNumbers(next);
+                        setTestResult(null);
+                      }}
+                      placeholder="+15551234567"
+                      className="flex-1 px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setSignalNumbers(signalNumbers.filter((_, i) => i !== index))}
+                      disabled={signalNumbers.length <= 1}
+                      className="px-2 text-bambu-gray hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      aria-label={t('notifications.signalRemoveNumber')}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setSignalNumbers([...signalNumbers, ''])}
+                  className="flex items-center gap-1 text-sm text-bambu-green hover:opacity-80 transition-opacity"
+                >
+                  <Plus className="w-4 h-4" />
+                  {t('notifications.signalAddNumber')}
+                </button>
+              </div>
+            ) : (
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('notifications.signalGroupId')} *</label>
+                <input
+                  type="text"
+                  value={signalGroupId}
+                  onChange={(e) => {
+                    setSignalGroupId(e.target.value);
+                    setTestResult(null);
+                  }}
+                  placeholder="group.XXXXXXXX=="
+                  className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                />
               </div>
             )}
           </div>
+        )}
 
-          {/* Event Toggles — provider-level. Telegram lives per-chat instead. */}
-          {providerType !== 'telegram' && (
-          <div className="space-y-3">
-            <p className="text-sm text-bambu-gray">{t('notifications.notificationEvents')}</p>
-
-            {/* Print Events */}
-            <div className="space-y-2 p-3 bg-bambu-dark rounded-lg">
-              <p className="text-xs text-bambu-gray uppercase tracking-wide mb-2">{t('notifications.printEvents')}</p>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.start')}</span>
-                  <Toggle checked={onPrintStart} onChange={setOnPrintStart} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.complete')}</span>
-                  <Toggle checked={onPrintComplete} onChange={setOnPrintComplete} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.failed')}</span>
-                  <Toggle checked={onPrintFailed} onChange={setOnPrintFailed} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.stopped')}</span>
-                  <Toggle checked={onPrintStopped} onChange={setOnPrintStopped} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.paused')}</span>
-                  <Toggle checked={onPrintPaused} onChange={setOnPrintPaused} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.resumed')}</span>
-                  <Toggle checked={onPrintResumed} onChange={setOnPrintResumed} />
-                </div>
-                <div className="flex items-center justify-between col-span-2">
-                  <div>
-                    <span className="text-sm text-white">{t('notifications.progress')}</span>
-                    <span className="text-xs text-bambu-gray ml-1">{t('notifications.progressPercent')}</span>
-                  </div>
-                  <Toggle checked={onPrintProgress} onChange={setOnPrintProgress} />
-                </div>
-                <div className="flex items-center justify-between col-span-2">
-                  <div>
-                    <span className="text-sm text-white">{t('notifications.bedCooled')}</span>
-                    <span className="text-xs text-bambu-gray ml-1">{t('notifications.bedCooledAfterPrint')}</span>
-                  </div>
-                  <Toggle checked={onBedCooled} onChange={setOnBedCooled} />
-                </div>
-                <div className="flex items-center justify-between col-span-2">
-                  <div>
-                    <span className="text-sm text-white">{t('notifications.firstLayerCompleteLabel')}</span>
-                    <span className="text-xs text-bambu-gray ml-1">{t('notifications.firstLayerCompleteDescription')}</span>
-                  </div>
-                  <Toggle checked={onFirstLayerComplete} onChange={setOnFirstLayerComplete} />
-                </div>
-              </div>
-            </div>
-
-            {/* Printer Status Events */}
-            <div className="space-y-2 p-3 bg-bambu-dark rounded-lg">
-              <p className="text-xs text-bambu-gray uppercase tracking-wide mb-2">{t('notifications.printerStatus')}</p>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.offline')}</span>
-                  <Toggle checked={onPrinterOffline} onChange={setOnPrinterOffline} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.error')}</span>
-                  <Toggle checked={onPrinterError} onChange={setOnPrinterError} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.aiFailureDetection')}</span>
-                  <Toggle checked={onAiFailureDetection} onChange={setOnAiFailureDetection} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.lowFilament')}</span>
-                  <Toggle checked={onFilamentLow} onChange={setOnFilamentLow} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.filamentRunout')}</span>
-                  <Toggle checked={onFilamentRunout} onChange={setOnFilamentRunout} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.filamentDeficit')}</span>
-                  <Toggle checked={onFilamentDeficit} onChange={setOnFilamentDeficit} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-white">{t('notifications.maintenance')}</span>
-                  <Toggle checked={onMaintenanceDue} onChange={setOnMaintenanceDue} />
-                </div>
-              </div>
-            </div>
-
-            {/* Inventory Stock Alerts (upstream #1184; scaffold — UI-only today) */}
-            <div className="space-y-2 p-3 bg-bambu-dark rounded-lg">
-              <p className="text-xs text-bambu-gray uppercase tracking-wide mb-2">{t('notifications.inventoryAlerts')}</p>
-              <div className="grid grid-cols-1 gap-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-sm text-white">{t('notifications.stockReorderAlert')}</span>
-                    <span className="text-xs text-bambu-gray ml-1">{t('notifications.stockReorderAlertDescription')}</span>
-                  </div>
-                  <Toggle checked={onStockReorderAlert} onChange={setOnStockReorderAlert} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-sm text-white">{t('notifications.stockBreakAlert')}</span>
-                    <span className="text-xs text-bambu-gray ml-1">{t('notifications.stockBreakAlertDescription')}</span>
-                  </div>
-                  <Toggle checked={onStockBreakAlert} onChange={setOnStockBreakAlert} />
-                </div>
-              </div>
-            </div>
-
-            {/* Per-event ntfy priority (#990) */}
-            {providerType === 'ntfy' && (() => {
-              const enabledEvents: Array<{ key: string; label: string }> = [];
-              if (onPrintStart) enabledEvents.push({ key: 'on_print_start', label: t('notifications.start') });
-              if (onPrintComplete) enabledEvents.push({ key: 'on_print_complete', label: t('notifications.complete') });
-              if (onPrintFailed) enabledEvents.push({ key: 'on_print_failed', label: t('notifications.failed') });
-              if (onPrintStopped) enabledEvents.push({ key: 'on_print_stopped', label: t('notifications.stopped') });
-              if (onPrintPaused) enabledEvents.push({ key: 'on_print_paused', label: t('notifications.paused') });
-              if (onPrintResumed) enabledEvents.push({ key: 'on_print_resumed', label: t('notifications.resumed') });
-              if (onPrintProgress) enabledEvents.push({ key: 'on_print_progress', label: t('notifications.progress') });
-              if (onBedCooled) enabledEvents.push({ key: 'on_bed_cooled', label: t('notifications.bedCooled') });
-              if (onFirstLayerComplete) enabledEvents.push({ key: 'on_first_layer_complete', label: t('notifications.firstLayerCompleteLabel') });
-              if (onPrinterOffline) enabledEvents.push({ key: 'on_printer_offline', label: t('notifications.offline') });
-              if (onPrinterError) enabledEvents.push({ key: 'on_printer_error', label: t('notifications.error') });
-              if (onAiFailureDetection) enabledEvents.push({ key: 'on_ai_failure_detection', label: t('notifications.aiFailureDetection') });
-              if (onFilamentLow) enabledEvents.push({ key: 'on_filament_low', label: t('notifications.lowFilament') });
-              if (onFilamentRunout) enabledEvents.push({ key: 'on_filament_runout', label: t('notifications.filamentRunout') });
-              if (onFilamentDeficit) enabledEvents.push({ key: 'on_filament_deficit', label: t('notifications.filamentDeficit') });
-              if (onMaintenanceDue) enabledEvents.push({ key: 'on_maintenance_due', label: t('notifications.maintenance') });
-              if (onStockReorderAlert) enabledEvents.push({ key: 'on_stock_reorder_alert', label: t('notifications.stockReorderAlert') });
-              if (onStockBreakAlert) enabledEvents.push({ key: 'on_stock_break_alert', label: t('notifications.stockBreakAlert') });
-
-              if (enabledEvents.length === 0) return null;
-
-              return (
-                <div className="space-y-2 p-3 bg-bambu-dark rounded-lg">
-                  <p className="text-xs text-bambu-gray uppercase tracking-wide mb-1">
-                    {t('notifications.eventPriority.sectionTitle')}
-                  </p>
-                  <p className="text-xs text-bambu-gray mb-2">{t('notifications.eventPriority.helpNtfy')}</p>
-                  <div className="space-y-2">
-                    {enabledEvents.map((ev) => (
-                      <div key={ev.key} className="flex items-center justify-between gap-3">
-                        <span className="text-sm text-white">{ev.label}</span>
-                        <select
-                          value={eventPriorities[ev.key] ?? 3}
-                          onChange={(e) => {
-                            const next = Number(e.target.value);
-                            setEventPriorities((prev) => ({ ...prev, [ev.key]: next }));
-                          }}
-                          className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-sm text-white focus:border-bambu-green focus:outline-none"
-                        >
-                          <option value={1}>{t('notifications.eventPriority.min')}</option>
-                          <option value={2}>{t('notifications.eventPriority.low')}</option>
-                          <option value={3}>{t('notifications.eventPriority.default')}</option>
-                          <option value={4}>{t('notifications.eventPriority.high')}</option>
-                          <option value={5}>{t('notifications.eventPriority.urgent')}</option>
-                        </select>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-          )}
-
-          {/* Actions */}
-          <div className="flex gap-3 pt-2">
+        {/* Test Button (not shown for Telegram - bot restarts automatically) */}
+        {providerType !== 'telegram' && (
+          <div className="flex gap-2">
             <Button
               type="button"
               variant="secondary"
-              onClick={onClose}
+              onClick={() => {
+                setTestResult(null);
+                testMutation.mutate();
+              }}
+              disabled={testMutation.isPending || (getRequiredFields(providerType).length > 0 && !config[getRequiredFields(providerType)[0]?.key])}
               className="flex-1"
             >
-              {t('notifications.cancel')}
-            </Button>
-            <Button
-              type="submit"
-              disabled={isPending}
-              className="flex-1"
-            >
-              {isPending ? (
+              {testMutation.isPending ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
-                <Save className="w-4 h-4" />
+                <Send className="w-4 h-4" />
               )}
-              {isEditing ? t('notifications.save') : t('notifications.add')}
+              {t('notifications.testConfiguration')}
             </Button>
           </div>
-        </form>
-      </div>
-    </div>
+        )}
+
+        {/* Test Result */}
+        {testResult && (
+          <div className={`p-3 rounded-lg flex items-center gap-2 ${
+            testResult.success
+              ? 'bg-bambu-green/20 border border-bambu-green/50 text-bambu-green'
+              : 'bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 text-red-700 dark:text-red-400'
+          }`}>
+            {testResult.success ? (
+              <>
+                <CheckCircle className="w-5 h-5" />
+                <span>{testResult.message}</span>
+              </>
+            ) : (
+              <>
+                <XCircle className="w-5 h-5" />
+                <span>{testResult.message}</span>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Printer scope — all / one / several (m157 3b). Not for
+            telegram: the scope lives on each chat there, like every other
+            telegram knob. */}
+        {providerType !== 'telegram' && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="block text-sm text-white">{t('notifications.printerFilter')}</label>
+              <p className="text-xs text-bambu-gray">{t('notifications.onlyFromPrinter')}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-bambu-gray">{t('notifications.allPrinters')}</span>
+              <Toggle
+                checked={printerIds === null}
+                onChange={(all) => setPrinterIds(all ? null : [])}
+              />
+            </div>
+          </div>
+          {printerIds !== null && (
+            <div className="space-y-1 bg-bambu-dark rounded border border-bambu-dark-tertiary p-3 max-h-40 overflow-y-auto">
+              {(printers ?? []).map((p) => (
+                <label
+                  key={p.id}
+                  className="flex items-center gap-2 text-xs text-white cursor-pointer hover:bg-bambu-dark-tertiary rounded px-1 py-0.5"
+                >
+                  <input
+                    type="checkbox"
+                    checked={printerIds.includes(p.id)}
+                    onChange={() =>
+                      setPrinterIds(
+                        printerIds.includes(p.id)
+                          ? printerIds.filter((id) => id !== p.id)
+                          : [...printerIds, p.id]
+                      )
+                    }
+                    className="accent-bambu-green w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                  />
+                  {p.name}
+                </label>
+              ))}
+              {printerIds.length === 0 && (
+                <p className="text-[10px] text-amber-500">{t('telegram.printerScopeEmpty')}</p>
+              )}
+            </div>
+          )}
+        </div>
+        )}
+
+        {/* Telegram-only hint: per-event opt-ins and quiet hours live on
+            each chat now (m045). Provider keeps only enabled + digest. */}
+        {providerType === 'telegram' && (
+          <div className="p-3 bg-blue-50 dark:bg-blue-500/10 border border-blue-300 dark:border-blue-500/30 rounded-lg flex items-start gap-2">
+            <MessageCircle className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+            <div className="text-xs text-bambu-gray space-y-1">
+              <p className="text-white">{t('notifications.telegram.perChatHintTitle')}</p>
+              <p>{t('notifications.telegram.perChatHintBody')}</p>
+              <Link to="/telegram" className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300">
+                {t('notifications.telegram.openChatsPage')}
+                <ExternalLink className="w-3 h-3" />
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {/* Quiet Hours — provider-level. Telegram skips this; per-chat
+            quiet hours are configured on each TelegramChat row. */}
+        {providerType !== 'telegram' && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-sm text-white">{t('notifications.quietHoursDnd')}</label>
+              <Toggle
+                checked={quietHoursEnabled}
+                onChange={setQuietHoursEnabled}
+              />
+            </div>
+            {quietHoursEnabled && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-bambu-gray mb-1">{t('notifications.quietStart')}</label>
+                  <input
+                    type="time"
+                    value={quietHoursStart}
+                    onChange={(e) => setQuietHoursStart(e.target.value)}
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-bambu-gray mb-1">{t('notifications.quietEnd')}</label>
+                  <input
+                    type="time"
+                    value={quietHoursEnd}
+                    onChange={(e) => setQuietHoursEnd(e.target.value)}
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Daily Digest */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-sm text-white">{t('notifications.dailyDigestLabel')}</label>
+              <p className="text-xs text-bambu-gray">{t('notifications.batchNotifications')}</p>
+            </div>
+            <Toggle
+              checked={dailyDigestEnabled}
+              onChange={setDailyDigestEnabled}
+            />
+          </div>
+          {dailyDigestEnabled && (
+            <div>
+              <label className="block text-xs text-bambu-gray mb-1">{t('notifications.sendDigestAt')}</label>
+              <input
+                type="time"
+                value={dailyDigestTime}
+                onChange={(e) => setDailyDigestTime(e.target.value)}
+                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+              />
+              <p className="text-xs text-bambu-gray mt-1">
+                {t('notifications.digestCollected')}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Event Toggles — provider-level. Telegram lives per-chat instead.
+            The list itself comes from the API; see ProviderEventToggles. */}
+        {providerType !== 'telegram' && (
+        <div className="space-y-3">
+          <p className="text-sm text-bambu-gray">{t('notifications.notificationEvents')}</p>
+
+          <ProviderEventToggles
+            value={eventsWithDefaults}
+            onChange={(flag, on) => setEvents((prev) => ({ ...prev, [flag]: on }))}
+            columns={2}
+          />
+
+          {/* Per-event ntfy priority (#990) */}
+          {providerType === 'ntfy' && (() => {
+            const enabledEvents = (providerEvents ?? [])
+              .filter((event) => eventsWithDefaults[event.flag])
+              .map((event) => ({ key: event.flag, label: eventLabel(event) }));
+
+            if (enabledEvents.length === 0) return null;
+
+            return (
+              <div className="space-y-2 p-3 bg-bambu-dark rounded-lg">
+                <p className="text-xs text-bambu-gray uppercase tracking-wide mb-1">
+                  {t('notifications.eventPriority.sectionTitle')}
+                </p>
+                <p className="text-xs text-bambu-gray mb-2">{t('notifications.eventPriority.helpNtfy')}</p>
+                <div className="space-y-2">
+                  {enabledEvents.map((ev) => (
+                    <div key={ev.key} className="flex items-center justify-between gap-3">
+                      <span className="text-sm text-white">{ev.label}</span>
+                      <Select
+                        size="sm"
+                        tone="raised"
+                        value={eventPriorities[ev.key] ?? 3}
+                        onChange={(e) => {
+                          const next = Number(e.target.value);
+                          setEventPriorities((prev) => ({ ...prev, [ev.key]: next }));
+                        }}
+                      >
+                        <option value={1}>{t('notifications.eventPriority.min')}</option>
+                        <option value={2}>{t('notifications.eventPriority.low')}</option>
+                        <option value={3}>{t('notifications.eventPriority.default')}</option>
+                        <option value={4}>{t('notifications.eventPriority.high')}</option>
+                        <option value={5}>{t('notifications.eventPriority.urgent')}</option>
+                      </Select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex gap-3 pt-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+            className="flex-1"
+          >
+            {t('notifications.cancel')}
+          </Button>
+          {/* ⚠️ Saving waits for the event list, and that is not cosmetic:
+              without it the payload would carry no on_* fields at all and the
+              backend would apply its own defaults — six of which are ON, which
+              is the exact bug this form was changed to end. */}
+          <Button
+            type="submit"
+            disabled={isPending || !eventsReady}
+            className="flex-1"
+          >
+            {isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4" />
+            )}
+            {isEditing ? t('notifications.save') : t('notifications.add')}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }

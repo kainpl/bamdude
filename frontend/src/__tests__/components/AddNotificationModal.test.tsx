@@ -14,6 +14,7 @@ import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { AddNotificationModal } from '../../components/AddNotificationModal';
+import { PROVIDER_EVENTS } from '../fixtures/providerEvents';
 import type { NotificationProvider } from '../../api/client';
 
 function buildProvider(provider_type: string, name: string, config: Record<string, unknown>) {
@@ -159,5 +160,219 @@ describe('AddNotificationModal — Home Assistant custom data', () => {
 
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByText(/valid JSON object/i)).toBeInTheDocument();
+  });
+});
+
+/**
+ * Signal, via a self-hosted signal-cli-rest-api instance. Its recipients
+ * don't fit the generic scalar-field config: signal-cli-rest-api can't mix
+ * individual numbers and a group ID in one request, so the form is a type
+ * switch between a dynamic list of numbers and a single group field, and
+ * only the active shape is required to be non-empty.
+ */
+describe('AddNotificationModal — Signal', () => {
+  const signalProvider = (config: Record<string, unknown>) => buildProvider('signal', 'My Signal', config);
+
+  it('offers Signal in the provider list and renders its fields', async () => {
+    render(
+      <AddNotificationModal
+        provider={signalProvider({
+          server: 'http://localhost:8080',
+          sender_number: '+15550000000',
+          recipient_type: 'numbers',
+          numbers: '+15551111111',
+        })}
+        onClose={() => undefined}
+      />,
+    );
+
+    await screen.findByDisplayValue('My Signal');
+    expect(screen.getByRole('option', { name: 'Signal CLI API' })).toBeInTheDocument();
+    expect(screen.getByDisplayValue('http://localhost:8080')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('+15550000000')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('+15551111111')).toBeInTheDocument();
+  });
+
+  it('switches from a numbers list to a single Group ID field', async () => {
+    const user = userEvent.setup();
+    render(
+      <AddNotificationModal
+        provider={signalProvider({
+          server: 'http://localhost:8080',
+          sender_number: '+15550000000',
+          recipient_type: 'numbers',
+          numbers: '+15551111111',
+        })}
+        onClose={() => undefined}
+      />,
+    );
+
+    await screen.findByDisplayValue('My Signal');
+    const recipientTypeRow = screen.getByText('Recipient Type').closest('div')!;
+    await user.selectOptions(within(recipientTypeRow).getByRole('combobox'), 'group');
+
+    expect(screen.queryByDisplayValue('+15551111111')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('group.XXXXXXXX==')).toBeInTheDocument();
+  });
+
+  it('adds a number row and saves the joined list', async () => {
+    let captured: { config: Record<string, unknown> } | null = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = (await request.json()) as { config: Record<string, unknown> };
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AddNotificationModal
+        provider={signalProvider({
+          server: 'http://localhost:8080',
+          sender_number: '+15550000000',
+          recipient_type: 'numbers',
+          numbers: '+15551111111',
+        })}
+        onClose={onClose}
+      />,
+    );
+
+    await screen.findByDisplayValue('My Signal');
+    await user.click(screen.getByRole('button', { name: /add number/i }));
+    const numberInputs = screen.getAllByPlaceholderText('+15551234567');
+    await user.type(numberInputs[numberInputs.length - 1], '+15552222222');
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured!.config).toMatchObject({ numbers: '+15551111111,+15552222222' });
+  });
+
+  it('refuses to save without any recipient number', async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AddNotificationModal
+        provider={signalProvider({
+          server: 'http://localhost:8080',
+          sender_number: '+15550000000',
+          recipient_type: 'numbers',
+          numbers: '',
+        })}
+        onClose={onClose}
+      />,
+    );
+
+    await screen.findByDisplayValue('My Signal');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('refuses to save without a Group ID in group mode', async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AddNotificationModal
+        provider={signalProvider({
+          server: 'http://localhost:8080',
+          sender_number: '+15550000000',
+          recipient_type: 'group',
+          group_id: '',
+        })}
+        onClose={onClose}
+      />,
+    );
+
+    await screen.findByDisplayValue('My Signal');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+
+/**
+ * Event subscriptions in the provider form.
+ *
+ * The form used to offer eighteen of the thirty-four flags the backend knows,
+ * and to send only those eighteen. The other sixteen were filled in by the
+ * backend's own defaults - six of which are ON - so a brand-new ntfy or Discord
+ * provider started sending AMS, queue and plate events its creator had never
+ * been shown, and could only switch them off on the expanded card. These tests
+ * pin the two halves of the fix: everything is offered, and everything is sent.
+ */
+describe('AddNotificationModal - event subscriptions', () => {
+  it('offers every event the API knows, not a subset', async () => {
+    render(<AddNotificationModal onClose={() => undefined} />);
+
+    await screen.findByRole('switch', { name: 'Print Started' });
+    const subscriptionToggles = PROVIDER_EVENTS.length;
+    expect(screen.getAllByRole('switch').length).toBeGreaterThanOrEqual(subscriptionToggles);
+    // One from each group the old hand-written list left out entirely.
+    expect(screen.getByRole('switch', { name: 'AMS Humidity High' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Job Failed' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Sensor readings' })).toBeInTheDocument();
+  });
+
+  it('shows a new provider the defaults it would be saved with', async () => {
+    render(<AddNotificationModal onClose={() => undefined} />);
+
+    // on_plate_not_empty defaults ON in the backend registry. Before the fix the
+    // form showed nothing for it and the backend switched it on out of sight.
+    const plate = await screen.findByRole('switch', { name: 'Plate Not Empty' });
+    expect(plate).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('switch', { name: 'Print Started' })).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('sends every flag on save, so the backend fills none in silently', async () => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(
+      http.post('*/api/v1/notifications/', async ({ request }) => {
+        captured = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ id: 7 });
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<AddNotificationModal onClose={vi.fn()} />);
+
+    await screen.findByRole('switch', { name: 'Print Started' });
+    // ntfy: one required config field, so the save is about the events.
+    await user.selectOptions(screen.getAllByRole('combobox')[0], 'ntfy');
+    await user.type(screen.getByPlaceholderText('My Notifications'), 'Test');
+    await user.type(screen.getByPlaceholderText('my-bamdude'), 'farm');
+    await user.click(screen.getByRole('button', { name: /^add$/i }));
+
+    await waitFor(() => expect(captured).not.toBeNull());
+    const sent = Object.keys(captured!).filter((key) => key.startsWith('on_'));
+    expect(sent.sort()).toEqual(PROVIDER_EVENTS.map((event) => event.flag).sort());
+  });
+
+  it('carries the edited provider own subscriptions into the form', async () => {
+    render(
+      <AddNotificationModal
+        provider={buildProvider('ntfy', 'My ntfy', { topic: 'bamdude' })}
+        onClose={() => undefined}
+      />,
+    );
+
+    await screen.findByDisplayValue('My ntfy');
+    // The fixture provider carries no on_* fields at all, so every flag shows
+    // as off rather than inheriting a default meant for a new provider.
+    const jobFailed = await screen.findByRole('switch', { name: 'Job Failed' });
+    expect(jobFailed).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('refuses to save while the event list is unavailable', async () => {
+    // Saving without the list would send no on_* fields at all, and the backend
+    // would fill in its defaults — six of them ON. Better to refuse than to
+    // reintroduce the bug quietly.
+    server.use(http.get('*/api/v1/notifications/events', () => HttpResponse.error()));
+
+    render(<AddNotificationModal onClose={() => undefined} />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /^add$/i })).toBeDisabled());
   });
 });

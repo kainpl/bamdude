@@ -31,9 +31,14 @@ const OBJECTS = {
   bbox_all: null,
 };
 
+/** `unknown` on purpose — some callers hand this a shape the server would
+ *  never send, to prove the modal survives it. msw's `JsonBodyType` refuses
+ *  that, so the widening lives here. */
+type JsonBody = Parameters<typeof HttpResponse.json>[0];
+
 function mockObjects(payload: unknown = OBJECTS) {
   server.use(
-    http.get('/api/v1/printers/:id/print/objects', () => HttpResponse.json(payload)),
+    http.get('/api/v1/printers/:id/print/objects', () => HttpResponse.json(payload as JsonBody)),
     http.get('/api/v1/printers/:id/status', () =>
       HttpResponse.json({ id: 1, connected: true, state: 'RUNNING' }),
     ),

@@ -27,14 +27,14 @@ from backend.app.services.print_scheduler import PrintScheduler
 from backend.app.services.queue_batch import claim_printer_for_direct_print
 
 
-async def _printer_with_pending_item(db_session, printer_factory):
+async def _printer_with_pending_item(db_session, printer_factory, raw_gcode_source):
     """A printer whose queue holds file2, waiting."""
     printer = await printer_factory()
     queue = PrinterQueue(id=printer.id, printer_id=printer.id)
     db_session.add(queue)
     await db_session.commit()
 
-    item = PrintQueueItem(queue_id=queue.id, status="pending", position=1)
+    item = PrintQueueItem(queue_id=queue.id, status="pending", position=1, library_file_id=raw_gcode_source.id)
     db_session.add(item)
     await db_session.commit()
     await db_session.refresh(item)
@@ -65,10 +65,18 @@ def _idle_printer_manager():
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_the_queue_waits_for_a_direct_print(db_session, printer_factory, scheduler):
+async def test_the_queue_waits_for_a_direct_print(
+    db_session, printer_factory, scheduler, raw_gcode_source, a_direct_capture
+):
     """The bug, end to end: file1 claimed, file2 must not overtake it."""
-    printer, item = await _printer_with_pending_item(db_session, printer_factory)
-    await claim_printer_for_direct_print(db_session, printer_id=printer.id)
+    printer, item = await _printer_with_pending_item(db_session, printer_factory, raw_gcode_source)
+    await claim_printer_for_direct_print(
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(raw_gcode_source),
+    )
 
     start = AsyncMock()
     with patch.object(PrintScheduler, "_start_print", start), _idle_printer_manager():
@@ -81,7 +89,9 @@ async def test_the_queue_waits_for_a_direct_print(db_session, printer_factory, s
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_accepting_a_direct_print_is_what_takes_the_claim(db_session, printer_factory, monkeypatch):
+async def test_accepting_a_direct_print_is_what_takes_the_claim(
+    db_session, printer_factory, monkeypatch, raw_gcode_source
+):
     """The wiring, without which the test above would pass on a contract nobody honours.
 
     ⚠️ The claim is taken inside ``_dispatch``, after its refusals and while it
@@ -92,7 +102,7 @@ async def test_accepting_a_direct_print_is_what_takes_the_claim(db_session, prin
 
     from backend.app.services.background_dispatch import BackgroundDispatchService
 
-    printer, _ = await _printer_with_pending_item(db_session, printer_factory)
+    printer, _ = await _printer_with_pending_item(db_session, printer_factory, raw_gcode_source)
 
     @asynccontextmanager
     async def _session_ctx():
@@ -106,7 +116,7 @@ async def test_accepting_a_direct_print_is_what_takes_the_claim(db_session, prin
         patch("backend.app.services.background_dispatch.ws_manager.broadcast", new_callable=AsyncMock),
     ):
         await service.dispatch_print_library_file(
-            file_id=22,
+            file_id=raw_gcode_source.id,
             filename="file1.gcode.3mf",
             printer_id=printer.id,
             printer_name=printer.name,
@@ -121,20 +131,20 @@ async def test_accepting_a_direct_print_is_what_takes_the_claim(db_session, prin
 
     claimed = await db_session.get(PrintQueueItem, job.queue_item_id)
     assert claimed.status == "printing"
-    assert claimed.library_file_id == 22
+    assert claimed.library_file_id == raw_gcode_source.id
     assert claimed.plate_id == 2
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_rejected_direct_print_leaves_no_claim(db_session, printer_factory, monkeypatch):
+async def test_a_rejected_direct_print_leaves_no_claim(db_session, printer_factory, monkeypatch, raw_gcode_source):
     """⚠️ Ordering, pinned: claiming before the refusals would park a printer
     every time somebody pressed Print now on a busy one."""
     from contextlib import asynccontextmanager
 
     from backend.app.services.background_dispatch import BackgroundDispatchService, DispatchEnqueueRejected
 
-    printer, _ = await _printer_with_pending_item(db_session, printer_factory)
+    printer, _ = await _printer_with_pending_item(db_session, printer_factory, raw_gcode_source)
 
     @asynccontextmanager
     async def _session_ctx():
@@ -151,7 +161,7 @@ async def test_a_rejected_direct_print_leaves_no_claim(db_session, printer_facto
         pytest.raises(DispatchEnqueueRejected),
     ):
         await service.dispatch_print_library_file(
-            file_id=22,
+            file_id=raw_gcode_source.id,
             filename="file1.gcode.3mf",
             printer_id=printer.id,
             printer_name=printer.name,
@@ -176,14 +186,22 @@ async def test_a_rejected_direct_print_leaves_no_claim(db_session, printer_facto
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_another_printers_direct_print_does_not_hold_this_queue(db_session, printer_factory, scheduler):
+async def test_another_printers_direct_print_does_not_hold_this_queue(
+    db_session, printer_factory, scheduler, raw_gcode_source, a_direct_capture
+):
     """⚠️ Per printer. A farm-wide hold would be worse than the bug — one
     Print now anywhere would stall every queue until it started."""
-    printer, item = await _printer_with_pending_item(db_session, printer_factory)
+    printer, item = await _printer_with_pending_item(db_session, printer_factory, raw_gcode_source)
     other = await printer_factory(name="other")
     db_session.add(PrinterQueue(id=other.id, printer_id=other.id))
     await db_session.commit()
-    await claim_printer_for_direct_print(db_session, printer_id=other.id)
+    await claim_printer_for_direct_print(
+        db_session,
+        printer_id=other.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(raw_gcode_source),
+    )
 
     start = AsyncMock()
     with patch.object(PrintScheduler, "_start_print", start), _idle_printer_manager():
@@ -194,10 +212,10 @@ async def test_another_printers_direct_print_does_not_hold_this_queue(db_session
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_an_idle_printer_still_takes_work(db_session, printer_factory, scheduler):
+async def test_an_idle_printer_still_takes_work(db_session, printer_factory, scheduler, raw_gcode_source):
     """The baseline the other two are measured against — without it, "block
     everything" would pass this file."""
-    printer, item = await _printer_with_pending_item(db_session, printer_factory)
+    printer, item = await _printer_with_pending_item(db_session, printer_factory, raw_gcode_source)
 
     start = AsyncMock()
     with patch.object(PrintScheduler, "_start_print", start), _idle_printer_manager():

@@ -142,14 +142,20 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         core_weight = entry.weight
         break
 
-    # Resolve slicer filament name from the identity catalog
+    # Resolve the family (the identity every K path reads through) and its
+    # display name. The tray id IS the family id, so a spool born from a tag
+    # is linked at birth — leaving it for the startup backfill meant every
+    # spool created between two restarts had no link, and the form then
+    # derived one itself (2026-09-04).
+    filament_family_id = None
     slicer_filament_name = None
     if tray_info_idx:
-        from backend.app.utils import filament_catalog as _catalog
+        from backend.app.services.filament_identity import resolve_tray
 
-        fam = _catalog.get_family(tray_info_idx)
-        if fam:
-            slicer_filament_name = fam.alias
+        resolved = await resolve_tray(db, tray_info_idx)
+        if resolved.family:
+            filament_family_id = resolved.family.filament_id
+            slicer_filament_name = resolved.display_name or None
         # Fallback: use tray_sub_brands as the display name
         if not slicer_filament_name and tray_sub_brands:
             slicer_filament_name = tray_sub_brands
@@ -180,6 +186,7 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         weight_used=weight_used,
         slicer_filament=tray_info_idx or None,
         slicer_filament_name=slicer_filament_name,
+        filament_family_id=filament_family_id,
         nozzle_temp_min=int(nozzle_min) if nozzle_min else None,
         nozzle_temp_max=int(nozzle_max) if nozzle_max else None,
         tag_uid=tag_uid if tag_uid and tag_uid != ZERO_TAG_UID else None,
@@ -330,6 +337,16 @@ async def link_tag_to_inventory_spool(db: AsyncSession, spool: Spool, tray_data:
         fam = _catalog.get_family(tray_info_idx)
         if fam and not spool.slicer_filament_name:
             spool.slicer_filament_name = fam.alias
+
+    # Fill the family link the same way the startup backfill would, from
+    # whatever slicer code the spool now carries — its own if it had one,
+    # the tag's otherwise. Never overwrite a link that is already there.
+    if not spool.filament_family_id and spool.slicer_filament:
+        from backend.app.services.filament_identity import resolve_raw
+
+        resolved = await resolve_raw(db, spool.slicer_filament)
+        if resolved.family:
+            spool.filament_family_id = resolved.family.filament_id
 
     await db.flush()
     logger.info(

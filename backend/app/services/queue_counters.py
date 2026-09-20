@@ -54,7 +54,10 @@ async def get_queue_terminal_counts(db: AsyncSession, queue_id: int) -> dict[str
     legacy display split, with a dedicated ``failed`` breakdown as well.
     """
     result = await db.execute(
-        select(PrintArchive.status, func.count()).where(PrintArchive.queue_id == queue_id).group_by(PrintArchive.status)
+        select(PrintArchive.status, func.count())
+        .where(func.coalesce(PrintArchive.extra_data["dispatch_aborted"].as_boolean(), False).is_(False))
+        .where(PrintArchive.queue_id == queue_id)
+        .group_by(PrintArchive.status)
     )
     by_status = {row[0]: int(row[1] or 0) for row in result.all()}
 
@@ -130,17 +133,22 @@ async def set_queue_paused(db: AsyncSession, queue_id: int, paused_item_id: int 
 
 
 async def set_queue_idle(db: AsyncSession, queue_id: int) -> None:
-    """Set queue to idle status when a print completes successfully."""
-    result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == queue_id))
-    queue = result.scalar_one_or_none()
-    if not queue:
-        return
+    """Release a queue only while its persisted state is ``printing``.
 
-    # Only set idle if currently printing (don't override paused/error)
-    if queue.status == "printing":
-        queue.status = "idle"
-    queue.current_item_id = None
-    queue.last_activity_at = datetime.now(timezone.utc)
+    Completion handlers can run after FTP, MQTT, or macro awaits.  Their
+    ``AsyncSession`` may still hold an old ``PrinterQueue`` object, so an ORM
+    read/compare here could turn a concurrent ``paused`` or ``error`` state
+    back into ``idle``.  Keep the condition in the database instead.
+    """
+    await db.execute(
+        update(PrinterQueue)
+        .where(PrinterQueue.id == queue_id, PrinterQueue.status == "printing")
+        .values(
+            status="idle",
+            current_item_id=None,
+            last_activity_at=datetime.now(timezone.utc),
+        )
+    )
 
 
 async def detach_print_queue_refs(db: AsyncSession, item_ids: list[int]) -> None:

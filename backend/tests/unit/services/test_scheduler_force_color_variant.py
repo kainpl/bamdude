@@ -164,7 +164,9 @@ class TestPerPrinterMapperHasNoOverrides:
         async def _reqs(_db, _item):
             return reqs
 
-        async def _bool_setting(_db, _key):
+        # The real reader takes a default; a stub that does not turns every caller
+        # that passes one into a TypeError instead of the answer under test.
+        async def _bool_setting(_db, _key, default=False):
             return False
 
         with (

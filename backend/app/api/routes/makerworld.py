@@ -52,6 +52,7 @@ from backend.app.services.makerworld import (
     MakerWorldUrlError,
 )
 from backend.app.services.makerworld_meta import build_meta_dict, download_covers
+from backend.app.services.product_sync import resync_file_products
 
 logger = logging.getLogger(__name__)
 
@@ -306,12 +307,12 @@ async def import_instance(
     download happens.
     """
     if body.folder_id is not None:
-        # Eager-load .projects so save_3mf_bytes_to_library's
-        # inherit_folder_projects() doesn't trip async lazy-load.
+        # Eager-load .products so save_3mf_bytes_to_library's
+        # inherit_folder_products() doesn't trip async lazy-load.
         folder_q = await db.execute(
             select(LibraryFolder)
             .where(LibraryFolder.id == body.folder_id)
-            .options(selectinload(LibraryFolder.projects))
+            .options(selectinload(LibraryFolder.products))
         )
         target_folder = folder_q.scalar_one_or_none()
         if target_folder is None:
@@ -658,6 +659,14 @@ async def redownload_import(
         except Exception:  # noqa: BLE001
             logger.debug("redownload: 3MF re-parse failed (non-critical)")
 
+        # The plate set is derived from ``file_metadata``, which we have just
+        # rewritten: re-run the sync against the file's CURRENT product links so
+        # a re-download that added or dropped a plate is reflected in every
+        # product this file belongs to. Flushed first — the sync reads the row
+        # back, and it must read the new metadata, not the old.
+        await db.flush()
+        await resync_file_products(db, lib.id)
+
         # Refresh meta row + covers. We reuse the open ``service`` for
         # the /instances call + cover downloads.
         try:
@@ -921,9 +930,10 @@ async def get_makerworld_cover(
     """Serve the model-level cover image saved locally during import.
 
     No ``RequirePermission`` here — ``<img src>`` browser fetches can't
-    carry an Authorization header. The auth-middleware whitelist treats
-    URL paths containing ``/cover`` as public (same pattern used by
-    library file thumbnails / printer covers). The data exposed is the
+    carry an Authorization header. ``main.py::PUBLIC_API_PATTERNS`` carries
+    one anchored entry for this exact route
+    (``^/api/v1/makerworld/imports/\\d+/cover$``), tagged ``anonymous`` in
+    ``backend/tests/test_auth_public_patterns.py``: the data served is the
     same image MakerWorld serves publicly on their site, so this isn't a
     privacy regression.
     """
@@ -944,9 +954,11 @@ async def get_makerworld_variant_cover(
 ):
     """Serve the variant (plate-level) cover image saved locally.
 
-    Path intentionally ends with ``cover-variant`` (not ``variant-cover``)
-    so the ``/cover`` substring still matches the auth-middleware public
-    whitelist — same reasoning as :func:`get_makerworld_cover`.
+    Anchored in the whitelist under its own entry
+    (``^/api/v1/makerworld/imports/\\d+/cover-variant$``) — same reasoning as
+    :func:`get_makerworld_cover`. The path's spelling no longer matters to the
+    gate: it once had to END in ``cover`` to satisfy a bare ``"/cover"``
+    substring, which is exactly the matching that was removed.
     """
     meta = (
         await db.execute(

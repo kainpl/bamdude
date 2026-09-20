@@ -1,11 +1,13 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useState, useMemo, useEffect, useId, useRef } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Settings2, ChevronDown, CheckCircle2, RotateCcw } from 'lucide-react';
+import { Loader2, Settings2, CheckCircle2, RotateCcw } from 'lucide-react';
 import { api } from '../api/client';
 import type { KProfile } from '../api/client';
 import { isMatchingCalibration } from './spool-form/utils';
 import { Button } from './Button';
+import { Modal } from './Modal';
+import { Select } from './Select';
 
 interface SlotInfo {
   amsId: number;
@@ -168,6 +170,7 @@ export function ConfigureAmsSlotModal({
   fullScreen,
 }: ConfigureAmsSlotModalProps) {
   const { t } = useTranslation();
+  const headingId = useId();
   const [selectedPresetId, setSelectedPresetId] = useState<string>('');
 
   // Poke the cloud preset mirror once per open (server-side debounced) so a
@@ -448,20 +451,6 @@ export function ConfigureAmsSlotModal({
     }
   }, [selectedPresetId, matchingKProfiles, slotInfo.caliIdx]);
 
-  // Escape key handler
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      onClose();
-    }
-  }, [onClose]);
-
-  useEffect(() => {
-    if (isOpen) {
-      document.addEventListener('keydown', handleKeyDown);
-      return () => document.removeEventListener('keydown', handleKeyDown);
-    }
-  }, [isOpen, handleKeyDown]);
-
   const isLoading = familiesLoading || kprofilesLoading;
 
   // Scroll selected preset into view when data finishes loading or the selection changes.
@@ -470,8 +459,7 @@ export function ConfigureAmsSlotModal({
   useEffect(() => {
     if (!isLoading && selectedPresetId && selectedPresetId !== scrolledToRef.current) {
       const raf = requestAnimationFrame(() => {
-          const modal = document.querySelector('[class*="fixed inset-0 z-50"]');
-          const el = modal?.querySelector(`[data-preset-id="${CSS.escape(selectedPresetId)}"]`);
+        const el = document.querySelector(`[data-preset-id="${CSS.escape(selectedPresetId)}"]`);
         if (el) {
           scrolledToRef.current = selectedPresetId;
           el.scrollIntoView({ block: 'nearest' });
@@ -488,106 +476,332 @@ export function ConfigureAmsSlotModal({
   const displayColor = colorHex || slotInfo.trayColor?.slice(0, 6) || 'FFFFFF';
 
   return (
-    <div className={`fixed inset-0 z-50 flex ${fullScreen ? '' : 'items-center justify-center'}`}>
-      {/* Backdrop */}
-      {!fullScreen && (
-        <div
-          className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-          onClick={onClose}
-        />
-      )}
-
-      {/* Modal */}
-      <div className={fullScreen
-        ? 'relative w-full h-full bg-bambu-dark-secondary flex flex-col'
-        : 'relative w-full max-w-lg mx-4 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl'
-      }>
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary shrink-0">
-          <div className="flex items-center gap-2">
-            <Settings2 className="w-5 h-5 text-bambu-blue" />
-            <h2 className="text-lg font-semibold text-white">{t('configureAmsSlot.title')}</h2>
-            {/* Inline slot info in fullScreen mode */}
-            {fullScreen && (
-              <div className="flex items-center gap-2 ml-4 text-sm text-bambu-gray">
-                <span className="text-white/30">|</span>
-                {slotInfo.trayColor && (
-                  <span
-                    className="w-4 h-4 rounded-full border border-black/20"
-                    style={{ backgroundColor: `#${slotInfo.trayColor.slice(0, 6)}` }}
-                  />
-                )}
-                <span className="text-white/70">
-                  {t('configureAmsSlot.slotLabel', { ams: getAmsLabel(slotInfo.amsId, slotInfo.trayCount), slot: slotInfo.trayId + 1 })}
-                </span>
-                {slotInfo.traySubBrands && (
-                  <span>({slotInfo.traySubBrands})</span>
-                )}
-              </div>
-            )}
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      size={fullScreen ? 'full' : 'lg'}
+      bodyClassName="flex flex-col"
+      header={
+        <>
+          <Settings2 className="w-5 h-5 text-bambu-blue" />
+          <h2 id={headingId} className="text-lg font-semibold text-white">{t('configureAmsSlot.title')}</h2>
+          {/* Inline slot info in fullScreen mode */}
+          {fullScreen && (
+            <div className="flex items-center gap-2 ml-4 text-sm text-bambu-gray">
+              <span className="text-white/30">|</span>
+              {slotInfo.trayColor && (
+                <span
+                  className="w-4 h-4 rounded-full border border-black/20"
+                  style={{ backgroundColor: `#${slotInfo.trayColor.slice(0, 6)}` }}
+                />
+              )}
+              <span className="text-white/70">
+                {t('configureAmsSlot.slotLabel', { ams: getAmsLabel(slotInfo.amsId, slotInfo.trayCount), slot: slotInfo.trayId + 1 })}
+              </span>
+              {slotInfo.traySubBrands && (
+                <span>({slotInfo.traySubBrands})</span>
+              )}
+            </div>
+          )}
+        </>
+      }
+    >
+      {/* Content */}
+      <div className={`p-4 overflow-y-auto ${fullScreen ? 'flex-1 min-h-0' : 'space-y-4 max-h-[60vh]'}`}>
+        {/* Success overlay */}
+        {showSuccess && (
+          <div className="absolute inset-0 bg-bambu-dark-secondary/95 z-10 flex items-center justify-center rounded-xl">
+            <div className="text-center space-y-3">
+              <CheckCircle2 className="w-16 h-16 text-bambu-green mx-auto" />
+              <p className="text-lg font-semibold text-white">{t('configureAmsSlot.slotConfigured')}</p>
+              <p className="text-sm text-bambu-gray">{t('configureAmsSlot.settingsSentToPrinter')}</p>
+            </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1 text-bambu-gray hover:text-white rounded transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+        )}
 
-        {/* Content */}
-        <div className={`p-4 overflow-y-auto ${fullScreen ? 'flex-1 min-h-0' : 'space-y-4 max-h-[60vh]'}`}>
-          {/* Success overlay */}
-          {showSuccess && (
-            <div className="absolute inset-0 bg-bambu-dark-secondary/95 z-10 flex items-center justify-center rounded-xl">
-              <div className="text-center space-y-3">
-                <CheckCircle2 className="w-16 h-16 text-bambu-green mx-auto" />
-                <p className="text-lg font-semibold text-white">{t('configureAmsSlot.slotConfigured')}</p>
-                <p className="text-sm text-bambu-gray">{t('configureAmsSlot.settingsSentToPrinter')}</p>
+        {/* Slot info */}
+        {!fullScreen && (
+          <div className="p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+            <p className="text-xs text-bambu-gray mb-1">{t('configureAmsSlot.configuringSlot')}</p>
+            <div className="flex items-center gap-2">
+              {slotInfo.trayColor && (
+                <span
+                  className="w-4 h-4 rounded-full border border-black/20"
+                  style={{ backgroundColor: `#${slotInfo.trayColor.slice(0, 6)}` }}
+                />
+              )}
+              <span className="text-white font-medium">
+                {t('configureAmsSlot.slotLabel', { ams: getAmsLabel(slotInfo.amsId, slotInfo.trayCount), slot: slotInfo.trayId + 1 })}
+              </span>
+              {slotInfo.traySubBrands && (
+                <span className="text-bambu-gray">({slotInfo.traySubBrands})</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {isLoading ? (
+          <div className="flex justify-center py-8">
+            <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
+          </div>
+        ) : fullScreen ? (
+          /* Two-column layout for kiosk display */
+          <div className="flex gap-4 h-full">
+            {/* Left column: Filament preset list (takes full height) */}
+            <div className="w-1/2 flex flex-col min-h-0">
+              <label className="block text-sm text-bambu-gray mb-2">
+                {t('configureAmsSlot.filamentProfile')} <span className="text-red-600 dark:text-red-400">*</span>
+              </label>
+              <input
+                type="text"
+                placeholder={t('configureAmsSlot.searchPresets')}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none mb-2 shrink-0"
+              />
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-1">
+                {filteredPresets.length === 0 ? (
+                  <p className="text-center py-4 text-bambu-gray">
+                    {((familiesData?.length ?? 0) === 0)
+                      ? t('configureAmsSlot.noPresetsAvailable')
+                      : t('configureAmsSlot.noMatchingPresets')}
+                  </p>
+                ) : (
+                  filteredPresets.map((preset) => (
+                    <button
+                      key={preset.id}
+                      data-preset-id={preset.id}
+                      onClick={() => setSelectedPresetId(preset.id)}
+                      className={`group w-full p-2 rounded-lg border text-left transition-colors ${
+                        selectedPresetId === preset.id
+                          ? 'bg-bambu-green/20 border-bambu-green'
+                          : 'bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-gray'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-white text-sm truncate group-hover:whitespace-normal group-hover:break-all" title={preset.name}>{preset.name}</span>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {preset.source === 'local' && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-400">
+                              {t('profiles.localProfiles.badge')}
+                            </span>
+                          )}
+                          {preset.source === 'orca_cloud' && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400">
+                              {t('configureAmsSlot.orcaCloud')}
+                            </span>
+                          )}
+                          {preset.source === 'cloud' && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-blue/20 text-bambu-blue">
+                              {t('configureAmsSlot.bambuCloud')}
+                            </span>
+                          )}
+                          {preset.source === 'builtin' && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400">
+                              {t('configureAmsSlot.builtin')}
+                            </span>
+                          )}
+                          {preset.isUser && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-blue/20 text-bambu-blue">
+                              {t('configureAmsSlot.custom')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  ))
+                )}
               </div>
             </div>
-          )}
 
-          {/* Slot info */}
-          {!fullScreen && (
-            <div className="p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-              <p className="text-xs text-bambu-gray mb-1">{t('configureAmsSlot.configuringSlot')}</p>
-              <div className="flex items-center gap-2">
-                {slotInfo.trayColor && (
-                  <span
-                    className="w-4 h-4 rounded-full border border-black/20"
-                    style={{ backgroundColor: `#${slotInfo.trayColor.slice(0, 6)}` }}
-                  />
-                )}
-                <span className="text-white font-medium">
-                  {t('configureAmsSlot.slotLabel', { ams: getAmsLabel(slotInfo.amsId, slotInfo.trayCount), slot: slotInfo.trayId + 1 })}
-                </span>
-                {slotInfo.traySubBrands && (
-                  <span className="text-bambu-gray">({slotInfo.traySubBrands})</span>
-                )}
-              </div>
-            </div>
-          )}
-
-          {isLoading ? (
-            <div className="flex justify-center py-8">
-              <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
-            </div>
-          ) : fullScreen ? (
-            /* Two-column layout for kiosk display */
-            <div className="flex gap-4 h-full">
-              {/* Left column: Filament preset list (takes full height) */}
-              <div className="w-1/2 flex flex-col min-h-0">
+            {/* Right column: K Profile + Color */}
+            <div className="w-1/2 flex flex-col gap-4 min-h-0 overflow-y-auto">
+              {/* K Profile Select */}
+              <div>
                 <label className="block text-sm text-bambu-gray mb-2">
-                  {t('configureAmsSlot.filamentProfile')} <span className="text-red-600 dark:text-red-400">*</span>
+                  {t('configureAmsSlot.kProfileLabel')}
+                  {selectedMaterial && (
+                    <span className="ml-2 text-xs text-bambu-blue">
+                      {t('configureAmsSlot.filteringFor', { material: selectedMaterial })}
+                    </span>
+                  )}
                 </label>
+                {matchingKProfiles.length > 0 ? (
+                  <Select
+                    className="w-full"
+                    value={selectedKProfile?.name || ''}
+                    onChange={(e) => {
+                      const profile = matchingKProfiles.find(p => p.name === e.target.value);
+                      setSelectedKProfile(profile || null);
+                    }}
+                  >
+                    <option value="">{t('configureAmsSlot.noKProfile')}</option>
+                    {matchingKProfiles.map((profile) => (
+                      <option key={`${profile.name}-${profile.extruder_id}`} value={profile.name}>
+                        {profile.name} (K={profile.k_value})
+                      </option>
+                    ))}
+                  </Select>
+                ) : selectedPresetId ? (
+                  <p className="text-sm text-bambu-gray italic py-2">
+                    {t('configureAmsSlot.noMatchingKProfiles')}
+                  </p>
+                ) : (
+                  <span className="inline-block text-xs px-2 py-1 rounded bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-300 dark:border-amber-500/30">
+                    {t('configureAmsSlot.selectFilamentFirst')}
+                  </span>
+                )}
+                {selectedKProfile && (
+                  <p className="text-xs text-bambu-green mt-1">
+                    {t('configureAmsSlot.kFromCalibration', { value: selectedKProfile.k_value })}
+                  </p>
+                )}
+              </div>
+
+              {/* Custom color */}
+              <div>
+                <label className="block text-sm text-bambu-gray mb-2">
+                  {t('configureAmsSlot.customColorLabel')}
+                </label>
+                {catalogColors.length > 0 && (
+                  <div className="mb-3">
+                    <p className="text-xs text-bambu-gray mb-1.5">
+                      {t('configureAmsSlot.presetColors', { name: selectedPresetInfo?.fullName })}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {catalogColors.map((entry) => (
+                        <button
+                          key={entry.id}
+                          onClick={() => {
+                            const hex = entry.hex_color.replace('#', '').toUpperCase();
+                            setColorHex(hex);
+                            setColorInput(entry.color_name);
+                          }}
+                          className={`h-7 px-2 rounded-md border-2 transition-all flex items-center gap-1.5 ${
+                            colorHex === entry.hex_color.replace('#', '').toUpperCase()
+                              ? 'border-bambu-green scale-105'
+                              : 'border-white/20 hover:border-white/40'
+                          }`}
+                          title={entry.color_name}
+                        >
+                          <span
+                            className="w-4 h-4 rounded-full border border-black/20 flex-shrink-0"
+                            style={{ backgroundColor: entry.hex_color }}
+                          />
+                          <span className="text-xs text-white/80 whitespace-nowrap">{entry.color_name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {QUICK_COLORS_BASIC.map((color) => (
+                    <button
+                      key={color.hex}
+                      onClick={() => {
+                        setColorHex(color.hex);
+                        setColorInput(color.name);
+                      }}
+                      className={`w-7 h-7 rounded-md border-2 transition-all ${
+                        colorHex === color.hex
+                          ? 'border-bambu-green scale-110'
+                          : 'border-white/20 hover:border-white/40'
+                      }`}
+                      style={{ backgroundColor: `#${color.hex}` }}
+                      title={color.name}
+                    />
+                  ))}
+                  <button
+                    onClick={() => setShowExtendedColors(!showExtendedColors)}
+                    className="w-7 h-7 rounded-md border-2 border-white/20 hover:border-white/40 flex items-center justify-center text-white/60 hover:text-white/80 transition-all text-xs"
+                    title={showExtendedColors ? t('configureAmsSlot.showLessColors') : t('configureAmsSlot.showMoreColors')}
+                  >
+                    {showExtendedColors ? '−' : '+'}
+                  </button>
+                </div>
+                {showExtendedColors && (
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    {QUICK_COLORS_EXTENDED.map((color) => (
+                      <button
+                        key={color.hex}
+                        onClick={() => {
+                          setColorHex(color.hex);
+                          setColorInput(color.name);
+                        }}
+                        className={`w-7 h-7 rounded-md border-2 transition-all ${
+                          colorHex === color.hex
+                            ? 'border-bambu-green scale-110'
+                            : 'border-white/20 hover:border-white/40'
+                        }`}
+                        style={{ backgroundColor: `#${color.hex}` }}
+                        title={color.name}
+                      />
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2 items-center">
+                  <div
+                    className="w-10 h-10 rounded-lg border-2 border-white/20 flex-shrink-0"
+                    style={{ backgroundColor: `#${displayColor}` }}
+                  />
+                  <input
+                    type="text"
+                    placeholder={t('configureAmsSlot.colorPlaceholder')}
+                    value={colorInput}
+                    onChange={(e) => {
+                      const input = e.target.value;
+                      setColorInput(input);
+                      const nameHex = colorNameToHex(input);
+                      if (nameHex) {
+                        setColorHex(nameHex);
+                      } else {
+                        const cleaned = input.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+                        if (cleaned.length === 6) {
+                          setColorHex(cleaned);
+                        } else if (cleaned.length === 3) {
+                          setColorHex(cleaned.split('').map(c => c + c).join(''));
+                        }
+                      }
+                    }}
+                    className="flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none text-sm"
+                  />
+                  {colorHex && (
+                    <button
+                      onClick={() => {
+                        setColorHex('');
+                        setColorInput('');
+                      }}
+                      className="px-2 py-1 text-xs text-bambu-gray hover:text-white bg-bambu-dark-tertiary rounded"
+                      title={t('configureAmsSlot.clearCustomColor')}
+                    >
+                      {t('configureAmsSlot.clear')}
+                    </button>
+                  )}
+                </div>
+                {colorHex && (
+                  <p className="text-xs text-bambu-gray mt-1.5">
+                    {t('configureAmsSlot.hexLabel', { hex: colorHex })}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Filament Profile Select */}
+            <div>
+              <label className="block text-sm text-bambu-gray mb-2">
+                {t('configureAmsSlot.filamentProfile')} <span className="text-red-600 dark:text-red-400">*</span>
+              </label>
+              <div className="relative">
                 <input
                   type="text"
                   placeholder={t('configureAmsSlot.searchPresets')}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none mb-2 shrink-0"
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none mb-2"
                 />
-                <div className="flex-1 min-h-0 overflow-y-auto space-y-1">
+                <div className="max-h-48 overflow-y-auto space-y-1">
                   {filteredPresets.length === 0 ? (
                     <p className="text-center py-4 text-bambu-gray">
                       {((familiesData?.length ?? 0) === 0)
@@ -641,338 +855,117 @@ export function ConfigureAmsSlotModal({
                   )}
                 </div>
               </div>
-
-              {/* Right column: K Profile + Color */}
-              <div className="w-1/2 flex flex-col gap-4 min-h-0 overflow-y-auto">
-                {/* K Profile Select */}
-                <div>
-                  <label className="block text-sm text-bambu-gray mb-2">
-                    {t('configureAmsSlot.kProfileLabel')}
-                    {selectedMaterial && (
-                      <span className="ml-2 text-xs text-bambu-blue">
-                        {t('configureAmsSlot.filteringFor', { material: selectedMaterial })}
-                      </span>
-                    )}
-                  </label>
-                  {matchingKProfiles.length > 0 ? (
-                    <div className="relative">
-                      <select
-                        value={selectedKProfile?.name || ''}
-                        onChange={(e) => {
-                          const profile = matchingKProfiles.find(p => p.name === e.target.value);
-                          setSelectedKProfile(profile || null);
-                        }}
-                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none pr-10"
-                      >
-                        <option value="">{t('configureAmsSlot.noKProfile')}</option>
-                        {matchingKProfiles.map((profile) => (
-                          <option key={`${profile.name}-${profile.extruder_id}`} value={profile.name}>
-                            {profile.name} (K={profile.k_value})
-                          </option>
-                        ))}
-                      </select>
-                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                    </div>
-                  ) : selectedPresetId ? (
-                    <p className="text-sm text-bambu-gray italic py-2">
-                      {t('configureAmsSlot.noMatchingKProfiles')}
-                    </p>
-                  ) : (
-                    <span className="inline-block text-xs px-2 py-1 rounded bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-300 dark:border-amber-500/30">
-                      {t('configureAmsSlot.selectFilamentFirst')}
-                    </span>
-                  )}
-                  {selectedKProfile && (
-                    <p className="text-xs text-bambu-green mt-1">
-                      {t('configureAmsSlot.kFromCalibration', { value: selectedKProfile.k_value })}
-                    </p>
-                  )}
-                </div>
-
-                {/* Custom color */}
-                <div>
-                  <label className="block text-sm text-bambu-gray mb-2">
-                    {t('configureAmsSlot.customColorLabel')}
-                  </label>
-                  {catalogColors.length > 0 && (
-                    <div className="mb-3">
-                      <p className="text-xs text-bambu-gray mb-1.5">
-                        {t('configureAmsSlot.presetColors', { name: selectedPresetInfo?.fullName })}
-                      </p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {catalogColors.map((entry) => (
-                          <button
-                            key={entry.id}
-                            onClick={() => {
-                              const hex = entry.hex_color.replace('#', '').toUpperCase();
-                              setColorHex(hex);
-                              setColorInput(entry.color_name);
-                            }}
-                            className={`h-7 px-2 rounded-md border-2 transition-all flex items-center gap-1.5 ${
-                              colorHex === entry.hex_color.replace('#', '').toUpperCase()
-                                ? 'border-bambu-green scale-105'
-                                : 'border-white/20 hover:border-white/40'
-                            }`}
-                            title={entry.color_name}
-                          >
-                            <span
-                              className="w-4 h-4 rounded-full border border-black/20 flex-shrink-0"
-                              style={{ backgroundColor: entry.hex_color }}
-                            />
-                            <span className="text-xs text-white/80 whitespace-nowrap">{entry.color_name}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  <div className="flex flex-wrap gap-1.5 mb-2">
-                    {QUICK_COLORS_BASIC.map((color) => (
-                      <button
-                        key={color.hex}
-                        onClick={() => {
-                          setColorHex(color.hex);
-                          setColorInput(color.name);
-                        }}
-                        className={`w-7 h-7 rounded-md border-2 transition-all ${
-                          colorHex === color.hex
-                            ? 'border-bambu-green scale-110'
-                            : 'border-white/20 hover:border-white/40'
-                        }`}
-                        style={{ backgroundColor: `#${color.hex}` }}
-                        title={color.name}
-                      />
-                    ))}
-                    <button
-                      onClick={() => setShowExtendedColors(!showExtendedColors)}
-                      className="w-7 h-7 rounded-md border-2 border-white/20 hover:border-white/40 flex items-center justify-center text-white/60 hover:text-white/80 transition-all text-xs"
-                      title={showExtendedColors ? t('configureAmsSlot.showLessColors') : t('configureAmsSlot.showMoreColors')}
-                    >
-                      {showExtendedColors ? '−' : '+'}
-                    </button>
-                  </div>
-                  {showExtendedColors && (
-                    <div className="flex flex-wrap gap-1.5 mb-2">
-                      {QUICK_COLORS_EXTENDED.map((color) => (
-                        <button
-                          key={color.hex}
-                          onClick={() => {
-                            setColorHex(color.hex);
-                            setColorInput(color.name);
-                          }}
-                          className={`w-7 h-7 rounded-md border-2 transition-all ${
-                            colorHex === color.hex
-                              ? 'border-bambu-green scale-110'
-                              : 'border-white/20 hover:border-white/40'
-                          }`}
-                          style={{ backgroundColor: `#${color.hex}` }}
-                          title={color.name}
-                        />
-                      ))}
-                    </div>
-                  )}
-                  <div className="flex gap-2 items-center">
-                    <div
-                      className="w-10 h-10 rounded-lg border-2 border-white/20 flex-shrink-0"
-                      style={{ backgroundColor: `#${displayColor}` }}
-                    />
-                    <input
-                      type="text"
-                      placeholder={t('configureAmsSlot.colorPlaceholder')}
-                      value={colorInput}
-                      onChange={(e) => {
-                        const input = e.target.value;
-                        setColorInput(input);
-                        const nameHex = colorNameToHex(input);
-                        if (nameHex) {
-                          setColorHex(nameHex);
-                        } else {
-                          const cleaned = input.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-                          if (cleaned.length === 6) {
-                            setColorHex(cleaned);
-                          } else if (cleaned.length === 3) {
-                            setColorHex(cleaned.split('').map(c => c + c).join(''));
-                          }
-                        }
-                      }}
-                      className="flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none text-sm"
-                    />
-                    {colorHex && (
-                      <button
-                        onClick={() => {
-                          setColorHex('');
-                          setColorInput('');
-                        }}
-                        className="px-2 py-1 text-xs text-bambu-gray hover:text-white bg-bambu-dark-tertiary rounded"
-                        title={t('configureAmsSlot.clearCustomColor')}
-                      >
-                        {t('configureAmsSlot.clear')}
-                      </button>
-                    )}
-                  </div>
-                  {colorHex && (
-                    <p className="text-xs text-bambu-gray mt-1.5">
-                      {t('configureAmsSlot.hexLabel', { hex: colorHex })}
-                    </p>
-                  )}
-                </div>
-              </div>
             </div>
-          ) : (
-            <>
-              {/* Filament Profile Select */}
-              <div>
-                <label className="block text-sm text-bambu-gray mb-2">
-                  {t('configureAmsSlot.filamentProfile')} <span className="text-red-600 dark:text-red-400">*</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    placeholder={t('configureAmsSlot.searchPresets')}
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none mb-2"
-                  />
-                  <div className="max-h-48 overflow-y-auto space-y-1">
-                    {filteredPresets.length === 0 ? (
-                      <p className="text-center py-4 text-bambu-gray">
-                        {((familiesData?.length ?? 0) === 0)
-                          ? t('configureAmsSlot.noPresetsAvailable')
-                          : t('configureAmsSlot.noMatchingPresets')}
-                      </p>
-                    ) : (
-                      filteredPresets.map((preset) => (
-                        <button
-                          key={preset.id}
-                          data-preset-id={preset.id}
-                          onClick={() => setSelectedPresetId(preset.id)}
-                          className={`group w-full p-2 rounded-lg border text-left transition-colors ${
-                            selectedPresetId === preset.id
-                              ? 'bg-bambu-green/20 border-bambu-green'
-                              : 'bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-gray'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="text-white text-sm truncate group-hover:whitespace-normal group-hover:break-all" title={preset.name}>{preset.name}</span>
-                            <div className="flex items-center gap-1 flex-shrink-0">
-                              {preset.source === 'local' && (
-                                <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-400">
-                                  {t('profiles.localProfiles.badge')}
-                                </span>
-                              )}
-                              {preset.source === 'orca_cloud' && (
-                                <span className="text-xs px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400">
-                                  {t('configureAmsSlot.orcaCloud')}
-                                </span>
-                              )}
-                              {preset.source === 'cloud' && (
-                                <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-blue/20 text-bambu-blue">
-                                  {t('configureAmsSlot.bambuCloud')}
-                                </span>
-                              )}
-                              {preset.source === 'builtin' && (
-                                <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400">
-                                  {t('configureAmsSlot.builtin')}
-                                </span>
-                              )}
-                              {preset.isUser && (
-                                <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-blue/20 text-bambu-blue">
-                                  {t('configureAmsSlot.custom')}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
 
-              {/* K Profile Select */}
-              <div>
-                <label className="block text-sm text-bambu-gray mb-2">
-                  {t('configureAmsSlot.kProfileLabel')}
-                  {selectedMaterial && (
-                    <span className="ml-2 text-xs text-bambu-blue">
-                      {t('configureAmsSlot.filteringFor', { material: selectedMaterial })}
-                    </span>
-                  )}
-                </label>
-                {matchingKProfiles.length > 0 ? (
-                  <div className="relative">
-                    <select
-                      value={selectedKProfile?.name || ''}
-                      onChange={(e) => {
-                        const profile = matchingKProfiles.find(p => p.name === e.target.value);
-                        setSelectedKProfile(profile || null);
-                      }}
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none pr-10"
-                    >
-                      <option value="">{t('configureAmsSlot.noKProfile')}</option>
-                      {matchingKProfiles.map((profile) => (
-                        <option key={`${profile.name}-${profile.extruder_id}`} value={profile.name}>
-                          {profile.name} (K={profile.k_value})
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                  </div>
-                ) : selectedPresetId ? (
-                  <p className="text-sm text-bambu-gray italic py-2">
-                    {t('configureAmsSlot.noMatchingKProfiles')}
-                  </p>
-                ) : (
-                  <span className="inline-block text-xs px-2 py-1 rounded bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-300 dark:border-amber-500/30">
-                    {t('configureAmsSlot.selectFilamentFirst')}
+            {/* K Profile Select */}
+            <div>
+              <label className="block text-sm text-bambu-gray mb-2">
+                {t('configureAmsSlot.kProfileLabel')}
+                {selectedMaterial && (
+                  <span className="ml-2 text-xs text-bambu-blue">
+                    {t('configureAmsSlot.filteringFor', { material: selectedMaterial })}
                   </span>
                 )}
-                {selectedKProfile && (
-                  <p className="text-xs text-bambu-green mt-1">
-                    {t('configureAmsSlot.kFromCalibration', { value: selectedKProfile.k_value })}
-                  </p>
-                )}
-              </div>
+              </label>
+              {matchingKProfiles.length > 0 ? (
+                <Select
+                  className="w-full"
+                  value={selectedKProfile?.name || ''}
+                  onChange={(e) => {
+                    const profile = matchingKProfiles.find(p => p.name === e.target.value);
+                    setSelectedKProfile(profile || null);
+                  }}
+                >
+                  <option value="">{t('configureAmsSlot.noKProfile')}</option>
+                  {matchingKProfiles.map((profile) => (
+                    <option key={`${profile.name}-${profile.extruder_id}`} value={profile.name}>
+                      {profile.name} (K={profile.k_value})
+                    </option>
+                  ))}
+                </Select>
+              ) : selectedPresetId ? (
+                <p className="text-sm text-bambu-gray italic py-2">
+                  {t('configureAmsSlot.noMatchingKProfiles')}
+                </p>
+              ) : (
+                <span className="inline-block text-xs px-2 py-1 rounded bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-300 dark:border-amber-500/30">
+                  {t('configureAmsSlot.selectFilamentFirst')}
+                </span>
+              )}
+              {selectedKProfile && (
+                <p className="text-xs text-bambu-green mt-1">
+                  {t('configureAmsSlot.kFromCalibration', { value: selectedKProfile.k_value })}
+                </p>
+              )}
+            </div>
 
-              {/* Optional: Custom color */}
-              <div>
-                <label className="block text-sm text-bambu-gray mb-2">
-                  {t('configureAmsSlot.customColorLabel')}
-                </label>
-                {/* Catalog colors matching selected preset */}
-                {catalogColors.length > 0 && (
-                  <div className="mb-3">
-                    <p className="text-xs text-bambu-gray mb-1.5">
-                      {t('configureAmsSlot.presetColors', { name: selectedPresetInfo?.fullName })}
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {catalogColors.map((entry) => (
-                        <button
-                          key={entry.id}
-                          onClick={() => {
-                            const hex = entry.hex_color.replace('#', '').toUpperCase();
-                            setColorHex(hex);
-                            setColorInput(entry.color_name);
-                          }}
-                          className={`h-7 px-2 rounded-md border-2 transition-all flex items-center gap-1.5 ${
-                            colorHex === entry.hex_color.replace('#', '').toUpperCase()
-                              ? 'border-bambu-green scale-105'
-                              : 'border-white/20 hover:border-white/40'
-                          }`}
-                          title={entry.color_name}
-                        >
-                          <span
-                            className="w-4 h-4 rounded-full border border-black/20 flex-shrink-0"
-                            style={{ backgroundColor: entry.hex_color }}
-                          />
-                          <span className="text-xs text-white/80 whitespace-nowrap">{entry.color_name}</span>
-                        </button>
-                      ))}
-                    </div>
+            {/* Optional: Custom color */}
+            <div>
+              <label className="block text-sm text-bambu-gray mb-2">
+                {t('configureAmsSlot.customColorLabel')}
+              </label>
+              {/* Catalog colors matching selected preset */}
+              {catalogColors.length > 0 && (
+                <div className="mb-3">
+                  <p className="text-xs text-bambu-gray mb-1.5">
+                    {t('configureAmsSlot.presetColors', { name: selectedPresetInfo?.fullName })}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {catalogColors.map((entry) => (
+                      <button
+                        key={entry.id}
+                        onClick={() => {
+                          const hex = entry.hex_color.replace('#', '').toUpperCase();
+                          setColorHex(hex);
+                          setColorInput(entry.color_name);
+                        }}
+                        className={`h-7 px-2 rounded-md border-2 transition-all flex items-center gap-1.5 ${
+                          colorHex === entry.hex_color.replace('#', '').toUpperCase()
+                            ? 'border-bambu-green scale-105'
+                            : 'border-white/20 hover:border-white/40'
+                        }`}
+                        title={entry.color_name}
+                      >
+                        <span
+                          className="w-4 h-4 rounded-full border border-black/20 flex-shrink-0"
+                          style={{ backgroundColor: entry.hex_color }}
+                        />
+                        <span className="text-xs text-white/80 whitespace-nowrap">{entry.color_name}</span>
+                      </button>
+                    ))}
                   </div>
-                )}
-                {/* Quick color buttons */}
+                </div>
+              )}
+              {/* Quick color buttons */}
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {QUICK_COLORS_BASIC.map((color) => (
+                  <button
+                    key={color.hex}
+                    onClick={() => {
+                      setColorHex(color.hex);
+                      setColorInput(color.name);
+                    }}
+                    className={`w-7 h-7 rounded-md border-2 transition-all ${
+                      colorHex === color.hex
+                        ? 'border-bambu-green scale-110'
+                        : 'border-white/20 hover:border-white/40'
+                    }`}
+                    style={{ backgroundColor: `#${color.hex}` }}
+                    title={color.name}
+                  />
+                ))}
+                <button
+                  onClick={() => setShowExtendedColors(!showExtendedColors)}
+                  className="w-7 h-7 rounded-md border-2 border-white/20 hover:border-white/40 flex items-center justify-center text-white/60 hover:text-white/80 transition-all text-xs"
+                  title={showExtendedColors ? t('configureAmsSlot.showLessColors') : t('configureAmsSlot.showMoreColors')}
+                >
+                  {showExtendedColors ? '−' : '+'}
+                </button>
+              </div>
+              {/* Extended colors (collapsible) */}
+              {showExtendedColors && (
                 <div className="flex flex-wrap gap-1.5 mb-2">
-                  {QUICK_COLORS_BASIC.map((color) => (
+                  {QUICK_COLORS_EXTENDED.map((color) => (
                     <button
                       key={color.hex}
                       onClick={() => {
@@ -988,141 +981,113 @@ export function ConfigureAmsSlotModal({
                       title={color.name}
                     />
                   ))}
-                  <button
-                    onClick={() => setShowExtendedColors(!showExtendedColors)}
-                    className="w-7 h-7 rounded-md border-2 border-white/20 hover:border-white/40 flex items-center justify-center text-white/60 hover:text-white/80 transition-all text-xs"
-                    title={showExtendedColors ? t('configureAmsSlot.showLessColors') : t('configureAmsSlot.showMoreColors')}
-                  >
-                    {showExtendedColors ? '−' : '+'}
-                  </button>
                 </div>
-                {/* Extended colors (collapsible) */}
-                {showExtendedColors && (
-                  <div className="flex flex-wrap gap-1.5 mb-2">
-                    {QUICK_COLORS_EXTENDED.map((color) => (
-                      <button
-                        key={color.hex}
-                        onClick={() => {
-                          setColorHex(color.hex);
-                          setColorInput(color.name);
-                        }}
-                        className={`w-7 h-7 rounded-md border-2 transition-all ${
-                          colorHex === color.hex
-                            ? 'border-bambu-green scale-110'
-                            : 'border-white/20 hover:border-white/40'
-                        }`}
-                        style={{ backgroundColor: `#${color.hex}` }}
-                        title={color.name}
-                      />
-                    ))}
-                  </div>
-                )}
-                {/* Color input: name or hex */}
-                <div className="flex gap-2 items-center">
-                  <div
-                    className="w-10 h-10 rounded-lg border-2 border-white/20 flex-shrink-0"
-                    style={{ backgroundColor: `#${displayColor}` }}
-                  />
-                  <input
-                    type="text"
-                    placeholder={t('configureAmsSlot.colorPlaceholder')}
-                    value={colorInput}
-                    onChange={(e) => {
-                      const input = e.target.value;
-                      setColorInput(input);
+              )}
+              {/* Color input: name or hex */}
+              <div className="flex gap-2 items-center">
+                <div
+                  className="w-10 h-10 rounded-lg border-2 border-white/20 flex-shrink-0"
+                  style={{ backgroundColor: `#${displayColor}` }}
+                />
+                <input
+                  type="text"
+                  placeholder={t('configureAmsSlot.colorPlaceholder')}
+                  value={colorInput}
+                  onChange={(e) => {
+                    const input = e.target.value;
+                    setColorInput(input);
 
-                      // Try to parse as color name first
-                      const nameHex = colorNameToHex(input);
-                      if (nameHex) {
-                        setColorHex(nameHex);
-                      } else {
-                        // Try to parse as hex code
-                        const cleaned = input.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-                        if (cleaned.length === 6) {
-                          setColorHex(cleaned);
-                        } else if (cleaned.length === 3) {
-                          // Expand shorthand hex (e.g., F00 -> FF0000)
-                          setColorHex(cleaned.split('').map(c => c + c).join(''));
-                        }
+                    // Try to parse as color name first
+                    const nameHex = colorNameToHex(input);
+                    if (nameHex) {
+                      setColorHex(nameHex);
+                    } else {
+                      // Try to parse as hex code
+                      const cleaned = input.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+                      if (cleaned.length === 6) {
+                        setColorHex(cleaned);
+                      } else if (cleaned.length === 3) {
+                        // Expand shorthand hex (e.g., F00 -> FF0000)
+                        setColorHex(cleaned.split('').map(c => c + c).join(''));
                       }
-                    }}
-                    className="flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none text-sm"
-                  />
-                  {colorHex && (
-                    <button
-                      onClick={() => {
-                        setColorHex('');
-                        setColorInput('');
-                      }}
-                      className="px-2 py-1 text-xs text-bambu-gray hover:text-white bg-bambu-dark-tertiary rounded"
-                      title={t('configureAmsSlot.clearCustomColor')}
-                    >
-                      {t('configureAmsSlot.clear')}
-                    </button>
-                  )}
-                </div>
+                    }
+                  }}
+                  className="flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder:text-bambu-gray focus:border-bambu-green focus:outline-none text-sm"
+                />
                 {colorHex && (
-                  <p className="text-xs text-bambu-gray mt-1.5">
-                    {t('configureAmsSlot.hexLabel', { hex: colorHex })}
-                  </p>
+                  <button
+                    onClick={() => {
+                      setColorHex('');
+                      setColorInput('');
+                    }}
+                    className="px-2 py-1 text-xs text-bambu-gray hover:text-white bg-bambu-dark-tertiary rounded"
+                    title={t('configureAmsSlot.clearCustomColor')}
+                  >
+                    {t('configureAmsSlot.clear')}
+                  </button>
                 )}
               </div>
+              {colorHex && (
+                <p className="text-xs text-bambu-gray mt-1.5">
+                  {t('configureAmsSlot.hexLabel', { hex: colorHex })}
+                </p>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="flex justify-between p-4 border-t border-bambu-dark-tertiary shrink-0">
+        {/* Reset button on the left */}
+        <Button
+          variant="secondary"
+          onClick={() => resetMutation.mutate()}
+          disabled={resetMutation.isPending || configureMutation.isPending}
+          className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-500/10"
+        >
+          {resetMutation.isPending ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              {t('configureAmsSlot.resetting')}
+            </>
+          ) : (
+            <>
+              <RotateCcw className="w-4 h-4" />
+              {t('configureAmsSlot.resetSlot')}
             </>
           )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex justify-between p-4 border-t border-bambu-dark-tertiary shrink-0">
-          {/* Reset button on the left */}
+        </Button>
+        {/* Cancel and Configure buttons on the right */}
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            {t('configureAmsSlot.cancel')}
+          </Button>
           <Button
-            variant="secondary"
-            onClick={() => resetMutation.mutate()}
-            disabled={resetMutation.isPending || configureMutation.isPending}
-            className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-500/10"
+            onClick={() => configureMutation.mutate()}
+            disabled={!canSave}
           >
-            {resetMutation.isPending ? (
+            {configureMutation.isPending ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                {t('configureAmsSlot.resetting')}
+                {t('configureAmsSlot.configuring')}
               </>
             ) : (
               <>
-                <RotateCcw className="w-4 h-4" />
-                {t('configureAmsSlot.resetSlot')}
+                <Settings2 className="w-4 h-4" />
+                {t('configureAmsSlot.configureSlot')}
               </>
             )}
           </Button>
-          {/* Cancel and Configure buttons on the right */}
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={onClose}>
-              {t('configureAmsSlot.cancel')}
-            </Button>
-            <Button
-              onClick={() => configureMutation.mutate()}
-              disabled={!canSave}
-            >
-              {configureMutation.isPending ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  {t('configureAmsSlot.configuring')}
-                </>
-              ) : (
-                <>
-                  <Settings2 className="w-4 h-4" />
-                  {t('configureAmsSlot.configureSlot')}
-                </>
-              )}
-            </Button>
-          </div>
         </div>
-
-        {/* Error */}
-        {(configureMutation.isError || resetMutation.isError) && (
-          <div className="mx-4 mb-4 p-2 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-sm text-red-700 dark:text-red-400">
-            {(configureMutation.error as Error)?.message || (resetMutation.error as Error)?.message}
-          </div>
-        )}
       </div>
-    </div>
+
+      {/* Error */}
+      {(configureMutation.isError || resetMutation.isError) && (
+        <div className="mx-4 mb-4 p-2 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-sm text-red-700 dark:text-red-400">
+          {(configureMutation.error as Error)?.message || (resetMutation.error as Error)?.message}
+        </div>
+      )}
+    </Modal>
   );
 }

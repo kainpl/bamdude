@@ -367,6 +367,31 @@ async def verify_websocket_token(token: str) -> bool:
         return result.scalar_one_or_none() is not None
 
 
+async def authenticate_websocket_token(token: str) -> tuple[bool, int | None]:
+    """Validate and resolve the owner in one round trip at WS upgrade.
+
+    A valid API-key token has no username; keep that distinct from an invalid
+    token (and from a token whose named owner no longer exists).
+    """
+    if not token:
+        return False, None
+    async with async_session() as db:
+        row = (
+            await db.execute(
+                select(AuthEphemeralToken.username, User.id)
+                .outerjoin(User, User.username == AuthEphemeralToken.username)
+                .where(
+                    AuthEphemeralToken.token == token,
+                    AuthEphemeralToken.token_type == TokenType.WEBSOCKET,
+                    AuthEphemeralToken.expires_at > datetime.now(timezone.utc),
+                )
+            )
+        ).one_or_none()
+    if row is None or (row[0] is not None and row[1] is None):
+        return False, None
+    return True, row[1]
+
+
 async def resolve_websocket_token_user(token: str) -> int | None:
     """Return the user id a valid WS token was minted for, for per-user broadcast
     tagging. None if the token is invalid/expired or was minted without a user
@@ -436,6 +461,12 @@ def _hash_refresh_token(raw: str) -> str:
     import hashlib
 
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+# Public name for the same primitive. Anything we hand a client and must later
+# recognise — a refresh cookie, a password-reset link — is stored as this hash
+# and never in the clear, so a stolen database yields nothing replayable.
+hash_client_secret = _hash_refresh_token
 
 
 def refresh_token_ttl(remember_me: bool, ceiling_hours: int = SESSION_MAX_HOURS_HARD_CEILING) -> timedelta:
@@ -747,20 +778,87 @@ async def is_jti_revoked(jti: str, db: AsyncSession | None = None) -> bool:
         return await _query(own_db)
 
 
+_collision_warned: set[tuple[str, str]] = set()
+"""``(field, folded value)`` pairs already warned about, so the WARNING lands
+once per process. The field is part of the key: on an email-as-username install
+the same value collides in both columns, and those are two separate renames."""
+
+
+def _pick_folded_match(rows: list[User], typed: str, field: str) -> User | None:
+    """Several rows fold to the same key (a pre-Unicode-fold install may hold
+    `Ірина` and `ІРИНА`): the byte-exact match wins, else the oldest account;
+    warn once so the administrator renames one. See spec §3.5.
+
+    ``username``/``email`` are UNIQUE under SQLite's BINARY collation and the
+    duplicate check in ``routes/users.py`` folded ASCII only until Unicode case
+    folding landed, so such a pair can already exist on disk. Returning one of
+    them beats ``scalar_one_or_none()``'s ``MultipleResultsFound``, which is a
+    500 on login for both accounts.
+
+    One consequence is not fixable here: a token minted for the exact row keeps
+    resolving through the fold for its whole TTL after that row is deleted or
+    renamed — the lookup then lands on the remaining variant, a different
+    account with the same folded name. This is pre-existing on any natively
+    folding PostgreSQL (the fold was never byte-exact there), and the WARNING is
+    the mitigation: the collision is meant to be resolved by a rename, not lived
+    with.
+    """
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return rows[0]
+    exact = [u for u in rows if getattr(u, field) == typed]
+    chosen = exact[0] if exact else min(rows, key=lambda u: u.id)
+    key = (field, typed.lower())
+    if key not in _collision_warned:
+        _collision_warned.add(key)
+        if field == "email":
+            # Addresses are personal data and a log line travels — into an issue,
+            # a paste, a shipped log bundle. The ids are enough to find the rows,
+            # and the folded key is the value that was looked up anyway; the
+            # spellings the rows hold stay out of it.
+            logger.warning(
+                "%d user rows fold to the same %s %r (ids %s); using id %d — rename one of them",
+                len(rows),
+                field,
+                key[1],
+                ", ".join(str(u.id) for u in rows),
+                chosen.id,
+            )
+        else:
+            # Usernames are named: the fix is a rename, and an administrator
+            # reading this cannot act on ids alone.
+            logger.warning(
+                "%d user rows differ only by letter case for %s=%r (%s); using %r — rename one of them",
+                len(rows),
+                field,
+                typed,
+                ", ".join(repr(getattr(u, field)) for u in rows),
+                getattr(chosen, field),
+            )
+    return chosen
+
+
 async def get_user_by_username(db: AsyncSession, username: str) -> User | None:
-    """Get a user by username (case-insensitive) with groups loaded for permission checks."""
+    """Get a user by username (case-insensitive) with groups loaded for permission checks.
+
+    Several rows can fold to one username — ``_pick_folded_match`` decides which.
+    """
     result = await db.execute(
         select(User).where(func.lower(User.username) == func.lower(username)).options(selectinload(User.groups))
     )
-    return result.scalar_one_or_none()
+    return _pick_folded_match(list(result.scalars().all()), username, "username")
 
 
 async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
-    """Get a user by email (case-insensitive) with groups loaded for permission checks."""
+    """Get a user by email (case-insensitive) with groups loaded for permission checks.
+
+    Several rows can fold to one address — ``_pick_folded_match`` decides which.
+    """
     result = await db.execute(
         select(User).where(func.lower(User.email) == func.lower(email)).options(selectinload(User.groups))
     )
-    return result.scalar_one_or_none()
+    return _pick_folded_match(list(result.scalars().all()), email, "email")
 
 
 async def authenticate_user(db: AsyncSession, username: str, password: str) -> User | None:
@@ -1248,6 +1346,8 @@ _APIKEY_DENIED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.NOTIFICATIONS_UPDATE,
         Permission.NOTIFICATIONS_DELETE,
         Permission.NOTIFICATIONS_USER_EMAIL,
+        # The inbox belongs to a person: a key has no user to put an item in front of.
+        Permission.NOTIFICATIONS_INBOX,
         Permission.NOTIFICATION_TEMPLATES_UPDATE,
         Permission.EXTERNAL_LINKS_CREATE,
         Permission.EXTERNAL_LINKS_UPDATE,

@@ -1,19 +1,28 @@
 import { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import type { ArchiveSlim } from '../api/client';
+import type { AggregateBucket } from '../api/client';
 import { api } from '../api/client';
 import { formatTimeOnly, parseUTCDate, type TimeFormat } from '../utils/date';
 import { getArchiveStatusBadge, isFailureStatus } from '../utils/archiveStatus';
 
 interface CalendarViewProps {
-  archives: ArchiveSlim[];
+  /**
+   * Per-day counts from `GET /statistics/aggregate`, already keyed in this
+   * browser's own zone.
+   *
+   * ⚠️ The grid used to be built by grouping every archive row of the window in
+   * the browser. On a busy farm that window overran the slim endpoint's
+   * undeclared 10 000-row cap, and because the rows came newest-first the days
+   * that silently vanished were the *start* of the month being looked at.
+   */
+  buckets: AggregateBucket[];
   printerMap?: Map<number, string>;
 }
 
 // Day names resolved via Intl at render time for proper localization
 
-export function CalendarView({ archives, printerMap }: CalendarViewProps) {
+export function CalendarView({ buckets, printerMap }: CalendarViewProps) {
   const { t } = useTranslation();
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
@@ -29,6 +38,15 @@ export function CalendarView({ archives, printerMap }: CalendarViewProps) {
   });
   const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
 
+  // The prints of one day arrive only when a day is actually opened — the grid
+  // itself needs counts, not rows.
+  const { data: dayPage, isLoading: dayLoading } = useQuery({
+    queryKey: ['archives', { date_from: selectedDate, date_to: selectedDate, per_page: 200 }],
+    queryFn: () => api.getArchives({ date_from: selectedDate!, date_to: selectedDate!, per_page: 200 }),
+    enabled: selectedDate !== null,
+  });
+  const selectedArchives = dayPage?.data ?? [];
+
   // Build list of last 30 days (today first, 29 days back last)
   const days = useMemo(() => {
     const result: Date[] = [];
@@ -42,48 +60,47 @@ export function CalendarView({ archives, printerMap }: CalendarViewProps) {
     return result;
   }, []);
 
-  // Group archives by date key
-  const archivesByDate = useMemo(() => {
-    const map = new Map<string, ArchiveSlim[]>();
-    archives.forEach(archive => {
-      const date = parseUTCDate(archive.completed_at || archive.created_at) || new Date();
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-      const existing = map.get(key) || [];
-      existing.push(archive);
-      map.set(key, existing);
+  // The server keys each bucket on `completed_at ?? created_at`, which is the
+  // axis this calendar has always shown.
+  const countsByDate = useMemo(() => {
+    const map = new Map<string, { count: number; success: number; failed: number }>();
+    buckets.forEach(bucket => {
+      map.set(bucket.at, {
+        count: bucket.ended.prints,
+        success: bucket.ended.completed,
+        failed: bucket.ended.failed,
+      });
     });
     return map;
-  }, [archives]);
+  }, [buckets]);
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
   // Stats for the 30-day period
-  const totalPrints = archives.length;
-  const successCount = archives.filter(a => a.status === 'completed').length;
-  const failedCount = archives.filter(a => isFailureStatus(a.status)).length;
+  const totalPrints = buckets.reduce((sum, b) => sum + b.ended.prints, 0);
+  const successCount = buckets.reduce((sum, b) => sum + b.ended.completed, 0);
+  const failedCount = buckets.reduce((sum, b) => sum + b.ended.failed, 0);
 
   // Find max prints per day for scaling
   const maxPerDay = useMemo(() => {
     let max = 0;
-    for (const dayArchives of archivesByDate.values()) {
-      if (dayArchives.length > max) max = dayArchives.length;
+    for (const day of countsByDate.values()) {
+      if (day.count > max) max = day.count;
     }
     return max || 1;
-  }, [archivesByDate]);
-
-  const selectedArchives = selectedDate ? archivesByDate.get(selectedDate) || [] : [];
+  }, [countsByDate]);
 
   const handleDateSelect = (dateKey: string) => {
     setSelectedDate(dateKey === selectedDate ? null : dateKey);
   };
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6">
+    <div className="flex flex-col lg:flex-row gap-4">
       {/* Calendar */}
       <div className="flex-1">
         {/* Stats row */}
-        <div className="grid grid-cols-3 gap-4 text-center mb-6">
+        <div className="grid grid-cols-3 gap-4 text-center mb-4">
           <div>
             <div className="text-2xl font-bold text-white">{totalPrints}</div>
             <div className="text-xs text-bambu-gray">{t('archives.calendar.totalPrints', 'Prints (30 days)')}</div>
@@ -115,12 +132,12 @@ export function CalendarView({ archives, printerMap }: CalendarViewProps) {
 
           {days.map(day => {
             const dateKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
-            const dayArchives = archivesByDate.get(dateKey) || [];
-            const count = dayArchives.length;
+            const dayCounts = countsByDate.get(dateKey);
+            const count = dayCounts?.count ?? 0;
             const isToday = day.getTime() === today.getTime();
             const isSelected = dateKey === selectedDate;
-            const daySuccess = dayArchives.filter(a => a.status === 'completed').length;
-            const dayFailed = dayArchives.filter(a => isFailureStatus(a.status)).length;
+            const daySuccess = dayCounts?.success ?? 0;
+            const dayFailed = dayCounts?.failed ?? 0;
 
             // Intensity based on count relative to max
             const intensity = count > 0 ? Math.max(0.15, count / maxPerDay) : 0;
@@ -177,7 +194,13 @@ export function CalendarView({ archives, printerMap }: CalendarViewProps) {
                 year: 'numeric'
               })}
             </h3>
-            {selectedArchives.length > 0 ? (
+            {dayLoading ? (
+              <div className="space-y-2">
+                {[0, 1, 2].map(i => (
+                  <div key={i} className="h-14 rounded-lg bg-bambu-dark-tertiary animate-pulse" />
+                ))}
+              </div>
+            ) : selectedArchives.length > 0 ? (
               <div className="space-y-2 max-h-96 overflow-y-auto">
                 {selectedArchives.map(archive => (
                   <div

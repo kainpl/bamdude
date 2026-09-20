@@ -47,6 +47,14 @@ docs/
 *.md
 !requirements.txt
 
+# Code graph — local tooling artifacts, never part of a build.
+# ⚠️ `**/` matters: Docker matches with Go's filepath.Match, so a bare
+# `graphify-out` would catch the root copy only, and `COPY frontend/ ./` would
+# go on shipping frontend/graphify-out into the build stage. The root folder
+# alone has reached 4.5 GB, all of it uploaded as build context on every
+# `docker build` because this entry was missing.
+**/graphify-out
+
 # Docker
 Dockerfile
 docker-compose*.yml

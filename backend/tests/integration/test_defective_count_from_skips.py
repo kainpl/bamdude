@@ -10,9 +10,11 @@ unusable — which a later skip must not pull back down.
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.models.archive import PrintArchive
+from backend.app.models.archive_part import PrintArchivePart
 from backend.app.services.printer_manager import _record_skipped_as_defective
 
 
@@ -44,6 +46,20 @@ async def _archive(db_session, *, status="printing", printer_id=1, defective=0) 
     await db_session.commit()
     await db_session.refresh(archive)
     return archive
+
+
+async def _plant_parts(db_session, archive_id, parts: dict[str, list[int]]):
+    for name, ids in parts.items():
+        db_session.add(
+            PrintArchivePart(
+                archive_id=archive_id,
+                name=name,
+                name_key=name.lower(),
+                identify_ids=ids,
+                quantity=len(ids),
+            )
+        )
+    await db_session.commit()
 
 
 @pytest.mark.asyncio
@@ -118,3 +134,75 @@ async def test_only_the_printer_that_skipped_is_touched(patched_session, db_sess
     await db_session.refresh(other)
     assert mine.defective_count == 2
     assert other.defective_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_skips_land_on_the_right_part_rows(patched_session, db_session):
+    archive = await _archive(db_session)
+    await _plant_parts(db_session, archive.id, {"lid": [941, 942], "base": [943, 944]})
+
+    await _record_skipped_as_defective(1, [941, 943, 944])
+
+    rows = {
+        r.name_key: r
+        for r in (
+            (await db_session.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id == archive.id)))
+            .scalars()
+            .all()
+        )
+    }
+    await db_session.refresh(archive)
+    assert rows["lid"].defective == 1
+    assert rows["base"].defective == 2
+    assert archive.defective_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_same_list_twice_does_not_double_per_part(patched_session, db_session):
+    archive = await _archive(db_session)
+    await _plant_parts(db_session, archive.id, {"lid": [941, 942]})
+
+    await _record_skipped_as_defective(1, [941])
+    await _record_skipped_as_defective(1, [941])
+
+    row = (
+        (await db_session.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id == archive.id)))
+        .scalars()
+        .one()
+    )
+    assert row.defective == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_hand_raised_row_value_survives_a_smaller_skip(patched_session, db_session):
+    archive = await _archive(db_session, defective=2)
+    await _plant_parts(db_session, archive.id, {"lid": [941, 942]})
+
+    row = (
+        (await db_session.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id == archive.id)))
+        .scalars()
+        .one()
+    )
+    row.defective = 2
+    await db_session.commit()
+
+    await _record_skipped_as_defective(1, [941])
+
+    await db_session.refresh(row)
+    await db_session.refresh(archive)
+    assert row.defective == 2
+    assert archive.defective_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_an_archive_without_part_rows_keeps_the_legacy_count(patched_session, db_session):
+    archive = await _archive(db_session)
+
+    await _record_skipped_as_defective(1, [941, 942, 943])
+
+    await db_session.refresh(archive)
+    assert archive.defective_count == 3

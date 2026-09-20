@@ -19,6 +19,7 @@ class ProviderType(StrEnum):
     DISCORD = "discord"
     WEBHOOK = "webhook"
     HOMEASSISTANT = "homeassistant"
+    SIGNAL = "signal"
 
 
 class NotificationProviderBase(BaseModel):
@@ -96,6 +97,12 @@ class NotificationProviderBase(BaseModel):
     on_stock_break_alert: bool = Field(default=False, description="Notify when an SKU will run out within lead time")
 
     # Quiet hours
+    progress_min_duration_minutes: int | None = Field(
+        default=None,
+        ge=0,
+        le=10080,
+        description="Mute 25/50/75% milestones for prints shorter than this (null or 0 = always send; ignored for telegram — chats carry their own)",
+    )
     quiet_hours_enabled: bool = Field(default=False, description="Enable quiet hours")
     quiet_hours_start: str | None = Field(default=None, description="Start time in HH:MM format")
     quiet_hours_end: str | None = Field(default=None, description="End time in HH:MM format")
@@ -105,7 +112,9 @@ class NotificationProviderBase(BaseModel):
     daily_digest_time: str | None = Field(default=None, description="Time to send digest in HH:MM format")
 
     # Printer filter
-    printer_id: int | None = Field(default=None, description="Specific printer ID or null for all")
+    printer_ids: list[int] | None = Field(
+        default=None, description="Printer scope: null = all printers, [ids] = only those"
+    )
 
     @field_validator("quiet_hours_start", "quiet_hours_end", "daily_digest_time")
     @classmethod
@@ -193,6 +202,7 @@ class NotificationProviderUpdate(BaseModel):
     on_stock_break_alert: bool | None = None
 
     # Quiet hours
+    progress_min_duration_minutes: int | None = Field(default=None, ge=0, le=10080)
     quiet_hours_enabled: bool | None = None
     quiet_hours_start: str | None = None
     quiet_hours_end: str | None = None
@@ -202,7 +212,7 @@ class NotificationProviderUpdate(BaseModel):
     daily_digest_time: str | None = None
 
     # Printer filter
-    printer_id: int | None = None
+    printer_ids: list[int] | None = None
 
 
 class NotificationProviderResponse(NotificationProviderBase):
@@ -280,6 +290,43 @@ class EmailConfig(BaseModel):
     use_tls: bool = Field(default=True, description="Use TLS encryption")
 
 
+class SignalConfig(BaseModel):
+    """Signal configuration (via a self-hosted signal-cli-rest-api instance)."""
+
+    server: str = Field(..., description="Base URL of your signal-cli-rest-api instance, e.g. http://localhost:8080")
+    sender_number: str = Field(..., description="Signal number registered with signal-cli, in E.164 format")
+    recipient_type: str = Field(
+        default="numbers",
+        description="'numbers' or 'group' - signal-cli-rest-api cannot mix individual recipients and a group in one request",
+    )
+    numbers: str | None = Field(
+        default=None, description="Comma-separated recipient phone numbers, used when recipient_type='numbers'"
+    )
+    group_id: str | None = Field(default=None, description="Signal group ID, used when recipient_type='group'")
+    auth_header: str | None = Field(
+        default=None,
+        description="Optional Authorization header value if signal-cli-rest-api sits behind an authenticating reverse proxy",
+    )
+
+
+class ProviderEventInfo(BaseModel):
+    """One event a provider can subscribe to, as the UI needs to render it.
+
+    The provider form and the provider card build their toggles from this list
+    rather than from a list of their own — three hand-kept copies on the
+    frontend had drifted to 18 of the 34 flags, and six of the missing ones
+    default to ON, so a new provider sent events nobody had seen offered.
+    """
+
+    flag: str = Field(..., description="The provider column, e.g. 'on_print_start'")
+    event_types: list[str] = Field(
+        ..., description="Catalog events this flag governs — one, or several for the sensor aggregates"
+    )
+    group: str = Field(..., description="Catalog group: print / printer / filament / ams / queue / inventory / sensors")
+    severity: str = Field(..., description="Catalog severity; for an aggregate, the strictest of its events")
+    default: bool = Field(..., description="Whether a new provider subscribes to it")
+
+
 # Notification Log schemas
 class NotificationLogResponse(BaseModel):
     """Schema for notification log API responses."""
@@ -293,6 +340,8 @@ class NotificationLogResponse(BaseModel):
     message: str
     success: bool
     error_message: str | None = None
+    # The single printer this LOG ROW was about — unrelated to the
+    # provider's ``printer_ids`` scope.
     printer_id: int | None = None
     printer_name: str | None = None
     created_at: datetime

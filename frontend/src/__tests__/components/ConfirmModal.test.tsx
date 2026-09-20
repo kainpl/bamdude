@@ -72,19 +72,15 @@ describe('ConfirmModal', () => {
       expect(onCancel).toHaveBeenCalledTimes(1);
     });
 
-    it('calls onCancel when clicking backdrop', async () => {
+    it('does NOT call onCancel when clicking the backdrop', async () => {
       const user = userEvent.setup();
       const onCancel = vi.fn();
-      const { container } = render(
-        <ConfirmModal {...defaultProps} onCancel={onCancel} />
-      );
+      render(<ConfirmModal {...defaultProps} onCancel={onCancel} />);
 
-      // Click on the backdrop (first div with fixed class)
-      const backdrop = container.querySelector('.fixed');
-      if (backdrop) {
-        await user.click(backdrop);
-        expect(onCancel).toHaveBeenCalledTimes(1);
-      }
+      // The overlay is the dialog's parent — the shell portals into document.body.
+      const backdrop = screen.getByRole('dialog').parentElement as HTMLElement;
+      await user.click(backdrop);
+      expect(onCancel).not.toHaveBeenCalled();
     });
 
     it('does not call onCancel when clicking modal content', async () => {
@@ -142,18 +138,14 @@ describe('ConfirmModal', () => {
       });
     });
 
-    it('does not call onCancel when clicking backdrop while loading', async () => {
+    it('does not call onCancel when clicking the backdrop while loading either', async () => {
       const user = userEvent.setup();
       const onCancel = vi.fn();
-      const { container } = render(
-        <ConfirmModal {...defaultProps} onCancel={onCancel} isLoading={true} />
-      );
+      render(<ConfirmModal {...defaultProps} onCancel={onCancel} isLoading={true} />);
 
-      const backdrop = container.querySelector('.fixed');
-      if (backdrop) {
-        await user.click(backdrop);
-        expect(onCancel).not.toHaveBeenCalled();
-      }
+      const backdrop = screen.getByRole('dialog').parentElement as HTMLElement;
+      await user.click(backdrop);
+      expect(onCancel).not.toHaveBeenCalled();
     });
 
     it('does not call onCancel on Escape key while loading', () => {

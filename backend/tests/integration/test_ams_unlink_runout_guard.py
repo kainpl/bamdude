@@ -58,6 +58,13 @@ def _emptied_slot_ams():
 async def _run_on_ams_change(printer_id, ams_data, printer_state):
     status = SimpleNamespace(state=printer_state, raw_data={})
     with (
+        # The deferred overlay rebuild is the first thing this callback does and
+        # it REPLACES the printer's map. These tests are about the unlink rule,
+        # so the map they set up must survive to be read.
+        patch(
+            "backend.app.services.ams_backup_compatibility_apply.rebuild_once",
+            new=AsyncMock(),
+        ),
         patch.object(main_module.printer_manager, "get_status", return_value=status),
         patch.object(main_module.ws_manager, "send_printer_status", new=AsyncMock()),
         patch.object(main_module.ws_manager, "broadcast", new=AsyncMock()),
@@ -94,3 +101,93 @@ async def test_empty_slot_while_idle_still_unlinks(db_session, printer_factory, 
         .all()
     )
     assert kept == []
+
+
+# --- The advertised profile is not a stranger's spool -------------------------
+#
+# Under colour mode the printer echoes the CANONICAL colour, which matches
+# neither the fingerprint (snapshotted before the publish) nor the spool. Left
+# alone, the very first AMS push after a publish unlinked the assignment and
+# forgot the overlay, so routing read the masked slot as black: the feature
+# destroyed itself. The overlay's own ``matches_live`` is the proof it was us.
+
+
+async def _red_spool_on_a_black_tray(db_session, printer_factory):
+    printer = await printer_factory()
+    spool = Spool(color_name="red", material="PETG", rgba="FF0000FF", label_weight=1000, weight_used=0)
+    db_session.add(spool)
+    await db_session.commit()
+    await db_session.refresh(spool)
+    db_session.add(
+        SpoolAssignment(
+            spool_id=spool.id,
+            printer_id=printer.id,
+            ams_id=0,
+            tray_id=2,
+            fingerprint_color="FF0000FF",
+            fingerprint_type="PETG",
+        )
+    )
+    await db_session.commit()
+    return printer, spool
+
+
+def _live_tray(color: str):
+    return [
+        {"id": 0, "tray": [{"id": 2, "state": 11, "tray_type": "PETG", "tray_color": color, "tray_info_idx": "GFG99"}]}
+    ]
+
+
+def _advertised_black(printer_id: int) -> None:
+    from backend.app.services import ams_advertised_overlay as overlay
+    from backend.app.services.ams_advertised_overlay import OverlayEntry
+
+    overlay.replace_printer(
+        printer_id, {(0, 2): OverlayEntry("PETG", "FF0000FF", "GFG99", (), "000000FF", "GFG99", "internal")}
+    )
+
+
+async def _assignments(db_session, printer_id):
+    return (
+        (await db_session.execute(select(SpoolAssignment).where(SpoolAssignment.printer_id == printer_id)))
+        .scalars()
+        .all()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_tray_reconfigured_to_what_we_advertised_keeps_its_assignment(db_session, printer_factory, main_db):
+    printer, spool = await _red_spool_on_a_black_tray(db_session, printer_factory)
+    _advertised_black(printer.id)
+
+    await _run_on_ams_change(printer.id, _live_tray("000000FF"), "IDLE")
+
+    kept = await _assignments(db_session, printer.id)
+    assert [(a.tray_id, a.spool_id) for a in kept] == [(2, spool.id)]
+    # The fingerprint follows what the slot now shows, or the same push would
+    # ask the same question forever.
+    assert (kept[0].fingerprint_color, kept[0].fingerprint_type) == ("000000FF", "PETG")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_black_tray_we_never_advertised_still_unlinks(db_session, printer_factory, main_db):
+    printer, _spool = await _red_spool_on_a_black_tray(db_session, printer_factory)
+
+    await _run_on_ams_change(printer.id, _live_tray("000000FF"), "IDLE")
+
+    assert await _assignments(db_session, printer.id) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_third_colour_unlinks_even_with_an_entry_on_the_slot(db_session, printer_factory, main_db):
+    """The entry says black; the slot shows green. Somebody reconfigured it
+    from the printer's screen, and that is a spool change like any other."""
+    printer, _spool = await _red_spool_on_a_black_tray(db_session, printer_factory)
+    _advertised_black(printer.id)
+
+    await _run_on_ams_change(printer.id, _live_tray("00FF00FF"), "IDLE")
+
+    assert await _assignments(db_session, printer.id) == []

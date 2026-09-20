@@ -1,20 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, VideoOff, WifiOff } from 'lucide-react';
+import { AlertTriangle, Expand, VideoOff, WifiOff } from 'lucide-react';
 import { getAuthToken, withStreamToken } from '../api/client';
 import { formatDuration } from '../utils/date';
+import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
+import { CameraSnapshotImage } from './CameraSnapshotImage';
 
 export type CameraTileMode = 'live' | 'snapshot' | 'paused';
 export type CameraTileStatusMode = 'off' | 'compact' | 'full';
 
 interface CameraTileProps {
-  printerId: number;
-  printerName: string;
+  /** A printer's camera, or a camera that belongs to a place. */
+  source: CameraSource;
+  name: string;
   cameraRotation?: number;
   mode: CameraTileMode;
   snapshotIntervalMs: number;
   connected: boolean;
-  onClick?: () => void;
+  /** The one explicit live-view selection on an interactive wall. */
+  onToggleLive?: () => void;
+  /** Opens the shared M-size printer card without changing the live selection. */
+  onOpenPrinterCard?: () => void;
+  activeLive?: boolean;
   // Optional status overlay — wired by CameraWall from the shared
   // ['printerStatus', id] query. All optional so existing tests don't break.
   statusMode?: CameraTileStatusMode;
@@ -36,6 +44,7 @@ interface CameraTileProps {
 // still does the MJPEG fan-out, so per-tile cost is one TLS pull on the wire.
 const LIVE_FPS = 8;
 
+
 type StatusBucket = 'printing' | 'paused' | 'finished' | 'error' | 'idle';
 
 function classifyState(state: string | null | undefined, hmsErrorCount: number): StatusBucket {
@@ -45,8 +54,9 @@ function classifyState(state: string | null | undefined, hmsErrorCount: number):
       return 'printing';
     case 'PAUSE':
       return 'paused';
-    case 'FINISH':
     case 'FAILED':
+      return 'error';
+    case 'FINISH':
       return 'finished';
     default:
       return 'idle';
@@ -54,7 +64,7 @@ function classifyState(state: string | null | undefined, hmsErrorCount: number):
 }
 
 const BUCKET_CHIP_CLASS: Record<StatusBucket, string> = {
-  printing: 'bg-bambu-green/85 text-black',
+  printing: 'bg-bambu-green/85 text-white',
   paused: 'bg-amber-500/85 text-black',
   finished: 'bg-sky-500/80 text-white',
   error: 'bg-red-500/85 text-white',
@@ -62,13 +72,15 @@ const BUCKET_CHIP_CLASS: Record<StatusBucket, string> = {
 };
 
 export function CameraTile({
-  printerId,
-  printerName,
+  source,
+  name,
   cameraRotation = 0,
   mode,
   snapshotIntervalMs,
   connected,
-  onClick,
+  onToggleLive,
+  onOpenPrinterCard,
+  activeLive = false,
   statusMode = 'off',
   printerState = null,
   progress = null,
@@ -95,7 +107,7 @@ export function CameraTile({
       const headers: Record<string, string> = {};
       const token = getAuthToken();
       if (token) headers['Authorization'] = `Bearer ${token}`;
-      fetch(`/api/v1/printers/${printerId}/camera/stop`, {
+      fetch(stopPath(source), {
         method: 'POST',
         keepalive: true,
         headers,
@@ -103,7 +115,8 @@ export function CameraTile({
     }
     setErrored(false);
     setBust((b) => b + 1);
-  }, [mode, printerId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, sourceKey(source)]);
 
   useEffect(() => {
     return () => {
@@ -111,42 +124,33 @@ export function CameraTile({
         const headers: Record<string, string> = {};
         const token = getAuthToken();
         if (token) headers['Authorization'] = `Bearer ${token}`;
-        fetch(`/api/v1/printers/${printerId}/camera/stop`, {
+        fetch(stopPath(source), {
           method: 'POST',
           keepalive: true,
           headers,
         }).catch(() => {});
       }
     };
-  }, [printerId]);
-
-  useEffect(() => {
-    if (mode !== 'snapshot') return;
-    const interval = setInterval(() => setBust((b) => b + 1), snapshotIntervalMs);
-    return () => clearInterval(interval);
-  }, [mode, snapshotIntervalMs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceKey(source)]);
 
   // A kiosk carries its own token; everything else rides the module-cached
   // short-lived one that only a signed-in browser holds (upstream #2531).
   const withToken = (path: string) =>
     streamToken ? `${path}&token=${encodeURIComponent(streamToken)}` : withStreamToken(path);
-  const liveUrl = withToken(
-    `/api/v1/printers/${printerId}/camera/stream?fps=${LIVE_FPS}&t=${bust}`,
-  );
-  const snapshotUrl = withToken(
-    `/api/v1/printers/${printerId}/camera/snapshot?t=${bust}`,
-  );
-
-  const handleClick = () => {
-    if (onClick) onClick();
-  };
+  const liveUrl = withToken(streamPath(source, LIVE_FPS, bust));
+  const { attachImage: attachLiveImage } = useCameraImageRef(liveUrl);
 
   const transform = cameraRotation ? `rotate(${cameraRotation}deg)` : undefined;
 
   const bucket = classifyState(printerState, hmsErrorCount);
   // Hide chip for idle to keep cold walls clean; always show when something
   // is happening (printing/paused/finished/error).
-  const showChip = connected && statusMode !== 'off' && bucket !== 'idle';
+  // A wall may hide routine status chips, but an error or pause must still
+  // tell an operator where to look before they choose a live camera.
+  const showChip = connected && bucket !== 'idle' && (
+    statusMode !== 'off' || bucket === 'error' || bucket === 'paused'
+  );
   const isPrintingOrPaused = bucket === 'printing' || bucket === 'paused';
   const showInfoStrip = connected && statusMode === 'full' && isPrintingOrPaused;
   const fileLabel = printName ?? null;
@@ -154,25 +158,36 @@ export function CameraTile({
   const hasLayers = layerNum != null && totalLayers != null && totalLayers > 0;
   const hasRemaining = remainingMin != null && remainingMin > 0;
 
-  // A kiosk wall passes no onClick — there is no pointer at a TV, and the page
-  // is authenticated by a token that cannot open the single-camera view. Render
-  // the tile as plain, non-focusable content rather than a button that looks
-  // clickable and then does nothing.
-  const interactive = onClick != null;
+  // Kiosk walls pass neither handler. They remain passive and redacted, while
+  // an authenticated operator gets two distinct actions: select live, or open
+  // the printer card. These cannot be nested HTML buttons.
+  const interactive = onToggleLive != null;
+  const attentionClass = !connected
+    ? ' border-bambu-dark-tertiary'
+    : bucket === 'error'
+      ? ' border-red-500 ring-1 ring-red-500/70'
+      : bucket === 'paused'
+        ? ' border-amber-400 ring-1 ring-amber-400/60'
+        : activeLive
+          ? ' border-bambu-green ring-1 ring-bambu-green/75'
+          : ' border-bambu-dark-tertiary';
   const rootClass =
-    'group relative aspect-video w-full overflow-hidden rounded-lg border border-bambu-dark-tertiary bg-black text-left' +
-    (interactive ? ' focus:outline-none focus:ring-2 focus:ring-bambu-green' : ' cursor-default');
-  const Root = interactive ? 'button' : 'div';
-  const rootProps = interactive
-    ? ({ type: 'button', onClick: handleClick } as const)
-    : ({} as const);
+    'group relative aspect-video w-full overflow-hidden rounded-lg border bg-black text-left' + attentionClass +
+    (interactive ? '' : ' cursor-default');
 
   return (
-    <Root
-      {...rootProps}
+    <div
       className={rootClass}
-      title={printerName}
+      title={name}
     >
+      {interactive && (
+        <button
+          type="button"
+          onClick={onToggleLive}
+          aria-label={t(activeLive ? 'printers.camWall.stopLive' : 'printers.camWall.startLive', { printer: name })}
+          className="absolute inset-0 z-10 cursor-pointer rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green focus-visible:ring-inset"
+        />
+      )}
       {!connected || mode === 'paused' ? (
         <div className="absolute inset-0 flex items-center justify-center bg-bambu-dark/60">
           {connected ? (
@@ -181,6 +196,14 @@ export function CameraTile({
             <WifiOff className="h-8 w-8 text-bambu-gray/70" aria-hidden="true" />
           )}
         </div>
+      ) : mode === 'snapshot' ? (
+        <CameraSnapshotImage
+          source={source}
+          name={name}
+          intervalMs={snapshotIntervalMs}
+          streamToken={streamToken}
+          transform={transform}
+        />
       ) : errored ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-black/80 text-bambu-gray">
           <VideoOff className="h-7 w-7" aria-hidden="true" />
@@ -188,9 +211,10 @@ export function CameraTile({
         </div>
       ) : (
         <img
+          ref={attachLiveImage}
           key={`${mode}-${bust}`}
-          src={mode === 'live' ? liveUrl : snapshotUrl}
-          alt={printerName}
+          src={liveUrl}
+          alt={name}
           draggable={false}
           loading="lazy"
           className="h-full w-full select-none object-contain"
@@ -202,7 +226,7 @@ export function CameraTile({
       {/* Status chip (top-left) */}
       {showChip && (
         <span
-          className={`absolute left-2 top-2 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${BUCKET_CHIP_CLASS[bucket]}`}
+          className={`pointer-events-none absolute left-2 top-2 z-20 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${BUCKET_CHIP_CLASS[bucket]}`}
         >
           {hmsErrorCount > 0 && (
             <AlertTriangle
@@ -216,7 +240,7 @@ export function CameraTile({
 
       {/* Mode indicator (top-right) */}
       <span
-        className={`absolute right-2 top-2 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+        className={`pointer-events-none absolute right-2 top-2 z-20 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
           mode === 'live'
             ? 'bg-red-500/80 text-white'
             : mode === 'snapshot'
@@ -262,8 +286,22 @@ export function CameraTile({
             </div>
           </div>
         )}
-        <span className="block truncate text-xs font-medium">{printerName}</span>
+        <span className={`block truncate text-xs font-medium${connected && mode === 'snapshot' ? ' pr-36' : ''}`}>{name}</span>
       </div>
-    </Root>
+      {onOpenPrinterCard && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenPrinterCard();
+          }}
+          aria-label={t('printers.camWall.openPrinterCard', { printer: name })}
+          title={t('printers.camWall.openPrinterCard')}
+          className="absolute bottom-2 right-2 z-20 inline-flex h-7 w-7 items-center justify-center rounded-md bg-black/70 text-white transition-colors hover:bg-bambu-dark-tertiary focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green"
+        >
+          <Expand className="h-4 w-4" aria-hidden="true" />
+        </button>
+      )}
+    </div>
   );
 }

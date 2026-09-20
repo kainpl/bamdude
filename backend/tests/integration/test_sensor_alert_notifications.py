@@ -1,4 +1,10 @@
-"""Who receives a sensor alert, and in whose words."""
+"""Who receives a sensor alert, and in whose words.
+
+⚠️ The in-app inbox rides every ``_get_providers_for_event`` lookup as a channel
+(``notification_inbox.INBOX_CHANNEL``, named "inbox"), which is what keeps the
+service's ``if not providers: return`` guards truthful. It is therefore expected
+in every list below; the question these tests ask is which PROVIDER rows join it.
+"""
 
 import pytest
 
@@ -6,14 +12,17 @@ import pytest
 async def _provider(db_session, **kwargs):
     import json
 
-    from backend.app.models.notification import NotificationProvider
+    from backend.app.models.notification import PROVIDER_EVENT_DEFAULTS, NotificationProvider
 
+    # ``on_*`` kwargs fold into the m157 JSON subscription list.
+    events = sorted(f for f in list(kwargs) if f in PROVIDER_EVENT_DEFAULTS and kwargs.pop(f))
     row = NotificationProvider(
         name=kwargs.pop("name", "ntfy"),
         provider_type="ntfy",
         enabled=True,
         # The column stores JSON as text; a dict reaches sqlite3 unbindable.
         config=json.dumps({"topic": "bamdude", "server_url": "https://ntfy.sh"}),
+        subscribed_events=events,
         **kwargs,
     )
     db_session.add(row)
@@ -29,12 +38,12 @@ async def test_a_printer_scoped_provider_does_not_receive_sensor_alerts(db_sessi
     asked for that printer's news."""
     from backend.app.services.notification_service import NotificationService
 
-    await _provider(db_session, name="bound", on_sensor_threshold=True, printer_id=1)
+    await _provider(db_session, name="bound", on_sensor_threshold=True, printer_ids=[1])
 
     service = NotificationService()
     providers = await service._get_providers_for_event(db_session, "on_sensor_threshold", unscoped_only=True)
 
-    assert providers == []
+    assert [p.name for p in providers] == ["inbox"]
 
 
 @pytest.mark.asyncio
@@ -47,7 +56,7 @@ async def test_an_unbound_provider_does_receive_them(db_session):
     service = NotificationService()
     providers = await service._get_providers_for_event(db_session, "on_sensor_threshold", unscoped_only=True)
 
-    assert [p.name for p in providers] == ["free"]
+    assert [p.name for p in providers] == ["free", "inbox"]
 
 
 @pytest.mark.asyncio
@@ -62,7 +71,7 @@ async def test_the_silence_toggle_is_separate_from_the_threshold_one(db_session)
     service = NotificationService()
     silent = await service._get_providers_for_event(db_session, "on_sensor_silent", unscoped_only=True)
 
-    assert silent == []
+    assert [p.name for p in silent] == ["inbox"]
 
 
 def test_the_quantity_name_is_translated():

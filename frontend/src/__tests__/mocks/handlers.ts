@@ -4,6 +4,8 @@
 
 import { http, HttpResponse } from 'msw';
 
+import { PROVIDER_EVENTS } from '../fixtures/providerEvents';
+
 // Sample data
 const mockSmartPlugs = [
   {
@@ -87,6 +89,14 @@ const mockPrinters = [
 ];
 
 export const handlers = [
+  http.post('/api/v1/auto-queue/routing-preview', async ({ request }) => {
+    const data = await request.json() as { plate_ids: number[] };
+    return HttpResponse.json({ plates: data.plate_ids.map(id => ({
+      requested_plate_id: id, plate_id: id || 1, model: 'X1C', status: 'ok', reason: null,
+      filaments: [{ slot_id: 1, type: 'PLA', color: '#FFFFFF', nozzle_id: null, used_grams: 1 }],
+      groups: [],
+    })) });
+  }),
   // ========================================================================
   // Smart Plugs
   // ========================================================================
@@ -158,6 +168,12 @@ export const handlers = [
   // Notification Providers
   // ========================================================================
 
+  // Declared before '/:id' for the same reason the backend declares it first:
+  // otherwise 'events' is matched as a provider id.
+  http.get('/api/v1/notifications/events', () => {
+    return HttpResponse.json(PROVIDER_EVENTS);
+  }),
+
   http.get('/api/v1/notifications/', () => {
     return HttpResponse.json(mockNotificationProviders);
   }),
@@ -225,6 +241,17 @@ export const handlers = [
       return new HttpResponse(null, { status: 404 });
     }
     return HttpResponse.json(printer);
+  }),
+
+  // Use each test's own single-status fixture for the batch as well, matching
+  // the backend's shared response builder. Per-test overrides still apply.
+  http.get('/api/v1/printers/status/batch', async ({ request }) => {
+    const url = new URL(request.url);
+    const entries = await Promise.all(url.searchParams.getAll('ids').map(async id => {
+      const response = await fetch(new URL(`/api/v1/printers/${id}/status`, url).href);
+      return response.ok ? [id, await response.json()] as const : null;
+    }));
+    return HttpResponse.json(Object.fromEntries(entries.filter(entry => entry !== null)));
   }),
 
   http.get('/api/v1/printers/:id/status', ({ params }) => {
@@ -419,5 +446,14 @@ export const handlers = [
       total_size: 0,
       total_folders: 0,
     });
+  }),
+
+  // "No open order wants this plate" — the ordinary answer, and the one every
+  // print dialog in the suite gets unless a test says otherwise. It has to be
+  // an empty list rather than nothing at all: an unhandled request is bypassed
+  // to a network that is not there, which reads as a failure and hides a real
+  // one behind it.
+  http.get('/api/v1/library/files/:id/order-candidates', () => {
+    return HttpResponse.json([]);
   }),
 ];

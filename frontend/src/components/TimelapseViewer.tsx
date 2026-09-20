@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
-import { X, Download, Film, Play, Pause, SkipBack, SkipForward, Pencil } from 'lucide-react';
+import { useId, useState, useRef, useEffect } from 'react';
+import { Download, Film, Play, Pause, SkipBack, SkipForward, Pencil } from 'lucide-react';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { TimelapseEditorModal } from './TimelapseEditorModal';
 import { formatMediaTime } from '../utils/date';
 
@@ -23,6 +24,7 @@ export function TimelapseViewer({
   onClose,
   onEdit,
 }: TimelapseViewerProps) {
+  const headingId = useId();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(true);
   const [playbackRate, setPlaybackRate] = useState(1); // Default to 1x
@@ -36,17 +38,6 @@ export function TimelapseViewer({
       video.playbackRate = playbackRate;
     }
   }, [playbackRate]);
-
-  // Close on Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -106,34 +97,32 @@ export function TimelapseViewer({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
-      <div className="relative bg-bambu-dark-secondary rounded-xl max-w-4xl w-full mx-4 overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-          <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-            <Film className="w-5 h-5 text-bambu-green" />
-            {title}
-          </h3>
-          <div className="flex items-center gap-2">
-            {archiveId && (
-              <Button variant="secondary" size="sm" onClick={() => setShowEditor(true)}>
-                <Pencil className="w-4 h-4" />
-                Edit
+    <>
+      <Modal
+        onClose={onClose}
+        labelledBy={headingId}
+        header={
+          <div className="flex flex-1 items-center justify-between min-w-0">
+            <h3 id={headingId} className="text-lg font-semibold text-white flex items-center gap-2">
+              <Film className="w-5 h-5 text-bambu-green" />
+              {title}
+            </h3>
+            <div className="flex items-center gap-2">
+              {archiveId && (
+                <Button variant="secondary" size="sm" onClick={() => setShowEditor(true)}>
+                  <Pencil className="w-4 h-4" />
+                  Edit
+                </Button>
+              )}
+              <Button variant="secondary" size="sm" onClick={handleDownload}>
+                <Download className="w-4 h-4" />
+                Download
               </Button>
-            )}
-            <Button variant="secondary" size="sm" onClick={handleDownload}>
-              <Download className="w-4 h-4" />
-              Download
-            </Button>
-            <button
-              onClick={onClose}
-              className="p-1 hover:bg-bambu-dark-tertiary rounded transition-colors"
-            >
-              <X className="w-5 h-5 text-bambu-gray" />
-            </button>
+            </div>
           </div>
-        </div>
-
+        }
+        size="4xl"
+      >
         {/* Video */}
         <div className="p-4">
           <video
@@ -219,7 +208,7 @@ export function TimelapseViewer({
             </div>
           </div>
         </div>
-      </div>
+      </Modal>
 
       {/* Timelapse Editor Modal */}
       {showEditor && archiveId && (
@@ -230,6 +219,6 @@ export function TimelapseViewer({
           onSave={onEdit}
         />
       )}
-    </div>
+    </>
   );
 }

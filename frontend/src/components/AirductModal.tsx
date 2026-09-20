@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { AirVent, AlertTriangle, Fan, Minus, Plus, Wind, X } from 'lucide-react';
+import { AirVent, AlertTriangle, Fan, Minus, Plus, Wind } from 'lucide-react';
 import { api, ApiError, type AirductFan } from '../api/client';
+import { Modal } from './Modal';
 
 /**
  * One window for the whole air duct: the mode, its "Filter" sub-mode, and every
@@ -131,161 +132,149 @@ export function AirductModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-md"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-bambu-dark-tertiary">
-          <h3 className="text-sm font-semibold text-white">{t('printers.airduct.title')}</h3>
-          <button onClick={onClose} className="text-bambu-gray hover:text-white transition-colors">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="p-4 space-y-4">
-          {modes.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-bambu-gray mb-2">
-                {t('printers.airduct.mode')}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {modes.map((m) => (
-                  <button
-                    key={m}
-                    // Also disabled for the mode already active: re-selecting
-                    // it is a no-op the user cannot tell from a real change, and
-                    // it was the click that could be repeated while the printer
-                    // was still confirming.
-                    disabled={!canControl || isPrinting || modeMutation.isPending || m === currentMode}
-                    onClick={() => modeMutation.mutate({ modeId: m })}
-                    className={`px-3 py-1.5 rounded-lg text-xs transition-colors ${
-                      m === currentMode
-                        ? 'bg-bambu-green/20 text-bambu-green'
-                        : 'bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary disabled:hover:bg-bambu-dark'
-                    } ${!canControl || isPrinting ? 'opacity-50 cursor-not-allowed' : ''} ${
-                      m === currentMode ? 'cursor-default' : ''
-                    }`}
-                  >
-                    {t(`printers.airduct.modes.${m}`, `Mode ${m}`)}
-                  </button>
-                ))}
-              </div>
-              {isPrinting && (
-                <p className="mt-2 text-[10px] text-bambu-gray leading-relaxed">
-                  {t('printers.airduct.modeLockedWhilePrinting')}
-                </p>
-              )}
-            </div>
-          )}
-
-          {showFilter && (
-            <div className="flex items-start justify-between gap-3 pt-1">
-              <div className="min-w-0">
-                <div className="text-xs text-white">{t('printers.airduct.filter')}</div>
-                <p className="text-[10px] text-bambu-gray leading-relaxed">{t('printers.airduct.filterHint')}</p>
-              </div>
-              <button
-                disabled={!canControl || modeMutation.isPending}
-                onClick={() => {
-                  // Only switching it ON is warned about; off gives cooling back.
-                  if (!filterOn && isPrinting && !confirmFilter) {
-                    setConfirmFilter(true);
-                    return;
-                  }
-                  setConfirmFilter(false);
-                  modeMutation.mutate({ modeId: currentMode, submode: filterOn ? 0 : 1, confirm: true });
-                }}
-                className={`shrink-0 w-11 h-6 rounded-full transition-colors relative ${
-                  filterOn ? 'bg-bambu-green/60' : 'bg-bambu-dark-tertiary'
-                } ${!canControl ? 'opacity-50 cursor-not-allowed' : ''}`}
-                aria-pressed={filterOn}
-              >
-                <span
-                  className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
-                    filterOn ? 'left-[22px]' : 'left-0.5'
-                  }`}
-                />
-              </button>
-            </div>
-          )}
-
-          {confirmFilter && (
-            <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-3">
-              <div className="flex items-start gap-2 mb-2">
-                <AlertTriangle className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
-                <p className="text-[11px] text-bambu-gray leading-relaxed">
-                  {t('printers.airduct.filterPrintingWarning')}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    setConfirmFilter(false);
-                    modeMutation.mutate({ modeId: currentMode, submode: 1, confirm: true });
-                  }}
-                  className="px-3 py-1.5 rounded-lg text-[11px] bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors"
-                >
-                  {t('printers.fans.changeAnyway')}
-                </button>
-                <button
-                  onClick={() => setConfirmFilter(false)}
-                  className="px-3 py-1.5 rounded-lg text-[11px] bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary transition-colors"
-                >
-                  {t('common.cancel')}
-                </button>
-              </div>
-            </div>
-          )}
-
+    <Modal onClose={onClose} title={t('printers.airduct.title')} size="md">
+      <div className="p-4 space-y-4">
+        {modes.length > 0 && (
           <div>
             <div className="text-[10px] uppercase tracking-wider text-bambu-gray mb-2">
-              {t('printers.airduct.fans')}
+              {t('printers.airduct.mode')}
             </div>
-            <div className="space-y-1.5">
-              {ordered.map((f) => {
-                const { Icon, tint } = FAN_LOOKS[f.part_id] ?? FAN_LOOK_DEFAULT;
-                const control = f.control ?? (f.controllable ? 'ctrl' : 'off');
-                const adjustable = canControl && control === 'ctrl';
-                return (
-                  <div key={f.part_id} className="flex items-center gap-2 px-2 py-1.5 rounded bg-bambu-dark">
-                    <Icon className={`w-4 h-4 shrink-0 ${f.speed > 0 ? tint : 'text-bambu-gray/50'}`} />
-                    <span className="text-xs text-white truncate flex-1 min-w-0">{fanName(f)}</span>
-                    {adjustable ? (
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          onClick={() => step(f, -1)}
-                          disabled={f.speed <= 0 || speedMutation.isPending}
-                          className="w-6 h-6 rounded bg-bambu-dark-tertiary text-bambu-gray hover:text-white disabled:opacity-40 flex items-center justify-center transition-colors"
-                        >
-                          <Minus className="w-3 h-3" />
-                        </button>
-                        <span className="text-[11px] text-white w-10 text-center tabular-nums">{f.speed}%</span>
-                        <button
-                          onClick={() => step(f, 1)}
-                          disabled={f.speed >= 100 || speedMutation.isPending}
-                          className="w-6 h-6 rounded bg-bambu-dark-tertiary text-bambu-gray hover:text-white disabled:opacity-40 flex items-center justify-center transition-colors"
-                        >
-                          <Plus className="w-3 h-3" />
-                        </button>
-                      </div>
-                    ) : (
-                      // BambuStudio writes the word where the control would be —
-                      // "Off" and "Auto" are different situations and neither is
-                      // an adjustable zero.
-                      <span className="text-[11px] text-bambu-gray shrink-0">
-                        {control === 'off' ? t('printers.airduct.fanOff') : t('printers.airduct.fanAuto')}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
+            <div className="flex flex-wrap gap-2">
+              {modes.map((m) => (
+                <button
+                  key={m}
+                  // Also disabled for the mode already active: re-selecting
+                  // it is a no-op the user cannot tell from a real change, and
+                  // it was the click that could be repeated while the printer
+                  // was still confirming.
+                  disabled={!canControl || isPrinting || modeMutation.isPending || m === currentMode}
+                  onClick={() => modeMutation.mutate({ modeId: m })}
+                  className={`px-3 py-1.5 rounded-lg text-xs transition-colors ${
+                    m === currentMode
+                      ? 'bg-bambu-green/20 text-bambu-green'
+                      : 'bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary disabled:hover:bg-bambu-dark'
+                  } ${!canControl || isPrinting ? 'opacity-50 cursor-not-allowed' : ''} ${
+                    m === currentMode ? 'cursor-default' : ''
+                  }`}
+                >
+                  {t(`printers.airduct.modes.${m}`, `Mode ${m}`)}
+                </button>
+              ))}
+            </div>
+            {isPrinting && (
+              <p className="mt-2 text-[10px] text-bambu-gray leading-relaxed">
+                {t('printers.airduct.modeLockedWhilePrinting')}
+              </p>
+            )}
+          </div>
+        )}
+
+        {showFilter && (
+          <div className="flex items-start justify-between gap-3 pt-1">
+            <div className="min-w-0">
+              <div className="text-xs text-white">{t('printers.airduct.filter')}</div>
+              <p className="text-[10px] text-bambu-gray leading-relaxed">{t('printers.airduct.filterHint')}</p>
+            </div>
+            <button
+              disabled={!canControl || modeMutation.isPending}
+              onClick={() => {
+                // Only switching it ON is warned about; off gives cooling back.
+                if (!filterOn && isPrinting && !confirmFilter) {
+                  setConfirmFilter(true);
+                  return;
+                }
+                setConfirmFilter(false);
+                modeMutation.mutate({ modeId: currentMode, submode: filterOn ? 0 : 1, confirm: true });
+              }}
+              className={`shrink-0 w-11 h-6 rounded-full transition-colors relative ${
+                filterOn ? 'bg-bambu-green/60' : 'bg-bambu-dark-tertiary'
+              } ${!canControl ? 'opacity-50 cursor-not-allowed' : ''}`}
+              aria-pressed={filterOn}
+            >
+              <span
+                className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all ${
+                  filterOn ? 'left-[22px]' : 'left-0.5'
+                }`}
+              />
+            </button>
+          </div>
+        )}
+
+        {confirmFilter && (
+          <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-3">
+            <div className="flex items-start gap-2 mb-2">
+              <AlertTriangle className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
+              <p className="text-[11px] text-bambu-gray leading-relaxed">
+                {t('printers.airduct.filterPrintingWarning')}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setConfirmFilter(false);
+                  modeMutation.mutate({ modeId: currentMode, submode: 1, confirm: true });
+                }}
+                className="px-3 py-1.5 rounded-lg text-[11px] bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors"
+              >
+                {t('printers.fans.changeAnyway')}
+              </button>
+              <button
+                onClick={() => setConfirmFilter(false)}
+                className="px-3 py-1.5 rounded-lg text-[11px] bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary transition-colors"
+              >
+                {t('common.cancel')}
+              </button>
             </div>
           </div>
+        )}
 
-          {error && <p className="text-[11px] text-red-400 leading-relaxed">{error}</p>}
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-bambu-gray mb-2">
+            {t('printers.airduct.fans')}
+          </div>
+          <div className="space-y-1.5">
+            {ordered.map((f) => {
+              const { Icon, tint } = FAN_LOOKS[f.part_id] ?? FAN_LOOK_DEFAULT;
+              const control = f.control ?? (f.controllable ? 'ctrl' : 'off');
+              const adjustable = canControl && control === 'ctrl';
+              return (
+                <div key={f.part_id} className="flex items-center gap-2 px-2 py-1.5 rounded bg-bambu-dark">
+                  <Icon className={`w-4 h-4 shrink-0 ${f.speed > 0 ? tint : 'text-bambu-gray/50'}`} />
+                  <span className="text-xs text-white truncate flex-1 min-w-0">{fanName(f)}</span>
+                  {adjustable ? (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => step(f, -1)}
+                        disabled={f.speed <= 0 || speedMutation.isPending}
+                        className="w-6 h-6 rounded bg-bambu-dark-tertiary text-bambu-gray hover:text-white disabled:opacity-40 flex items-center justify-center transition-colors"
+                      >
+                        <Minus className="w-3 h-3" />
+                      </button>
+                      <span className="text-[11px] text-white w-10 text-center tabular-nums">{f.speed}%</span>
+                      <button
+                        onClick={() => step(f, 1)}
+                        disabled={f.speed >= 100 || speedMutation.isPending}
+                        className="w-6 h-6 rounded bg-bambu-dark-tertiary text-bambu-gray hover:text-white disabled:opacity-40 flex items-center justify-center transition-colors"
+                      >
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    // BambuStudio writes the word where the control would be —
+                    // "Off" and "Auto" are different situations and neither is
+                    // an adjustable zero.
+                    <span className="text-[11px] text-bambu-gray shrink-0">
+                      {control === 'off' ? t('printers.airduct.fanOff') : t('printers.airduct.fanAuto')}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
+
+        {error && <p className="text-[11px] text-red-400 leading-relaxed">{error}</p>}
       </div>
-    </div>
+    </Modal>
   );
 }

@@ -30,11 +30,20 @@ import pytest
 
 from backend.app.services.archive import ArchiveService
 
+#: Pinned so that the same payload always produces the same BYTES. ``writestr``
+#: with a plain name stamps each entry from ``time.localtime()``, which the ZIP
+#: format stores at two-second resolution — so two byte-identical payloads
+#: zipped either side of a boundary hash differently, and a test that asks
+#: "same input, same hash" fails once every few hundred runs with nothing wrong
+#: in the code under test. Measured 2026-09-13.
+_FIXED_ZIP_DATE = (2026, 1, 1, 0, 0, 0)
+
 
 def _write_zip(path: Path, payload: bytes) -> str:
     """Write a tiny valid ZIP at ``path`` with ``payload`` inside; return SHA256."""
     with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("Metadata/model_settings.config", payload.decode("utf-8", errors="replace"))
+        entry = zipfile.ZipInfo("Metadata/model_settings.config", date_time=_FIXED_ZIP_DATE)
+        zf.writestr(entry, payload.decode("utf-8", errors="replace"))
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(8192), b""):
@@ -176,19 +185,16 @@ async def test_archive_print_dispatched_file_dedup_shares_on_disk_copy(
     assert a1.content_hash == a2.content_hash
     # Cross-printer dedup: both archives point at the SAME file_path.
     #
-    # ⚠️ This assertion has failed once inside a full run and never in
-    # isolation (25 consecutive green), on code byte-identical to a run that
-    # passed. Rather than leave the next occurrence as another "flaky", the
-    # message below splits the search space with what the paths already say:
-    #
-    #   * a2 in a directory suffixed ``_2``  → the dedup lookup returned None
-    #     and a2 built a fresh directory next to a1's, colliding on the name.
-    #   * a2 somewhere unrelated             → the lookup returned a DIFFERENT
-    #     row, which points at ``ORDER BY created_at ASC`` over a column with
-    #     one-second resolution.
-    #
-    # One of those two is what happened; they need different fixes, and
-    # guessing which without a live failure is how the last attempt stalled.
+    # ⚠️ This used to fail once inside a full run and never in isolation, and
+    # the two hypotheses that stood here — a dedup lookup returning None, or
+    # ``ORDER BY created_at ASC`` over a one-second column — were BOTH wrong.
+    # The failure was one line earlier, on the content_hash equality, and the
+    # cause was this file's own ZIP helper: entries were stamped from the wall
+    # clock at the ZIP format's two-second resolution, so the two "identical"
+    # patched files were only identical when both dispatches landed inside the
+    # same two-second window. Found 2026-09-13 while reviewing the queue-spool
+    # dispatch change; the helper now pins the stamp, and nothing about the
+    # dedup code was ever at fault.
     assert a1.file_path == a2.file_path, (
         "cross-printer dedup did not share the on-disk copy\n"
         f"  a1: {a1.file_path}\n"

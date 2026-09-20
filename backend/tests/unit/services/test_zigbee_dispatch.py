@@ -4,7 +4,7 @@ This is where phase 1's investment is checked. Both energy paths were rewired
 then — main.py::_get_plug_energy ended its chain with ``else: tasmota_service``
 and the archive sum had no ``else`` at all — precisely so that adding a plug
 type would be one line in the manager rather than four edits across the app.
-If these tests pass without touching main.py or archives.py, that paid off.
+If these tests pass without touching main.py or the statistics module, that paid off.
 """
 
 from types import SimpleNamespace
@@ -60,10 +60,10 @@ async def test_the_main_energy_path_reaches_it():
 
 @pytest.mark.asyncio
 async def test_the_archive_total_reaches_it():
-    from backend.app.api.routes import archives
+    from backend.app.services.statistics import energy
 
     with patch.object(zigbee_smart_plug_service, "get_energy", AsyncMock(return_value={"total": 2.25})):
-        total = await archives._sum_live_plug_totals(_FakeDB([_plug()]))
+        total = await energy.sum_live_plug_totals(_FakeDB([_plug()]))
 
     assert total == 2.25
 

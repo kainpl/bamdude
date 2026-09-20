@@ -263,10 +263,11 @@ class TestPrintersAPI:
     ):
         """A ``CloudLinkPrinter`` row survives archiving on purpose — the
         allowlist has no opinion about a printer's lifecycle — so availability
-        is filtered on the read side, in ``Uplink.build_snapshot``. A link that
-        is already running holds the set that snapshot produced, and nothing
-        about archiving reaches it: the machine is gone from the whole app while
-        the portal is still being told about it, until the next reconnect.
+        is filtered on the read side, in ``Uplink.build_snapshot_chunks``. A
+        link that is already running holds the set that snapshot produced, and
+        nothing about archiving reaches it: the machine is gone from the whole
+        app while the portal is still being told about it, until the next
+        reconnect.
         """
         from backend.app.services.cloud_link.service import cloud_link_service
 
@@ -461,14 +462,23 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_update_printer_name(self, async_client: AsyncClient, printer_factory, db_session):
+    async def test_update_printer_name(self, async_client: AsyncClient, printer_factory, db_session, monkeypatch):
         """Verify printer name can be updated."""
         printer = await printer_factory(name="Original Name")
+        from backend.app.api.routes.printers import printer_manager
+        from backend.app.services.printer_manager import PrinterInfo
+
+        monkeypatch.setitem(
+            printer_manager._printer_info,
+            printer.id,
+            PrinterInfo("Original Name", printer.serial_number),
+        )
 
         response = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"name": "Updated Name"})
 
         assert response.status_code == 200
         assert response.json()["name"] == "Updated Name"
+        assert printer_manager.get_printer(printer.id).name == "Updated Name"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -491,6 +501,20 @@ class TestPrintersAPI:
 
         assert response.status_code == 200
         assert response.json()["auto_archive"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_printer_camera_light_auto(self, async_client: AsyncClient, printer_factory):
+        """The per-printer answer is one of three words; anything else is refused (services/camera_light)."""
+        printer = await printer_factory()
+        assert (await async_client.get(f"/api/v1/printers/{printer.id}")).json()["camera_light_auto"] == "inherit"
+
+        response = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"camera_light_auto": "off"})
+        assert response.status_code == 200
+        assert response.json()["camera_light_auto"] == "off"
+
+        refused = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"camera_light_auto": "maybe"})
+        assert refused.status_code == 422
 
     @pytest.mark.asyncio
     @pytest.mark.integration

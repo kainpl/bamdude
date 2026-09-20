@@ -1,9 +1,39 @@
 from datetime import datetime
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.app.schemas.calibration_mode import CalibrationMode
+from backend.app.schemas.filament_routing import FilamentRoutingChoices
 from backend.app.schemas.timelapse import TimelapseStorage
+
+
+class ArchivePartRow(BaseModel):
+    """One canonical part on the printed plate (m158)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    name_key: str
+    quantity: int
+    defective: int
+
+    @classmethod
+    def from_row(cls, row: object) -> "ArchivePartRow":
+        """The wire shape of one ``print_archive_parts`` row.
+
+        Named rather than spelled out per call site: three surfaces render the
+        same five fields, and a field added to the row has to reach all of them
+        or one screen silently stops showing it.
+        """
+        return cls.model_validate(row)
+
+
+class ArchivePartDefective(BaseModel):
+    """Per-part defect write: row id + new absolute value (not a delta)."""
+
+    id: int
+    defective: int = Field(ge=0)
 
 
 class ArchiveBase(BaseModel):
@@ -25,8 +55,14 @@ class ArchiveBase(BaseModel):
 class ArchiveUpdate(ArchiveBase):
     printer_id: int | None = None
     project_id: int | None = None
+    # The order line this print is for; validated against ``project_id``.
+    project_line_id: int | None = None
     # Allow changing status (e.g., clearing failed flag)
     status: str | None = None
+    # Per-part defect write (m158). Not a column on PrintArchive — the route
+    # applies it to PrintArchivePart rows and derives defective_count from
+    # them; it must never reach the generic setattr loop.
+    parts_defective: list[ArchivePartDefective] | None = None
 
 
 class ArchiveDuplicate(BaseModel):
@@ -42,7 +78,11 @@ class ArchiveResponse(BaseModel):
     id: int
     printer_id: int | None
     project_id: int | None = None
+    project_line_id: int | None = None
     project_name: str | None = None  # Included for convenience
+    # The library file this print was dispatched from (m014). The archive UI
+    # links a print card back to the file's print history via ?file=<id>.
+    library_file_id: int | None = None
     filename: str
     file_path: str
     file_size: int
@@ -66,12 +106,15 @@ class ArchiveResponse(BaseModel):
     duplicate_sequence: int = 0  # 0 = original, 1+ = nth duplicate
     original_archive_id: int | None = None  # ID of the first/original archive
 
-    # Object count (computed from extra_data.printable_objects)
+    # Object count, from ``extra_data.printable_objects``. None means "no object
+    # metadata", which is not the same as zero objects.
     object_count: int | None = None
 
     # gcode_label_objects AND exclude_object — badge in the archive list, and
-    # the preview banner explains what it means. Denormalised column (m114),
-    # populated straight from the model by from_attributes.
+    # the preview banner explains what it means. Denormalised column (m114).
+    # ⚠️ Both fields are filled by ``archives.archive_to_response``, which
+    # answers with a dict — ``from_attributes`` never sees the model, so a field
+    # that builder does not set is this default on every response, for ever.
     skip_objects_supported: bool = False
 
     print_name: str | None
@@ -118,6 +161,9 @@ class ArchiveResponse(BaseModel):
     # Scrap out of that plate. Shown beside ``object_count`` in the archive card
     # and list; never subtracted from any total (see models/archive.py).
     defective_count: int = 0
+    # Per-part rows (m158). DETAIL responses only — list_archives never loads
+    # them, to avoid an N+1 per page of archives.
+    parts: list[ArchivePartRow] = []
 
     # Energy tracking
     energy_kwh: float | None = None
@@ -167,78 +213,6 @@ class ArchiveResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-class ArchiveSlim(BaseModel):
-    """Lightweight archive response for stats/dashboard/calendar widgets."""
-
-    id: int
-    printer_id: int | None
-    print_name: str | None
-    filename: str
-    print_time_seconds: int | None
-    actual_time_seconds: int | None = None
-    filament_used_grams: float | None
-    filament_type: str | None
-    filament_color: str | None
-    status: str
-    started_at: datetime | None
-    completed_at: datetime | None
-    # Filament ONLY — computed by usage_tracker from grams x price per spool
-    # (plus the untracked remainder at the default rate) and recomputed by
-    # POST /archives/recalculate-costs. Electricity is NOT in here.
-    cost: float | None
-    # Measured electricity for this print, when a smart plug covered it.
-    # Populated in per-print energy tracking mode; NULL otherwise, and NULL for
-    # every print on a printer with no plug — those then compete on filament
-    # alone, which is the honest comparison rather than a fabricated zero-cost.
-    energy_kwh: float | None = None
-    energy_cost: float | None = None
-    quantity: int = 1
-    created_at: datetime | None
-    thumbnail_path: str | None = None
-
-    class Config:
-        from_attributes = True
-
-
-class ArchiveStats(BaseModel):
-    total_prints: int
-    successful_prints: int
-    failed_prints: int
-    # User/system-stopped prints (status in stopped/cancelled/skipped).
-    # Defaulted so older clients that don't send this field still validate.
-    cancelled_prints: int = 0
-    total_print_time_hours: float
-    total_filament_grams: float
-    total_cost: float
-    prints_by_filament_type: dict
-    prints_by_printer: dict
-    # Time accuracy stats
-    # Average across all prints with data
-    average_time_accuracy: float | None = None
-    time_accuracy_by_printer: dict | None = None  # Per-printer accuracy
-    # ── Energy, answered twice ───────────────────────────────────────────
-    # These used to be one pair whose meaning depended on a setting, so the
-    # number on the page could not be read without opening Settings to find out
-    # which question it had answered. Both are returned now and the page shows
-    # both; the setting is gone.
-    #
-    # ⚠️ They are not two views of one figure. ``print_*`` is measured between
-    # the start and end of each print and is therefore bounded by the date
-    # filter like every other statistic here. ``total_*`` is what the plugs
-    # themselves counted — idle, warm-up, and anything else sharing the socket
-    # — and all-time it is read from their live lifetime counters, which no
-    # date filter can reach. The gap between the two is the cost of standing
-    # still, which is the reason anyone wants both.
-    print_energy_kwh: float = 0.0
-    print_energy_cost: float = 0.0
-    total_energy_kwh: float = 0.0
-    total_energy_cost: float = 0.0
-    # Set when the date-range query in "total consumption" mode is running on
-    # incomplete snapshot history - e.g. right after a fresh upgrade before the
-    # hourly snapshot loop has built up a baseline. Frontend shows a tooltip.
-    energy_data_warming_up: bool = False
 
 
 class PaginationMeta(BaseModel):
@@ -305,7 +279,7 @@ class ProjectPageResponse(BaseModel):
     thumbnails: list[ProjectPageImage] = []
 
 
-class ReprintRequest(BaseModel):
+class ReprintRequest(FilamentRoutingChoices):
     """Request body for reprinting an archive."""
 
     # Plate selection for multi-plate 3MF files

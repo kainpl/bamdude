@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useId, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
-  X,
+  Check,
   Folder,
   File,
   ChevronLeft,
@@ -19,21 +19,23 @@ import {
   Search,
   ArrowUpDown,
   CheckSquare,
-  Square,
   MinusSquare,
   Box,
   Eraser,
 } from 'lucide-react';
+import { SelectionBox } from './SelectionBox';
 import { api, type PrinterFileType, type PrinterStorage } from '../api/client';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
+import { Modal } from './Modal';
 import { ModelViewer } from './ModelViewer';
 import { GcodePreview } from './GcodePreview';
 import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
 import { formatFileSize } from '../utils/file';
 import { FolderTreePicker } from './FolderTreePicker';
+import { Select } from './Select';
 
 // Depth-first flatten of the library folder tree for a single <select>.
 // Mirror of the helper in VirtualPrinterCard / MakerworldPage — kept inline
@@ -64,6 +66,7 @@ interface PrinterFileViewerModalProps {
 }
 
 function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: PrinterFileViewerModalProps) {
+  const headingId = useId();
   const [activeTab, setActiveTab] = useState<PrinterViewerTab | null>(null);
   const [plates, setPlates] = useState<PlateMetadata[]>([]);
   const [platesLoading, setPlatesLoading] = useState(false);
@@ -96,160 +99,162 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
     : plates.find((plate) => plate.index === selectedPlateId) ?? null;
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-6" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-4xl h-[80vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
-          <h2 className="text-lg font-semibold text-white truncate flex-1 mr-4">{filename}</h2>
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            <X className="w-5 h-5" />
-          </Button>
-        </div>
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      size="4xl"
+      panelClassName="h-[80vh]"
+      bodyClassName="flex flex-col"
+      header={
+        <h2 id={headingId} className="text-lg font-semibold text-white truncate flex-1 mr-4">{filename}</h2>
+      }
+    >
+      <div className="flex border-b border-bambu-dark-tertiary">
+        <button
+          onClick={() => hasModel && setActiveTab('3d')}
+          disabled={!hasModel}
+          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
+            activeTab === '3d'
+              ? 'text-bambu-green border-b-2 border-bambu-green'
+              : hasModel
+                ? 'text-bambu-gray hover:text-white'
+                : 'text-bambu-gray/30 cursor-not-allowed'
+          }`}
+        >
+          <Box className="w-4 h-4" />
+          3D Model
+          {!hasModel && <span className="text-xs">(not available)</span>}
+        </button>
+        <button
+          onClick={() => hasGcode && setActiveTab('gcode')}
+          disabled={!hasGcode}
+          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
+            activeTab === 'gcode'
+              ? 'text-bambu-green border-b-2 border-bambu-green'
+              : hasGcode
+                ? 'text-bambu-gray hover:text-white'
+                : 'text-bambu-gray/30 cursor-not-allowed'
+          }`}
+        >
+          <FileText className="w-4 h-4" />
+          G-code Preview
+          {!hasGcode && <span className="text-xs">(not sliced)</span>}
+        </button>
+      </div>
 
-        <div className="flex border-b border-bambu-dark-tertiary">
-          <button
-            onClick={() => hasModel && setActiveTab('3d')}
-            disabled={!hasModel}
-            className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
-              activeTab === '3d'
-                ? 'text-bambu-green border-b-2 border-bambu-green'
-                : hasModel
-                  ? 'text-bambu-gray hover:text-white'
-                  : 'text-bambu-gray/30 cursor-not-allowed'
-            }`}
-          >
-            <Box className="w-4 h-4" />
-            3D Model
-            {!hasModel && <span className="text-xs">(not available)</span>}
-          </button>
-          <button
-            onClick={() => hasGcode && setActiveTab('gcode')}
-            disabled={!hasGcode}
-            className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
-              activeTab === 'gcode'
-                ? 'text-bambu-green border-b-2 border-bambu-green'
-                : hasGcode
-                  ? 'text-bambu-gray hover:text-white'
-                  : 'text-bambu-gray/30 cursor-not-allowed'
-            }`}
-          >
-            <FileText className="w-4 h-4" />
-            G-code Preview
-            {!hasGcode && <span className="text-xs">(not sliced)</span>}
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-hidden p-4">
-          {activeTab === '3d' && hasModel ? (
-            <div className="w-full h-full flex flex-col gap-3">
-              {hasMultiplePlates && (
-                <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3">
-                  <div className="flex items-center gap-2 text-sm text-bambu-gray mb-2">
-                    <Box className="w-4 h-4" />
-                    Plates
-                    {platesLoading && <Loader2 className="w-3 h-3 animate-spin" />}
-                  </div>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+      <div className="flex-1 overflow-hidden p-4">
+        {activeTab === '3d' && hasModel ? (
+          <div className="w-full h-full flex flex-col gap-3">
+            {hasMultiplePlates && (
+              <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3">
+                <div className="flex items-center gap-2 text-sm text-bambu-gray mb-2">
+                  <Box className="w-4 h-4" />
+                  Plates
+                  {platesLoading && <Loader2 className="w-3 h-3 animate-spin" />}
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPlateId(null)}
+                    className={`flex items-center gap-2 rounded-lg border p-2 text-left transition-colors ${
+                      selectedPlateId == null
+                        ? 'border-bambu-green bg-bambu-green/10'
+                        : 'border-bambu-dark-tertiary bg-bambu-dark-secondary hover:border-bambu-gray'
+                    }`}
+                  >
+                    <div className="w-10 h-10 rounded bg-bambu-dark-tertiary flex items-center justify-center">
+                      <Box className="w-5 h-5 text-bambu-gray" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-white font-medium truncate">All Plates</p>
+                      <p className="text-xs text-bambu-gray truncate">
+                        {plates.length} plate{plates.length !== 1 ? 's' : ''}
+                      </p>
+                    </div>
+                    {selectedPlateId == null && (
+                      <Check className="w-4 h-4 text-bambu-green flex-shrink-0" />
+                    )}
+                  </button>
+                  {plates.map((plate) => (
                     <button
+                      key={plate.index}
                       type="button"
-                      onClick={() => setSelectedPlateId(null)}
+                      onClick={() => setSelectedPlateId(plate.index)}
                       className={`flex items-center gap-2 rounded-lg border p-2 text-left transition-colors ${
-                        selectedPlateId == null
+                        selectedPlateId === plate.index
                           ? 'border-bambu-green bg-bambu-green/10'
                           : 'border-bambu-dark-tertiary bg-bambu-dark-secondary hover:border-bambu-gray'
                       }`}
                     >
-                      <div className="w-10 h-10 rounded bg-bambu-dark-tertiary flex items-center justify-center">
-                        <Box className="w-5 h-5 text-bambu-gray" />
-                      </div>
+                      {/* The plates answer carries the URL itself — an anonymous
+                          archive route or an inline data URL. There is no
+                          per-plate image endpoint on the printer routes: an
+                          <img> cannot send the Authorization header, so the one
+                          that used to exist answered 401 for every plate. */}
+                      {plate.thumbnail_url ? (
+                        <img
+                          src={plate.thumbnail_url}
+                          alt={`Plate ${plate.index}`}
+                          className="w-10 h-10 rounded object-cover bg-bambu-dark-tertiary"
+                        />
+                      ) : (
+                        <div className="w-10 h-10 rounded bg-bambu-dark-tertiary flex items-center justify-center">
+                          <Box className="w-5 h-5 text-bambu-gray" />
+                        </div>
+                      )}
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm text-white font-medium truncate">All Plates</p>
+                        <p className="text-sm text-white font-medium truncate">
+                          {plate.name || `Plate ${plate.index}`}
+                        </p>
                         <p className="text-xs text-bambu-gray truncate">
-                          {plates.length} plate{plates.length !== 1 ? 's' : ''}
+                          {plate.objects.length > 0
+                            ? plate.objects.slice(0, 2).join(', ') + (plate.objects.length > 2 ? '…' : '')
+                            : `${plate.filaments.length} filament${plate.filaments.length !== 1 ? 's' : ''}`}
                         </p>
                       </div>
-                      {selectedPlateId == null && (
-                        <CheckSquare className="w-4 h-4 text-bambu-green flex-shrink-0" />
+                      {selectedPlateId === plate.index && (
+                        <Check className="w-4 h-4 text-bambu-green flex-shrink-0" />
                       )}
                     </button>
-                    {plates.map((plate) => (
-                      <button
-                        key={plate.index}
-                        type="button"
-                        onClick={() => setSelectedPlateId(plate.index)}
-                        className={`flex items-center gap-2 rounded-lg border p-2 text-left transition-colors ${
-                          selectedPlateId === plate.index
-                            ? 'border-bambu-green bg-bambu-green/10'
-                            : 'border-bambu-dark-tertiary bg-bambu-dark-secondary hover:border-bambu-gray'
-                        }`}
-                      >
-                        {plate.has_thumbnail ? (
-                          <img
-                            src={api.getPrinterFilePlateThumbnail(printerId, plate.index, filePath)}
-                            alt={`Plate ${plate.index}`}
-                            className="w-10 h-10 rounded object-cover bg-bambu-dark-tertiary"
-                          />
-                        ) : (
-                          <div className="w-10 h-10 rounded bg-bambu-dark-tertiary flex items-center justify-center">
-                            <Box className="w-5 h-5 text-bambu-gray" />
-                          </div>
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm text-white font-medium truncate">
-                            {plate.name || `Plate ${plate.index}`}
-                          </p>
-                          <p className="text-xs text-bambu-gray truncate">
-                            {plate.objects.length > 0
-                              ? plate.objects.slice(0, 2).join(', ') + (plate.objects.length > 2 ? '…' : '')
-                              : `${plate.filaments.length} filament${plate.filaments.length !== 1 ? 's' : ''}`}
-                          </p>
-                        </div>
-                        {selectedPlateId === plate.index && (
-                          <CheckSquare className="w-4 h-4 text-bambu-green flex-shrink-0" />
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                  {selectedPlate && (
-                    <div className="mt-3 text-xs text-bambu-gray flex flex-wrap gap-x-4 gap-y-1">
-                      <span>Plate {selectedPlate.index}</span>
-                      {selectedPlate.print_time_seconds != null && (
-                        <span>ETA {Math.round(selectedPlate.print_time_seconds / 60)} min</span>
-                      )}
-                      {selectedPlate.filament_used_grams != null && (
-                        <span>{selectedPlate.filament_used_grams.toFixed(1)} g</span>
-                      )}
-                      {selectedPlate.filaments.length > 0 && (
-                        <span>{selectedPlate.filaments.length} filament{selectedPlate.filaments.length !== 1 ? 's' : ''}</span>
-                      )}
-                    </div>
-                  )}
+                  ))}
                 </div>
-              )}
-              <div className="flex-1">
-                <ModelViewer
-                  url={api.getPrinterFileDownloadUrl(printerId, filePath)}
-                  fileType={ext}
-                  selectedPlateId={selectedPlateId}
-                  className="w-full h-full"
-                />
+                {selectedPlate && (
+                  <div className="mt-3 text-xs text-bambu-gray flex flex-wrap gap-x-4 gap-y-1">
+                    <span>Plate {selectedPlate.index}</span>
+                    {selectedPlate.print_time_seconds != null && (
+                      <span>ETA {Math.round(selectedPlate.print_time_seconds / 60)} min</span>
+                    )}
+                    {selectedPlate.filament_used_grams != null && (
+                      <span>{selectedPlate.filament_used_grams.toFixed(1)} g</span>
+                    )}
+                    {selectedPlate.filaments.length > 0 && (
+                      <span>{selectedPlate.filaments.length} filament{selectedPlate.filaments.length !== 1 ? 's' : ''}</span>
+                    )}
+                  </div>
+                )}
               </div>
+            )}
+            <div className="flex-1">
+              <ModelViewer
+                url={api.getPrinterFileDownloadUrl(printerId, filePath)}
+                fileType={ext}
+                selectedPlateId={selectedPlateId}
+                className="w-full h-full"
+              />
             </div>
-          ) : activeTab === 'gcode' && hasGcode ? (
-            <GcodePreview
-              gcodeUrl={api.getPrinterFileGcodeUrl(printerId, filePath)}
-              className="w-full h-full"
-            />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-bambu-gray">
-              No preview available for this file
-            </div>
-          )}
-        </div>
+          </div>
+        ) : activeTab === 'gcode' && hasGcode ? (
+          <GcodePreview
+            gcodeUrl={api.getPrinterFileGcodeUrl(printerId, filePath)}
+            className="w-full h-full"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-bambu-gray">
+            No preview available for this file
+          </div>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -297,6 +302,8 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
 
 export function FileManagerModal({ printerId, printerName, onClose }: FileManagerModalProps) {
   const { t } = useTranslation();
+  const headingId = useId();
+  const importHeadingId = useId();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const [currentPath, setCurrentPath] = useState('/');
@@ -401,15 +408,6 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
     );
     importMutation.mutate({ paths: importableSelectedPaths, folderId: importFolderId });
   };
-
-  // Close on Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
 
   // No auto-poll: every refetch opens a fresh FTPS connection (TLS handshake
   // and all) to the printer, and a 30s interval saturated fragile printer
@@ -599,20 +597,18 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
       ];
 
   return (
-    <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-3xl max-h-[85vh] flex flex-col bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary flex-shrink-0">
+    <>
+      <Modal
+        onClose={onClose}
+        labelledBy={headingId}
+        size="3xl"
+        bodyClassName="flex flex-col"
+        header={
+          <div className="flex flex-1 items-center justify-between min-w-0">
             <div className="flex items-center gap-3">
               <HardDrive className="w-5 h-5 text-bambu-green" />
               <div>
-                <h2 className="text-lg font-semibold text-white">{t('printerFiles.title')}</h2>
+                <h2 id={headingId} className="text-lg font-semibold text-white">{t('printerFiles.title')}</h2>
                 <p className="text-sm text-bambu-gray">{printerName}</p>
               </div>
             </div>
@@ -656,17 +652,10 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                   )}
                 </div>
               )}
-              <button
-                onClick={onClose}
-                className="text-bambu-gray hover:text-white transition-colors"
-                title="Close file manager"
-                aria-label="Close file manager"
-              >
-                <X className="w-5 h-5" />
-              </button>
             </div>
           </div>
-
+        }
+      >
         {/* Quick Navigation */}
         <div className="flex items-center gap-2 p-3 border-b border-bambu-dark-tertiary bg-bambu-dark/50 flex-shrink-0">
           {quickDirs.map((dir) => (
@@ -720,10 +709,10 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
           </div>
           <div className="relative flex items-center gap-1">
             <ArrowUpDown className="w-4 h-4 text-bambu-gray" />
-            <select
+            <Select
+              size="sm"
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as SortOption)}
-              className="appearance-none bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm py-1.5 pl-2 pr-6 focus:border-bambu-green focus:outline-none cursor-pointer"
               title="Sort files"
               aria-label="Sort files"
             >
@@ -732,7 +721,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                   {option.label}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <Button
             variant="secondary"
@@ -835,9 +824,9 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                             className="flex-shrink-0 text-bambu-gray hover:text-white"
                           >
                             {isSelected ? (
-                              <CheckSquare className="w-5 h-5 text-bambu-green" />
+                              <SelectionBox checked={true} className="w-5 h-5" />
                             ) : (
-                              <Square className="w-5 h-5" />
+                              <SelectionBox checked={false} className="w-5 h-5" />
                             )}
                           </button>
                         ) : null}
@@ -976,7 +965,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
             </Button>
           </div>
         </div>
-      </div>
+      </Modal>
 
       {/* Delete Confirmation Modal */}
       {filesToDelete.length > 0 && (
@@ -1019,18 +1008,16 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
       )}
 
       {importDialogOpen && (
-        <div
-          className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4"
-          onClick={() => !importMutation.isPending && setImportDialogOpen(false)}
-        >
-          <div
-            className="w-full max-w-md bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-3 p-4 border-b border-bambu-dark-tertiary">
+        <Modal
+          onClose={() => setImportDialogOpen(false)}
+          closeDisabled={importMutation.isPending}
+          labelledBy={importHeadingId}
+          size="md"
+          header={
+            <>
               <Library className="w-5 h-5 text-bambu-green" />
               <div className="min-w-0 flex-1">
-                <h3 className="text-base font-semibold text-white">
+                <h3 id={importHeadingId} className="text-base font-semibold text-white">
                   {t('printerFiles.importDialog.title')}
                 </h3>
                 <p className="text-xs text-bambu-gray truncate">
@@ -1040,55 +1027,56 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                   })}
                 </p>
               </div>
-            </div>
-            <div className="p-4 space-y-3">
-              <div>
-                <div className="text-white text-sm font-medium block mb-1">
-                  {t('printerFiles.importDialog.folderLabel')}
-                </div>
-                {/* The same picker the file manager's Move dialog uses — a
-                    dropdown collapsed the nesting into em-dashes, which is
-                    most of what you are choosing between. */}
-                <div
-                  className={`bg-bambu-dark border border-bambu-dark-tertiary rounded-md p-2 ${
-                    importMutation.isPending ? 'opacity-50 pointer-events-none' : ''
-                  }`}
-                >
-                  <FolderTreePicker
-                    folders={libraryFolders}
-                    value={importFolderId}
-                    onChange={setImportFolderId}
-                    rootLabel={t('printerFiles.importDialog.rootFolder')}
-                    className="max-h-52"
-                  />
-                </div>
+            </>
+          }
+        >
+          <div className="p-4 space-y-3">
+            <div>
+              <div className="text-white text-sm font-medium block mb-1">
+                {t('printerFiles.importDialog.folderLabel')}
               </div>
-              <p className="text-xs text-bambu-gray">{t('printerFiles.importDialog.hint')}</p>
-            </div>
-            <div className="flex justify-end gap-2 px-4 py-3 border-t border-bambu-dark-tertiary bg-bambu-dark/50">
-              <Button
-                variant="secondary"
-                onClick={() => setImportDialogOpen(false)}
-                disabled={importMutation.isPending}
+              {/* The same picker the file manager's Move dialog uses — a
+                  dropdown collapsed the nesting into em-dashes, which is
+                  most of what you are choosing between. */}
+              <div
+                className={`bg-bambu-dark border border-bambu-dark-tertiary rounded-md p-2 ${
+                  importMutation.isPending ? 'opacity-50 pointer-events-none' : ''
+                }`}
               >
-                {t('printerFiles.importDialog.cancel')}
-              </Button>
-              <Button
-                variant="primary"
-                onClick={handleConfirmImport}
-                disabled={importMutation.isPending}
-              >
-                {importMutation.isPending ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Library className="w-4 h-4" />
-                )}
-                {t('printerFiles.importDialog.confirm')}
-              </Button>
+                <FolderTreePicker
+                  folders={libraryFolders}
+                  value={importFolderId}
+                  onChange={setImportFolderId}
+                  rootLabel={t('printerFiles.importDialog.rootFolder')}
+                  className="max-h-52"
+                />
+              </div>
             </div>
+            <p className="text-xs text-bambu-gray">{t('printerFiles.importDialog.hint')}</p>
           </div>
-        </div>
+          <div className="flex justify-end gap-2 px-4 py-3 border-t border-bambu-dark-tertiary bg-bambu-dark/50">
+            <Button
+              variant="secondary"
+              onClick={() => setImportDialogOpen(false)}
+              disabled={importMutation.isPending}
+            >
+              {t('printerFiles.importDialog.cancel')}
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleConfirmImport}
+              disabled={importMutation.isPending}
+            >
+              {importMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Library className="w-4 h-4" />
+              )}
+              {t('printerFiles.importDialog.confirm')}
+            </Button>
+          </div>
+        </Modal>
       )}
-    </div>
+    </>
   );
 }

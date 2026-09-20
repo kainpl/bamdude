@@ -8,10 +8,11 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { CloudUpload, Loader2, Trash2, X } from 'lucide-react';
+import { CloudUpload, Loader2, Trash2 } from 'lucide-react';
 import { api } from '../api/client';
 import type { AuthoredFamily, FamilyPushResult } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
 
 interface ConflictState {
@@ -160,80 +161,70 @@ export function AuthoredFamiliesSection() {
       ))}
 
       {conflicts && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="bg-bambu-dark border border-bambu-dark-tertiary rounded-xl w-full max-w-md shadow-2xl">
-            <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-              <h2 className="text-lg font-semibold text-white">{t('authoring.families.conflictTitle')}</h2>
-              <button type="button" onClick={() => setConflicts(null)} className="text-bambu-gray hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-4 space-y-3">
-              <p className="text-sm text-bambu-gray">{t('authoring.families.conflictBody')}</p>
-              {conflicts.rows.map((row) => (
-                <div
-                  key={row.row_id}
-                  className="rounded-lg border border-yellow-700/60 bg-yellow-500/10 p-3 space-y-2"
-                  data-testid="push-conflict-row"
-                >
-                  <p className="text-sm text-white">{row.name}</p>
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      disabled={resolveMutation.isPending}
-                      onClick={() =>
-                        row.row_id != null &&
-                        resolveMutation.mutate({ familyId: conflicts.familyId, rowId: row.row_id, action: 'force' })
-                      }
-                    >
-                      {t('authoring.families.overwriteCloud')}
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      disabled={resolveMutation.isPending}
-                      onClick={() =>
-                        row.row_id != null &&
-                        resolveMutation.mutate({ familyId: conflicts.familyId, rowId: row.row_id, action: 'adopt' })
-                      }
-                    >
-                      {t('authoring.families.adoptCloud')}
-                    </Button>
-                  </div>
+        <Modal onClose={() => setConflicts(null)} title={t('authoring.families.conflictTitle')} size="md">
+          <div className="p-4 space-y-3">
+            <p className="text-sm text-bambu-gray">{t('authoring.families.conflictBody')}</p>
+            {conflicts.rows.map((row) => (
+              <div
+                key={row.row_id}
+                className="rounded-lg border border-yellow-700/60 bg-yellow-500/10 p-3 space-y-2"
+                data-testid="push-conflict-row"
+              >
+                <p className="text-sm text-white">{row.name}</p>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    disabled={resolveMutation.isPending}
+                    onClick={() =>
+                      row.row_id != null &&
+                      resolveMutation.mutate({ familyId: conflicts.familyId, rowId: row.row_id, action: 'force' })
+                    }
+                  >
+                    {t('authoring.families.overwriteCloud')}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={resolveMutation.isPending}
+                    onClick={() =>
+                      row.row_id != null &&
+                      resolveMutation.mutate({ familyId: conflicts.familyId, rowId: row.row_id, action: 'adopt' })
+                    }
+                  >
+                    {t('authoring.families.adoptCloud')}
+                  </Button>
                 </div>
-              ))}
-              {resolveMutation.isPending && <Loader2 className="w-4 h-4 animate-spin text-bambu-gray" />}
-            </div>
+              </div>
+            ))}
+            {resolveMutation.isPending && <Loader2 className="w-4 h-4 animate-spin text-bambu-gray" />}
           </div>
-        </div>
+        </Modal>
       )}
 
       {deleting && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="bg-bambu-dark border border-bambu-dark-tertiary rounded-xl w-full max-w-sm shadow-2xl">
-            <div className="p-4 space-y-3">
-              <p className="text-sm text-white">
-                {t('authoring.families.deleteConfirm', { name: deleting.alias || deleting.filament_id })}
-              </p>
-              <label className="flex items-center gap-2 text-sm text-white">
-                <input type="checkbox" checked={alsoCloud} onChange={(e) => setAlsoCloud(e.target.checked)} />
-                {t('authoring.families.alsoCloud')}
-              </label>
-              <div className="flex justify-end gap-2">
-                <Button variant="secondary" onClick={() => setDeleting(null)}>
-                  {t('common.cancel')}
-                </Button>
-                <Button
-                  variant="danger"
-                  disabled={deleteMutation.isPending}
-                  onClick={() => deleteMutation.mutate({ familyId: deleting.filament_id, cloud: alsoCloud })}
-                >
-                  {t('common.delete')}
-                </Button>
-              </div>
+        <Modal onClose={() => setDeleting(null)} hideClose ariaLabel={t('authoring.families.delete')} size="sm">
+          <div className="p-4 space-y-3">
+            <p className="text-sm text-white">
+              {t('authoring.families.deleteConfirm', { name: deleting.alias || deleting.filament_id })}
+            </p>
+            <label className="flex items-center gap-2 text-sm text-white">
+              <input type="checkbox" checked={alsoCloud} onChange={(e) => setAlsoCloud(e.target.checked)} />
+              {t('authoring.families.alsoCloud')}
+            </label>
+            <div className="accent-bambu-green flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setDeleting(null)}>
+                {t('common.cancel')}
+              </Button>
+              <Button
+                variant="danger"
+                disabled={deleteMutation.isPending}
+                onClick={() => deleteMutation.mutate({ familyId: deleting.filament_id, cloud: alsoCloud })}
+              >
+                {t('common.delete')}
+              </Button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

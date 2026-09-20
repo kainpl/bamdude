@@ -11,9 +11,9 @@ import {
 import {
   normalizeColorForCompare,
   sortByRemainAscending,
-  colorsAreSimilar,
+  filamentColorMatches,
+  filamentRequirementMatches,
   matchLoadedExtruderTray,
-  filamentTypesCompatible,
 } from '../utils/amsHelpers';
 
 /**
@@ -115,15 +115,14 @@ function computeMatchDetails(
       const manualLoaded = loadedFilaments.find((f) => f.globalTrayId === manualTrayId);
 
       if (manualLoaded) {
-        const typeMatch = filamentTypesCompatible(manualLoaded.type, req.type);
-        const colorMatch =
-          normalizeColorForCompare(manualLoaded.color) === normalizeColorForCompare(req.color) ||
-          colorsAreSimilar(manualLoaded.color, req.color);
+        const typeMatch = filamentRequirementMatches(req, manualLoaded);
+        const colorMatch = filamentColorMatches(req, manualLoaded);
 
         if (typeMatch && colorMatch) {
           exactMatches++;
         } else if (typeMatch) {
-          typeOnlyMatches++;
+          if (req.strict_color_match) missingTypes++;
+          else typeOnlyMatches++;
         } else {
           missingTypes++;
         }
@@ -153,23 +152,27 @@ function computeMatchDetails(
       : undefined;
     const exactMatch = candidates.find(
       (f) =>
-        filamentTypesCompatible(f.type, req.type) &&
+        filamentRequirementMatches(req, f) &&
         normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
     );
-    const similarMatch = exactMatch
+    const similarMatch = exactMatch || req.strict_color_match
       ? undefined
       : candidates.find(
           (f) =>
-            filamentTypesCompatible(f.type, req.type) &&
-            colorsAreSimilar(f.color, req.color)
+            filamentRequirementMatches(req, f) &&
+            filamentColorMatches(req, f)
         );
-    const typeOnlyMatch =
+    const typeOnlyMatch = req.strict_color_match
+      ? undefined
+      :
       exactMatch || similarMatch
         ? undefined
         : candidates.find(
-            (f) => filamentTypesCompatible(f.type, req.type)
+            (f) => filamentRequirementMatches(req, f)
           );
-    const loaded = extruderTray ?? exactMatch ?? similarMatch ?? typeOnlyMatch;
+    const loaded = extruderTray && filamentColorMatches(req, extruderTray)
+      ? extruderTray
+      : exactMatch ?? similarMatch ?? typeOnlyMatch;
 
     if (loaded) {
       usedTrayIds.add(loaded.globalTrayId);
@@ -179,10 +182,7 @@ function computeMatchDetails(
     // counts as an exact match when the colour also matches, else type-only.
     if (!loaded) {
       missingTypes++;
-    } else if (
-      normalizeColorForCompare(loaded.color) === normalizeColorForCompare(req.color) ||
-      colorsAreSimilar(loaded.color, req.color)
-    ) {
+    } else if (filamentColorMatches(req, loaded)) {
       exactMatches++;
     } else {
       typeOnlyMatches++;
@@ -224,7 +224,13 @@ function computeMappingWithOverrides(
 
     // Check manual override first
     if (slotId > 0 && manualMappings[slotId] !== undefined) {
-      comparisons.push({ slot_id: slotId, globalTrayId: manualMappings[slotId] });
+      const manualLoaded = loadedFilaments.find((f) => f.globalTrayId === manualMappings[slotId]);
+      comparisons.push({
+        slot_id: slotId,
+        globalTrayId: !req.strict_color_match || (manualLoaded && filamentColorMatches(req, manualLoaded))
+          ? manualMappings[slotId]
+          : -1,
+      });
       continue;
     }
 
@@ -250,23 +256,27 @@ function computeMappingWithOverrides(
       : undefined;
     const exactMatch = candidates.find(
       (f) =>
-        filamentTypesCompatible(f.type, req.type) &&
+        filamentRequirementMatches(req, f) &&
         normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
     );
-    const similarMatch = exactMatch
+    const similarMatch = exactMatch || req.strict_color_match
       ? undefined
       : candidates.find(
           (f) =>
-            filamentTypesCompatible(f.type, req.type) &&
-            colorsAreSimilar(f.color, req.color)
+            filamentRequirementMatches(req, f) &&
+            filamentColorMatches(req, f)
         );
-    const typeOnlyMatch =
+    const typeOnlyMatch = req.strict_color_match
+      ? undefined
+      :
       exactMatch || similarMatch
         ? undefined
         : candidates.find(
-            (f) => filamentTypesCompatible(f.type, req.type)
+            (f) => filamentRequirementMatches(req, f)
           );
-    const loaded = extruderTray ?? exactMatch ?? similarMatch ?? typeOnlyMatch;
+    const loaded = extruderTray && filamentColorMatches(req, extruderTray)
+      ? extruderTray
+      : exactMatch ?? similarMatch ?? typeOnlyMatch;
 
     if (loaded) {
       usedTrayIds.add(loaded.globalTrayId);
@@ -316,7 +326,7 @@ export function useMultiPrinterFilamentMapping(
   // whole Print -> pick printer -> Add to queue path. Reads the same cached
   // ['settings'] query the modal already issues, so this costs no extra fetch.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
-  const preferLowest = settings?.prefer_lowest_filament ?? false;
+  const preferLowest = settings?.prefer_lowest_filament ?? true;
 
   // Fetch printer status for all selected printers in parallel
   const statusQueries = useQueries({

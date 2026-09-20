@@ -238,6 +238,12 @@ class TestModuleImports:
         ]
 
         original_modules = {name: sys.modules.get(name) for name in modules}
+        missing = object()
+        original_bindings = {}
+        for name in modules:
+            parent_name, _, child_name = name.rpartition(".")
+            parent = importlib.import_module(parent_name)
+            original_bindings[name] = (parent, child_name, getattr(parent, child_name, missing))
         errors = []
         try:
             for module_name in modules:
@@ -256,6 +262,16 @@ class TestModuleImports:
                     sys.modules[name] = original
                 elif name in sys.modules:
                     del sys.modules[name]
+                # import_module also overwrites the parent's child attribute.
+                # String monkeypatch targets follow that attribute, whereas
+                # `from backend.app.main import ...` follows sys.modules.
+                # Restore both so a later test cannot patch a different module.
+                parent, child_name, binding = original_bindings[name]
+                if binding is missing:
+                    if hasattr(parent, child_name):
+                        delattr(parent, child_name)
+                else:
+                    setattr(parent, child_name, binding)
 
         if errors:
             pytest.fail("Failed to import modules:\n" + "\n".join(errors))

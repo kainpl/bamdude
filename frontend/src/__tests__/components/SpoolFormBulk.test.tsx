@@ -13,7 +13,6 @@
  * - validateForm with quickAdd=true only requires material
  */
 
-import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
 import { render } from '../utils';
@@ -63,6 +62,15 @@ vi.mock('../../contexts/ToastContext', async (importOriginal) => {
 const existingSpool: InventorySpool = {
   id: 1,
   material: 'PLA',
+  purchase_date: null,
+  filament_diameter: '1.75',
+  lot: null,
+  last_scale_weight: null,
+  last_weighed_at: null,
+  extra_colors: null,
+  effect_type: null,
+  category: null,
+  low_stock_threshold_pct: null,
   subtype: 'Basic',
   brand: 'Polymaker',
   color_name: 'Red',

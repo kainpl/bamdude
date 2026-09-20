@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next';
 import { Copy, ExternalLink, Eye, EyeOff } from 'lucide-react';
 import { api, type Printer } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
+import { Select } from './Select';
 
 type OverlaySize = 'small' | 'medium' | 'large';
 
@@ -131,11 +132,11 @@ export function StreamOverlayBuilder() {
           >
             {t('streamOverlay.builder.printer', 'Printer')}
           </label>
-          <select
+          <Select
+            className="w-full"
             id="overlay-builder-printer"
             value={printerId ?? ''}
             onChange={(e) => setPrinterId(Number(e.target.value))}
-            className="w-full px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
           >
             {printers.length === 0 && <option value="">{t('common.loading', 'Loading…')}</option>}
             {printers.map((p) => (
@@ -143,23 +144,23 @@ export function StreamOverlayBuilder() {
                 {p.name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div>
           <label htmlFor="overlay-builder-size" className="block text-sm font-medium text-white mb-1">
             {t('streamOverlay.builder.size', 'Text size')}
           </label>
-          <select
+          <Select
+            className="w-full"
             id="overlay-builder-size"
             value={size}
             onChange={(e) => setSize(e.target.value as OverlaySize)}
-            className="w-full px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
           >
             <option value="small">{t('streamOverlay.builder.sizeSmall', 'Small')}</option>
             <option value="medium">{t('streamOverlay.builder.sizeMedium', 'Medium')}</option>
             <option value="large">{t('streamOverlay.builder.sizeLarge', 'Large')}</option>
-          </select>
+          </Select>
         </div>
 
         <div>

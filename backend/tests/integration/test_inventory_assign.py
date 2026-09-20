@@ -16,6 +16,7 @@ Resolution priority for the value sent to the printer as ``tray_info_idx``:
   signal, not a ``tray_type == ""`` heuristic (upstream Bambuddy #1322).
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch as _orig_patch
 
 import pytest
@@ -754,3 +755,151 @@ class TestARunoutIsNotASpoolRemoval:
         await self._push(printer.id, [{"id": 0, "tray": [{"id": 1, "tray_type": "PETG"}]}], "IDLE")
 
         assert await self._assignment_for(db_session, printer.id) == []
+
+
+class TestAssignSaysWhatItReplaced:
+    """A plain assign over an occupied slot has always replaced the old spool.
+    Since spec 2026-09-13 §3.3 it also SAYS so — ``replaced_spool_id`` on the
+    response plus one INFO line — which is what lets the UI offer *Replace
+    spool* as a first-class action instead of making the operator unassign
+    first. The replace semantics themselves are untouched: no refusal for an
+    occupied slot, the usage journal is still told, the websocket event is
+    still sent.
+    """
+
+    @staticmethod
+    def _loaded_slot_status():
+        """AMS0-T1 holding filament, so the assign takes the MQTT branch rather
+        than the firmware-reports-empty pending-config one."""
+        return _make_mock_status(
+            ams_data=[{"id": 0, "tray": [{"id": 1, "tray_type": "PLA", "tray_color": "FF0000FF", "state": 11}]}]
+        )
+
+    @staticmethod
+    async def _slot_spool_ids(db_session: AsyncSession, printer_id: int) -> list[int]:
+        """The slot's assigned spool ids, straight from the database — a
+        column-only select so the identity map cannot serve a row the route's
+        own session has since changed."""
+        from sqlalchemy import select
+
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        result = await db_session.execute(
+            select(SpoolAssignment.spool_id).where(
+                SpoolAssignment.printer_id == printer_id,
+                SpoolAssignment.ams_id == 0,
+                SpoolAssignment.tray_id == 1,
+            )
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def _occupy_slot(db_session: AsyncSession, printer_id: int, spool_id: int):
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        db_session.add(
+            SpoolAssignment(
+                spool_id=spool_id,
+                printer_id=printer_id,
+                ams_id=0,
+                tray_id=1,
+                fingerprint_color="FF0000FF",
+                fingerprint_type="PLA",
+            )
+        )
+        await db_session.commit()
+
+    async def _assign(self, async_client: AsyncClient, printer_id: int, spool_id: int):
+        """POST the assignment with the MQTT layer stubbed; returns
+        (response, broadcast spy, note_assignment_change spy)."""
+        mock_client = MagicMock()
+        mock_client.ams_set_filament_setting.return_value = True
+        mock_client.extrusion_cali_sel.return_value = True
+
+        with (
+            patch("backend.app.services.printer_manager.printer_manager") as mock_pm,
+            patch("backend.app.core.websocket.ws_manager.broadcast", new_callable=AsyncMock) as broadcast,
+            patch(
+                "backend.app.services.print_usage_journal.note_assignment_change",
+                new_callable=AsyncMock,
+            ) as note_change,
+        ):
+            mock_pm.get_client.return_value = mock_client
+            mock_pm.get_status.return_value = self._loaded_slot_status()
+
+            response = await async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool_id, "printer_id": printer_id, "ams_id": 0, "tray_id": 1},
+            )
+        return response, broadcast, note_change
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_assigning_over_an_occupied_slot_replaces_and_says_so(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession, caplog
+    ):
+        printer = await printer_factory(name="X1C")
+        old_spool = await spool_factory(material="PLA", color_name="Red")
+        new_spool = await spool_factory(material="PLA", color_name="Blue")
+        await self._occupy_slot(db_session, printer.id, old_spool.id)
+
+        caplog.set_level(logging.INFO, logger="backend.app.api.routes.inventory")
+        response, broadcast, note_change = await self._assign(async_client, printer.id, new_spool.id)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["replaced_spool_id"] == old_spool.id
+        assert body["spool_id"] == new_spool.id
+
+        # Exactly one row for the slot, and it holds the incoming spool.
+        assert await self._slot_spool_ids(db_session, printer.id) == [new_spool.id]
+
+        assert f"Slot {printer.id}/0/1: spool {old_spool.id} replaced with {new_spool.id}" in caplog.text
+
+        # The runout-replacement boundary is journalled for the NEW spool.
+        note_change.assert_awaited_once()
+        assert note_change.await_args.kwargs == {
+            "printer_id": printer.id,
+            "ams_id": 0,
+            "tray_id": 1,
+            "spool_id": new_spool.id,
+        }
+
+        payloads = [call.args[0] for call in broadcast.await_args_list if call.args]
+        assert {
+            "type": "spool_assignment_changed",
+            "printer_id": printer.id,
+            "ams_id": 0,
+            "tray_id": 1,
+        } in payloads
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_reassigning_the_same_spool_reports_no_replacement(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+    ):
+        """Re-assigning the spool that is already on the slot displaced nothing
+        — the field must stay None so the UI does not announce a replacement."""
+        printer = await printer_factory(name="X1C")
+        spool = await spool_factory(material="PLA", color_name="Red")
+        await self._occupy_slot(db_session, printer.id, spool.id)
+
+        response, _broadcast, _note_change = await self._assign(async_client, printer.id, spool.id)
+
+        assert response.status_code == 200
+        assert response.json()["replaced_spool_id"] is None
+        assert await self._slot_spool_ids(db_session, printer.id) == [spool.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_first_assignment_reports_no_replacement(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+    ):
+        printer = await printer_factory(name="X1C")
+        spool = await spool_factory(material="PLA", color_name="Red")
+
+        response, _broadcast, _note_change = await self._assign(async_client, printer.id, spool.id)
+
+        assert response.status_code == 200
+        assert response.json()["replaced_spool_id"] is None
+        assert await self._slot_spool_ids(db_session, printer.id) == [spool.id]

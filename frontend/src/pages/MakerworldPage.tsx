@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import DOMPurify from 'dompurify';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, ArrowRight, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, ExternalLink, FolderOpen, History, Images, Loader2, Trash2, X } from 'lucide-react';
@@ -16,8 +16,10 @@ import {
 } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { Card, CardContent, CardHeader } from '../components/Card';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { Modal } from '../components/Modal';
 import { SliceModal, type SliceSource } from '../components/SliceModal';
 import { Cog } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -408,12 +410,12 @@ export function MakerworldPage() {
     resolveMutation.mutate(trimmed);
   };
 
-  // Keyboard navigation for the lightbox (Escape closes, arrows navigate).
+  // Arrow-key navigation for the lightbox. Escape is the shell's (the modal
+  // stack closes the topmost, which is this lightbox).
   useEffect(() => {
     if (!lightbox) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setLightbox(null);
-      else if (e.key === 'ArrowLeft') {
+      if (e.key === 'ArrowLeft') {
         setLightbox((prev) => (prev && prev.index > 0 ? { ...prev, index: prev.index - 1 } : prev));
       } else if (e.key === 'ArrowRight') {
         setLightbox((prev) =>
@@ -510,7 +512,7 @@ export function MakerworldPage() {
   const downloadCount = pickNumber(design, 'downloadCount');
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 space-y-4">
       <div>
         <h1 className="text-2xl font-bold text-white flex items-center gap-3"><MakerWorldIcon className="w-6 h-6 text-bambu-green" />{t('makerworld.title')}</h1>
       </div>
@@ -542,7 +544,7 @@ export function MakerworldPage() {
       </div>
 
       {activeTab === 'import' && (
-        <div className="space-y-6 min-w-0">
+        <div className="space-y-4 min-w-0">
       {!hasToken && (
         <Card className="border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20">
           <CardContent>
@@ -1009,28 +1011,28 @@ export function MakerworldPage() {
                 className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
               />
             </div>
-            <select
+            <Select
+              className="min-w-[10rem]"
               value={historySortBy}
               onChange={(e) => setHistorySortBy(e.target.value as typeof historySortBy)}
-              className="h-9 min-w-[10rem] px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             >
               <option value="date-desc">{t('makerworld.history.sort.dateDesc')}</option>
               <option value="date-asc">{t('makerworld.history.sort.dateAsc')}</option>
               <option value="name-asc">{t('makerworld.history.sort.nameAsc')}</option>
               <option value="name-desc">{t('makerworld.history.sort.nameDesc')}</option>
-            </select>
+            </Select>
             <div className="flex items-center gap-1.5">
               <span className="text-xs text-bambu-gray">{t('common.show')}</span>
-              <select
+              <Select
+                tone="muted"
                 value={historyPerPage}
                 onChange={(e) => setHistoryPerPage(Number(e.target.value))}
-                className="h-9 px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none"
               >
                 {[12, 24, 48, 96].map((n) => (
                   <option key={n} value={n}>{n}</option>
                 ))}
                 <option value={-1}>{t('common.all')}</option>
-              </select>
+              </Select>
             </div>
           </div>
 
@@ -1228,11 +1230,10 @@ export function MakerworldPage() {
       )}
 
       {lightbox && (
-        <div
-          className="fixed inset-0 bg-black/90 flex items-center justify-center z-50"
-          onClick={() => setLightbox(null)}
-          role="dialog"
-          aria-modal="true"
+        <Modal
+          variant="lightbox"
+          onClose={() => setLightbox(null)}
+          ariaLabel={t('makerworld.openGallery')}
         >
           <button
             type="button"
@@ -1286,7 +1287,7 @@ export function MakerworldPage() {
               {lightbox.index + 1} / {lightbox.images.length}
             </div>
           )}
-        </div>
+        </Modal>
       )}
     </div>
   );

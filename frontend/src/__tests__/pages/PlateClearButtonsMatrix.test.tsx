@@ -72,13 +72,22 @@ async function waitForCard() {
 describe('size S (compact)', () => {
   beforeEach(() => localStorage.setItem('printerCardSize', '1'));
 
+  it('names the next queued job in its queue strip', async () => {
+    mockApi([pendingItem]);
+    render(<PrintersPage />);
+    await waitForCard();
+    await waitFor(() => {
+      expect(screen.getByText('Next: next_job.gcode.3mf')).toBeInTheDocument();
+    });
+  });
+
   it('offers both actions when a queue is waiting', async () => {
     mockApi([pendingItem]);
     render(<PrintersPage />);
     await waitForCard();
     await waitFor(() => {
-      expect(screen.getByLabelText('Mark plate as cleared')).toBeInTheDocument();
-      expect(screen.getByLabelText('Repeat print')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Clear plate/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Repeat print/i })).toBeInTheDocument();
     });
   });
 
@@ -87,8 +96,8 @@ describe('size S (compact)', () => {
     render(<PrintersPage />);
     await waitForCard();
     await waitFor(() => {
-      expect(screen.getByLabelText('Mark plate as cleared')).toBeInTheDocument();
-      expect(screen.getByLabelText('Repeat print')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Clear plate/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Repeat print/i })).toBeInTheDocument();
     });
   });
 });
@@ -115,5 +124,35 @@ describe('expanded', () => {
       expect(screen.getAllByRole('button', { name: /Repeat print/ })).toHaveLength(1);
       expect(screen.getAllByRole('button', { name: /Clear plate/i })).toHaveLength(1);
     });
+  });
+});
+
+
+/**
+ * The plate-clear surface after m173 — deliberately UNMARKED.
+ *
+ * A completed row held for Clear/Repeat does keep its file (§9's table), but this
+ * prompt is drawn from live printer state, not from the queue row, and the two
+ * answers it offers are about the PLATE. Ruled out of scope: what has to hold is
+ * the negative — the queue's own mark does not leak onto this surface, and the
+ * pair of answers is still exactly one pair.
+ */
+describe('the plate prompt carries no queue-source mark', () => {
+  beforeEach(() => localStorage.setItem('printerCardSize', '2'));
+
+  it('draws neither mark nor tooltip, and still offers both answers once', async () => {
+    // The waiting row reports a stored copy; the prompt must not repeat it.
+    mockApi([{ ...pendingItem, source_storage: 'ready' }]);
+    render(<PrintersPage />);
+    await waitForCard();
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: /Repeat print/ })).toHaveLength(1);
+      expect(screen.getAllByRole('button', { name: /Clear plate/i })).toHaveLength(1);
+    });
+    for (const label of ['File saved', 'Saving the file', 'Uses the original', 'Saved copy lost']) {
+      expect(screen.queryByLabelText(label)).toBeNull();
+    }
+    expect(screen.queryByTitle(/stored copy|stored file|File saved for the queue/)).toBeNull();
   });
 });

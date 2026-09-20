@@ -64,8 +64,12 @@ interface BugReportBubbleProps {
    *
    * ⚠️ The panel deliberately stays at the Layout root rather than moving into
    * the header with its button: the header is `fixed z-40` and therefore its
-   * own stacking context, so a `z-50` panel nested inside it would be capped
-   * at the header's level and end up underneath every ordinary z-50 modal.
+   * own stacking context, so a panel nested inside it would be capped at the
+   * header's level whatever its own z-index says. At the Layout root it sits at
+   * `z-[49]` — above the header, just below the modal layer (z = 50 + stack
+   * position), because it lives inside `#root`, which the modal stack marks
+   * inert while a dialog is open: a panel painting over a dialog would be
+   * visible but dead.
    */
   showTrigger?: boolean;
   /** Controlled open state. Falls back to internal state when omitted. */
@@ -283,7 +287,7 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
       {isOpen && (
         <div
           id="bug-report-modal"
-          className="fixed bottom-20 right-4 left-4 z-50 w-auto max-w-md ml-auto"
+          className="fixed bottom-20 right-4 left-4 z-[49] w-auto max-w-md ml-auto"
           onPaste={handlePaste}
         >
           <div
@@ -543,7 +547,7 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
               )}
 
               {viewState === 'logging' && (
-                <div className="py-6 space-y-6">
+                <div className="py-4 space-y-4">
                   {/* 3-step progress indicator */}
                   <div className="space-y-3 px-2">
                     {/* Step 1: Completed */}
@@ -576,7 +580,7 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
                   <div className="flex justify-center">
                     <button
                       onClick={handleStopLogging}
-                      className="px-6 py-2.5 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
+                      className="px-4 py-2.5 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
                     >
                       {t('bugReport.stopAndSubmit')}
                     </button>
@@ -585,7 +589,7 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange }: BugR
               )}
 
               {(viewState === 'stopping' || viewState === 'submitting') && (
-                <div className="flex flex-col items-center justify-center py-6 gap-3">
+                <div className="flex flex-col items-center justify-center py-4 gap-3">
                   <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />
                   <p className="text-sm text-bambu-gray text-center">
                     {viewState === 'stopping' ? t('bugReport.stoppingLogs') : t('bugReport.submitting')}

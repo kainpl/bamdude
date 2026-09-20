@@ -306,6 +306,12 @@ def test_every_fk_to_printers_is_accounted_for():
         "printer_sensor_history",
         "printer_queues",
     }
+    # Cleaned up by the route too, but through the service that owns the table
+    # rather than through the bulk list — listing them in
+    # ``PRINTER_CASCADE_MODELS`` would put a second writer on a table whose
+    # whole point is having exactly one. ``test_printer_tag_routes`` covers
+    # that the rows actually go.
+    by_owning_service = {"printer_tag_links"}
 
     unhandled = set()
     for table in Base.metadata.tables.values():
@@ -318,12 +324,14 @@ def test_every_fk_to_printers_is_accounted_for():
             # A nullable column can simply be nulled and keep its row.
             if fk.parent.nullable:
                 continue
-            if table.name in handled or table.name in by_orm_cascade:
+            if table.name in handled or table.name in by_orm_cascade or table.name in by_owning_service:
                 continue
             unhandled.add(table.name)
 
     assert not unhandled, (
         f"these tables carry a NOT NULL printer_id with nothing to clean them up: {sorted(unhandled)}. "
         "Add the model to PRINTER_CASCADE_MODELS in routes/printers.py, or give Printer a cascading "
-        "relationship and list it here."
+        "relationship and list it here — or, if the rows are removed by the service that owns the "
+        "table rather than by the bulk list, add the table to by_owning_service above and name the "
+        "test that proves the rows actually go."
     )

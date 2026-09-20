@@ -7,10 +7,10 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('RetentionCard', () => {
-  it('offers all four windows, not only the new ones', () => {
+  it('offers all five windows, not only the new ones', () => {
     render(<RetentionCard values={{}} onSave={() => {}} saving={false} />);
 
-    expect(screen.getAllByRole('spinbutton')).toHaveLength(4);
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(5);
   });
 
   it('falls back to thirty days when a value has never been set', () => {
@@ -33,7 +33,11 @@ describe('RetentionCard', () => {
     fireEvent.click(screen.getByRole('button'));
 
     expect(onSave).toHaveBeenCalledWith(
-      expect.objectContaining({ ams_history_retention_days: 7, plug_power_history_retention_days: 14 }),
+      expect.objectContaining({
+        ams_history_retention_days: 7,
+        plug_power_history_retention_days: 14,
+        inbox_retention_days: 30,
+      }),
     );
   });
 });

@@ -50,7 +50,11 @@ export function FolderTreeSelect({
       if (!wrapper.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      // Escape stops at this popover — the modal stack must not also close the dialog behind it.
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setOpen(false);
+      }
     };
 
     document.addEventListener('mousedown', onPointerDown);

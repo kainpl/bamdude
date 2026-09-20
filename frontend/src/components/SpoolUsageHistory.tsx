@@ -6,6 +6,7 @@ import type { SpoolUsageRecord } from '../api/client';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 import { formatDateTime, type DateFormat, type TimeFormat } from '../utils/date';
+import { invalidateSpoolViews } from '../utils/queryInvalidation';
 
 interface SpoolUsageHistoryProps {
   spoolId: number;
@@ -54,7 +55,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['spool-usage', spoolId] });
       // Clear-all returns each row's weight to the spool, so refresh the list too.
-      queryClient.invalidateQueries({ queryKey: ['spools'] });
+      invalidateSpoolViews(queryClient);
       showToast(t('inventory.historyCleared'), 'success');
     },
   });
@@ -65,7 +66,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
     mutationFn: (usageId: number) => api.deleteSpoolUsageRecord(spoolId, usageId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['spool-usage', spoolId] });
-      queryClient.invalidateQueries({ queryKey: ['spools'] });
+      invalidateSpoolViews(queryClient);
       showToast(t('inventory.usageRecordDeleted'), 'success');
     },
   });
@@ -102,7 +103,10 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
           {t('inventory.clearHistory')}
         </Button>
       </div>
-      <div className="max-h-48 overflow-y-auto space-y-1">
+      {/* No height cap and no scroller of its own — this fills its own tab in
+          the spool dialog, whose body already scrolls. A second scroll box
+          inside it would strand the list in 48 units of the space it has. */}
+      <div className="space-y-1">
         {history.map((record: SpoolUsageRecord) => (
           <div
             key={record.id}

@@ -15,11 +15,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X } from 'lucide-react';
 import { api } from '../api/client';
 import type { CreateFamilyResponse, UnifiedPreset } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
+import { Select } from './Select';
 
 interface CreateFilamentFamilyModalProps {
   open: boolean;
@@ -196,184 +197,177 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="bg-bambu-dark border border-bambu-dark-tertiary rounded-xl w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl">
-        <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-          <h2 className="text-lg font-semibold text-white">{t('authoring.title')}</h2>
-          <button type="button" onClick={onClose} className="text-bambu-gray hover:text-white">
-            <X className="w-5 h-5" />
-          </button>
+    <Modal onClose={onClose} title={t('authoring.title')}>
+      <div className="p-4 space-y-4">
+        <div>
+          <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.vendor')}</label>
+          <input
+            value={vendor}
+            onChange={(e) => setVendor(e.target.value)}
+            className="w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
+            placeholder="Polymaker"
+          />
+          {vendorError && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{vendorError}</p>}
         </div>
 
-        <div className="p-4 space-y-4">
+        <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.vendor')}</label>
+            <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.type')}</label>
+            <Select
+              tone="raised"
+              className="w-full"
+              value={filamentType}
+              onChange={(e) => setFilamentType(e.target.value)}
+            >
+              {(options?.filament_types || ['PLA']).map((ft) => (
+                <option key={ft} value={ft}>
+                  {ft}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.serial')}</label>
             <input
-              value={vendor}
-              onChange={(e) => setVendor(e.target.value)}
-              className="w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
-              placeholder="Polymaker"
+              value={serial}
+              onChange={(e) => setSerial(e.target.value)}
+              className="accent-bambu-green w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
+              placeholder="Basic"
             />
-            {vendorError && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{vendorError}</p>}
           </div>
+        </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.type')}</label>
-              <select
-                value={filamentType}
-                onChange={(e) => setFilamentType(e.target.value)}
-                className="w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
-              >
-                {(options?.filament_types || ['PLA']).map((ft) => (
-                  <option key={ft} value={ft}>
-                    {ft}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.serial')}</label>
-              <input
-                value={serial}
-                onChange={(e) => setSerial(e.target.value)}
-                className="w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
-                placeholder="Basic"
-              />
-            </div>
+        {vendor.trim() && serial.trim() && (
+          <p className="text-xs text-bambu-gray">
+            {t('authoring.namePreview')}: <span className="text-white">{`${vendor.trim()} ${filamentType} ${serial.trim()}`}</span>
+          </p>
+        )}
+
+        <div>
+          <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.sourceMode')}</label>
+          <div className="flex gap-4 text-sm text-white">
+            <label className="flex items-center gap-1.5">
+              <input type="radio" checked={sourceMode === 'type'} onChange={() => setSourceMode('type')} />
+              {t('authoring.sourceModeType')}
+            </label>
+            <label className="accent-bambu-green flex items-center gap-1.5">
+              <input type="radio" checked={sourceMode === 'preset'} onChange={() => setSourceMode('preset')} />
+              {t('authoring.sourceModePreset')}
+            </label>
           </div>
+          {sourceMode === 'preset' && (
+            <Select
+              tone="raised"
+              className="accent-bambu-green mt-2 w-full"
+              value={sourceKey}
+              onChange={(e) => setSourceKey(e.target.value)}
+            >
+              <option value="">{t('authoring.pickPreset')}</option>
+              {presetChoices.map((c) => (
+                <option key={c.key} value={c.key}>
+                  {c.label}
+                </option>
+              ))}
+            </Select>
+          )}
+        </div>
 
-          {vendor.trim() && serial.trim() && (
-            <p className="text-xs text-bambu-gray">
-              {t('authoring.namePreview')}: <span className="text-white">{`${vendor.trim()} ${filamentType} ${serial.trim()}`}</span>
+        <div>
+          <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.printers')}</label>
+          <input
+            value={printerQuery}
+            onChange={(e) => setPrinterQuery(e.target.value)}
+            placeholder={t('authoring.printerSearch')}
+            className="accent-bambu-green w-full mb-1.5 px-2.5 py-1.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
+          />
+          <div className="space-y-1 max-h-40 overflow-y-auto rounded-lg border border-bambu-dark-tertiary p-2">
+            {visiblePrinterNames.map((name) => (
+              <label key={name} className="flex items-center gap-2 text-sm text-white">
+                <input
+                  type="checkbox"
+                  checked={(checkedNames ?? []).includes(name)}
+                  onChange={() => toggleName(name)}
+                />
+                {name}
+              </label>
+            ))}
+            {visiblePrinterNames.length === 0 && (
+              <p className="accent-bambu-green text-xs text-bambu-gray">{t('authoring.noPrinters')}</p>
+            )}
+          </div>
+          {(checkedNames ?? []).length > 0 && (
+            <p className="mt-1 text-xs text-bambu-gray">
+              {t('authoring.printersSelected', { count: (checkedNames ?? []).length })}
             </p>
           )}
+        </div>
 
-          <div>
-            <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.sourceMode')}</label>
-            <div className="flex gap-4 text-sm text-white">
-              <label className="flex items-center gap-1.5">
-                <input type="radio" checked={sourceMode === 'type'} onChange={() => setSourceMode('type')} />
-                {t('authoring.sourceModeType')}
-              </label>
-              <label className="flex items-center gap-1.5">
-                <input type="radio" checked={sourceMode === 'preset'} onChange={() => setSourceMode('preset')} />
-                {t('authoring.sourceModePreset')}
-              </label>
-            </div>
-            {sourceMode === 'preset' && (
-              <select
-                value={sourceKey}
-                onChange={(e) => setSourceKey(e.target.value)}
-                className="mt-2 w-full p-2.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
-              >
-                <option value="">{t('authoring.pickPreset')}</option>
-                {presetChoices.map((c) => (
-                  <option key={c.key} value={c.key}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-
-          <div>
-            <label className="block text-sm text-bambu-gray-light mb-1">{t('authoring.printers')}</label>
+        {variant === 'local' && cloudConnected && (
+          <label className="flex items-center gap-2 text-sm text-white">
             <input
-              value={printerQuery}
-              onChange={(e) => setPrinterQuery(e.target.value)}
-              placeholder={t('authoring.printerSearch')}
-              className="w-full mb-1.5 px-2.5 py-1.5 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary text-sm text-white outline-none focus:border-bambu-green"
+              type="checkbox"
+              checked={secondaryChecked}
+              onChange={(e) => setSecondaryChecked(e.target.checked)}
             />
-            <div className="space-y-1 max-h-40 overflow-y-auto rounded-lg border border-bambu-dark-tertiary p-2">
-              {visiblePrinterNames.map((name) => (
-                <label key={name} className="flex items-center gap-2 text-sm text-white">
-                  <input
-                    type="checkbox"
-                    checked={(checkedNames ?? []).includes(name)}
-                    onChange={() => toggleName(name)}
-                  />
-                  {name}
-                </label>
+            {t('authoring.pushBambu')}
+          </label>
+        )}
+        {variant === 'local' && orcaConnected && (
+          <label
+            className={`accent-bambu-green flex items-center gap-2 text-sm ${orcaWritable ? 'text-white' : 'text-bambu-gray'}`}
+            title={orcaWritable ? undefined : t('authoring.orcaNeedsWrite')}
+          >
+            <input
+              type="checkbox"
+              disabled={!orcaWritable}
+              checked={orcaChecked && orcaWritable}
+              onChange={(e) => setOrcaChecked(e.target.checked)}
+            />
+            {t('authoring.pushOrca')}
+          </label>
+        )}
+        {(variant === 'bambu' || variant === 'orca') && (
+          <label className="accent-bambu-green flex items-center gap-2 text-sm text-white">
+            <input
+              type="checkbox"
+              checked={secondaryChecked}
+              onChange={(e) => setSecondaryChecked(e.target.checked)}
+            />
+            {t('authoring.saveLocal')}
+          </label>
+        )}
+        {variant === 'bambu' && !cloudConnected && (
+          <p className="accent-bambu-green text-xs text-red-600 dark:text-red-400">{t('authoring.cloudRequired')}</p>
+        )}
+        {variant === 'orca' && !orcaConnected && (
+          <p className="text-xs text-red-600 dark:text-red-400">{t('authoring.orcaRequired')}</p>
+        )}
+        {variant === 'orca' && orcaConnected && !orcaWritable && (
+          <p className="text-xs text-red-600 dark:text-red-400">{t('authoring.orcaNeedsWrite')}</p>
+        )}
+
+        {resultNotes.length > 0 && (
+          <div className="rounded-lg border border-yellow-700/60 bg-yellow-500/10 p-3">
+            <p className="text-sm text-yellow-700 dark:text-yellow-300 font-medium mb-1">{t('authoring.warningsTitle')}</p>
+            <ul className="text-xs text-yellow-700/80 dark:text-yellow-200/80 list-disc pl-4 space-y-0.5">
+              {resultNotes.map((w, i) => (
+                <li key={i}>{w}</li>
               ))}
-              {visiblePrinterNames.length === 0 && (
-                <p className="text-xs text-bambu-gray">{t('authoring.noPrinters')}</p>
-              )}
-            </div>
-            {(checkedNames ?? []).length > 0 && (
-              <p className="mt-1 text-xs text-bambu-gray">
-                {t('authoring.printersSelected', { count: (checkedNames ?? []).length })}
-              </p>
-            )}
+            </ul>
           </div>
-
-          {variant === 'local' && cloudConnected && (
-            <label className="flex items-center gap-2 text-sm text-white">
-              <input
-                type="checkbox"
-                checked={secondaryChecked}
-                onChange={(e) => setSecondaryChecked(e.target.checked)}
-              />
-              {t('authoring.pushBambu')}
-            </label>
-          )}
-          {variant === 'local' && orcaConnected && (
-            <label
-              className={`flex items-center gap-2 text-sm ${orcaWritable ? 'text-white' : 'text-bambu-gray'}`}
-              title={orcaWritable ? undefined : t('authoring.orcaNeedsWrite')}
-            >
-              <input
-                type="checkbox"
-                disabled={!orcaWritable}
-                checked={orcaChecked && orcaWritable}
-                onChange={(e) => setOrcaChecked(e.target.checked)}
-              />
-              {t('authoring.pushOrca')}
-            </label>
-          )}
-          {(variant === 'bambu' || variant === 'orca') && (
-            <label className="flex items-center gap-2 text-sm text-white">
-              <input
-                type="checkbox"
-                checked={secondaryChecked}
-                onChange={(e) => setSecondaryChecked(e.target.checked)}
-              />
-              {t('authoring.saveLocal')}
-            </label>
-          )}
-          {variant === 'bambu' && !cloudConnected && (
-            <p className="text-xs text-red-600 dark:text-red-400">{t('authoring.cloudRequired')}</p>
-          )}
-          {variant === 'orca' && !orcaConnected && (
-            <p className="text-xs text-red-600 dark:text-red-400">{t('authoring.orcaRequired')}</p>
-          )}
-          {variant === 'orca' && orcaConnected && !orcaWritable && (
-            <p className="text-xs text-red-600 dark:text-red-400">{t('authoring.orcaNeedsWrite')}</p>
-          )}
-
-          {resultNotes.length > 0 && (
-            <div className="rounded-lg border border-yellow-700/60 bg-yellow-500/10 p-3">
-              <p className="text-sm text-yellow-700 dark:text-yellow-300 font-medium mb-1">{t('authoring.warningsTitle')}</p>
-              <ul className="text-xs text-yellow-700/80 dark:text-yellow-200/80 list-disc pl-4 space-y-0.5">
-                {resultNotes.map((w, i) => (
-                  <li key={i}>{w}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-
-        <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary">
-          <Button variant="secondary" onClick={onClose}>
-            {resultNotes.length > 0 ? t('common.close') : t('common.cancel')}
-          </Button>
-          {resultNotes.length === 0 && (
-            <Button onClick={() => createMutation.mutate()} disabled={!canSubmit || createMutation.isPending}>
-              {t('authoring.createButton')}
-            </Button>
-          )}
-        </div>
+        )}
       </div>
-    </div>
+
+      <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary">
+        <Button variant="secondary" onClick={onClose}>
+          {resultNotes.length > 0 ? t('common.close') : t('common.cancel')}
+        </Button>
+        {resultNotes.length === 0 && (
+          <Button onClick={() => createMutation.mutate()} disabled={!canSubmit || createMutation.isPending}>
+            {t('authoring.createButton')}
+          </Button>
+        )}
+      </div>
+    </Modal>
   );
 }

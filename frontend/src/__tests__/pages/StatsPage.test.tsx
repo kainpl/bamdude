@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { render } from '../utils';
 import { StatsPage } from '../../pages/StatsPage';
 import { http, HttpResponse } from 'msw';
@@ -40,72 +40,82 @@ const mockPrinters = [
   { id: 2, name: 'P1S', model: 'P1S', enabled: true },
 ];
 
-const mockArchives = [
-  {
-    id: 1,
-    created_at: '2024-01-01T10:00:00Z',
-    started_at: '2024-01-01T10:00:00Z',
-    completed_at: '2024-01-01T14:30:00Z',
-    print_name: 'Benchy',
-    status: 'completed',
-    printer_id: 1,
-    filament_type: 'PLA',
-    filament_color: '#00FF00',
-    filament_used_grams: 25,
-    actual_time_seconds: 16200,
-    print_time_seconds: 15000,
-    cost: 0.75,
-    quantity: 1,
+/**
+ * The Stats page reads `GET /statistics/aggregate` now, not a list of archives.
+ *
+ * ⚠️ The rules these fixtures used to prove in the browser — records count
+ * completed prints only, "most expensive" ranks on filament plus measured
+ * electricity, materials split "PLA, PETG" with grams divided and counts whole
+ * — live in SQL now and are pinned in
+ * backend/tests/unit/services/test_archive_aggregate_queries.py. What is left
+ * to prove here is that the page RENDERS what the server decided.
+ */
+const emptyMetrics = {
+  prints: 0, completed: 0, failed: 0, grams: 0,
+  cost: 0, energy_cost: 0, quantity: 0, seconds: 0,
+};
+
+function aggregate(overrides: Record<string, unknown> = {}) {
+  return {
+    timezone: 'UTC',
+    granularity: 'day',
+    buckets: [],
+    by_hour_of_day: Array.from({ length: 24 }, (_, hour) => ({ hour, prints: 0, failures: 0 })),
+    by_printer: [],
+    by_material: [],
+    by_color: [],
+    by_duration: [],
+    totals: { ...emptyMetrics, energy_kwh: 0, printers: 0 },
+    records: { longest: null, heaviest: null, costliest: null, success_streak: 0 },
+    ...overrides,
+  };
+}
+
+function bucket(at: string, started: Partial<typeof emptyMetrics>, ended: Partial<typeof emptyMetrics>) {
+  return { at, started: { ...emptyMetrics, ...started }, ended: { ...emptyMetrics, ...ended } };
+}
+
+// A small farm's week: three completed prints and one failure.
+const mockAggregate = aggregate({
+  buckets: [
+    bucket('2024-01-01', { prints: 1, completed: 1, grams: 25, seconds: 16200 },
+                         { prints: 1, completed: 1, grams: 25, cost: 0.75, quantity: 1, seconds: 16200 }),
+    bucket('2024-01-02', { prints: 1, completed: 1, grams: 180, seconds: 28800 },
+                         { prints: 1, completed: 1, grams: 180, cost: 5.4, quantity: 1, seconds: 28800 }),
+    bucket('2024-01-03', { prints: 2, completed: 1, failed: 1, grams: 55, seconds: 25200 },
+                         { prints: 1, failed: 1, grams: 10, cost: 0.3, quantity: 1, seconds: 3600 }),
+    bucket('2024-01-04', {}, { prints: 1, completed: 1, grams: 45, cost: 1.35, quantity: 1, seconds: 21600 }),
+  ],
+  by_printer: [
+    { printer_id: 1, prints: 2, grams: 205, seconds: 45000, completed: 2, failed: 0 },
+    { printer_id: 2, prints: 2, grams: 55, seconds: 25200, completed: 1, failed: 1 },
+  ],
+  by_material: [
+    { material: 'PETG', prints: 1, grams: 180, seconds: 28800, completed: 1, failed: 0 },
+    { material: 'PLA', prints: 2, grams: 70, seconds: 37800, completed: 2, failed: 0 },
+    { material: 'ABS', prints: 1, grams: 10, seconds: 3600, completed: 0, failed: 1 },
+  ],
+  by_color: [
+    { color: '#FF0000', prints: 1, grams: 180 },
+    { color: '#00FF00', prints: 2, grams: 70 },
+    { color: '#0000FF', prints: 1, grams: 10 },
+  ],
+  by_duration: [
+    { bucket: '<30m', prints: 0 }, { bucket: '30m-1h', prints: 0 }, { bucket: '1-2h', prints: 1 },
+    { bucket: '2-4h', prints: 0 }, { bucket: '4-8h', prints: 3 }, { bucket: '8-12h', prints: 0 },
+    { bucket: '12-24h', prints: 0 }, { bucket: '24h+', prints: 0 },
+  ],
+  totals: {
+    prints: 4, completed: 3, failed: 1, grams: 260, cost: 7.8,
+    energy_kwh: 0, energy_cost: 0, quantity: 4, seconds: 70200, printers: 2,
   },
-  {
-    id: 2,
-    created_at: '2024-01-02T14:00:00Z',
-    started_at: '2024-01-02T14:00:00Z',
-    completed_at: '2024-01-02T22:00:00Z',
-    print_name: 'Large Vase',
-    status: 'completed',
-    printer_id: 1,
-    filament_type: 'PETG',
-    filament_color: '#FF0000',
-    filament_used_grams: 180,
-    actual_time_seconds: 28800,
-    print_time_seconds: 27000,
-    cost: 5.40,
-    quantity: 1,
+  records: {
+    longest: { archive_id: 2, print_name: 'Large Vase', seconds: 28800 },
+    heaviest: { archive_id: 2, print_name: 'Large Vase', grams: 180 },
+    costliest: { archive_id: 2, print_name: 'Large Vase', total: 5.4, cost: 5.4, energy_cost: 0 },
+    success_streak: 2,
   },
-  {
-    id: 3,
-    created_at: '2024-01-03T08:00:00Z',
-    started_at: '2024-01-03T08:00:00Z',
-    completed_at: null,
-    print_name: 'Failed Bracket',
-    status: 'failed',
-    printer_id: 2,
-    filament_type: 'ABS',
-    filament_color: '#0000FF',
-    filament_used_grams: 10,
-    actual_time_seconds: 3600,
-    print_time_seconds: 7200,
-    cost: 0.30,
-    quantity: 1,
-  },
-  {
-    id: 4,
-    created_at: '2024-01-03T20:00:00Z',
-    started_at: '2024-01-03T20:00:00Z',
-    completed_at: '2024-01-04T02:00:00Z',
-    print_name: 'Phone Stand',
-    status: 'completed',
-    printer_id: 2,
-    filament_type: 'PLA',
-    filament_color: '#00FF00',
-    filament_used_grams: 45,
-    actual_time_seconds: 21600,
-    print_time_seconds: 20000,
-    cost: 1.35,
-    quantity: 1,
-  },
-];
+});
 
 const mockSettings = {
   currency: 'USD',
@@ -141,19 +151,19 @@ const mockFailureAnalysis = {
 describe('StatsPage', () => {
   beforeEach(() => {
     server.use(
-      http.get('/api/v1/archives/stats', () => {
+      http.get('/api/v1/statistics/overview', () => {
         return HttpResponse.json(mockStats);
       }),
       http.get('/api/v1/printers/', () => {
         return HttpResponse.json(mockPrinters);
       }),
-      http.get('/api/v1/archives/slim', () => {
-        return HttpResponse.json(mockArchives);
+      http.get('/api/v1/statistics/aggregate', () => {
+        return HttpResponse.json(mockAggregate);
       }),
       http.get('/api/v1/settings/', () => {
         return HttpResponse.json(mockSettings);
       }),
-      http.get('/api/v1/archives/analysis/failures', () => {
+      http.get('/api/v1/statistics/failures', () => {
         return HttpResponse.json(mockFailureAnalysis);
       })
     );
@@ -267,7 +277,7 @@ describe('StatsPage', () => {
 
     it('translates camelCase failure-reason keys (#1687 follow-up)', async () => {
       server.use(
-        http.get('/api/v1/archives/analysis/failures', () => {
+        http.get('/api/v1/statistics/failures', () => {
           return HttpResponse.json({
             ...mockFailureAnalysis,
             failures_by_reason: { filamentRunout: 3, cloggedNozzle: 1 },
@@ -283,7 +293,7 @@ describe('StatsPage', () => {
 
     it('renders legacy translated-text failure reasons unchanged', async () => {
       server.use(
-        http.get('/api/v1/archives/analysis/failures', () => {
+        http.get('/api/v1/statistics/failures', () => {
           return HttpResponse.json({
             ...mockFailureAnalysis,
             failures_by_reason: { 'First layer adhesion': 2 },
@@ -355,6 +365,29 @@ describe('StatsPage', () => {
     });
   });
 
+  describe('defects by printer', () => {
+    it('lists defects by printer, worst rate first', async () => {
+      server.use(
+        http.get('/api/v1/statistics/overview', () =>
+          HttpResponse.json({
+            total_prints: 3, successful_prints: 3, failed_prints: 0, cancelled_prints: 0,
+            total_print_time_hours: 1, total_filament_grams: 10, total_cost: 1,
+            prints_by_filament_type: {}, prints_by_printer: { '1': 2, '2': 1 },
+            average_time_accuracy: null, time_accuracy_by_printer: null,
+            print_energy_kwh: 0, print_energy_cost: 0, total_energy_kwh: 0, total_energy_cost: 0,
+            defects_by_printer: { '1': { printed: 10, defective: 1 }, '2': { printed: 4, defective: 2 } },
+          }),
+        ),
+      );
+      render(<StatsPage />);
+
+      const table = await screen.findByTestId('defects-by-printer');
+      const rows = within(table).getAllByRole('row').slice(1); // header first
+      expect(rows[0].textContent).toContain('50.0%');
+      expect(rows[1].textContent).toContain('10.0%');
+    });
+  });
+
   describe('filament trends sub-cards', () => {
     it('shows by material section', async () => {
       render(<StatsPage />);
@@ -414,103 +447,84 @@ describe('StatsPage', () => {
       });
     });
 
-    it('excludes non-completed prints from records', async () => {
-      // A failed print with outlier time/weight/cost must NOT win any record.
+    it('renders the records the server decided, with the cost split', async () => {
+      // ⚠️ The RULES behind these numbers moved into SQL: completed prints only,
+      // "most expensive" ranked on filament plus measured electricity. They are
+      // pinned in backend/tests/unit/services/test_archive_aggregate_queries.py.
+      // What this page still owns is showing the split, so a total can be
+      // reconciled against the print's own page instead of reading as a wrong
+      // filament cost.
       server.use(
-        http.get('/api/v1/archives/slim', () =>
-          HttpResponse.json([
-            {
-              id: 10, created_at: '2024-02-01T10:00:00Z', started_at: '2024-02-01T10:00:00Z',
-              completed_at: '2024-02-01T12:00:00Z', print_name: 'Good Small', status: 'completed',
-              printer_id: 1, filament_type: 'PLA', filament_color: '#00FF00',
-              filament_used_grams: 20, actual_time_seconds: 7200, print_time_seconds: 7000, cost: 2.0, quantity: 1,
-            },
-            {
-              id: 11, created_at: '2024-02-02T10:00:00Z', started_at: '2024-02-02T10:00:00Z',
-              completed_at: null, print_name: 'Failed Big', status: 'failed',
-              printer_id: 1, filament_type: 'ABS', filament_color: '#0000FF',
-              filament_used_grams: 999, actual_time_seconds: 99999, print_time_seconds: 99999, cost: 99.0, quantity: 1,
-            },
-          ])
-        )
+        http.get('/api/v1/statistics/aggregate', () =>
+          HttpResponse.json(
+            aggregate({
+              totals: {
+                prints: 2, completed: 2, failed: 0, grams: 50, cost: 9.0,
+                energy_kwh: 8.1, energy_cost: 3.25, quantity: 2, seconds: 39600, printers: 1,
+              },
+              records: {
+                longest: { archive_id: 21, print_name: 'Long And Hungry', seconds: 36000 },
+                heaviest: { archive_id: 21, print_name: 'Long And Hungry', grams: 30 },
+                costliest: {
+                  archive_id: 21, print_name: 'Long And Hungry',
+                  total: 7.2, cost: 4.0, energy_cost: 3.2,
+                },
+                success_streak: 2,
+              },
+            }),
+          ),
+        ),
       );
       render(<StatsPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Most Expensive')).toBeInTheDocument();
       });
-      // The failed print's outlier values must never surface as a record.
-      expect(screen.queryByText('Failed Big')).not.toBeInTheDocument();
-      expect(screen.queryByText('$99.00')).not.toBeInTheDocument();
-      // The completed print is the record instead.
-      expect(screen.getAllByText('Good Small').length).toBeGreaterThan(0);
-    });
-
-    it('ranks Most Expensive on filament AND measured electricity', async () => {
-      // The load-bearing case: the print with the DEARER FILAMENT loses once the
-      // power it drew is counted. Ranking on `cost` alone answered a narrower
-      // question than the label promises — `cost` is filament only.
-      server.use(
-        http.get('/api/v1/archives/slim', () =>
-          HttpResponse.json([
-            {
-              id: 20, created_at: '2024-03-01T10:00:00Z', started_at: '2024-03-01T10:00:00Z',
-              completed_at: '2024-03-01T11:00:00Z', print_name: 'Pricey Filament', status: 'completed',
-              printer_id: 1, filament_type: 'PLA', filament_color: '#00FF00',
-              filament_used_grams: 20, actual_time_seconds: 3600, print_time_seconds: 3600,
-              cost: 5.0, energy_kwh: 0.1, energy_cost: 0.05, quantity: 1,
-            },
-            {
-              id: 21, created_at: '2024-03-02T10:00:00Z', started_at: '2024-03-02T10:00:00Z',
-              completed_at: '2024-03-02T20:00:00Z', print_name: 'Long And Hungry', status: 'completed',
-              printer_id: 1, filament_type: 'ABS', filament_color: '#0000FF',
-              filament_used_grams: 30, actual_time_seconds: 36000, print_time_seconds: 36000,
-              cost: 4.0, energy_kwh: 8.0, energy_cost: 3.2, quantity: 1,
-            },
-          ])
-        )
-      );
-      render(<StatsPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Most Expensive')).toBeInTheDocument();
-      });
-      // 4.00 filament + 3.20 power = 7.20 beats 5.00 + 0.05 = 5.05.
       expect(screen.getByText('$7.20')).toBeInTheDocument();
-      expect(screen.queryByText('$5.05')).not.toBeInTheDocument();
-      // And the split is shown, so the total can be reconciled against the
-      // print's own page rather than reading as a wrong filament cost.
       expect(screen.getByText(/filament \$4\.00 \+ power \$3\.20/)).toBeInTheDocument();
+      expect(screen.getAllByText('Long And Hungry').length).toBeGreaterThan(0);
     });
 
-    it('lets a print with no plug compete on filament alone', async () => {
-      // Unmetered prints carry null energy. They must still be rankable —
-      // treating "not measured" as disqualifying would hide every record on a
-      // farm without smart plugs.
+    it('shows no cost breakdown when nothing was measured', async () => {
+      // An unmetered print carries zero energy and competes on filament alone.
+      // A "+ power $0.00" would claim it ran on no electricity, which is a
+      // different statement from "we did not measure it".
       server.use(
-        http.get('/api/v1/archives/slim', () =>
-          HttpResponse.json([
-            {
-              id: 30, created_at: '2024-04-01T10:00:00Z', started_at: '2024-04-01T10:00:00Z',
-              completed_at: '2024-04-01T11:00:00Z', print_name: 'Unmetered', status: 'completed',
-              printer_id: 1, filament_type: 'PLA', filament_color: '#00FF00',
-              filament_used_grams: 20, actual_time_seconds: 3600, print_time_seconds: 3600,
-              cost: 6.0, energy_kwh: null, energy_cost: null, quantity: 1,
-            },
-          ])
-        )
+        http.get('/api/v1/statistics/aggregate', () =>
+          HttpResponse.json(
+            aggregate({
+              totals: {
+                prints: 1, completed: 1, failed: 0, grams: 20, cost: 6.0,
+                energy_kwh: 0, energy_cost: 0, quantity: 1, seconds: 3600, printers: 1,
+              },
+              records: {
+                longest: null,
+                heaviest: null,
+                costliest: { archive_id: 30, print_name: 'Unmetered', total: 6.0, cost: 6.0, energy_cost: 0 },
+                success_streak: 1,
+              },
+            }),
+          ),
+        ),
       );
       render(<StatsPage />);
 
       await waitFor(() => {
         expect(screen.getByText('Most Expensive')).toBeInTheDocument();
       });
-      // getAllByText: with one archive its cost is also the period total, so
-      // the same figure renders in more than one widget.
       expect(screen.getAllByText('$6.00').length).toBeGreaterThan(0);
-      // No breakdown when nothing was measured — a "+ power $0.00" would claim
-      // the print ran on no electricity.
       expect(screen.queryByText(/power \$0\.00/)).not.toBeInTheDocument();
+    });
+
+    it('shows no records at all when the range is empty', async () => {
+      server.use(http.get('/api/v1/statistics/aggregate', () => HttpResponse.json(aggregate())));
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Records')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Most Expensive')).not.toBeInTheDocument();
+      expect(screen.queryByText('Success Streak')).not.toBeInTheDocument();
     });
   });
 
@@ -547,7 +561,7 @@ describe('while the numbers are still loading', () => {
     server.use(
       // Never resolves: the page has to be usable in this state, not merely
       // survive it.
-      http.get('/api/v1/archives/stats', () => new Promise(() => {})),
+      http.get('/api/v1/statistics/overview', () => new Promise(() => {})),
     );
   });
 

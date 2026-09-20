@@ -18,7 +18,6 @@ from backend.app.core.permissions import Permission
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.spool_assignment import SpoolAssignment
-from backend.app.models.spoolman_k_profile import SpoolmanKProfile
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
 from backend.app.services.printer_manager import printer_manager
@@ -30,6 +29,7 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
+from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
 
 logger = logging.getLogger(__name__)
 
@@ -943,13 +943,6 @@ async def link_spool(
                     if nd:
                         nozzle_diameter = nd
 
-                kp_result = await db.execute(
-                    select(SpoolmanKProfile).where(
-                        SpoolmanKProfile.spoolman_spool_id == spool_id,
-                        SpoolmanKProfile.printer_id == p_id,
-                    )
-                )
-                kp_rows = list(kp_result.scalars().all())
                 slot_extruder = 0
                 if state and state.ams_extruder_map:
                     if a_id == 255:
@@ -963,54 +956,70 @@ async def link_spool(
                     nozzle_dia_float = 0.4
 
                 # Pick link by matching nozzle on the joined filament_calibration.
-                exact_link = None
-                fallback_link = None
-                for kp in kp_rows:
-                    fc = kp.filament_calibration
-                    if not fc or abs(fc.nozzle_diameter - nozzle_dia_float) > 0.05:
-                        continue
-                    if kp.extruder == slot_extruder:
-                        exact_link = kp
-                        break
-                    if fallback_link is None:
-                        fallback_link = kp
-                matching_link = exact_link or fallback_link
-                matching_fc = matching_link.filament_calibration if matching_link else None
+                matching_fc = await resolve_spoolman_slot_kprofile(
+                    db,
+                    printer_id=p_id,
+                    spoolman_spool_id=spool_id,
+                    nozzle_diameter=nozzle_dia_float,
+                    slot_extruder=slot_extruder,
+                )
 
                 # ONE identity path (spec A §5.2): the family catalog builds the
                 # payload. The Spoolman spool's identity is the family of its
                 # linked calibration when one exists; otherwise the generic
                 # family of the material — resolved inside the builder, no
                 # hand-rolled realignment.
+                from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
+                    kprofile_allowed,
+                    live_tray_for,
+                )
                 from backend.app.services.slot_assignment import build_slot_assignment  # noqa: PLC0415
+                from backend.app.services.slot_assignment_publish import (  # noqa: PLC0415
+                    publish_projected_slot,
+                )
 
+                supports_user_preset = bool(getattr(state, "support_user_preset", False))
+                # Model cache, not PrinterInfo — see configure_ams_slot.
+                printer_model = printer_manager.get_model(p_id)
                 plan = await build_slot_assignment(
                     db,
                     family_id=matching_fc.filament_id if matching_fc else None,
                     material_override=tray_type,
                     color_rgba=tray_color,
                     temp_overrides=(mapped.get("nozzle_temp_min"), None),
-                    # Model cache, not PrinterInfo — see configure_ams_slot.
-                    printer_model=printer_manager.get_model(p_id),
+                    printer_model=printer_model,
                     nozzle_diameter=nozzle_diameter,
-                    supports_user_preset=bool(getattr(state, "support_user_preset", False)),
+                    supports_user_preset=supports_user_preset,
                 )
                 for note in plan.warnings:
                     logger.info("Spoolman link: %s", note)
+                # The K half below keys off the ACTUAL family, never the advertised one.
                 effective_tray_info_idx = plan.tray_info_idx
 
-                mqtt_client.ams_set_filament_setting(
+                # Project under the printer's policy, publish, remember what was
+                # masked — the one helper all three assignment paths share. The
+                # actual plan stays the spool's truth; only what the printer is
+                # told changes.
+                printer_row = (await db.execute(select(Printer).where(Printer.id == p_id))).scalar_one_or_none()
+                _, projection = await publish_projected_slot(
+                    db,
+                    mqtt_client,
+                    printer=printer_row,
+                    printer_id=p_id,
                     ams_id=a_id,
                     tray_id=t_id,
-                    tray_info_idx=plan.tray_info_idx,
-                    tray_type=plan.tray_type or tray_type,
+                    actual_plan=plan,
+                    live_tray=live_tray_for(state, a_id, t_id),
+                    spool_tag_uid=mapped.get("tag_uid"),
+                    spool_tray_uuid=mapped.get("tray_uuid"),
+                    material=tray_type,
+                    extra_colors=None,
+                    printer_model=printer_model,
+                    nozzle_diameter=nozzle_diameter,
+                    supports_user_preset=supports_user_preset,
                     tray_sub_brands=tray_sub_brands,
-                    tray_color=tray_color,
-                    nozzle_temp_min=plan.nozzle_temp_min,
-                    nozzle_temp_max=plan.nozzle_temp_max,
-                    setting_id=plan.setting_id,
-                    cols=plan.cols,
-                    ctype=plan.ctype,
+                    tray_type_fallback=tray_type,
+                    source="spoolman",
                 )
 
                 from backend.app.services.calibration_service import (  # noqa: PLC0415
@@ -1018,7 +1027,7 @@ async def link_spool(
                 )
 
                 fired = False
-                if matching_fc:
+                if matching_fc and kprofile_allowed(projection):
                     fired, _ = await apply_active_calibration_to_slot(
                         db=db,
                         printer_id=p_id,

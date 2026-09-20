@@ -13,7 +13,7 @@ which is worse: the operator presses the number under the part they meant and
 cancels a different one. There is no undo for a skipped object.
 
 That is why ``top_view_png`` has no fallback chain, unlike
-``GET /printers/{id}/cover?view=top``, which degrades through ``plate_N.png``
+``GET /printers/{id}/camera-cover?view=top``, which degrades through ``plate_N.png``
 to ``thumbnail.png`` so a printer card always shows *something*. Here a
 missing picture is the correct answer; the caller sends the plain cover and
 says the positions are unavailable.

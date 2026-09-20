@@ -25,6 +25,8 @@ function makeFilament(overrides: Partial<LoadedFilament> & { globalTrayId: numbe
     colorName: 'White',
     amsId: 0,
     trayId: 0,
+    isHt: false,
+    isExternal: false,
     label: 'AMS1-T1',
     trayInfoIdx: '',
     extruderId: undefined,

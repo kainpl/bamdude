@@ -15,16 +15,17 @@
  * SkipObjectsModal so the two dialogs cannot drift apart.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, Box, Maximize2, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { api } from '../api/client';
+import { Modal } from './Modal';
 import { PlateMarkers } from './PlateObjectMarkers';
 import {
   COLUMN_PX,
   DIALOG_FRAME,
-  DIALOG_WIDTH_PX,
+  DIALOG_FRAME_STYLE,
   LIGHTBOX_SCALE,
   LIST_COLUMN,
   LIST_COLUMN_PX,
@@ -38,14 +39,23 @@ interface PlateObjectsPreviewModalProps {
   id: number;
   isOpen: boolean;
   onClose: () => void;
+  /** The plate to open on; without it the modal opens on the first plate that has objects. */
+  initialPlate?: number;
 }
 // No `isMultiPlate` prop: the modal fetches /plates for library files anyway,
 // to choose its opening plate, so it already knows. A prop would be a second
 // source for a question the component can answer itself — and callers that got
 // it wrong would silently lose the plate strip.
 
-export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateObjectsPreviewModalProps) {
+export function PlateObjectsPreviewModal({
+  source,
+  id,
+  isOpen,
+  onClose,
+  initialPlate,
+}: PlateObjectsPreviewModalProps) {
   const { t } = useTranslation();
+  const headingId = useId();
   const [plate, setPlate] = useState(1);
   const [enlarged, setEnlarged] = useState(false);
 
@@ -56,7 +66,8 @@ export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateO
   // request against a cache LibraryPlateGallery usually warmed already, and the
   // right opening plate is worth more than the round trip.
   const { data: plateList } = useQuery({
-    queryKey: ['library-plates', id],
+    // The key the gallery uses too: one /plates answer per file in the cache, not two.
+    queryKey: ['library-file-plates', id],
     queryFn: () => api.getLibraryFilePlates(id),
     enabled: isOpen && source === 'library',
   });
@@ -64,17 +75,17 @@ export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateO
   const autoPlated = useRef(false);
   useEffect(() => {
     autoPlated.current = false;
-    setPlate(1);
+    setPlate(initialPlate ?? 1);
     setEnlarged(false);
-  }, [id, source]);
+  }, [id, source, initialPlate]);
   useEffect(() => {
     // Once, on first arrival. Re-running would yank the plate back from under
     // anyone who has since clicked the strip.
-    if (autoPlated.current || !plateList?.plates?.length) return;
+    if (autoPlated.current || initialPlate != null || !plateList?.plates?.length) return;
     autoPlated.current = true;
     const first = plateList.plates.find((p) => (p.object_count ?? 0) > 0);
     if (first) setPlate(first.index);
-  }, [plateList]);
+  }, [plateList, initialPlate]);
 
   const { data } = useQuery({
     queryKey: ['plate-objects', source, id, plate],
@@ -108,186 +119,168 @@ export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateO
 
   return (
     <>
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center p-4"
-        onClick={onClose}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose();
-        }}
-        tabIndex={-1}
-        ref={(el) => el?.focus()}
-      >
-        {/* Backdrop */}
-        <div className="absolute inset-0 bg-black/50 z-0" />
-        {/* Modal */}
-        <div
-          style={{ width: DIALOG_WIDTH_PX }}
-          className={`relative z-10 bg-white dark:bg-bambu-dark border border-gray-200 dark:border-bambu-dark-tertiary rounded-xl shadow-2xl ${DIALOG_FRAME} flex flex-col overflow-hidden`}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-bambu-dark-tertiary bg-gray-50 dark:bg-bambu-dark">
-            <div className="flex items-center gap-2">
-              <Box className="w-4 h-4 text-bambu-green" />
-              <span className="text-sm font-medium text-gray-900 dark:text-white">
-                {t('library.plateObjects.title')}
+      <Modal
+        onClose={onClose}
+        labelledBy={headingId}
+        size="4xl"
+        panelClassName={`${DIALOG_FRAME} overflow-hidden`}
+        panelStyle={DIALOG_FRAME_STYLE}
+        bodyClassName="flex flex-col"
+        header={
+          <>
+            <Box className="w-4 h-4 text-bambu-green" />
+            <span id={headingId} className="text-sm font-medium text-gray-900 dark:text-white">
+              {t('library.plateObjects.title')}
+            </span>
+            {objects.length > 0 && (
+              <span className="text-xs text-gray-500 dark:text-bambu-gray">
+                {t('library.plateObjects.objectCount', { count: objects.length })}
               </span>
-              {objects.length > 0 && (
-                <span className="text-xs text-gray-500 dark:text-bambu-gray">
-                  {t('library.plateObjects.objectCount', { count: objects.length })}
-                </span>
-              )}
-            </div>
-            <button
-              onClick={onClose}
-              className="p-1 text-gray-500 dark:text-bambu-gray hover:text-gray-900 dark:hover:text-white rounded transition-colors"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            )}
+          </>
+        }
+      >
+        {!data ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="w-5 h-5 animate-spin text-bambu-gray" />
           </div>
-
-          {!data ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="w-5 h-5 animate-spin text-bambu-gray" />
-            </div>
-          ) : (
-            // min-h-0 matters: a flex child defaults to min-height:auto, which
-            // refuses to shrink below its content and would push the list's own
-            // scroll container past the bottom of a fixed-height dialog.
-            <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-              {/* Skip-availability banner. Never hidden, whichever way it reads —
-                  a missing button explains nothing, "Exclude objects was off"
-                  points at the switch to flip. */}
-              <div
-                className={`flex items-start gap-2 px-4 py-2.5 border-b border-gray-200 dark:border-bambu-dark-tertiary ${
+        ) : (
+          // min-h-0 matters: a flex child defaults to min-height:auto, which
+          // refuses to shrink below its content and would push the list's own
+          // scroll container past the bottom of a fixed-height dialog.
+          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+            {/* Skip-availability banner. Never hidden, whichever way it reads —
+                a missing button explains nothing, "Exclude objects was off"
+                points at the switch to flip. */}
+            <div
+              className={`flex items-start gap-2 px-4 py-2.5 border-b border-gray-200 dark:border-bambu-dark-tertiary ${
+                data.skip_objects_supported
+                  ? 'bg-green-50 dark:bg-green-500/10'
+                  : 'bg-amber-50 dark:bg-amber-500/10'
+              }`}
+            >
+              {data.skip_objects_supported ? (
+                <CheckCircle2 className="w-3.5 h-3.5 text-green-600 dark:text-bambu-green flex-shrink-0 mt-0.5" />
+              ) : (
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+              )}
+              <p
+                className={`text-[11px] ${
                   data.skip_objects_supported
-                    ? 'bg-green-50 dark:bg-green-500/10'
-                    : 'bg-amber-50 dark:bg-amber-500/10'
+                    ? 'text-green-700 dark:text-green-300/90'
+                    : 'text-amber-700 dark:text-amber-300/90'
                 }`}
               >
-                {data.skip_objects_supported ? (
-                  <CheckCircle2 className="w-3.5 h-3.5 text-green-600 dark:text-bambu-green flex-shrink-0 mt-0.5" />
-                ) : (
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-                )}
-                <p
-                  className={`text-[11px] ${
-                    data.skip_objects_supported
-                      ? 'text-green-700 dark:text-green-300/90'
-                      : 'text-amber-700 dark:text-amber-300/90'
-                  }`}
-                >
-                  {data.skip_objects_supported
-                    ? t('library.plateObjects.skipSupported')
-                    : t('library.plateObjects.skipUnsupported')}
+                {data.skip_objects_supported
+                  ? t('library.plateObjects.skipSupported')
+                  : t('library.plateObjects.skipUnsupported')}
+              </p>
+            </div>
+
+            {/* Nothing on this plate could be located in the file's object map,
+                so every marker came from markerPosition's grid fallback. The
+                picture looks like a real layout and is not one. */}
+            {data.positions_approximate && objects.length > 0 && (
+              <div className="flex items-start gap-2 px-4 py-2 bg-blue-50 dark:bg-blue-500/10 border-b border-gray-200 dark:border-bambu-dark-tertiary">
+                <AlertTriangle className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+                <p className="text-[11px] text-blue-600 dark:text-blue-300/90">
+                  {t('library.plateObjects.approximate')}
                 </p>
               </div>
+            )}
 
-              {/* Nothing on this plate could be located in the file's object map,
-                  so every marker came from markerPosition's grid fallback. The
-                  picture looks like a real layout and is not one. */}
-              {data.positions_approximate && objects.length > 0 && (
-                <div className="flex items-start gap-2 px-4 py-2 bg-blue-50 dark:bg-blue-500/10 border-b border-gray-200 dark:border-bambu-dark-tertiary">
-                  <AlertTriangle className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-[11px] text-blue-600 dark:text-blue-300/90">
-                    {t('library.plateObjects.approximate')}
-                  </p>
+            {/* Plate strip — library only, and only when there is a choice. */}
+            {showStrip && (
+              <div className="flex items-center gap-1.5 px-4 py-2 border-b border-gray-200 dark:border-bambu-dark-tertiary overflow-x-auto">
+                {plateList?.plates.map((p) => (
+                  <button
+                    key={p.index}
+                    type="button"
+                    onClick={() => setPlate(p.index)}
+                    className={`px-2.5 py-1 text-[11px] rounded-md whitespace-nowrap transition-colors ${
+                      p.index === plateIndex
+                        ? 'bg-bambu-green/20 text-bambu-green border border-bambu-green/40'
+                        : 'bg-gray-100 dark:bg-bambu-dark-secondary text-gray-600 dark:text-bambu-gray border border-transparent hover:bg-gray-200 dark:hover:bg-bambu-dark'
+                    }`}
+                  >
+                    {t('library.plateObjects.plate', { index: p.index })}
+                    {(p.object_count ?? 0) > 0 && (
+                      <span className="ml-1.5 opacity-60">{p.object_count}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Content: image + list side by side */}
+            <div className="flex flex-1 min-h-0 overflow-hidden">
+              <div
+                style={{ width: COLUMN_PX }}
+                className="flex-shrink-0 p-4 border-r border-gray-200 dark:border-bambu-dark-tertiary bg-gray-50 dark:bg-bambu-dark-secondary overflow-y-auto"
+              >
+                {/* No top view means no image at all — never markers over the
+                    3/4 plate_N.png render, where they would sit convincingly
+                    on the wrong parts. */}
+                {data.has_top_view ? (
+                  <div className="relative cursor-pointer group" onClick={() => setEnlarged(true)}>
+                    <img
+                      src={imageUrl}
+                      alt={t('library.plateObjects.title')}
+                      className="w-full aspect-square object-contain rounded-lg bg-gray-900 dark:bg-gray-900 border border-gray-300 dark:border-gray-600"
+                    />
+                    <div className="absolute top-2 right-2 p-1 bg-black/60 rounded opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Maximize2 className="w-3.5 h-3.5 text-white" />
+                    </div>
+                    {/* Markers with no canSkip/onSkip render disabled — the
+                        read-only branch PlateMarkers already had. */}
+                    <PlateMarkers objects={objects} t={t} />
+                  </div>
+                ) : (
+                  <div className="w-full aspect-square rounded-lg bg-gray-100 dark:bg-bambu-dark flex flex-col items-center justify-center gap-2 px-4 text-center">
+                    <Box className="w-8 h-8 text-gray-300 dark:text-bambu-gray/30" />
+                    <p className="text-[11px] text-gray-500 dark:text-bambu-gray">
+                      {t('library.plateObjects.noImage')}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Object list. Fills DOWN a column then wraps to the NEXT column
+                  to the right — see plateDialogLayout for why grid-flow-col and
+                  an auto-fill row template produce that order. */}
+              {objects.length === 0 ? (
+                <div className="flex-1 flex items-center justify-center px-4 text-center">
+                  <p className="text-sm text-bambu-gray">{t('library.plateObjects.empty')}</p>
                 </div>
-              )}
-
-              {/* Plate strip — library only, and only when there is a choice. */}
-              {showStrip && (
-                <div className="flex items-center gap-1.5 px-4 py-2 border-b border-gray-200 dark:border-bambu-dark-tertiary overflow-x-auto">
-                  {plateList?.plates.map((p) => (
-                    <button
-                      key={p.index}
-                      type="button"
-                      onClick={() => setPlate(p.index)}
-                      className={`px-2.5 py-1 text-[11px] rounded-md whitespace-nowrap transition-colors ${
-                        p.index === plateIndex
-                          ? 'bg-bambu-green/20 text-bambu-green border border-bambu-green/40'
-                          : 'bg-gray-100 dark:bg-bambu-dark-secondary text-gray-600 dark:text-bambu-gray border border-transparent hover:bg-gray-200 dark:hover:bg-bambu-dark'
-                      }`}
+              ) : (
+                <div
+                  style={{ width: LIST_COLUMN_PX }}
+                  className={`flex-shrink-0 grid grid-flow-col ${LIST_ROW_HEIGHT} ${LIST_COLUMN} overflow-x-auto overflow-y-hidden`}
+                >
+                  {objects.map((obj) => (
+                    <div
+                      key={obj.id}
+                      className="flex items-center gap-3 px-4 border-b border-r border-gray-200 dark:border-bambu-dark-tertiary/50 hover:bg-gray-50 dark:hover:bg-bambu-dark/50"
                     >
-                      {t('library.plateObjects.plate', { index: p.index })}
-                      {(p.object_count ?? 0) > 0 && (
-                        <span className="ml-1.5 opacity-60">{p.object_count}</span>
-                      )}
-                    </button>
+                      <div className="w-12 h-12 flex-shrink-0 rounded-lg flex flex-col items-center justify-center bg-green-100 dark:bg-bambu-green/20 border border-green-300 dark:border-bambu-green/40">
+                        <span className="text-lg font-mono font-bold text-green-600 dark:text-bambu-green">
+                          {obj.id}
+                        </span>
+                        <span className="text-[8px] uppercase tracking-wider text-green-500/60 dark:text-bambu-green/60">
+                          ID
+                        </span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className="block text-sm truncate text-gray-900 dark:text-white">{obj.name}</span>
+                      </div>
+                    </div>
                   ))}
                 </div>
               )}
-
-              {/* Content: image + list side by side */}
-              <div className="flex flex-1 min-h-0 overflow-hidden">
-                <div
-                  style={{ width: COLUMN_PX }}
-                  className="flex-shrink-0 p-4 border-r border-gray-200 dark:border-bambu-dark-tertiary bg-gray-50 dark:bg-bambu-dark-secondary overflow-y-auto"
-                >
-                  {/* No top view means no image at all — never markers over the
-                      3/4 plate_N.png render, where they would sit convincingly
-                      on the wrong parts. */}
-                  {data.has_top_view ? (
-                    <div className="relative cursor-pointer group" onClick={() => setEnlarged(true)}>
-                      <img
-                        src={imageUrl}
-                        alt={t('library.plateObjects.title')}
-                        className="w-full aspect-square object-contain rounded-lg bg-gray-900 dark:bg-gray-900 border border-gray-300 dark:border-gray-600"
-                      />
-                      <div className="absolute top-2 right-2 p-1 bg-black/60 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-                        <Maximize2 className="w-3.5 h-3.5 text-white" />
-                      </div>
-                      {/* Markers with no canSkip/onSkip render disabled — the
-                          read-only branch PlateMarkers already had. */}
-                      <PlateMarkers objects={objects} t={t} />
-                    </div>
-                  ) : (
-                    <div className="w-full aspect-square rounded-lg bg-gray-100 dark:bg-bambu-dark flex flex-col items-center justify-center gap-2 px-4 text-center">
-                      <Box className="w-8 h-8 text-gray-300 dark:text-bambu-gray/30" />
-                      <p className="text-[11px] text-gray-500 dark:text-bambu-gray">
-                        {t('library.plateObjects.noImage')}
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Object list. Fills DOWN a column then wraps to the NEXT column
-                    to the right — see plateDialogLayout for why grid-flow-col and
-                    an auto-fill row template produce that order. */}
-                {objects.length === 0 ? (
-                  <div className="flex-1 flex items-center justify-center px-4 text-center">
-                    <p className="text-sm text-bambu-gray">{t('library.plateObjects.empty')}</p>
-                  </div>
-                ) : (
-                  <div
-                    style={{ width: LIST_COLUMN_PX }}
-                    className={`flex-shrink-0 grid grid-flow-col ${LIST_ROW_HEIGHT} ${LIST_COLUMN} overflow-x-auto overflow-y-hidden`}
-                  >
-                    {objects.map((obj) => (
-                      <div
-                        key={obj.id}
-                        className="flex items-center gap-3 px-4 border-b border-r border-gray-200 dark:border-bambu-dark-tertiary/50 hover:bg-gray-50 dark:hover:bg-bambu-dark/50"
-                      >
-                        <div className="w-12 h-12 flex-shrink-0 rounded-lg flex flex-col items-center justify-center bg-green-100 dark:bg-bambu-green/20 border border-green-300 dark:border-bambu-green/40">
-                          <span className="text-lg font-mono font-bold text-green-600 dark:text-bambu-green">
-                            {obj.id}
-                          </span>
-                          <span className="text-[8px] uppercase tracking-wider text-green-500/60 dark:text-bambu-green/60">
-                            ID
-                          </span>
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <span className="block text-sm truncate text-gray-900 dark:text-white">{obj.name}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
             </div>
-          )}
-        </div>
-      </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Enlarged lightbox. Square is load-bearing, not cosmetic: PlateMarkers
           positions every marker as a percentage of THIS box while the image
@@ -296,9 +289,10 @@ export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateO
           Hence aspect-square with only a max-WIDTH cap in vmin — a max-height
           would squash one axis independently and break exactly that. */}
       {enlarged && data?.has_top_view && (
-        <div
-          className="fixed inset-0 bg-black/90 flex items-center justify-center z-60"
-          onClick={() => setEnlarged(false)}
+        <Modal
+          variant="lightbox"
+          onClose={() => setEnlarged(false)}
+          ariaLabel={t('library.plateObjects.title')}
         >
           <button
             onClick={() => setEnlarged(false)}
@@ -318,7 +312,7 @@ export function PlateObjectsPreviewModal({ source, id, isOpen, onClose }: PlateO
             />
             <PlateMarkers objects={objects} t={t} />
           </div>
-        </div>
+        </Modal>
       )}
     </>
   );

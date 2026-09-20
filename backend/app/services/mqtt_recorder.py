@@ -5,6 +5,12 @@ keeping the window open — close it and the evidence stops arriving. That is th
 wrong shape for the faults it catches, which are the intermittent ones nobody is
 sitting and watching for.
 
+That script is still there and still has a job: it opens its OWN session, so it
+reaches a printer BamDude does not manage, or one whose connection never
+establishes and therefore has nothing to tee. Use it there and only there —
+pointing a second session at an already-connected printer is the failure this
+class of tool keeps causing.
+
 ⚠️ **This tees the connection BamDude already holds.** It registers on
 ``BambuMQTTClient``'s raw fan-out — the same extension point the VP MQTT bridge
 uses — and never opens a session of its own. A second session to a printer that

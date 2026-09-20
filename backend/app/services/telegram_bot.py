@@ -84,6 +84,7 @@ async def start_telegram_bot() -> None:
     from backend.app.services.telegram_handlers.actions import router as actions_router
     from backend.app.services.telegram_handlers.auth_middleware import TelegramAuthMiddleware
     from backend.app.services.telegram_handlers.calibration import router as calibration_router
+    from backend.app.services.telegram_handlers.defects import router as defects_router
     from backend.app.services.telegram_handlers.fallback import router as fallback_router
     from backend.app.services.telegram_handlers.library_scene import router as library_router
     from backend.app.services.telegram_handlers.library_upload_scene import router as library_upload_router
@@ -103,6 +104,12 @@ async def start_telegram_bot() -> None:
     _dispatcher.include_router(printers_router)
     _dispatcher.include_router(calibration_router)
     _dispatcher.include_router(maintenance_router)
+    # ⚠️ ABOVE actions_router, whose last handler is the catch-all ``action:*``.
+    # The completion message's «Брак…» button is ``action:defects:{archive_id}``,
+    # so below it the catch-all would claim it, read the archive id as a printer
+    # id and redraw that printer's detail. Same reason ``action:hours:`` lives in
+    # printers_router, which is included earlier for exactly this.
+    _dispatcher.include_router(defects_router)
     _dispatcher.include_router(actions_router)
     # Its own callbacks are ``skipobj:*``, so it collides with nothing above —
     # in particular not with actions_router's catch-all ``action:*``, which is

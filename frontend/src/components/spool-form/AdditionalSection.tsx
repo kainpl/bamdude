@@ -5,6 +5,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { FILAMENT_EFFECT_OPTIONS } from '../filamentSwatchHelpers';
 import { FilamentSwatch } from '../FilamentSwatch';
 import type { AdditionalSectionProps } from './types';
+import { Select } from '../Select';
 
 function SpoolWeightPicker({
   catalog,
@@ -312,14 +313,14 @@ export function AdditionalSection({
         <label className="block text-sm font-medium text-bambu-gray mb-1">
           {t('inventory.filamentDiameter')}
         </label>
-        <select
+        <Select
+          className="w-full"
           value={formData.filament_diameter || '1.75'}
           onChange={(e) => updateField('filament_diameter', e.target.value)}
-          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
         >
           <option value="1.75">1.75 mm</option>
           <option value="2.85">2.85 mm</option>
-        </select>
+        </Select>
       </div>
 
       {/* Lot (bundle position). In quick-add mode an extra "auto-increment"
@@ -345,7 +346,7 @@ export function AdditionalSection({
             const n = parseInt(raw, 10);
             updateField('lot', Number.isFinite(n) && n > 0 ? String(n) : '');
           }}
-          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+          className="accent-bambu-green w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
         />
         {quickAdd && (
           <label className="flex items-center gap-2 cursor-pointer mt-2">
@@ -353,7 +354,7 @@ export function AdditionalSection({
               type="checkbox"
               checked={formData.auto_increment_lot}
               onChange={(e) => updateField('auto_increment_lot', e.target.checked)}
-              className="w-4 h-4 rounded border-bambu-dark-tertiary text-bambu-green focus:ring-bambu-green"
+              className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary text-bambu-green focus:ring-bambu-green"
             />
             <span className="text-sm text-white">{t('inventory.autoIncrementLots')}</span>
           </label>
@@ -497,17 +498,17 @@ export function AdditionalSection({
           <label className="block text-sm font-medium text-bambu-gray mb-1">
             {t('inventory.spoolForm.effectType', 'Visual effect')}
           </label>
-          <select
+          <Select
+            className="w-full"
             value={formData.effect_type}
             onChange={(e) => updateField('effect_type', e.target.value)}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
           >
             {FILAMENT_EFFECT_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {t(opt.labelKey)}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
         {/* Live swatch preview — pins what the chosen colour + stops + effect
          * will actually look like on the inventory card. Dual/Tri-Color show
@@ -533,9 +534,9 @@ export function AdditionalSection({
         <label className="block text-sm font-medium text-bambu-gray mb-1" htmlFor="spool-storage-location">
           {t('inventory.storageLocation')}
         </label>
-        <select
+        <Select
+          className="w-full"
           id="spool-storage-location"
-          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
           value={formData.location_id ?? ''}
           onChange={(e) => {
             const raw = e.target.value;
@@ -550,7 +551,7 @@ export function AdditionalSection({
           {availableLocations.map((loc) => (
             <option key={loc.id} value={loc.id}>{loc.name}</option>
           ))}
-        </select>
+        </Select>
         {onCreateLocation && (
           <div className="mt-2 flex gap-2">
             <input

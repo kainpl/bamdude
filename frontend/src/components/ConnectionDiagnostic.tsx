@@ -1,8 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
-  X,
   Stethoscope,
   CheckCircle2,
   XCircle,
@@ -16,6 +15,7 @@ import {
   type DiagnosticStatus,
   type PrinterDiagnosticResult,
 } from '../api/client';
+import { Modal } from './Modal';
 
 function StatusIcon({ status }: { status: DiagnosticStatus }) {
   if (status === 'pass') return <CheckCircle2 className="w-5 h-5 text-bambu-green flex-shrink-0" />;
@@ -111,6 +111,7 @@ const PUBLISH_WAIT_DEFAULT_SECONDS = 10;
 export function ConnectionDiagnosticModal(props: ConnectionDiagnosticModalProps) {
   const { onClose, printerName } = props;
   const { t } = useTranslation();
+  const headingId = useId();
   const printerId = 'printerId' in props ? props.printerId : undefined;
   const connection = 'connection' in props ? props.connection : undefined;
 
@@ -145,82 +146,66 @@ export function ConnectionDiagnosticModal(props: ConnectionDiagnosticModalProps)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
-
   const result = diagnose.data as PrinterDiagnosticResult | undefined;
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-lg flex flex-col max-h-[85vh]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
-          <div className="flex items-center gap-2 min-w-0">
-            <Stethoscope className="w-5 h-5 text-bambu-green flex-shrink-0" />
-            <h2 className="text-lg font-semibold text-white truncate">
-              {t('diagnostic.modalTitle', { name: printerName || '' })}
-            </h2>
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      header={
+        <>
+          <Stethoscope className="w-5 h-5 text-bambu-green flex-shrink-0" />
+          <h2 id={headingId} className="text-lg font-semibold text-white truncate">
+            {t('diagnostic.modalTitle', { name: printerName || '' })}
+          </h2>
+        </>
+      }
+      size="lg"
+      bodyClassName="flex flex-col"
+    >
+      <div className="p-4 space-y-4 overflow-y-auto">
+        {diagnose.isPending && (
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2 text-bambu-gray">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span>
+                {elapsedSeconds > 0
+                  ? t('diagnostic.runningElapsed', { elapsed: elapsedSeconds })
+                  : t('diagnostic.running')}
+              </span>
+            </div>
+            {printerId !== undefined && (
+              <p className="text-xs text-bambu-gray-light pl-6">
+                {t('diagnostic.waitingForReportHint', { max: PUBLISH_WAIT_DEFAULT_SECONDS })}
+              </p>
+            )}
           </div>
-          <button
-            onClick={onClose}
-            className="text-bambu-gray hover:text-white transition-colors"
-            title={t('common.close')}
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+        )}
 
-        <div className="p-6 space-y-4 overflow-y-auto">
-          {diagnose.isPending && (
-            <div className="space-y-1.5">
-              <div className="flex items-center gap-2 text-bambu-gray">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>
-                  {elapsedSeconds > 0
-                    ? t('diagnostic.runningElapsed', { elapsed: elapsedSeconds })
-                    : t('diagnostic.running')}
-                </span>
-              </div>
-              {printerId !== undefined && (
-                <p className="text-xs text-bambu-gray-light pl-6">
-                  {t('diagnostic.waitingForReportHint', { max: PUBLISH_WAIT_DEFAULT_SECONDS })}
-                </p>
-              )}
-            </div>
-          )}
+        {diagnose.isError && (
+          <div className="rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+            {t('diagnostic.runFailed', { error: (diagnose.error as Error).message })}
+          </div>
+        )}
 
-          {diagnose.isError && (
-            <div className="rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30 px-4 py-3 text-sm text-red-700 dark:text-red-300">
-              {t('diagnostic.runFailed', { error: (diagnose.error as Error).message })}
-            </div>
-          )}
-
-          {result && <DiagnosticChecklist result={result} />}
-        </div>
-
-        <div className="px-6 py-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
-          <button
-            onClick={() => diagnose.mutate()}
-            disabled={diagnose.isPending}
-            className="px-4 py-2 bg-bambu-dark hover:bg-bambu-dark-tertiary disabled:opacity-50 text-white text-sm rounded-lg transition-colors"
-          >
-            {t('diagnostic.retry')}
-          </button>
-          <button
-            onClick={onClose}
-            className="px-4 py-2 bg-bambu-green hover:bg-bambu-green/90 text-white text-sm rounded-lg transition-colors"
-          >
-            {t('common.close')}
-          </button>
-        </div>
+        {result && <DiagnosticChecklist result={result} />}
       </div>
-    </div>
+
+      <div className="px-4 py-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
+        <button
+          onClick={() => diagnose.mutate()}
+          disabled={diagnose.isPending}
+          className="px-4 py-2 bg-bambu-dark hover:bg-bambu-dark-tertiary disabled:opacity-50 text-white text-sm rounded-lg transition-colors"
+        >
+          {t('diagnostic.retry')}
+        </button>
+        <button
+          onClick={onClose}
+          className="px-4 py-2 bg-bambu-green hover:bg-bambu-green/90 text-white text-sm rounded-lg transition-colors"
+        >
+          {t('common.close')}
+        </button>
+      </div>
+    </Modal>
   );
 }

@@ -122,6 +122,186 @@ class TestFreshInstall:
     def test_starts_with_no_users_so_setup_is_required(self, result):
         assert result["counts"].get("users") == 0
 
+    def test_the_legacy_project_tables_are_gone(self, result):
+        """m158 retires the whole make-it side of the old projects feature.
+
+        Replaces an m044-era test that asserted which unique constraint
+        ``project_print_plan_items`` ends up with: the table itself is dropped
+        now, so the only thing left worth pinning on a real server is that the
+        drop actually happened — the frozen migrations (m016, m044, m048) still
+        CREATE and fill these tables earlier in the chain, so a fresh install
+        proves m158 runs after them and cleans up.
+
+        ``_m158_pending_plate_copies`` is in the list for the same reason from
+        the other end: it is m158's own scratch table, created in ``upgrade()``
+        and dropped at the very bottom of ``seed()``. Left behind it would mean
+        ``seed()`` never reached its end, which is exactly the interrupted-run
+        state the parts step is now written to recover from — and a fresh
+        install has nothing to recover, so on this path it must be gone.
+        """
+        psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
+        import asyncio
+
+        url = _pg_url()
+        legacy = (
+            "project_bom_items",
+            "project_print_plan_items",
+            "project_parts",
+            "library_file_projects",
+            "library_folder_projects",
+            "_m158_pending_plate_copies",
+        )
+
+        async def go() -> set[str]:
+            conn = await psycopg.connect(url, timeout=20)
+            try:
+                rows = await conn.fetch(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = ANY($1::text[])",
+                    list(legacy),
+                )
+                return {r["tablename"] for r in rows}
+            finally:
+                await conn.close()
+
+        survivors = asyncio.run(go())
+        assert survivors == set(), (
+            f"m158 left legacy or scratch project tables behind on a fresh install: {sorted(survivors)}"
+        )
+
+    def test_the_part_stock_ledger_is_there_with_its_indexes(self, result):
+        """m162's table and the three indexes its reads ride.
+
+        The table alone is already covered by ``test_every_declared_table_exists``
+        through ``Base.metadata``; the INDEXES are invisible from there. On a
+        fresh install ``create_all`` builds them and m162's
+        ``CREATE INDEX IF NOT EXISTS`` finds them already present — the branch
+        that would show up as a duplicate index or an error only on a real
+        server, which is what this file is for.
+        """
+        assert "product_part_stock_movements" in result["tables"]
+
+        psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
+        import asyncio
+
+        url = _pg_url()
+
+        async def go() -> list[str]:
+            conn = await psycopg.connect(url, timeout=20)
+            try:
+                rows = await conn.fetch(
+                    "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = $1",
+                    "product_part_stock_movements",
+                )
+                return sorted(r["indexname"] for r in rows)
+            finally:
+                await conn.close()
+
+        indexes = set(asyncio.run(go()))
+        wanted = {
+            "ix_product_part_stock_movements_part_created",
+            "ix_product_part_stock_movements_archive_id",
+            "ix_product_part_stock_movements_project_line_id",
+        }
+        assert wanted <= indexes, f"missing {sorted(wanted - indexes)}; the table has {sorted(indexes)}"
+
+    def test_the_hidden_hms_entries_table_has_its_unique_pair_and_index(self, result):
+        """m163's table, with the constraint and the index the model also
+        declares — ``create_all`` builds them on a fresh install and the
+        migration's ``CREATE INDEX IF NOT EXISTS`` must find that one already
+        there rather than trip over it; the constraint name is what makes a
+        second Hide of the same entry idempotent at the storage level.
+        """
+        assert "hms_muted_entries" in result["tables"]
+
+        psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
+        import asyncio
+
+        url = _pg_url()
+
+        async def go() -> tuple[list[str], list[str]]:
+            conn = await psycopg.connect(url, timeout=20)
+            try:
+                indexes = await conn.fetch(
+                    "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = $1",
+                    "hms_muted_entries",
+                )
+                constraints = await conn.fetch(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = 'public.hms_muted_entries'::regclass"
+                )
+                return sorted(r["indexname"] for r in indexes), sorted(r["conname"] for r in constraints)
+            finally:
+                await conn.close()
+
+        indexes, constraints = asyncio.run(go())
+        assert "ix_hms_muted_entries_printer_id" in indexes, indexes
+        assert "uq_hms_muted_printer_code" in constraints, constraints
+
+    def test_the_printer_tag_tables_carry_their_widths_key_and_composite_pk(self, result):
+        """m164's two tables, with the three things only a real server enforces.
+
+        ``name_key`` is deliberately VARCHAR(128) against ``name``'s 64 because
+        ``.lower()`` is not length-preserving in Unicode — SQLite ignores the
+        width entirely, so a narrowed column here would reject a legal tag on
+        PostgreSQL alone. The UNIQUE index is the case-insensitive identity the
+        whole entity exists for, and the link table's composite primary key is
+        what makes pinning the same tag twice a no-op at the storage level.
+        """
+        assert "printer_tags" in result["tables"]
+        assert "printer_tag_links" in result["tables"]
+
+        psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
+        import asyncio
+
+        url = _pg_url()
+
+        async def go() -> tuple[list[str], dict[str, tuple[str, int | None]], list[str], list[str]]:
+            conn = await psycopg.connect(url, timeout=20)
+            try:
+                indexes = await conn.fetch(
+                    "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = $1 AND indexname = $2",
+                    "printer_tags",
+                    "ix_printer_tags_name_key",
+                )
+                columns = await conn.fetch(
+                    "SELECT column_name, data_type, character_maximum_length "
+                    "FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = $1",
+                    "printer_tags",
+                )
+                pk = await conn.fetch(
+                    "SELECT a.attname FROM pg_constraint c "
+                    "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey) "
+                    "WHERE c.conrelid = 'public.printer_tag_links'::regclass AND c.contype = 'p' "
+                    # In declaration order: a (tag_id, printer_id) key would not serve a
+                    # printer_id lookup, and membership alone cannot tell the two apart.
+                    "ORDER BY array_position(c.conkey, a.attnum)"
+                )
+                fks = await conn.fetch(
+                    "SELECT confrelid::regclass::text AS target FROM pg_constraint "
+                    "WHERE conrelid = 'public.printer_tag_links'::regclass AND contype = 'f'"
+                )
+                return (
+                    [r["indexdef"] for r in indexes],
+                    {r["column_name"]: (r["data_type"], r["character_maximum_length"]) for r in columns},
+                    [r["attname"] for r in pk],
+                    sorted(r["target"] for r in fks),
+                )
+            finally:
+                await conn.close()
+
+        indexdefs, columns, pk_columns, fk_targets = asyncio.run(go())
+
+        assert indexdefs, "ix_printer_tags_name_key is missing"
+        assert "UNIQUE" in indexdefs[0], indexdefs[0]
+
+        assert columns.get("name_key") == ("character varying", 128), columns.get("name_key")
+        assert columns.get("name") == ("character varying", 64), columns.get("name")
+
+        assert pk_columns == ["printer_id", "tag_id"], pk_columns
+        # Both parents: without the FK to printer_tags a tag row could be deleted
+        # out from under its links on PostgreSQL alone.
+        assert fk_targets == ["printer_tags", "printers"], fk_targets
+
 
 class TestSqliteMigration:
     """An existing SQLite install must carry its rows across."""
@@ -155,3 +335,91 @@ class TestSqliteMigration:
             f"sequences behind MAX(id): {migrated['lagging_sequences']} — "
             "the next insert into these tables would collide on the primary key"
         )
+
+
+class TestProductExportImport:
+    """A product ZIP must round-trip on PostgreSQL, not only on SQLite.
+
+    The same round trip is covered in full by
+    ``test_product_export_import.py``; this run exists for what the two back
+    ends disagree about — JSON columns, sequences behind ``id``, and a NOT NULL
+    a Python-side default fills. Skipped with everything else here when
+    ``TEST_POSTGRES_URL`` is unset.
+    """
+
+    @pytest.fixture(scope="class")
+    def result(self, tmp_path_factory) -> dict:
+        url = _pg_url()
+        _wipe(url)
+        return _run("product_roundtrip", tmp_path_factory.mktemp("pg_product"), url)
+
+    def test_the_card_and_the_composition_come_back(self, result):
+        assert result["name"] == "Desk Lamp"
+        assert result["designer"] == "Chef&koch" and result["design_id"] == "1234567"
+        assert result["parts"] == {"shade.stl": 1, "hook.stl": 2, "clip.stl": 1}
+        assert result["warnings"] == []
+        assert result["filename"].startswith("desk-lamp_") and result["filename"].endswith(".zip")
+
+    def test_the_plates_are_derived_from_the_files_themselves(self, result):
+        assert sorted(result["plates"]) == [["gone.gcode.3mf", 1], ["gone.gcode.3mf", 2], ["kept.gcode.3mf", 0]]
+
+    def test_the_surviving_file_is_matched_by_hash_and_only_the_other_is_ingested(self, result):
+        assert result["library_rows_after"] == result["library_rows_before"], (
+            "one file was deleted before the import and one survived — the survivor must be matched by "
+            "hash and the deleted one re-ingested, so the row count must come back to where it started"
+        )
+
+    def test_the_attachments_and_the_cover_come_back(self, result):
+        assert result["attachments"] == [["pictures", "shot.png", "import"]]
+        assert result["cover_is_the_picture"] is True
+
+
+class TestCyrillicSearch:
+    """Upper-case Cyrillic must find its lower-case row on a real server.
+
+    The maintainer's dev database is a ``C``-locale one (measured 2026-09-12:
+    PostgreSQL 18.4, ``datctype = C``), which is the shape that used to fail —
+    ``lower('ЛАМПА')`` came back unchanged, so ``ILIKE`` matched nothing. The
+    unit tests read the collated SQL as text; only a server says whether that
+    text folds. Skipped with everything else here when ``TEST_POSTGRES_URL``
+    is unset.
+    """
+
+    @pytest.fixture(scope="class")
+    def result(self, tmp_path_factory) -> dict:
+        url = _pg_url()
+        _wipe(url)
+        return _run("cyrillic_search", tmp_path_factory.mktemp("pg_cyrillic"), url)
+
+    def test_capitals_find_the_lower_case_rows(self, result):
+        assert result["products"] == ["Лампа настільна"]
+        assert result["archives"] == ["Кронштейн"]
+
+    def test_the_probe_reports_what_it_did(self, result):
+        """Rows were found above, so a folding mechanism must be on record: the
+        database folds natively, or the probe picked a collation. Neither is
+        impossible — it would mean the search matched with nothing folding it,
+        and the reported state is then not describing this run.
+
+        This does not say WHICH path ran (a UTF-8-locale server legitimately
+        answers "native"); the report itself names it, and the ``C``-locale dev
+        server is what the maintainer runs this against.
+        """
+        assert result["native"] or result["collation"] in ("pg_c_utf8", "und-x-icu"), result
+
+    def test_the_collated_sql_runs_on_this_server(self, result):
+        """The collated SQL is sent to a server here even when this one folds
+        natively — otherwise the branch would only ever be measured on the
+        maintainer's ``C``-locale database, and CI (and every modern default
+        install) would report the feature green without having compiled it once.
+
+        The runner picks the collation the probe would have picked, sets the
+        compiler's switch by hand and asks the same two searches again with a
+        private compiled-SQL cache. A wrong rewrite does not reach this assertion
+        at all — the server refuses the statement and the scenario fails.
+        """
+        if result["forced_collation"] is None:
+            pytest.skip("this server offers no Unicode collation (pre-17 without ICU) — nothing to force")
+        assert result["forced_collation"] in ("pg_c_utf8", "und-x-icu"), result
+        assert result["forced_products"] == result["products"], result
+        assert result["forced_archives"] == result["archives"], result

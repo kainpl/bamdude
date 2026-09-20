@@ -14,8 +14,8 @@ import { render } from '../utils';
 import { server } from '../mocks/server';
 import { FileManagerPage } from '../../pages/FileManagerPage';
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+vi.mock('react-router', async () => {
+  const actual = await vi.importActual<typeof import('react-router')>('react-router');
   return { ...actual, useNavigate: () => vi.fn() };
 });
 
@@ -23,6 +23,7 @@ const base = {
   file_path: '/library/x',
   file_size: 1024,
   folder_id: null,
+  product_ids: [],
   thumbnail_path: null,
   print_time_seconds: null,
   duplicate_count: 0,
@@ -37,7 +38,14 @@ const RAW = { ...base, id: 2, filename: 'bracket.stl', file_type: 'stl', file_ta
 function mockLibrary(files: unknown[]) {
   server.use(
     http.get('/api/v1/library/folders', () => HttpResponse.json([])),
-    http.get('/api/v1/library/files', () => HttpResponse.json(files)),
+    // Server-driven (task 2, 2026-08-29): FileManagerPage always sends
+    // `page`, so the endpoint answers with the {items, meta} envelope.
+    http.get('/api/v1/library/files', () =>
+      HttpResponse.json({
+        items: files,
+        meta: { total: files.length, current_page: 1, per_page: 50, last_page: 1 },
+      }),
+    ),
     http.get('/api/v1/library/stats', () =>
       HttpResponse.json({
         total_files: files.length,

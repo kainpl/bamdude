@@ -16,6 +16,8 @@
  * class string, and anything arithmetic is a number applied through inline style.
  */
 
+import type { CSSProperties } from 'react';
+
 /* ── Layout knobs ───────────────────────────────────────────────────────────
  * Every dimension worth tuning by eye lives here rather than being buried in a
  * className soup. These are whole Tailwind class strings on purpose (see the
@@ -25,7 +27,8 @@
  *                   caps that only bite on a small window. The overlay is
  *                   `fixed inset-0`, so a percentage here is a share of the
  *                   client area — `vh` would include the scrollbar gutter.
- *                   Width is absent on purpose — see DIALOG_WIDTH_PX.
+ *                   Only the height is a class; the width and the two caps are
+ *                   DIALOG_FRAME_STYLE.
  * PLATE_IMAGE_PX  — rendered edge of the square plate image inside the dialog.
  *                   Deliberately fixed and deliberately NOT tied to the dialog
  *                   width: the markers are a fixed size, so growing the plate is
@@ -49,7 +52,7 @@
  *                   (48px ID badge + 24px padding = 72px = 4.5rem), or content
  *                   clips; 5rem leaves a little air.
  */
-export const DIALOG_FRAME = 'h-[60%] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)]';
+export const DIALOG_FRAME = 'h-[60%]';
 export const PLATE_IMAGE_PX = 352;
 export const PLATE_GUTTER_PX = 32; // the column's p-4, both sides
 export const LIGHTBOX_SCALE = 1.5;
@@ -83,6 +86,15 @@ export const LIST_COLUMN_PX = Math.round(COLUMN_PX * LIST_WIDTH_SCALE);
  * width, making the dialog as wide as the longest translated string.
  */
 export const DIALOG_WIDTH_PX = COLUMN_PX + LIST_COLUMN_PX + 2;
+
+/** The frame's inline half: the computed width plus the two small-window caps.
+ *  Inline because the modal shell sizes its panel with a class and an inline
+ *  style is the only thing that reliably beats it. */
+export const DIALOG_FRAME_STYLE: CSSProperties = {
+  width: DIALOG_WIDTH_PX,
+  maxWidth: 'calc(100vw - 2rem)',
+  maxHeight: 'calc(100vh - 2rem)',
+};
 
 export type PlateObject = {
   id: number;

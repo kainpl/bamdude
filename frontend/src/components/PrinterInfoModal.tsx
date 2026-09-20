@@ -1,8 +1,7 @@
-import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Signal, Cable } from 'lucide-react';
-import { Card, CardContent } from './Card';
+import { Signal, Cable } from 'lucide-react';
 import { CopyButton } from './CopyButton';
+import { Modal } from './Modal';
 import { useQuery } from '@tanstack/react-query';
 import { formatDateTime, type TimeFormat, type DateFormat } from '../utils/date';
 import { api, macrosApi } from '../api/client';
@@ -38,14 +37,6 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
   });
   const timeFormat: TimeFormat = (settings as Record<string, string> | undefined)?.time_format as TimeFormat || 'system';
   const dateFormat: DateFormat = (settings as Record<string, string> | undefined)?.date_format as DateFormat || 'system';
-
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
 
   const rows: { label: string; value: React.ReactNode }[] = [];
 
@@ -292,42 +283,26 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
   });
 
   return (
-    <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-      role="dialog"
-      aria-modal="true"
-      onClick={onClose}
-    >
-      <Card className="w-full max-w-md" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
-        <CardContent>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-white">
-              {printer.name}
-            </h2>
-            <button onClick={onClose} className="p-1 hover:bg-bambu-dark rounded flex-shrink-0">
-              <X className="w-5 h-5 text-bambu-gray" />
-            </button>
-          </div>
+    <Modal onClose={onClose} title={printer.name} size="md">
+      <div className="p-4">
+        {/* Printer Image */}
+        <div className="flex justify-center mb-4">
+          <img
+            src={getPrinterImage(printer.model)}
+            alt={printer.model ?? printer.name}
+            className="h-24 object-contain"
+          />
+        </div>
 
-          {/* Printer Image */}
-          <div className="flex justify-center mb-4">
-            <img
-              src={getPrinterImage(printer.model)}
-              alt={printer.model ?? printer.name}
-              className="h-24 object-contain"
-            />
-          </div>
-
-          <div className="space-y-0">
-            {rows.map((row, i) => (
-              <div key={i} className="flex items-center justify-between gap-4 py-2.5 border-b border-bambu-dark-tertiary last:border-0">
-                <span className="text-sm text-bambu-gray whitespace-nowrap">{row.label}</span>
-                <span className="text-sm text-white text-right">{row.value}</span>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+        <div className="space-y-0">
+          {rows.map((row, i) => (
+            <div key={i} className="flex items-center justify-between gap-4 py-2.5 border-b border-bambu-dark-tertiary last:border-0">
+              <span className="text-sm text-bambu-gray whitespace-nowrap">{row.label}</span>
+              <span className="text-sm text-white text-right">{row.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Modal>
   );
 }

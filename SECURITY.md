@@ -33,10 +33,13 @@ Please include the following information in your report:
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
-| 0.2.x   | :white_check_mark: |
+Fixes ship in the next release, not as backports.
+
+| Version | Supported |
+| ------- | --------- |
+| Latest stable (`vX.Y.Z`, Docker `:latest`) | :white_check_mark: |
+| Current beta (`vX.Y.ZbN`, Docker `:dev`)   | :white_check_mark: — fixed in the next beta or the stable it becomes |
+| Anything older                              | :x: — upgrade first (see [UPDATING.md](UPDATING.md)) |
 
 ## Security Considerations
 
@@ -57,10 +60,12 @@ BamDude communicates with your printers over your local network using:
 
 ### Known Security Features
 
-- API key authentication for external access
-- No default credentials
+- Authentication is always on: JWT with rotating refresh tokens, optional 2FA (TOTP, email OTP, backup codes) and OIDC single sign-on
+- Every API endpoint is permission-checked; API keys are scoped and can never reach admin-only operations
+- Login rate limiting per user and per IP
+- No default credentials — the first start creates the admin account
 - Local-only by default (no cloud dependency)
-- TLS encryption for printer communication
+- TLS encryption for printer communication; strict Content-Security-Policy and security headers on the web UI
 
 ## Scope
 

@@ -2,9 +2,10 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.app.schemas.printer_location import PrinterLocationOut
+from backend.app.schemas.printer_tag import PrinterTagOut
 
 
 class PrinterQueueResponse(BaseModel):
@@ -15,6 +16,9 @@ class PrinterQueueResponse(BaseModel):
     printer_name: str | None = None
     printer_model: str | None = None
     printer_location: PrinterLocationOut | None = None
+    #: The printer's tags, the shape every response embeds — the queue page
+    #: sorts and groups by them exactly as the printers page does.
+    printer_tags: list[PrinterTagOut] = Field(default_factory=list)
     status: str  # idle, printing, paused, error
     is_paused: bool = False  # operator-controlled queue pause, orthogonal to status
     auto_distribute_eligible: bool = True  # opt-out from AutoQueue routing

@@ -162,9 +162,17 @@ def _name_matches_subtask(archive: PrintArchive, live_subtask_name: str) -> bool
     as ``PrintArchive.print_name`` (and the sliced ``filename`` stem) — match on
     that.
 
-    Requires both sides non-empty: an empty live subtask is ambiguous (printer
-    between jobs) and must fall through to the state-based classification, never
-    force a spurious match.
+    Requires both sides to have SAID something: an empty live subtask is
+    ambiguous (printer between jobs) and must fall through to the state-based
+    classification, never force a spurious match; an archive that recorded no
+    name offers nothing to agree with.
+
+    ⚠️ **Emptiness is decided on the raw string, not the normalised one.** A file
+    called only ``.gcode.3mf`` (farm, 2026-09-06) goes up as ``/.3mf`` and is
+    echoed as ``.3mf``; both normalise to ``""``. Reading that as "printer
+    between jobs" refused a live print's own completion — the queue row stayed
+    in ``printing`` for good, and one reconnect during the seven-hour job would
+    have closed it as completed. Two extension-only names are one file, not none.
 
     ⚠️ **``filename`` is the candidate that actually carries the weight**;
     ``print_name`` is checked first only because it is the cheaper identity when
@@ -175,11 +183,13 @@ def _name_matches_subtask(archive: PrintArchive, live_subtask_name: str) -> bool
     suffix: a file may legitimately be named that way, and the filename match
     (see :func:`_subtask_norm` on space folding) already answers it correctly.
     """
-    live = _subtask_norm(live_subtask_name)
-    if not live:
+    if not (live_subtask_name or "").strip():
         return False
+    live = _subtask_norm(live_subtask_name)
     return any(
-        _norm_names_match(_subtask_norm(candidate or ""), live) for candidate in (archive.print_name, archive.filename)
+        _norm_names_match(_subtask_norm(candidate), live)
+        for candidate in (archive.print_name, archive.filename)
+        if (candidate or "").strip()
     )
 
 
@@ -203,11 +213,16 @@ def _norm_names_match(candidate: str, live: str) -> bool:
     #2829). Either side can be the truncated one: the printer truncates what it
     echoes, and an archive whose own name was recorded from an earlier truncated
     echo carries the marker too.
+
+    ⚠️ Two empty strings are equal here, on purpose. The caller has already
+    refused a side that said nothing, so an empty *normalised* name is a name
+    made only of the extensions :func:`_subtask_norm` strips — ``.gcode.3mf``
+    uploaded as ``.3mf`` and echoed as ``.3mf`` (2026-09-06). Same file.
     """
-    if not candidate or not live:
-        return False
     if candidate == live:
         return True
+    if not candidate or not live:
+        return False
     for full, cut in ((candidate, live), (live, candidate)):
         if cut.endswith(_TRUNCATION_MARKER) and full.startswith(cut[: -len(_TRUNCATION_MARKER)]):
             return True
@@ -342,12 +357,64 @@ async def _reconcile_complete_archive(
     # bound.
     archive.completed_at = _recovered_completed_at(archive.started_at, archive.print_time_seconds, now)
 
+    # A finished print books its filament exactly like a supervised one —
+    # measured hole 2026-08-29: six overnight prints closed by this sweep left
+    # ~1.77 kg unbooked. Completed only: a reconciled "failed" carries no layer
+    # information, and booking the full estimate for a partial print would be
+    # worse than the gap it fills. The persisted print-start session survives
+    # the outage (that is what it is for), so the dispatched mapping is intact;
+    # ``expected_print_name`` keeps a session belonging to a DIFFERENT print
+    # from lending its mapping. Skipped when the archive already has history —
+    # a re-entered sweep must not double-book. Best-effort: a booking failure
+    # must never break the sweep.
+    if status == "completed" and archive.printer_id is not None:
+        try:
+            from sqlalchemy import func as _func
+
+            from backend.app.models.spool_usage_history import SpoolUsageHistory
+            from backend.app.services import usage_tracker
+            from backend.app.services.printer_manager import printer_manager as _pm
+
+            already_booked = (
+                await db.execute(
+                    select(_func.count(SpoolUsageHistory.id)).where(SpoolUsageHistory.archive_id == archive.id)
+                )
+            ).scalar()
+            if not already_booked:
+                persisted_name = await usage_tracker.get_persisted_print_name(db, archive.printer_id)
+                await usage_tracker.on_print_complete(
+                    archive.printer_id,
+                    {"status": "completed"},
+                    _pm,
+                    db,
+                    archive_id=archive.id,
+                    expected_print_name=archive.print_name,
+                )
+                # Drop the start row only when it belonged to THIS print — a
+                # row for the printer's next job must survive untouched.
+                if persisted_name and archive.print_name and persisted_name == archive.print_name:
+                    await usage_tracker.clear_persisted_session(db, archive.printer_id)
+        except Exception:
+            logger.exception("reconcile: usage booking failed for archive %s", archive.id)
+
     # Audit flags — reassign the dict so SQLAlchemy flags the JSON column dirty.
     extra = dict(archive.extra_data or {})
     extra["recovered_by_startup_sweep"] = True
     if uncertain:
         extra["recovered_outcome_uncertain"] = True
     archive.extra_data = extra
+
+    # A swap printer's completion normally runs ``swap_mode_change_table``
+    # INSIDE the live handler, holding the queue claim until the table has
+    # physically moved. A print that ended while the process was down never
+    # got that — the pending checklist on the archive still says so — and a
+    # swap printer usually has ``require_plate_clear=False``, so the armed
+    # plate gate below would not hold it either: measured 2026-08-29, four
+    # minis were dispatched onto un-swapped tables a minute after the sweep.
+    # So while the swap is owed, the queue claim is NOT released and the gate
+    # is NOT armed; ``_resolve_pending_swaps`` (spawned after the caller
+    # commits) settles it — runs the macro, or pauses the queue with a reason.
+    swap_owed = status == "completed" and "swap_mode_change_table" in (extra.get("swap_macro_events_pending") or [])
 
     # Successes only, matching the live handler: a file attempted three times
     # and failed three times has a print_count of 0.
@@ -363,7 +430,7 @@ async def _reconcile_complete_archive(
         item.completed_at = now
         if status == "failed":
             await set_queue_error(db, item.queue_id, failed_item_id=item.id)
-        else:
+        elif not swap_owed:
             await set_queue_idle(db, item.queue_id)
         await update_queue_counters(db, item.queue_id)
 
@@ -383,10 +450,13 @@ async def _reconcile_complete_archive(
 
         await clean_up_finished_row(db, item, queue_status=status, plate_auto_cleared=False)
 
-    # Arm the plate-clear gate unconditionally — the recovered print's
-    # plate is physically still on the bed after an unsupervised gap, so
-    # the next job must wait for the operator's clear-plate confirmation.
-    if archive.printer_id is not None:
+    # Arm the plate-clear gate — the recovered print's plate is physically
+    # still on the bed after an unsupervised gap, so the next job must wait
+    # for the operator's clear-plate confirmation. Except while a swap is
+    # owed: there the held queue claim is the block, and the swap resolution
+    # decides whether the plate ends up clear (macro ran) or the operator is
+    # asked (queue paused with a reason).
+    if archive.printer_id is not None and not swap_owed:
         from backend.app.services.printer_manager import printer_manager
 
         printer_manager.set_awaiting_plate_clear(archive.printer_id, True)
@@ -610,7 +680,109 @@ async def reconcile_printer_prints(
             name=f"reconcile-energy-{archive_id}",
         )
 
+    # The table swap a dead process still owed (2026-08-29). Spawned after the
+    # commit: the macro is a physical move with an ACK wait, which has no
+    # business on the connect path — and the race is already closed, because
+    # the close above kept the queue claim for every archive whose swap is
+    # owed, so nothing dispatches until this task settles it.
+    if recovered:
+        from backend.app.core.tasks import spawn_background_task
+
+        spawn_background_task(
+            _resolve_pending_swaps(printer_id, recovered),
+            name=f"reconcile-swaps-{printer_id}",
+        )
+
     await _load_objects_for_a_print_already_running(printer_id, live_state)
+
+
+async def _resolve_pending_swaps(printer_id: int, archive_ids: list[int]) -> None:
+    """Finish the table swap a dead process still owed, or hold the queue.
+
+    For each recovered archive still carrying ``swap_mode_change_table`` on
+    its pending checklist:
+
+    * **certain completed + swap enabled + macro found** — run the macro now,
+      exactly as the live completion would have, then release the queue claim
+      the close deliberately kept. The interrupted automation resumes.
+    * **anything else** — outcome uncertain, swap since disabled, macro
+      missing, or the macro failed — pause the queue with a reason on the
+      next pending item. ``waiting_reason`` alone is NOT a block (the
+      scheduler recomputes it every tick); the pause is.
+    """
+    from sqlalchemy import select as sa_select
+
+    from backend.app.core.database import async_session
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer import Printer
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.archive import remove_swap_pending_event
+    from backend.app.services.macro_executor import find_swap_macro
+    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.queue_counters import set_queue_idle, set_queue_paused
+
+    for archive_id in archive_ids:
+        try:
+            async with async_session() as db:
+                archive = await db.get(PrintArchive, archive_id)
+                if archive is None or archive.status != "completed":
+                    continue
+                extra = archive.extra_data if isinstance(archive.extra_data, dict) else {}
+                if "swap_mode_change_table" not in (extra.get("swap_macro_events_pending") or []):
+                    continue
+                uncertain = bool(extra.get("recovered_outcome_uncertain"))
+                printer = await db.get(Printer, printer_id)
+                # ⚠️ queue_id is NOT printer_id — see telegram_handlers.common.resolve_queue_id.
+                queue_id = (
+                    await db.execute(sa_select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))
+                ).scalar_one_or_none()
+
+                macro = None
+                if printer is not None and printer.swap_mode_enabled and not uncertain:
+                    macro = await find_swap_macro(db, "swap_mode_change_table", printer)
+
+                swapped = False
+                reason = None
+                if uncertain:
+                    reason = "Swap pending after outage — outcome uncertain, inspect the plate, then resume"
+                elif macro is None or not macro.gcode:
+                    reason = "Swap pending after outage — run the table swap or clear the plate, then resume"
+                else:
+                    logger.info(
+                        "reconcile: running owed change_table macro '%s' on printer %d (archive %d)",
+                        macro.name,
+                        printer_id,
+                        archive_id,
+                    )
+                    swapped, msg = await printer_manager.execute_macro_and_wait(printer_id, macro.gcode, macro.name)
+                    if swapped:
+                        if remove_swap_pending_event(archive, "swap_mode_change_table"):
+                            await db.commit()
+                    else:
+                        reason = f"Swap macro failed: {msg}"
+
+                if swapped:
+                    if queue_id is not None:
+                        await set_queue_idle(db, queue_id)
+                        await db.commit()
+                    logger.info("reconcile: owed table swap done — queue released for printer %d", printer_id)
+                elif queue_id is not None:
+                    await set_queue_paused(db, queue_id)
+                    nxt = (
+                        await db.execute(
+                            sa_select(PrintQueueItem)
+                            .where(PrintQueueItem.queue_id == queue_id, PrintQueueItem.status == "pending")
+                            .order_by(PrintQueueItem.position)
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+                    if nxt is not None:
+                        nxt.waiting_reason = reason
+                    await db.commit()
+                    logger.warning("reconcile: queue paused for printer %d — %s", printer_id, reason)
+        except Exception:
+            logger.exception("reconcile: swap resolution failed for archive %s", archive_id)
 
 
 async def _load_objects_for_a_print_already_running(printer_id: int, live_state: str) -> None:

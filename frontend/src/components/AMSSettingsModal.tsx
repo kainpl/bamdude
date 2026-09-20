@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 
 import { useAmsSettings } from '../hooks/useAmsSettings';
 import { useToast } from '../contexts/ToastContext';
 import type { AmsSettingsPostBody, AmsSystemSettingState } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
+import { Select } from './Select';
 
 interface Props {
   isOpen: boolean;
@@ -133,203 +135,188 @@ export function AMSSettingsModal({ isOpen, onClose, printerId }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center p-4 border-b border-bambu-dark-tertiary">
-          <h2 className="text-lg font-semibold text-white">
-            {t('amsSettings.title')}
-          </h2>
-          <button
-            onClick={onClose}
-            aria-label={t('amsSettings.cancel')}
-            className="p-1 text-bambu-gray hover:text-white rounded transition-colors"
-          >
-            <X className="h-5 w-5" />
-          </button>
+    <Modal onClose={onClose} title={t('amsSettings.title')} size="md">
+      {isLoading || !s || !supports ? (
+        <div className="p-4 space-y-3">
+          {[0, 1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="animate-pulse h-12 bg-bambu-dark rounded"
+            />
+          ))}
         </div>
+      ) : (
+        <div className="p-4 space-y-4">
+          {supports.insertion_update && (
+            <CheckRow
+              title={t('amsSettings.insertionUpdate')}
+              tip={
+                s.insertion_update
+                  ? `${t('amsSettings.insertionUpdateTipOn')} ${t('amsSettings.insertionUpdateTipNote')}`
+                  : t('amsSettings.insertionUpdateTipOff')
+              }
+              checked={!!s.insertion_update}
+              disabled={pendingFlag === 'insertion_update'}
+              onChange={onToggleInsertion}
+            />
+          )}
+          {supports.power_on_update && (
+            <CheckRow
+              title={t('amsSettings.powerOnUpdate')}
+              tip={
+                s.power_on_update
+                  ? t('amsSettings.powerOnTipOn')
+                  : t('amsSettings.powerOnTipOff')
+              }
+              checked={!!s.power_on_update}
+              disabled={pendingFlag === 'power_on_update'}
+              onChange={onTogglePowerOn}
+            />
+          )}
+          {supports.remain_capacity && (
+            <CheckRow
+              title={t('amsSettings.updateRemain')}
+              tip={t('amsSettings.updateRemainTip')}
+              checked={!!s.remain_capacity}
+              disabled={pendingFlag === 'remain_capacity'}
+              onChange={onToggleRemain}
+            />
+          )}
+          {supports.auto_switch_filament && (
+            <CheckRow
+              title={t('amsSettings.filamentBackup')}
+              tip={t('amsSettings.filamentBackupTip')}
+              checked={!!s.auto_switch_filament}
+              disabled={pendingFlag === 'auto_switch_filament'}
+              onChange={onToggleBackup}
+            />
+          )}
+          {supports.air_print_detect && (
+            <CheckRow
+              title={t('amsSettings.airPrintDetection')}
+              tip={t('amsSettings.airPrintTip')}
+              checked={!!s.air_print_detect}
+              disabled={pendingFlag === 'air_print_detect'}
+              onChange={onToggleAirPrint}
+            />
+          )}
 
-        {isLoading || !s || !supports ? (
-          <div className="p-6 space-y-3">
-            {[0, 1, 2, 3].map((i) => (
-              <div
-                key={i}
-                className="animate-pulse h-12 bg-bambu-dark rounded"
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="p-4 space-y-4">
-            {supports.insertion_update && (
-              <CheckRow
-                title={t('amsSettings.insertionUpdate')}
-                tip={
-                  s.insertion_update
-                    ? `${t('amsSettings.insertionUpdateTipOn')} ${t('amsSettings.insertionUpdateTipNote')}`
-                    : t('amsSettings.insertionUpdateTipOff')
-                }
-                checked={!!s.insertion_update}
-                disabled={pendingFlag === 'insertion_update'}
-                onChange={onToggleInsertion}
-              />
-            )}
-            {supports.power_on_update && (
-              <CheckRow
-                title={t('amsSettings.powerOnUpdate')}
-                tip={
-                  s.power_on_update
-                    ? t('amsSettings.powerOnTipOn')
-                    : t('amsSettings.powerOnTipOff')
-                }
-                checked={!!s.power_on_update}
-                disabled={pendingFlag === 'power_on_update'}
-                onChange={onTogglePowerOn}
-              />
-            )}
-            {supports.remain_capacity && (
-              <CheckRow
-                title={t('amsSettings.updateRemain')}
-                tip={t('amsSettings.updateRemainTip')}
-                checked={!!s.remain_capacity}
-                disabled={pendingFlag === 'remain_capacity'}
-                onChange={onToggleRemain}
-              />
-            )}
-            {supports.auto_switch_filament && (
-              <CheckRow
-                title={t('amsSettings.filamentBackup')}
-                tip={t('amsSettings.filamentBackupTip')}
-                checked={!!s.auto_switch_filament}
-                disabled={pendingFlag === 'auto_switch_filament'}
-                onChange={onToggleBackup}
-              />
-            )}
-            {supports.air_print_detect && (
-              <CheckRow
-                title={t('amsSettings.airPrintDetection')}
-                tip={t('amsSettings.airPrintTip')}
-                checked={!!s.air_print_detect}
-                disabled={pendingFlag === 'air_print_detect'}
-                onChange={onToggleAirPrint}
-              />
-            )}
-
-            {supports.firmware_switch && data && (
-              <div className="border-t border-bambu-dark-tertiary pt-3">
-                <div className="font-medium text-white">
-                  {t('amsSettings.amsType')}
-                </div>
-                {s.firmware_switching ? (
-                  // BS hides the picker entirely while the reflash runs
-                  // (AMSSetting.cpp) — offering a second switch mid-flash is
-                  // the one thing that must not be possible here.
-                  <p className="text-sm text-bambu-gray mt-2">
-                    {t('amsSettings.amsTypeSwitching')}
-                  </p>
-                ) : (
-                  <div className="mt-2 flex gap-2 items-center">
-                    <select
-                      className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 text-white focus:border-bambu-green focus:outline-none"
-                      // No `?? 0` fallback: 0 is a real id (IDX_LITE), so
-                      // defaulting to it would silently pre-select a
-                      // personality the printer never said it was running.
-                      value={s.firmware_idx_sel ?? ''}
-                      onChange={(e) => setFwSwitchConfirm(Number(e.target.value))}
-                    >
-                      {s.firmware_idx_sel == null && (
-                        <option value="" disabled>
-                          {t('amsSettings.amsTypeUnknown')}
-                        </option>
-                      )}
-                      {data.firmware_options.map((o) => (
-                        <option key={o.idx} value={o.idx}>
-                          {o.version ? `${o.label} (${o.version})` : o.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-                {s.firmware_idx_run != null && s.firmware_idx_run !== s.firmware_idx_sel && (
-                  <p className="text-sm text-bambu-gray mt-2">
-                    {t('amsSettings.amsTypeRunning', {
-                      name:
-                        data.firmware_options.find((o) => o.idx === s.firmware_idx_run)?.label ??
-                        String(s.firmware_idx_run),
-                    })}
-                  </p>
-                )}
+          {supports.firmware_switch && data && (
+            <div className="border-t border-bambu-dark-tertiary pt-3">
+              <div className="font-medium text-white">
+                {t('amsSettings.amsType')}
               </div>
-            )}
-
-            {supports.reorder && (
-              <div className="border-t border-bambu-dark-tertiary pt-3">
-                <div className="font-medium text-white">
-                  {t('amsSettings.arrangeOrder')}
-                </div>
-                <p className="text-sm text-bambu-gray mt-1">
-                  {t('amsSettings.arrangeNote')}
+              {s.firmware_switching ? (
+                // BS hides the picker entirely while the reflash runs
+                // (AMSSetting.cpp) — offering a second switch mid-flash is
+                // the one thing that must not be possible here.
+                <p className="text-sm text-bambu-gray mt-2">
+                  {t('amsSettings.amsTypeSwitching')}
                 </p>
-                <Button
-                  variant="secondary"
-                  className="mt-2"
-                  onClick={() => setReorderConfirm(true)}
-                >
-                  {t('amsSettings.reset')}
-                </Button>
-              </div>
-            )}
-
-            {(data?.ams_units?.length ?? 0) > 0 && (
-              <div className="border-t border-bambu-dark-tertiary pt-3">
-                <div className="font-medium text-white">
-                  {t('amsSettings.calibrate')}
-                </div>
+              ) : (
                 <div className="mt-2 flex gap-2 items-center">
-                  <label className="text-sm text-bambu-gray">
-                    {t('amsSettings.selectAmsForCalibrate')}:
-                  </label>
-                  <select
-                    className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 text-white focus:border-bambu-green focus:outline-none"
-                    value={selectedAmsId ?? ''}
-                    onChange={(e) => setSelectedAmsId(Number(e.target.value))}
+                  <Select
+                    size="sm"
+                    // No `?? 0` fallback: 0 is a real id (IDX_LITE), so
+                    // defaulting to it would silently pre-select a
+                    // personality the printer never said it was running.
+                    value={s.firmware_idx_sel ?? ''}
+                    onChange={(e) => setFwSwitchConfirm(Number(e.target.value))}
                   >
-                    {data!.ams_units.map((u) => (
-                      <option key={u.ams_id} value={u.ams_id}>
-                        {u.label}
+                    {s.firmware_idx_sel == null && (
+                      <option value="" disabled>
+                        {t('amsSettings.amsTypeUnknown')}
+                      </option>
+                    )}
+                    {data.firmware_options.map((o) => (
+                      <option key={o.idx} value={o.idx}>
+                        {o.version ? `${o.label} (${o.version})` : o.label}
                       </option>
                     ))}
-                  </select>
-                  <Button variant="secondary" onClick={onCalibrate}>
-                    {t('amsSettings.calibrate')}
-                  </Button>
+                  </Select>
                 </div>
+              )}
+              {s.firmware_idx_run != null && s.firmware_idx_run !== s.firmware_idx_sel && (
+                <p className="text-sm text-bambu-gray mt-2">
+                  {t('amsSettings.amsTypeRunning', {
+                    name:
+                      data.firmware_options.find((o) => o.idx === s.firmware_idx_run)?.label ??
+                      String(s.firmware_idx_run),
+                  })}
+                </p>
+              )}
+            </div>
+          )}
+
+          {supports.reorder && (
+            <div className="border-t border-bambu-dark-tertiary pt-3">
+              <div className="font-medium text-white">
+                {t('amsSettings.arrangeOrder')}
               </div>
-            )}
-          </div>
-        )}
+              <p className="text-sm text-bambu-gray mt-1">
+                {t('amsSettings.arrangeNote')}
+              </p>
+              <Button
+                variant="secondary"
+                className="mt-2"
+                onClick={() => setReorderConfirm(true)}
+              >
+                {t('amsSettings.reset')}
+              </Button>
+            </div>
+          )}
 
-        {reorderConfirm && (
-          <ConfirmDialog
-            title={t('amsSettings.reorderTitle')}
-            body={t('amsSettings.confirmReorder')}
-            confirmLabel={t('amsSettings.confirm')}
-            cancelLabel={t('amsSettings.cancel')}
-            onConfirm={onConfirmReorder}
-            onCancel={() => setReorderConfirm(false)}
-          />
-        )}
+          {(data?.ams_units?.length ?? 0) > 0 && (
+            <div className="border-t border-bambu-dark-tertiary pt-3">
+              <div className="font-medium text-white">
+                {t('amsSettings.calibrate')}
+              </div>
+              <div className="mt-2 flex gap-2 items-center">
+                <label className="text-sm text-bambu-gray">
+                  {t('amsSettings.selectAmsForCalibrate')}:
+                </label>
+                <Select
+                  size="sm"
+                  value={selectedAmsId ?? ''}
+                  onChange={(e) => setSelectedAmsId(Number(e.target.value))}
+                >
+                  {data!.ams_units.map((u) => (
+                    <option key={u.ams_id} value={u.ams_id}>
+                      {u.label}
+                    </option>
+                  ))}
+                </Select>
+                <Button variant="secondary" onClick={onCalibrate}>
+                  {t('amsSettings.calibrate')}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
-        {fwSwitchConfirm != null && (
-          <ConfirmDialog
-            title={t('amsSettings.amsType')}
-            body={t('amsSettings.switchFirmwareConfirm')}
-            confirmLabel={t('amsSettings.confirm')}
-            cancelLabel={t('amsSettings.cancel')}
-            onConfirm={onConfirmFwSwitch}
-            onCancel={() => setFwSwitchConfirm(null)}
-          />
-        )}
-      </div>
-    </div>
+      {reorderConfirm && (
+        <ConfirmDialog
+          title={t('amsSettings.reorderTitle')}
+          body={t('amsSettings.confirmReorder')}
+          confirmLabel={t('amsSettings.confirm')}
+          cancelLabel={t('amsSettings.cancel')}
+          onConfirm={onConfirmReorder}
+          onCancel={() => setReorderConfirm(false)}
+        />
+      )}
+
+      {fwSwitchConfirm != null && (
+        <ConfirmDialog
+          title={t('amsSettings.amsType')}
+          body={t('amsSettings.switchFirmwareConfirm')}
+          confirmLabel={t('amsSettings.confirm')}
+          cancelLabel={t('amsSettings.cancel')}
+          onConfirm={onConfirmFwSwitch}
+          onCancel={() => setFwSwitchConfirm(null)}
+        />
+      )}
+    </Modal>
   );
 }
 
@@ -381,8 +368,8 @@ function ConfirmDialog({
   onCancel,
 }: ConfirmDialogProps) {
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
-      <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl p-4 max-w-sm mx-4">
+    <Modal onClose={onCancel} hideClose ariaLabel={title} size="sm">
+      <div className="p-4">
         <h3 className="font-semibold text-white">{title}</h3>
         <p className="mt-2 text-sm text-bambu-gray">{body}</p>
         <div className="mt-4 flex justify-end gap-2">
@@ -392,6 +379,6 @@ function ConfirmDialog({
           <Button onClick={onConfirm}>{confirmLabel}</Button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

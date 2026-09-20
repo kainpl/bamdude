@@ -1,7 +1,6 @@
 import logging
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.i18n.api_errors import json_error
 from backend.app.models.user import User
 from backend.app.schemas.virtual_printer import VPDiagnosticResult
 
@@ -186,18 +186,15 @@ async def create_virtual_printer(
 
     # Validate mode
     if body.mode not in ("print_queue", "auto_queue", "file_manager", "proxy"):
-        return JSONResponse(status_code=400, content={"detail": "Invalid mode"})
+        return json_error(400, "Invalid mode")
 
     # Validate model
     if body.model and body.model not in VIRTUAL_PRINTER_MODELS:
-        return JSONResponse(
-            status_code=400,
-            content={"detail": f"Invalid model. Must be one of: {', '.join(VIRTUAL_PRINTER_MODELS.keys())}"},
-        )
+        return json_error(400, f"Invalid model. Must be one of: {', '.join(VIRTUAL_PRINTER_MODELS.keys())}")
 
     # Validate access code length
     if body.access_code and len(body.access_code) != 8:
-        return JSONResponse(status_code=400, content={"detail": "Access code must be exactly 8 characters"})
+        return json_error(400, "Access code must be exactly 8 characters")
 
     # Validation when enabling. Non-proxy VPs with a target printer derive their
     # access code from the target (the bridge forwards the slicer's auth bytes
@@ -205,13 +202,13 @@ async def create_virtual_printer(
     # supplied access_code isn't required in that case.
     if body.enabled:
         if not body.bind_ip:
-            return JSONResponse(status_code=400, content={"detail": "Bind IP is required when enabling"})
+            return json_error(400, "Bind IP is required when enabling")
         if body.mode == "proxy":
             if not body.target_printer_id:
-                return JSONResponse(status_code=400, content={"detail": "Target printer is required for proxy mode"})
+                return json_error(400, "Target printer is required for proxy mode")
         else:
             if not body.access_code and not body.target_printer_id:
-                return JSONResponse(status_code=400, content={"detail": "Access code is required when enabling"})
+                return json_error(400, "Access code is required when enabling")
 
     # In print_queue mode without auto-select (auto_queue toggle off) AND
     # without a target printer, auto_dispatch=True is unsafe — uploads have
@@ -219,14 +216,10 @@ async def create_virtual_printer(
     # library. Force the operator to either pick a target or switch to
     # auto_queue / disable auto_dispatch.
     if body.mode == "print_queue" and body.auto_dispatch and not body.target_printer_id:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "detail": (
-                    "Auto-dispatch in Queue mode requires a Target Printer. "
-                    "Pick a target, enable Auto-select printer, or turn Auto-dispatch off."
-                )
-            },
+        return json_error(
+            400,
+            "Auto-dispatch in Queue mode requires a Target Printer. "
+            "Pick a target, enable Auto-select printer, or turn Auto-dispatch off.",
         )
 
     # Validate proxy target printer exists
@@ -237,9 +230,7 @@ async def create_virtual_printer(
         result = await db.execute(select(Printer).where(Printer.id == body.target_printer_id))
         target_printer = result.scalar_one_or_none()
         if not target_printer:
-            return JSONResponse(
-                status_code=400, content={"detail": f"Printer with ID {body.target_printer_id} not found"}
-            )
+            return json_error(400, f"Printer with ID {body.target_printer_id} not found")
 
     # Force-inherit the access code from the target printer for non-proxy VPs.
     # The non-proxy bridge (Archive / Review / Queue with a target set) forwards
@@ -257,9 +248,7 @@ async def create_virtual_printer(
 
         result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == body.target_folder_id))
         if not result.scalar_one_or_none():
-            return JSONResponse(
-                status_code=400, content={"detail": f"Library folder with ID {body.target_folder_id} not found"}
-            )
+            return json_error(400, f"Library folder with ID {body.target_folder_id} not found")
 
     # Validate bind_ip uniqueness (against all enabled VPs)
     if body.bind_ip:
@@ -270,7 +259,7 @@ async def create_virtual_printer(
             )
         )
         if result.scalar_one_or_none():
-            return JSONResponse(status_code=400, content={"detail": f"Bind IP {body.bind_ip} is already in use"})
+            return json_error(400, f"Bind IP {body.bind_ip} is already in use")
 
     # Generate next serial suffix
     result = await db.execute(select(VirtualPrinter.serial_suffix).order_by(VirtualPrinter.id.desc()))
@@ -341,7 +330,7 @@ async def get_ca_certificate(
         return virtual_printer_manager.get_ca_certificate_info()
     except Exception as e:
         logger.error("Failed to obtain virtual printer CA certificate: %s", e)
-        return JSONResponse(status_code=500, content={"detail": "Could not generate the CA certificate"})
+        return json_error(500, "Could not generate the CA certificate")
 
 
 @router.get("/{vp_id}/diagnostic", response_model=VPDiagnosticResult)
@@ -362,7 +351,7 @@ async def diagnose_virtual_printer(
     result = await db.execute(select(VirtualPrinter).where(VirtualPrinter.id == vp_id))
     vp = result.scalar_one_or_none()
     if not vp:
-        return JSONResponse(status_code=404, content={"detail": "Virtual printer not found"})
+        return json_error(404, "Virtual printer not found")
 
     instance = virtual_printer_manager.get_instance(vp.id)
     return await run_vp_diagnostic(vp, instance)
@@ -381,7 +370,7 @@ async def get_virtual_printer(
     result = await db.execute(select(VirtualPrinter).where(VirtualPrinter.id == vp_id))
     vp = result.scalar_one_or_none()
     if not vp:
-        return JSONResponse(status_code=404, content={"detail": "Virtual printer not found"})
+        return json_error(404, "Virtual printer not found")
 
     instance = virtual_printer_manager.get_instance(vp.id)
     status = instance.get_status() if instance else {"running": False, "pending_files": 0}
@@ -403,7 +392,7 @@ async def update_virtual_printer(
     result = await db.execute(select(VirtualPrinter).where(VirtualPrinter.id == vp_id))
     vp = result.scalar_one_or_none()
     if not vp:
-        return JSONResponse(status_code=404, content={"detail": "Virtual printer not found"})
+        return json_error(404, "Virtual printer not found")
 
     # Redact the plaintext access code before it reaches the DEBUG log — dumping
     # ``model_dump`` verbatim leaked it whenever a user saved a new code
@@ -428,18 +417,15 @@ async def update_virtual_printer(
         vp.name = body.name
     if body.mode is not None:
         if body.mode not in ("print_queue", "auto_queue", "file_manager", "proxy"):
-            return JSONResponse(status_code=400, content={"detail": "Invalid mode"})
+            return json_error(400, "Invalid mode")
         vp.mode = body.mode
     if body.model is not None:
         if body.model not in VIRTUAL_PRINTER_MODELS:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": f"Invalid model. Must be one of: {', '.join(VIRTUAL_PRINTER_MODELS.keys())}"},
-            )
+            return json_error(400, f"Invalid model. Must be one of: {', '.join(VIRTUAL_PRINTER_MODELS.keys())}")
         vp.model = body.model
     if body.access_code is not None:
         if body.access_code and len(body.access_code) != 8:
-            return JSONResponse(status_code=400, content={"detail": "Access code must be exactly 8 characters"})
+            return json_error(400, "Access code must be exactly 8 characters")
         vp.access_code = body.access_code
     if body.clear_target_printer:
         vp.target_printer_id = None
@@ -449,9 +435,7 @@ async def update_virtual_printer(
         result = await db.execute(select(Printer).where(Printer.id == body.target_printer_id))
         target_printer = result.scalar_one_or_none()
         if not target_printer:
-            return JSONResponse(
-                status_code=400, content={"detail": f"Printer with ID {body.target_printer_id} not found"}
-            )
+            return json_error(400, f"Printer with ID {body.target_printer_id} not found")
         vp.target_printer_id = body.target_printer_id
         # Auto-inherit model from target printer in proxy mode (unless user explicitly set model)
         if body.model is None and vp.mode == "proxy" and target_printer.model:
@@ -463,10 +447,7 @@ async def update_virtual_printer(
 
         result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == body.target_folder_id))
         if not result.scalar_one_or_none():
-            return JSONResponse(
-                status_code=400,
-                content={"detail": f"Library folder with ID {body.target_folder_id} not found"},
-            )
+            return json_error(400, f"Library folder with ID {body.target_folder_id} not found")
         vp.target_folder_id = body.target_folder_id
     if body.auto_dispatch is not None:
         vp.auto_dispatch = body.auto_dispatch
@@ -487,14 +468,10 @@ async def update_virtual_printer(
     # mode (auto_queue toggle off) without a Target Printer, auto_dispatch=True
     # is unsafe — uploads have nowhere to land automatically.
     if vp.mode == "print_queue" and vp.auto_dispatch and not vp.target_printer_id:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "detail": (
-                    "Auto-dispatch in Queue mode requires a Target Printer. "
-                    "Pick a target, enable Auto-select printer, or turn Auto-dispatch off."
-                )
-            },
+        return json_error(
+            400,
+            "Auto-dispatch in Queue mode requires a Target Printer. "
+            "Pick a target, enable Auto-select printer, or turn Auto-dispatch off.",
         )
 
     # Auto-inherit model when switching to proxy mode with existing target printer
@@ -529,7 +506,7 @@ async def update_virtual_printer(
         # User is explicitly toggling on - enforce all requirements
         if not vp.bind_ip:
             logger.warning("Update VP %d rejected: no bind_ip", vp_id)
-            return JSONResponse(status_code=400, content={"detail": "Bind IP is required when enabling"})
+            return json_error(400, "Bind IP is required when enabling")
         # Validate bind_ip uniqueness (against all enabled VPs)
         existing = await db.execute(
             select(VirtualPrinter).where(
@@ -548,20 +525,17 @@ async def update_virtual_printer(
                 conflict.enabled,
                 conflict.mode,
             )
-            return JSONResponse(
-                status_code=400,
-                content={"detail": f"Bind IP {vp.bind_ip} is already in use by '{conflict.name}'"},
-            )
+            return json_error(400, f"Bind IP {vp.bind_ip} is already in use by '{conflict.name}'")
         if effective_mode == "proxy":
             if not vp.target_printer_id:
                 logger.warning("Update VP %d rejected: no target_printer_id for proxy mode", vp_id)
-                return JSONResponse(status_code=400, content={"detail": "Target printer is required for proxy mode"})
+                return json_error(400, "Target printer is required for proxy mode")
         else:
             if not vp.access_code:
                 logger.warning(
                     "Update VP %d rejected: no access_code for non-proxy enable (mode=%s)", vp_id, effective_mode
                 )
-                return JSONResponse(status_code=400, content={"detail": "Access code is required when enabling"})
+                return json_error(400, "Access code is required when enabling")
     elif new_enabled and body.enabled is None:
         # VP is already enabled and user is changing other fields -
         # auto-disable if new state doesn't meet requirements
@@ -608,7 +582,7 @@ async def delete_virtual_printer(
     result = await db.execute(select(VirtualPrinter).where(VirtualPrinter.id == vp_id))
     vp = result.scalar_one_or_none()
     if not vp:
-        return JSONResponse(status_code=404, content={"detail": "Virtual printer not found"})
+        return json_error(404, "Virtual printer not found")
 
     vp_name = vp.name
 

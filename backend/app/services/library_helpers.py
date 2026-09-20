@@ -306,33 +306,3 @@ def folder_activity_at(folder, latest_file_activity: datetime | None = None) -> 
     if latest_file_activity is None:
         return own
     return max(own, latest_file_activity)
-
-
-def project_for_library_file(explicit: int | None, library_file) -> int | None:
-    """Which project a print belongs to, when the caller did not name one.
-
-    An operator who names a project always wins. Otherwise the file's own links
-    answer: a file already sitting in a project produces prints that sit in the
-    same project, without the interface having to re-state it from whichever
-    page the print was started on.
-
-    m044 made the link many-to-many while archives, queue items and auto-queue
-    items each carry a single project. The first link is taken — deterministic,
-    since the pivot reads in insertion order — and an operator who needs a
-    different one passes it explicitly.
-
-    Takes an already-loaded file: ``projects`` is a relationship, and touching
-    it inside a request that did not eager-load it raises ``MissingGreenlet``.
-    Callers use ``selectinload(LibraryFile.projects)``.
-
-    This lived twice, written out in the queue and auto-queue routes, and the
-    direct-print route never received a copy — so printing a project-linked
-    file straight to a printer produced an archive with no project at all.
-    That is why it is one function now.
-    """
-    if explicit is not None:
-        return explicit
-    if library_file is None:
-        return None
-    projects = getattr(library_file, "projects", None) or []
-    return projects[0].id if projects else None

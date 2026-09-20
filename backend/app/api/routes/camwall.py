@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequireCamWallToken
 from backend.app.core.database import get_db
+from backend.app.models.camera import Camera
 from backend.app.models.printer import Printer
 from backend.app.services.printer_manager import printer_manager
 
@@ -100,3 +101,31 @@ async def list_camwall_printers(
         payload.append(entry)
 
     return payload
+
+
+@router.get("/cameras")
+async def list_camwall_cameras(
+    _: None = RequireCamWallToken,
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """The standalone cameras a kiosk wall draws beside the printers.
+
+    ⚠️ **No URL, ever.** The same rule that keeps ``serial_number`` out of the
+    printer feed above: this list is fetched with a token that travels in a URL
+    on a lobby screen, and an RTSP camera's credentials live inside its own URL.
+    A tile needs a name, a rotation and a place — the frames come through
+    ``/cameras/{id}/stream``, which the stream token gates separately.
+
+    Switched-off cameras are excluded rather than sent with a flag: a kiosk has
+    nobody to explain a greyed-out tile to.
+    """
+    rows = (await db.execute(select(Camera).where(Camera.enabled.is_(True)).order_by(Camera.name))).scalars().all()
+    return [
+        {
+            "id": camera.id,
+            "name": camera.name,
+            "rotation": camera.rotation or 0,
+            "location_id": camera.location_id,
+        }
+        for camera in rows
+    ]

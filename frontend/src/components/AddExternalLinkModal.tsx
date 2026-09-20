@@ -1,11 +1,13 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { X, Save, Loader2, Upload, Trash2 } from 'lucide-react';
+import { Save, Loader2, Upload, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { ExternalLink, ExternalLinkCreate, ExternalLinkNavGroup, ExternalLinkUpdate } from '../api/client';
 import { Button } from './Button';
 import { IconPicker, getIconByName } from './IconPicker';
+import { Modal } from './Modal';
+import { Select } from './Select';
 interface AddExternalLinkModalProps {
   link?: ExternalLink | null;
   onClose: () => void;
@@ -28,15 +30,6 @@ export function AddExternalLinkModal({ link, onClose }: AddExternalLinkModalProp
   );
   const [pendingIconFile, setPendingIconFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  // Close on Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
 
   // Create mutation
   const createMutation = useMutation({
@@ -156,182 +149,165 @@ export function AddExternalLinkModal({ link, onClose }: AddExternalLinkModalProp
   const PresetIcon = getIconByName(icon);
 
   return (
-    <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-      onClick={onClose}
+    <Modal
+      onClose={onClose}
+      title={isEditing ? 'Edit Link' : 'Add External Link'}
+      icon={
+        <div className="p-2 rounded-full bg-bambu-green/20 text-bambu-green">
+          {useCustomIcon && customIconPreview ? (
+            <img src={customIconPreview} alt="" className="w-5 h-5 rounded" />
+          ) : (
+            <PresetIcon className="w-5 h-5" />
+          )}
+        </div>
+      }
+      size="md"
     >
-      <div
-        className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-md"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-full bg-bambu-green/20 text-bambu-green">
-              {useCustomIcon && customIconPreview ? (
-                <img src={customIconPreview} alt="" className="w-5 h-5 rounded" />
-              ) : (
-                <PresetIcon className="w-5 h-5" />
-              )}
-            </div>
-            <h2 className="text-lg font-semibold text-white">
-              {isEditing ? 'Edit Link' : 'Add External Link'}
-            </h2>
+      {/* Form */}
+      <form onSubmit={handleSubmit} className="p-4 space-y-4">
+        {error && (
+          <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
+            {error}
           </div>
-          <button
-            onClick={onClose}
-            className="text-bambu-gray hover:text-white transition-colors"
+        )}
+
+        {/* Name */}
+        <div>
+          <label className="block text-sm text-bambu-gray mb-1">Name *</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="My Link"
+            maxLength={50}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+          />
+        </div>
+
+        {/* URL */}
+        <div>
+          <label className="block text-sm text-bambu-gray mb-1">URL *</label>
+          <input
+            type="text"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://example.com"
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+          />
+        </div>
+
+        {/* Sidebar group */}
+        <div>
+          <label className="block text-sm text-bambu-gray mb-1">{t('externalLinks.navGroup')}</label>
+          <Select
+            className="w-full"
+            value={navGroup}
+            onChange={(e) => setNavGroup(e.target.value as ExternalLinkNavGroup)}
           >
-            <X className="w-5 h-5" />
+            <option value="operations">{t('nav.group.operations')}</option>
+            <option value="workshop">{t('nav.group.workshop')}</option>
+            <option value="resources">{t('nav.group.resources')}</option>
+            <option value="care">{t('nav.group.care')}</option>
+            <option value="system">{t('nav.group.system')}</option>
+            <option value="external">{t('nav.group.external')}</option>
+          </Select>
+        </div>
+
+        {/* Open in New Tab */}
+        <div className="flex items-center justify-between">
+          <label className="text-sm text-bambu-gray">{t('externalLinks.openInNewTab')}</label>
+          <button
+            type="button"
+            onClick={() => setOpenInNewTab(!openInNewTab)}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+              openInNewTab ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                openInNewTab ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
           </button>
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          {error && (
-            <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
-              {error}
+        {/* Icon Section */}
+        <div className="space-y-3">
+          <label className="block text-sm text-bambu-gray">Icon</label>
+
+          {/* Custom Icon Upload */}
+          <div className="p-3 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm text-white">Custom Icon</span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/svg+xml,image/webp,image/x-icon"
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+              {useCustomIcon && customIconPreview ? (
+                <div className="flex items-center gap-2">
+                  <img src={customIconPreview} alt="Custom icon" className="w-8 h-8 rounded border border-bambu-dark-tertiary" />
+                  <button
+                    type="button"
+                    onClick={handleRemoveCustomIcon}
+                    className="p-1 text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors"
+                    title="Remove custom icon"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload className="w-4 h-4" />
+                  Upload
+                </Button>
+              )}
+            </div>
+            <p className="text-xs text-bambu-gray">
+              PNG, JPG, GIF, SVG, WebP, or ICO. Max 1MB.
+            </p>
+          </div>
+
+          {/* Preset Icon Picker */}
+          {!useCustomIcon && (
+            <div>
+              <span className="text-sm text-bambu-gray block mb-2">Or choose a preset icon</span>
+              <IconPicker value={icon} onChange={setIcon} />
             </div>
           )}
+        </div>
 
-          {/* Name */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">Name *</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="My Link"
-              maxLength={50}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-            />
-          </div>
-
-          {/* URL */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">URL *</label>
-            <input
-              type="text"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://example.com"
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-            />
-          </div>
-
-          {/* Sidebar group */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">{t('externalLinks.navGroup')}</label>
-            <select
-              value={navGroup}
-              onChange={(e) => setNavGroup(e.target.value as ExternalLinkNavGroup)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-            >
-              <option value="operations">{t('nav.group.operations')}</option>
-              <option value="workshop">{t('nav.group.workshop')}</option>
-              <option value="resources">{t('nav.group.resources')}</option>
-              <option value="care">{t('nav.group.care')}</option>
-              <option value="system">{t('nav.group.system')}</option>
-              <option value="external">{t('nav.group.external')}</option>
-            </select>
-          </div>
-
-          {/* Open in New Tab */}
-          <div className="flex items-center justify-between">
-            <label className="text-sm text-bambu-gray">{t('externalLinks.openInNewTab')}</label>
-            <button
-              type="button"
-              onClick={() => setOpenInNewTab(!openInNewTab)}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                openInNewTab ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  openInNewTab ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-
-          {/* Icon Section */}
-          <div className="space-y-3">
-            <label className="block text-sm text-bambu-gray">Icon</label>
-
-            {/* Custom Icon Upload */}
-            <div className="p-3 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-white">Custom Icon</span>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/gif,image/svg+xml,image/webp,image/x-icon"
-                  className="hidden"
-                  onChange={handleFileSelect}
-                />
-                {useCustomIcon && customIconPreview ? (
-                  <div className="flex items-center gap-2">
-                    <img src={customIconPreview} alt="Custom icon" className="w-8 h-8 rounded border border-bambu-dark-tertiary" />
-                    <button
-                      type="button"
-                      onClick={handleRemoveCustomIcon}
-                      className="p-1 text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors"
-                      title="Remove custom icon"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ) : (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Upload className="w-4 h-4" />
-                    Upload
-                  </Button>
-                )}
-              </div>
-              <p className="text-xs text-bambu-gray">
-                PNG, JPG, GIF, SVG, WebP, or ICO. Max 1MB.
-              </p>
-            </div>
-
-            {/* Preset Icon Picker */}
-            {!useCustomIcon && (
-              <div>
-                <span className="text-sm text-bambu-gray block mb-2">Or choose a preset icon</span>
-                <IconPicker value={icon} onChange={setIcon} />
-              </div>
+        {/* Actions */}
+        <div className="flex gap-3 pt-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+            className="flex-1"
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            disabled={isPending}
+            className="flex-1"
+          >
+            {isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4" />
             )}
-          </div>
-
-          {/* Actions */}
-          <div className="flex gap-3 pt-2">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={onClose}
-              className="flex-1"
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              disabled={isPending}
-              className="flex-1"
-            >
-              {isPending ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Save className="w-4 h-4" />
-              )}
-              {isEditing ? 'Save' : 'Add'}
-            </Button>
-          </div>
-        </form>
-      </div>
-    </div>
+            {isEditing ? 'Save' : 'Add'}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }

@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Save, Loader2, Search, Check, Minus, Shield, AlertTriangle } from 'lucide-react';
@@ -172,7 +172,7 @@ export function GroupEditPage() {
 
   if (groupLoading || permissionsLoading) {
     return (
-      <div className="space-y-6 max-w-5xl mx-auto">
+      <div className="space-y-4 max-w-5xl mx-auto">
         {pageHeader}
         <LoadingBlock label={t('common.loading')} />
       </div>
@@ -180,7 +180,7 @@ export function GroupEditPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-5xl mx-auto">
+    <div className="space-y-4 max-w-5xl mx-auto">
       {pageHeader}
 
       {/* System group warning */}
@@ -271,7 +271,7 @@ export function GroupEditPage() {
                           : 'border-bambu-gray hover:border-white'
                       }`}
                     >
-                      {fullySelected && <Check className="w-3 h-3 text-white" />}
+                      {fullySelected && <Check className="w-3 h-3 text-black" strokeWidth={3} />}
                       {partiallySelected && !fullySelected && <Minus className="w-3 h-3 text-white" />}
                     </button>
                     <Shield className="w-4 h-4 text-bambu-gray shrink-0" />
@@ -291,7 +291,7 @@ export function GroupEditPage() {
                         type="checkbox"
                         checked={permissions.includes(perm.value)}
                         onChange={() => togglePermission(perm.value)}
-                        className="w-4 h-4 shrink-0 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark-secondary"
+                        className="accent-bambu-green w-4 h-4 shrink-0 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark-secondary"
                       />
                       <span className="flex flex-col">
                         <span className="text-sm text-bambu-gray">{getPermissionLabel(perm.label, t)}</span>
@@ -314,7 +314,7 @@ export function GroupEditPage() {
       <div className="h-16" />
 
       {/* Fixed bottom bar */}
-      <div className="fixed bottom-0 left-0 right-0 z-20 px-6 py-3 bg-bambu-dark-secondary border-t border-bambu-dark-tertiary flex items-center justify-center gap-3">
+      <div className="fixed bottom-0 left-0 right-0 z-20 px-4 py-3 bg-bambu-dark-secondary border-t border-bambu-dark-tertiary flex items-center justify-center gap-3">
         <Button variant="secondary" onClick={() => navigate('/settings?tab=users')}>
           {t('common.cancel')}
         </Button>

@@ -1,19 +1,28 @@
-"""zigpy's database carries the Zigbee network key. It has to ride the backup.
+"""Zigbee snapshot includes WAL; file restore retains old DB and sidecars for rollback."""
 
-Same reasoning as the MFA encryption key, which the ZIP already carries: both
-are unrecoverable, and losing either makes a restore quietly useless — encrypted
-secrets in one case, every paired device in the other.
-
-The severities differ, and so does the handling. A missing MFA key corrupts data
-that already exists, so that copy failure raises. A missing Zigbee database
-costs re-pairing, which is recoverable by walking to each plug — so it warns and
-lets the backup finish. Failing an operator's whole backup, prints and archives
-included, over an optional radio would be the worse trade.
-"""
+from types import SimpleNamespace
 
 import pytest
 
-from backend.app.api.routes.settings import _restore_zigbee_db, _stage_zigbee_db
+from backend.app.services.backup_files import FileRestore, stage_zigbee_db as _stage_zigbee_db
+
+
+def _restore_zigbee_db(staging, data_dir):
+    settings = SimpleNamespace(
+        base_dir=data_dir,
+        archive_dir=data_dir / "archive",
+        library_dir=data_dir / "library",
+        projects_dir=data_dir / "projects",
+        products_dir=data_dir / "products",
+        plate_calibration_dir=data_dir / "plate_calibration",
+    )
+    files = FileRestore(staging, settings, data_dir)
+    try:
+        files.prepare()
+        files.apply()
+        files.committed = True
+    finally:
+        files.finish()
 
 
 def test_staged_when_present(tmp_path):
@@ -49,18 +58,15 @@ def test_absent_is_not_an_error(tmp_path):
     assert not (staging / "zigbee").exists()
 
 
-def test_a_corrupt_source_warns_but_does_not_raise(tmp_path):
-    """An optional radio must not be able to fail the whole backup.
+def test_a_corrupt_existing_source_fails_backup(tmp_path):
+    import sqlite3
 
-    A file that is not a database at all is the cheapest way to make the
-    snapshot fail for real, rather than patching the call out.
-    """
     data_dir, staging = tmp_path / "data", tmp_path / "stage"
     (data_dir / "zigbee").mkdir(parents=True)
-    (data_dir / "zigbee" / "zigbee.db").write_bytes(b"definitely not sqlite")
+    (data_dir / "zigbee/zigbee.db").write_bytes(b"definitely not sqlite")
     staging.mkdir()
-
-    _stage_zigbee_db(data_dir, staging)  # must not raise
+    with pytest.raises(sqlite3.DatabaseError):
+        _stage_zigbee_db(data_dir, staging)
 
 
 def test_wal_contents_are_included(tmp_path):

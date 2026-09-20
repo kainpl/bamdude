@@ -52,7 +52,7 @@ function mockArchives(meta: { current_page: number; per_page: number; total: num
       lastQuery = new URL(request.url).searchParams;
       return HttpResponse.json({ data: [archive(1, 'Benchy'), archive(2, 'Bracket')], meta });
     }),
-    http.get('/api/v1/archives/stats', () =>
+    http.get('/api/v1/statistics/overview', () =>
       HttpResponse.json({
         total_archives: meta.total,
         total_print_time_seconds: 0,

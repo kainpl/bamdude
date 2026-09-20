@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { Layers, Clock, Weight, Box, Loader2, X } from 'lucide-react';
+import { Layers, Clock, Weight, Box, Loader2 } from 'lucide-react';
 import { api } from '../api/client';
 import type { PlateMetadata } from '../types/plates';
 import { resolveSpoolColorName } from '../utils/colors';
 import { formatDuration } from '../utils/date';
+import { Modal } from './Modal';
 
 interface Props {
   fileId: number;
+  /** Open on this plate index rather than the first one (spec 5). */
+  initialPlateIndex?: number;
 }
 
 /**
@@ -23,7 +26,7 @@ interface Props {
 // Internal-only — LibraryPlateGalleryModal below is the single consumer
 // (kept as a separate component so the modal frame can wrap the gallery
 // without forcing every caller to deal with focus/escape handling).
-function LibraryPlateGallery({ fileId }: Props) {
+function LibraryPlateGallery({ fileId, initialPlateIndex }: Props) {
   const { t } = useTranslation();
   const { data, isLoading } = useQuery({
     queryKey: ['library-file-plates', fileId],
@@ -33,7 +36,7 @@ function LibraryPlateGallery({ fileId }: Props) {
 
   const plates: PlateMetadata[] = useMemo(() => data?.plates ?? [], [data]);
 
-  const [activeIdx, setActiveIdx] = useState<number | null>(null);
+  const [activeIdx, setActiveIdx] = useState<number | null>(initialPlateIndex ?? null);
   useEffect(() => {
     if (plates.length === 0) return;
     if (activeIdx !== null && plates.find((p) => p.index === activeIdx)) return;
@@ -167,46 +170,28 @@ interface ModalProps {
   fileId: number;
   filename: string;
   onClose: () => void;
+  initialPlateIndex?: number;
 }
 
 /** Full-screen modal wrapping ``LibraryPlateGallery`` for list-mode rows. */
-export function LibraryPlateGalleryModal({ fileId, filename, onClose }: ModalProps) {
+export function LibraryPlateGalleryModal({ fileId, filename, onClose, initialPlateIndex }: ModalProps) {
   const { t } = useTranslation();
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  const headingId = useId();
 
   return (
-    <div
-      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
-      onClick={onClose}
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      header={
+        <h3 id={headingId} className="text-sm font-semibold text-white truncate">
+          {t('fileManager.plateGallery')}: <span className="font-normal text-bambu-gray">{filename}</span>
+        </h3>
+      }
+      size="3xl"
     >
-      <div
-        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl w-full max-w-3xl shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-bambu-dark-tertiary">
-          <h3 className="text-sm font-semibold text-white truncate">
-            {t('fileManager.plateGallery')}: <span className="font-normal text-bambu-gray">{filename}</span>
-          </h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-bambu-gray hover:text-white"
-            aria-label={t('common.close')}
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        <div className="p-4">
-          <LibraryPlateGallery fileId={fileId} />
-        </div>
+      <div className="p-4">
+        <LibraryPlateGallery fileId={fileId} initialPlateIndex={initialPlateIndex} />
       </div>
-    </div>
+    </Modal>
   );
 }

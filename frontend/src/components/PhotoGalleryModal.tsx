@@ -3,6 +3,7 @@ import { X, ChevronLeft, ChevronRight, Download, Trash2 } from 'lucide-react';
 import { api } from '../api/client';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
+import { Modal } from './Modal';
 
 interface PhotoGalleryModalProps {
   archiveId: number;
@@ -22,16 +23,15 @@ export function PhotoGalleryModal({
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  // Keyboard navigation
+  // Keyboard navigation. ⚠️ Escape is NOT here: the shell owns it.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
       if (e.key === 'ArrowLeft') setCurrentIndex((i) => Math.max(0, i - 1));
       if (e.key === 'ArrowRight') setCurrentIndex((i) => Math.min(photos.length - 1, i + 1));
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, photos.length]);
+  }, [photos.length]);
 
   // Reset index if photos change
   useEffect(() => {
@@ -62,16 +62,10 @@ export function PhotoGalleryModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 bg-black/90 flex items-center justify-center z-50"
-      onClick={onClose}
-    >
-      <div
-        className="relative w-full h-full flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal variant="lightbox" onClose={onClose} ariaLabel={archiveName}>
+      <div className="relative w-full h-full flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-black/50">
+        <div className="flex items-center justify-between px-4 py-4 bg-black/50">
           <div>
             <h2 className="text-lg font-semibold text-white">{archiveName}</h2>
             <p className="text-sm text-bambu-gray">
@@ -166,6 +160,6 @@ export function PhotoGalleryModal({
           onCancel={() => setShowDeleteConfirm(false)}
         />
       )}
-    </div>
+    </Modal>
   );
 }

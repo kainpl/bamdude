@@ -21,7 +21,7 @@ import { api } from '../../api/client';
 import type { ZigbeeStatus } from '../../api/client';
 
 function status(over: Partial<ZigbeeStatus> = {}): ZigbeeStatus {
-  return { state: 'up', reason: null, coordinator: null, network: null, ...over };
+  return { state: 'up', reason: null, coordinator: null, network: null, radio_changed: null, ...over };
 }
 
 describe('ZigbeeStatusBadge', () => {

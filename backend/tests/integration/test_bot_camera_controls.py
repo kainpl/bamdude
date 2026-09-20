@@ -29,6 +29,10 @@ class _Chat:
     def has_permission(self, _perm: str) -> bool:
         return self._allowed
 
+    def allows_printer(self, _printer_id) -> bool:
+        # m157 printer scope: this double models an unscoped chat.
+        return True
+
 
 def _printer(state="RUNNING", *, connected=True, pid=3):
     return {"id": pid, "name": "P1S-02", "state": state, "connected": connected}

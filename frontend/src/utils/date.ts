@@ -460,6 +460,20 @@ export function formatDurationFromHours(hours: number): string {
  * for *keying* buckets, where the value needs to be a stable comparable
  * string regardless of locale conventions.
  */
+/**
+ * Read a bucket key from `GET /statistics/aggregate` as a local calendar date.
+ *
+ * ⚠️ Do NOT feed these to `parseUTCDate`. A bucket key (`2026-09-08` or
+ * `2026-09-08T14`) is already local — the server folded it into the zone this
+ * browser sent as `X-Client-Timezone` — so treating it as an instant would
+ * shift it back by the offset and move prints to the wrong day.
+ */
+export function localDateOfBucket(key: string): Date {
+  const [datePart, hourPart] = key.split('T');
+  const [y, m, d] = datePart.split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1, hourPart ? Number(hourPart) : 0);
+}
+
 export function localDateKey(input: string | Date): string {
   const date = typeof input === 'string' ? parseUTCDate(input) : input;
   if (!date) return '';

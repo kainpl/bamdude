@@ -1,4 +1,4 @@
-import type { AutoQueueItem, CalibrationMode, PrintQueueItem, Printer } from '../../api/client';
+import type { AutoQueueItem, FilamentRoutingSnapshot, FeedPolicy, CalibrationMode, PrintQueueItem, Printer } from '../../api/client';
 import type { AutoCalibrationCaps } from '../../utils/printerCapabilities';
 
 /**
@@ -10,20 +10,97 @@ import type { AutoCalibrationCaps } from '../../utils/printerCapabilities';
  */
 export type PrintModalMode = 'reprint' | 'add-to-queue' | 'edit-queue-item' | 'edit-auto-item';
 
+/** What the Quantity field means when several specific printers are picked
+ *  (spec 2026-09-11 §3): the number on EACH printer, or the total across them,
+ *  dealt round-robin on submit. With one printer, or in auto mode, the two are
+ *  the same number and the toggle is not shown. */
+export type QuantityMode = 'perPrinter' | 'total';
+
+/** Remembered per browser — each operator keeps their own habit, nothing on
+ *  the server (owner's choice, 2026-09-11). */
+export const QUANTITY_MODE_STORAGE_KEY = 'bamdude.printModal.quantityMode';
+
+export function readStoredQuantityMode(): QuantityMode {
+  try {
+    const raw = window.localStorage.getItem(QUANTITY_MODE_STORAGE_KEY);
+    return raw === 'total' ? 'total' : 'perPrinter';
+  } catch {
+    return 'perPrinter';
+  }
+}
+
+export function storeQuantityMode(mode: QuantityMode): void {
+  try {
+    window.localStorage.setItem(QUANTITY_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Private mode / blocked storage: the choice simply is not remembered.
+  }
+}
+
+/**
+ * Everything a submitted dialog was answered WITH — the operator's decisions,
+ * and nothing derived from the file.
+ *
+ * ⚠️ This exists so a grouped run can carry one answer onto the files that
+ * would have been answered identically. Before it, `QueueSequencer` mounted
+ * each silent member with the component's own defaults and hoped: a member
+ * started at no printer and `dispatchMode: 'specific'`, so `canSubmit` was
+ * false for ever on any farm with more than one printer, and a leader who
+ * chose "Queue Only" produced members that dispatched immediately. The spec's
+ * carry table described this type; nothing implemented it.
+ *
+ * ⚠️ **Filament mapping is deliberately absent, and so is anything keyed by
+ * plate index.** A global tray id names a different spool on a different
+ * machine and plate 3 of one file is not plate 3 of the next, so both are
+ * recomputed per file by the same code the visible dialog uses. The rule for
+ * adding a field here: it carries if and only if the answer means the same
+ * thing about a different file.
+ */
+export interface PrintModalAnswer {
+  /** File-local slot decisions require a visible dialog for the next file. */
+  requiresFileReview?: boolean;
+  /** Which printers the operator ticked. Empty in auto mode. */
+  selectedPrinterIds: number[];
+  dispatchMode: 'specific' | 'auto';
+  /** The auto-queue's own answers. A group is one `sliced_for_model` by
+   *  construction, so `target_model` means the same thing for every member —
+   *  and `target_location_id` / `force_color_match` are answers no file
+   *  implies. */
+  autoModeOptions: AutoModeOptionsState;
+  scheduleOptions: ScheduleOptions;
+  /** The shared Quantity. Per-plate overrides are NOT carried: they are keyed
+   *  by this file's plate indexes. */
+  quantity: number;
+  /** How `quantity` is to be read on several printers. Required (spec §4): a
+   *  silent member must split the way its leader did, and an answer that could
+   *  omit the field would silently fall back to the browser's own memory. */
+  quantityMode: QuantityMode;
+  printOptions: PrintOptions;
+  swapMacros: SwapMacrosOptions;
+  selectedMacroIds: number[];
+  /** The KIND of the order answer — inherited by silent members; a specific
+   *  order never is. */
+  orderFilingKind?: 'none' | 'new';
+}
+
 /**
  * Props for the unified PrintModal component.
  *
- * Either archiveId or libraryFileId must be provided.
+ * Exactly one archiveId, libraryFileId, or sourceQueueItemId must be provided.
  * - archiveId: For reprinting/queueing archives
  * - libraryFileId: For printing library files directly
  */
 export interface PrintModalProps {
+  /** File-local intent from a copied queue row; physical pins require review. */
+  initialRouting?: FilamentRoutingSnapshot;
   /** Modal operation mode */
   mode: PrintModalMode;
   /** Archive ID to print (mutually exclusive with libraryFileId) */
   archiveId?: number;
   /** Library file ID to print (mutually exclusive with archiveId) */
   libraryFileId?: number;
+  /** Queue row whose immutable saved bytes are copied (mutually exclusive with both file ids). */
+  sourceQueueItemId?: number;
   /** Display name for the print */
   archiveName: string;
   /** Existing queue item (only for edit-queue-item mode) */
@@ -39,11 +116,83 @@ export interface PrintModalProps {
    *  ⚠️ Only for a caller that knows this file's plates. Copying a queue onto
    *  another printer of the same model does — it is the same file, so the plate
    *  the source item was queued with exists there too, and a "copy" that forgot
-   *  which plate was queued would not be one. A bulk selection of arbitrary
-   *  files must NOT set it: plate 3 of one file need not exist in the next.
+   *  which plate was queued would not be one. A caller that has not read this
+   *  file's plates must NOT set it: plate 3 of one file need not exist in the
+   *  next. A grouped run HAS read them (see ``preselectedPlateIds``), which is
+   *  why it may.
    *
    *  Ignored in `edit-queue-item` mode, where the item's own plate wins. */
   preselectedPlateId?: number | null;
+  /** Open with several plates of this file already chosen.
+   *
+   *  Used by a grouped run: the group knows which of THIS file's plates belong
+   *  to it, so the dialog must show all of them — showing one while the rest
+   *  queue silently would make the visible dialog lie about what it is about
+   *  to do.
+   *
+   *  Takes precedence over ``preselectedPlateId`` when both are given. */
+  preselectedPlateIds?: number[];
+  /** Position of this dialog in a run over GROUPS, with the group's size.
+   *  Rendered as a badge; display only, exactly like ``sequence``. */
+  groupBadge?: { current: number; total: number; units: number };
+  /** Whether this group's remaining members go in on this answer.
+   *
+   *  Controlled: the modal renders what it is given and reports changes; the
+   *  run owns the state, because the answer is a property of the GROUP and must
+   *  reset when the next one opens.
+   *
+   *  ⚠️ Turning it off does NOT discard the answer. The rest of the group still
+   *  opens seeded with it — the operator did not change their mind about the
+   *  settings, they want to look at each file. That is why this is separate
+   *  from ``autoSubmitWhenUnambiguous`` and from ``seededAnswer``. */
+  applyToRest?: boolean;
+  onApplyToRestChange?: (next: boolean) => void;
+  /** Every queue row this dialog's submit created.
+   *
+   *  A quantity becomes ROWS — there is no quantity column on ``print_queue`` —
+   *  and a multi-plate submit fans out over plates and printers besides, so one
+   *  answer can produce many. Reported so a copy run can re-form the blocks the
+   *  source queue had; nothing else needs it. */
+  onQueued?: (createdItemIds: number[]) => void;
+  /** Submit without rendering once the dialog is ready and nothing is
+   *  ambiguous. The modal still owns the payload — this only removes the
+   *  click. Falls back to rendering normally whenever ``canQueueWithoutAsking``
+   *  says no, so a run can never queue a plate the operator would have been
+   *  asked about — and likewise whenever the submit itself ends in a question
+   *  (a low-spool warning) or a failure, so a silent member can never stall a
+   *  run with nothing on screen. */
+  autoSubmitWhenUnambiguous?: boolean;
+  /** Open already answered the way the group's visible dialog was answered.
+   *
+   *  ⚠️ Read ONLY by the state initialisers, so the operator can still change
+   *  every one of these if the member ends up rendering after all. That is why
+   *  it is a separate prop and not a reuse of ``initialSelectedPrinterIds``:
+   *  that one HIDES the printer selector when it is set without
+   *  ``lockPrinterSelection``, which would leave a refused member — precisely
+   *  the dialog that most needs the question — with no way to change printer.
+   *
+   *  ⚠️ It also outranks the stored per-model preference. The preference is
+   *  what the operator answered LAST TIME; this is what they answered a moment
+   *  ago, about this very run. (And the preference write from the leader is
+   *  fire-and-forget, so a member mounting in the same commit reads a cache hit
+   *  of the pre-leader values — carrying the answer is the only ordering that
+   *  is right in both races.) */
+  seededAnswer?: PrintModalAnswer;
+  /** Fired on a successful submit with what the operator actually answered, so
+   *  a grouped run can seed the rest of the group. Fires from every mode's
+   *  success path, alongside the preference write. Display-agnostic: the modal
+   *  does not read it back and does not care whether anyone listens. */
+  onAnswered?: (answer: PrintModalAnswer) => void;
+  /** Fired once when a member asked to submit itself gives up and renders
+   *  instead — no filament match, a dead status query, a low-spool warning, a
+   *  failed dispatch.
+   *
+   *  ⚠️ The run cannot see this any other way: a refused member and a silent
+   *  one both end in `onSuccess` + `onClose`, so without this callback the
+   *  difference between "answered one dialog per group" and "answered one per
+   *  group and then some" is invisible, and the run's summary could not say
+   *  it. Display-only for the caller — it never changes what the modal does. */
+  onAutoSubmitRefused?: () => void;
   /** Position of this dialog in a run over several files ("2 / 5"), rendered as
    *  a badge beside the title. Display only — the modal does not know a run
    *  exists and cannot advance one; QueueSequencer owns that. Omitted for a
@@ -55,6 +204,19 @@ export interface PrintModalProps {
   onSuccess?: () => void;
   /** Project ID to associate the resulting archive with (only when triggered from project view) */
   projectId?: number;
+  /** Which LINE of that order the resulting print counts against.
+   *
+   *  ⚠️ Only meaningful beside ``projectId`` — a line names nothing without
+   *  its order, and the server rejects a line from a different one. Absent
+   *  means "bound to the order, to no line of it", which is what the order
+   *  page shows as its other prints. */
+  projectLineId?: number | null;
+  /** The caller has already answered the order question — with ``projectId`` /
+   *  ``projectLineId``, or with neither, which is the answer "no order". Hides
+   *  the Order field either way. A copied queue item passes this: its source
+   *  row already carries the answer, and re-asking handed the dialog's own
+   *  proposal to every member that submits silently. */
+  orderAnswered?: boolean;
   /** Delete the LibraryFile after dispatch — used by the Printers-page Direct-Print flow
    *  so transient uploads don't linger in File Manager. Only applies to library-file prints. */
   cleanupLibraryAfterDispatch?: boolean;
@@ -180,6 +342,8 @@ export type ScheduleType = 'asap' | 'scheduled' | 'manual';
 export interface ScheduleOptions {
   scheduleType: ScheduleType;
   scheduledTime: string;
+  /** Put this newly submitted block before existing pending work. */
+  enqueuePosition: 'end' | 'next';
   autoOffAfter: boolean;
   /** Hold this job when the printer's last print failed (m116). */
   requirePreviousSuccess: boolean;
@@ -191,6 +355,7 @@ export interface ScheduleOptions {
 export const DEFAULT_SCHEDULE_OPTIONS: ScheduleOptions = {
   scheduleType: 'asap',
   scheduledTime: '',
+  enqueuePosition: 'end',
   autoOffAfter: false,
   // Off by default: a gate nobody asked for is a stalled farm.
   requirePreviousSuccess: false,
@@ -201,15 +366,19 @@ export const DEFAULT_SCHEDULE_OPTIONS: ScheduleOptions = {
  * when the operator picks "Auto" instead of a specific printer.
  */
 export interface AutoModeOptionsState {
+  feed_policy?: FeedPolicy;
   target_model: string | null;
   target_location_id: number | null;
   force_color_match: boolean;
+  allow_base_material_match: boolean;
 }
 
 export const DEFAULT_AUTO_MODE_OPTIONS: AutoModeOptionsState = {
+  feed_policy: 'auto',
   target_model: null,
   target_location_id: null,
   force_color_match: false,
+  allow_base_material_match: true,
 };
 
 /**
@@ -260,6 +429,9 @@ export interface PrinterSelectorProps {
   slicedForModel?: string | null;
   /** File is swap mode compatible - filter to swap-enabled printers only */
   swapCompatible?: boolean;
+  /** Printers whose queue the operator has paused. They stay selectable — the
+   *  item is accepted and waits — and only carry a badge saying so. */
+  pausedQueuePrinterIds?: number[];
 }
 
 /**
@@ -300,6 +472,12 @@ export interface FilamentReqsData {
      *  = user custom). Used to resolve the "original" filament label in
      *  FilamentMapping against the builtin + cloud user-preset maps. #1718. */
     tray_info_idx?: string;
+    /** Structured material resolved through the profile family, e.g. PETG. */
+    filament_type?: string;
+    /** UI-only matcher policy; never sent as part of the raw 3MF requirement. */
+    strict_profile_match?: boolean;
+    /** UI-only matcher policy; never sent as part of the raw 3MF requirement. */
+    strict_color_match?: boolean;
   }>;
 }
 
@@ -321,6 +499,8 @@ export interface FilamentMappingProps {
   forceColorMatch?: Record<number, boolean>;
   /** Called when a slot's force-color-match checkbox is toggled. */
   onForceColorMatchChange?: (slotId: number, value: boolean) => void;
+  /** Make a different loaded colour a refusal in the live mapping preview. */
+  requireExactColor?: boolean;
   /** Names the plate this panel maps, when one panel is rendered per selected
    *  plate. Each plate prints its own subset of the file's slots and gets its
    *  own AMS mapping, so the panels have to be told apart (upstream #2551). */
@@ -382,4 +562,6 @@ export interface ScheduleOptionsProps {
   timeFormat?: 'system' | '12h' | '24h';
   /** Whether the user has permission to control printers (for auto power off) */
   canControlPrinter?: boolean;
+  /** A selected-printer add may move its new block ahead of pending work. */
+  showRunNext?: boolean;
 }

@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { X, Mail, Shield, Smartphone, Key } from 'lucide-react';
+import { Mail, Shield, Smartphone, Key } from 'lucide-react';
 import { api, type LoginResponse } from '../api/client';
-import { Card, CardHeader, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
+import { Modal } from '../components/Modal';
+import { PasswordField } from '../components/PasswordField';
+import { checkPasswordComplexity } from '../utils/password';
 
 type LoginStep = 'credentials' | '2fa' | 'reset-password';
 
@@ -397,8 +399,9 @@ export function LoginPage() {
         showToast(t('login.resetPassword.passwordsDoNotMatch'), 'error');
         return;
       }
-      if (newPassword.length < 8) {
-        showToast(t('login.resetPassword.passwordTooShort'), 'error');
+      const ruleKey = checkPasswordComplexity(newPassword);
+      if (ruleKey) {
+        showToast(t(ruleKey), 'error');
         return;
       }
       resetPasswordMutation.mutate();
@@ -406,7 +409,7 @@ export function LoginPage() {
 
     return (
       <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
-        <div className="max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
+        <div className="max-w-md w-full space-y-4 p-4 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
           <div className="text-center">
             <div className="flex items-center justify-center mb-4">
               <div className="w-14 h-14 rounded-full bg-bambu-green/20 flex items-center justify-center">
@@ -418,39 +421,26 @@ export function LoginPage() {
           </div>
 
           <form onSubmit={handleResetSubmit} className="space-y-4">
-            <div>
-              <label htmlFor="new-password" className="block text-sm font-medium text-white mb-2">
-                {t('login.resetPassword.newPassword')}
-              </label>
-              <input
-                id="new-password"
-                type="password"
-                required
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                className="block w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
-                placeholder={t('login.resetPassword.newPasswordPlaceholder')}
-                autoFocus
-                autoComplete="new-password"
-                minLength={8}
-              />
-            </div>
+            <PasswordField
+              id="new-password"
+              label={t('login.resetPassword.newPassword')}
+              value={newPassword}
+              onChange={setNewPassword}
+              placeholder={t('login.resetPassword.newPasswordPlaceholder')}
+              required
+              autoFocus
+              showRules
+            />
 
-            <div>
-              <label htmlFor="confirm-password" className="block text-sm font-medium text-white mb-2">
-                {t('login.resetPassword.confirmPassword')}
-              </label>
-              <input
-                id="confirm-password"
-                type="password"
-                required
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                className="block w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
-                placeholder={t('login.resetPassword.confirmPasswordPlaceholder')}
-                autoComplete="new-password"
-              />
-            </div>
+            <PasswordField
+              id="confirm-password"
+              label={t('login.resetPassword.confirmPassword')}
+              value={confirmPassword}
+              onChange={setConfirmPassword}
+              placeholder={t('login.resetPassword.confirmPasswordPlaceholder')}
+              required
+              mustMatch={newPassword}
+            />
 
             <button
               type="submit"
@@ -484,7 +474,7 @@ export function LoginPage() {
   if (step === '2fa') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
-        <div className="max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
+        <div className="max-w-md w-full space-y-4 p-4 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
           <div className="text-center">
             <div className="flex items-center justify-center mb-4">
               <div className="w-14 h-14 rounded-full bg-bambu-green/20 flex items-center justify-center">
@@ -644,13 +634,13 @@ export function LoginPage() {
   // ---- Render: credentials step ----
   return (
     <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
-      <div className="max-w-md w-full space-y-8 p-8 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
+      <div className="max-w-md w-full space-y-4 p-4 bg-gradient-to-br from-bambu-card to-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary shadow-lg">
         <div className="text-center">
-          <div className="flex items-center justify-center mb-6">
+          <div className="flex items-center justify-center mb-4">
             <img
-              src={mode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png'}
+              src={mode === 'dark' ? '/img/brand/lockup-compact-on-dark.svg' : '/img/brand/lockup-compact-on-light.svg'}
               alt="BamDude"
-              className="h-16"
+              className="h-12 w-auto"
             />
           </div>
           <h2 className="text-3xl font-bold text-white">
@@ -662,19 +652,19 @@ export function LoginPage() {
         </div>
 
         {showAutologinBanner && (
-          <div className="mt-6 rounded-lg border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          <div className="mt-4 rounded-lg border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
             {t('login.autologinFailed')}
           </div>
         )}
 
         {!localLoginEnabled && (
-          <div className="mt-6 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/40 px-4 py-3 text-sm text-bambu-gray">
+          <div className="mt-4 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/40 px-4 py-3 text-sm text-bambu-gray">
             {t('login.localDisabledNotice')}
           </div>
         )}
 
         {localLoginEnabled && (
-        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+        <form className="mt-4 space-y-4" onSubmit={handleSubmit}>
           <div className="space-y-4">
             <div>
               <label htmlFor="username" className="block text-sm font-medium text-white mb-2">
@@ -696,21 +686,15 @@ export function LoginPage() {
               />
             </div>
 
-            <div>
-              <label htmlFor="password" className="block text-sm font-medium text-white mb-2">
-                {t('login.password') || 'Password'}
-              </label>
-              <input
-                id="password"
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="block w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
-                placeholder={t('login.passwordPlaceholder')}
-                autoComplete="current-password"
-              />
-            </div>
+            <PasswordField
+              id="password"
+              label={t('login.password') || 'Password'}
+              value={password}
+              onChange={setPassword}
+              placeholder={t('login.passwordPlaceholder')}
+              autoComplete="current-password"
+              required
+            />
 
             {/* Remember-me — sliding-session opt-in for 30-day persistence. */}
             <div className="flex items-center gap-2">
@@ -719,7 +703,7 @@ export function LoginPage() {
                 type="checkbox"
                 checked={rememberMe}
                 onChange={(e) => setRememberMe(e.target.checked)}
-                className="h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green/50 focus:ring-2 focus:ring-offset-0 cursor-pointer"
+                className="accent-bambu-green h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green/50 focus:ring-2 focus:ring-offset-0 cursor-pointer"
               />
               <label htmlFor="rememberMe" className="text-sm text-bambu-gray cursor-pointer select-none">
                 {t('login.rememberMe')}
@@ -737,14 +721,23 @@ export function LoginPage() {
             </button>
           </div>
 
+          {/* Offered only when a reset e-mail can actually be sent. With no
+              SMTP there is no self-service recovery at all, and a link that
+              opens a form nothing will answer is worse than no link: the
+              operator recovers the account from the server console instead
+              (`python -m backend.app.cli reset_password`). */}
           <div className="text-center">
-            <button
-              type="button"
-              onClick={() => setShowForgotPassword(true)}
-              className="text-sm text-bambu-gray hover:text-bambu-green transition-colors"
-            >
-              {t('login.forgotPassword')}
-            </button>
+            {advancedAuthStatus?.password_reset_available ? (
+              <button
+                type="button"
+                onClick={() => setShowForgotPassword(true)}
+                className="text-sm text-bambu-gray hover:text-bambu-green transition-colors"
+              >
+                {t('login.forgotPassword')}
+              </button>
+            ) : (
+              <p className="text-sm text-bambu-gray">{t('login.forgotPasswordAskAdmin')}</p>
+            )}
           </div>
         </form>
         )}
@@ -785,105 +778,61 @@ export function LoginPage() {
 
       {/* Forgot Password Modal */}
       {showForgotPassword && (
-        <div
-          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-          onClick={() => setShowForgotPassword(false)}
+        <Modal
+          onClose={() => {
+            setShowForgotPassword(false);
+            setForgotEmail('');
+          }}
+          title={t('login.forgotPasswordTitle')}
+          icon={<Mail className="w-5 h-5 text-bambu-green" />}
+          size="md"
         >
-          <Card
-            className="w-full max-w-md"
-            onClick={(e: React.MouseEvent) => e.stopPropagation()}
-          >
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Mail className="w-5 h-5 text-bambu-green" />
-                  <h2 className="text-lg font-semibold text-white">{t('login.forgotPasswordTitle')}</h2>
+          <div className="p-4">
+            <form onSubmit={handleForgotPassword} className="space-y-4">
+                <p className="text-bambu-gray text-sm">
+                  {t('login.forgotPasswordEmailMessage')}
+                </p>
+
+                <div>
+                  <label htmlFor="forgot-email" className="block text-sm font-medium text-white mb-2">
+                    {t('login.emailAddress')}
+                  </label>
+                  <input
+                    id="forgot-email"
+                    type="email"
+                    required
+                    value={forgotEmail}
+                    onChange={(e) => setForgotEmail(e.target.value)}
+                    className="block w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
+                    placeholder={t('login.emailPlaceholder')}
+                  />
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setShowForgotPassword(false);
-                    setForgotEmail('');
-                  }}
-                >
-                  <X className="w-5 h-5" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {advancedAuthStatus?.advanced_auth_enabled ? (
-                <form onSubmit={handleForgotPassword} className="space-y-4">
-                  <p className="text-bambu-gray text-sm">
-                    {t('login.forgotPasswordEmailMessage')}
-                  </p>
 
-                  <div>
-                    <label htmlFor="forgot-email" className="block text-sm font-medium text-white mb-2">
-                      {t('login.emailAddress')}
-                    </label>
-                    <input
-                      id="forgot-email"
-                      type="email"
-                      required
-                      value={forgotEmail}
-                      onChange={(e) => setForgotEmail(e.target.value)}
-                      className="block w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
-                      placeholder={t('login.emailPlaceholder')}
-                    />
-                  </div>
-
-                  <div className="flex gap-2">
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      className="flex-1"
-                      onClick={() => {
-                        setShowForgotPassword(false);
-                        setForgotEmail('');
-                      }}
-                    >
-                      {t('login.cancel')}
-                    </Button>
-                    <Button
-                      type="submit"
-                      className="flex-1"
-                      disabled={forgotPasswordMutation.isPending}
-                    >
-                      {forgotPasswordMutation.isPending
-                        ? t('login.sending')
-                        : t('login.sendResetEmail')}
-                    </Button>
-                  </div>
-                </form>
-              ) : (
-                <div className="space-y-4">
-                  <p className="text-bambu-gray">
-                    {t('login.forgotPasswordMessage')}
-                  </p>
-
-                  <div className="bg-bambu-dark rounded-lg p-4 space-y-2">
-                    <p className="text-sm text-white font-medium">{t('login.howToReset')}</p>
-                    <ol className="text-sm text-bambu-gray space-y-1 list-decimal list-inside">
-                      <li>{t('login.resetStep1')}</li>
-                      <li>{t('login.resetStep2')}</li>
-                      <li>{t('login.resetStep3')}</li>
-                      <li>{t('login.resetStep4')}</li>
-                    </ol>
-                  </div>
-
+                <div className="flex gap-2">
                   <Button
+                    type="button"
                     variant="secondary"
-                    className="w-full"
-                    onClick={() => setShowForgotPassword(false)}
+                    className="flex-1"
+                    onClick={() => {
+                      setShowForgotPassword(false);
+                      setForgotEmail('');
+                    }}
                   >
-                    {t('login.gotIt')}
+                    {t('login.cancel')}
+                  </Button>
+                  <Button
+                    type="submit"
+                    className="flex-1"
+                    disabled={forgotPasswordMutation.isPending}
+                  >
+                    {forgotPasswordMutation.isPending
+                      ? t('login.sending')
+                      : t('login.sendResetEmail')}
                   </Button>
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+            </form>
+          </div>
+        </Modal>
       )}
     </div>
   );

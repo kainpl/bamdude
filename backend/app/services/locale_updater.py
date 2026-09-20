@@ -61,7 +61,22 @@ async def update_locale_data(db: AsyncSession, language: str) -> dict:
 
 
 async def _update_notification_templates(db: AsyncSession, lang: str) -> int:
-    """Update default notification templates from locale JSON."""
+    """Bring the DB's default notification templates in line with the shipped JSON.
+
+    ⚠️ **Creates as well as updates.** This used to issue an UPDATE only, so a
+    template added to the JSON after the DB was first seeded never appeared:
+    ``rowcount`` came back 0 and the loop moved on. Four shipped templates were
+    dead that way — both filament-runout ones and the two stock alerts — and a
+    farm lost every runout notification in silence, because the count this
+    returns is rows TOUCHED and a missing template looked exactly like an
+    unchanged one. A new event type is now a JSON entry and nothing else; it
+    lands on the next startup without a migration.
+
+    ⚠️ ``event_type`` is UNIQUE, and a template the operator has edited keeps
+    the same single row with ``is_default=False``. So an insert happens only
+    when no row exists AT ALL — otherwise the sync would either break the
+    constraint or overwrite the very customisation it exists to preserve.
+    """
     from backend.app.models.notification_template import NotificationTemplate
 
     file_path = DATA_DIR / f"notification_templates_{lang}.json"
@@ -72,7 +87,8 @@ async def _update_notification_templates(db: AsyncSession, lang: str) -> int:
     with open(file_path, encoding="utf-8") as f:
         templates = json.load(f)
 
-    count = 0
+    updated = 0
+    created: list[str] = []
     for event_type, data in templates.items():
         result = await db.execute(
             update(NotificationTemplate)
@@ -86,9 +102,33 @@ async def _update_notification_templates(db: AsyncSession, lang: str) -> int:
                 body_template=data["body_template"],
             )
         )
-        count += result.rowcount
+        if result.rowcount:
+            updated += result.rowcount
+            continue
+        # Nothing was updated: the row is either absent, or present and
+        # customised. Only the first case is ours to fill in.
+        present = await db.scalar(select(NotificationTemplate.id).where(NotificationTemplate.event_type == event_type))
+        if present is not None:
+            continue
+        db.add(
+            NotificationTemplate(
+                event_type=event_type,
+                name=data["name"],
+                title_template=data["title_template"],
+                body_template=data["body_template"],
+                is_default=True,
+            )
+        )
+        await db.flush()
+        created.append(event_type)
 
-    return count
+    if created:
+        logger.info(
+            "Notification templates created from the %s locale (they had no row): %s",
+            lang,
+            ", ".join(sorted(created)),
+        )
+    return updated + len(created)
 
 
 async def _update_maintenance_types(db: AsyncSession, lang: str) -> int:

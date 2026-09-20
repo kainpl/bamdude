@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, ImageOff, RotateCcw, Save, Trash2, Loader2 } from 'lucide-react';
@@ -223,7 +223,7 @@ export function LibraryTrashPage() {
   };
 
   return (
-    <div className="p-6 max-w-screen-2xl mx-auto">
+    <div className="p-4 max-w-screen-2xl mx-auto">
       <div className="flex items-center gap-3 mb-4">
         <Link
           to="/files"
@@ -233,7 +233,7 @@ export function LibraryTrashPage() {
         </Link>
       </div>
 
-      <div className="flex items-start justify-between mb-6 gap-4 flex-wrap">
+      <div className="flex items-start justify-between mb-4 gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-white">
             {t('libraryTrash.title')}
@@ -341,7 +341,7 @@ export function LibraryTrashPage() {
                       }}
                       onChange={toggleAll}
                       aria-label={t('libraryTrash.selectAll')}
-                      className="rounded border-bambu-dark-tertiary cursor-pointer"
+                      className="accent-bambu-green rounded border-bambu-dark-tertiary cursor-pointer"
                     />
                   </th>
                   <th className="px-3 py-2 w-14" aria-label={t('libraryTrash.col.preview', { defaultValue: 'Preview' })} />
@@ -363,7 +363,7 @@ export function LibraryTrashPage() {
                         checked={selected.has(item.id)}
                         onChange={() => toggleOne(item.id)}
                         aria-label={t('libraryTrash.selectOne', { filename: item.filename })}
-                        className="rounded border-bambu-dark-tertiary cursor-pointer"
+                        className="accent-bambu-green rounded border-bambu-dark-tertiary cursor-pointer"
                       />
                     </td>
                     <td className="px-3 py-2">

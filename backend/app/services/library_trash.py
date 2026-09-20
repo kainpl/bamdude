@@ -31,6 +31,8 @@ from backend.app.core.database import async_session
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.settings import Settings
+from backend.app.services import queue_source_release
+from backend.app.services.product_sync import purge_file_product_links
 
 logger = logging.getLogger(__name__)
 
@@ -131,12 +133,18 @@ class LibraryPurgeRunResult:
 
 
 async def _cancel_pending_queue_items(db: AsyncSession, library_file_id: int) -> None:
-    """Cancel pending queue items whose source file is on its way out.
+    """Cancel the pending jobs that cannot print once this file is gone.
 
-    A queue row that outlives its file cannot dispatch, and until now it was
+    A queue row that outlives its file cannot dispatch, and until #2819 it was
     left to find that out at the printer — days later, as "Library file not
     found" — or, on the external branch below, was deleted outright with no
-    error and no history (upstream #2819, which had both faces of this).
+    error and no history.
+
+    ⚠️ **Since m173 that is only half the rows.** A job that already holds its own
+    copy of the bytes prints perfectly well without this file, so cancelling it
+    would destroy work for no reason (spec §10). Which rows those are, on both
+    tiers, is ``queue_source_release``'s question — it is the collector's owner
+    question read from the other side, and it is asked in exactly one place.
 
     ⚠️ **Only ``pending`` rows.** ``printing`` is a race the printer-side fail
     path catches anyway, and completed / failed / cancelled rows are history:
@@ -149,17 +157,9 @@ async def _cancel_pending_queue_items(db: AsyncSession, library_file_id: int) ->
 
     Does not commit; the caller owns the transaction.
     """
-    from backend.app.models.print_queue import PrintQueueItem
-
-    result = await db.execute(
-        select(PrintQueueItem).where(
-            PrintQueueItem.library_file_id == library_file_id,
-            PrintQueueItem.status == "pending",
-        )
+    await queue_source_release.source_trashed(
+        db, library_file_ids=[library_file_id], reason=queue_source_release.REASON_FILE_DELETED
     )
-    for item in result.scalars().all():
-        item.status = "cancelled"
-        item.waiting_reason = "Source file deleted"
 
 
 class LibraryTrashService:
@@ -549,11 +549,18 @@ class LibraryTrashService:
         # after the retention window, pointing at a library file that no longer
         # exists. The route-side delete paths already do this; the sweeper did
         # it for archives and forgot the queue.
-        from backend.app.models.print_queue import PrintQueueItem
-
-        await db.execute(
-            update(PrintQueueItem).where(PrintQueueItem.library_file_id.in_(row_ids)).values(library_file_id=None)
+        #
+        # Both tiers now, through the one service: the auto-queue row has the same
+        # FK with the same non-enforcement, and a job that owns its bytes is not
+        # cancelled by a retention window (spec §10).
+        await queue_source_release.source_purged(
+            db, library_file_ids=row_ids, reason=queue_source_release.REASON_FILE_DELETED
         )
+        # ⚠️ And the product pivot + plates, for the third time the same reason:
+        # both are ``ON DELETE CASCADE`` and SQLite ignores that, so a purged
+        # file would leave a plate row a product still renders and nothing can
+        # open.
+        await purge_file_product_links(db, row_ids)
         await db.execute(delete(LibraryFile).where(LibraryFile.id.in_(row_ids)))
         await db.commit()
         logger.info("Library trash sweeper: hard-deleted %d row(s) past %d-day retention", deleted, retention)
@@ -603,8 +610,6 @@ class LibraryTrashService:
         at the library root, which is the only honest destination once its
         folder is gone. Does not commit; the caller owns the transaction.
         """
-        from backend.app.models.print_queue import PrintQueueItem
-
         if file.is_external:
             abs_thumb = _to_absolute_path(file.thumbnail_path)
             if abs_thumb is not None:
@@ -616,13 +621,17 @@ class LibraryTrashService:
             await db.execute(
                 update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None)
             )
-            queue_items = (
-                (await db.execute(select(PrintQueueItem).where(PrintQueueItem.library_file_id == file.id)))
-                .scalars()
-                .all()
+            # ⚠️ **The queue rows used to be DELETED here.** An external file's
+            # bytes live outside BamDude, so an SMB share that goes away took every
+            # job queued from it with no error and no history (#2819's second face)
+            # — and that is precisely the loss the queue source exists to prevent:
+            # a job holding its own copy prints fine without the share. So the rows
+            # stay, unhooked; only the ones with nothing of their own are cancelled,
+            # exactly as the managed branch below does it (spec §10).
+            await queue_source_release.source_purged(
+                db, library_file_ids=[file.id], reason=queue_source_release.REASON_FILE_DELETED
             )
-            for item in queue_items:
-                await db.delete(item)
+            await purge_file_product_links(db, [file.id])
             await db.delete(file)
             return False
 
@@ -651,11 +660,19 @@ class LibraryTrashService:
         ``library_file_id`` blanked out (not cascade-deleted) — see the
         comment in ``_sweep`` for why we do this in code rather than relying
         on the schema-level ``ON DELETE SET NULL``.
+
+        ⚠️ It did that for archives and nothing at all for the queue, so this path
+        left a row naming a library file that no longer existed — the same gap the
+        sweeper had. Both tiers go through the one service now.
         """
         self._unlink_on_disk(file)
         await db.execute(
             update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None)
         )
+        await queue_source_release.source_purged(
+            db, library_file_ids=[file.id], reason=queue_source_release.REASON_FILE_DELETED
+        )
+        await purge_file_product_links(db, [file.id])
         await db.delete(file)
         await db.commit()
 

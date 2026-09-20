@@ -15,6 +15,7 @@ import { api } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import type { LibraryFileUploadResponse } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
 
 interface UploadFile {
   file: File;
@@ -212,224 +213,215 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const allDone = files.length > 0 && pendingCount === 0 && !isUploading;
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-lg border border-bambu-dark-tertiary">
-        <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">{t('fileManager.uploadFiles')}</h2>
-          <button onClick={onClose} className="p-1 hover:bg-bambu-dark rounded">
-            <X className="w-5 h-5 text-bambu-gray" />
-          </button>
+    <Modal onClose={onClose} title={t('fileManager.uploadFiles')} size="lg">
+      <div className="p-4 space-y-4">
+        {/* Drop Zone */}
+        <div
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={() => fileInputRef.current?.click()}
+          className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+            isDragging
+              ? 'border-bambu-green bg-bambu-green/10'
+              : 'border-bambu-dark-tertiary hover:border-bambu-green/50'
+          }`}
+        >
+          <Upload className={`w-10 h-10 mx-auto mb-3 ${isDragging ? 'text-bambu-green' : 'text-bambu-gray'}`} />
+          <p className="text-white font-medium">
+            {isDragging ? t('fileManager.dropFilesHere') : t('fileManager.dragDropFiles')}
+          </p>
+          <p className="text-sm text-bambu-gray mt-1">{t('fileManager.orClickToBrowse')}</p>
+          <p className="text-xs text-bambu-gray/70 mt-2">{t('fileManager.allFileTypesSupported')}</p>
         </div>
 
-        <div className="p-4 space-y-4">
-          {/* Drop Zone */}
-          <div
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
-              isDragging
-                ? 'border-bambu-green bg-bambu-green/10'
-                : 'border-bambu-dark-tertiary hover:border-bambu-green/50'
-            }`}
-          >
-            <Upload className={`w-10 h-10 mx-auto mb-3 ${isDragging ? 'text-bambu-green' : 'text-bambu-gray'}`} />
-            <p className="text-white font-medium">
-              {isDragging ? t('fileManager.dropFilesHere') : t('fileManager.dragDropFiles')}
-            </p>
-            <p className="text-sm text-bambu-gray mt-1">{t('fileManager.orClickToBrowse')}</p>
-            <p className="text-xs text-bambu-gray/70 mt-2">{t('fileManager.allFileTypesSupported')}</p>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={accept}
+          className="hidden"
+          onChange={handleFileSelect}
+        />
+
+        {/* ZIP Options */}
+        {hasZipFiles && (
+          <div className="p-3 bg-blue-50 dark:bg-blue-500/10 border border-blue-300 dark:border-blue-500/30 rounded-lg">
+            <div className="flex items-start gap-3">
+              <ArchiveIcon className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm text-blue-700 dark:text-blue-300 font-medium">{t('fileManager.zipFilesDetected')}</p>
+                <p className="text-xs text-blue-700/80 dark:text-blue-300/70 mt-1">
+                  {t('fileManager.zipExtractOptions')}
+                </p>
+                <label className="flex items-center gap-2 mt-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={preserveZipStructure}
+                    onChange={(e) => setPreserveZipStructure(e.target.checked)}
+                    className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                  />
+                  <span className="text-sm text-white">{t('fileManager.preserveZipStructure')}</span>
+                </label>
+                <label className="flex items-center gap-2 mt-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={createFolderFromZip}
+                    onChange={(e) => setCreateFolderFromZip(e.target.checked)}
+                    className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                  />
+                  <span className="text-sm text-white">{t('fileManager.createFolderFromZip')}</span>
+                </label>
+              </div>
+            </div>
           </div>
+        )}
 
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept={accept}
-            className="hidden"
-            onChange={handleFileSelect}
-          />
-
-          {/* ZIP Options */}
-          {hasZipFiles && (
-            <div className="p-3 bg-blue-50 dark:bg-blue-500/10 border border-blue-300 dark:border-blue-500/30 rounded-lg">
-              <div className="flex items-start gap-3">
-                <ArchiveIcon className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
-                <div className="flex-1">
-                  <p className="text-sm text-blue-700 dark:text-blue-300 font-medium">{t('fileManager.zipFilesDetected')}</p>
-                  <p className="text-xs text-blue-700/80 dark:text-blue-300/70 mt-1">
-                    {t('fileManager.zipExtractOptions')}
-                  </p>
-                  <label className="flex items-center gap-2 mt-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={preserveZipStructure}
-                      onChange={(e) => setPreserveZipStructure(e.target.checked)}
-                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                    />
-                    <span className="text-sm text-white">{t('fileManager.preserveZipStructure')}</span>
-                  </label>
-                  <label className="flex items-center gap-2 mt-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={createFolderFromZip}
-                      onChange={(e) => setCreateFolderFromZip(e.target.checked)}
-                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                    />
-                    <span className="text-sm text-white">{t('fileManager.createFolderFromZip')}</span>
-                  </label>
-                </div>
+        {/* 3MF File Info */}
+        {has3mfFiles && (
+          <div className="p-3 bg-purple-50 dark:bg-purple-500/10 border border-purple-300 dark:border-purple-500/30 rounded-lg">
+            <div className="flex items-start gap-3">
+              <Printer className="w-5 h-5 text-purple-600 dark:text-purple-400 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm text-purple-700 dark:text-purple-300 font-medium">{t('fileManager.threemfDetected')}</p>
+                <p className="text-xs text-purple-700/80 dark:text-purple-300/70 mt-1">
+                  {t('fileManager.threemfExtractionInfo')}
+                </p>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* 3MF File Info */}
-          {has3mfFiles && (
-            <div className="p-3 bg-purple-50 dark:bg-purple-500/10 border border-purple-300 dark:border-purple-500/30 rounded-lg">
-              <div className="flex items-start gap-3">
-                <Printer className="w-5 h-5 text-purple-600 dark:text-purple-400 mt-0.5 flex-shrink-0" />
-                <div className="flex-1">
-                  <p className="text-sm text-purple-700 dark:text-purple-300 font-medium">{t('fileManager.threemfDetected')}</p>
-                  <p className="text-xs text-purple-700/80 dark:text-purple-300/70 mt-1">
-                    {t('fileManager.threemfExtractionInfo')}
-                  </p>
-                </div>
+        {/* STL Thumbnail Options */}
+        {(hasStlFiles || hasZipFiles) && (
+          <div className="p-3 bg-bambu-green/10 border border-bambu-green/30 rounded-lg">
+            <div className="flex items-start gap-3">
+              <Image className="w-5 h-5 text-bambu-green mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm text-bambu-green font-medium">{t('fileManager.stlThumbnailGeneration')}</p>
+                <p className="text-xs text-bambu-green/70 mt-1">
+                  {hasZipFiles && !hasStlFiles
+                    ? t('fileManager.zipMayContainStl')
+                    : t('fileManager.thumbnailsCanBeGenerated')}
+                </p>
+                <label className="flex items-center gap-2 mt-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={generateStlThumbnails}
+                    onChange={(e) => setGenerateStlThumbnails(e.target.checked)}
+                    className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                  />
+                  <span className="text-sm text-white">{t('fileManager.generateThumbnailsForStl')}</span>
+                </label>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* STL Thumbnail Options */}
-          {(hasStlFiles || hasZipFiles) && (
-            <div className="p-3 bg-bambu-green/10 border border-bambu-green/30 rounded-lg">
-              <div className="flex items-start gap-3">
-                <Image className="w-5 h-5 text-bambu-green mt-0.5 flex-shrink-0" />
-                <div className="flex-1">
-                  <p className="text-sm text-bambu-green font-medium">{t('fileManager.stlThumbnailGeneration')}</p>
-                  <p className="text-xs text-bambu-green/70 mt-1">
-                    {hasZipFiles && !hasStlFiles
-                      ? t('fileManager.zipMayContainStl')
-                      : t('fileManager.thumbnailsCanBeGenerated')}
+        {/* File List */}
+        {files.length > 0 && (
+          <div className="max-h-48 overflow-y-auto space-y-2">
+            {files.map((uploadFile, index) => (
+              <div
+                key={index}
+                className="flex items-center gap-3 p-2 bg-bambu-dark rounded-lg"
+              >
+                {uploadFile.isZip ? (
+                  <ArchiveIcon className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0" />
+                ) : (
+                  <File className="w-4 h-4 text-bambu-gray flex-shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-white truncate">{uploadFile.file.name}</p>
+                  <p className="text-xs text-bambu-gray">
+                    {(uploadFile.file.size / 1024 / 1024).toFixed(2)} MB
+                    {uploadFile.isZip && uploadFile.status === 'pending' && (
+                      <span className="text-blue-700 dark:text-blue-400 ml-2">• {t('fileManager.willBeExtracted')}</span>
+                    )}
+                    {uploadFile.extractedCount !== undefined && (
+                      <span className="text-green-700 dark:text-green-400 ml-2">• {t('fileManager.filesExtracted', { count: uploadFile.extractedCount })}</span>
+                    )}
+                    {uploadFile.skippedDuplicates ? (
+                      <span className="text-blue-700 dark:text-blue-400 ml-2">• {t('fileManager.dedupSkippedInZip', { count: uploadFile.skippedDuplicates })}</span>
+                    ) : null}
                   </p>
-                  <label className="flex items-center gap-2 mt-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={generateStlThumbnails}
-                      onChange={(e) => setGenerateStlThumbnails(e.target.checked)}
-                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                    />
-                    <span className="text-sm text-white">{t('fileManager.generateThumbnailsForStl')}</span>
-                  </label>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* File List */}
-          {files.length > 0 && (
-            <div className="max-h-48 overflow-y-auto space-y-2">
-              {files.map((uploadFile, index) => (
-                <div
-                  key={index}
-                  className="flex items-center gap-3 p-2 bg-bambu-dark rounded-lg"
-                >
-                  {uploadFile.isZip ? (
-                    <ArchiveIcon className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0" />
-                  ) : (
-                    <File className="w-4 h-4 text-bambu-gray flex-shrink-0" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-white truncate">{uploadFile.file.name}</p>
-                    <p className="text-xs text-bambu-gray">
-                      {(uploadFile.file.size / 1024 / 1024).toFixed(2)} MB
-                      {uploadFile.isZip && uploadFile.status === 'pending' && (
-                        <span className="text-blue-700 dark:text-blue-400 ml-2">• {t('fileManager.willBeExtracted')}</span>
-                      )}
-                      {uploadFile.extractedCount !== undefined && (
-                        <span className="text-green-700 dark:text-green-400 ml-2">• {t('fileManager.filesExtracted', { count: uploadFile.extractedCount })}</span>
-                      )}
-                      {uploadFile.skippedDuplicates ? (
-                        <span className="text-blue-700 dark:text-blue-400 ml-2">• {t('fileManager.dedupSkippedInZip', { count: uploadFile.skippedDuplicates })}</span>
-                      ) : null}
+                  {uploadFile.dedupOutcome === 'deduped' && (
+                    <p className="text-xs text-blue-700 dark:text-blue-400 mt-1 break-words">
+                      {t('fileManager.dedupUsedExisting', { name: uploadFile.dedupName })}
                     </p>
-                    {uploadFile.dedupOutcome === 'deduped' && (
-                      <p className="text-xs text-blue-700 dark:text-blue-400 mt-1 break-words">
-                        {t('fileManager.dedupUsedExisting', { name: uploadFile.dedupName })}
-                      </p>
-                    )}
-                    {uploadFile.dedupOutcome === 'restored' && (
-                      <p className="text-xs text-blue-700 dark:text-blue-400 mt-1 break-words">
-                        {t('fileManager.dedupRestored')}
-                      </p>
-                    )}
-                    {/* #1401: errors render inline rather than as a
-                        hover-only title. The backend's rejection
-                        messages explain the actual fix (re-export as
-                        .gcode.3mf) — useless if the user can't read
-                        them. */}
-                    {uploadFile.status === 'error' && uploadFile.error && (
-                      <p className="text-xs text-red-700 dark:text-red-400 mt-1 break-words">{uploadFile.error}</p>
-                    )}
-                  </div>
-                  {uploadFile.status === 'pending' && (
-                    <button
-                      onClick={() => removeFile(index)}
-                      className="p-1 hover:bg-bambu-dark-tertiary rounded"
-                    >
-                      <X className="w-4 h-4 text-bambu-gray" />
-                    </button>
                   )}
-                  {uploadFile.status === 'uploading' && (
-                    <Loader2 className="w-4 h-4 text-bambu-green animate-spin" />
+                  {uploadFile.dedupOutcome === 'restored' && (
+                    <p className="text-xs text-blue-700 dark:text-blue-400 mt-1 break-words">
+                      {t('fileManager.dedupRestored')}
+                    </p>
                   )}
-                  {uploadFile.status === 'success' && (
-                    <CheckCircle className="w-4 h-4 text-green-500" />
-                  )}
-                  {uploadFile.status === 'error' && (
-                    <span title={uploadFile.error}>
-                      <XCircle className="w-4 h-4 text-red-500" />
-                    </span>
+                  {/* #1401: errors render inline rather than as a
+                      hover-only title. The backend's rejection
+                      messages explain the actual fix (re-export as
+                      .gcode.3mf) — useless if the user can't read
+                      them. */}
+                  {uploadFile.status === 'error' && uploadFile.error && (
+                    <p className="text-xs text-red-700 dark:text-red-400 mt-1 break-words">{uploadFile.error}</p>
                   )}
                 </div>
-              ))}
-            </div>
-          )}
-
-          {/* Compatibility Error */}
-          {uploadError && (
-            <div className="p-3 bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30 rounded-lg">
-              <div className="flex items-start gap-3">
-                <XCircle className="w-5 h-5 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
-                <p className="text-sm text-red-700 dark:text-red-300">{uploadError}</p>
+                {uploadFile.status === 'pending' && (
+                  <button
+                    onClick={() => removeFile(index)}
+                    className="p-1 hover:bg-bambu-dark-tertiary rounded"
+                  >
+                    <X className="w-4 h-4 text-bambu-gray" />
+                  </button>
+                )}
+                {uploadFile.status === 'uploading' && (
+                  <Loader2 className="w-4 h-4 text-bambu-green animate-spin" />
+                )}
+                {uploadFile.status === 'success' && (
+                  <CheckCircle className="w-4 h-4 text-green-500" />
+                )}
+                {uploadFile.status === 'error' && (
+                  <span title={uploadFile.error}>
+                    <XCircle className="w-4 h-4 text-red-500" />
+                  </span>
+                )}
               </div>
-            </div>
-          )}
-        </div>
+            ))}
+          </div>
+        )}
 
-        <div className="p-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
-            {t('common.cancel')}
-          </Button>
-          {!allDone && (
-            <Button
-              onClick={() => uploadFiles(files)}
-              disabled={pendingCount === 0 || isUploading}
-            >
-              {isUploading ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  {t('fileManager.uploading')}
-                </>
-              ) : (
-                <>
-                  <Upload className="w-4 h-4 mr-2" />
-                  {t('common.upload')} {pendingCount > 0 ? `(${pendingCount})` : ''}
-                </>
-              )}
-            </Button>
-          )}
-        </div>
+        {/* Compatibility Error */}
+        {uploadError && (
+          <div className="p-3 bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30 rounded-lg">
+            <div className="flex items-start gap-3">
+              <XCircle className="w-5 h-5 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+              <p className="text-sm text-red-700 dark:text-red-300">{uploadError}</p>
+            </div>
+          </div>
+        )}
       </div>
-    </div>
+
+      <div className="p-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
+        <Button variant="secondary" onClick={onClose}>
+          {t('common.cancel')}
+        </Button>
+        {!allDone && (
+          <Button
+            onClick={() => uploadFiles(files)}
+            disabled={pendingCount === 0 || isUploading}
+          >
+            {isUploading ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                {t('fileManager.uploading')}
+              </>
+            ) : (
+              <>
+                <Upload className="w-4 h-4 mr-2" />
+                {t('common.upload')} {pendingCount > 0 ? `(${pendingCount})` : ''}
+              </>
+            )}
+          </Button>
+        )}
+      </div>
+    </Modal>
   );
 }

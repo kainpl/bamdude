@@ -18,14 +18,34 @@ import type { PrintQueueItem } from '../../api/client';
 
 const mockPrinters = [
   { id: 1, name: 'X1 Carbon', model: 'X1C', ip_address: '192.168.1.100', enabled: true, is_active: true },
-  { id: 2, name: 'P1S', model: 'P1S', ip_address: '192.168.1.101', enabled: true, is_active: true },
+  {
+    id: 2,
+    name: 'P1S',
+    model: 'P1S',
+    ip_address: '192.168.1.101',
+    enabled: true,
+    is_active: true,
+    swap_mode_enabled: true,
+  },
   { id: 3, name: 'A1 Mini', model: 'A1M', ip_address: '192.168.1.102', enabled: true, is_active: true },
 ];
 
 const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueueItem => ({
   id: 1,
+  queue_id: 1,
   printer_id: 1,
   archive_id: 1,
+  library_file_id: null,
+  waiting_reason: null,
+  origin: 'queue',
+  nozzle_offset_cali: 'off',
+  mesh_mode_fast_check: true,
+  execute_swap_macros: false,
+  swap_macro_events: null,
+  selected_macro_ids: null,
+  gcode_injection: false,
+  preheat_override: 'inherit',
+  preheat_chamber_target_override: null,
   position: 1,
   scheduled_time: null,
   auto_off_after: false,
@@ -33,8 +53,8 @@ const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueu
   require_previous_success: false,
   ams_mapping: null,
   plate_id: null,
-  bed_levelling: true,
-  flow_cali: true,
+  bed_levelling: 'on',
+  flow_cali: 'on',
   layer_inspect: false,
   timelapse: false,
   use_ams: true,
@@ -200,7 +220,10 @@ describe('PrintModal', () => {
       await user.click(screen.getByRole('button', { name: /^print$/i }));
       await waitFor(() => expect(printBody).not.toBeNull());
       expect(printBody).toHaveProperty('selected_macro_ids');
-      expect(Array.isArray((printBody as Record<string, unknown>).selected_macro_ids)).toBe(true);
+      // Double cast: the only assignment to `printBody` is inside an msw
+      // handler, which TypeScript's flow analysis cannot see, so it still
+      // holds the declared `null` here.
+      expect(Array.isArray((printBody as unknown as Record<string, unknown>).selected_macro_ids)).toBe(true);
     });
   });
 
@@ -495,6 +518,42 @@ describe('PrintModal', () => {
   });
 
   describe('dispatch-mode toggle (add-to-queue)', () => {
+    it('leaves model-specific options and macros to the target profile in auto mode', async () => {
+      server.use(
+        http.get('/api/v1/macros/', () =>
+          HttpResponse.json([
+            {
+              id: 7,
+              name: 'P1S chamber light',
+              event: 'print_started',
+              printer_models: ['P1S'],
+              enabled: true,
+              swap_mode_only: false,
+            },
+          ]),
+        ),
+      );
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          libraryFileId={42}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+        />,
+      );
+
+      await user.click(await screen.findByText('P1S'));
+      expect(await screen.findByText('Print Options')).toBeInTheDocument();
+      expect(await screen.findByText('Swap Macros')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('radio', { name: /Auto-distribute/i }));
+      await waitFor(() => {
+        expect(screen.queryByText('Print Options')).not.toBeInTheDocument();
+        expect(screen.queryByText('Swap Macros')).not.toBeInTheDocument();
+      });
+    });
+
     it('shows the Specific/Auto toggle by default', () => {
       render(
         <PrintModal

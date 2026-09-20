@@ -143,7 +143,7 @@ def test_the_top_view_is_read_for_the_asked_plate(tmp_path: Path):
 def test_there_is_no_fallback_to_the_three_quarter_render(tmp_path: Path):
     """⚠️ The load-bearing test of this module.
 
-    ``GET /printers/{id}/cover?view=top`` degrades through ``plate_N.png`` and
+    ``GET /printers/{id}/camera-cover?view=top`` degrades through ``plate_N.png`` and
     ``thumbnail.png`` so a camera card always shows something. Those are ¾
     renders: markers computed in top-down space land on the wrong parts, and
     convincingly so. A missing picture is recoverable; a lying one gets the

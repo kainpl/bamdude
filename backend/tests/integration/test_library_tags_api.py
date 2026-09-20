@@ -246,6 +246,31 @@ async def test_tag_ids_and_filter(async_client: AsyncClient, file_factory):
     assert "file_tags" in f2_row  # SYSTEM B still present + separate
 
 
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_tag_filter_honors_explicit_recursive_folder_scope(async_client: AsyncClient, file_factory):
+    """``folder_scope`` makes a cross-cutting tag search respect one subtree."""
+    parent = (await async_client.post("/api/v1/library/folders", json={"name": "Search parent"})).json()
+    child = (
+        await async_client.post("/api/v1/library/folders", json={"name": "Search child", "parent_id": parent["id"]})
+    ).json()
+    in_parent = await file_factory(filename="in_parent.3mf", folder_id=parent["id"])
+    in_child = await file_factory(filename="in_child.3mf", folder_id=child["id"])
+    outside = await file_factory(filename="outside.3mf")
+    tag = (await async_client.post("/api/v1/library/tags", json={"name": "search scope"})).json()
+    await async_client.post(
+        "/api/v1/library/tags/bulk-assign",
+        json={"file_ids": [in_parent.id, in_child.id, outside.id], "tag_ids": [tag["id"]], "action": "add"},
+    )
+
+    response = await async_client.get(
+        f"/api/v1/library/files?tag_ids={tag['id']}&folder_id={parent['id']}&recursive=true&folder_scope=true"
+    )
+
+    assert response.status_code == 200, response.text
+    assert {row["id"] for row in response.json()} == {in_parent.id, in_child.id}
+
+
 # ============================ Ownership narrowing ============================
 
 

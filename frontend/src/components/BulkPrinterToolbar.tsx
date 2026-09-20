@@ -133,6 +133,7 @@ export function BulkPrinterToolbar({
         </Button>
         {showStateDropdown && (
           <>
+            {/* not-a-modal: menu */}
             <div className="fixed inset-0 z-10" onClick={() => setShowStateDropdown(false)} />
             <div className="absolute bottom-full mb-2 left-0 w-48 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-20 py-1">
               {STATE_OPTIONS.filter(({ key }) => stateCounts[key] > 0).map(({ key, dot }) => (
@@ -164,6 +165,7 @@ export function BulkPrinterToolbar({
           </Button>
           {showLocationDropdown && (
             <>
+              {/* not-a-modal: menu */}
               <div className="fixed inset-0 z-10" onClick={() => setShowLocationDropdown(false)} />
               <div className="absolute bottom-full mb-2 left-0 w-48 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-20 py-1">
                 {locations.map(location => (

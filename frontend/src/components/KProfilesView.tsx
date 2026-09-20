@@ -17,16 +17,19 @@ import {
   Download,
   Upload,
   CheckSquare,
-  Square,
   StickyNote,
 } from 'lucide-react';
+import { SelectionBox } from './SelectionBox';
 import { api } from '../api/client';
 import type { KProfile, KProfileCreate, KProfileDelete, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
+import { Modal } from './Modal';
+import { isAnyModalOpen } from './modalStack';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { MAX_PA_K_VALUE, MIN_PA_K_VALUE, formatKForDisplay, isValidKValue } from '../utils/kValue';
+import { Select } from './Select';
 
 interface KProfileCardProps {
   profile: KProfile;
@@ -120,9 +123,9 @@ function KProfileCard({ profile, onEdit, onCopy, selectionMode, isSelected, onTo
           className="text-bambu-gray hover:text-white transition-colors p-1"
         >
           {isSelected ? (
-            <CheckSquare className="w-4 h-4 text-bambu-green" />
+            <SelectionBox checked={true} className="w-4 h-4" />
           ) : (
-            <Square className="w-4 h-4" />
+            <SelectionBox checked={false} className="w-4 h-4" />
           )}
         </button>
       )}
@@ -431,8 +434,13 @@ function KProfileModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <Card className="w-full max-w-md relative">
+    <>
+      <Modal
+        onClose={onClose}
+        title={profile ? t('kProfiles.modal.editTitle') : t('kProfiles.modal.addTitle')}
+        closeDisabled={isSyncing}
+        size="md"
+      >
         {/* Syncing overlay */}
         {isSyncing && (
           <div className="absolute inset-0 bg-bambu-dark-secondary/90 flex flex-col items-center justify-center z-10 rounded-lg">
@@ -445,297 +453,285 @@ function KProfileModal({
             <p className="text-bambu-gray text-sm mt-1">{t('kProfiles.modal.pleaseWait')}</p>
           </div>
         )}
-        <CardContent className="p-0">
-          <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-            <h2 className="text-xl font-semibold text-white">
-              {profile ? t('kProfiles.modal.editTitle') : t('kProfiles.modal.addTitle')}
-            </h2>
-            <button
-              onClick={onClose}
-              className="text-bambu-gray hover:text-white transition-colors"
-              disabled={isSyncing}
-            >
-              <X className="w-5 h-5" />
-            </button>
+        <form onSubmit={handleSubmit} className="p-4 space-y-4">
+          {/* Profile Name — editable both on add and edit (BS-parity). Backend
+              handles rename through the same set_kprofile path: H2D in-place
+              via cali_idx, non-H2D via delete + re-add. */}
+          <div>
+            <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.profileName')}</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+              placeholder={t('kProfiles.modal.profileNamePlaceholder')}
+              required
+            />
           </div>
 
-          <form onSubmit={handleSubmit} className="p-4 space-y-4">
-            {/* Profile Name — editable both on add and edit (BS-parity). Backend
-                handles rename through the same set_kprofile path: H2D in-place
-                via cali_idx, non-H2D via delete + re-add. */}
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.profileName')}</label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                placeholder={t('kProfiles.modal.profileNamePlaceholder')}
-                required
-              />
-            </div>
+          {/* K-Value - always editable */}
+          <div>
+            <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.kValue')}</label>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={kValue}
+              onChange={(e) => {
+                // Allow typing any decimal value
+                const val = e.target.value;
+                if (val === '' || /^\d*\.?\d*$/.test(val)) {
+                  setKValue(val);
+                }
+              }}
+              onBlur={(e) => {
+                // Round for display, never truncate the value being submitted.
+                //
+                // This used to do Math.trunc(num * 1000) / 1000, "like Bambu
+                // Studio" — BS does no such thing. It formats for DISPLAY with
+                // %.3f and stores what was parsed (CalibrationWizardSavePage /
+                // CalibUtils::validate_input_k_value). Truncating the input
+                // turned a real 0.0005 into 0.000, i.e. a saved profile with
+                // pressure advance switched off, silently.
+                const num = parseFloat(e.target.value);
+                if (!isNaN(num)) {
+                  setKValue(formatKForDisplay(num));
+                }
+              }}
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none font-mono"
+              placeholder={t('kProfiles.modal.kValuePlaceholder')}
+              required
+            />
+            <p className="text-xs text-bambu-gray mt-1">
+              {t('kProfiles.modal.kValueHelp')}
+            </p>
+          </div>
 
-            {/* K-Value - always editable */}
+          {/* Filament family — K-profiles bind to the family (filament_id),
+              the same identity the printer's own table uses. Editing keeps
+              the family fixed, as before. */}
+          <div>
+            <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.filament')}</label>
+            <FamilyPicker
+              value={filamentId || null}
+              disabled={!!profile}
+              onChange={(id, family) => {
+                setFilamentId(id || '');
+                // Auto-generate profile name when a family is picked (new profiles
+                // only; never overwrite user input).
+                if (!profile && id && !name && family) {
+                  const flowLabel = nozzleType === 'HH00' ? 'HF' : 'S';
+                  setName(`${flowLabel} ${family.alias}`);
+                }
+              }}
+            />
+          </div>
+
+          {/* Flow Type and Nozzle Size - read-only when editing.
+              Flow Type is dropped entirely on models that ship a single
+              nozzle variant (#1748) — BS hides it there too, and the firmware
+              discards whatever is chosen. The grid collapses to one column so
+              Nozzle Size does not sit next to a gap. */}
+          <div className={supportsFlowType ? 'grid grid-cols-2 gap-4' : ''}>
+            {supportsFlowType && (
             <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.kValue')}</label>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={kValue}
+              <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.flowType')}</label>
+              <Select
+                className={`w-full ${profile ? 'opacity-60 cursor-not-allowed' : ''}`}
+                value={nozzleType}
                 onChange={(e) => {
-                  // Allow typing any decimal value
-                  const val = e.target.value;
-                  if (val === '' || /^\d*\.?\d*$/.test(val)) {
-                    setKValue(val);
-                  }
-                }}
-                onBlur={(e) => {
-                  // Round for display, never truncate the value being submitted.
-                  //
-                  // This used to do Math.trunc(num * 1000) / 1000, "like Bambu
-                  // Studio" — BS does no such thing. It formats for DISPLAY with
-                  // %.3f and stores what was parsed (CalibrationWizardSavePage /
-                  // CalibUtils::validate_input_k_value). Truncating the input
-                  // turned a real 0.0005 into 0.000, i.e. a saved profile with
-                  // pressure advance switched off, silently.
-                  const num = parseFloat(e.target.value);
-                  if (!isNaN(num)) {
-                    setKValue(formatKForDisplay(num));
-                  }
-                }}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none font-mono"
-                placeholder={t('kProfiles.modal.kValuePlaceholder')}
-                required
-              />
-              <p className="text-xs text-bambu-gray mt-1">
-                {t('kProfiles.modal.kValueHelp')}
-              </p>
-            </div>
-
-            {/* Filament family — K-profiles bind to the family (filament_id),
-                the same identity the printer's own table uses. Editing keeps
-                the family fixed, as before. */}
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.filament')}</label>
-              <FamilyPicker
-                value={filamentId || null}
-                disabled={!!profile}
-                onChange={(id, family) => {
-                  setFilamentId(id || '');
-                  // Auto-generate profile name when a family is picked (new profiles
-                  // only; never overwrite user input).
-                  if (!profile && id && !name && family) {
-                    const flowLabel = nozzleType === 'HH00' ? 'HF' : 'S';
-                    setName(`${flowLabel} ${family.alias}`);
-                  }
-                }}
-              />
-            </div>
-
-            {/* Flow Type and Nozzle Size - read-only when editing.
-                Flow Type is dropped entirely on models that ship a single
-                nozzle variant (#1748) — BS hides it there too, and the firmware
-                discards whatever is chosen. The grid collapses to one column so
-                Nozzle Size does not sit next to a gap. */}
-            <div className={supportsFlowType ? 'grid grid-cols-2 gap-4' : ''}>
-              {supportsFlowType && (
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.flowType')}</label>
-                <select
-                  value={nozzleType}
-                  onChange={(e) => {
-                    const newNozzleType = e.target.value;
-                    setNozzleType(newNozzleType);
-                    // Update profile name when flow type changes (for new profiles)
-                    // Only auto-generate if name is empty - don't overwrite user input.
-                    // HH00 = High Flow (HF), HS00 = Standard (S) — matches the
-                    // option list below; previously this ternary was inverted.
-                    if (!profile && filamentId && !name) {
-                      const selectedFilament = knownFilaments.find(f => f.id === filamentId);
-                      if (selectedFilament) {
-                        const flowLabel = newNozzleType === 'HH00' ? 'HF' : 'S';
-                        setName(`${flowLabel} ${selectedFilament.name}`);
-                      }
+                  const newNozzleType = e.target.value;
+                  setNozzleType(newNozzleType);
+                  // Update profile name when flow type changes (for new profiles)
+                  // Only auto-generate if name is empty - don't overwrite user input.
+                  // HH00 = High Flow (HF), HS00 = Standard (S) — matches the
+                  // option list below; previously this ternary was inverted.
+                  if (!profile && filamentId && !name) {
+                    const selectedFilament = knownFilaments.find(f => f.id === filamentId);
+                    if (selectedFilament) {
+                      const flowLabel = newNozzleType === 'HH00' ? 'HF' : 'S';
+                      setName(`${flowLabel} ${selectedFilament.name}`);
                     }
-                  }}
-                  disabled={!!profile}
-                  className={`w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none ${profile ? 'opacity-60 cursor-not-allowed' : ''}`}
-                >
-                  <option value="HH00">{t('kProfiles.modal.highFlow')}</option>
-                  <option value="HS00">{t('kProfiles.modal.standard')}</option>
-                </select>
-              </div>
-              )}
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.nozzleSize')}</label>
-                <select
-                  value={modalDiameter}
-                  onChange={(e) => setModalDiameter(e.target.value)}
-                  disabled={!!profile}
-                  className={`w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none ${profile ? 'opacity-60 cursor-not-allowed' : ''}`}
-                >
-                  <option value="0.2">0.2mm</option>
-                  <option value="0.4">0.4mm</option>
-                  <option value="0.6">0.6mm</option>
-                  <option value="0.8">0.8mm</option>
-                </select>
-              </div>
+                  }
+                }}
+                disabled={!!profile}
+              >
+                <option value="HH00">{t('kProfiles.modal.highFlow')}</option>
+                <option value="HS00">{t('kProfiles.modal.standard')}</option>
+              </Select>
             </div>
-
-            {/* Extruder - only show for dual-nozzle printers */}
-            {isDualNozzle && (
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {profile ? t('kProfiles.modal.extruder') : t('kProfiles.modal.extruders')}
-                </label>
-                {profile ? (
-                  // Read-only display for editing
-                  <div className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white opacity-60">
-                    {profile.extruder_id === 1 ? t('kProfiles.modal.left') : t('kProfiles.modal.right')}
-                  </div>
-                ) : (
-                  // Checkboxes for new profile - can select both
-                  <div className="flex gap-4">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={selectedExtruders.includes(1)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedExtruders([...selectedExtruders, 1]);
-                          } else {
-                            setSelectedExtruders(selectedExtruders.filter(id => id !== 1));
-                          }
-                        }}
-                        className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green focus:ring-offset-0 accent-bambu-green"
-                      />
-                      <span className="text-white">{t('kProfiles.modal.left')}</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={selectedExtruders.includes(0)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedExtruders([...selectedExtruders, 0]);
-                          } else {
-                            setSelectedExtruders(selectedExtruders.filter(id => id !== 0));
-                          }
-                        }}
-                        className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green focus:ring-offset-0 accent-bambu-green"
-                      />
-                      <span className="text-white">{t('kProfiles.modal.right')}</span>
-                    </label>
-                  </div>
-                )}
-              </div>
             )}
-
-            {/* Notes */}
             <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.notes')}</label>
-              <textarea
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                placeholder={t('kProfiles.modal.notesPlaceholder')}
-                rows={2}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none resize-none"
-              />
-              <p className="text-xs text-bambu-gray mt-1">
-                {t('kProfiles.modal.notesHelp')}
-              </p>
+              <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.nozzleSize')}</label>
+              <Select
+                className={`w-full ${profile ? 'opacity-60 cursor-not-allowed' : ''}`}
+                value={modalDiameter}
+                onChange={(e) => setModalDiameter(e.target.value)}
+                disabled={!!profile}
+              >
+                <option value="0.2">0.2mm</option>
+                <option value="0.4">0.4mm</option>
+                <option value="0.6">0.6mm</option>
+                <option value="0.8">0.8mm</option>
+              </Select>
             </div>
+          </div>
 
-            <div className="flex gap-2 pt-4">
-              {profile && (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => setShowDeleteConfirm(true)}
-                  disabled={deleteMutation.isPending || isSyncing || !hasPermission('kprofiles:delete')}
-                  title={!hasPermission('kprofiles:delete') ? t('kProfiles.permission.noDelete') : undefined}
-                  className="text-red-500 hover:bg-red-500/10"
-                >
-                  {deleteMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Trash2 className="w-4 h-4" />
-                  )}
-                </Button>
+          {/* Extruder - only show for dual-nozzle printers */}
+          {isDualNozzle && (
+            <div>
+              <label className="block text-sm text-bambu-gray mb-1">
+                {profile ? t('kProfiles.modal.extruder') : t('kProfiles.modal.extruders')}
+              </label>
+              {profile ? (
+                // Read-only display for editing
+                <div className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white opacity-60">
+                  {profile.extruder_id === 1 ? t('kProfiles.modal.left') : t('kProfiles.modal.right')}
+                </div>
+              ) : (
+                // Checkboxes for new profile - can select both
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedExtruders.includes(1)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedExtruders([...selectedExtruders, 1]);
+                        } else {
+                          setSelectedExtruders(selectedExtruders.filter(id => id !== 1));
+                        }
+                      }}
+                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green focus:ring-offset-0 accent-bambu-green"
+                    />
+                    <span className="text-white">{t('kProfiles.modal.left')}</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedExtruders.includes(0)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedExtruders([...selectedExtruders, 0]);
+                        } else {
+                          setSelectedExtruders(selectedExtruders.filter(id => id !== 0));
+                        }
+                      }}
+                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green focus:ring-offset-0 accent-bambu-green"
+                    />
+                    <span className="text-white">{t('kProfiles.modal.right')}</span>
+                  </label>
+                </div>
               )}
+            </div>
+          )}
+
+          {/* Notes */}
+          <div>
+            <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.notes')}</label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder={t('kProfiles.modal.notesPlaceholder')}
+              rows={2}
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none resize-none"
+            />
+            <p className="text-xs text-bambu-gray mt-1">
+              {t('kProfiles.modal.notesHelp')}
+            </p>
+          </div>
+
+          <div className="flex gap-2 pt-4">
+            {profile && (
               <Button
                 type="button"
                 variant="secondary"
-                onClick={onClose}
-                disabled={isSyncing}
+                onClick={() => setShowDeleteConfirm(true)}
+                disabled={deleteMutation.isPending || isSyncing || !hasPermission('kprofiles:delete')}
+                title={!hasPermission('kprofiles:delete') ? t('kProfiles.permission.noDelete') : undefined}
+                className="text-red-500 hover:bg-red-500/10"
+              >
+                {deleteMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Trash2 className="w-4 h-4" />
+                )}
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={onClose}
+              disabled={isSyncing}
+              className="flex-1"
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              type="submit"
+              disabled={saveMutation.isPending || isSyncing || !hasPermission(profile ? 'kprofiles:update' : 'kprofiles:create')}
+              title={!hasPermission(profile ? 'kprofiles:update' : 'kprofiles:create') ? t(profile ? 'kProfiles.permission.noUpdate' : 'kProfiles.permission.noCreate') : undefined}
+              className="flex-1"
+            >
+              {saveMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Gauge className="w-4 h-4" />
+              )}
+              {t('common.save')}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <Modal
+          onClose={() => setShowDeleteConfirm(false)}
+          hideClose
+          ariaLabel={t('kProfiles.deleteConfirm.title')}
+          size="sm"
+        >
+          <div className="p-4">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-500/20 flex items-center justify-center">
+                <Trash2 className="w-5 h-5 text-red-500" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-white">{t('kProfiles.deleteConfirm.title')}</h3>
+                <p className="text-sm text-bambu-gray">{t('kProfiles.deleteConfirm.cannotUndo')}</p>
+              </div>
+            </div>
+            <p className="text-bambu-gray mb-4">
+              {t('kProfiles.deleteConfirm.message', { name: profile?.name })}
+            </p>
+            <div className="flex gap-3">
+              <Button
+                variant="secondary"
+                onClick={() => setShowDeleteConfirm(false)}
                 className="flex-1"
               >
                 {t('common.cancel')}
               </Button>
               <Button
-                type="submit"
-                disabled={saveMutation.isPending || isSyncing || !hasPermission(profile ? 'kprofiles:update' : 'kprofiles:create')}
-                title={!hasPermission(profile ? 'kprofiles:update' : 'kprofiles:create') ? t(profile ? 'kProfiles.permission.noUpdate' : 'kProfiles.permission.noCreate') : undefined}
-                className="flex-1"
+                onClick={() => {
+                  setShowDeleteConfirm(false);
+                  handleDelete();
+                }}
+                disabled={deleteMutation.isPending}
+                className="flex-1 bg-red-500 hover:bg-red-600 text-white"
               >
-                {saveMutation.isPending ? (
+                {deleteMutation.isPending ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
-                  <Gauge className="w-4 h-4" />
+                  <Trash2 className="w-4 h-4" />
                 )}
-                {t('common.save')}
+                {t('common.delete')}
               </Button>
             </div>
-          </form>
-        </CardContent>
-      </Card>
-
-      {/* Delete Confirmation Modal */}
-      {showDeleteConfirm && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]">
-          <Card className="w-full max-w-sm">
-            <CardContent className="p-6">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-500/20 flex items-center justify-center">
-                  <Trash2 className="w-5 h-5 text-red-500" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-white">{t('kProfiles.deleteConfirm.title')}</h3>
-                  <p className="text-sm text-bambu-gray">{t('kProfiles.deleteConfirm.cannotUndo')}</p>
-                </div>
-              </div>
-              <p className="text-bambu-gray mb-6">
-                {t('kProfiles.deleteConfirm.message', { name: profile?.name })}
-              </p>
-              <div className="flex gap-3">
-                <Button
-                  variant="secondary"
-                  onClick={() => setShowDeleteConfirm(false)}
-                  className="flex-1"
-                >
-                  {t('common.cancel')}
-                </Button>
-                <Button
-                  onClick={() => {
-                    setShowDeleteConfirm(false);
-                    handleDelete();
-                  }}
-                  disabled={deleteMutation.isPending}
-                  className="flex-1 bg-red-500 hover:bg-red-600 text-white"
-                >
-                  {deleteMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Trash2 className="w-4 h-4" />
-                  )}
-                  {t('common.delete')}
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+          </div>
+        </Modal>
       )}
-    </div>
+    </>
   );
 }
 
@@ -996,6 +992,10 @@ export function KProfilesView() {
       if (editingProfile || showAddModal || copyingProfile) {
         return;
       }
+      // Page shortcuts stay quiet under a modal — the stack owns Esc there.
+      if (isAnyModalOpen()) {
+        return;
+      }
 
       if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
@@ -1243,41 +1243,42 @@ export function KProfilesView() {
     <>
       {/* Loading overlay when refetching profiles (not initial load) */}
       {isFetching && !kprofilesLoading && (
-        <div className="fixed inset-0 bg-black/50 flex flex-col items-center justify-center z-40">
+        // not-a-modal: loading
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex flex-col items-center justify-center z-40">
           <Loader2 className="w-10 h-10 text-bambu-green animate-spin mb-3" />
           <p className="text-white font-medium">{t('kProfiles.loadingProfiles')}</p>
         </div>
       )}
 
       {/* Printer & Nozzle Selector */}
-      <div className="flex flex-wrap gap-4 mb-6">
+      <div className="flex flex-wrap gap-4 mb-4">
         <div className="flex-1 min-w-48">
           <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.printer')}</label>
-          <select
+          <Select
+            className="w-full"
             value={selectedPrinter || ''}
             onChange={(e) => setSelectedPrinter(parseInt(e.target.value))}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
           >
             {connectedPrinters.map((printer) => (
               <option key={printer.id} value={printer.id}>
                 {printer.name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div className="w-32">
           <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.nozzle')}</label>
-          <select
+          <Select
+            className="w-full"
             value={nozzleDiameter}
             onChange={(e) => setNozzleDiameter(e.target.value)}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
           >
             <option value="0.2">0.2mm</option>
             <option value="0.4">0.4mm</option>
             <option value="0.6">0.6mm</option>
             <option value="0.8">0.8mm</option>
-          </select>
+          </Select>
         </div>
 
         <div className="flex items-end gap-2">
@@ -1315,15 +1316,15 @@ export function KProfilesView() {
         </div>
         {isDualNozzle && (
           <div className="w-36">
-            <select
+            <Select
+              className="w-full"
               value={extruderFilter}
               onChange={(e) => setExtruderFilter(e.target.value as ExtruderFilter)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             >
               <option value="all">{t('kProfiles.allExtruders')}</option>
               <option value="left">{t('kProfiles.leftOnly')}</option>
               <option value="right">{t('kProfiles.rightOnly')}</option>
-            </select>
+            </Select>
           </div>
         )}
         {/* Hidden, not disabled, on a model with a single nozzle variant
@@ -1331,32 +1332,32 @@ export function KProfilesView() {
             so the control has nothing to offer. */}
         {supportsFlowType && (
           <div className="w-32">
-            <select
+            <Select
+              className="w-full"
               value={flowTypeFilter}
               onChange={(e) => setFlowTypeFilter(e.target.value as FlowTypeFilter)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             >
               <option value="all">{t('kProfiles.allFlow')}</option>
               <option value="hf">{t('kProfiles.hfOnly')}</option>
               <option value="s">{t('kProfiles.sOnly')}</option>
-            </select>
+            </Select>
           </div>
         )}
         <div className="w-32">
-          <select
+          <Select
+            className="w-full"
             value={sortOption}
             onChange={(e) => setSortOption(e.target.value as SortOption)}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
           >
             <option value="name">{t('kProfiles.sortName')}</option>
             <option value="k_value">{t('kProfiles.sortKValue')}</option>
             <option value="filament">{t('kProfiles.sortFilament')}</option>
-          </select>
+          </Select>
         </div>
       </div>
 
       {/* Toolbar Row */}
-      <div className="flex flex-wrap gap-2 mb-6">
+      <div className="flex flex-wrap gap-2 mb-4">
         <Button
           variant="secondary"
           onClick={handleExport}
@@ -1610,46 +1611,49 @@ export function KProfilesView() {
 
       {/* Bulk Delete Confirmation Modal */}
       {showBulkDeleteConfirm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <Card className="w-full max-w-sm">
-            <CardContent className="p-6">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-500/20 flex items-center justify-center">
-                  <Trash2 className="w-5 h-5 text-red-500" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-white">{t('kProfiles.bulkDelete.title')}</h3>
-                  <p className="text-sm text-bambu-gray">{t('kProfiles.bulkDelete.cannotUndo')}</p>
-                </div>
+        <Modal
+          onClose={() => setShowBulkDeleteConfirm(false)}
+          hideClose
+          ariaLabel={t('kProfiles.bulkDelete.title')}
+          size="sm"
+        >
+          <div className="p-4">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-500/20 flex items-center justify-center">
+                <Trash2 className="w-5 h-5 text-red-500" />
               </div>
-              <p className="text-bambu-gray mb-6">
-                {t('kProfiles.bulkDelete.message', { count: selectedProfiles.size })}
-              </p>
-              <div className="flex gap-3">
-                <Button
-                  variant="secondary"
-                  onClick={() => setShowBulkDeleteConfirm(false)}
-                  disabled={bulkDeleteInProgress}
-                  className="flex-1"
-                >
-                  {t('common.cancel')}
-                </Button>
-                <Button
-                  onClick={executeBulkDelete}
-                  disabled={bulkDeleteInProgress}
-                  className="flex-1 bg-red-500 hover:bg-red-600 text-white"
-                >
-                  {bulkDeleteInProgress ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Trash2 className="w-4 h-4" />
-                  )}
-                  {t('common.delete')}
-                </Button>
+              <div>
+                <h3 className="text-lg font-semibold text-white">{t('kProfiles.bulkDelete.title')}</h3>
+                <p className="text-sm text-bambu-gray">{t('kProfiles.bulkDelete.cannotUndo')}</p>
               </div>
-            </CardContent>
-          </Card>
-        </div>
+            </div>
+            <p className="text-bambu-gray mb-4">
+              {t('kProfiles.bulkDelete.message', { count: selectedProfiles.size })}
+            </p>
+            <div className="flex gap-3">
+              <Button
+                variant="secondary"
+                onClick={() => setShowBulkDeleteConfirm(false)}
+                disabled={bulkDeleteInProgress}
+                className="flex-1"
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                onClick={executeBulkDelete}
+                disabled={bulkDeleteInProgress}
+                className="flex-1 bg-red-500 hover:bg-red-600 text-white"
+              >
+                {bulkDeleteInProgress ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Trash2 className="w-4 h-4" />
+                )}
+                {t('common.delete')}
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
     </>
   );

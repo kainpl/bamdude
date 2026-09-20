@@ -1,0 +1,332 @@
+"""Stable in-process boundary for one-shot camera capture.
+
+The current implementation is deliberately inline.  Callers use this module so
+the future worker can take ownership of physical camera connections without
+changing every consumer at once.  It must stay free of FastAPI, database, MQTT,
+browser-token and worker-process imports.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import uuid
+from collections.abc import AsyncGenerator, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal, Protocol
+
+from backend.app.services.camera_metrics import CameraCaptureResult
+
+if TYPE_CHECKING:
+    from backend.app.services.camera_worker_supervisor import CameraWorkerSupervisor
+
+CameraPurpose = Literal[
+    "snapshot",
+    "diagnose",
+    "finish_photo",
+    "obico",
+    "plate_check",
+    "layer_timelapse",
+    "telegram",
+    "cloud_link",
+]
+
+
+@dataclass(frozen=True, kw_only=True)
+class CameraCaptureRequest:
+    """Validated description of one caller's capture need.
+
+    This is intentionally an in-memory request.  The worker IPC schema gets a
+    separate, versioned representation: credentials must never be accidentally
+    serialized by a debug ``repr`` or a generic dataclass encoder.
+    """
+
+    kind: Literal["builtin", "external"]
+    purpose: CameraPurpose
+    timeout: int
+    ip_address: str | None = field(default=None, repr=False)
+    access_code: str | None = field(default=None, repr=False)
+    model: str | None = None
+    url: str | None = field(default=None, repr=False)
+    camera_type: str | None = None
+    snapshot_url: str | None = field(default=None, repr=False)
+    #: The printer this frame is for. The chamber-light lease keys on it
+    #: (services/camera_light); ``None`` means no lease. In-memory only —
+    #: the worker command copies its fields by name and never sees this.
+    printer_id: int | None = None
+    #: A poller's declared hold on the light, seconds (camera_light.hold_for_poll).
+    hold: float | None = None
+
+    @classmethod
+    def builtin(
+        cls,
+        *,
+        ip_address: str,
+        access_code: str,
+        model: str | None,
+        timeout: int = 15,
+        purpose: CameraPurpose = "snapshot",
+        printer_id: int | None = None,
+        hold: float | None = None,
+    ) -> CameraCaptureRequest:
+        return cls(
+            kind="builtin",
+            purpose=purpose,
+            timeout=timeout,
+            ip_address=ip_address,
+            access_code=access_code,
+            model=model,
+            printer_id=printer_id,
+            hold=hold,
+        )
+
+    @classmethod
+    def external(
+        cls,
+        *,
+        url: str,
+        camera_type: str,
+        snapshot_url: str | None = None,
+        timeout: int = 15,
+        purpose: CameraPurpose = "snapshot",
+        printer_id: int | None = None,
+        hold: float | None = None,
+    ) -> CameraCaptureRequest:
+        return cls(
+            kind="external",
+            purpose=purpose,
+            timeout=timeout,
+            url=url,
+            camera_type=camera_type,
+            snapshot_url=snapshot_url,
+            printer_id=printer_id,
+            hold=hold,
+        )
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.timeout <= 120:
+            raise ValueError("camera capture timeout must be between 1 and 120 seconds")
+        if self.hold is not None and self.hold < 0:
+            raise ValueError("camera light hold cannot be negative")
+        if self.kind == "builtin":
+            if not self.ip_address or self.access_code is None:
+                raise ValueError("built-in camera capture requires address and access code")
+            if self.url is not None or self.camera_type is not None or self.snapshot_url is not None:
+                raise ValueError("built-in camera capture cannot contain an external camera URL")
+            return
+        if not self.url or not self.camera_type:
+            raise ValueError("external camera capture requires URL and type")
+        if self.ip_address is not None or self.access_code is not None or self.model is not None:
+            raise ValueError("external camera capture cannot contain built-in camera fields")
+
+
+class CameraRuntime(Protocol):
+    async def capture(self, request: CameraCaptureRequest) -> CameraCaptureResult: ...
+
+
+class InlineCameraRuntime:
+    """The existing capture paths behind the worker-ready interface."""
+
+    async def capture(self, request: CameraCaptureRequest) -> CameraCaptureResult:
+        if request.kind == "builtin":
+            from backend.app.services.camera import capture_camera_frame_with_provenance
+
+            return await capture_camera_frame_with_provenance(
+                request.ip_address or "",
+                request.access_code or "",
+                request.model,
+                request.timeout,
+            )
+
+        from backend.app.services.external_camera import capture_frame_with_provenance
+
+        return await capture_frame_with_provenance(
+            request.url or "",
+            request.camera_type or "",
+            request.timeout,
+            request.snapshot_url,
+        )
+
+
+@dataclass
+class WorkerCameraRuntime:
+    """Explicit test/rollout adapter for the supervised capture worker.
+
+    Nothing selects this adapter globally yet.  Application startup will add a
+    validated runtime setting only after the worker's producer and relay gates
+    have passed on supported hosts.
+    """
+
+    supervisor: CameraWorkerSupervisor
+
+    async def capture(self, request: CameraCaptureRequest) -> CameraCaptureResult:
+        return await self.supervisor.capture(request)
+
+    async def stream_external(
+        self,
+        *,
+        identity: str,
+        url: str,
+        camera_type: str,
+        fps: int,
+        disconnect_event: asyncio.Event,
+        on_frame: Callable[[bytes], None] | None = None,
+    ) -> AsyncGenerator[bytes, None]:
+        """Yield a worker-owned external camera stream as standard MJPEG parts.
+
+        The HTTP layer still owns browser disconnect detection and its normal
+        fan-out lifecycle.  This adapter only bridges its one physical source
+        to that fan-out; it never exposes worker protocol frames to a client.
+        ``identity`` is a stable UUID for the physical source, not a URL, so a
+        credential rotation cannot accidentally create a second producer.
+        """
+
+        # Validate it here too: callers must not use an endpoint URL as the
+        # worker identity, which would make credentials part of a registry key.
+        uuid.UUID(identity)
+        lease_id, queue = await self.supervisor.subscribe_external(
+            identity=identity,
+            url=url,
+            camera_type=camera_type,
+            fps=fps,
+        )
+        try:
+            from backend.app.services.external_camera import format_mjpeg_frame
+
+            while not disconnect_event.is_set():
+                try:
+                    media = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except TimeoutError:
+                    continue
+                if media is None:
+                    return
+                if on_frame is not None:
+                    on_frame(media.frame)
+                yield format_mjpeg_frame(media.frame)
+        finally:
+            await self.supervisor.unsubscribe(lease_id, queue)
+
+    async def stream_builtin(
+        self,
+        *,
+        identity: str,
+        ip_address: str,
+        access_code: str,
+        model: str | None,
+        fps: int,
+        disconnect_event: asyncio.Event,
+        on_frame: Callable[[bytes], None] | None = None,
+    ) -> AsyncGenerator[bytes, None]:
+        """Yield worker-owned Bambu chamber/RTSPS frames as MJPEG parts."""
+
+        uuid.UUID(identity)
+        lease_id, queue = await self.supervisor.subscribe_builtin(
+            identity=identity,
+            ip_address=ip_address,
+            access_code=access_code,
+            model=model,
+            fps=fps,
+        )
+        try:
+            from backend.app.services.external_camera import format_mjpeg_frame
+
+            while not disconnect_event.is_set():
+                try:
+                    media = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except TimeoutError:
+                    continue
+                if media is None:
+                    return
+                if on_frame is not None:
+                    on_frame(media.frame)
+                yield format_mjpeg_frame(media.frame)
+        finally:
+            await self.supervisor.unsubscribe(lease_id, queue)
+
+    async def start_raw_proxy(
+        self,
+        *,
+        identity: str,
+        bind_address: str,
+        listen_port: int,
+        target_host: str,
+        target_port: int,
+    ) -> str:
+        """Delegate Virtual Printer's byte-for-byte camera endpoint to the worker."""
+
+        uuid.UUID(identity)
+        return await self.supervisor.start_raw_proxy(
+            identity=identity,
+            bind_address=bind_address,
+            listen_port=listen_port,
+            target_host=target_host,
+            target_port=target_port,
+        )
+
+    async def stop_raw_proxy(self, lease_id: str) -> None:
+        await self.supervisor.stop_raw_proxy(lease_id)
+
+    async def stop(self) -> None:
+        await self.supervisor.stop()
+
+
+_inline_runtime = InlineCameraRuntime()
+_configured_runtime: CameraRuntime = _inline_runtime
+_runtime_override: ContextVar[CameraRuntime | None] = ContextVar("camera_runtime_override", default=None)
+
+
+def get_camera_runtime() -> CameraRuntime:
+    return _runtime_override.get() or _configured_runtime
+
+
+async def configure_camera_runtime(mode: Literal["inline", "worker"]) -> None:
+    """Select one process-wide physical camera owner at application startup."""
+
+    global _configured_runtime
+    if mode == "inline":
+        if isinstance(_configured_runtime, WorkerCameraRuntime):
+            await _configured_runtime.stop()
+        _configured_runtime = _inline_runtime
+        return
+    if isinstance(_configured_runtime, WorkerCameraRuntime):
+        return
+    from backend.app.services.camera_worker_supervisor import CameraWorkerSupervisor
+
+    runtime = WorkerCameraRuntime(CameraWorkerSupervisor())
+    await runtime.supervisor.start()
+    _configured_runtime = runtime
+
+
+async def stop_configured_camera_runtime() -> None:
+    """Release the worker tree before the app tears down camera dependencies."""
+
+    await configure_camera_runtime("inline")
+
+
+async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:
+    """Capture through the selected runtime without exposing implementation.
+
+    The chamber light is taken here, in the main process, whichever runtime
+    does the capture: a request that names its printer holds the light for
+    the frame and waits for the printer to confirm it before the capture
+    (services/camera_light — off unless the farm or the printer asks for it).
+    """
+
+    from backend.app.services import camera_light
+
+    async with camera_light.held(request.printer_id, request.purpose, hold=request.hold) as lease:
+        if lease is not None:
+            await lease.settle()
+        return await get_camera_runtime().capture(request)
+
+
+@contextmanager
+def override_camera_runtime(runtime: CameraRuntime) -> Iterator[None]:
+    """Scope a test/runtime experiment without leaking into other tasks."""
+
+    token = _runtime_override.set(runtime)
+    try:
+        yield
+    finally:
+        _runtime_override.reset(token)

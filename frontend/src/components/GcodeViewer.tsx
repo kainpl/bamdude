@@ -251,9 +251,15 @@ export function GcodeViewer({
       }
       initRef.current = false;
     };
-    // theme + showTravels are syncd live in their own effects below;
-    // re-running init on those would tear down + reload the gcode for
-    // a no-op state flip. eslint-disable-next-line react-hooks/exhaustive-deps
+    // Every dependency the linter names is left out on purpose:
+    //  - theme, showTravels: synced live by their own effects below. Re-running
+    //    init for them would tear down and reload the gcode for a state flip.
+    //  - filamentColors: covered by `colorsKey`, which is its VALUE. Depending
+    //    on the array itself would re-init whenever the parent re-rendered.
+    //  - buildVolume: a prop with an object-literal default, i.e. a new object
+    //    every render. ⚠️ The cost is that a changed build volume does not
+    //    re-init on its own; in practice `gcodeUrl` changes with it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gcodeUrl, colorsKey]);
 
   // Theme sync — flip canvas background live without recreating the

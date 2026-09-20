@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -16,8 +17,10 @@ from backend.app.core.config import settings
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
+from backend.app.services.archive_parts import seed_archive_parts
 from backend.app.services.library_helpers import skip_objects_supported_from_metadata
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
+from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 
 logger = logging.getLogger(__name__)
 
@@ -291,6 +294,7 @@ class ThreeMFParser:
 
                     # Collect per-slot filament usage for tracking & notifications
                     filament_slots = []
+                    nozzle_mapping = extract_nozzle_mapping_from_3mf(zf, self.metadata.get("_plate_index")) or {}
                     for f in filaments:
                         slot_id = f.get("id")
                         used_g_str = f.get("used_g", "0")
@@ -303,6 +307,9 @@ class ThreeMFParser:
                                 {
                                     "slot_id": int(slot_id),
                                     "used_g": round(used_g, 2),
+                                    # Routing must not turn a small positive
+                                    # consumption into an unused channel.
+                                    "used_g_raw": used_g,
                                     "type": f.get("type", ""),
                                     "color": f.get("color", ""),
                                     # The slicer's spool identity for this slot
@@ -314,6 +321,8 @@ class ThreeMFParser:
                                     "tray_info_idx": f.get("tray_info_idx", ""),
                                 }
                             )
+                            if int(slot_id) in nozzle_mapping:
+                                filament_slots[-1]["nozzle_id"] = nozzle_mapping[int(slot_id)]
                     if filament_slots:
                         self.metadata["filament_slots"] = filament_slots
         except Exception:
@@ -572,7 +581,7 @@ class ThreeMFParser:
                 # 3MF metadata values are XML-encoded — `&` becomes `&amp;`, etc.
                 # BambuStudio sometimes writes triple-encoded payloads
                 # (`&amp;amp;amp;`), so unescape in a loop until stable (the same
-                # trick ProjectPageParser uses). Without this a Title like
+                # trick `ThreeMFCardParser` uses). Without this a Title like
                 # "Foo & Bar" lands in the DB as raw "Foo &amp; Bar" and React
                 # double-escapes it on render to "Foo &amp;amp; Bar" (#1658).
                 decoded = value.strip()
@@ -1150,6 +1159,165 @@ def read_total_layers(zf: zipfile.ZipFile, gcode_path: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def sd_stem(sd_name: str) -> str:
+    """The name on the card without its trailing ``.gcode.3mf`` / ``.3mf`` suffixes.
+
+    The same strip loop as ``utils.filename.derive_remote_filename``, minus the
+    re-append of a single ``.3mf`` — the two must agree on where the stem ends,
+    because that function computes the very name on the card this one takes apart.
+
+    Raises ``TypeError`` on non-string input rather than entering the loop, for
+    the reason that function records: a duck-typed object whose ``endswith``
+    returns a truthy sentinel never escapes, and the unbounded allocation that
+    follows has cgroup-OOM'd the test runner under mocks.
+    """
+    if not isinstance(sd_name, str):
+        raise TypeError(f"sd_stem requires str, got {type(sd_name).__name__}")
+    stem = sd_name
+    while True:
+        if stem.endswith(".gcode.3mf"):
+            stem = stem[:-10]
+        elif stem.endswith(".3mf"):
+            stem = stem[:-4]
+        else:
+            return stem
+
+
+def _reconstruct_recovered_start(archive: PrintArchive) -> bool:
+    """Set ``started_at`` for a print adopted mid-flight (spec 2026-09-12 §3.3).
+
+    The row was created when BamDude joined the print, with the remaining time
+    the printer reported at that moment; the slicer's estimate arrives with the
+    3MF. ``started_at = observed_at − (estimate − remaining)``; when the printer
+    claims more remaining than the whole estimate (firmware drift) the honest
+    floor is ``observed_at``. Missing inputs leave the start unknown — nothing
+    downstream banks a fictitious duration for a row without ``started_at``.
+    Returns True when it wrote the field.
+
+    ⚠️ Every refusal is a no-op, never an exception. The only caller is
+    ``attach_3mf_to_archive``, whose broad ``except`` rolls the session back and
+    returns False — so a record this could not read would cost the whole attach
+    and orphan the 3MF folder already copied to disk, to save a timestamp.
+    A ``remaining_seconds`` that is a bool is treated as missing: ``True`` is an
+    ``int`` in Python, and reading a flag as "one second left" would invent a
+    whole print's worth of elapsed time.
+    """
+    extra = archive.extra_data if isinstance(archive.extra_data, dict) else {}
+    rec = extra.get("recovered_start")
+    if not isinstance(rec, dict) or archive.started_at is not None:
+        return False
+    remaining = rec.get("remaining_seconds")
+    estimate = archive.print_time_seconds
+    if isinstance(remaining, bool) or not isinstance(remaining, (int, float)) or not math.isfinite(remaining):
+        return False  # ``json.loads`` admits NaN/Infinity literals; ``int()`` of either would raise below
+    if not estimate or estimate <= 0:
+        return False
+    try:
+        observed_at = datetime.fromisoformat(rec.get("observed_at"))
+    except (TypeError, ValueError):
+        logger.warning(
+            "recovered_start for archive %s has an unreadable observed_at (%r) — leaving started_at unknown",
+            archive.id,
+            rec.get("observed_at"),
+        )
+        return False
+    # The records are written in UTC; a value that lost its offset on the way
+    # through the database is still that instant, not a local-time one.
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    elapsed = max(0, int(estimate) - int(remaining))
+    archive.started_at = observed_at - timedelta(seconds=elapsed)
+    archive.extra_data = {**extra, "started_at_reconstructed": True}
+    return True
+
+
+async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: str) -> PrintArchive | None:
+    """The archive that still has something to show for a file on the card — or None.
+
+    One owner for "printer file name → archive" (spec 2026-09-12 §3.1): the
+    printer-card cover and the file manager both ask here. An archive's
+    ``filename`` IS the card name for an external print (the download attaches
+    the name it found) and DERIVES the card name for a dispatched one
+    (``derive_remote_filename``: suffixes collapsed, spaces → underscores), so
+    the match folds spaces on both sides and accepts ``{stem}.3mf`` /
+    ``{stem}.gcode.3mf`` / the raw name / ``print_name == stem``. No content
+    hash: that would need the bytes, and not fetching them is the point.
+
+    A candidate counts when it still has **something on disk to show** — its
+    3MF, or failing that its extracted ``thumbnail_path``. Two kinds of row have
+    no 3MF and they are not the same thing:
+
+    * *pending* — the row is created at print start with ``file_path=""`` and no
+      thumbnail yet, while the 3MF is still being fetched. It has nothing to
+      show and must never shadow an older populated row; having neither a path
+      nor a thumbnail, it is already excluded in SQL.
+    * *cleaned* — retention (``archive_cleanup_service``) deleted the 3MF and
+      blanked ``file_path`` but deliberately KEPT ``thumbnail_path``, because
+      the row is print history. Amended 2026-09-12: that surviving picture is a
+      valid answer and gets used.
+
+    A **trashed** row (``deleted_at`` set) never answers either, newest or not:
+    it falls through to the next candidate exactly as a vanished file does.
+    ``PrintArchive.active()`` is the rule — trash must not leak into a normal
+    flow — and the sibling URL the plates route hands out
+    (``/archives/{id}/plate-thumbnail/{n}``) refuses a trashed row anyway.
+
+    Newest ``created_at`` first, and a row whose files have since vanished
+    yields to the next — so the walk reads light ``(id, file_path,
+    thumbnail_path)`` tuples and loads only the winner as an entity. No blind
+    ``LIMIT``: the eleventh row can be the only one still on disk.
+
+    Deliberately no status filter: the printer can be FINISH (the archive
+    already flipped to ``completed``) while the UI still asks for the picture.
+
+    **Callers decide what they can serve from the answer.** The cover serves
+    ``thumbnail_path`` when the row has one and opens the 3MF otherwise; the
+    plates route serves the cached ``extra_data["plates"]`` plus the printed
+    plate's PNG, and falls through to one read from the printer when a cleaned
+    row has no cached plates either.
+
+    ⚠️ Known hole, recorded rather than fixed: a #1542 doubled-suffix filename
+    (``Model.gcode.3mf.gcode.3mf`` stored on the row) matches no arm — the stem
+    of the card name is ``Model``, and folding spaces does not collapse the
+    extra suffix. The inline query this was lifted from had the same hole, and
+    the consequence is graceful: the plates route reads the file once, as it
+    does for a file that never printed.
+    """
+    stem = sd_stem(sd_name)
+    stem_us = stem.replace(" ", "_")
+    filename_us = func.replace(PrintArchive.filename, " ", "_")
+    candidates = (
+        await db.execute(
+            select(PrintArchive.id, PrintArchive.file_path, PrintArchive.thumbnail_path)
+            .where(PrintArchive.printer_id == printer_id)
+            .where(PrintArchive.deleted_at.is_(None))
+            .where(or_(PrintArchive.file_path != "", PrintArchive.thumbnail_path.is_not(None)))
+            .where(
+                or_(
+                    PrintArchive.print_name == stem,
+                    PrintArchive.filename == sd_name,
+                    filename_us == f"{stem_us}.3mf",
+                    filename_us == f"{stem_us}.gcode.3mf",
+                )
+            )
+            .order_by(PrintArchive.created_at.desc())
+        )
+    ).all()
+    for archive_id, file_path, thumbnail_path in candidates:
+        # ``base_dir / ""`` is base_dir itself — a directory, so is_file() is
+        # False — but check the column first and say so out loud. Both columns
+        # are persisted server-owned relative paths, written only by
+        # archive_print / attach_3mf_to_archive / the thumbnail extractor — never
+        # by a request; the card-name input selects rows, it never enters the join.
+        local_3mf = settings.base_dir / file_path if file_path else None  # SEC-PATH-OK: server-owned column
+        local_png = settings.base_dir / thumbnail_path if thumbnail_path else None  # SEC-PATH-OK: server-owned column
+        has_3mf = local_3mf is not None and local_3mf.is_file()
+        has_png = local_png is not None and local_png.is_file()
+        if has_3mf or has_png:
+            return await db.get(PrintArchive, archive_id)
+    return None
+
+
 def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
     """Build the full per-plate metadata list for one 3MF.
 
@@ -1683,211 +1851,6 @@ def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int,
         return False
 
 
-class ProjectPageParser:
-    """Parser for extracting project page data from Bambu Lab 3MF files."""
-
-    def __init__(self, file_path: Path):
-        self.file_path = file_path
-
-    def parse(self, archive_id: int) -> dict:
-        """Extract project page metadata and images from 3MF file."""
-        import html
-
-        result = {
-            "title": None,
-            "description": None,
-            "designer": None,
-            "designer_user_id": None,
-            "license": None,
-            "copyright": None,
-            "creation_date": None,
-            "modification_date": None,
-            "origin": None,
-            "profile_title": None,
-            "profile_description": None,
-            "profile_cover": None,
-            "profile_user_id": None,
-            "profile_user_name": None,
-            "design_model_id": None,
-            "design_profile_id": None,
-            "design_region": None,
-            "model_pictures": [],
-            "profile_pictures": [],
-            "thumbnails": [],
-        }
-
-        try:
-            with zipfile.ZipFile(self.file_path, "r") as zf:
-                # Parse 3D/3dmodel.model for metadata
-                model_path = "3D/3dmodel.model"
-                if model_path in zf.namelist():
-                    content = zf.read(model_path).decode("utf-8", errors="ignore")
-
-                    # Extract metadata elements using regex
-                    # Format: <metadata name="Key">Value</metadata> or <metadata name="Key" />
-                    metadata_pattern = r'<metadata\s+name="([^"]+)"[^>]*>([^<]*)</metadata>'
-                    matches = re.findall(metadata_pattern, content)
-
-                    field_mapping = {
-                        "Title": "title",
-                        "Description": "description",
-                        "Designer": "designer",
-                        "DesignerUserId": "designer_user_id",
-                        "License": "license",
-                        "Copyright": "copyright",
-                        "CreationDate": "creation_date",
-                        "ModificationDate": "modification_date",
-                        "Origin": "origin",
-                        "ProfileTitle": "profile_title",
-                        "ProfileDescription": "profile_description",
-                        "ProfileCover": "profile_cover",
-                        "ProfileUserId": "profile_user_id",
-                        "ProfileUserName": "profile_user_name",
-                        "DesignModelId": "design_model_id",
-                        "DesignProfileId": "design_profile_id",
-                        "DesignRegion": "design_region",
-                    }
-
-                    for name, value in matches:
-                        if name in field_mapping:
-                            # Decode HTML entities multiple times (content is often triple-encoded)
-                            decoded = value.strip()
-                            prev = None
-                            while prev != decoded:
-                                prev = decoded
-                                decoded = html.unescape(decoded)
-                            # Normalize non-breaking spaces to regular spaces
-                            decoded = decoded.replace("\xa0", " ")
-                            result[field_mapping[name]] = decoded if decoded else None
-
-                # List images in Auxiliaries folder
-                from urllib.parse import quote
-
-                for name in zf.namelist():
-                    if name.startswith("Auxiliaries/Model Pictures/"):
-                        filename = name.split("/")[-1]
-                        if filename:
-                            result["model_pictures"].append(
-                                {
-                                    "name": filename,
-                                    "path": name,
-                                    "url": f"/api/v1/archives/{archive_id}/project-image/{quote(name, safe='')}",
-                                }
-                            )
-                    elif name.startswith("Auxiliaries/Profile Pictures/"):
-                        filename = name.split("/")[-1]
-                        if filename:
-                            result["profile_pictures"].append(
-                                {
-                                    "name": filename,
-                                    "path": name,
-                                    "url": f"/api/v1/archives/{archive_id}/project-image/{quote(name, safe='')}",
-                                }
-                            )
-                    elif name.startswith("Auxiliaries/.thumbnails/"):
-                        filename = name.split("/")[-1]
-                        if filename:
-                            result["thumbnails"].append(
-                                {
-                                    "name": filename,
-                                    "path": name,
-                                    "url": f"/api/v1/archives/{archive_id}/project-image/{quote(name, safe='')}",
-                                }
-                            )
-
-        except Exception as e:
-            result["_error"] = str(e)
-
-        return result
-
-    def get_image(self, image_path: str) -> tuple[bytes, str] | None:
-        """Extract an image from the 3MF file.
-
-        Returns tuple of (image_data, content_type) or None if not found.
-        """
-        try:
-            with zipfile.ZipFile(self.file_path, "r") as zf:
-                if image_path in zf.namelist():
-                    data = zf.read(image_path)
-                    # Determine content type from extension
-                    ext = image_path.lower().split(".")[-1]
-                    content_types = {
-                        "png": "image/png",
-                        "jpg": "image/jpeg",
-                        "jpeg": "image/jpeg",
-                        "webp": "image/webp",
-                        "gif": "image/gif",
-                    }
-                    content_type = content_types.get(ext, "application/octet-stream")
-                    return (data, content_type)
-        except Exception:
-            pass  # Return None if image cannot be extracted from 3MF
-        return None
-
-    def update_metadata(self, updates: dict) -> bool:
-        """Update project page metadata in the 3MF file.
-
-        Args:
-            updates: Dict with fields to update (title, description, designer, etc.)
-
-        Returns:
-            True if successful, False otherwise.
-        """
-        import html
-        import tempfile
-
-        try:
-            # Read the 3MF file
-            with zipfile.ZipFile(self.file_path, "r") as zf_read:
-                # Find and read the 3dmodel.model file
-                model_path = "3D/3dmodel.model"
-                if model_path not in zf_read.namelist():
-                    return False
-
-                content = zf_read.read(model_path).decode("utf-8")
-
-                # Update metadata fields
-                field_mapping = {
-                    "title": "Title",
-                    "description": "Description",
-                    "designer": "Designer",
-                    "license": "License",
-                    "copyright": "Copyright",
-                    "profile_title": "ProfileTitle",
-                    "profile_description": "ProfileDescription",
-                }
-
-                for field, xml_name in field_mapping.items():
-                    if field in updates and updates[field] is not None:
-                        new_value = html.escape(updates[field])
-                        # Replace existing metadata or we'd need to add it
-                        pattern = rf'(<metadata\s+name="{xml_name}"[^>]*>)[^<]*(</metadata>)'
-                        replacement = rf"\g<1>{new_value}\g<2>"
-                        content = re.sub(pattern, replacement, content)
-
-                # Write to a temporary file first
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".3mf") as tmp:
-                    tmp_path = Path(tmp.name)
-
-                # Create new zip with updated content
-                with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf_write:
-                    for item in zf_read.namelist():
-                        if item == model_path:
-                            zf_write.writestr(item, content.encode("utf-8"))
-                        else:
-                            zf_write.writestr(item, zf_read.read(item))
-
-            # Replace original file with updated one
-            shutil.move(tmp_path, self.file_path)
-            return True
-
-        except Exception:
-            # Clean up temp file if it exists
-            if "tmp_path" in locals() and tmp_path.exists():
-                tmp_path.unlink()
-            return False
-
-
 # Sorts over what the print actually consumed. Kept as a table rather than an
 # if/elif chain because the route validates against the same keys — one place
 # to add a column, and no way for the two to drift.
@@ -2071,6 +2034,7 @@ class ArchiveService:
         original_filename: str | None = None,
         project_id: int | None = None,
         *,
+        project_line_id: int | None = None,
         source_content_hash: str | None = None,
         applied_patches: list[str] | None = None,
         subtask_id: str | None = None,
@@ -2080,6 +2044,7 @@ class ArchiveService:
         prefer_filename_for_name: bool = False,
         plate_index: int | None = None,
         dispatched_file: Path | None = None,
+        stored_filename: str | None = None,
         is_calibration: bool = False,
         calibration_session_id: int | None = None,
     ) -> PrintArchive | None:
@@ -2104,6 +2069,15 @@ class ArchiveService:
                 stored with UUID names)
             source_content_hash: SHA256 of the UNPATCHED source file, when the
                 caller (BamDude dispatch) knows it. None for external prints.
+            stored_filename: Name to keep the archived copy under, when
+                ``source_file.name`` is not a name anybody should read. Since m173
+                a dispatch's ``source_file`` is the captured object in the queue
+                spool, whose name is its sha256 — and the archive folder around it
+                is named after the human stem, so without this one tree would hold
+                both conventions and the person reading it during an incident pays.
+                Containment-checked like ``attach_3mf_to_archive``'s ``dest_name``;
+                ``None`` keeps the source file's own name, as every caller before
+                m173 did.
             applied_patches: Patch identifiers applied by the dispatch pipeline
                 before upload. None for external prints.
             subtask_id: Printer-assigned subtask identifier from MQTT push_status,
@@ -2235,7 +2209,16 @@ class ArchiveService:
                 )  # SEC-PATH-OK: printer_folder=str(printer_id); archive_name is timestamp + path-stripped display stem (no separators)
                 suffix += 1
             archive_dir.mkdir(parents=True)
-            dest_file = archive_dir / source_file.name
+            # The human name when the caller has one (a captured source's own name
+            # is its hash — see ``stored_filename``), containment-checked exactly
+            # as ``attach_3mf_to_archive`` does it: the string reaches here from a
+            # row or from a job's ``source_snapshot``, neither of which this
+            # function gets to trust with a path component.
+            dest_file = (
+                safe_join_under(archive_dir, stored_filename, http=False)
+                if stored_filename
+                else archive_dir / source_file.name
+            )
             # Explicit fsync'd loop avoids the shutil.copy2 → sendfile short-read
             # quirk that silently truncated 3MF archives on some platforms (#1032).
             # ``bytes_for_disk`` is the post-patch file when the dispatcher
@@ -2421,6 +2404,7 @@ class ArchiveService:
             skip_objects_supported=skip_objects_supported_from_metadata(metadata),
             created_by_id=created_by_id,
             project_id=project_id,
+            project_line_id=project_line_id,
             subtask_id=subtask_id,
             library_file_id=library_file_id,
             is_calibration=is_calibration,
@@ -2428,6 +2412,15 @@ class ArchiveService:
         )
 
         self.db.add(archive)
+        await self.db.flush()
+
+        # Seed the per-part plate state (m158). Source bytes, not dispatched:
+        # the patcher touches gcode, never slice_info, and the on-disk copy is
+        # the unpatched original anyway. Pass the Path, not the bytes — the
+        # read happens inside seed_archive_parts' own guard so a transient
+        # read error can never raise out of archive creation.
+        await seed_archive_parts(self.db, archive, source_file)
+
         await self.db.commit()
         await self.db.refresh(archive)
 
@@ -2448,9 +2441,11 @@ class ArchiveService:
         with ``file_path=""`` + ``extra_data["no_3mf_available"]=True``;
         the retry service later manages to grab the file from SD.
 
-        Does NOT touch ``status``, ``started_at``, ``completed_at``,
-        ``project_id``, or ``created_by_id`` — those were set when the
-        archive was originally created.
+        Does NOT touch ``status``, ``completed_at``, ``project_id``,
+        ``project_line_id``, or ``created_by_id`` — those were set when the
+        archive was originally created; never **overwrites** ``started_at`` —
+        fills it only for a row adopted mid-flight
+        (``extra_data['recovered_start']``, spec 2026-09-12 §3.3) that has none.
 
         Returns True on success, False on parse/copy failure.
         """
@@ -2661,6 +2656,17 @@ class ArchiveService:
             # False. Now that the file has landed we know the real answer.
             archive.skip_objects_supported = skip_objects_supported_from_metadata(metadata)
 
+            # The estimate needed to place a mid-flight adoption's start time
+            # only exists once the file has been parsed — here, and after
+            # ``extra_data`` has taken its merged value, which the rule writes
+            # its flag into. A no-op for every row that has a start.
+            if _reconstruct_recovered_start(archive):
+                logger.info(
+                    "Reconstructed started_at for adopted archive %s: %s",
+                    archive.id,
+                    archive.started_at,
+                )
+
             # Backfill cost + quantity — fallback creation seeded them with
             # NULL / 1, and without this the archive stays stuck there even
             # after the 3MF lands.  Mirrors the logic in archive_print().
@@ -2726,6 +2732,41 @@ class ArchiveService:
                     .where(PrintQueueItem.plate_id.is_(None))
                     .values(plate_id=archive.plate_index)
                 )
+
+            # Seed the per-part plate state (m158) — same contract as
+            # archive_print's call, now that archive.file_path points at
+            # the freshly attached 3MF. Pass the Path — this whole method is
+            # wrapped in a try/except that returns False on any failure, so
+            # a read error here would otherwise fail the entire attach.
+            await seed_archive_parts(self.db, archive, source_file)
+
+            # ⚠️ The free-stock credit runs HERE too (Ruling 27), not only in
+            # the completion hook. An external print reaches ``completed``
+            # before its 3MF does — the hook fired against an archive with no
+            # part rows at all and credited nothing, and the four retry triggers
+            # that finally attach the file (startup sweep, reconnect, the
+            # last-chance call in ``on_print_complete``, the manual button) only
+            # seed the rows. Nothing re-ran the credit, so a print that arrived
+            # by that door never reached the shelf.
+            #
+            # ``credit_if_unfiled`` is the never-fail wrapper the hook uses:
+            # this whole method returns False on any exception, and losing an
+            # attached 3MF over a bookkeeping refusal would be the worse trade.
+            # It decides for itself whether this archive qualifies (completed,
+            # order-less, and not already standing per part).
+            #
+            # ⚠️ The wrapper runs that credit inside a SAVEPOINT of its own,
+            # and this call site is why. Swallowing the exception is only half
+            # of "never fails its caller": a failure that reached the DATABASE
+            # rolls the session's transaction back with it, and by the time the
+            # polite empty list came back, the file copy and every field written
+            # above would be gone — lost to bookkeeping that is explicitly
+            # optional. The savepoint keeps the loss inside the ledger; the
+            # ``commit`` below still writes the attach.
+            if archive.status == "completed" and archive.project_id is None:
+                from backend.app.services import part_stock
+
+                await part_stock.credit_if_unfiled(self.db, archive)
 
             await self.db.commit()
             await self.db.refresh(archive)
@@ -3069,6 +3110,18 @@ class ArchiveService:
         if not archive:
             return False
 
+        # Archive rows are navigation/provenance after a queue item has a
+        # ready queue source of its own.  Hard deletion therefore only cancels
+        # legacy dependents and explicitly clears both queue tiers; SQLite does
+        # not enforce the model's ON DELETE SET NULL rule.
+        from backend.app.services import queue_source_release
+
+        await queue_source_release.source_purged(
+            self.db,
+            archive_ids=[archive_id],
+            reason=queue_source_release.REASON_ARCHIVE_DELETED,
+        )
+
         # Detach spool-usage history before removing the archive. The
         # ``spool_usage_history.archive_id`` FK has no ``ON DELETE`` clause (the
         # row must outlive the archive so the spool keeps its consumption record),
@@ -3088,6 +3141,17 @@ class ArchiveService:
         from backend.app.services.print_usage_journal import delete_for_archive
 
         await delete_for_archive(self.db, archive_id)
+
+        # Free-stock movements go the OTHER way: the parts this print made are
+        # on a shelf and stay there (pass 8, §Invariants touched — "deleting an
+        # archive does not delete its movements"), so the link is cut and the
+        # rows are kept. ``ON DELETE SET NULL`` says the same thing and fires on
+        # PostgreSQL only; on SQLite the movements would keep an id naming
+        # nothing, which is both a dead link in the product's history and an
+        # idempotency key the next archive to take that rowid would trip over.
+        from backend.app.services.part_stock import detach_archive
+
+        await detach_archive(self.db, archive_id)
 
         # Resolve the directory to delete BEFORE committing the DB change
         dir_to_delete: Path | None = None

@@ -432,7 +432,7 @@ describe('ModelViewerModal', () => {
       expect(mockOnClose).toHaveBeenCalled();
     });
 
-    it('calls onClose when backdrop is clicked', () => {
+    it('does NOT close when the backdrop is clicked', () => {
       render(
         <ModelViewerModal
           archiveId={1}
@@ -441,11 +441,9 @@ describe('ModelViewerModal', () => {
         />
       );
 
-      const backdrop = document.querySelector('.fixed.inset-0');
-      if (backdrop) {
-        fireEvent.click(backdrop);
-        expect(mockOnClose).toHaveBeenCalled();
-      }
+      const backdrop = screen.getByRole('dialog').parentElement as HTMLElement;
+      fireEvent.click(backdrop);
+      expect(mockOnClose).not.toHaveBeenCalled();
     });
   });
 

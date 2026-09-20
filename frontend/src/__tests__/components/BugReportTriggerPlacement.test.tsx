@@ -14,8 +14,10 @@
  *
  * ⚠️ And the panel must stay at the Layout root, not move into the header with
  * its button: the header is `fixed z-40` and therefore its own stacking
- * context, which would cap the z-50 panel at the header's level and bury it
- * under every ordinary modal.
+ * context, which would cap the panel at the header's level whatever its own
+ * z-index says. At the Layout root it sits at `z-[49]`, one below the modal
+ * layer (z = 50 + stack position) — above the header, and never over a dialog
+ * it would be inert under.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';

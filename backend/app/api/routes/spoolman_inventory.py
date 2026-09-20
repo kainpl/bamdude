@@ -57,6 +57,7 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
+from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot
 from backend.app.utils.filament_remaining import grams_remaining
 
@@ -1436,6 +1437,33 @@ async def assign_spoolman_slot(
                 status_code=409, detail="Mid-print replacement needs a print that is paused or has been paused"
             )
 
+    # What the upsert below is about to displace, read BEFORE it (spec
+    # 2026-09-13 §3.3) — the ON CONFLICT DO UPDATE overwrites the old spool id
+    # in place, so afterwards there is nothing left to report. Reported on the
+    # response so the UI can offer Replace in one step; the replace itself is
+    # unchanged — an occupied slot is never refused. A column-only select on
+    # purpose: the raw SQL changes the row without the ORM knowing, and loading
+    # the entity here would leave a stale copy in the identity map.
+    spool_on_slot = (
+        await db.execute(
+            select(SpoolmanSlotAssignment.spoolman_spool_id).where(
+                SpoolmanSlotAssignment.printer_id == body.printer_id,
+                SpoolmanSlotAssignment.ams_id == body.ams_id,
+                SpoolmanSlotAssignment.tray_id == body.tray_id,
+            )
+        )
+    ).scalar_one_or_none()
+    replaced_spoolman_spool_id = spool_on_slot if spool_on_slot != body.spoolman_spool_id else None
+    if replaced_spoolman_spool_id is not None:
+        logger.info(
+            "Slot %s/%s/%s: spool %s replaced with %s",
+            body.printer_id,
+            body.ams_id,
+            body.tray_id,
+            replaced_spoolman_spool_id,
+            body.spoolman_spool_id,
+        )
+
     # Spool confirmed in Spoolman — upsert into local slot-assignment table
     # assigned_at is intentionally not refreshed on re-assign (original timestamp preserved)
     try:
@@ -1490,15 +1518,6 @@ async def assign_spoolman_slot(
 
     mapped = _map_spoolman_spool(spool)
 
-    # Fetch K-profiles before the MQTT try block so we can use async DB access.
-    kp_rows_result = await db.execute(
-        select(SpoolmanKProfile).where(
-            SpoolmanKProfile.spoolman_spool_id == body.spoolman_spool_id,
-            SpoolmanKProfile.printer_id == body.printer_id,
-        )
-    )
-    kp_rows = kp_rows_result.scalars().all()
-
     # Auto-configure AMS slot via MQTT (best-effort; slot assignment is already persisted)
     try:
         mqtt_client = printer_manager.get_client(body.printer_id)
@@ -1544,52 +1563,65 @@ async def assign_spoolman_slot(
                 nozzle_dia_float = 0.4
 
             # Pick link by matching nozzle on the joined filament_calibration.
-            exact_link = None
-            fallback_link = None
-            for kp in kp_rows:
-                fc = kp.filament_calibration
-                if not fc or abs(fc.nozzle_diameter - nozzle_dia_float) > 0.05:
-                    continue
-                if slot_extruder is not None and kp.extruder == slot_extruder:
-                    exact_link = kp
-                    break
-                if fallback_link is None:
-                    fallback_link = kp
-            matching_link = exact_link or fallback_link
-            matching_fc = matching_link.filament_calibration if matching_link else None
+            matching_fc = await resolve_spoolman_slot_kprofile(
+                db,
+                printer_id=body.printer_id,
+                spoolman_spool_id=body.spoolman_spool_id,
+                nozzle_diameter=nozzle_dia_float,
+                slot_extruder=slot_extruder,
+            )
 
             # ONE identity path (spec A §5.2): the family catalog builds the
             # payload — family from the linked calibration when one exists,
             # else the generic family of the material, inside the builder.
+            from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
+                kprofile_allowed,
+                live_tray_for,
+            )
             from backend.app.services.slot_assignment import build_slot_assignment  # noqa: PLC0415
+            from backend.app.services.slot_assignment_publish import publish_projected_slot  # noqa: PLC0415
 
+            supports_user_preset = bool(getattr(state, "support_user_preset", False))
+            # Model cache, not PrinterInfo — see configure_ams_slot.
+            printer_model = printer_manager.get_model(body.printer_id)
             plan = await build_slot_assignment(
                 db,
                 family_id=matching_fc.filament_id if matching_fc else None,
                 material_override=tray_type,
                 color_rgba=tray_color,
                 temp_overrides=(mapped.get("nozzle_temp_min"), None),
-                # Model cache, not PrinterInfo — see configure_ams_slot.
-                printer_model=printer_manager.get_model(body.printer_id),
+                printer_model=printer_model,
                 nozzle_diameter=nozzle_diameter,
-                supports_user_preset=bool(getattr(state, "support_user_preset", False)),
+                supports_user_preset=supports_user_preset,
             )
             for note in plan.warnings:
                 logger.info("Spoolman assign: %s", note)
+            # The K half below keys off the ACTUAL family, never the advertised one.
             effective_tray_info_idx = plan.tray_info_idx
 
-            mqtt_client.ams_set_filament_setting(
+            # Project under the printer's policy, publish, remember what was
+            # masked — the one helper all three assignment paths share. The
+            # actual plan stays the spool's truth; only what the printer is told
+            # changes.
+            _, projection = await publish_projected_slot(
+                db,
+                mqtt_client,
+                printer=printer,
+                printer_id=body.printer_id,
                 ams_id=body.ams_id,
                 tray_id=body.tray_id,
-                tray_info_idx=plan.tray_info_idx,
-                tray_type=plan.tray_type or tray_type,
+                actual_plan=plan,
+                live_tray=live_tray_for(state, body.ams_id, body.tray_id),
+                spool_tag_uid=mapped.get("tag_uid"),
+                spool_tray_uuid=mapped.get("tray_uuid"),
+                material=tray_type,
+                extra_colors=None,
+                printer_model=printer_model,
+                nozzle_diameter=nozzle_diameter,
+                supports_user_preset=supports_user_preset,
                 tray_sub_brands=tray_sub_brands,
-                tray_color=tray_color,
-                nozzle_temp_min=plan.nozzle_temp_min,
-                nozzle_temp_max=plan.nozzle_temp_max,
-                setting_id=plan.setting_id,
-                cols=plan.cols,
-                ctype=plan.ctype,
+                tray_type_fallback=tray_type,
+                source="spoolman",
             )
 
             from backend.app.services.calibration_service import (  # noqa: PLC0415
@@ -1597,7 +1629,7 @@ async def assign_spoolman_slot(
             )
 
             fired = False
-            if matching_fc:
+            if matching_fc and kprofile_allowed(projection):
                 fired, _ = await apply_active_calibration_to_slot(
                     db=db,
                     printer_id=body.printer_id,
@@ -1659,7 +1691,25 @@ async def assign_spoolman_slot(
             body.tray_id,
         )
 
-    return mapped
+    # The slot changed — the event the internal assign and both unassigns send
+    # and this route never did, which is why a Spoolman filament card only
+    # picked up an assignment on the next poll (spec 2026-09-13 §3.3). Sent at
+    # the end, like the internal endpoint: everything a refetch reads — the
+    # slot row, the cleared stale fallback-tag links — is settled by here.
+    await ws_manager.broadcast(
+        {
+            "type": "spool_assignment_changed",
+            "printer_id": body.printer_id,
+            "ams_id": body.ams_id,
+            "tray_id": body.tray_id,
+        }
+    )
+
+    # The spool this assignment displaced is a fact about the ASSIGNMENT, not a
+    # property of the spool, so it is layered onto the response here instead of
+    # into ``_map_spoolman_spool`` (whose shape every other Spoolman route
+    # returns unchanged).
+    return {**mapped, "replaced_spoolman_spool_id": replaced_spoolman_spool_id}
 
 
 @router.delete("/slot-assignments/{spoolman_spool_id}")
@@ -1674,6 +1724,22 @@ async def unassign_spoolman_slot(
     """
     client = await _get_client(db)
 
+    # This route is addressed by SPOOL, not by slot, so the slot the card has to
+    # refresh is knowable only from the row — read it BEFORE the delete, as
+    # plain values (after the commit the instances are expired and their rows
+    # are gone). Normally exactly one; the loop covers nothing more exotic than
+    # a database that somehow holds two.
+    removed_slots = [
+        (row.printer_id, row.ams_id, row.tray_id)
+        for row in (
+            await db.execute(
+                select(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.spoolman_spool_id == spoolman_spool_id)
+            )
+        )
+        .scalars()
+        .all()
+    ]
+
     try:
         await db.execute(
             delete(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.spoolman_spool_id == spoolman_spool_id)
@@ -1683,6 +1749,24 @@ async def unassign_spoolman_slot(
         await db.rollback()
         logger.error("Failed to delete slot assignment: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to remove slot assignment") from exc
+
+    from backend.app.services import ams_advertised_overlay as overlay  # noqa: PLC0415
+
+    # Symmetry with the assign route (spec 2026-09-13 §3.3): a card that
+    # refreshes when a spool lands on a slot must refresh when it leaves. Only
+    # for rows that actually went — with nothing deleted there is no slot to
+    # name and nothing changed.
+    for printer_id, ams_id, tray_id in removed_slots:
+        # With the assignment gone there is no spool left behind the mask.
+        overlay.forget(printer_id, ams_id, tray_id)
+        await ws_manager.broadcast(
+            {
+                "type": "spool_assignment_changed",
+                "printer_id": printer_id,
+                "ams_id": ams_id,
+                "tray_id": tray_id,
+            }
+        )
 
     # Fetch the spool from Spoolman to return in InventorySpool format.
     # If the spool no longer exists in Spoolman, the local unassignment still succeeded.

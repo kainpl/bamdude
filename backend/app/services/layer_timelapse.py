@@ -13,7 +13,7 @@ from pathlib import Path
 
 from backend.app.core.config import settings
 from backend.app.services.camera import apply_camera_rotation
-from backend.app.services.external_camera import capture_frame
+from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,16 @@ class TimelapseSession:
                     return False
                 frame_data = buffered
             else:
-                frame_data = await capture_frame(self.camera_url, self.camera_type, snapshot_url=self.snapshot_url)
+                result = await capture(
+                    CameraCaptureRequest.external(
+                        url=self.camera_url,
+                        camera_type=self.camera_type,
+                        snapshot_url=self.snapshot_url,
+                        purpose="layer_timelapse",
+                        printer_id=self.printer_id,
+                    )
+                )
+                frame_data = result.frame
             if frame_data:
                 # Rotate on the way in, not at stitch time: ffmpeg reads the
                 # frames straight off disk, so a frame saved the wrong way up

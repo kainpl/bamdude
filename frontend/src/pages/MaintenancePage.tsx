@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useSearchParams, Link } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { byLocationName, compareLocationNames } from '../utils/locationOrder';
 import { buildLocationIndex, readStoredLocationFilter } from '../utils/locationTree';
@@ -51,6 +51,7 @@ import type { MaintenanceStatus, PrinterMaintenanceOverview, MaintenanceType, Ma
 import { Card, CardContent } from '../components/Card';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { Toggle } from '../components/Toggle';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
@@ -378,7 +379,7 @@ function PrinterSection({
     // card is the full width.
     <Card className="overflow-hidden @container">
       {/* Header */}
-      <div className="p-5">
+      <div className="p-4">
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <div className="flex items-center gap-3 min-w-0">
             <h2 className="text-xl font-semibold text-white truncate" title={overview.printer_name}>{overview.printer_name}</h2>
@@ -712,7 +713,7 @@ function SettingsSection({
 
         {/* Add custom type form */}
         {showAddType && (
-          <Card className="mb-6">
+          <Card className="mb-4">
             <CardContent className="py-4">
               <form onSubmit={handleAddType}>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -729,7 +730,8 @@ function SettingsSection({
                   </div>
                   <div>
                     <label className="block text-xs text-bambu-gray mb-1.5">{t('maintenance.intervalType')}</label>
-                    <select
+                    <Select
+                      className="w-full"
                       value={newTypeIntervalType}
                       onChange={(e) => {
                         setNewTypeIntervalType(e.target.value as 'hours' | 'days');
@@ -740,11 +742,10 @@ function SettingsSection({
                           setNewTypeInterval('100');
                         }
                       }}
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
                     >
                       <option value="hours">{t('maintenance.printHours')}</option>
                       <option value="days">{t('maintenance.calendarDays')}</option>
-                    </select>
+                    </Select>
                   </div>
                   <div>
                     <label className="block text-xs text-bambu-gray mb-1.5">
@@ -811,7 +812,8 @@ function SettingsSection({
                       </span>
                     ))}
                   </div>
-                  <select
+                  <Select
+                    className="w-full"
                     value=""
                     onChange={(e) => {
                       const val = e.target.value;
@@ -826,7 +828,6 @@ function SettingsSection({
                         });
                       }
                     }}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
                   >
                     <option value="">{t('maintenance.addModel')}</option>
                     <option value="*" disabled={newTypePrinterModels.includes('*')}>{t('maintenance.allModels')}</option>
@@ -835,7 +836,7 @@ function SettingsSection({
                         {name}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </div>
                 {/* Printer selection */}
                 <div className="mt-4">
@@ -931,14 +932,14 @@ function SettingsSection({
                       autoFocus
                     />
                     <div className="flex gap-2">
-                      <select
+                      <Select
+                        className="flex-1"
                         value={editTypeIntervalType}
                         onChange={(e) => setEditTypeIntervalType(e.target.value as 'hours' | 'days')}
-                        className="flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
                       >
                         <option value="hours">{t('maintenance.printHours')}</option>
                         <option value="days">{t('maintenance.calendarDays')}</option>
-                      </select>
+                      </Select>
                       <input
                         type="number"
                         value={editTypeInterval}
@@ -989,7 +990,9 @@ function SettingsSection({
                           </span>
                         ))}
                       </div>
-                      <select
+                      <Select
+                        size="sm"
+                        className="w-full"
                         value=""
                         onChange={(e) => {
                           const val = e.target.value;
@@ -1004,7 +1007,6 @@ function SettingsSection({
                             });
                           }
                         }}
-                        className="w-full px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
                       >
                         <option value="">{t('maintenance.addModel')}</option>
                         <option value="*" disabled={editTypePrinterModels.includes('*')}>{t('maintenance.allModels')}</option>
@@ -1013,7 +1015,7 @@ function SettingsSection({
                             {name}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
                     <div className="flex gap-2">
                       <Button size="sm" onClick={handleSaveEditType} disabled={!editTypeName.trim()}>
@@ -1173,14 +1175,15 @@ function SettingsSection({
                               ) : (
                                 <Timer className="w-3.5 h-3.5 text-bambu-gray shrink-0" />
                               )}
-                              <select
+                              <Select
+                                size="xs"
+                                tone="raised"
                                 value={intervalTypeInput}
                                 onChange={(e) => setIntervalTypeInput(e.target.value as 'hours' | 'days')}
-                                className="px-1.5 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-xs"
                               >
                                 <option value="hours">{t('maintenance.printHours')}</option>
                                 <option value="days">{t('maintenance.calendarDays')}</option>
-                              </select>
+                              </Select>
                               <input
                                 type="number"
                                 value={intervalInput}
@@ -1337,10 +1340,10 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
       {/* Toolbar: printer filter + per-page + pagination */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-sm text-bambu-gray">
-          <select
+          <Select
+            size="sm"
             value={filterPrinterId ?? ''}
             onChange={(e) => { setFilterPrinterId(e.target.value ? Number(e.target.value) : undefined); setPage(1); }}
-            className="bg-bambu-dark border border-bambu-dark-tertiary text-white rounded px-2 py-1.5 text-sm focus:border-bambu-green focus:outline-none"
             title={t('maintenance.filterByPrinter')}
           >
             <option value="">{t('maintenance.allPrinters')}</option>
@@ -1349,17 +1352,18 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
               .map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
-          </select>
+          </Select>
           <span className="hidden sm:inline">{t('common.show')}:</span>
-          <select
+          <Select
+            size="sm"
+            className="w-16 text-center"
             value={perPage}
             onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }}
-            className="w-16 bg-bambu-dark border border-bambu-dark-tertiary text-white rounded px-2 py-1.5 text-center text-sm focus:border-bambu-green focus:outline-none"
           >
             <option value={10}>10</option>
             <option value={25}>25</option>
             <option value={50}>50</option>
-          </select>
+          </Select>
           <span>{total} {t('common.total')}</span>
           <button
             onClick={async () => {
@@ -1710,7 +1714,7 @@ export function MaintenancePage() {
   void statusCacheVersion;
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 space-y-4">
       {/* Header */}
       <div className="space-y-3">
         <div>
@@ -1765,7 +1769,7 @@ export function MaintenancePage() {
       ) : (
         <>
         {activeTab === 'status' ? (
-          <div className="space-y-6">
+          <div className="space-y-4">
             {overview && overview.length > 0 ? (
               visibleOverviews.length === 0 ? (
                 <Card>

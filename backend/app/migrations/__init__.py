@@ -5,7 +5,8 @@ Runner logic:
 2. Ensure _migrations table
 3. Run all pending migrations sequentially (m000, m001, m002...)
 
-m000 is special - handles Bambuddy 2.2.2 → BamDude import if legacy DB found.
+m000 is inert since 0.5.6 (the Bambuddy import was removed); the version-0 record is kept for the
+bootstrap, and the per-boot notice about a Bambuddy file lives in run_all_migrations, not in m000.
 m001 is baseline - FTS5 + seeds for BamDude 3.0.1.
 m002+ are incremental upgrades between BamDude versions.
 """
@@ -18,6 +19,36 @@ from pathlib import Path
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
+
+# One definition, two callers: the startup check below and the PostgreSQL
+# auto-migrate in core/db_portable.py, which refuses the same file. Keeping the
+# sentence in one place is what stops the two paths telling a user different
+# stories about what happened to their database.
+FOREIGN_BAMBUDDY_NOTICE = (
+    "Found a Bambuddy database at %s. Importing Bambuddy data was removed in 0.5.6 — "
+    "BamDude and Bambuddy have diverged too far for a one-time import; the file is left "
+    "untouched. See https://docs.bamdude.top/getting-started/upgrading/"
+)
+
+
+async def _warn_if_foreign_bambuddy_file(data_dir) -> None:
+    """Name an upstream Bambuddy database sitting in the data directory.
+
+    Deliberately a startup check rather than part of m000. A migration is
+    recorded in ``_migrations`` and therefore runs exactly once: a notice living
+    in m000 fired on the first boot of a fresh install and stayed silent on every
+    boot after it, while the file it describes sits in the data directory
+    indefinitely. Nothing renames or removes that file any more — the ``.bak``
+    rename went with the importer — so the only way the notice can keep being
+    true is to re-check on every start.
+
+    Silent for BamDude's own 3.0.1-era ``bambuddy.db``: ``run_all_migrations``
+    has already renamed that one to ``bamdude.db`` above, and calling it foreign
+    would tell a BamDude user their own database was ignored.
+    """
+    path = _find_legacy_database(data_dir)
+    if path and not await _is_bamdude_301(path):
+        logger.warning(FOREIGN_BAMBUDDY_NOTICE, path)
 
 
 def _discover_migrations() -> list[dict]:
@@ -155,13 +186,16 @@ async def run_all_migrations(engine, session_factory) -> None:
     1. create_all() - ensures all tables exist from models
     2. Ensure _migrations table
     3. Handle BamDude 3.0.1 upgrade (rename + bootstrap)
-    4. Run all pending migrations (m000 handles legacy import if needed)
+    4. Run all pending migrations
+    5. Name an upstream Bambuddy database in the log, if one is sitting there
+
+    A Bambuddy database found in the data directory is left exactly where it is:
+    the import was removed in 0.5.6, and step 5 only reports it.
     """
     from backend.app.core.config import settings
     from backend.app.core.database import Base
     from backend.app.core.db_dialect import is_sqlite
 
-    legacy_path = None
     if is_sqlite():
         legacy_path = _find_legacy_database(settings.data_dir)
 
@@ -200,22 +234,18 @@ async def run_all_migrations(engine, session_factory) -> None:
     # Run all pending migrations sequentially
     await _run_pending(engine, session_factory)
 
-    # Rename legacy DB to .bak after successful migration (prevent re-import on next start)
-    # Only applicable for SQLite - PostgreSQL doesn't have local DB files
-    if legacy_path and legacy_path.exists():
-        bak_path = legacy_path.with_suffix(".db.bak")
-        try:
-            if bak_path.exists():
-                bak_path.unlink()
-            legacy_path.rename(bak_path)
-            # Also rename WAL/SHM
-            for suffix in ("-wal", "-shm"):
-                wal = legacy_path.parent / (legacy_path.name + suffix)
-                if wal.exists():
-                    wal.unlink()
-            logger.info("Renamed legacy database to %s", bak_path.name)
-        except OSError as e:
-            logger.warning("Could not rename legacy database: %s", e)
+    # A SQLite file imported this boot arrived at ITS migration level and the
+    # chain has just brought it to the head; now add what the models declare
+    # and no migration ever created. A no-op on every other boot.
+    if not is_sqlite():
+        from backend.app.core.db_portable import conform_imported_schema
+
+        await conform_imported_schema(engine, Base.metadata)
+
+    # Every boot, not once, and on every engine: the FILE is what matters, and a
+    # PostgreSQL install with a stray bambuddy.db in its data directory deserves
+    # the same sentence (two stat calls). See _warn_if_foreign_bambuddy_file.
+    await _warn_if_foreign_bambuddy_file(settings.data_dir)
 
 
 async def _has_existing_data(engine) -> bool:

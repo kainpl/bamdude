@@ -224,7 +224,7 @@ describe('GroupEditPage', () => {
       // pre-update snapshot. The fix invalidates the detail key AND primes
       // the cache with the server response so a re-mount sees fresh data.
       const { QueryClient, QueryClientProvider } = await import('@tanstack/react-query');
-      const { MemoryRouter, Routes, Route } = await import('react-router-dom');
+      const { MemoryRouter, Routes, Route } = await import('react-router');
       const { AuthProvider } = await import('../../contexts/AuthContext');
       const { ToastProvider } = await import('../../contexts/ToastContext');
       const { ThemeProvider } = await import('../../contexts/ThemeContext');

@@ -801,7 +801,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
                 step="0.1"
                 value={nozzleDiameter}
                 onChange={(e) => setNozzleDiameter(parseFloat(e.target.value) || 0.4)}
-                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                className="accent-bambu-green w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
           </div>

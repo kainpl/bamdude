@@ -34,6 +34,15 @@ const mockSettings = {
   bed_cooled_threshold: 35,
 };
 
+/** The checkbox that sits in the same row as a given label. */
+const toggleFor = (label: string): HTMLInputElement => {
+  const row = screen.getByText(label).closest('.flex.items-center.justify-between');
+  expect(row, `no toggle row around "${label}"`).not.toBeNull();
+  const input = row!.querySelector('input[type="checkbox"]');
+  expect(input, `no checkbox in the "${label}" row`).not.toBeNull();
+  return input as HTMLInputElement;
+};
+
 describe('SettingsPage', () => {
   beforeEach(() => {
     server.use(
@@ -41,7 +50,7 @@ describe('SettingsPage', () => {
         return HttpResponse.json(mockSettings);
       }),
       http.patch('/api/v1/settings/', async ({ request }) => {
-        const body = await request.json();
+        const body = (await request.json()) as Record<string, unknown>;
         return HttpResponse.json({ ...mockSettings, ...body });
       }),
       http.get('/api/v1/printers/', () => {
@@ -118,23 +127,6 @@ describe('SettingsPage', () => {
       });
     });
 
-    it('shows preferred slicer setting', async () => {
-      render(<SettingsPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Preferred Slicer')).toBeInTheDocument();
-      });
-    });
-
-    it('shows slicer dropdown with both options', async () => {
-      render(<SettingsPage />);
-
-      await waitFor(() => {
-        const slicerSelect = screen.getAllByDisplayValue('Bambu Studio');
-        expect(slicerSelect.length).toBeGreaterThan(0);
-      });
-    });
-
     it('shows appearance section', async () => {
       render(<SettingsPage />);
 
@@ -151,6 +143,47 @@ describe('SettingsPage', () => {
         expect(screen.getByText('Check for updates')).toBeInTheDocument();
         expect(screen.getByText('Check printer firmware')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('slicing settings', () => {
+    it('keeps slicer configuration out of General and opens it from Slicing', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await screen.findByText('Date Format');
+      expect(screen.queryByText('Preferred Slicer')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Slicing' }));
+
+      expect(await screen.findByText('Preferred Slicer')).toBeInTheDocument();
+      expect(screen.getByText('Open in Slicer')).toBeInTheDocument();
+      expect(screen.getByText('Enable server-side slicing')).toBeInTheDocument();
+      expect(screen.getAllByDisplayValue('Bambu Studio')).toHaveLength(1);
+
+      // Tab selection is intentionally reflected in the URL. Restore the
+      // default so this test does not leak ?tab=slicing into the next one.
+      await user.click(screen.getByRole('button', { name: 'General' }));
+      await screen.findByText('Date Format');
+    });
+
+    it('shows saved slice settings on Slicing, not Printing', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, use_slicer_api: true })),
+        http.get('/api/v1/slicer-pipelines/', () => HttpResponse.json({ pipelines: [] })),
+        http.get('/api/v1/slicer/presets', () => HttpResponse.json({ printers: [], processes: [], filaments: [] })),
+      );
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await user.click(await screen.findByRole('button', { name: 'Slicing' }));
+      expect(await screen.findByText('Slice settings')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Printing' }));
+      expect(screen.queryByText('Slice settings')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'General' }));
+      await screen.findByText('Date Format');
     });
   });
 
@@ -305,6 +338,117 @@ describe('SettingsPage', () => {
 
       expect(deleteCallCount).toBe(1);
     });
+  });
+
+  describe('light for the camera', () => {
+    const printerRow = (overrides: Record<string, unknown> = {}) => ({
+      id: 9,
+      name: 'Mini by the window',
+      serial_number: 'MINI0001',
+      ip_address: '192.168.1.109',
+      access_code: 'XXXX',
+      model: 'A1 mini',
+      location: null,
+      nozzle_count: 1,
+      is_active: true,
+      auto_archive: true,
+      external_camera_url: null,
+      external_camera_type: null,
+      external_camera_enabled: false,
+      external_camera_snapshot_url: null,
+      camera_rotation: 0,
+      camera_light_auto: 'inherit',
+      plate_detection_enabled: false,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      ...overrides,
+    });
+    const status = (overrides: Record<string, unknown>) =>
+      http.get('/api/v1/printers/:id/status', ({ params }) =>
+        HttpResponse.json({ id: Number(params.id), name: 'Mini by the window', connected: true, state: 'IDLE', ...overrides }),
+      );
+    // The tab a previous test left open survives into this one, so every
+    // test here opens the tab it needs instead of trusting the default.
+    const openTab = async (label: string) => {
+      const user = userEvent.setup();
+      const tab = await waitFor(() => {
+        const buttons = screen.getAllByText(label).filter((el) => el.tagName === 'BUTTON');
+        expect(buttons.length).toBeGreaterThan(0);
+        return buttons[0];
+      });
+      await user.click(tab);
+    };
+
+    it('the Obico toggle appears only once the light toggle is on, and both are saved', async () => {
+      const saved: Record<string, unknown>[] = [];
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, obico_enabled: true, camera_light_auto: false, camera_light_auto_obico: false })),
+        http.put('/api/v1/settings/', async ({ request }) => {
+          const body = (await request.json()) as Record<string, unknown>;
+          saved.push(body);
+          return HttpResponse.json({ ...mockSettings, ...body });
+        }),
+      );
+      render(<SettingsPage />);
+      await openTab('Printing');
+      const light = await waitFor(() => toggleFor('Light for the camera'), { timeout: 5000 });
+      expect(light.checked).toBe(false);
+      expect(screen.queryByText('Also for Obico failure detection')).not.toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(light);
+      await waitFor(() => toggleFor('Also for Obico failure detection'), { timeout: 5000 });
+      await user.click(toggleFor('Also for Obico failure detection'));
+      await waitFor(() => {
+        const last = saved.at(-1);
+        expect(last?.camera_light_auto).toBe(true);
+        expect(last?.camera_light_auto_obico).toBe(true);
+      }, { timeout: 5000 });
+    }, 15000);
+
+    it('a printer that reported a light gets its own selector, and the choice is sent as camera_light_auto', async () => {
+      const patches: Record<string, unknown>[] = [];
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, camera_light_auto: true })),
+        http.get('/api/v1/printers/', () => HttpResponse.json([printerRow()])),
+        status({ has_chamber_light: true }),
+        http.patch('/api/v1/printers/:id', async ({ request }) => {
+          const body = (await request.json()) as Record<string, unknown>;
+          patches.push(body);
+          return HttpResponse.json(printerRow(body));
+        }),
+      );
+      render(<SettingsPage />);
+      await openTab('Printing');
+      const select = (await screen.findByLabelText('Light for the camera', {}, { timeout: 5000 })) as HTMLSelectElement;
+      expect(select.value).toBe('inherit');
+      await userEvent.setup().selectOptions(select, 'off');
+      await waitFor(() => expect(patches).toEqual([{ camera_light_auto: 'off' }]), { timeout: 5000 });
+    }, 15000);
+
+    it('a connected printer with no chamber light has no selector', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, camera_light_auto: true })),
+        http.get('/api/v1/printers/', () => HttpResponse.json([printerRow()])),
+        status({ has_chamber_light: false }),
+      );
+      render(<SettingsPage />);
+      await openTab('Printing');
+      await screen.findByText('Mini by the window', {}, { timeout: 5000 });
+      await waitFor(() => expect(screen.queryByLabelText('Light for the camera')).not.toBeInTheDocument(), { timeout: 5000 });
+    }, 15000);
+
+    it('with the farm toggle off there is no per-printer selector at all', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () => HttpResponse.json({ ...mockSettings, camera_light_auto: false })),
+        http.get('/api/v1/printers/', () => HttpResponse.json([printerRow()])),
+        status({ has_chamber_light: true }),
+      );
+      render(<SettingsPage />);
+      await openTab('Printing');
+      await screen.findByText('Mini by the window', {}, { timeout: 5000 });
+      expect(screen.queryByLabelText('Light for the camera')).not.toBeInTheDocument();
+    }, 15000);
   });
 
   describe('external camera snapshot URL override (#1177)', () => {
@@ -495,6 +639,104 @@ describe('SettingsPage', () => {
       expect(await screen.findByText('Speed')).toBeInTheDocument();
       expect(screen.getByText('Silent')).toBeInTheDocument();
       expect(screen.getByText('Standard')).toBeInTheDocument();
+    });
+  });
+
+  describe('Filament checks — prefer_lowest_filament', () => {
+    /**
+     * The rule was honoured by the print dialog, the auto-queue and the
+     * virtual printer long before anything on screen could turn it on. What
+     * this pins is the wiring, not the rule: the toggle has to reach the PUT
+     * body, which means both hand-written lists in SettingsPage (the
+     * hasChanges comparison and the save payload) carry the key. The drift
+     * guard next door proves the two lists agree with each other; only an
+     * actual save proves they agree with the server.
+     */
+    const LABEL = 'Drain the emptiest spool first';
+
+    /** Click the Filament tab and wait for the Filament checks card. */
+    const switchToFilamentTab = async (user: ReturnType<typeof userEvent.setup>) => {
+      await waitFor(() => {
+        expect(screen.getAllByText('Filament').length).toBeGreaterThan(0);
+      });
+      await user.click(screen.getAllByText('Filament')[0]);
+      await screen.findByText(LABEL);
+    };
+
+    it('renders the toggle on when the server has never set it', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+      await switchToFilamentTab(user);
+
+      // mockSettings omits the key entirely — the `?? true` fallback is what
+      // keeps an old server's response from rendering an indeterminate box.
+      expect(toggleFor(LABEL)).toBeChecked();
+    });
+
+    it('sends prefer_lowest_filament: false once switched off', async () => {
+      let receivedBody: Record<string, unknown> | null = null;
+      server.use(
+        // The page saves with PUT; the shared beforeEach only mocks PATCH, so
+        // without this handler the save would fall through to the catch-all.
+        http.put('/api/v1/settings/', async ({ request }) => {
+          receivedBody = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ ...mockSettings, ...receivedBody });
+        })
+      );
+
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+      await switchToFilamentTab(user);
+
+      const toggle = toggleFor(LABEL);
+      await user.click(toggle);
+
+      // Assert the local flip first: if the click were swallowed (missing
+      // settings:update, say) the PUT wait below would time out with nothing
+      // to say about why.
+      await waitFor(() => expect(toggleFor(LABEL)).not.toBeChecked());
+
+      // The save is debounced by 500ms.
+      await waitFor(
+        () => {
+          expect(receivedBody).not.toBeNull();
+          expect(receivedBody!.prefer_lowest_filament).toBe(false);
+        },
+        { timeout: 5000 }
+      );
+    });
+  });
+
+  describe('Auto-queue routing — auto_queue_rebalance_models', () => {
+    const LABEL = 'Rebalance across printer models';
+
+    const switchToPrintingTab = async (user: ReturnType<typeof userEvent.setup>) => {
+      render(<SettingsPage />);
+      await user.click(await screen.findByText('Printing'));
+      await screen.findByText(LABEL);
+    };
+
+    it('renders off when the server has never set it', async () => {
+      const user = userEvent.setup();
+      await switchToPrintingTab(user);
+      expect(toggleFor(LABEL)).not.toBeChecked();
+    });
+
+    it('sends auto_queue_rebalance_models: true once switched on', async () => {
+      let receivedBody: Record<string, unknown> | null = null;
+      server.use(
+        http.put('/api/v1/settings/', async ({ request }) => {
+          receivedBody = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ ...mockSettings, ...receivedBody });
+        }),
+      );
+      const user = userEvent.setup();
+      await switchToPrintingTab(user);
+
+      await user.click(toggleFor(LABEL));
+      expect(toggleFor(LABEL)).toBeChecked();
+      await waitFor(() => expect(receivedBody).not.toBeNull());
+      expect(receivedBody).toMatchObject({ auto_queue_rebalance_models: true });
     });
   });
 

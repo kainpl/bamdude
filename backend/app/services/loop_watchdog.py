@@ -17,6 +17,7 @@ stack to stderr. The blocked frame then shows up in ``docker compose logs``.
 import asyncio
 import faulthandler
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +30,18 @@ HEARTBEAT_INTERVAL = 10.0
 # block for 30s, so anything that does is itself a bug worth a stack dump.
 STALL_THRESHOLD = 30.0
 
+# A several-second scheduler pause is enough to make an operator view appear
+# stale, yet is below the threshold for a full thread dump. Keep the existing
+# hard-stall evidence and record these shorter pauses for support correlation.
+SLOW_SCHEDULER_LAG_SECONDS = 1.0
+
 _watchdog_task: asyncio.Task | None = None
 
 
 async def _heartbeat_loop() -> None:
     """Re-arm the faulthandler stall timer on every tick."""
     while True:
+        sleep_started = time.monotonic()
         try:
             faulthandler.cancel_dump_traceback_later()
             # repeat=False: one dump pinpoints a hard freeze. If the loop
@@ -46,6 +53,13 @@ async def _heartbeat_loop() -> None:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
         except asyncio.CancelledError:
             break
+        lag = time.monotonic() - sleep_started - HEARTBEAT_INTERVAL
+        if lag >= SLOW_SCHEDULER_LAG_SECONDS:
+            logger.warning(
+                "Event-loop scheduler lag %.3fs (heartbeat %.1fs)",
+                lag,
+                HEARTBEAT_INTERVAL,
+            )
 
 
 def start_loop_watchdog() -> None:

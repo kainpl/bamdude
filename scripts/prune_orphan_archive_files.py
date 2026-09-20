@@ -28,12 +28,30 @@ trash-retained files still live on disk until the retention sweeper hard-
 deletes them. Files that don't match any reference are orphans. After files
 are removed, empty directories are collapsed bottom-up.
 
-Skipped from the sweep:
+Skipped from the file sweep:
 
 * ``<DATA_DIR>/archive/temp/`` — runtime FTP staging area, rebuilt per upload
+* ``<DATA_DIR>/archive/projects/`` and ``<DATA_DIR>/archive/products/`` — an
+  order's or a product's attachments, covered by the directory sweep below
+  instead. ⚠️ They are NOT archive files: no row of ``print_archives`` or
+  ``library_files`` names them, so the file sweep would call every live
+  attachment an orphan and ``--apply`` would delete the lot.
 * anything outside ``<DATA_DIR>/archive/`` (the database's ``file_path`` is
   always relative to ``DATA_DIR``, but only ``archive/`` is BamDude's
-  responsibility — leave certs, projects, virtual_printer alone).
+  responsibility — leave certs, virtual_printer alone).
+
+Attachment directories
+----------------------
+``delete_project`` and ``delete_product`` remove the row and leave
+``archive/{projects,products}/<id>/attachments/`` on disk, so a deleted order's
+pictures outlive it. The second pass here lists every ``<id>`` directory under
+those two whose row is gone and, with ``--apply``, removes it whole.
+
+⚠️ The id set is read from the ``projects`` / ``products`` tables, and a
+database that HAS NO such table means "cannot tell", never "nothing is
+referenced": that subtree is skipped with a warning rather than swept. A
+directory whose name is not an integer is reported and left alone for the same
+reason.
 
 Usage
 -----
@@ -57,9 +75,53 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
+
+# The tables whose file columns decide what is referenced. If either is
+# unreadable the answer to "what is an orphan?" is "everything".
+_REQUIRED_TABLES = ("print_archives", "library_files")
+
+
+def _refuse_unusable_database(db_path: Path) -> None:
+    """Stop before the scan when the database cannot answer the question.
+
+    ⚠️ Two ways this script used to arrive at "delete everything", both silent:
+
+    * **The install is on PostgreSQL.** ``DATABASE_URL`` points elsewhere and
+      this SQLite file is a leftover — on a migrated install it is the 0-byte
+      ``data/bamdude.db`` the app recreates beside ``bamdude.db.migrated``.
+    * **The file exists but holds no schema.** ``Path.exists()`` was the only
+      check, and SQLite opens an empty file as a valid empty database.
+
+    Either way the two SELECTs below raised "no such table", which was caught
+    and printed as a warning, the referenced set stayed empty, and every file
+    under ``archive/`` was reported as an orphan — with ``--apply`` offered on
+    the next line. Same shape as the ``EMPTY_WALK_GUARD`` in
+    ``services/library_scan.py``: an empty answer from a stocked directory is a
+    broken question, not a mandate to delete.
+    """
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if database_url:
+        where = "the bundled PostgreSQL" if database_url == "embedded" else database_url.split("@")[-1]
+        raise SystemExit(
+            f"refusing to run: DATABASE_URL is set ({where}), so this install's data is not in "
+            f"{db_path}.\nThis script reads SQLite only. Against a leftover SQLite file it would "
+            "report every archived file as an orphan."
+        )
+
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+        present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    missing = [name for name in _REQUIRED_TABLES if name not in present]
+    if missing:
+        raise SystemExit(
+            f"refusing to run: {db_path} has no {', '.join(missing)} table.\n"
+            "That is not a BamDude database (or it is an empty leftover). Every file would look "
+            "unreferenced, and --apply would delete all of them."
+        )
 
 
 def _resolve_data_dir(arg_data_dir: str | None) -> Path:
@@ -92,9 +154,67 @@ def _collect_referenced_paths(db_path: Path) -> set[str]:
                     if v:
                         referenced.add(Path(str(v)).as_posix())
         except sqlite3.OperationalError as e:
-            print(f"warning: skipping {table}: {e}", file=sys.stderr)
+            # ⚠️ NOT a warning. An unreadable table means "nothing is
+            # referenced", and this script deletes precisely what is not
+            # referenced — so the friendly degradation was a full wipe of the
+            # archive. See ``_refuse_unusable_database`` for the guard that
+            # normally stops us reaching here.
+            conn.close()
+            raise SystemExit(
+                f"refusing to continue: cannot read {table} ({e}).\n"
+                "Every file would look unreferenced, and --apply would delete all of them."
+            ) from e
     conn.close()
     return referenced
+
+
+# ``<data_dir>/<subdir>/<id>/`` — one per row of ``<table>``, attachments inside
+# (their own roots since m177; before that they sat under archive/).
+_ENTITY_DIRS: tuple[tuple[str, str], ...] = (("projects", "projects"), ("products", "products"))
+
+
+def _orphan_entity_dirs(db_path: Path, data_dir: Path) -> list[Path]:
+    """``<data_dir>/{projects,products}/<id>`` directories whose row is gone.
+
+    Returns them deepest-safe (whole directory, attachments and all) — the row
+    is what made the directory meaningful, so nothing inside it can be wanted.
+    """
+    orphans: list[Path] = []
+    # ``closing``: anything raised below would otherwise walk out of this
+    # function with the connection still open — and the caller goes on to delete
+    # files, which on Windows a lingering handle can refuse.
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        for subdir, table in _ENTITY_DIRS:
+            root = data_dir / subdir
+            if not root.exists():
+                continue
+            try:
+                live = {int(row[0]) for row in conn.execute(f"SELECT id FROM {table}")}  # noqa: S608 — fixed tables
+            except (sqlite3.OperationalError, TypeError, ValueError) as e:
+                # No such table (an older database) is "cannot tell", not "nothing
+                # is referenced". Sweeping on that reading would delete every
+                # attachment the install has.
+                print(f"warning: skipping {root}: cannot read {table}: {e}", file=sys.stderr)
+                continue
+            try:
+                children = sorted(root.iterdir())
+            except OSError as e:
+                # A root we cannot LIST is "cannot tell", the same reading the
+                # missing-table branch above takes: an offline mount or a
+                # permission change must not be reported as "nothing here is
+                # referenced". Skipping it leaves its subtree alone; the caller
+                # only ever deletes what this function returns.
+                print(f"warning: skipping {root}: cannot list it: {e}", file=sys.stderr)
+                continue
+            for child in children:
+                if not child.is_dir():
+                    continue
+                if not child.name.isdigit():
+                    print(f"  not an id, left alone: {child}")
+                    continue
+                if int(child.name) not in live:
+                    orphans.append(child)
+    return orphans
 
 
 def _is_under(path: Path, ancestor: Path) -> bool:
@@ -107,7 +227,8 @@ def _is_under(path: Path, ancestor: Path) -> bool:
 
 
 def _walk_archive_files(archive_root: Path, data_dir: Path, skip_dirs: list[Path]):
-    """Yield (relative_posix_path, abs_path) for regular files under archive/.
+    """Yield (relative_posix_path, abs_path) for regular files under one root
+    (``archive/`` or, since m177, ``library/``).
 
     ``skip_dirs`` are absolute paths to omit (anything under them is skipped).
     """
@@ -163,11 +284,16 @@ def main(argv: list[str] | None = None) -> int:
     data_dir = _resolve_data_dir(args.data_dir)
     db_path = data_dir / "bamdude.db"
     archive_root = data_dir / "archive"
-    skip_dirs = [archive_root / "temp"]
+    library_root = data_dir / "library"  # its own root since m177
+    # ⚠️ ``projects`` and ``products`` are skipped by the FILE sweep on purpose:
+    # nothing in the database's file columns names an attachment, so every live
+    # one would read as an orphan. They get their own directory pass below.
+    skip_dirs = [archive_root / "temp", archive_root / "projects", archive_root / "products"]
 
     if not db_path.exists():
         print(f"DB not found at {db_path}", file=sys.stderr)
         return 1
+    _refuse_unusable_database(db_path)
     if not archive_root.exists():
         print(f"archive/ not found at {archive_root} — nothing to do")
         return 0
@@ -184,15 +310,18 @@ def main(argv: list[str] | None = None) -> int:
     orphans: list[Path] = []
     total_files = 0
     total_bytes = 0
-    for rel, abs_path in _walk_archive_files(archive_root, data_dir, skip_dirs):
-        total_files += 1
-        if rel not in referenced:
-            try:
-                size = abs_path.stat().st_size
-            except OSError:
-                size = 0
-            total_bytes += size
-            orphans.append(abs_path)
+    # Library files are referenced by the same two tables and, since m177, live
+    # under their own root - walk it against the same reference set.
+    for walk_root in (archive_root, library_root):
+        for rel, abs_path in _walk_archive_files(walk_root, data_dir, skip_dirs):
+            total_files += 1
+            if rel not in referenced:
+                try:
+                    size = abs_path.stat().st_size
+                except OSError:
+                    size = 0
+                total_bytes += size
+                orphans.append(abs_path)
 
     print(f"Total files scanned: {total_files}")
     print(f"Orphan files: {len(orphans)} ({total_bytes / 1_048_576:.1f} MiB)")
@@ -210,9 +339,23 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     print("Collapsing empty directories...")
-    _collapse_empty_dirs(archive_root, skip_dirs, dry_run=not args.apply)
+    for walk_root in (archive_root, library_root):
+        _collapse_empty_dirs(walk_root, skip_dirs, dry_run=not args.apply)
 
-    if not args.apply and orphans:
+    print()
+    orphan_dirs = _orphan_entity_dirs(db_path, data_dir)
+    print(f"Orphan attachment directories: {len(orphan_dirs)}")
+    for directory in orphan_dirs:
+        if args.apply:
+            try:
+                shutil.rmtree(directory)
+                print(f"  deleted: {directory}")
+            except OSError as e:
+                print(f"  error deleting {directory}: {e}", file=sys.stderr)
+        else:
+            print(f"  would delete: {directory}")
+
+    if not args.apply and (orphans or orphan_dirs):
         print()
         print("(dry-run) re-run with --apply to actually delete the orphans above.")
     return 0

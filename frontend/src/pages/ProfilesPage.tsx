@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useId, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -48,7 +48,9 @@ import type { SlicerSetting, SlicerSettingsResponse, SlicerSettingDetail, Slicer
 import { Card, CardContent } from '../components/Card';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
 import { FilterDropdown } from '../components/FilterDropdown';
+import { Modal } from '../components/Modal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { KProfilesView } from '../components/KProfilesView';
@@ -179,7 +181,7 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
   return (
     <Card className="max-w-md mx-auto">
       <CardContent>
-        <div className="text-center mb-6">
+        <div className="text-center mb-4">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-bambu-green/20 mb-3">
             <Cloud className="w-6 h-6 text-bambu-green" />
           </div>
@@ -236,14 +238,14 @@ function LoginForm({ onSuccess, t }: { onSuccess: () => void; t: TFunction }) {
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('profiles.login.region')}</label>
-                <select
+                <Select
+                  className="w-full"
                   value={region}
                   onChange={(e) => setRegion(e.target.value)}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 >
                   <option value="global">{t('profiles.login.regionGlobal')}</option>
                   <option value="china">{t('profiles.login.regionChina')}</option>
-                </select>
+                </Select>
               </div>
             </>
           )}
@@ -513,6 +515,7 @@ function PresetDetailModal({
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const headingId = useId();
 
   const { data: detail, isLoading } = useQuery<SlicerSettingDetail>({
     queryKey: ['cloudSettingDetail', setting.setting_id],
@@ -533,103 +536,99 @@ function PresetDetailModal({
   const metadata = extractMetadata(setting.name, detail?.setting?.inherits as string);
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <Card className="w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
-        <CardContent className="p-0 flex flex-col min-h-0 flex-1">
-          {/* Header */}
-          <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <h2 className="text-xl font-semibold text-white truncate">{setting.name}</h2>
-                {isEditable && (
-                  <span className="px-2 py-0.5 text-xs font-medium bg-bambu-green/20 text-bambu-green rounded-full">
-                    {t('profiles.presets.editable')}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2 mt-1 text-sm text-bambu-gray">
-                <span className="capitalize">{t(`profiles.presets.types.${setting.type}`)}</span>
-                {metadata.printer && <><span>•</span><span>{metadata.printer}</span></>}
-              </div>
-            </div>
-            <button onClick={onClose} className="p-2 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded-lg transition-colors">
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-
-          {/* Content */}
-          <div className="flex-1 min-h-0 overflow-y-auto p-4">
-            {isLoading ? (
-              <LoadingBlock label={t('common.loading')} />
-            ) : detail ? (
-              <pre className="text-xs text-bambu-gray font-mono whitespace-pre-wrap break-all bg-bambu-dark p-4 rounded-lg border border-bambu-dark-tertiary overflow-x-auto max-w-full">
-                {formatJsonForDisplay(detail)}
-              </pre>
-            ) : (
-              <div className="text-center py-16 text-bambu-gray">{t('profiles.presets.failedToLoadDetails')}</div>
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      header={
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h2 id={headingId} className="text-xl font-semibold text-white truncate">{setting.name}</h2>
+            {isEditable && (
+              <span className="px-2 py-0.5 text-xs font-medium bg-bambu-green/20 text-bambu-green rounded-full">
+                {t('profiles.presets.editable')}
+              </span>
             )}
           </div>
+          <div className="flex items-center gap-2 mt-1 text-sm text-bambu-gray">
+            <span className="capitalize">{t(`profiles.presets.types.${setting.type}`)}</span>
+            {metadata.printer && <><span>•</span><span>{metadata.printer}</span></>}
+          </div>
+        </div>
+      }
+      size="3xl"
+      bodyClassName="flex flex-col"
+    >
+      {/* Content */}
+      <div className="flex-1 min-h-0 overflow-y-auto p-4">
+        {isLoading ? (
+          <LoadingBlock label={t('common.loading')} />
+        ) : detail ? (
+          <pre className="text-xs text-bambu-gray font-mono whitespace-pre-wrap break-all bg-bambu-dark p-4 rounded-lg border border-bambu-dark-tertiary overflow-x-auto max-w-full">
+            {formatJsonForDisplay(detail)}
+          </pre>
+        ) : (
+          <div className="text-center py-16 text-bambu-gray">{t('profiles.presets.failedToLoadDetails')}</div>
+        )}
+      </div>
 
-          {/* Footer */}
-          {showDeleteConfirm ? (
-            <div className="flex-shrink-0 p-4 border-t border-bambu-dark-tertiary bg-red-500/5">
-              <div className="flex items-center gap-2 mb-3 text-red-700 dark:text-red-400">
-                <AlertTriangle className="w-5 h-5" />
-                <span className="font-medium">{t('profiles.presets.deleteConfirm')}</span>
-              </div>
-              <p className="text-sm text-bambu-gray mb-4">
-                {t('profiles.presets.deleteWarning', { name: setting.name })}
-              </p>
-              <div className="flex gap-2">
-                <Button variant="secondary" onClick={() => setShowDeleteConfirm(false)} disabled={deleteMutation.isPending} className="flex-1">
-                  {t('common.cancel')}
-                </Button>
-                <Button variant="danger" onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending} className="flex-1">
-                  {deleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                  {t('common.delete')}
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="flex-shrink-0 p-4 border-t border-bambu-dark-tertiary">
-              <div className="flex gap-2">
-                <Button variant="secondary" onClick={onClose} className="flex-1">{t('common.close')}</Button>
+      {/* Footer */}
+      {showDeleteConfirm ? (
+        <div className="flex-shrink-0 p-4 border-t border-bambu-dark-tertiary bg-red-500/5">
+          <div className="flex items-center gap-2 mb-3 text-red-700 dark:text-red-400">
+            <AlertTriangle className="w-5 h-5" />
+            <span className="font-medium">{t('profiles.presets.deleteConfirm')}</span>
+          </div>
+          <p className="text-sm text-bambu-gray mb-4">
+            {t('profiles.presets.deleteWarning', { name: setting.name })}
+          </p>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => setShowDeleteConfirm(false)} disabled={deleteMutation.isPending} className="flex-1">
+              {t('common.cancel')}
+            </Button>
+            <Button variant="danger" onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending} className="flex-1">
+              {deleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+              {t('common.delete')}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex-shrink-0 p-4 border-t border-bambu-dark-tertiary">
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onClose} className="flex-1">{t('common.close')}</Button>
+            <Button
+              variant="secondary"
+              onClick={onDuplicate}
+              disabled={!hasPermission('cloud:auth')}
+              title={!hasPermission('cloud:auth') ? t('profiles.presets.noDuplicatePermission') : undefined}
+            >
+              <Copy className="w-4 h-4" />
+              {t('profiles.presets.duplicate')}
+            </Button>
+            {isEditable && (
+              <>
                 <Button
                   variant="secondary"
-                  onClick={onDuplicate}
-                  disabled={!hasPermission('cloud:auth')}
-                  title={!hasPermission('cloud:auth') ? t('profiles.presets.noDuplicatePermission') : undefined}
+                  onClick={onEdit}
+                  disabled={isLoading || !detail || !hasPermission('cloud:auth')}
+                  title={!hasPermission('cloud:auth') ? t('profiles.presets.noEditPermission') : undefined}
                 >
-                  <Copy className="w-4 h-4" />
-                  {t('profiles.presets.duplicate')}
+                  <Pencil className="w-4 h-4" />
+                  {t('common.edit')}
                 </Button>
-                {isEditable && (
-                  <>
-                    <Button
-                      variant="secondary"
-                      onClick={onEdit}
-                      disabled={isLoading || !detail || !hasPermission('cloud:auth')}
-                      title={!hasPermission('cloud:auth') ? t('profiles.presets.noEditPermission') : undefined}
-                    >
-                      <Pencil className="w-4 h-4" />
-                      {t('common.edit')}
-                    </Button>
-                    <Button
-                      variant="danger"
-                      onClick={() => setShowDeleteConfirm(true)}
-                      disabled={!hasPermission('cloud:auth')}
-                      title={!hasPermission('cloud:auth') ? t('profiles.presets.noDeletePermission') : undefined}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+                <Button
+                  variant="danger"
+                  onClick={() => setShowDeleteConfirm(true)}
+                  disabled={!hasPermission('cloud:auth')}
+                  title={!hasPermission('cloud:auth') ? t('profiles.presets.noDeletePermission') : undefined}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -750,207 +749,198 @@ function TemplatesModal({
 
   const templateToDelete = deleteConfirmId ? templates.find(tpl => tpl.id === deleteConfirmId) : null;
 
-  // Handle Escape key
+  // Esc belongs to the inline row editor while it is open — an inner layer, so
+  // it stops there and never reaches the stack that owns Esc for the modal
+  // itself. With the delete confirm up, that confirm is topmost and wins.
   useEffect(() => {
+    if (!editingId || deleteConfirmId) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (deleteConfirmId) {
-          setDeleteConfirmId(null);
-        } else if (editingId) {
-          handleCancelEdit();
-        } else {
-          onClose();
-        }
-      }
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      handleCancelEdit();
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [deleteConfirmId, editingId, onClose]);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [deleteConfirmId, editingId]);
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+    <Modal
+      onClose={onClose}
+      title={t('profiles.templates.title')}
+      icon={<Sparkles className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
+      size="2xl"
+      bodyClassName="flex flex-col"
+    >
       {/* Delete confirmation modal */}
       {templateToDelete && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-60">
-          <Card className="w-full max-w-md">
-            <CardContent className="p-6">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="p-2 bg-red-100 dark:bg-red-500/20 rounded-lg">
-                  <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-white">{t('profiles.templates.deleteTitle')}</h3>
-                  <p className="text-sm text-bambu-gray">{t('profiles.templates.deleteWarning')}</p>
-                </div>
+        <Modal
+          onClose={() => setDeleteConfirmId(null)}
+          hideClose
+          ariaLabel={t('profiles.templates.deleteTitle')}
+          size="md"
+        >
+          <div className="p-4">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 bg-red-100 dark:bg-red-500/20 rounded-lg">
+                <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400" />
               </div>
-              <p className="text-white mb-6">
-                {t('profiles.templates.deleteConfirm', { name: templateToDelete.name })}
-              </p>
-              <div className="flex gap-2">
-                <Button variant="secondary" onClick={() => setDeleteConfirmId(null)} className="flex-1">
-                  {t('common.cancel')}
-                </Button>
-                <Button onClick={() => handleDelete(deleteConfirmId!)} className="flex-1 bg-red-500 hover:bg-red-600">
-                  <Trash2 className="w-4 h-4" />
-                  {t('common.delete')}
-                </Button>
+              <div>
+                <h3 className="text-lg font-semibold text-white">{t('profiles.templates.deleteTitle')}</h3>
+                <p className="text-sm text-bambu-gray">{t('profiles.templates.deleteWarning')}</p>
               </div>
-            </CardContent>
-          </Card>
-        </div>
+            </div>
+            <p className="text-white mb-4">
+              {t('profiles.templates.deleteConfirm', { name: templateToDelete.name })}
+            </p>
+            <div className="flex gap-2">
+              <Button variant="secondary" onClick={() => setDeleteConfirmId(null)} className="flex-1">
+                {t('common.cancel')}
+              </Button>
+              <Button onClick={() => handleDelete(deleteConfirmId!)} className="flex-1 bg-red-500 hover:bg-red-600">
+                <Trash2 className="w-4 h-4" />
+                {t('common.delete')}
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
 
-      <Card className="w-full max-w-2xl max-h-[80vh] flex flex-col">
-        <CardContent className="p-0 flex flex-col h-full">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-amber-600 dark:text-amber-400" />
-              {t('profiles.templates.title')}
-            </h2>
-            <button onClick={onClose} className="text-bambu-gray hover:text-white">
-              <X className="w-5 h-5" />
-            </button>
+      {/* Filter row */}
+      <div className="flex items-center gap-2 p-4 border-b border-bambu-dark-tertiary">
+        <span className="text-sm text-bambu-gray">{t('profiles.templates.typeFilter')}</span>
+        {(['all', 'filament', 'print', 'printer'] as const).map((type) => (
+          <button
+            key={type}
+            onClick={() => setFilterType(type)}
+            className={`px-3 py-1 text-sm rounded-lg transition-colors ${
+              filterType === type
+                ? 'bg-bambu-green text-white'
+                : 'bg-bambu-dark text-bambu-gray hover:text-white'
+            }`}
+          >
+            {type === 'all' ? t('common.all') : typeLabels[type].label}
+          </button>
+        ))}
+      </div>
+
+      {/* Templates list */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {filteredTemplates.length === 0 ? (
+          <div className="text-center py-12 text-bambu-gray">
+            <Sparkles className="w-12 h-12 mx-auto mb-4 opacity-30" />
+            <p>{t('profiles.templates.noTemplates')}</p>
+            <p className="text-sm mt-1">{t('profiles.templates.createFirst')}</p>
           </div>
+        ) : (
+          <div className="space-y-2">
+            {filteredTemplates.map((template) => {
+              const typeInfo = typeLabels[template.type];
+              const TypeIcon = typeInfo.icon;
 
-          {/* Filter row */}
-          <div className="flex items-center gap-2 p-4 border-b border-bambu-dark-tertiary">
-            <span className="text-sm text-bambu-gray">{t('profiles.templates.typeFilter')}</span>
-            {(['all', 'filament', 'print', 'printer'] as const).map((type) => (
-              <button
-                key={type}
-                onClick={() => setFilterType(type)}
-                className={`px-3 py-1 text-sm rounded-lg transition-colors ${
-                  filterType === type
-                    ? 'bg-bambu-green text-white'
-                    : 'bg-bambu-dark text-bambu-gray hover:text-white'
-                }`}
-              >
-                {type === 'all' ? t('common.all') : typeLabels[type].label}
-              </button>
-            ))}
-          </div>
-
-          {/* Templates list */}
-          <div className="flex-1 overflow-y-auto p-4">
-            {filteredTemplates.length === 0 ? (
-              <div className="text-center py-12 text-bambu-gray">
-                <Sparkles className="w-12 h-12 mx-auto mb-4 opacity-30" />
-                <p>{t('profiles.templates.noTemplates')}</p>
-                <p className="text-sm mt-1">{t('profiles.templates.createFirst')}</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {filteredTemplates.map((template) => {
-                  const typeInfo = typeLabels[template.type];
-                  const TypeIcon = typeInfo.icon;
-
-                  if (editingId === template.id) {
-                    return (
-                      <div
-                        key={template.id}
-                        className="p-4 bg-bambu-dark rounded-lg border border-bambu-green"
-                      >
-                        <div className="grid grid-cols-2 gap-3 mb-3">
-                          <input
-                            type="text"
-                            value={editName}
-                            onChange={(e) => setEditName(e.target.value)}
-                            placeholder={t('profiles.templates.namePlaceholder')}
-                            className="px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
-                            autoFocus
-                          />
-                          <input
-                            type="text"
-                            value={editDesc}
-                            onChange={(e) => setEditDesc(e.target.value)}
-                            placeholder={t('profiles.templates.descriptionPlaceholder')}
-                            className="px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
-                          />
-                        </div>
-                        <div className="mb-3">
-                          <label className="text-xs text-bambu-gray mb-1 block">{t('profiles.templates.settingsJson')}</label>
-                          <textarea
-                            value={editSettings}
-                            onChange={(e) => {
-                              setEditSettings(e.target.value);
-                              setEditSettingsError(null);
-                            }}
-                            rows={6}
-                            className={`w-full px-3 py-2 bg-bambu-dark-secondary border rounded text-white text-sm font-mono focus:outline-none ${
-                              editSettingsError ? 'border-red-500' : 'border-bambu-dark-tertiary focus:border-bambu-green'
-                            }`}
-                          />
-                          {editSettingsError && (
-                            <p className="text-xs text-red-700 dark:text-red-400 mt-1">{editSettingsError}</p>
-                          )}
-                        </div>
-                        <div className="flex gap-2">
-                          <Button size="sm" onClick={handleSaveEdit} disabled={!editName.trim()}>
-                            <Save className="w-4 h-4" />
-                            Save
-                          </Button>
-                          <Button size="sm" variant="secondary" onClick={handleCancelEdit}>
-                            Cancel
-                          </Button>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div
-                      key={template.id}
-                      className="flex items-center gap-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary hover:border-bambu-gray-dark transition-colors"
-                    >
-                      <TypeIcon className={`w-5 h-5 ${typeInfo.color} flex-shrink-0`} />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-white">{template.name}</p>
-                        <p className="text-xs text-bambu-gray truncate">{template.description}</p>
-                      </div>
-                      <span className="text-xs text-bambu-gray-dark px-2 py-1 bg-bambu-dark-secondary rounded">
-                        {t('profiles.templates.fieldsCount', { count: Object.keys(template.settings).length })}
-                      </span>
-                      <button
-                        onClick={() => toggleShowInModal(template.id)}
-                        className={`p-1 transition-colors ${
-                          template.showInModal
-                            ? 'text-bambu-green hover:text-bambu-green/70'
-                            : 'text-bambu-gray hover:text-white'
-                        }`}
-                        title={template.showInModal ? t('profiles.templates.shownInModals') : t('profiles.templates.hiddenInModals')}
-                      >
-                        {template.showInModal ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-                      </button>
-                      <button
-                        onClick={() => onApply(template)}
-                        className="px-3 py-1 text-xs bg-bambu-green/20 text-bambu-green rounded hover:bg-bambu-green/30 transition-colors"
-                      >
-                        {t('profiles.templates.apply')}
-                      </button>
-                      <button
-                        onClick={() => handleEdit(template)}
-                        className="p-1 text-bambu-gray hover:text-white"
-                        title={t('common.edit')}
-                      >
-                        <Pencil className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => setDeleteConfirmId(template.id)}
-                        className="p-1 text-bambu-gray hover:text-red-600 dark:hover:text-red-400"
-                        title={t('common.delete')}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+              if (editingId === template.id) {
+                return (
+                  <div
+                    key={template.id}
+                    className="p-4 bg-bambu-dark rounded-lg border border-bambu-green"
+                  >
+                    <div className="grid grid-cols-2 gap-3 mb-3">
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        placeholder={t('profiles.templates.namePlaceholder')}
+                        className="px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
+                        autoFocus
+                      />
+                      <input
+                        type="text"
+                        value={editDesc}
+                        onChange={(e) => setEditDesc(e.target.value)}
+                        placeholder={t('profiles.templates.descriptionPlaceholder')}
+                        className="px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
+                      />
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                    <div className="mb-3">
+                      <label className="text-xs text-bambu-gray mb-1 block">{t('profiles.templates.settingsJson')}</label>
+                      <textarea
+                        value={editSettings}
+                        onChange={(e) => {
+                          setEditSettings(e.target.value);
+                          setEditSettingsError(null);
+                        }}
+                        rows={6}
+                        className={`w-full px-3 py-2 bg-bambu-dark-secondary border rounded text-white text-sm font-mono focus:outline-none ${
+                          editSettingsError ? 'border-red-500' : 'border-bambu-dark-tertiary focus:border-bambu-green'
+                        }`}
+                      />
+                      {editSettingsError && (
+                        <p className="text-xs text-red-700 dark:text-red-400 mt-1">{editSettingsError}</p>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" onClick={handleSaveEdit} disabled={!editName.trim()}>
+                        <Save className="w-4 h-4" />
+                        Save
+                      </Button>
+                      <Button size="sm" variant="secondary" onClick={handleCancelEdit}>
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <div
+                  key={template.id}
+                  className="flex items-center gap-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary hover:border-bambu-gray-dark transition-colors"
+                >
+                  <TypeIcon className={`w-5 h-5 ${typeInfo.color} flex-shrink-0`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-white">{template.name}</p>
+                    <p className="text-xs text-bambu-gray truncate">{template.description}</p>
+                  </div>
+                  <span className="text-xs text-bambu-gray-dark px-2 py-1 bg-bambu-dark-secondary rounded">
+                    {t('profiles.templates.fieldsCount', { count: Object.keys(template.settings).length })}
+                  </span>
+                  <button
+                    onClick={() => toggleShowInModal(template.id)}
+                    className={`p-1 transition-colors ${
+                      template.showInModal
+                        ? 'text-bambu-green hover:text-bambu-green/70'
+                        : 'text-bambu-gray hover:text-white'
+                    }`}
+                    title={template.showInModal ? t('profiles.templates.shownInModals') : t('profiles.templates.hiddenInModals')}
+                  >
+                    {template.showInModal ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                  </button>
+                  <button
+                    onClick={() => onApply(template)}
+                    className="px-3 py-1 text-xs bg-bambu-green/20 text-bambu-green rounded hover:bg-bambu-green/30 transition-colors"
+                  >
+                    {t('profiles.templates.apply')}
+                  </button>
+                  <button
+                    onClick={() => handleEdit(template)}
+                    className="p-1 text-bambu-gray hover:text-white"
+                    title={t('common.edit')}
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => setDeleteConfirmId(template.id)}
+                    className="p-1 text-bambu-gray hover:text-red-600 dark:hover:text-red-400"
+                    title={t('common.delete')}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
-        </CardContent>
-      </Card>
-    </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -1074,166 +1064,148 @@ function DiffModal({
     return str;
   };
 
-  // Handle Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
-
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <Card className="w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
-        <CardContent className="p-0 flex flex-col min-h-0 flex-1">
-          {/* Header */}
-          <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-              <GitCompare className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-              {t('profiles.diff.title')}
-            </h2>
-            <button onClick={onClose} className="text-bambu-gray hover:text-white">
-              <X className="w-5 h-5" />
-            </button>
-          </div>
+    <Modal
+      onClose={onClose}
+      title={t('profiles.diff.title')}
+      icon={<GitCompare className="w-5 h-5 text-blue-600 dark:text-blue-400" />}
+      size="4xl"
+      bodyClassName="flex flex-col"
+    >
+      {/* Preset labels */}
+      <div className="flex-shrink-0 grid grid-cols-2 gap-4 p-4 border-b border-bambu-dark-tertiary bg-bambu-dark">
+        <div className="text-center">
+          <span className="text-sm text-bambu-gray">{t('profiles.diff.left')}</span>
+          <p className="text-white font-medium truncate">{leftLabel}</p>
+        </div>
+        <div className="text-center">
+          <span className="text-sm text-bambu-gray">{t('profiles.diff.right')}</span>
+          <p className="text-white font-medium truncate">{rightLabel}</p>
+        </div>
+      </div>
 
-          {/* Preset labels */}
-          <div className="flex-shrink-0 grid grid-cols-2 gap-4 p-4 border-b border-bambu-dark-tertiary bg-bambu-dark">
-            <div className="text-center">
-              <span className="text-sm text-bambu-gray">{t('profiles.diff.left')}</span>
-              <p className="text-white font-medium truncate">{leftLabel}</p>
-            </div>
-            <div className="text-center">
-              <span className="text-sm text-bambu-gray">{t('profiles.diff.right')}</span>
-              <p className="text-white font-medium truncate">{rightLabel}</p>
-            </div>
+      {/* Stats and filters */}
+      <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
+        <div className="flex items-center gap-4 text-sm">
+          <span className="flex items-center gap-1 text-green-700 dark:text-green-400">
+            <PlusIcon className="w-3.5 h-3.5" />
+            {stats.added} {t('profiles.diff.added')}
+          </span>
+          <span className="flex items-center gap-1 text-red-700 dark:text-red-400">
+            <MinusIcon className="w-3.5 h-3.5" />
+            {stats.removed} {t('profiles.diff.removed')}
+          </span>
+          <span className="flex items-center gap-1 text-amber-700 dark:text-amber-400">
+            <ArrowRight className="w-3.5 h-3.5" />
+            {stats.changed} {t('profiles.diff.changed')}
+          </span>
+          <span className="flex items-center gap-1 text-bambu-gray">
+            <Equal className="w-3.5 h-3.5" />
+            {stats.same} {t('profiles.diff.same')}
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={t('profiles.diff.searchFields')}
+              className="pl-8 pr-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none w-48"
+            />
           </div>
+          {stats.same > 0 && (
+            <div className="flex rounded overflow-hidden border border-bambu-dark-tertiary">
+              <button
+                onClick={() => setFilterMode('changes')}
+                className={`px-3 py-1.5 text-sm transition-colors ${
+                  filterMode === 'changes'
+                    ? 'bg-bambu-green text-white'
+                    : 'bg-bambu-dark text-bambu-gray hover:text-white'
+                }`}
+              >
+                {t('profiles.diff.changes')}
+              </button>
+              <button
+                onClick={() => setFilterMode('all')}
+                className={`px-3 py-1.5 text-sm transition-colors ${
+                  filterMode === 'all'
+                    ? 'bg-bambu-green text-white'
+                    : 'bg-bambu-dark text-bambu-gray hover:text-white'
+                }`}
+              >
+                {t('common.all')}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
 
-          {/* Stats and filters */}
-          <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-            <div className="flex items-center gap-4 text-sm">
-              <span className="flex items-center gap-1 text-green-700 dark:text-green-400">
-                <PlusIcon className="w-3.5 h-3.5" />
-                {stats.added} {t('profiles.diff.added')}
-              </span>
-              <span className="flex items-center gap-1 text-red-700 dark:text-red-400">
-                <MinusIcon className="w-3.5 h-3.5" />
-                {stats.removed} {t('profiles.diff.removed')}
-              </span>
-              <span className="flex items-center gap-1 text-amber-700 dark:text-amber-400">
-                <ArrowRight className="w-3.5 h-3.5" />
-                {stats.changed} {t('profiles.diff.changed')}
-              </span>
-              <span className="flex items-center gap-1 text-bambu-gray">
-                <Equal className="w-3.5 h-3.5" />
-                {stats.same} {t('profiles.diff.same')}
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="relative">
-                <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={t('profiles.diff.searchFields')}
-                  className="pl-8 pr-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none w-48"
-                />
-              </div>
-              {stats.same > 0 && (
-                <div className="flex rounded overflow-hidden border border-bambu-dark-tertiary">
-                  <button
-                    onClick={() => setFilterMode('changes')}
-                    className={`px-3 py-1.5 text-sm transition-colors ${
-                      filterMode === 'changes'
-                        ? 'bg-bambu-green text-white'
-                        : 'bg-bambu-dark text-bambu-gray hover:text-white'
-                    }`}
-                  >
-                    {t('profiles.diff.changes')}
-                  </button>
-                  <button
-                    onClick={() => setFilterMode('all')}
-                    className={`px-3 py-1.5 text-sm transition-colors ${
-                      filterMode === 'all'
-                        ? 'bg-bambu-green text-white'
-                        : 'bg-bambu-dark text-bambu-gray hover:text-white'
-                    }`}
-                  >
-                    {t('common.all')}
-                  </button>
-                </div>
-              )}
-            </div>
+      {/* Diff table */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {filteredEntries.length === 0 ? (
+          <div className="text-center py-12 text-bambu-gray">
+            <Equal className="w-12 h-12 mx-auto mb-4 opacity-30" />
+            <p>{filterMode === 'changes' ? t('profiles.diff.noDifferences') : t('profiles.diff.noFieldsMatch')}</p>
           </div>
+        ) : (
+          <table className="w-full">
+            <thead className="sticky top-0 bg-bambu-dark-secondary">
+              <tr className="text-sm text-bambu-gray border-b border-bambu-dark-tertiary">
+                <th className="text-left p-3 w-1/3">{t('profiles.diff.field')}</th>
+                <th className="text-left p-3 w-1/3">{leftLabel}</th>
+                <th className="text-left p-3 w-1/3">{rightLabel}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredEntries.map((entry) => {
+                const bgClass = {
+                  added: 'bg-green-500/10',
+                  removed: 'bg-red-500/10',
+                  changed: 'bg-amber-500/10',
+                  same: '',
+                }[entry.status];
 
-          {/* Diff table */}
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            {filteredEntries.length === 0 ? (
-              <div className="text-center py-12 text-bambu-gray">
-                <Equal className="w-12 h-12 mx-auto mb-4 opacity-30" />
-                <p>{filterMode === 'changes' ? t('profiles.diff.noDifferences') : t('profiles.diff.noFieldsMatch')}</p>
-              </div>
-            ) : (
-              <table className="w-full">
-                <thead className="sticky top-0 bg-bambu-dark-secondary">
-                  <tr className="text-sm text-bambu-gray border-b border-bambu-dark-tertiary">
-                    <th className="text-left p-3 w-1/3">{t('profiles.diff.field')}</th>
-                    <th className="text-left p-3 w-1/3">{leftLabel}</th>
-                    <th className="text-left p-3 w-1/3">{rightLabel}</th>
+                const statusIcon = {
+                  added: <PlusIcon className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />,
+                  removed: <MinusIcon className="w-3.5 h-3.5 text-red-600 dark:text-red-400" />,
+                  changed: <ArrowRight className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />,
+                  same: <Equal className="w-3.5 h-3.5 text-bambu-gray-dark" />,
+                }[entry.status];
+
+                return (
+                  <tr key={entry.key} className={`border-b border-bambu-dark-tertiary ${bgClass}`}>
+                    <td className="p-3">
+                      <div className="flex items-center gap-2">
+                        {statusIcon}
+                        <span className="text-sm text-white font-mono">{entry.key}</span>
+                      </div>
+                    </td>
+                    <td className="p-3">
+                      <span className={`text-sm font-mono break-all ${
+                        entry.status === 'removed' ? 'text-red-700 dark:text-red-300' :
+                        entry.status === 'changed' ? 'text-white' : 'text-bambu-gray'
+                      }`}>
+                        {formatValue(entry.left)}
+                      </span>
+                    </td>
+                    <td className="p-3">
+                      <span className={`text-sm font-mono break-all ${
+                        entry.status === 'added' ? 'text-green-700 dark:text-green-300' :
+                        entry.status === 'changed' ? 'text-white' : 'text-bambu-gray'
+                      }`}>
+                        {formatValue(entry.right)}
+                      </span>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {filteredEntries.map((entry) => {
-                    const bgClass = {
-                      added: 'bg-green-500/10',
-                      removed: 'bg-red-500/10',
-                      changed: 'bg-amber-500/10',
-                      same: '',
-                    }[entry.status];
-
-                    const statusIcon = {
-                      added: <PlusIcon className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />,
-                      removed: <MinusIcon className="w-3.5 h-3.5 text-red-600 dark:text-red-400" />,
-                      changed: <ArrowRight className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />,
-                      same: <Equal className="w-3.5 h-3.5 text-bambu-gray-dark" />,
-                    }[entry.status];
-
-                    return (
-                      <tr key={entry.key} className={`border-b border-bambu-dark-tertiary ${bgClass}`}>
-                        <td className="p-3">
-                          <div className="flex items-center gap-2">
-                            {statusIcon}
-                            <span className="text-sm text-white font-mono">{entry.key}</span>
-                          </div>
-                        </td>
-                        <td className="p-3">
-                          <span className={`text-sm font-mono break-all ${
-                            entry.status === 'removed' ? 'text-red-700 dark:text-red-300' :
-                            entry.status === 'changed' ? 'text-white' : 'text-bambu-gray'
-                          }`}>
-                            {formatValue(entry.left)}
-                          </span>
-                        </td>
-                        <td className="p-3">
-                          <span className={`text-sm font-mono break-all ${
-                            entry.status === 'added' ? 'text-green-700 dark:text-green-300' :
-                            entry.status === 'changed' ? 'text-white' : 'text-bambu-gray'
-                          }`}>
-                            {formatValue(entry.right)}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -1254,6 +1226,7 @@ function CreatePresetModal({
 }) {
   const { showToast } = useToast();
   const queryClient = useQueryClient();
+  const headingId = useId();
 
   // Editing mode if initialData has setting_id
   const isEditMode = !!initialData?.setting_id;
@@ -1665,16 +1638,17 @@ function CreatePresetModal({
 
     if (field.type === 'select') {
       return (
-        <select
+        <Select
+          size="sm"
+          className="w-full"
           value={(value as string) || ''}
           onChange={(e) => updateField(field.key, e.target.value)}
-          className={baseClass}
         >
           <option value="">{placeholder}</option>
           {field.options?.map(opt => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
-        </select>
+        </Select>
       );
     }
 
@@ -1702,11 +1676,32 @@ function CreatePresetModal({
   }, [basePresetDetail]);
 
   return (
-    <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-      onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-      onDragLeave={() => setIsDragging(false)}
-      onDrop={handleFileDrop}
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      header={
+        <>
+          <div className="flex-1 min-w-0">
+            <h2 id={headingId} className="text-xl font-semibold text-white">
+              {isEditMode ? t('profiles.presets.editPreset') : (initialData ? t('profiles.presets.duplicatePreset') : t('profiles.presets.createNewPreset'))}
+            </h2>
+            <p className="text-sm text-bambu-gray mt-1">
+              {t('profiles.presets.customizeSettings')}
+            </p>
+          </div>
+          {baseId && (
+            <button
+              onClick={() => setShowDiffModal(true)}
+              className="flex items-center gap-2 px-3 py-2 text-sm text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded-lg transition-colors"
+              title={t('profiles.presets.compareWithBase')}
+            >
+              <GitCompare className="w-4 h-4" />
+              {t('profiles.presets.compare')}
+            </button>
+          )}
+        </>
+      }
+      size="6xl"
     >
       {/* Diff Modal */}
       {showDiffModal && baseId && (
@@ -1720,532 +1715,509 @@ function CreatePresetModal({
         />
       )}
 
-      <Card className="w-full max-w-6xl max-h-[90vh] flex flex-col overflow-y-auto">
-        <CardContent className="p-0 flex flex-col h-full">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-            <div>
-              <h2 className="text-xl font-semibold text-white">
-                {isEditMode ? t('profiles.presets.editPreset') : (initialData ? t('profiles.presets.duplicatePreset') : t('profiles.presets.createNewPreset'))}
-              </h2>
-              <p className="text-sm text-bambu-gray mt-1">
-                {t('profiles.presets.customizeSettings')}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              {baseId && (
-                <button
-                  onClick={() => setShowDiffModal(true)}
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded-lg transition-colors"
-                  title={t('profiles.presets.compareWithBase')}
-                >
-                  <GitCompare className="w-4 h-4" />
-                  {t('profiles.presets.compare')}
-                </button>
-              )}
-              <button onClick={onClose} className="p-2 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded-lg transition-colors">
-                <X className="w-5 h-5" />
-              </button>
+      {/* The drop target is the body: a JSON dropped anywhere in it imports. */}
+      <div
+        className="flex flex-col h-full"
+        onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={handleFileDrop}
+      >
+        {/* Drag overlay */}
+        {isDragging && (
+          <div className="absolute inset-0 bg-bambu-green/10 border-2 border-dashed border-bambu-green rounded-lg flex items-center justify-center z-10">
+            <div className="text-center">
+              <Upload className="w-12 h-12 text-bambu-green mx-auto mb-2" />
+              <p className="text-bambu-green font-medium">{t('profiles.presets.dropJsonToImport')}</p>
             </div>
           </div>
+        )}
 
-          {/* Drag overlay */}
-          {isDragging && (
-            <div className="absolute inset-0 bg-bambu-green/10 border-2 border-dashed border-bambu-green rounded-lg flex items-center justify-center z-10">
-              <div className="text-center">
-                <Upload className="w-12 h-12 text-bambu-green mx-auto mb-2" />
-                <p className="text-bambu-green font-medium">{t('profiles.presets.dropJsonToImport')}</p>
+        {/* Basic Info */}
+        <div className="p-4 border-b border-bambu-dark-tertiary space-y-3">
+          <div className="grid grid-cols-3 gap-4 max-[640px]:grid-cols-1">
+            <div>
+              <label className="block text-sm text-bambu-gray mb-1">{t('common.type')}</label>
+              <Select
+                className="w-full"
+                value={presetType}
+                onChange={(e) => { setPresetType(e.target.value as 'filament' | 'print' | 'printer'); setBaseId(''); }}
+              >
+                <option value="filament">{t('profiles.presets.types.filament')}</option>
+                <option value="print">{t('profiles.presets.types.process')}</option>
+                <option value="printer">{t('profiles.presets.types.printer')}</option>
+              </Select>
+            </div>
+            <div>
+              <label className="block text-sm text-bambu-gray mb-1">{t('profiles.presets.basePreset')}</label>
+              <Select
+                className="w-full"
+                value={baseId}
+                onChange={(e) => setBaseId(e.target.value)}
+              >
+                <option value="">{t('profiles.presets.selectBasePreset')}</option>
+                {availableBasePresets.some(p => p.is_custom) && (
+                  <optgroup label={t('profiles.presets.baseGroups.mine')}>
+                    {availableBasePresets.filter(p => p.is_custom).map((preset) => (
+                      <option key={preset.setting_id} value={preset.setting_id}>{preset.name}</option>
+                    ))}
+                  </optgroup>
+                )}
+                <optgroup label={t('profiles.presets.baseGroups.builtin')}>
+                  {availableBasePresets.filter(p => !p.is_custom).map((preset) => (
+                    <option key={preset.setting_id} value={preset.setting_id}>{preset.name}</option>
+                  ))}
+                </optgroup>
+              </Select>
+            </div>
+            <div>
+              <label className="block text-sm text-bambu-gray mb-1">{t('profiles.presets.presetName')}</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                placeholder={t('profiles.presets.myCustomPreset')}
+              />
+            </div>
+          </div>
+          {baseName && (
+            <div className="text-xs text-bambu-gray">
+              <p className="flex items-center gap-1">
+                <Check className="w-3 h-3 text-bambu-green" />
+                {t('profiles.presets.inheritsFrom')} <span className="text-white">{baseName}</span>
+                {isLoadingBasePreset && (
+                  <Loader2 className="w-3 h-3 animate-spin ml-1" />
+                )}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-bambu-dark-tertiary max-[640px]:flex-wrap max-[640px]:items-center">
+          <button
+            onClick={() => setActiveTab('common')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'common' ? 'text-bambu-green border-bambu-green' : 'text-bambu-gray hover:text-white border-transparent'
+            }`}
+          >
+            <Sliders className="w-4 h-4" />
+            {t('profiles.presets.tabs.common')}
+          </button>
+          <button
+            onClick={() => setActiveTab('fields')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'fields' ? 'text-bambu-green border-bambu-green' : 'text-bambu-gray hover:text-white border-transparent'
+            }`}
+          >
+            <List className="w-4 h-4" />
+            {t('profiles.presets.tabs.allFields')}
+          </button>
+          <button
+            onClick={() => setActiveTab('json')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === 'json' ? 'text-bambu-green border-bambu-green' : 'text-bambu-gray hover:text-white border-transparent'
+            }`}
+          >
+            <Code className="w-4 h-4" />
+            JSON
+            {jsonError && <AlertCircle className="w-3 h-3 text-red-600 dark:text-red-400" />}
+          </button>
+          <div className="flex-1 max-[640px]:hidden" />
+          <button
+            onClick={() => {
+              const exportData = {
+                name,
+                type: presetType,
+                base_id: baseId,
+                setting: settingsObj,
+              };
+              const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `${name || 'preset'}.json`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+              showToast(t('profiles.presets.toast.exported'));
+            }}
+            className="flex items-center gap-2 px-4 py-3 text-sm text-bambu-gray hover:text-white transition-colors"
+            title={t('profiles.presets.exportToJson')}
+          >
+            <Download className="w-4 h-4" />
+            {t('common.download')}
+          </button>
+          <button
+            onClick={() => document.getElementById('file-import')?.click()}
+            className="flex items-center gap-2 px-4 py-3 text-sm text-bambu-gray hover:text-white transition-colors"
+            title={t('profiles.presets.importFromJson')}
+          >
+            <Upload className="w-4 h-4" />
+            {t('common.upload')}
+          </button>
+          <input
+            id="file-import"
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                  try {
+                    const parsed = JSON.parse(event.target?.result as string);
+                    const settings = parsed.setting || parsed;
+                    setSettingsObj(prev => ({ ...prev, ...settings }));
+                    showToast(t('profiles.presets.fileImported'));
+                  } catch {
+                    showToast(t('profiles.presets.invalidJson'), 'error');
+                  }
+                };
+                reader.readAsText(file);
+              }
+            }}
+          />
+        </div>
+
+        {/* Tab Content */}
+        <div className="flex-1 p-4">
+          {activeTab === 'common' && (
+            <div className="space-y-4">
+              {/* Templates */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-medium text-white flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                    {t('profiles.templates.title')}
+                  </h3>
+                  {Object.keys(settingsObj).filter(k => k !== 'inherits').length > 0 && (
+                    <button
+                      onClick={() => setShowSaveTemplate(!showSaveTemplate)}
+                      className="text-xs text-bambu-gray hover:text-white flex items-center gap-1 transition-colors"
+                    >
+                      <Save className="w-3 h-3" />
+                      {t('profiles.presets.saveAsTemplate')}
+                    </button>
+                  )}
+                </div>
+
+                {showSaveTemplate && (
+                  <div className="mb-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <input
+                        type="text"
+                        value={newTemplateName}
+                        onChange={(e) => setNewTemplateName(e.target.value)}
+                        placeholder={t('profiles.templates.namePlaceholder')}
+                        className="px-3 py-1.5 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
+                        autoFocus
+                      />
+                      <input
+                        type="text"
+                        value={newTemplateDesc}
+                        onChange={(e) => setNewTemplateDesc(e.target.value)}
+                        placeholder={t('profiles.templates.descriptionPlaceholder')}
+                        className="px-3 py-1.5 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex gap-2">
+                        <Button size="sm" onClick={saveAsTemplate} disabled={!newTemplateName.trim()}>
+                          <Save className="w-3 h-3" />
+                          {t('common.save')}
+                        </Button>
+                        <Button size="sm" variant="secondary" onClick={() => setShowSaveTemplate(false)}>
+                          {t('common.cancel')}
+                        </Button>
+                      </div>
+                      <button
+                        onClick={() => setNewTemplateShowInModal(!newTemplateShowInModal)}
+                        className={`flex items-center gap-1.5 text-xs transition-colors ${
+                          newTemplateShowInModal ? 'text-bambu-green' : 'text-bambu-gray hover:text-white'
+                        }`}
+                      >
+                        {newTemplateShowInModal ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                        {newTemplateShowInModal ? t('profiles.templates.shownInModals') : t('profiles.templates.hiddenInModals')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Applied template indicator */}
+                {appliedTemplateName && (
+                  <div className="mb-3 px-3 py-2 bg-bambu-green/10 border border-bambu-green/30 rounded-lg flex items-center gap-2">
+                    <Check className="w-4 h-4 text-bambu-green" />
+                    <span className="text-sm text-bambu-green">{t('profiles.presets.templateApplied')} <span className="font-medium">{appliedTemplateName}</span></span>
+                    <button
+                      onClick={() => setAppliedTemplateName(null)}
+                      className="ml-auto text-bambu-green/70 hover:text-bambu-green"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-2">
+                  {templatesForType.map((template) => (
+                    <button
+                      key={template.id}
+                      onClick={() => applyTemplate(template)}
+                      className="p-3 text-left bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-gray-dark transition-colors"
+                    >
+                      <p className="text-sm font-medium text-white">{template.name}</p>
+                      <p className="text-xs text-bambu-gray mt-1">{template.description}</p>
+                    </button>
+                  ))}
+                  {templatesForType.length === 0 && (
+                    <p className="col-span-3 text-center text-bambu-gray text-sm py-4">
+                      {t('profiles.presets.noTemplatesSelected')}
+                    </p>
+                  )}
+                </div>
+
+                {/* Note about template management */}
+                <p className="text-xs text-bambu-gray-dark mt-2 text-center">
+                  {t('profiles.presets.manageTemplatesHint')}
+                </p>
+              </div>
+
+              {/* Common Fields */}
+              <div>
+                <h3 className="text-sm font-medium text-white mb-3">{t('profiles.presets.commonSettings')}</h3>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-3 max-[640px]:grid-cols-1">
+                  {dynamicFields.slice(0, 10).map(field => (
+                    <div key={field.key} className="grid grid-cols-[1fr_200px] items-center gap-2 max-[640px]:grid-cols-1">
+                      <label className="text-sm text-bambu-gray truncate">{field.label}</label>
+                      <div>{renderFieldInput(field)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Current overrides */}
+              {Object.keys(settingsObj).length > 1 && (
+                <div>
+                  <h3 className="text-sm font-medium text-white mb-3">{t('profiles.presets.currentOverrides')}</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(settingsObj)
+                      .filter(([k]) => k !== 'inherits')
+                      .map(([key, value]) => (
+                        <span key={key} className="inline-flex items-center gap-1 px-2 py-1 bg-bambu-green/10 text-bambu-green text-xs rounded">
+                          {key}: {String(value).slice(0, 20)}
+                          <button onClick={() => updateField(key, undefined)} className="hover:text-white">
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'fields' && (
+            <div className="grid grid-cols-2 gap-4" style={{ height: '400px' }}>
+              {/* Left: Available Fields */}
+              <div className="flex flex-col h-full overflow-hidden">
+                <div className="flex items-center justify-between mb-3 flex-shrink-0">
+                  <h3 className="text-sm font-medium text-white">{t('profiles.presets.availableFields')}</h3>
+                  <span className="text-xs text-bambu-gray">
+                    {allPresetDetails
+                      ? t('profiles.templates.fieldsCount', { count: dynamicFields.length })
+                      : t('common.loading')}
+                  </span>
+                </div>
+
+                <div className="relative mb-3 flex-shrink-0">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
+                  <input
+                    type="text"
+                    value={fieldSearch}
+                    onChange={(e) => setFieldSearch(e.target.value)}
+                    placeholder={t('profiles.presets.searchFieldsPlaceholder')}
+                    className="w-full pl-10 pr-4 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder-bambu-gray-dark focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex-1 overflow-y-auto space-y-1 pr-2 min-h-0">
+                  {filteredFields
+                    .filter(f => !(f.key in settingsObj))
+                    .map(field => {
+                      const baseVal = basePresetValues[field.key];
+                      const formattedVal = formatValue(baseVal);
+                      return (
+                        <div
+                          key={field.key}
+                          onClick={() => {
+                            // Add field directly (don't use updateField which deletes on empty)
+                            setSettingsObj(prev => ({ ...prev, [field.key]: formattedVal || '' }));
+                          }}
+                          className="flex items-center justify-between gap-2 p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors cursor-pointer group"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm text-white truncate">{field.label}</p>
+                            <p className="text-xs text-bambu-gray-dark truncate">{field.key}</p>
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            {formattedVal && (
+                              <span className="text-xs text-bambu-gray bg-bambu-dark px-2 py-0.5 rounded max-w-32 truncate" title={formattedVal}>
+                                {formattedVal.slice(0, 20)}{formattedVal.length > 20 ? '...' : ''}
+                              </span>
+                            )}
+                            <div className="w-6 h-6 flex items-center justify-center rounded bg-bambu-dark-tertiary group-hover:bg-bambu-green/20 transition-colors">
+                              <Plus className="w-4 h-4 text-bambu-gray group-hover:text-bambu-green transition-colors" />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                  {filteredFields.filter(f => !(f.key in settingsObj)).length === 0 && (
+                    <p className="text-center text-bambu-gray py-4 text-sm">
+                      {fieldSearch ? t('profiles.presets.noMatchingFields') : t('profiles.presets.allFieldsAdded')}
+                    </p>
+                  )}
+                </div>
+
+                {/* Custom field input */}
+                <div className="pt-3 mt-3 border-t border-bambu-dark-tertiary flex-shrink-0">
+                  {showCustomFieldInput ? (
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={customFieldKey}
+                        onChange={(e) => setCustomFieldKey(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && addCustomField()}
+                        placeholder="custom_field_name"
+                        className="flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white font-mono text-sm placeholder-bambu-gray-dark focus:border-bambu-green focus:outline-none"
+                        autoFocus
+                      />
+                      <Button size="sm" onClick={addCustomField} disabled={!customFieldKey.trim()}>
+                        <Plus className="w-4 h-4" />
+                      </Button>
+                      <Button size="sm" variant="secondary" onClick={() => { setShowCustomFieldInput(false); setCustomFieldKey(''); }}>
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setShowCustomFieldInput(true)}
+                      className="w-full flex items-center justify-center gap-2 p-2 text-sm text-bambu-gray hover:text-white border border-dashed border-bambu-dark-tertiary hover:border-bambu-gray-dark rounded-lg transition-colors"
+                    >
+                      <Plus className="w-4 h-4" />
+                      {t('profiles.presets.addCustomField')}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Right: Added Fields */}
+              <div className="flex flex-col h-full overflow-hidden">
+                <div className="flex items-center justify-between mb-3 flex-shrink-0">
+                  <h3 className="text-sm font-medium text-white">{t('profiles.presets.yourOverrides')}</h3>
+                  <span className="text-xs text-bambu-gray">
+                    {t('profiles.templates.fieldsCount', { count: Object.keys(settingsObj).filter(k => k !== 'inherits').length })}
+                  </span>
+                </div>
+
+                <div className="flex-1 overflow-y-auto space-y-2 pr-2 min-h-0">
+                  {Object.entries(settingsObj)
+                    .filter(([key]) => key !== 'inherits')
+                    .map(([key, value]) => {
+                      const fieldDef = dynamicFields.find(f => f.key === key);
+                      return (
+                        <div key={key} className="p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                          <div className="flex items-center justify-between mb-2">
+                            <div>
+                              <p className="text-sm font-medium text-white">{fieldDef?.label || key}</p>
+                              <p className="text-xs text-bambu-gray-dark">{key}</p>
+                            </div>
+                            <button
+                              onClick={() => updateField(key, undefined)}
+                              className="p-1 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                          {fieldDef ? (
+                            renderFieldInput(fieldDef)
+                          ) : (
+                            <input
+                              type="text"
+                              value={String(value)}
+                              onChange={(e) => updateField(key, e.target.value)}
+                              className="w-full px-3 py-1.5 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+
+                  {Object.keys(settingsObj).filter(k => k !== 'inherits').length === 0 && (
+                    <div className="text-center py-8 text-bambu-gray">
+                      <Sliders className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                      <p className="text-sm">{t('profiles.presets.noOverridesYet')}</p>
+                      <p className="text-xs mt-1">{t('profiles.presets.clickFieldsToAdd')}</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Save as template button */}
+                {Object.keys(settingsObj).filter(k => k !== 'inherits').length > 0 && (
+                  <div className="pt-3 mt-3 border-t border-bambu-dark-tertiary flex-shrink-0">
+                    <button
+                      onClick={() => { setShowSaveTemplate(true); setActiveTab('common'); }}
+                      className="w-full flex items-center justify-center gap-2 p-2 text-sm text-bambu-gray hover:text-white border border-dashed border-bambu-dark-tertiary hover:border-bambu-gray-dark rounded-lg transition-colors"
+                    >
+                      <Save className="w-4 h-4" />
+                      {t('profiles.presets.saveAsTemplate')}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
 
-          {/* Basic Info */}
-          <div className="p-4 border-b border-bambu-dark-tertiary space-y-3">
-            <div className="grid grid-cols-3 gap-4 max-[640px]:grid-cols-1">
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">{t('common.type')}</label>
-                <select
-                  value={presetType}
-                  onChange={(e) => { setPresetType(e.target.value as 'filament' | 'print' | 'printer'); setBaseId(''); }}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                >
-                  <option value="filament">{t('profiles.presets.types.filament')}</option>
-                  <option value="print">{t('profiles.presets.types.process')}</option>
-                  <option value="printer">{t('profiles.presets.types.printer')}</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">{t('profiles.presets.basePreset')}</label>
-                <select
-                  value={baseId}
-                  onChange={(e) => setBaseId(e.target.value)}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
-                >
-                  <option value="">{t('profiles.presets.selectBasePreset')}</option>
-                  {availableBasePresets.some(p => p.is_custom) && (
-                    <optgroup label={t('profiles.presets.baseGroups.mine')}>
-                      {availableBasePresets.filter(p => p.is_custom).map((preset) => (
-                        <option key={preset.setting_id} value={preset.setting_id}>{preset.name}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                  <optgroup label={t('profiles.presets.baseGroups.builtin')}>
-                    {availableBasePresets.filter(p => !p.is_custom).map((preset) => (
-                      <option key={preset.setting_id} value={preset.setting_id}>{preset.name}</option>
-                    ))}
-                  </optgroup>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">{t('profiles.presets.presetName')}</label>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  placeholder={t('profiles.presets.myCustomPreset')}
-                />
-              </div>
+          {activeTab === 'json' && (
+            <div className="space-y-2">
+              {jsonError && (
+                <div className="flex items-center gap-2 text-red-700 dark:text-red-400 text-sm">
+                  <AlertCircle className="w-4 h-4" />
+                  {jsonError}
+                </div>
+              )}
+              <textarea
+                value={jsonText}
+                onChange={(e) => handleJsonChange(e.target.value)}
+                className={`w-full h-80 px-3 py-2 bg-bambu-dark border rounded-lg text-white text-xs font-mono focus:outline-none resize-none ${
+                  jsonError ? 'border-red-500 focus:border-red-500' : 'border-bambu-dark-tertiary focus:border-bambu-green'
+                }`}
+                spellCheck={false}
+              />
+              <p className="text-xs text-bambu-gray">
+                {t('profiles.presets.jsonTip')}
+              </p>
             </div>
-            {baseName && (
-              <div className="text-xs text-bambu-gray">
-                <p className="flex items-center gap-1">
-                  <Check className="w-3 h-3 text-bambu-green" />
-                  {t('profiles.presets.inheritsFrom')} <span className="text-white">{baseName}</span>
-                  {isLoadingBasePreset && (
-                    <Loader2 className="w-3 h-3 animate-spin ml-1" />
-                  )}
-                </p>
-              </div>
-            )}
-          </div>
+          )}
+        </div>
 
-          {/* Tabs */}
-          <div className="flex border-b border-bambu-dark-tertiary max-[640px]:flex-wrap max-[640px]:items-center">
-            <button
-              onClick={() => setActiveTab('common')}
-              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
-                activeTab === 'common' ? 'text-bambu-green border-bambu-green' : 'text-bambu-gray hover:text-white border-transparent'
-              }`}
-            >
-              <Sliders className="w-4 h-4" />
-              {t('profiles.presets.tabs.common')}
-            </button>
-            <button
-              onClick={() => setActiveTab('fields')}
-              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
-                activeTab === 'fields' ? 'text-bambu-green border-bambu-green' : 'text-bambu-gray hover:text-white border-transparent'
-              }`}
-            >
-              <List className="w-4 h-4" />
-              {t('profiles.presets.tabs.allFields')}
-            </button>
-            <button
-              onClick={() => setActiveTab('json')}
-              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
-                activeTab === 'json' ? 'text-bambu-green border-bambu-green' : 'text-bambu-gray hover:text-white border-transparent'
-              }`}
-            >
-              <Code className="w-4 h-4" />
-              JSON
-              {jsonError && <AlertCircle className="w-3 h-3 text-red-600 dark:text-red-400" />}
-            </button>
-            <div className="flex-1 max-[640px]:hidden" />
-            <button
-              onClick={() => {
-                const exportData = {
-                  name,
-                  type: presetType,
-                  base_id: baseId,
-                  setting: settingsObj,
-                };
-                const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `${name || 'preset'}.json`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-                showToast(t('profiles.presets.toast.exported'));
-              }}
-              className="flex items-center gap-2 px-4 py-3 text-sm text-bambu-gray hover:text-white transition-colors"
-              title={t('profiles.presets.exportToJson')}
-            >
-              <Download className="w-4 h-4" />
-              {t('common.download')}
-            </button>
-            <button
-              onClick={() => document.getElementById('file-import')?.click()}
-              className="flex items-center gap-2 px-4 py-3 text-sm text-bambu-gray hover:text-white transition-colors"
-              title={t('profiles.presets.importFromJson')}
-            >
-              <Upload className="w-4 h-4" />
-              {t('common.upload')}
-            </button>
-            <input
-              id="file-import"
-              type="file"
-              accept=".json"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  const reader = new FileReader();
-                  reader.onload = (event) => {
-                    try {
-                      const parsed = JSON.parse(event.target?.result as string);
-                      const settings = parsed.setting || parsed;
-                      setSettingsObj(prev => ({ ...prev, ...settings }));
-                      showToast(t('profiles.presets.fileImported'));
-                    } catch {
-                      showToast(t('profiles.presets.invalidJson'), 'error');
-                    }
-                  };
-                  reader.readAsText(file);
-                }
-              }}
-            />
-          </div>
-
-          {/* Tab Content */}
-          <div className="flex-1 p-4">
-            {activeTab === 'common' && (
-              <div className="space-y-6">
-                {/* Templates */}
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-sm font-medium text-white flex items-center gap-2">
-                      <Sparkles className="w-4 h-4 text-amber-600 dark:text-amber-400" />
-                      {t('profiles.templates.title')}
-                    </h3>
-                    {Object.keys(settingsObj).filter(k => k !== 'inherits').length > 0 && (
-                      <button
-                        onClick={() => setShowSaveTemplate(!showSaveTemplate)}
-                        className="text-xs text-bambu-gray hover:text-white flex items-center gap-1 transition-colors"
-                      >
-                        <Save className="w-3 h-3" />
-                        {t('profiles.presets.saveAsTemplate')}
-                      </button>
-                    )}
-                  </div>
-
-                  {showSaveTemplate && (
-                    <div className="mb-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-                      <div className="grid grid-cols-2 gap-2 mb-2">
-                        <input
-                          type="text"
-                          value={newTemplateName}
-                          onChange={(e) => setNewTemplateName(e.target.value)}
-                          placeholder={t('profiles.templates.namePlaceholder')}
-                          className="px-3 py-1.5 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
-                          autoFocus
-                        />
-                        <input
-                          type="text"
-                          value={newTemplateDesc}
-                          onChange={(e) => setNewTemplateDesc(e.target.value)}
-                          placeholder={t('profiles.templates.descriptionPlaceholder')}
-                          className="px-3 py-1.5 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
-                        />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div className="flex gap-2">
-                          <Button size="sm" onClick={saveAsTemplate} disabled={!newTemplateName.trim()}>
-                            <Save className="w-3 h-3" />
-                            {t('common.save')}
-                          </Button>
-                          <Button size="sm" variant="secondary" onClick={() => setShowSaveTemplate(false)}>
-                            {t('common.cancel')}
-                          </Button>
-                        </div>
-                        <button
-                          onClick={() => setNewTemplateShowInModal(!newTemplateShowInModal)}
-                          className={`flex items-center gap-1.5 text-xs transition-colors ${
-                            newTemplateShowInModal ? 'text-bambu-green' : 'text-bambu-gray hover:text-white'
-                          }`}
-                        >
-                          {newTemplateShowInModal ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                          {newTemplateShowInModal ? t('profiles.templates.shownInModals') : t('profiles.templates.hiddenInModals')}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Applied template indicator */}
-                  {appliedTemplateName && (
-                    <div className="mb-3 px-3 py-2 bg-bambu-green/10 border border-bambu-green/30 rounded-lg flex items-center gap-2">
-                      <Check className="w-4 h-4 text-bambu-green" />
-                      <span className="text-sm text-bambu-green">{t('profiles.presets.templateApplied')} <span className="font-medium">{appliedTemplateName}</span></span>
-                      <button
-                        onClick={() => setAppliedTemplateName(null)}
-                        className="ml-auto text-bambu-green/70 hover:text-bambu-green"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-3 gap-2">
-                    {templatesForType.map((template) => (
-                      <button
-                        key={template.id}
-                        onClick={() => applyTemplate(template)}
-                        className="p-3 text-left bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-gray-dark transition-colors"
-                      >
-                        <p className="text-sm font-medium text-white">{template.name}</p>
-                        <p className="text-xs text-bambu-gray mt-1">{template.description}</p>
-                      </button>
-                    ))}
-                    {templatesForType.length === 0 && (
-                      <p className="col-span-3 text-center text-bambu-gray text-sm py-4">
-                        {t('profiles.presets.noTemplatesSelected')}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Note about template management */}
-                  <p className="text-xs text-bambu-gray-dark mt-2 text-center">
-                    {t('profiles.presets.manageTemplatesHint')}
-                  </p>
-                </div>
-
-                {/* Common Fields */}
-                <div>
-                  <h3 className="text-sm font-medium text-white mb-3">{t('profiles.presets.commonSettings')}</h3>
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-3 max-[640px]:grid-cols-1">
-                    {dynamicFields.slice(0, 10).map(field => (
-                      <div key={field.key} className="grid grid-cols-[1fr_200px] items-center gap-2 max-[640px]:grid-cols-1">
-                        <label className="text-sm text-bambu-gray truncate">{field.label}</label>
-                        <div>{renderFieldInput(field)}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Current overrides */}
-                {Object.keys(settingsObj).length > 1 && (
-                  <div>
-                    <h3 className="text-sm font-medium text-white mb-3">{t('profiles.presets.currentOverrides')}</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {Object.entries(settingsObj)
-                        .filter(([k]) => k !== 'inherits')
-                        .map(([key, value]) => (
-                          <span key={key} className="inline-flex items-center gap-1 px-2 py-1 bg-bambu-green/10 text-bambu-green text-xs rounded">
-                            {key}: {String(value).slice(0, 20)}
-                            <button onClick={() => updateField(key, undefined)} className="hover:text-white">
-                              <X className="w-3 h-3" />
-                            </button>
-                          </span>
-                        ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {activeTab === 'fields' && (
-              <div className="grid grid-cols-2 gap-6" style={{ height: '400px' }}>
-                {/* Left: Available Fields */}
-                <div className="flex flex-col h-full overflow-hidden">
-                  <div className="flex items-center justify-between mb-3 flex-shrink-0">
-                    <h3 className="text-sm font-medium text-white">{t('profiles.presets.availableFields')}</h3>
-                    <span className="text-xs text-bambu-gray">
-                      {allPresetDetails
-                        ? t('profiles.templates.fieldsCount', { count: dynamicFields.length })
-                        : t('common.loading')}
-                    </span>
-                  </div>
-
-                  <div className="relative mb-3 flex-shrink-0">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
-                    <input
-                      type="text"
-                      value={fieldSearch}
-                      onChange={(e) => setFieldSearch(e.target.value)}
-                      placeholder={t('profiles.presets.searchFieldsPlaceholder')}
-                      className="w-full pl-10 pr-4 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder-bambu-gray-dark focus:border-bambu-green focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="flex-1 overflow-y-auto space-y-1 pr-2 min-h-0">
-                    {filteredFields
-                      .filter(f => !(f.key in settingsObj))
-                      .map(field => {
-                        const baseVal = basePresetValues[field.key];
-                        const formattedVal = formatValue(baseVal);
-                        return (
-                          <div
-                            key={field.key}
-                            onClick={() => {
-                              // Add field directly (don't use updateField which deletes on empty)
-                              setSettingsObj(prev => ({ ...prev, [field.key]: formattedVal || '' }));
-                            }}
-                            className="flex items-center justify-between gap-2 p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors cursor-pointer group"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <p className="text-sm text-white truncate">{field.label}</p>
-                              <p className="text-xs text-bambu-gray-dark truncate">{field.key}</p>
-                            </div>
-                            <div className="flex items-center gap-2 flex-shrink-0">
-                              {formattedVal && (
-                                <span className="text-xs text-bambu-gray bg-bambu-dark px-2 py-0.5 rounded max-w-32 truncate" title={formattedVal}>
-                                  {formattedVal.slice(0, 20)}{formattedVal.length > 20 ? '...' : ''}
-                                </span>
-                              )}
-                              <div className="w-6 h-6 flex items-center justify-center rounded bg-bambu-dark-tertiary group-hover:bg-bambu-green/20 transition-colors">
-                                <Plus className="w-4 h-4 text-bambu-gray group-hover:text-bambu-green transition-colors" />
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-
-                    {filteredFields.filter(f => !(f.key in settingsObj)).length === 0 && (
-                      <p className="text-center text-bambu-gray py-4 text-sm">
-                        {fieldSearch ? t('profiles.presets.noMatchingFields') : t('profiles.presets.allFieldsAdded')}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Custom field input */}
-                  <div className="pt-3 mt-3 border-t border-bambu-dark-tertiary flex-shrink-0">
-                    {showCustomFieldInput ? (
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={customFieldKey}
-                          onChange={(e) => setCustomFieldKey(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && addCustomField()}
-                          placeholder="custom_field_name"
-                          className="flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white font-mono text-sm placeholder-bambu-gray-dark focus:border-bambu-green focus:outline-none"
-                          autoFocus
-                        />
-                        <Button size="sm" onClick={addCustomField} disabled={!customFieldKey.trim()}>
-                          <Plus className="w-4 h-4" />
-                        </Button>
-                        <Button size="sm" variant="secondary" onClick={() => { setShowCustomFieldInput(false); setCustomFieldKey(''); }}>
-                          <X className="w-4 h-4" />
-                        </Button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => setShowCustomFieldInput(true)}
-                        className="w-full flex items-center justify-center gap-2 p-2 text-sm text-bambu-gray hover:text-white border border-dashed border-bambu-dark-tertiary hover:border-bambu-gray-dark rounded-lg transition-colors"
-                      >
-                        <Plus className="w-4 h-4" />
-                        {t('profiles.presets.addCustomField')}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Right: Added Fields */}
-                <div className="flex flex-col h-full overflow-hidden">
-                  <div className="flex items-center justify-between mb-3 flex-shrink-0">
-                    <h3 className="text-sm font-medium text-white">{t('profiles.presets.yourOverrides')}</h3>
-                    <span className="text-xs text-bambu-gray">
-                      {t('profiles.templates.fieldsCount', { count: Object.keys(settingsObj).filter(k => k !== 'inherits').length })}
-                    </span>
-                  </div>
-
-                  <div className="flex-1 overflow-y-auto space-y-2 pr-2 min-h-0">
-                    {Object.entries(settingsObj)
-                      .filter(([key]) => key !== 'inherits')
-                      .map(([key, value]) => {
-                        const fieldDef = dynamicFields.find(f => f.key === key);
-                        return (
-                          <div key={key} className="p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-                            <div className="flex items-center justify-between mb-2">
-                              <div>
-                                <p className="text-sm font-medium text-white">{fieldDef?.label || key}</p>
-                                <p className="text-xs text-bambu-gray-dark">{key}</p>
-                              </div>
-                              <button
-                                onClick={() => updateField(key, undefined)}
-                                className="p-1 text-bambu-gray hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
-                            </div>
-                            {fieldDef ? (
-                              renderFieldInput(fieldDef)
-                            ) : (
-                              <input
-                                type="text"
-                                value={String(value)}
-                                onChange={(e) => updateField(key, e.target.value)}
-                                className="w-full px-3 py-1.5 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
-                              />
-                            )}
-                          </div>
-                        );
-                      })}
-
-                    {Object.keys(settingsObj).filter(k => k !== 'inherits').length === 0 && (
-                      <div className="text-center py-8 text-bambu-gray">
-                        <Sliders className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                        <p className="text-sm">{t('profiles.presets.noOverridesYet')}</p>
-                        <p className="text-xs mt-1">{t('profiles.presets.clickFieldsToAdd')}</p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Save as template button */}
-                  {Object.keys(settingsObj).filter(k => k !== 'inherits').length > 0 && (
-                    <div className="pt-3 mt-3 border-t border-bambu-dark-tertiary flex-shrink-0">
-                      <button
-                        onClick={() => { setShowSaveTemplate(true); setActiveTab('common'); }}
-                        className="w-full flex items-center justify-center gap-2 p-2 text-sm text-bambu-gray hover:text-white border border-dashed border-bambu-dark-tertiary hover:border-bambu-gray-dark rounded-lg transition-colors"
-                      >
-                        <Save className="w-4 h-4" />
-                        {t('profiles.presets.saveAsTemplate')}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'json' && (
-              <div className="space-y-2">
-                {jsonError && (
-                  <div className="flex items-center gap-2 text-red-700 dark:text-red-400 text-sm">
-                    <AlertCircle className="w-4 h-4" />
-                    {jsonError}
-                  </div>
-                )}
-                <textarea
-                  value={jsonText}
-                  onChange={(e) => handleJsonChange(e.target.value)}
-                  className={`w-full h-80 px-3 py-2 bg-bambu-dark border rounded-lg text-white text-xs font-mono focus:outline-none resize-none ${
-                    jsonError ? 'border-red-500 focus:border-red-500' : 'border-bambu-dark-tertiary focus:border-bambu-green'
-                  }`}
-                  spellCheck={false}
-                />
-                <p className="text-xs text-bambu-gray">
-                  {t('profiles.presets.jsonTip')}
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* Footer */}
-          <div className="p-4 border-t border-bambu-dark-tertiary flex gap-2">
-            <Button variant="secondary" onClick={onClose} className="flex-1">{t('common.cancel')}</Button>
-            <Button
-              onClick={() => saveMutation.mutate()}
-              disabled={saveMutation.isPending || !name.trim() || (!isEditMode && !baseId) || !!jsonError}
-              className="flex-1"
-            >
-              {saveMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : (isEditMode ? <Save className="w-4 h-4" /> : <Plus className="w-4 h-4" />)}
-              {isEditMode ? t('common.save') : (initialData ? t('common.duplicate') : t('common.create'))}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+        {/* Footer */}
+        <div className="p-4 border-t border-bambu-dark-tertiary flex gap-2">
+          <Button variant="secondary" onClick={onClose} className="flex-1">{t('common.cancel')}</Button>
+          <Button
+            onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending || !name.trim() || (!isEditMode && !baseId) || !!jsonError}
+            className="flex-1"
+          >
+            {saveMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : (isEditMode ? <Save className="w-4 h-4" /> : <Plus className="w-4 h-4" />)}
+            {isEditMode ? t('common.save') : (initialData ? t('common.duplicate') : t('common.create'))}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -2469,7 +2441,7 @@ function CloudProfilesView({
   return (
     <>
       {/* Search and Filters */}
-      <div className="space-y-4 mb-6">
+      <div className="space-y-4 mb-4">
         {/* Search row */}
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
@@ -2694,7 +2666,7 @@ function CloudProfilesView({
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* Filament Column */}
           <div>
             <div className="flex items-center gap-2 mb-3 px-1">
@@ -2947,7 +2919,7 @@ export function ProfilesPage() {
 
   if (statusLoading) {
     return (
-      <div className="p-4 md:p-6 space-y-4">
+      <div className="p-4 space-y-4">
         {pageChrome}
         <LoadingBlock label={t('common.loading')} className="min-h-[400px] text-bambu-gray" />
       </div>
@@ -2955,7 +2927,7 @@ export function ProfilesPage() {
   }
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 space-y-4">
       {pageChrome}
 
       {/* Cloud Profiles Tab */}
@@ -2963,7 +2935,7 @@ export function ProfilesPage() {
         <>
           {/* Connection Status Bar */}
           {status?.is_authenticated && (
-            <div className="flex items-center justify-between p-3 mb-6 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+            <div className="flex items-center justify-between p-3 mb-4 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
               <div className="flex items-center gap-3">
                 <div className="w-2 h-2 rounded-full bg-bambu-green animate-pulse" />
                 <span className="text-sm text-bambu-gray">

@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
+import { Select } from './Select';
 
 import type {
   PrinterSettingsGetResponse,
@@ -44,7 +45,7 @@ export function PrintOptionsTab({ data, onSubmit, isPending }: Props) {
   ) => onSubmit({ action: 'xcam_control', module, enabled, sensitivity });
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {(sup.spaghetti_detector || sup.pileup_detector || sup.nozzleclumping_detector || sup.airprinting_detector || sup.first_layer_inspector || sup.ai_monitoring_legacy) && (
         <Group title={t('printerSettings.aiMonitoringGroup')}>
           {sup.ai_monitoring_legacy && (
@@ -318,8 +319,8 @@ function XCamRow({
       <span className="text-white flex-1">{title}</span>
       {pending && <Loader2 className="w-4 h-4 animate-spin text-bambu-gray flex-shrink-0" />}
       {sensitivityOptions.length > 0 && (
-        <select
-          className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 text-white text-sm"
+        <Select
+          size="sm"
           value={sens}
           disabled={!enabled || pending}
           onChange={(e) => onChange(enabled, e.target.value as 'low' | 'medium' | 'high')}
@@ -327,7 +328,7 @@ function XCamRow({
           {sensitivityOptions.map((o) => (
             <option key={o.v} value={o.v}>{o.label}</option>
           ))}
-        </select>
+        </Select>
       )}
     </label>
   );

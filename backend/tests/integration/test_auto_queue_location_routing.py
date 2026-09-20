@@ -15,13 +15,18 @@ import pytest
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.printer_queue import PrinterQueue
-from backend.app.services.auto_queue_eligibility import find_eligible_printer
+from backend.app.services.auto_queue_eligibility import printers_for_item
 
 # What the location filter says when it excluded every candidate. Asserting on
 # this rather than on a printer being returned keeps these tests about the
 # filter: a printer that passes it still has to be online, plate-clear and
 # stocked, and those gates are somebody else's subject.
 _EXCLUDED_BY_LOCATION = "No active"
+
+
+async def location_candidates(db, item, _busy):
+    printers, model, suffix = await printers_for_item(db, item)
+    return (printers[0], None) if printers else (None, f"No active {model} printers{suffix} eligible")
 
 
 async def _place(db, name: str) -> PrinterLocation:
@@ -41,7 +46,7 @@ async def test_a_printer_in_the_target_location_is_eligible(db_session, printer_
     db_session.add(PrinterQueue(printer_id=p.id, auto_distribute_eligible=True, is_paused=False))
     await db_session.commit()
 
-    _printer, reason = await find_eligible_printer(
+    _printer, reason = await location_candidates(
         db_session, AutoQueueItem(target_model="X1C", target_location_id=place.id), set()
     )
 
@@ -58,7 +63,7 @@ async def test_a_printer_elsewhere_is_not(db_session, printer_factory):
     db_session.add(PrinterQueue(printer_id=p.id, auto_distribute_eligible=True, is_paused=False))
     await db_session.commit()
 
-    printer, reason = await find_eligible_printer(
+    printer, reason = await location_candidates(
         db_session, AutoQueueItem(target_model="X1C", target_location_id=there.id), set()
     )
 
@@ -75,7 +80,7 @@ async def test_an_item_with_no_target_place_takes_any_printer(db_session, printe
     db_session.add(PrinterQueue(printer_id=p.id, auto_distribute_eligible=True, is_paused=False))
     await db_session.commit()
 
-    _printer, reason = await find_eligible_printer(db_session, AutoQueueItem(target_model="X1C"), set())
+    _printer, reason = await location_candidates(db_session, AutoQueueItem(target_model="X1C"), set())
 
     assert _EXCLUDED_BY_LOCATION not in (reason or "")
 
@@ -98,7 +103,7 @@ async def test_renaming_the_place_does_not_change_where_work_goes(db_session, pr
     place.name, place.name_key = "Workshop", "workshop"
     await db_session.commit()
 
-    _printer, reason = await find_eligible_printer(
+    _printer, reason = await location_candidates(
         db_session, AutoQueueItem(target_model="X1C", target_location_id=place.id), set()
     )
 
@@ -117,7 +122,7 @@ async def test_the_waiting_reason_names_the_place_a_human_would_recognise(db_ses
     db_session.add(PrinterQueue(printer_id=p.id, auto_distribute_eligible=True, is_paused=False))
     await db_session.commit()
 
-    _printer, reason = await find_eligible_printer(
+    _printer, reason = await location_candidates(
         db_session, AutoQueueItem(target_model="X1C", target_location_id=there.id), set()
     )
 
@@ -140,7 +145,7 @@ async def test_work_aimed_at_a_workshop_reaches_a_printer_on_a_shelf(db_session,
     db_session.add(PrinterQueue(printer_id=p.id, auto_distribute_eligible=True, is_paused=False))
     await db_session.commit()
 
-    _printer, reason = await find_eligible_printer(
+    _printer, reason = await location_candidates(
         db_session, AutoQueueItem(target_model="X1C", target_location_id=workshop.id), set()
     )
 
@@ -164,7 +169,7 @@ async def test_a_printer_in_a_sibling_workshop_is_still_excluded(db_session, pri
     db_session.add(PrinterQueue(printer_id=p.id, auto_distribute_eligible=True, is_paused=False))
     await db_session.commit()
 
-    _printer, reason = await find_eligible_printer(
+    _printer, reason = await location_candidates(
         db_session, AutoQueueItem(target_model="X1C", target_location_id=workshop.id), set()
     )
 
@@ -181,7 +186,7 @@ async def test_the_refusal_names_the_path_not_the_bare_name(db_session):
     await db_session.commit()
     await db_session.refresh(shelf)
 
-    _printer, reason = await find_eligible_printer(
+    _printer, reason = await location_candidates(
         db_session, AutoQueueItem(target_model="X1C", target_location_id=shelf.id), set()
     )
 

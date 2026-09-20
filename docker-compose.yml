@@ -98,9 +98,22 @@ services:
       # is also editable in Settings if you would rather set it there, or if you
       # drive Compose with `-f` from elsewhere.
       #- BAMDUDE_COMPOSE_DIR=${PWD}
-      # PostgreSQL: uncomment to use external PostgreSQL instead of SQLite
-      # Requires: PostgreSQL 14+ with the target database already created
-      #- DATABASE_URL=postgresql+asyncpg://bamdude:password@postgres:5432/bamdude
+      # Database backend (default: SQLite). Two states:
+      #   unset     - SQLite, one file in the data volume. Fine for most farms.
+      #   a URL     - PostgreSQL. Either the sidecar in docker-compose.postgres.yml
+      #               or a server you run yourself; the database must already
+      #               exist. With the default host networking, use the host's
+      #               real address, not a Compose service name.
+      # Switching from SQLite imports the existing database on first start.
+      #- DATABASE_URL=postgresql+asyncpg://bamdude:password@192.168.1.100:5432/bamdude
+      # For a PostgreSQL running in its own container, see docker-compose.postgres.yml.
+      # For Signal notifications through a signal-cli-rest-api in its own
+      # container, see docker-compose.signal.yml (same COMPOSE_FILE mechanism).
+      # ⚠️ `DATABASE_URL=embedded` (the PostgreSQL bundled with BamDude) is NOT
+      # available in Docker and is deliberately not offered here. This image runs
+      # as root and `initdb` refuses to run as root — PostgreSQL's own rule — so
+      # the container would die on first boot. It is the native/Windows install's
+      # option; in Docker use the sidecar above or your own server.
       # Virtual printer: Set to the Docker host's IP when using bridge mode (ports:).
       # Required for FTP passive mode to work behind NAT.
       # Example: VIRTUAL_PRINTER_PASV_ADDRESS=192.168.1.100
@@ -121,6 +134,10 @@ services:
       # that BamDude needs to talk to over HTTPS.
       #- USE_SYSTEM_TRUST_STORE=true
     restart: unless-stopped
+    # Give the container time to close the database cleanly on
+    # `docker compose down` before Docker sends SIGKILL. Cheap for SQLite, and
+    # it is what a slow final checkpoint needs on a busy PostgreSQL.
+    stop_grace_period: 60s
 
 volumes:
   bamdude_data:

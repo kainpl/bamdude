@@ -2,22 +2,32 @@ import asyncio
 import logging
 
 from sqlalchemy import event
+from sqlalchemy.dialects.postgresql.base import PGDialect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Session
 
+from backend.app.core import case_folding, query_timing
 from backend.app.core.config import settings
 from backend.app.core.db_dialect import is_sqlite
 
 logger = logging.getLogger(__name__)
 
 
-def _set_sqlite_pragmas(dbapi_conn, connection_record):
-    """Set SQLite pragmas on each new connection for concurrency and performance."""
+def configure_sqlite_connection(dbapi_conn, connection_record):
+    """Every new SQLite connection: pragmas for concurrency, Unicode case folding.
+
+    The pragmas are per connection by SQLite's design. The ``lower``/``upper``
+    shadowing is per connection too (application-defined functions live on the
+    connection object) — which is why the test engine attaches this same
+    listener (``tests/conftest.py``): a test must see the ``lower`` production
+    sees. Rationale in ``core/case_folding.py``.
+    """
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode = WAL")
     cursor.execute("PRAGMA busy_timeout = 15000")
     cursor.execute("PRAGMA synchronous = NORMAL")
     cursor.close()
+    case_folding.register_sqlite_functions(dbapi_conn)
 
 
 def _strip_tz_from_params(conn, cursor, statement, parameters, context, executemany):
@@ -108,9 +118,23 @@ def _create_engine():
         **kwargs,
     )
     if is_sqlite():
-        event.listen(eng.sync_engine, "connect", _set_sqlite_pragmas)
+        event.listen(eng.sync_engine, "connect", configure_sqlite_connection)
     else:
         event.listen(eng.sync_engine, "before_cursor_execute", _strip_tz_from_params, retval=True)
+        # Fold ilike/lower/upper through a collation when this database cannot
+        # fold Unicode case itself — which collation is decided by the probe in
+        # init_db, and until it runs the compiler renders stock SQL. See
+        # core/case_folding.py. The folding compiler is derived FROM the one the
+        # driver's dialect carries, never assigned over it, so a psycopg URL
+        # would keep PGCompiler_psycopg's own overrides; the isinstance guard is
+        # what keeps a third dialect out (this branch is "not SQLite").
+        if isinstance(eng.dialect, PGDialect):
+            eng.dialect.statement_compiler = case_folding.compiler_for(eng.dialect)
+    # ⚠️ Outside the branch above on purpose: _strip_tz_from_params is the
+    # PostgreSQL half only, and hanging the timing beside it would instrument
+    # half the installs. Inside _create_engine rather than at module level,
+    # because reinitialize_database() rebuilds the engine after a restore.
+    query_timing.install(eng)
     return eng
 
 
@@ -168,6 +192,12 @@ async def reinitialize_database():
         class_=AsyncSession,
         expire_on_commit=False,
     )
+    # A restore can land a database that folds differently from the one we
+    # probed at boot (a portable backup carries its own locale) — ask again.
+    # The fresh engine also brings a fresh compiled-SQL cache, which is what
+    # makes a second answer safe (see the state block in core/case_folding.py).
+    if not is_sqlite():
+        await case_folding.probe_postgres_case_folding(engine)
 
 
 class Base(DeclarativeBase):
@@ -217,34 +247,61 @@ async def get_db() -> AsyncSession:
                 pass
 
 
-async def init_db():
-    """Initialize the database: create tables, run migrations, seed data."""
-    # Import models to register them with SQLAlchemy
-    from backend.app.migrations import run_all_migrations
+def import_all_models() -> None:
+    """Import every module under ``backend.app.models`` so its tables land on ``Base.metadata``.
+
+    ``Base.metadata.create_all`` emits DDL only for tables the mapper has
+    actually seen, and a mapper sees a table only once the module defining it
+    has been imported. A model nobody imports is therefore invisible: the
+    application boots, the ORM statement is valid Python, and the database
+    answers "no such table" at the first query.
+
+    The list lives here and is called from two places — ``init_db`` for the
+    application and ``tests/conftest.py::test_engine`` for the test database —
+    because it used to be written out twice. The copies drifted: ``hms_mute``
+    (m163) was missing from the test one and surfaced only when the
+    printer-delete cascade grew to touch it, and ``printer_tag`` reached the
+    test metadata by accident, through a runtime import inside
+    ``models/printer.py``.
+
+    ``tests/unit/test_every_model_module_is_registered.py`` compares the names
+    below against the directory listing, so a new model module fails a test
+    rather than a query.
+
+    The imports are inside the function on purpose: every model module imports
+    ``Base`` from this one, so importing them at module scope would be a cycle.
+    """
     from backend.app.models import (  # noqa: F401
         active_print_session,
         active_print_spoolman,
         ams_history,
         ams_label,
+        ams_setting_audit,
         api_key,
         archive,
+        archive_part,
         auth_ephemeral,
         auto_queue,
         bug_report,
+        calibration_audit,
+        calibration_session,
+        camera,
         cloud_link,
         color_catalog,
+        customer,
         external_link,
+        filament_calibration,
         filament_sku_settings,
         firmware,
         git_backup,
         group,
+        hms_mute,
         kprofile_note,
         label_device,
         label_template,
         library,
         library_file_makerworld_meta,
         library_file_note,
-        library_project_links,
         library_scan,
         local_preset,
         location,
@@ -255,6 +312,7 @@ async def init_db():
         notification_template,
         oidc_provider,
         orca_base_cache,
+        part_stock,
         print_options_preference,
         print_queue,
         print_usage_event,
@@ -262,9 +320,12 @@ async def init_db():
         printer_location,
         printer_queue,
         printer_sensor_history,
+        printer_setting_audit,
+        printer_tag,
+        product,
         project,
-        project_bom,
-        project_print_plan,
+        project_line,
+        queue_source,
         settings,
         shopping_list,
         slicer_pipeline,
@@ -285,11 +346,25 @@ async def init_db():
         user,
         user_email_pref,
         user_filament,
+        user_notification,
         user_otp_code,
         user_totp,
         virtual_printer,
         zigbee_device,
     )
+
+
+async def init_db():
+    """Initialize the database: create tables, run migrations, seed data."""
+    from backend.app.migrations import run_all_migrations
+
+    # Register every model on Base.metadata before create_all — see the function.
+    import_all_models()
+
+    # Does this database fold Unicode case? Decided once, before the
+    # migrations run (m137's backfill uses ilike). See core/case_folding.py.
+    if not is_sqlite():
+        await case_folding.probe_postgres_case_folding(engine)
 
     await run_all_migrations(engine, async_session)
 

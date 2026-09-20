@@ -62,6 +62,11 @@ async def test_running_observed_captures_baseline_on_restart_recovery():
             "backend.app.main._list_timelapse_videos",
             new=AsyncMock(return_value=(existing_videos, "/timelapse")),
         ),
+        # A print running with no archive is ADOPTED since spec 2026-09-12, and
+        # that creates a row, claims the queue and spawns an FTP download. All of
+        # it is covered in test_adopt_print_started_while_down.py; here it would
+        # only drive a whole write path through this test's mock session.
+        patch("backend.app.main._adopt_running_print", new=AsyncMock(return_value=None)),
     ):
         mock_session_maker.return_value = mock_session
 
@@ -110,6 +115,32 @@ async def test_running_observed_skips_when_baseline_already_present():
         # about the TIMELAPSE half — under xdist, a neighbouring test can
         # leave printer 1 registered and flip that branch on.
         patch("backend.app.main.printer_manager.get_status", return_value=None),
+        # d93977c8: a print already under way claims its queue row, and finding
+        # its archive is a DB read that also runs before the baseline
+        # early-return. Pin it to "no live archive" so no claim is attempted
+        # and this test stays about the TIMELAPSE half.
+        patch(
+            "backend.app.main._live_archive_for_running_print",
+            new=AsyncMock(return_value=(None, None)),
+        ),
+        # …and since spec 2026-09-12 "no live archive" means the print is
+        # adopted, which opens a session of its own before the baseline
+        # early-return below. Pinned away for the same reason: this test is
+        # about the TIMELAPSE half.
+        patch("backend.app.main._adopt_running_print", new=AsyncMock(return_value=None)),
+        # ...and the runout-journal seeder, the fourth branch of this shape and
+        # the one that made this test flake on CI. It runs UNCONDITIONALLY and
+        # returns early only when the printer has no CLIENT - a different piece
+        # of shared printer_manager state than get_status above - so a
+        # neighbouring test that left one registered for printer 1 sends it into
+        # a session before the baseline early-return. Its own `except` then
+        # swallows the mock AttributeError and logs "Could not read the journal
+        # to re-arm printer 1", which is the line that gave it away in the CI log.
+        # WARNING Four pins in one test is the real signal: the handler keeps
+        # growing branches that read the database before the early-return, and
+        # each is found the hard way, as an intermittent failure. The durable fix
+        # is resetting printer_manager state between tests, not the fifth pin.
+        patch("backend.app.main.printer_manager.get_client", return_value=None),
     ):
         from backend.app.main import on_print_running_observed
 
@@ -124,7 +155,7 @@ async def test_running_observed_skips_when_baseline_already_present():
             },
         )
 
-        # Neither the DB lookup nor the FTP scan should have run.
+        # Neither the timelapse DB lookup nor the FTP scan should have run.
         mock_session_maker.assert_not_called()
         mock_list.assert_not_called()
 

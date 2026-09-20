@@ -22,10 +22,12 @@ import {
   type PrintOptionsPreferenceData,
   type UserSlim,
 } from '../../api/client';
+import { Modal } from '../Modal';
 import { CalibrationModeControl } from '../PrintModal/CalibrationModeControl';
 import { autoCalibrationCaps, isDualNozzleModel } from '../../utils/printerCapabilities';
 import { useToast } from '../../contexts/ToastContext';
 import { MAX_CHAMBER_TEMP_C } from '../../utils/printer';
+import { Select } from '../Select';
 
 // Sentinel for the "System (slicer fallback)" pseudo-user. Real user ids
 // start at 1, so 0 is safe to mean "the per-model system row (user_id IS
@@ -168,7 +170,7 @@ export function PrintOptionsPreferencesPanel() {
         <button
           type="button"
           onClick={() => setDialog({ kind: 'add' })}
-          className="px-3 py-1.5 bg-bambu-green hover:bg-bambu-green-dark text-black text-sm font-medium rounded-lg flex items-center gap-1.5 flex-shrink-0"
+          className="px-3 py-1.5 bg-bambu-green hover:bg-bambu-green-dark text-white text-sm font-medium rounded-lg flex items-center gap-1.5 flex-shrink-0"
         >
           <Plus className="w-4 h-4" />
           {t('printOptionsPrefs.add')}
@@ -449,25 +451,22 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-5 w-full max-w-md max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 className="text-lg font-semibold text-white mb-4">
-          {editingExisting ? t('printOptionsPrefs.editTitle') : t('printOptionsPrefs.addTitle')}
-        </h3>
-
+    <Modal
+      onClose={onClose}
+      title={editingExisting ? t('printOptionsPrefs.editTitle') : t('printOptionsPrefs.addTitle')}
+      size="md"
+    >
+      <div className="p-4">
         <div className="space-y-3 mb-4">
           <div>
             <label className="block text-xs text-bambu-gray mb-1">
               {t('printOptionsPrefs.col.user')}
             </label>
-            <select
+            <Select
+              className="w-full"
               value={userId}
               disabled={editingExisting}
               onChange={(e) => setUserId(Number(e.target.value))}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:outline-none focus:border-bambu-green disabled:opacity-60"
             >
               <option value={SYSTEM_USER_ID}>{t('printOptionsPrefs.systemUser')}</option>
               {users.map((u) => (
@@ -475,7 +474,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
                   {u.username}
                 </option>
               ))}
-            </select>
+            </Select>
             {isSystemRow && (
               <p className="text-xs text-bambu-gray mt-1">{t('printOptionsPrefs.systemHint')}</p>
             )}
@@ -497,17 +496,17 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
                 {t('printOptionsPrefs.noModelsAvailable')}
               </p>
             ) : (
-              <select
+              <Select
+                className="w-full"
                 value={printerModel}
                 onChange={(e) => setPrinterModel(e.target.value)}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:outline-none focus:border-bambu-green"
               >
                 {availableModels.map((m) => (
                   <option key={m} value={m}>
                     {m}
                   </option>
                 ))}
-              </select>
+              </Select>
             )}
             {collidesWithExisting && (
               <p className="text-xs text-red-700 dark:text-red-400 mt-1">{t('printOptionsPrefs.alreadyExists')}</p>
@@ -572,7 +571,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
                 onClick={() => setPreheatOverride(opt)}
                 className={`flex-1 px-2 py-1.5 text-xs rounded transition-colors ${
                   data.print_options.preheat_override === opt
-                    ? 'bg-bambu-green text-black'
+                    ? 'bg-bambu-green text-white'
                     : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white'
                 }`}
               >
@@ -672,13 +671,13 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
             type="button"
             disabled={!canSave}
             onClick={() => upsertMutation.mutate()}
-            className="px-4 py-1.5 bg-bambu-green hover:bg-bambu-green-dark text-black text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-1.5 bg-bambu-green hover:bg-bambu-green-dark text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {t('common.save')}
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -730,50 +729,44 @@ function CopyDialog({ src, users, availableModels, onClose }: CopyDialogProps) {
   const canCopy = dstUserId > 0 && dstModel.trim().length > 0 && !copyMutation.isPending;
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-5 w-full max-w-md"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 className="text-lg font-semibold text-white mb-1">
-          {t('printOptionsPrefs.copyTitle')}
-        </h3>
+    <Modal onClose={onClose} title={t('printOptionsPrefs.copyTitle')} size="md">
+      <div className="p-4">
         <p className="text-xs text-bambu-gray mb-4">
           {t('printOptionsPrefs.copyFrom', { user: src.username, model: src.printer_model })}
         </p>
 
-        <div className="space-y-3 mb-5">
+        <div className="space-y-3 mb-4">
           <div>
             <label className="block text-xs text-bambu-gray mb-1">
               {t('printOptionsPrefs.copyDstUser')}
             </label>
-            <select
+            <Select
+              className="w-full"
               value={dstUserId}
               onChange={(e) => setDstUserId(Number(e.target.value))}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:outline-none focus:border-bambu-green"
             >
               {otherUsers.map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.username}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <div>
             <label className="block text-xs text-bambu-gray mb-1">
               {t('printOptionsPrefs.copyDstModel')}
             </label>
-            <select
+            <Select
+              className="w-full"
               value={dstModel}
               onChange={(e) => setDstModel(e.target.value)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:outline-none focus:border-bambu-green"
             >
               {modelChoices.map((m) => (
                 <option key={m} value={m}>
                   {m}
                 </option>
               ))}
-            </select>
+            </Select>
             <p className="text-xs text-bambu-gray mt-1">
               {t('printOptionsPrefs.copyDstModelHint')}
             </p>
@@ -792,12 +785,12 @@ function CopyDialog({ src, users, availableModels, onClose }: CopyDialogProps) {
             type="button"
             disabled={!canCopy}
             onClick={() => copyMutation.mutate()}
-            className="px-4 py-1.5 bg-bambu-green hover:bg-bambu-green-dark text-black text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-1.5 bg-bambu-green hover:bg-bambu-green-dark text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {t('printOptionsPrefs.copyAction')}
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

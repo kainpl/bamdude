@@ -70,6 +70,52 @@ async def test_an_external_print_gets_a_row(db_session, printer_factory, main_db
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_the_row_says_it_is_external(db_session, printer_factory, main_db):
+    """⚠️ **The row exists, so "there is a queue row" cannot mean "queued".**
+
+    That is what this file created, and what the queue-completed notifications
+    were still reading as a queue when they fired — an externally-started print
+    announced "queue finished — all jobs done" to a farm that had scheduled
+    nothing. ``origin`` is the discriminator the file's own header used to say
+    was unnecessary ("absence, not a new column"): absence still identifies an
+    external print at print START, but by completion the row is present and
+    absence has nothing left to say.
+    """
+    printer, queue = await _queue(db_session, printer_factory)
+
+    await mark_queue_printing_for_printer(printer.id)
+
+    rows = await _printing_rows(db_session, queue.id)
+    assert [r.origin for r in rows] == ["external"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_an_adopted_row_keeps_the_origin_of_whoever_made_it(
+    db_session, printer_factory, main_db, raw_gcode_source, a_direct_capture
+):
+    """A dispatch of ours reaches ``on_print_start`` too, and adopts its own
+    claim rather than making a second row. Adoption must not relabel it: the
+    row was made by the Print dialog and stays ``direct``."""
+    from backend.app.services.queue_batch import claim_printer_for_direct_print
+
+    printer, queue = await _queue(db_session, printer_factory)
+    await claim_printer_for_direct_print(
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(raw_gcode_source),
+    )
+
+    await mark_queue_printing_for_printer(printer.id)
+
+    rows = await _printing_rows(db_session, queue.id)
+    assert [r.origin for r in rows] == ["direct"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_the_row_carries_the_archive_so_completion_can_close_it(
     db_session, printer_factory, main_db, archive_factory
 ):
@@ -87,14 +133,22 @@ async def test_the_row_carries_the_archive_so_completion_can_close_it(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_direct_prints_own_row_is_adopted_not_duplicated(db_session, printer_factory, main_db):
+async def test_a_direct_prints_own_row_is_adopted_not_duplicated(
+    db_session, printer_factory, main_db, raw_gcode_source, a_direct_capture
+):
     """⚠️ ``on_print_start`` runs for our own dispatches too, and a second row
     there would trip on_print_complete's "Multiple queue items in 'printing'
     status" guard and attribute the print to whichever came back first."""
     from backend.app.services.queue_batch import claim_printer_for_direct_print
 
     printer, queue = await _queue(db_session, printer_factory)
-    mine = await claim_printer_for_direct_print(db_session, printer_id=printer.id)
+    mine = await claim_printer_for_direct_print(
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(raw_gcode_source),
+    )
 
     await mark_queue_printing_for_printer(printer.id)
 
@@ -104,7 +158,9 @@ async def test_a_direct_prints_own_row_is_adopted_not_duplicated(db_session, pri
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_an_adopted_row_learns_its_archive(db_session, printer_factory, main_db, archive_factory):
+async def test_an_adopted_row_learns_its_archive(
+    db_session, printer_factory, main_db, archive_factory, raw_gcode_source, a_direct_capture
+):
     """A direct print's row is created before its archive exists — the dispatcher
     wires it, but a re-trigger path that adopts a different archive would leave
     the row pointing nowhere, and a completed item with no archive is never
@@ -112,7 +168,13 @@ async def test_an_adopted_row_learns_its_archive(db_session, printer_factory, ma
     from backend.app.services.queue_batch import claim_printer_for_direct_print
 
     printer, queue = await _queue(db_session, printer_factory)
-    mine = await claim_printer_for_direct_print(db_session, printer_id=printer.id)
+    mine = await claim_printer_for_direct_print(
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(raw_gcode_source),
+    )
     archive = await archive_factory(printer.id, status="printing")
 
     await mark_queue_printing_for_printer(printer.id, archive_id=archive.id)
@@ -137,12 +199,20 @@ async def test_a_scheduler_item_is_adopted_not_duplicated(db_session, printer_fa
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_printer_with_no_queue_row_is_a_noop(db_session, printer_factory, main_db):
+async def test_a_printer_with_no_queue_row_gets_one_and_still_holds_a_row(db_session, printer_factory, main_db):
+    """⚠️ Used to be a no-op, and the no-op is what the reporter hit: no queue
+    row meant no claim, no claim meant nothing for the completion to close,
+    and the plate gate armed regardless — "Repeat" on the card, 409 from the
+    route (2026-09-04). A missing queue is created on the spot; the printer's
+    id is the queue's id."""
     printer = await printer_factory()
 
-    await mark_queue_printing_for_printer(printer.id)  # no error
+    await mark_queue_printing_for_printer(printer.id)
 
-    assert (await db_session.execute(select(PrintQueueItem))).scalars().all() == []
+    queue = (await db_session.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer.id))).scalar_one()
+    assert queue.id == printer.id
+    rows = (await db_session.execute(select(PrintQueueItem))).scalars().all()
+    assert [(r.queue_id, r.status) for r in rows] == [(queue.id, "printing")]
 
 
 class TestTheRowSurvivesItsOwnCompletion:

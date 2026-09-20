@@ -82,6 +82,33 @@ You should see the `m00X` migrations that apply to the version you upgraded to, 
 
 ---
 
+## Switching the database backend
+
+`DATABASE_URL` picks the storage and switching it is its own migration:
+
+| `DATABASE_URL` | Backend |
+|----------------|---------|
+| *empty / unset* | SQLite at `data/bamdude.db` (default) |
+| `embedded` | the PostgreSQL 18 bundled with BamDude, under `DATA_DIR/postgres/18` |
+| `postgresql+asyncpg://…` | your own PostgreSQL server (the database must already exist) |
+
+**SQLite → PostgreSQL** is a one-shot automatic copy. Back up first, set `DATABASE_URL`, restart. BamDude sees an empty PostgreSQL next to `bamdude.db`, copies every table across, then renames the file to `bamdude.db.migrated`:
+
+```text
+Found local SQLite database at .../bamdude.db, migrating to PostgreSQL
+SQLite -> PostgreSQL migration complete (78 tables). Original renamed to bamdude.db.migrated
+```
+
+Two things to read in that log. PostgreSQL enforces foreign keys SQLite never did, so **unreachable orphan rows are purged and counted** (`Purging N orphan … rows`) — expected, but check the numbers look sane for your install. And a **failed import aborts the start**: PostgreSQL is left alone and `bamdude.db` is *not* renamed, so unsetting `DATABASE_URL` and restarting puts you back exactly where you were.
+
+**Going back:** unset `DATABASE_URL` and `mv data/bamdude.db.migrated data/bamdude.db`. Anything written after the switch lives only in PostgreSQL — take a backup first if you want to keep it (the UI backup format restores onto either backend).
+
+**Upgrading with the bundled server:** stop BamDude before `pip install -r requirements.txt`, or pip cannot replace the PostgreSQL package while a server from it is running (`update.sh` already stops the service first). Its cluster, password and port files live in `DATA_DIR/postgres/` — back them up with the rest of `data/`, service stopped. BamDude refuses to open a cluster from a different PostgreSQL major rather than touching it; a major bump ships as its own release with an explicit step.
+
+Full guide, including the Windows service layouts and Docker: <https://docs.bamdude.top/features/postgresql/> and the [upgrade guide](https://docs.bamdude.top/getting-started/upgrading/).
+
+---
+
 ## Migrating FROM Bambuddy (source project)
 
 See [Scenario 1 in the upgrade guide](https://docs.bamdude.top/getting-started/upgrading/#scenario-1-migrating-from-bambuddy-222). Short form: point BamDude at your existing Bambuddy `data/` directory, first boot runs `m000_bambuddy_import`, Bambuddy file is renamed (not deleted) so rollback is possible. Only Bambuddy **2.2.2** is tested; newer Bambuddy releases (0.2.3+) are untested and may break — the fork has diverged.

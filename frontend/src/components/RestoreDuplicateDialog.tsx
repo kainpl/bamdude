@@ -1,8 +1,9 @@
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, X } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 
 import type { TrashRestoreConflict } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
 
 interface RestoreDuplicateDialogProps {
   conflicts: TrashRestoreConflict[];
@@ -36,54 +37,47 @@ export function RestoreDuplicateDialog({
   const { t } = useTranslation();
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-lg">
-        <div className="flex items-center justify-between p-4 border-b border-bambu-dark">
-          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-            <AlertTriangle className="w-5 h-5 text-yellow-500" />
-            {t('libraryTrash.restoreDuplicate.title')}
-          </h2>
-          <button onClick={onCancel} className="p-1 hover:bg-bambu-dark rounded" aria-label={t('common.close')}>
-            <X className="w-5 h-5 text-bambu-gray" />
-          </button>
-        </div>
+    <Modal
+      onClose={onCancel}
+      title={t('libraryTrash.restoreDuplicate.title')}
+      icon={<AlertTriangle className="w-5 h-5 text-yellow-500" />}
+      size="lg"
+    >
+      <div className="p-4 space-y-3">
+        <p className="text-sm text-white">
+          {t('libraryTrash.restoreDuplicate.intro', { count: conflicts.length })}
+        </p>
 
-        <div className="p-4 space-y-3">
-          <p className="text-sm text-white">
-            {t('libraryTrash.restoreDuplicate.intro', { count: conflicts.length })}
+        <ul className="max-h-48 overflow-y-auto space-y-1 text-xs">
+          {conflicts.map((c) => (
+            <li key={c.id} className="p-2 rounded bg-bambu-dark/50">
+              <span className="text-white break-words">{c.filename}</span>
+              <span className="text-bambu-gray"> — {t('libraryTrash.restoreDuplicate.sameAs')} </span>
+              <span className="text-white break-words">{c.existing_filename}</span>
+            </li>
+          ))}
+        </ul>
+
+        {cleanCount > 0 && (
+          <p className="text-xs text-bambu-gray">
+            {t('libraryTrash.restoreDuplicate.othersRestoreAnyway', { count: cleanCount })}
           </p>
-
-          <ul className="max-h-48 overflow-y-auto space-y-1 text-xs">
-            {conflicts.map((c) => (
-              <li key={c.id} className="p-2 rounded bg-bambu-dark/50">
-                <span className="text-white break-words">{c.filename}</span>
-                <span className="text-bambu-gray"> — {t('libraryTrash.restoreDuplicate.sameAs')} </span>
-                <span className="text-white break-words">{c.existing_filename}</span>
-              </li>
-            ))}
-          </ul>
-
-          {cleanCount > 0 && (
-            <p className="text-xs text-bambu-gray">
-              {t('libraryTrash.restoreDuplicate.othersRestoreAnyway', { count: cleanCount })}
-            </p>
-          )}
-        </div>
-
-        <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark">
-          <Button variant="ghost" onClick={onCancel} disabled={busy}>
-            {t('common.cancel')}
-          </Button>
-          {cleanCount > 0 && (
-            <Button variant="ghost" onClick={onSkipDuplicates} disabled={busy}>
-              {t('libraryTrash.restoreDuplicate.skipDuplicates', { count: cleanCount })}
-            </Button>
-          )}
-          <Button onClick={onRestoreAll} disabled={busy}>
-            {t('libraryTrash.restoreDuplicate.restoreAll')}
-          </Button>
-        </div>
+        )}
       </div>
-    </div>
+
+      <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark">
+        <Button variant="ghost" onClick={onCancel} disabled={busy}>
+          {t('common.cancel')}
+        </Button>
+        {cleanCount > 0 && (
+          <Button variant="ghost" onClick={onSkipDuplicates} disabled={busy}>
+            {t('libraryTrash.restoreDuplicate.skipDuplicates', { count: cleanCount })}
+          </Button>
+        )}
+        <Button onClick={onRestoreAll} disabled={busy}>
+          {t('libraryTrash.restoreDuplicate.restoreAll')}
+        </Button>
+      </div>
+    </Modal>
   );
 }

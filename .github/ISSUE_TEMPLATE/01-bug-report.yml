@@ -1,0 +1,196 @@
+name: Bug Report
+description: Something in BamDude misbehaves. The in-app Bug button is faster; use this form when you can't.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### The fastest way is inside BamDude
+
+        Every page has a red **Bug** button in the bottom-right corner. It creates this issue for you and attaches what we would otherwise ask for: version, OS, printer models and firmware, connection state, a screenshot and **sanitised** debug logs (printer names, serials, access codes and IPs are replaced before anything leaves your install). [How it works](https://docs.bamdude.top/features/bug-report/).
+
+        Use this form when BamDude does not start, the UI is unreachable, or you prefer to write it up by hand. Thank you either way.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+      placeholder: "The queue sent the same plate to two printers …"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to …
+        2. Click …
+        3. …
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: BamDude version
+      description: Settings → System → [Version info](https://docs.bamdude.top/features/system-info/#version-info).
+      placeholder: "0.5.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How BamDude is installed
+      options:
+        - Docker (image from Docker Hub or GHCR)
+        - Docker Compose, built from source
+        - Native Linux / macOS (install.sh)
+        - Windows installer (.exe)
+        - Manual (git clone, own venv)
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: What BamDude runs on. The architecture matters — ARM boards have had bugs of their own.
+      options:
+        - Linux x86_64
+        - Linux ARM64 (Raspberry Pi 4/5, aarch64)
+        - Linux ARM 32-bit (armv7l)
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database
+      options:
+        - SQLite (default)
+        - PostgreSQL bundled with BamDude (DATABASE_URL=embedded)
+        - PostgreSQL, my own server
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: printers
+    attributes:
+      label: Printer model(s) involved
+      description: Pick every model the bug shows on.
+      multiple: true
+      options:
+        - X1 Carbon
+        - X1
+        - X1E
+        - H2D
+        - H2D Pro
+        - H2C
+        - H2S
+        - P1S
+        - P1P
+        - P2S
+        - X2D
+        - A2L
+        - A1
+        - A1 Mini
+        - Not printer-related
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Printer firmware
+      description: From the printer screen or Bambu Handy. Skip if not printer-related.
+      placeholder: "01.08.02.00"
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of BamDude
+      options:
+        - Printers — status, camera, controls
+        - Print queue, auto-queue and scheduling
+        - Print archive and statistics
+        - Library — files, folders, slicing
+        - Projects — orders, products, customers
+        - Spool inventory and filament usage
+        - Spoolman integration
+        - Filament calibration and K-profiles
+        - Maintenance tracking
+        - Telegram bot
+        - Notifications — email, ntfy, Discord, webhooks, Home Assistant …
+        - Smart plugs, Zigbee and energy
+        - Labels
+        - Virtual printer and remote printing
+        - Authentication, users and API keys
+        - Installers, Docker and updates
+        - BamDude Cloud
+        - UI, translation and accessibility
+        - REST API and integrations
+        - Other / not sure
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser
+      description: For UI bugs — name and version, or "mobile / PWA".
+      placeholder: "Firefox 140; Chrome 138 on Android"
+
+  - type: markdown
+    attributes:
+      value: |
+        ### Logs
+
+        The most useful attachment is a **Support Bundle**: Settings → System → turn on **Debug Logging**, reproduce the bug, then **Support Bundle** → download, and drop the `.zip` into the box below. Sensitive values are redacted in the bundle. [Details](https://docs.bamdude.top/features/system-info/#support-bundle).
+
+        Pasting log lines by hand? They are **not** redacted — check for your printer's access code, serial number and IP before posting. The log file is `logs/bamdude.log` next to the install (`docker logs bamdude` in Docker), and Settings → System has a [log viewer](https://docs.bamdude.top/features/system-info/#log-viewer) with downloads.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Support Bundle
+      description: Drag the .zip into this box, or paste the relevant lines.
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Drag images into this box.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Integrations in play (Spoolman, Obico, Telegram, Home Assistant, Zigbee, Cloud Link), a reverse proxy, when it started, what you already tried.
+
+  - type: checkboxes
+    id: printer-setup
+    attributes:
+      label: Printer setup (only if the bug involves a printer)
+      description: Local access needs Developer Mode on current firmware — see [First printer](https://docs.bamdude.top/getting-started/first-printer/).
+      options:
+        - label: Developer Mode is enabled on the printer
+        - label: The printer is reachable from the BamDude host (same network, no client isolation)
+        - label: BamDude has shown this printer as connected at least once
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues, open and closed
+          required: true
+        - label: I am on the latest release or the current beta
+          required: true

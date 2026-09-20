@@ -17,11 +17,29 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import wraps
+from itertools import count
 
 import paho.mqtt.client as mqtt
 
 from backend.app.services.hms_actions import HMSAction, get_actions_for_error_code
+from backend.app.services.printer_feed_snapshot import FeedTelemetry, snapshot_from_state
+from backend.app.utils.printer_models import is_dual_nozzle_model
 from backend.app.utils.timelapse import task_cfg
+
+
+def _routing_locked(method):
+    """Serialize telemetry revisions with the final synchronous print handoff."""
+
+    @wraps(method)
+    def locked(self, *args, **kwargs):
+        with self._routing_lock:
+            return method(self, *args, **kwargs)
+
+    return locked
+
+
+_connection_generations = count(1)
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +295,35 @@ def a2l_lite_wire_ids(ams_id: int, tray_id: int) -> tuple[int, int, int] | None:
         local_slot,
         A2L_LITE_PHYSICAL_AMS_ID * 4 + local_slot,
     )
+
+
+def decode_filam_bak_groups(value: object) -> list[list[int]] | None:
+    """Decode firmware ``filam_bak`` masks into global tray ids.
+
+    ``None`` means the field was unusable or absent and callers must preserve
+    their last known value. An explicit empty list is meaningful: the printer
+    has reported that this extruder currently has no backup group.
+    """
+    if not isinstance(value, list):
+        return None
+
+    groups: list[list[int]] = []
+    for raw_mask in value:
+        if isinstance(raw_mask, bool):
+            continue
+        try:
+            mask = int(raw_mask, 0) if isinstance(raw_mask, str) else int(raw_mask)
+        except (TypeError, ValueError):
+            continue
+        if mask < 0:
+            continue
+
+        members = [bit for bit in range(16) if mask & (1 << bit)]
+        members.extend(128 + bit for bit in range(8) if mask & (1 << (16 + bit)))
+        members.extend(24 + bit for bit in range(4) if mask & (1 << (24 + bit)))
+        if members:
+            groups.append(members)
+    return groups
 
 
 # --- H2C nozzle-rack dispatch mapping ---------------------------------------
@@ -1074,6 +1121,8 @@ class PrintOptions:
 @dataclass
 class PrinterState:
     connected: bool = False
+    connection_generation: int = 0
+    feed_telemetry: FeedTelemetry = field(default_factory=FeedTelemetry)
     state: str = "unknown"
     current_print: str | None = None
     subtask_name: str | None = None
@@ -1094,6 +1143,10 @@ class PrinterState:
     # be empty by the time anyone asks.
     last_project_url: str | None = None
     hms_errors: list = field(default_factory=list)  # List of HMSError
+    # ``hms[]`` entries the operator chose to hide on this printer, kept apart
+    # from ``hms_errors`` so every reader of that list goes quiet together while
+    # the modal can still show and un-hide them — see services/hms_mute.
+    hms_muted: list = field(default_factory=list)  # List of HMSError
     kprofiles: list = field(default_factory=list)  # List of KProfile
     # BS ``DevStorage::SdcardState`` — four states, not a bool:
     #   0 NO_SDCARD · 1 HAS_SDCARD_NORMAL · 2 HAS_SDCARD_ABNORMAL · 3 HAS_SDCARD_READONLY
@@ -1195,6 +1248,10 @@ class PrinterState:
     speed_level: int = 2
     # Chamber light on/off
     chamber_light: bool = False
+    # True once a lights_report has carried a chamber_light node — the
+    # printer has a light we can switch. Off until the first report of a
+    # connection; the camera-light lease is a no-op while it is off.
+    has_chamber_light: bool = False
     # Active extruder for dual nozzle (0=right, 1=left) - from device.extruder.info[X].hnow
     active_extruder: int = 0
     # Currently loaded tray (global ID): 254/255 = external spools, 255 = no filament on legacy printers
@@ -1226,6 +1283,10 @@ class PrinterState:
     ams_mapping: list = field(default_factory=list)
     # Per-AMS extruder map: {ams_id: extruder_id} where 0=right/main, 1=left/deputy
     ams_extruder_map: dict = field(default_factory=dict)
+    # Firmware-reported fallback groups, keyed by extruder id. ``None`` means
+    # this firmware has not reported ``filam_bak``; ``{0: []}`` is an explicit
+    # report that the primary extruder has no fallback group.
+    ams_backup_groups: dict[int, list[list[int]]] | None = None
     # ---------- AMS system-level user settings (BS "AMS Settings" dialog) ----------
     # Each flag mirrors the corresponding push field from print.ams (insert_flag,
     # power_on_flag, calibrate_remain_flag) and the cfg bitfield (auto_switch
@@ -1764,6 +1825,7 @@ class BambuMQTTClient:
         on_skipped_objects_changed: Callable[[list], None] | None = None,
         on_tray_change: Callable[[int, int], None] | None = None,
         on_usage_event: Callable[[str, str | None, int | None, int], None] | None = None,
+        on_lights_report: Callable[[bool], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -1782,6 +1844,11 @@ class BambuMQTTClient:
         # list must not inflate it. printer_manager wires this to the archive's
         # defective-part counter.
         self.on_skipped_objects_changed = on_skipped_objects_changed
+        # Fired on a CHANGE of the chamber light after the first report of a
+        # connection, with the new state. The camera-light lease listens
+        # (services/camera_light): a change it commanded confirms its "on",
+        # any other change ends its ownership of the light.
+        self.on_lights_report = on_lights_report
         # #1349: fired when an AMS unit's ``dry_time`` falls from >0 to 0
         # — i.e. the drying cycle just finished (queue-triggered, ambient,
         # or manual). Receives the AMS id of the unit that finished drying.
@@ -1829,6 +1896,13 @@ class BambuMQTTClient:
         # wants ONE boundary per tray per print (kind may upgrade
         # pause → autoswitch once, when the backup takes over mid-purge).
         self._runout_fired: dict[int | None, str] = {}
+        # ⚠️ ``_runout_fired`` is per-process memory, and the HMS runout status
+        # stays active for the WHOLE print — so a client created mid-print would
+        # replay every still-active code as a fresh episode at the CURRENT
+        # layer. Armed by default (a print that starts under our watch has
+        # nothing to recover); the restart-recovery branch below disarms it
+        # until the journal has been read back in. See ``seed_runout_fired``.
+        self._runout_seeded: bool = True
         # Trays whose runout was fired, mapped to the tray_uuid seen at that
         # moment — a later valid, different uuid means a replacement spool was
         # loaded (one-shot ``spool_loaded`` event).
@@ -1865,8 +1939,15 @@ class BambuMQTTClient:
         self._unnamed_stages_seen: set[int] = set()
 
         self.state = PrinterState()
+        self._routing_lock = threading.RLock()
         self._client: mqtt.Client | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Full 16-char ``hms[]`` codes the operator chose to hide on this
+        # printer (services/hms_mute). Loaded by the manager before the first
+        # push; a code drops out by itself when the printer stops reporting it,
+        # and ``on_hms_mute_expired`` tells the manager which ones did.
+        self.muted_hms_codes: set[str] = set()
+        self.on_hms_mute_expired: Callable[[set[str]], None] | None = None
         self._previous_gcode_state: str | None = None
         # Last time "device is busy" was cleared off this printer (see
         # _clear_device_busy). Per client, so a reconnect starts fresh.
@@ -2112,6 +2193,11 @@ class BambuMQTTClient:
     # Maximum time (seconds) without a message before considering connection stale
     STALE_TIMEOUT = 60.0
 
+    @property
+    def status_received_at(self) -> float | None:
+        """Last received MQTT message, without reconnecting or refreshing it."""
+        return self._last_message_time or None
+
     def is_stale(self) -> bool:
         """Check if the connection is stale (no messages for too long)."""
         if self._last_message_time == 0:
@@ -2265,8 +2351,11 @@ class BambuMQTTClient:
             except Exception:
                 pass
 
+    @_routing_locked
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
+            self.state.connection_generation = next(_connection_generations)
+            self.state.feed_telemetry = FeedTelemetry()
             self.state.connected = True
 
             # ⚠️ Anything paho is still retrying was published BEFORE this link
@@ -2384,6 +2473,7 @@ class BambuMQTTClient:
             self._request_topic_sub_mid = None
             self._request_topic_sub_time = 0.0
 
+    @_routing_locked
     def _on_disconnect(self, client, userdata, disconnect_flags=None, rc=None, properties=None):
         # Always unblock disconnect() callers, regardless of whether we suppress
         # the state broadcast below.  disconnect() sets _disconnection_event and
@@ -2461,6 +2551,7 @@ class BambuMQTTClient:
         if self.on_state_change:
             self.on_state_change(self.state)
 
+    @_routing_locked
     def _on_message(self, client, userdata, msg):
         for handler in self._raw_message_handlers:
             try:
@@ -2485,8 +2576,11 @@ class BambuMQTTClient:
                     len(msg.payload),
                 )
             payload = json.loads(raw)
-            # Track last message time - receiving a message proves we're connected
+            # A recovered link must not refresh cached spools with an unrelated report.
             self._last_message_time = time.time()
+            if not self.state.connected:
+                self.state.connection_generation = next(_connection_generations)
+                self.state.feed_telemetry = FeedTelemetry()
             self.state.connected = True
 
             # Intercept request-topic messages (print commands from slicer/BamDude)
@@ -2583,8 +2677,10 @@ class BambuMQTTClient:
                     json.dumps(print_data),
                 )
 
+    @_routing_locked
     def _process_message(self, payload: dict):
         """Process incoming MQTT message from printer."""
+        self.state.feed_telemetry.observe(payload, self.model)
         # Handle top-level AMS data (comes outside of "print" key)
         # Wrap in try/except to prevent breaking the MQTT connection
         if "ams" in payload:
@@ -2754,6 +2850,15 @@ class BambuMQTTClient:
                     self._handle_ams_data(print_data["ams"])
                 except Exception as e:
                     logger.error("[%s] Error handling AMS data from print: %s", self.serial_number, e)
+
+            # ``filam_bak`` is the firmware's authoritative grouping for AMS
+            # filament backup. It is a list of bitmasks: regular AMS slots are
+            # bits 0..15, AMS HT slots 16..23 (global ids 128..135), and A2L
+            # slots 24..27. Older single-nozzle firmware puts it at print level.
+            if "filam_bak" in print_data:
+                _groups = decode_filam_bak_groups(print_data["filam_bak"])
+                if _groups is not None:
+                    self.state.ams_backup_groups = {0: _groups}
 
             # AMS Settings dialog echoes: the printer reflects the most recently
             # accepted ``print_option`` values directly under the ``print`` key.
@@ -5593,6 +5698,7 @@ class BambuMQTTClient:
                             )
                         )
             self._apply_mqtt_verify_state(verify_failed)
+            self._apply_hms_mutes_after_rebuild()
 
         # Parse print_error - this is a different error format than HMS
         # print_error is a 32-bit integer where:
@@ -5752,18 +5858,27 @@ class BambuMQTTClient:
         # reads the same bit for the same reason.
         _ext = (data.get("device") or {}).get("extruder") if isinstance(data.get("device"), dict) else None
         if isinstance(_ext, dict) and isinstance(_ext.get("info"), list):
+            _backup_groups = dict(self.state.ams_backup_groups or {})
+            _backup_groups_changed = False
             for _idx, _entry in enumerate(_ext["info"]):
-                if not isinstance(_entry, dict) or "info" not in _entry:
-                    continue
-                try:
-                    _info_int = int(_entry["info"])
-                except (TypeError, ValueError):
+                if not isinstance(_entry, dict):
                     continue
                 _ext_id = _entry.get("id")
                 try:
                     _ext_id = int(_ext_id)
                 except (TypeError, ValueError):
                     _ext_id = _idx
+                if "filam_bak" in _entry:
+                    _groups = decode_filam_bak_groups(_entry["filam_bak"])
+                    if _groups is not None:
+                        _backup_groups[_ext_id] = _groups
+                        _backup_groups_changed = True
+                if "info" not in _entry:
+                    continue
+                try:
+                    _info_int = int(_entry["info"])
+                except (TypeError, ValueError):
+                    continue
                 self.state.ext_has_filament[_ext_id] = bool((_info_int >> 1) & 0x1)
                 # Bit 3 of the same word — BS ``m_has_nozzle``, which gates the
                 # nozzle temperature control. ⚠️ Absence is NOT "no hotend": BS
@@ -5771,6 +5886,8 @@ class BambuMQTTClient:
                 # series does not support nozzle detection"), so only a machine
                 # that reports the word at all may ever answer False here.
                 self.state.ext_has_nozzle[_ext_id] = bool((_info_int >> 3) & 0x1)
+            if _backup_groups_changed:
+                self.state.ams_backup_groups = _backup_groups
 
         _ams_fw = _upgrade_state.get("mc_for_ams_firmware") if isinstance(_upgrade_state, dict) else None
         if isinstance(_ams_fw, dict):
@@ -6017,11 +6134,23 @@ class BambuMQTTClient:
                 for light in lights:
                     if isinstance(light, dict) and light.get("node") == "chamber_light":
                         new_light_state = light.get("mode") == "on"
-                        if new_light_state != self.state.chamber_light:
+                        # The first report of a connection is a sync, not a switch:
+                        # nobody flipped anything, we just did not know yet. Only a
+                        # later change is reported onward, so the camera-light lease
+                        # never mistakes a reconnect for the operator taking over.
+                        first_report = not self.state.has_chamber_light
+                        changed = new_light_state != self.state.chamber_light
+                        if changed:
                             logger.debug(
                                 f"[{self.serial_number}] chamber_light changed: {self.state.chamber_light} -> {new_light_state}"
                             )
+                        self.state.has_chamber_light = True
                         self.state.chamber_light = new_light_state
+                        if changed and not first_report and self.on_lights_report:
+                            try:
+                                self.on_lights_report(new_light_state)
+                            except Exception as e:
+                                logger.warning("[%s] on_lights_report failed: %s", self.serial_number, e)
                         break
 
         # Parse nozzle hardware info (single nozzle printers)
@@ -6292,6 +6421,9 @@ class BambuMQTTClient:
             # Runout detector memory is per-print: a spool that ran out last
             # print may legitimately run out again this one.
             self._runout_fired.clear()
+            # This print began under our watch, so its journal cannot already
+            # hold a runout — nothing to recover, and the detector is armed.
+            self._runout_seeded = True
             self._runout_watch.clear()
             # #1721: rearm the end-of-print finish-photo trigger for the new print
             self._finish_photo_captured = False
@@ -6339,6 +6471,14 @@ class BambuMQTTClient:
                 }
             )
         elif running_first_observed and self.on_print_running_observed:
+            # ⚠️ We joined a print already in flight, so this client's runout
+            # dedup is empty while the printer's HMS status is not — every
+            # still-active runout code would fire again, at the CURRENT layer.
+            # Hold the detector until main.py reads the journal back in
+            # (``seed_runout_fired``). Safe here: the detector needs
+            # ``_was_running``, set below, so it cannot have fired yet on this
+            # client, and the status repeats on every push.
+            self._runout_seeded = False
             # Restart-recovery hook (#1485 follow-up): BamDude started mid-
             # print, so the #1304 first-push guard suppressed on_print_start,
             # but we still need main.py to capture a fresh timelapse baseline
@@ -6891,6 +7031,20 @@ class BambuMQTTClient:
             return tn
         return None
 
+    def seed_runout_fired(self, already_fired: dict[int | None, str]) -> None:
+        """Arm the runout detector with what this print's journal already holds.
+
+        Called on restart-recovery, when a client is created for a print that
+        was already running. Each entry is a tray whose runout this print has
+        already recorded, so the still-active HMS status behind it is a replay,
+        not a second reel. Entries never overwrite what this client has seen
+        itself, and the normal re-arm still drops a tray the moment its code
+        clears — so a genuine second episode is unaffected.
+        """
+        for tray, kind in already_fired.items():
+            self._runout_fired.setdefault(tray, kind)
+        self._runout_seeded = True
+
     def _detect_runout_signals(self) -> None:
         """Scan active error codes for the runout family and fire events once.
 
@@ -6911,6 +7065,13 @@ class BambuMQTTClient:
         # print was actually at 548). The HMS repeats every push, so waiting
         # for a populated state only delays the fire, never loses it.
         if (self.state.layer_num or 0) == 0 and (self.state.total_layers or 0) == 0:
+            return
+        # Same reasoning, one step earlier: until the journal has been read back
+        # into this client, we cannot tell a NEW runout from the one this print
+        # already recorded — and this status repeats on every push, so holding
+        # fire only delays it. Firing unseeded put a phantom second episode into
+        # a running print once the operator had closed the first one.
+        if not self._runout_seeded:
             return
         from backend.app.services.hms_errors import classify_runout_ecode
 
@@ -7163,6 +7324,15 @@ class BambuMQTTClient:
             logger.warning("[%s] MQTT connect could not be started: %s", self.serial_number, self._last_connect_error)
             raise
 
+    @_routing_locked
+    def get_feed_snapshot(self, printer_id: int):
+        # Read fresh on every call — a snapshot taken before the printer echoed
+        # our push must not be the one a later routing decision is made on.
+        from backend.app.services.ams_advertised_overlay import entries_for
+
+        return snapshot_from_state(printer_id, self.model, self.state, overlay=entries_for(printer_id))
+
+    @_routing_locked
     def start_print(
         self,
         filename: str,
@@ -7179,6 +7349,7 @@ class BambuMQTTClient:
         storage: str = "external",
         file_md5: str = "",
         timelapse_storage: str | None = None,
+        routing_guard=None,
     ):
         """Start a print job on the printer.
 
@@ -7235,6 +7406,13 @@ class BambuMQTTClient:
         # job. IDLE / FINISH / FAILED are valid start targets; only active-print
         # states are refused. Callers treat False here as a DEFER (leave the queue
         # item pending), not a failure.
+        if routing_guard is not None:
+            routing_guard.validate(
+                self.get_feed_snapshot(routing_guard.plan.printer_id),
+                mapping=ams_mapping,
+                use_ams=use_ams,
+                plate_id=plate_id,
+            )
         if self.state.state in _ACTIVE_PRINT_STATES:
             logger.warning(
                 "[%s] start_print refused: printer busy (gcode_state=%s) — not publishing project_file for %s",
@@ -7277,9 +7455,7 @@ class BambuMQTTClient:
                         # previous classifier that put H2S into the dual-nozzle bucket
                         # silently routed external-spool prints to ams_id=254 and the
                         # firmware rejected the dispatch with ``07FF_8012``.
-                        _is_dual_nozzle = self._is_dual_nozzle or (
-                            self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "X2D")
-                        )
+                        _is_dual_nozzle = self._is_dual_nozzle or (is_dual_nozzle_model(self.model))
                         ext_ams_id = tray_id if _is_dual_nozzle else 255
                         flat_ams_mapping.append(-1)
                         ams_mapping2.append({"ams_id": ext_ams_id, "slot_id": 0})
@@ -7318,9 +7494,7 @@ class BambuMQTTClient:
             # ``_is_dual_nozzle`` flag set from device.extruder.info (>=2
             # entries); model name is the fallback for the brief window after
             # connect before push data arrives. Upstream Bambuddy #1386.
-            is_dual_nozzle = self._is_dual_nozzle or (
-                self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "X2D")
-            )
+            is_dual_nozzle = self._is_dual_nozzle or (is_dual_nozzle_model(self.model))
 
             from backend.app.utils.printer_models import is_nozzle_rack_model
 
@@ -7365,7 +7539,12 @@ class BambuMQTTClient:
             # and 254 (virtual tray) in ams_mapping with 0700_8012 "Failed to get
             # AMS mapping table". Fix: remap -1→0 and omit ams_mapping2 entirely.
             # Dual-nozzle excluded — use_ams controls nozzle routing on those.
-            no_ams_printer = not use_ams and not is_dual_nozzle and not self.state.raw_data.get("ams")
+            has_ams = (
+                self.get_feed_snapshot(routing_guard.plan.printer_id).ams_present
+                if routing_guard is not None
+                else bool(self.state.raw_data.get("ams"))
+            )
+            no_ams_printer = not use_ams and not is_dual_nozzle and not has_ams
             if no_ams_printer and flat_ams_mapping:
                 flat_ams_mapping = [0 if v == -1 else v for v in flat_ams_mapping]
                 logger.info(
@@ -7559,9 +7738,9 @@ class BambuMQTTClient:
 
             logger.info("[%s] Sending print command: %s", self.serial_number, json.dumps(command))
             self._client.publish(self.topic_publish, json.dumps(command), qos=1)
-            # Record what we dispatched so /cover can pick the right plate
-            # thumbnail even when the printer's gcode_file echo is just the
-            # 3MF filename without a plate path (#1166). Match the same
+            # Record what we dispatched so /printers/{id}/camera-cover can pick
+            # the right plate thumbnail even when the printer's gcode_file echo
+            # is just the 3MF filename without a plate path (#1166). Match the same
             # subtask_name shape we send so the comparison in resolve_plate_id
             # works against state.subtask_name reflected back via MQTT.
             self.state.dispatched_plate_id = plate_id
@@ -8825,6 +9004,64 @@ class BambuMQTTClient:
             return
         command = {"print": {"command": "clean_print_error", "sequence_id": "0"}}
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+
+    # ── Hiding stack entries (services/hms_mute) ──────────────────────────
+    #
+    # The firmware owns ``hms[]``; an entry it keeps re-sending cannot be cleared
+    # from here. The operator can hide ONE entry on ONE printer, by its full
+    # 16-char code, for as long as the printer keeps reporting it. Hidden entries
+    # move from ``state.hms_errors`` to ``state.hms_muted`` so every reader of
+    # the first list goes quiet together and the modal can still show them.
+
+    def _split_hms_by_mute(self) -> None:
+        """Re-partition the current stack entries by the mute set, expiring nothing."""
+        entries = list(self.state.hms_errors) + list(self.state.hms_muted)
+        self.state.hms_muted = [e for e in entries if e.full_code in self.muted_hms_codes]
+        self.state.hms_errors = [e for e in entries if e.full_code not in self.muted_hms_codes]
+
+    def _apply_hms_mutes_after_rebuild(self) -> None:
+        """After ``hms[]`` was rebuilt from a push: let go of every mute whose
+        entry the printer no longer reports, then hide the rest.
+
+        ⚠️ Only here, on a push that carries the stack — a push without it says
+        nothing about what the printer still holds. Expiry is what makes the
+        same code later a NEW incident that is shown again."""
+        if not self.muted_hms_codes:
+            self.state.hms_muted = []
+            return
+        present = {e.full_code for e in self.state.hms_errors if len(e.full_code or "") == 16}
+        gone = self.muted_hms_codes - present
+        if gone:
+            self.muted_hms_codes -= gone
+            logger.info(
+                "[%s] Hidden HMS entries left the stack — no longer hidden: %s", self.serial_number, sorted(gone)
+            )
+            if self.on_hms_mute_expired is not None:
+                try:
+                    self.on_hms_mute_expired(gone)
+                except Exception as e:  # noqa: BLE001 — bookkeeping must never break a status push
+                    logger.warning("[%s] on_hms_mute_expired failed: %s", self.serial_number, e)
+        self.state.hms_muted = [e for e in self.state.hms_errors if e.full_code in self.muted_hms_codes]
+        self.state.hms_errors = [e for e in self.state.hms_errors if e.full_code not in self.muted_hms_codes]
+
+    def set_muted_hms_codes(self, codes: set[str]) -> None:
+        """Replace the mute set (what the manager loaded from the DB) and re-split now."""
+        self.muted_hms_codes = {c.upper() for c in codes if len(c or "") == 16}
+        self._split_hms_by_mute()
+
+    def mute_hms(self, full_code: str) -> bool:
+        """Hide a stack entry at once, without waiting for the next push. False for anything but a 16-char code."""
+        code = (full_code or "").upper()
+        if len(code) != 16:
+            return False
+        self.muted_hms_codes.add(code)
+        self._split_hms_by_mute()
+        return True
+
+    def unmute_hms(self, full_code: str) -> bool:
+        self.muted_hms_codes.discard((full_code or "").upper())
+        self._split_hms_by_mute()
+        return True
 
     def clear_hms_errors(self) -> bool:
         """Clear HMS/print errors on the printer and locally."""

@@ -10,14 +10,26 @@ import {
   buildLoadedFilaments,
   computeAmsMapping,
 } from '../../hooks/useFilamentMapping';
-import type { PrinterStatus } from '../../api/client';
+import type { AMSTray, AMSUnit, PrinterStatus } from '../../api/client';
 
-// Helper to create a minimal printer status with AMS data
-function createPrinterStatus(ams: PrinterStatus['ams'], vt_tray: PrinterStatus['vt_tray'] = []): PrinterStatus {
+/**
+ * A tray as these tests write one: the three or four fields the matching rule
+ * reads, not the fourteen an `AMSTray` carries. Spelling out `tray_id_name`,
+ * `cali_idx`, `tag_uid` and the rest on every one of the ~120 trays below would
+ * bury the field actually under test, so the partial shape is declared here and
+ * widened in exactly one place.
+ */
+type TestTray = Partial<AMSTray>;
+type TestAmsUnit = Partial<Omit<AMSUnit, 'tray'>> & { id: number; tray: TestTray[] };
+
+// Helper to create a minimal printer status with AMS data. ⚠️ An external
+// spool is written WITHOUT an `id` on purpose — 254/255 is the hook's own
+// numbering, not something the printer sends on the tray.
+function createPrinterStatus(ams: TestAmsUnit[], vt_tray: TestTray[] = []): PrinterStatus {
   return {
     ams,
     vt_tray,
-  } as PrinterStatus;
+  } as unknown as PrinterStatus;
 }
 
 describe('buildLoadedFilaments', () => {

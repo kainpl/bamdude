@@ -14,6 +14,8 @@
 #   --tz TIMEZONE      Timezone (default: system timezone or UTC)
 #   --data-dir PATH    Data directory (default: INSTALL_PATH/data)
 #   --log-dir PATH     Log directory (default: INSTALL_PATH/logs)
+#   --db BACKEND       Database: sqlite (default) | embedded | external
+#   --database-url URL External database URL (implies --db external)
 #   --debug            Enable debug mode
 #   --log-level LEVEL  Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)
 #   --branch BRANCH    Git branch to install (default: main)
@@ -48,6 +50,8 @@ BIND_ADDRESS=""
 TIMEZONE=""
 DATA_DIR=""
 LOG_DIR=""
+DB_MODE=""            # sqlite | embedded | external
+DATABASE_URL_VALUE="" # external URL when DB_MODE=external
 DEBUG_MODE=""
 LOG_LEVEL=""
 SKIP_SERVICE="false"
@@ -155,6 +159,8 @@ show_help() {
     echo "  --tz TIMEZONE      Timezone (default: system timezone or UTC)"
     echo "  --data-dir PATH    Data directory (default: INSTALL_PATH/data)"
     echo "  --log-dir PATH     Log directory (default: INSTALL_PATH/logs)"
+    echo "  --db BACKEND       Database: sqlite (default) | embedded | external"
+    echo "  --database-url URL External database URL (implies --db external)"
     echo "  --debug            Enable debug mode"
     echo "  --log-level LEVEL  Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)"
     echo "  --branch BRANCH    Git branch to install (default: main)"
@@ -543,6 +549,27 @@ LOG_LEVEL=$LOG_LEVEL
 LOG_TO_FILE=true
 EOF
 
+    # Database backend. Empty / absent DATABASE_URL = SQLite; "embedded" = the
+    # bundled PostgreSQL 18 (from the embedded-postgres wheel in requirements);
+    # a URL = an external server. The app imports an existing bamdude.db into an
+    # empty PostgreSQL on first start (renamed to bamdude.db.migrated).
+    if [[ "$DB_MODE" == "embedded" ]]; then
+        cat >> /tmp/bamdude.env << 'EOF'
+
+# Bundled PostgreSQL 18, managed by BamDude itself.
+DATABASE_URL=embedded
+# Pin the port to reach the server with psql/DBeaver; unset = chosen once and
+# kept in DATA_DIR/postgres/port.
+# EMBEDDED_PG_PORT=6432
+EOF
+    elif [[ "$DB_MODE" == "external" ]]; then
+        cat >> /tmp/bamdude.env << EOF
+
+# External PostgreSQL server.
+DATABASE_URL=$DATABASE_URL_VALUE
+EOF
+    fi
+
     if [[ "$OS_TYPE" == "macos" ]]; then
         # Rootless: install path is user-owned, so write it directly.
         mv /tmp/bamdude.env "$env_file"
@@ -570,6 +597,16 @@ create_systemd_service() {
     local protect_home="true"
     if [[ "$INSTALL_PATH" == /home/* ]]; then
         protect_home="read-only"
+    fi
+
+    # Embedded PostgreSQL is a child of the app process. Give the lifespan time
+    # to run `pg_ctl stop -m fast` (a clean checkpoint) on shutdown, and let
+    # KillMode=mixed SIGKILL any postmaster still standing after the grace
+    # window — never rely on WAL recovery for an ordinary stop. SQLite / external
+    # backends keep the tighter default.
+    local stop_settings="TimeoutStopSec=10"
+    if [[ "$DB_MODE" == "embedded" ]]; then
+        stop_settings=$'TimeoutStopSec=90\nKillMode=mixed'
     fi
 
     # This function overwrites /etc/systemd/system/bamdude.service outright. Any
@@ -624,6 +661,7 @@ Environment="TZ=$TIMEZONE"
 ExecStart=$INSTALL_PATH/venv/bin/uvicorn backend.app.main:app --host $BIND_ADDRESS --port $PORT --loop asyncio
 Restart=on-failure
 RestartSec=5
+$stop_settings
 StandardOutput=journal
 StandardError=journal
 
@@ -680,6 +718,13 @@ create_launchd_service() {
 
     local plist_path="$HOME/Library/LaunchAgents/com.bamdude.app.plist"
 
+    # Embedded PostgreSQL is stopped by the app on SIGTERM; give launchd's
+    # SIGTERM→SIGKILL window room for the clean fast-shutdown (default is 20s).
+    local exit_timeout_xml=""
+    if [[ "$DB_MODE" == "embedded" ]]; then
+        exit_timeout_xml=$'    <key>ExitTimeOut</key>\n    <integer>90</integer>'
+    fi
+
     cat > "$plist_path" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -718,6 +763,7 @@ create_launchd_service() {
     <true/>
     <key>KeepAlive</key>
     <true/>
+$exit_timeout_xml
     <key>StandardOutPath</key>
     <string>$LOG_DIR/bamdude.log</string>
     <key>StandardErrorPath</key>
@@ -770,6 +816,15 @@ parse_args() {
                 LOG_DIR="$2"
                 shift 2
                 ;;
+            --db)
+                DB_MODE="$2"
+                shift 2
+                ;;
+            --database-url)
+                DATABASE_URL_VALUE="$2"
+                DB_MODE="external"
+                shift 2
+                ;;
             --debug)
                 DEBUG_MODE="true"
                 shift
@@ -803,6 +858,81 @@ parse_args() {
                 ;;
         esac
     done
+}
+
+# Read DATABASE_URL from an existing install's .env, so an upgrade defaults to
+# the backend already in use instead of silently reverting to SQLite. Prints
+# sqlite / embedded / external on stdout, or nothing when there is no prior .env.
+detect_existing_db_mode() {
+    local env_file="$INSTALL_PATH/.env"
+    local line=""
+    if [[ -r "$env_file" ]]; then
+        line=$(grep -E '^DATABASE_URL=' "$env_file" 2>/dev/null | tail -1) || true
+    elif [[ -f "$env_file" ]]; then
+        line=$(sudo grep -E '^DATABASE_URL=' "$env_file" 2>/dev/null | tail -1) || true
+    fi
+    [[ -z "$line" ]] && return 0
+    local val="${line#DATABASE_URL=}"
+    val="${val%\"}"; val="${val#\"}"  # strip optional quotes
+    case "$val" in
+        "" ) echo "sqlite" ;;
+        embedded|embedded://* ) echo "embedded" ;;
+        * ) echo "external" ;;
+    esac
+}
+
+gather_db_config() {
+    # --database-url already fixes the mode; an explicit --db is honoured too.
+    if [[ -n "$DB_MODE" ]]; then
+        case "$DB_MODE" in
+            sqlite|embedded|external) ;;
+            postgres|postgresql) DB_MODE="external" ;;
+            *) log_error "Unknown --db backend '$DB_MODE' (use sqlite|embedded|external)"; exit 1 ;;
+        esac
+    else
+        # Default to whatever the existing install used, else SQLite.
+        local existing
+        existing=$(detect_existing_db_mode)
+        DB_MODE="${existing:-sqlite}"
+    fi
+
+    if [[ "$NON_INTERACTIVE" != "true" ]]; then
+        echo ""
+        echo "Database backend:"
+        echo "  1) SQLite    - zero setup, one file; great up to a busy mid-size farm (default)"
+        echo "  2) embedded  - a PostgreSQL 18 that BamDude runs itself (bundled, no server to manage)"
+        echo "  3) external  - a PostgreSQL server you already run (enter its URL)"
+        local default_choice=1
+        [[ "$DB_MODE" == "embedded" ]] && default_choice=2
+        [[ "$DB_MODE" == "external" ]] && default_choice=3
+        local choice
+        prompt "Choose 1, 2 or 3" "$default_choice" choice
+        case "$choice" in
+            1|sqlite)   DB_MODE="sqlite" ;;
+            2|embedded) DB_MODE="embedded" ;;
+            3|external) DB_MODE="external" ;;
+            *) log_warn "Unrecognised choice '$choice', keeping $DB_MODE" ;;
+        esac
+    fi
+
+    if [[ "$DB_MODE" == "external" ]]; then
+        if [[ -z "$DATABASE_URL_VALUE" ]]; then
+            if [[ "$NON_INTERACTIVE" == "true" ]]; then
+                log_error "--db external needs --database-url (e.g. postgresql+asyncpg://user:pass@host:5432/bamdude)"
+                exit 1
+            fi
+            echo ""
+            echo "Enter the SQLAlchemy URL of your PostgreSQL (the database must already exist):"
+            echo "  postgresql+asyncpg://user:password@host:5432/bamdude"
+            while [[ -z "$DATABASE_URL_VALUE" ]]; do
+                prompt "Database URL" "" DATABASE_URL_VALUE
+            done
+        fi
+    fi
+
+    if [[ "$DB_MODE" == "embedded" ]]; then
+        log_info "Bundled PostgreSQL 18 arrives with the Python dependencies; the first start imports any existing SQLite database automatically."
+    fi
 }
 
 gather_config() {
@@ -857,6 +987,9 @@ gather_config() {
     [[ -z "$LOG_DIR" ]] && LOG_DIR="$INSTALL_PATH/logs"
     prompt "Log directory" "$LOG_DIR" LOG_DIR
 
+    # Database backend
+    gather_db_config
+
     # Debug mode
     if [[ -z "$DEBUG_MODE" ]]; then
         if prompt_yes_no "Enable debug mode?" "n"; then
@@ -888,6 +1021,11 @@ gather_config() {
     echo -e "  Timezone:      ${GREEN}$TIMEZONE${NC}"
     echo -e "  Data dir:      ${GREEN}$DATA_DIR${NC}"
     echo -e "  Log dir:       ${GREEN}$LOG_DIR${NC}"
+    case "$DB_MODE" in
+        embedded) echo -e "  Database:      ${GREEN}embedded PostgreSQL 18${NC}" ;;
+        external) echo -e "  Database:      ${GREEN}external PostgreSQL${NC}" ;;
+        *)        echo -e "  Database:      ${GREEN}SQLite${NC}" ;;
+    esac
     echo -e "  Debug mode:    ${GREEN}$DEBUG_MODE${NC}"
     echo -e "  Log level:     ${GREEN}$LOG_LEVEL${NC}"
     echo ""

@@ -112,6 +112,17 @@ async def _upsert_family(
     return True
 
 
+def _verbatim(value) -> str | None:
+    """A cloud timestamp as the ``String`` column stores it.
+
+    Both clouds send ``updated_time`` as an integer (Unix seconds). SQLite kept
+    the int in the VARCHAR column without a word; PostgreSQL's driver refuses
+    it ("expected str, got int") and the whole sync tick failed — found the
+    first time a real database ran on the bundled PostgreSQL.
+    """
+    return None if value is None else str(value)
+
+
 async def _reconcile(
     db: AsyncSession,
     *,
@@ -212,7 +223,7 @@ async def sync_bambu_presets_for_user(db: AsyncSession, user: User | None) -> Sy
             "filament_type": row.get("filament_type"),
             "nozzle_temp_min": temps[0] if len(temps) > 0 else None,
             "nozzle_temp_max": temps[1] if len(temps) > 1 else None,
-            "updated_time": row.get("update_time"),
+            "updated_time": _verbatim(row.get("update_time")),
         }
     # Spec B §5 dedup: a listing row whose setting_id equals a local row's
     # pushed_cloud_id is OUR pushed copy — the local row IS the identity, so
@@ -289,7 +300,7 @@ async def sync_orca_presets_for_user(db: AsyncSession, user: User | None) -> Syn
             "filament_type": _scalar(content.get("filament_type")),
             "nozzle_temp_min": _int_or_none(_scalar(content.get("nozzle_temperature_range_low"))),
             "nozzle_temp_max": _int_or_none(_scalar(content.get("nozzle_temperature_range_high"))),
-            "updated_time": profile.get("updated_time"),
+            "updated_time": _verbatim(profile.get("updated_time")),
         }
     # Own-push dedup (Orca mirror of the §5 rule): a pulled profile whose id
     # equals a local row's orca_pushed_profile_id is OUR pushed copy — the

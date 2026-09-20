@@ -4,21 +4,19 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.calibration_mode import CalibrationMode
+from backend.app.schemas.filament_routing import FilamentRoutingChoices
 from backend.app.schemas.timelapse import TimelapseStorage
 
 
-class ProjectRef(BaseModel):
-    """Tiny project reference embedded in file/folder responses (m044).
-
-    Carries just enough for the frontend to render the project chip
-    (name + color) without a follow-up fetch. The full Project schema
-    lives in ``backend.app.schemas.project``.
-    """
+class ProductRef(BaseModel):
+    """Tiny product reference embedded in file/folder responses — enough for a
+    chip; the full shape lives in ``backend.app.schemas.product``."""
 
     id: int
     name: str
-    color: str | None = None
+    is_active: bool = True
 
     class Config:
         from_attributes = True
@@ -32,10 +30,8 @@ class FolderCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=255)
     parent_id: int | None = None
-    # m044: list of project IDs to associate the folder with. Empty list
-    # = no project links.
-    project_ids: list[int] = Field(default_factory=list)
-    archive_id: int | None = None
+    # Products this folder belongs to. Empty list = no product links.
+    product_ids: list[int] = Field(default_factory=list)
 
 
 class ExternalFolderCreate(BaseModel):
@@ -51,14 +47,13 @@ class ExternalFolderCreate(BaseModel):
 class FolderUpdate(BaseModel):
     """Schema for updating a folder.
 
-    ``project_ids``: ``None`` = leave links untouched, ``[]`` = unlink
-    from every project, otherwise replace the whole list.
+    ``product_ids``: ``None`` = leave links untouched, ``[]`` = unlink
+    from every product, otherwise replace the whole list.
     """
 
     name: str | None = Field(None, min_length=1, max_length=255)
     parent_id: int | None = None
-    project_ids: list[int] | None = None
-    archive_id: int | None = None  # 0 to unlink
+    product_ids: list[int] | None = None
 
 
 class FolderResponse(BaseModel):
@@ -67,10 +62,8 @@ class FolderResponse(BaseModel):
     id: int
     name: str
     parent_id: int | None
-    # m044: M2M project links. Empty list = unattached.
-    projects: list[ProjectRef] = Field(default_factory=list)
-    archive_id: int | None = None
-    archive_name: str | None = None
+    # M2M product links. Empty list = unattached.
+    products: list[ProductRef] = Field(default_factory=list)
     is_external: bool = False
     external_path: str | None = None
     external_readonly: bool = False
@@ -108,9 +101,7 @@ class FolderTreeItem(BaseModel):
     id: int
     name: str
     parent_id: int | None
-    projects: list[ProjectRef] = Field(default_factory=list)
-    archive_id: int | None = None
-    archive_name: str | None = None
+    products: list[ProductRef] = Field(default_factory=list)
     is_external: bool = False
     external_path: str | None = None
     external_readonly: bool = False
@@ -129,13 +120,13 @@ class FolderTreeItem(BaseModel):
 class FileUpdate(BaseModel):
     """Schema for updating a file.
 
-    ``project_ids``: ``None`` = leave links untouched, ``[]`` = unlink
-    from every project, otherwise replace the whole list.
+    ``product_ids``: ``None`` = leave links untouched, ``[]`` = unlink
+    from every product, otherwise replace the whole list.
     """
 
     filename: str | None = Field(None, min_length=1, max_length=255)
     folder_id: int | None = None
-    project_ids: list[int] | None = None
+    product_ids: list[int] | None = None
     notes: str | None = None
 
 
@@ -155,8 +146,8 @@ class FileResponse(BaseModel):
     id: int
     folder_id: int | None
     folder_name: str | None = None
-    # m044: M2M project links — empty list = unattached.
-    projects: list[ProjectRef] = Field(default_factory=list)
+    # M2M product links — empty list = unattached.
+    products: list[ProductRef] = Field(default_factory=list)
     is_external: bool = False
 
     filename: str
@@ -277,14 +268,29 @@ class TagBulkAssignResponse(BaseModel):
     associations_removed: int
 
 
+class PlateSummary(BaseModel):
+    """One plate as the library card pages through it - the seven things the
+    card shows (vault 60-specs/library-multiplate-card-spec §4, §5). Deeper
+    detail (grams per slot, object names, bed type, layers) stays behind
+    ``/library/files/{id}/plates``."""
+
+    index: int
+    name: str | None = None
+    print_time_seconds: int | None = None
+    filament_used_grams: float | None = None
+    object_count: int | None = None
+    filament_types: list[str] = []
+    has_thumbnail: bool = False
+
+
 class FileListResponse(BaseModel):
     """Schema for file list item (lighter than full response)."""
 
     id: int
     folder_id: int | None
-    # m044: M2M project IDs only (names omitted to keep list payload small —
-    # frontend resolves names from a global ``projects`` query).
-    project_ids: list[int] = Field(default_factory=list)
+    # M2M product IDs only (names omitted to keep list payload small —
+    # frontend resolves names from a global ``products`` query).
+    product_ids: list[int] = Field(default_factory=list)
     is_external: bool = False
     filename: str
     file_type: str
@@ -316,6 +322,11 @@ class FileListResponse(BaseModel):
     sliced_for_model: str | None = None
     swap_compatible: bool = False
     is_multi_plate: bool = False
+    # spec §4 - plate 1's (or the only plate's) filament types in slot order,
+    # and one compact slice per plate for a multi-plate file (empty otherwise),
+    # so the card pages through plates without a /plates request per card.
+    filament_types: list[str] = []
+    plate_summaries: list[PlateSummary] = []
     # Provenance (m033) — same semantics as ``FileResponse``. List endpoint
     # surfaces them so the file card can show the "MakerWorld" / "Sliced"
     # badge without a follow-up detail fetch.
@@ -335,6 +346,22 @@ class FileListResponse(BaseModel):
         from_attributes = True
 
 
+class LibraryFileListPage(BaseModel):
+    """Paginated envelope for ``GET /library/files`` (task 1, 2026-08-29
+    server-driven lists) — returned only when the request carries ``page``.
+
+    Mirrors ``PaginatedArchiveResponse``'s ``meta`` (same ``PaginationMeta``
+    field names: total / current_page / per_page / last_page) so both list
+    endpoints read the same way on the frontend; the item container is named
+    ``items`` here rather than archives' ``data`` per this endpoint's own
+    contract. Omitting ``page`` entirely still returns the legacy flat
+    ``list[FileListResponse]`` — this model never appears in that path.
+    """
+
+    items: list[FileListResponse]
+    meta: PaginationMeta
+
+
 class FileMoveRequest(BaseModel):
     """Schema for moving files to a folder."""
 
@@ -342,7 +369,7 @@ class FileMoveRequest(BaseModel):
     folder_id: int | None = None  # None = move to root
 
 
-class FilePrintRequest(BaseModel):
+class FilePrintRequest(FilamentRoutingChoices):
     """Schema for printing a file from the library.
 
     Note: printer_id is passed as a query parameter, not in the body.
@@ -373,6 +400,8 @@ class FilePrintRequest(BaseModel):
     quantity: int = 1
     # Project to associate the resulting archive with (when triggered from project view)
     project_id: int | None = None
+    # The order line this print is for; travels queue → dispatcher → archive.
+    project_line_id: int | None = None
     # When true, delete the LibraryFile row + disk file after the archive has
     # been created and the print has been dispatched. Used by the Printers-page
     # Direct-Print flow (click / drag-drop a file onto a printer card) so the
@@ -485,3 +514,122 @@ class BatchThumbnailResponse(BaseModel):
     succeeded: int
     failed: int
     results: list[BatchThumbnailResult]
+
+
+# ============ Queue Sequencer Grouping ============
+
+
+class LibraryGroupingPlate(BaseModel):
+    """One plate, reduced to what decides which group it belongs to."""
+
+    index: int
+    # Sorted so two plates that need the same filaments compare equal without
+    # the caller having to normalise. ⚠️ TYPES only — colour is never part of a
+    # grouping key, and a colour field here would invite one.
+    filament_types: list[str]
+    bed_type: str | None = None
+
+
+class LibraryGroupingMetadata(BaseModel):
+    """Everything the queue sequencer needs to group a file's plates.
+
+    Read from ``LibraryFile.file_metadata`` alone — no disk access — which is
+    what lets a 60-file selection be grouped in one query.
+    """
+
+    file_id: int
+    filename: str
+    sliced_for_model: str | None = None
+    nozzle_diameter: float | None = None
+    bed_type: str | None = None
+    # Empty for a file that was never parsed (raw STL, unsliced 3MF). The caller
+    # must treat that as "cannot be grouped", never as "matches anything".
+    plates: list[LibraryGroupingPlate] = []
+
+
+# ============ Model card of a library file (spec §Decisions 5) ============
+
+
+class CardAuxOut(BaseModel):
+    """One file inside an ``Auxiliaries/`` folder, plus the url that serves it.
+
+    ``url`` names WHICH of the two card routes can serve this member, and the
+    server decides: ``card-file`` for a picture the browser will render (append
+    a camera stream token — an ``<img src>`` cannot carry an Authorization
+    header), ``card-download`` for everything else (an ordinary bearer read, so
+    a customer's bill of materials never sits behind a long-lived kiosk token).
+    Built server-side because the ZIP path needs percent-encoding and because
+    that split is a server rule the frontend should not re-derive.
+    """
+
+    name: str
+    zip_path: str
+    size: int = 0
+    url: str
+
+
+class CardResponse(BaseModel):
+    """What a 3MF says about itself — the ``CardData`` dataclass on the wire.
+
+    Read from the file on disk on every request, NOT from ``file_metadata``,
+    which carries only ``designer`` and ``print_name``. ``error`` is set when the
+    file could not be parsed; the card screen degrades, the request still
+    succeeds (``ThreeMFCardParser.parse`` never raises).
+    """
+
+    title: str | None = None
+    description: str | None = None
+    designer: str | None = None
+    designer_user_id: str | None = None
+    license: str | None = None
+    copyright: str | None = None
+    creation_date: str | None = None
+    modification_date: str | None = None
+    origin: str | None = None
+    profile_title: str | None = None
+    profile_description: str | None = None
+    profile_cover: str | None = None
+    profile_user_id: str | None = None
+    profile_user_name: str | None = None
+    design_model_id: str | None = None
+    design_profile_id: str | None = None
+    design_region: str | None = None
+    # Every category the parser knows is always present, empty when the 3MF has
+    # no such folder, so the frontend can index without guarding.
+    auxiliaries: dict[str, list[CardAuxOut]] = {}
+    error: str | None = None
+
+
+# ============ Order candidates for a plate (spec pass 7, Decision 1) ============
+
+
+class OrderCandidateOut(BaseModel):
+    """One order this plate could be filed under, and the line it would land on.
+
+    ``outstanding_prints`` is how many prints of THIS plate that line still
+    needs — the order plan's own number, so the picker and the plan block never
+    disagree. ``0`` means the line is satisfied; it stays in the list because
+    printing ahead is legitimate, and it simply sorts after the needy ones.
+
+    ``priority`` is the RANK of the order's priority (higher is more urgent),
+    not the stored word — the list arrives already sorted, and this is here so a
+    client can re-sort without a second vocabulary to learn.
+
+    ``line_material`` is the line's own material. One ORDER may appear several
+    times — every line whose product holds this plate and whose material accepts
+    it is offered, because the writers refuse to guess between two of them and
+    the operator is the one who may answer — so the label needs something that
+    tells two lines of the same order apart. ``None`` means the line takes any
+    material; the dialog then shows nothing extra rather than the word "none".
+    """
+
+    project_id: int
+    project_name: str
+    project_line_id: int
+    product_id: int
+    product_name: str
+    outstanding_prints: int
+    priority: int
+    deadline: datetime | None = None
+    created_at: datetime
+    line_material: str | None = None

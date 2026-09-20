@@ -1,400 +1,569 @@
+"""Order (project) schemas — spec §Data model / §API."""
+
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+
+from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
+
+PROJECT_STATUSES = ("active", "completed", "cancelled")
+PROJECT_PRIORITIES = ("low", "normal", "high", "urgent")
 
 
-def _validate_project_url(value: str | None) -> str | None:
-    """Reject anything that isn't an http(s) URL — the URL is rendered as a
-    clickable `<a href>` so a `javascript:` / `data:` / `file:` value would
-    be an XSS vector even with React's default escaping (#1155)."""
+def validate_http_url(value: str | None) -> str | None:
+    """Reject anything that isn't an http(s) URL — it is rendered as ``<a href>``,
+    so ``javascript:`` / ``data:`` / ``file:`` would be XSS even through React's
+    escaping (#1155).
+
+    Public because it guards every operator-supplied link in the domain, not
+    just an order's: ``schemas/product.py`` validates ``source_url`` with it too.
+    """
     if value is None:
-        return value
+        return None
     trimmed = value.strip()
     if not trimmed:
         return None
-    lowered = trimmed.lower()
-    if not (lowered.startswith("http://") or lowered.startswith("https://")):
+    if not trimmed.lower().startswith(("http://", "https://")):
         raise ValueError("url must start with http:// or https://")
     return trimmed
 
 
-class ProjectCreate(BaseModel):
-    """Schema for creating a new project."""
+def _reject_null(value, info: ValidationInfo):
+    """These columns are NOT NULL, so an explicit ``null`` must be a 422.
 
-    name: str
+    A PATCH clears a field by sending ``null``; on a NOT NULL column that
+    clearing surfaces as an IntegrityError from the flush — a 500 on malformed
+    input. This answers 422 instead, and does NOT fire when the field is absent:
+    pydantic does not validate defaults, so an omitted field is still left
+    alone. Same shape as ``schemas/customer.py::CustomerUpdate``.
+    """
+    if value is None:
+        raise ValueError(f"{info.field_name} cannot be null")
+    return value
+
+
+def _normalize_material(value: str | None) -> str | None:
+    """A line's material is a filament-type TOKEN and is matched against the
+    archive's ``filament_type`` case-insensitively — normalising on the way in
+    means the comparison never has to care (``order_metrics`` upper-cases the
+    other side)."""
+    if value is None:
+        return None
+    token = value.strip().upper()
+    return token or None
+
+
+class ProjectLineCreate(BaseModel):
+    product_id: int
+    quantity: int = Field(default=1, ge=1)
+    material: str | None = Field(default=None, max_length=50)
+    color: str | None = Field(default=None, max_length=64)
+    note: str | None = None
+    #: Whole units to take off the product's free stock instead of printing
+    #: (pass 8, Decision 4). NOT a column on ``project_lines`` — the route
+    #: turns it into ledger movements, so the handler must exclude it from the
+    #: model dump it builds the row from. The number that comes back on
+    #: :class:`ProjectLineResponse` is what was actually reserved, which is
+    #: less when the shelf emptied between rendering the dialog and pressing OK.
+    from_stock_units: int = Field(default=0, ge=0)
+
+    @field_validator("material")
+    @classmethod
+    def _mat(cls, v: str | None) -> str | None:
+        return _normalize_material(v)
+
+
+class ProjectLineUpdate(BaseModel):
+    quantity: int | None = Field(default=None, ge=1)
+    material: str | None = Field(default=None, max_length=50)
+    color: str | None = Field(default=None, max_length=64)
+    note: str | None = None
+    sort_order: int | None = None
+    #: ``None`` — absent or explicitly null — leaves the reservation alone; a
+    #: number REWRITES it (release + reserve in the one transaction). Not in
+    #: ``_not_null`` for exactly that reason: unlike ``quantity``, this field
+    #: has a meaningful "don't touch it", and the dialog sends the box only
+    #: when the operator has a shelf to take from.
+    from_stock_units: int | None = Field(default=None, ge=0)
+
+    @field_validator("quantity", "sort_order")
+    @classmethod
+    def _not_null(cls, v: int | None, info: ValidationInfo) -> int:
+        return _reject_null(v, info)
+
+    @field_validator("material")
+    @classmethod
+    def _mat(cls, v: str | None) -> str | None:
+        return _normalize_material(v)
+
+
+class ProcurementUpdate(BaseModel):
+    quantity_acquired: int = Field(ge=0)
+
+
+class ProjectCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    customer_id: int | None = None
     description: str | None = None
     color: str | None = None
-    target_count: int | None = None
-    target_parts_count: int | None = None
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None
     priority: str = "normal"
-    budget: float | None = None
-    parent_id: int | None = None  # For sub-projects
+    price: float | None = Field(default=None, ge=0)
     url: str | None = None
+    lines: list[ProjectLineCreate] = Field(default_factory=list)
 
     @field_validator("url")
     @classmethod
-    def _check_url(cls, v: str | None) -> str | None:
-        return _validate_project_url(v)
+    def _url(cls, v: str | None) -> str | None:
+        return validate_http_url(v)
+
+    @field_validator("priority")
+    @classmethod
+    def _prio(cls, v: str) -> str:
+        if v not in PROJECT_PRIORITIES:
+            raise ValueError("invalid priority")
+        return v
 
 
 class ProjectUpdate(BaseModel):
-    """Schema for updating a project."""
-
-    name: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    customer_id: int | None = None
     description: str | None = None
     color: str | None = None
-    status: str | None = None  # active, completed, archived
-    target_count: int | None = None
-    target_parts_count: int | None = None
+    status: str | None = None
     notes: str | None = None
     tags: str | None = None
     due_date: datetime | None = None
     priority: str | None = None
-    budget: float | None = None
-    parent_id: int | None = None
+    price: float | None = Field(default=None, ge=0)
     url: str | None = None
+
+    @field_validator("name", "status", "priority")
+    @classmethod
+    def _not_null(cls, v: str | None, info: ValidationInfo) -> str:
+        return _reject_null(v, info)
 
     @field_validator("url")
     @classmethod
-    def _check_url(cls, v: str | None) -> str | None:
-        return _validate_project_url(v)
+    def _url(cls, v: str | None) -> str | None:
+        return validate_http_url(v)
 
 
 class ProjectDuplicate(BaseModel):
-    """Options for copying an existing project into a new one.
+    name: str | None = None
 
-    Everything that describes *how the project is set up* is copied; nothing
-    that records *what has happened to it* is. See the route for the exact
-    split — it is the part users ask about.
-    """
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str | None) -> str | None:
+        """Whitespace-only falls back to the generated name rather than 422ing.
 
-    name: str | None = None  # defaults to "<source> (Copy)", de-duplicated
-    include_children: bool = False  # duplicate the whole sub-project tree
-
-
-class ProjectStats(BaseModel):
-    """Statistics for a project."""
-
-    total_archives: int = 0  # Number of archive records
-    total_items: int = 0  # Sum of quantities (total items printed)
-    completed_prints: int = 0  # Sum of quantities for completed prints
-    failed_prints: int = 0  # Sum of quantities for failed prints
-    queued_prints: int = 0
-    in_progress_prints: int = 0
-    total_print_time_hours: float = 0.0
-    total_filament_grams: float = 0.0
-    # Scrap among the completed prints, already subtracted from
-    # ``completed_prints``. Surfaced so the page can say why the parts
-    # tally is lower than what came off the plates.
-    defective_parts: int = 0
-    progress_percent: float | None = None  # Based on target_count (plates)
-    parts_progress_percent: float | None = None  # Based on target_parts_count
-    # Cost tracking (Phase 6)
-    estimated_cost: float = 0.0  # Based on filament cost
-    total_energy_kwh: float = 0.0
-    total_energy_cost: float = 0.0
-    remaining_prints: int | None = None  # target_count - total_archives
-    remaining_parts: int | None = None  # target_parts_count - completed_prints
-    # BOM stats (Phase 7)
-    bom_total_items: int = 0
-    bom_completed_items: int = 0
-    bom_cost: float = 0.0  # Total cost of BOM items (sum of unit_price * quantity_needed)
-
-
-class ProjectChildPreview(BaseModel):
-    """Minimal project data for child preview."""
-
-    id: int
-    name: str
-    color: str | None
-    status: str
-    progress_percent: float | None = None
-
-
-class ProjectResponse(BaseModel):
-    """Schema for project response."""
-
-    id: int
-    name: str
-    description: str | None
-    color: str | None
-    status: str
-    target_count: int | None
-    target_parts_count: int | None = None
-    notes: str | None = None
-    attachments: list | None = None
-    tags: str | None = None
-    due_date: datetime | None = None
-    priority: str = "normal"
-    budget: float | None = None
-    is_template: bool = False
-    template_source_id: int | None = None
-    parent_id: int | None = None
-    parent_name: str | None = None  # For display
-    children: list[ProjectChildPreview] = []
-    url: str | None = None
-    cover_image_filename: str | None = None
-    created_at: datetime
-    updated_at: datetime
-    stats: ProjectStats | None = None
-    # Everything under this project, its own prints included — present only when
-    # it actually has sub-projects.
-    #
-    # ⚠️ A SECOND figure rather than a widening of ``stats``. Nesting has been
-    # settable over the API all along, so broadening the existing numbers would
-    # silently restate the history of anyone who already used it; and a master
-    # project still has its own prints, which are a different question from what
-    # the tree did.
-    rollup_stats: ProjectStats | None = None
-
-    class Config:
-        from_attributes = True
-
-
-class ArchivePreview(BaseModel):
-    """Minimal archive data for project preview."""
-
-    id: int
-    print_name: str | None
-    thumbnail_path: str | None
-    status: str
-    filament_type: str | None = None
-    filament_color: str | None = None
-
-
-class ProjectListResponse(BaseModel):
-    """Schema for project list item (lighter weight)."""
-
-    id: int
-    name: str
-    description: str | None
-    color: str | None
-    status: str
-    target_count: int | None
-    target_parts_count: int | None = None
-    budget: float | None = None
-    created_at: datetime
-    # Card-level metadata the shared edit dialog seeds itself from. The dialog
-    # is handed whichever project object the caller has — a list item on the
-    # Projects page, a full project on the detail page — so anything it edits
-    # has to be on BOTH payloads or editing from the list silently submits the
-    # dialog's defaults over stored values (upstream #2536).
-    tags: str | None = None
-    due_date: datetime | None = None
-    priority: str = "normal"
-    # Quick stats
-    archive_count: int = 0  # Number of print jobs
-    total_items: int = 0  # Sum of quantities (total items printed, including failed)
-    completed_count: int = 0  # Sum of quantities for completed prints only
-    # Scrap off completed plates. Already subtracted from ``completed_count``,
-    # which is why the card needs it separately: without it the parts figure
-    # silently reads lower than the plates produced, with nothing saying why.
-    defective_count: int = 0  # Sum of defective_count over completed prints
-    failed_count: int = 0  # Sum of quantities for failed prints
-    queue_count: int = 0
-    progress_percent: float | None = None
-    # Preview of archives (up to 5)
-    archives: list[ArchivePreview] = []
-    url: str | None = None
-    cover_image_filename: str | None = None
-    # Nesting, so a list-only caller can group and can offer a parent picker
-    # that already knows which projects would close a loop.
-    parent_id: int | None = None
-    is_template: bool = False
-
-    class Config:
-        from_attributes = True
+        An empty box in the duplicate dialog means "you pick", which is what the
+        old handler said with ``(data.name or "").strip() or _duplicate_name(...)``.
+        Normalising here keeps the route's ``data.name or _duplicate_name(...)``
+        honest — without it, ``"   "`` is truthy and becomes the copy's name.
+        """
+        return (v or "").strip() or None
 
 
 class BatchAddArchives(BaseModel):
-    """Schema for batch adding archives to a project."""
-
     archive_ids: list[int]
+    project_line_id: int | None = None
 
 
 class BatchAddQueueItems(BaseModel):
-    """Schema for batch adding queue items to a project."""
-
     queue_item_ids: list[int]
 
 
-# Phase 7: BOM Schemas - Tracks sourced/purchased parts
-class BOMItemCreate(BaseModel):
-    """Schema for creating a BOM item."""
-
+class PartFiguresOut(BaseModel):
+    part_id: int
     name: str
-    quantity_needed: int = 1
-    unit_price: float | None = None
-    sourcing_url: str | None = None
-    archive_id: int | None = None
-    stl_filename: str | None = None
-    remarks: str | None = None
+    qty_per_unit: int
+    need: int
+    usable: int
+    in_progress: int
+    remaining: int
+    surplus: int
 
 
-class BOMItemUpdate(BaseModel):
-    """Schema for updating a BOM item."""
-
-    name: str | None = None
-    quantity_needed: int | None = None
-    quantity_acquired: int | None = None
-    unit_price: float | None = None
-    sourcing_url: str | None = None
-    archive_id: int | None = None
-    stl_filename: str | None = None
-    remarks: str | None = None
-
-
-class BOMItemResponse(BaseModel):
-    """Schema for BOM item response."""
-
+class ProjectLineResponse(BaseModel):
     id: int
-    project_id: int
-    name: str
-    quantity_needed: int
-    quantity_acquired: int
-    unit_price: float | None
-    sourcing_url: str | None
-    archive_id: int | None
-    archive_name: str | None = None
-    stl_filename: str | None
-    remarks: str | None
+    product_id: int
+    product_name: str
+    quantity: int
+    material: str | None
+    color: str | None
+    note: str | None
     sort_order: int
-    is_complete: bool = False
-    created_at: datetime
-    updated_at: datetime
+    units_printed: int
+    # Kits taken off the product's free stock (pass 8, Decision 4), read back
+    # from the ledger — so this is what was ACTUALLY reserved, not what the
+    # dialog asked for. ``units_printed`` stays prints only; "done" is the two
+    # added, which is what ``progress`` already is.
+    from_stock_units: int = 0
+    # 0.0–1.0, capped server-side (``order_metrics._finish`` /
+    # ``project_figures``). An overprinted line reports its excess through
+    # ``units_printed`` and each part's ``surplus``, never through this.
+    progress: float
+    parts: list[PartFiguresOut] = []
+    # Every archive attributed to this line, in processing order. One archive
+    # may appear under two lines — a plate carrying parts of both products, or a
+    # file both hold — so these lists are not a partition of the order's prints.
+    archive_ids: list[int] = []
+    #: Archives in ``printing`` attributed to this line, and pending queue rows
+    #: (both tiers) stamped with this line's id.
+    prints_in_progress: int = 0
+    prints_queued: int = 0
 
-    class Config:
-        from_attributes = True
 
-
-# Phase 9: Timeline Schemas
-class TimelineEvent(BaseModel):
-    """Schema for a timeline event."""
-
-    event_type: str  # archive_added, queue_started, queue_completed, status_changed, note_updated
-    timestamp: datetime
-    title: str
-    description: str | None = None
-    metadata: dict | None = None  # Additional event-specific data
-
-
-# Phase 10: Import/Export Schemas
-class BOMItemExport(BaseModel):
-    """Schema for exporting a BOM item."""
-
+class ProcurementOut(BaseModel):
+    part_id: int
     name: str
-    quantity_needed: int
-    quantity_acquired: int
-    unit_price: float | None
-    sourcing_url: str | None
-    stl_filename: str | None
-    remarks: str | None
+    need: int
+    acquired: int
+    remaining: int
 
 
-class LinkedFolderExport(BaseModel):
-    """Schema for exporting a linked library folder."""
+class ProjectFiguresOut(BaseModel):
+    ordered: int
+    printed: int
+    complete: int
+    remaining: int
+    total_time_seconds: int
+    total_filament_grams: float
+    total_filament_cost: float
+    total_energy_cost: float
+    total_cost: float
+    defective: int
+    margin: float | None
+    # 0.0–1.0, capped server-side (see ``ProjectLineResponse.progress``).
+    # An overprinted order reports its excess through ``printed`` against
+    # ``ordered``, which stay uncapped.
+    progress: float
+    other_prints_count: int
+    all_printed: bool
+    # Σ over the lines. ``printed`` and ``ordered`` stay literal — the farm
+    # printed this many, the customer ordered that many — and this is the third
+    # number the order card shows beside them when it is not zero.
+    from_stock_units: int = 0
+    # What «Списати надлишок» would still move, in parts (Ruling 30). The button
+    # is enabled on exactly this: it used to gate on the surplus, which banking
+    # never lowers, so it stayed lit for ever and answered "nothing to bank".
+    bankable_surplus: int = 0
+    # Archives in ``printing`` under this order, and pending rows of both queue
+    # tiers under it — rows on a line AND rows filed under the order alone.
+    prints_in_progress: int = 0
+    prints_queued: int = 0
 
+
+class ProjectResponse(BaseModel):
+    id: int
     name: str
-
-
-class ProjectExport(BaseModel):
-    """Schema for exporting a project."""
-
-    name: str
+    customer_id: int | None
+    customer_name: str | None
     description: str | None
     color: str | None
     status: str
-    target_count: int | None
-    target_parts_count: int | None
     notes: str | None
+    attachments: list | None
     tags: str | None
     due_date: datetime | None
     priority: str
-    budget: float | None
-    bom_items: list[BOMItemExport] = []
-    linked_folders: list[LinkedFolderExport] = []
+    price: float | None
+    url: str | None
+    cover_image_filename: str | None
+    created_at: datetime
+    updated_at: datetime
+    lines: list[ProjectLineResponse]
+    procurement: list[ProcurementOut]
+    figures: ProjectFiguresOut
+    # Prints filed under this order that no line could take (spec §Line
+    # resolution step 3), oldest first — the ids behind ``other_prints_count``.
+    other_archive_ids: list[int] = []
 
 
-class PrintPlanItemResponse(BaseModel):
-    """One file in a project's print plan, with computed per-row totals."""
-
+class ProjectListResponse(BaseModel):
     id: int
-    library_file_id: int
-    copies: int
-    order_index: int
-
-    # Joined library file fields for display (read-only)
-    filename: str
-    print_name: str | None = None
-    file_type: str
-    thumbnail_path: str | None = None
-    swap_compatible: bool = False
-
-    # Per-unit metadata (nullable — unsliced 3MFs have no timings)
-    filament_grams: float | None = None
-    print_time_seconds: int | None = None
-    object_count: int | None = None
-    cost_per_copy: float | None = None
-
-    # Computed totals = per-unit × copies (null when per-unit is null)
-    total_filament_grams: float | None = None
-    total_print_time_seconds: int | None = None
-    total_objects: int | None = None
-    total_cost: float | None = None
-
-    # Per-project print progress (read-only): count of completed
-    # ``print_archives`` rows with this ``(project_id, library_file_id)``
-    # pair, plus the derived ``copies - printed_count`` remainder
-    # (clamped at 0 so an operator-reduced ``copies`` value doesn't
-    # surface as a negative).
-    printed_count: int = 0
-    remaining_count: int = 0
-
-    class Config:
-        from_attributes = True
-
-
-class PrintPlanResponse(BaseModel):
-    """Full plan: ordered items plus grand totals across all rows."""
-
-    items: list[PrintPlanItemResponse]
-    totals_filament_grams: float = 0.0
-    totals_print_time_seconds: int = 0
-    totals_objects: int = 0
-    totals_cost: float = 0.0
-    # Currency-per-kg used when computing cost, echoed back so the UI can
-    # label the total without a second round-trip to /settings.
-    default_filament_cost_per_kg: float = 0.0
-
-
-class PrintPlanItemUpdate(BaseModel):
-    """Patch a single plan row — only ``copies`` is user-editable here."""
-
-    copies: int
-
-
-class PrintPlanReorderRequest(BaseModel):
-    """Bulk-reorder: list of library_file_ids in the desired display order."""
-
-    library_file_ids: list[int]
-
-
-class ProjectImport(BaseModel):
-    """Schema for importing a project."""
-
     name: str
+    customer_id: int | None
+    customer_name: str | None
+    color: str | None
+    status: str
+    due_date: datetime | None
+    priority: str
+    price: float | None
+    tags: str | None
+    cover_image_filename: str | None
+    created_at: datetime
+    lines_count: int
+    ordered: int
+    printed: int
+    # Kits this order took off its products' free stock, capped per line and
+    # summed — the same number the order page's figures carry, so a card and
+    # the page it opens cannot disagree about what is already done. Beside
+    # ``printed``, never inside it: one is prints, the other is the shelf.
+    from_stock_units: int = 0
+    # Off the same batch as ``ordered``/``printed`` — archives in ``printing``
+    # under this order, and pending queue rows of both tiers under it.
+    prints_in_progress: int = 0
+    prints_queued: int = 0
+    # 0.0–1.0, capped server-side (see ``ProjectLineResponse.progress``).
+    # An overprinted order reports its excess through ``printed`` against
+    # ``ordered``, which stay uncapped.
+    progress: float
+    line_products: list["LineProductOut"] = []
+
+
+class TimelineEvent(BaseModel):
+    event_type: str
+    timestamp: datetime
+    title: str
     description: str | None = None
-    color: str | None = None
-    status: str = "active"
-    target_count: int | None = None
-    target_parts_count: int | None = None
-    notes: str | None = None
-    tags: str | None = None
-    due_date: datetime | None = None
-    priority: str = "normal"
-    budget: float | None = None
-    bom_items: list[BOMItemExport] = []
-    linked_folders: list[LinkedFolderExport] = []
+    metadata: dict | None = None
+
+
+# ---------- the print plan (spec pass 3) ----------
+#
+# One contiguous block: everything the plan endpoints put on the wire. The
+# engine's dataclasses (``services/plan_engine.py``) speak in bare part ids
+# because they are pure; the wire needs names, so every ``part_id → count`` map
+# becomes a list of ``PlanPartCount`` sorted by part id and the route resolves
+# the names.
+
+
+class PlanPartCount(BaseModel):
+    part_id: int
+    name: str
+    count: int
+
+
+class PlanAlternativeOut(BaseModel):
+    """Another plate of the row's line that makes exactly the same counted parts.
+
+    The same part is routinely sliced once per printer model — two files, one
+    yield — and the engine's greedy picks one of them, which made the other
+    invisible in the plan block. This is that other file: the block offers it as
+    a file switch on the row, preselects it when the operator sends the row to a
+    printer of its model, and can split the row's count across it, because the
+    auto-queue routes an item by ``target_model`` and a file only ever reaches
+    the printers it was sliced for.
+
+    The figures are PER PRINT, like the row's. The COUNT is not repeated here on
+    purpose: the counted yield is identical by construction, so the row's count
+    is the count whichever file is chosen.
+    """
+
+    plate_id: int  # ProductPlate.id
+    library_file_id: int
+    plate_index: int  # 0 = the whole file
+    filename: str
+    # The short model name the auto-queue routes on, or null when the file names
+    # none — which is "we do not know", never "any printer".
+    printer_model: str | None = None
+    print_time_seconds: int | None = None
+    filament_used_grams: float | None = None
+    cost: float | None = None
+    time_unknown: bool = False
+
+
+class PlanRowOut(BaseModel):
+    """One plate, printed ``count`` times.
+
+    ``print_time_seconds`` / ``filament_used_grams`` / ``cost`` are PER PRINT —
+    the count is the multiplier, so the block can re-do its own arithmetic while
+    the operator edits the count. ``time_unknown`` says the plate is sliced but
+    carries no estimate, i.e. it was ranked on its useful count alone.
+    """
+
+    plate_id: int  # ProductPlate.id — NOT the slicer's plate index
+    library_file_id: int
+    plate_index: int  # 0 = the whole file
+    filename: str
+    count: int
+    useful: list[PlanPartCount]
+    print_time_seconds: int | None = None
+    filament_used_grams: float | None = None
+    cost: float | None = None
+    time_unknown: bool = False
+    printer_model: str | None = None
+    # The line's other candidate plates with the identical counted yield, this
+    # one excluded — see ``PlanAlternativeOut``. Empty is the ordinary case.
+    alternatives: list[PlanAlternativeOut] = []
+
+
+class LinePlanOut(BaseModel):
+    line_id: int
+    product_id: int
+    product_name: str
+    material: str | None = None
+    outstanding_before: list[PlanPartCount] = []
+    rows: list[PlanRowOut] = []
+    surplus_after: list[PlanPartCount] = []
+    # Parts still outstanding that no candidate plate yields at all: the count
+    # is what is missing, and there is nothing to print for it yet.
+    unsatisfiable: list[PlanPartCount] = []
+    candidates: list[int] = []  # ProductPlate ids eligible for this line
+    not_sliced: list[int] = []  # ProductPlate ids skipped because not sliced
+    # This line's pending, unassigned auto-queue rows — the same "still waiting"
+    # rule ``plan_engine.queued_yield_by_line`` applies to that table. The order
+    # page shows its Rebalance button off it (spec 2026-09-10).
+    pending_auto_prints: int = 0
+
+
+class PlanTotalsOut(BaseModel):
+    prints: int
+    print_time_seconds: int | None = None  # null as soon as ONE row has no estimate
+    filament_used_grams: float
+    # null when the farm has no filament rate OR when no counted row could be
+    # costed (a rate exists, but nothing planned carries a weight to price).
+    # 0.00 would read as "this plan is free" — see ``plan_engine._totals``.
+    cost: float | None = None
+
+
+class OrderPlanResponse(BaseModel):
+    lines: list[LinePlanOut] = []
+    totals: PlanTotalsOut
+    # The engine's iteration guard stopped the covering of at least one line, so
+    # the rows are a PREFIX of the plan: printing all of them still leaves work.
+    # It defaults to false because a client that has never heard of the flag
+    # must read "not truncated", and because that is what every finished plan
+    # says — see ``plan_engine.cover``.
+    truncated: bool = False
+
+
+class PlanEnqueueItem(BaseModel):
+    plate_id: int  # ProductPlate.id
+    count: int = Field(ge=1, le=999)
+    line_id: int
+
+
+class PlanEnqueueTarget(BaseModel):
+    """``auto`` = the auto-queue distributor picks the printer; ``printer`` =
+    this printer's own queue. Naming a printer is a ROUTING choice, never a
+    dispatch one — nothing here or downstream asks whether it is ready."""
+
+    kind: Literal["auto", "printer"]
+    printer_id: int | None = None
+
+    @model_validator(mode="after")
+    def _printer_id_belongs_to_the_kind(self) -> "PlanEnqueueTarget":
+        """The two kinds are two SHAPES, so the shape refuses a wrong one.
+
+        A hand-written check in the handler answered 400 for the same fact the
+        schema already knew, and only for the missing half — an ``auto`` target
+        carrying a printer id was accepted and the id silently dropped, which
+        reads to the caller as "filed under that printer" and is the opposite of
+        what happens. Both halves are a 422 naming ``target``.
+        """
+        if self.kind == "printer" and self.printer_id is None:
+            raise ValueError("A printer target needs printer_id")
+        if self.kind == "auto" and self.printer_id is not None:
+            raise ValueError("An auto target takes no printer_id — the distributor picks the printer")
+        return self
+
+
+class PlanEnqueueRequest(BaseModel):
+    items: list[PlanEnqueueItem] = Field(min_length=1)
+    target: PlanEnqueueTarget
+
+
+class PlanEnqueueCreated(BaseModel):
+    line_id: int
+    plate_id: int
+    queue_item_ids: list[int]
+
+
+class PlanEnqueueResponse(BaseModel):
+    created: list[PlanEnqueueCreated] = []
+
+
+class RebalanceSkipped(BaseModel):
+    item_id: int
+    reason: str  # one of services.queue_rebalance.SKIP_REASONS
+
+
+class RebalanceOut(BaseModel):
+    """What a rebalance run did (spec 2026-09-10 §3.3).
+
+    ``cancelled`` is always 0 today — a conversion replaces a row, it never
+    deletes one — and exists so a later variant that consolidates prints has a
+    place to report. ``skipped`` names every item the run looked at and left,
+    with a code the frontend translates.
+    """
+
+    converted: int = 0
+    created: int = 0
+    cancelled: int = 0
+    moved_parts: int = 0
+    skipped: list[RebalanceSkipped] = []
+
+
+class StockMovedOut(BaseModel):
+    """One part's change of free stock, as the operator is told about it.
+
+    The «5 кришок, 5 колб → у залишок» line of Decision 2, and the same shape
+    the archive's "count this print into stock" answers with — one movement is
+    one movement whichever button wrote it. ``delta`` is signed for the same
+    reason the ledger's is: a reversal is a movement too.
+    """
+
+    part_id: int
+    name: str
+    delta: int
+
+
+class OrderPrintDefectsIn(BaseModel):
+    """What came out bad on one of the order's prints: per part when the print
+    has part rows, else one flat count. Absolute values, clamped server-side."""
+
+    parts: list[ArchivePartDefective] | None = None
+    defective_count: int | None = Field(default=None, ge=0)
+
+
+class OrderPrintDefectsOut(BaseModel):
+    """⚠️ No ``ledger_refused_parts`` here, deliberately. A print this route can
+    reach is FILED under an order, and ``part_stock.adjust_unfiled_print``
+    returns an empty result on exactly that condition — so the field was
+    structurally always 0 and the toast behind it was dead code. The refusal is
+    reported where it can happen: the two plate answers and Telegram's prompt."""
+
+    archive_id: int
+    quantity: int
+    defective_count: int
+    parts: list[ArchivePartRow] = []
+
+
+class BankSurplusResponse(BaseModel):
+    """What «Списати надлишок у залишок» did (Decision 2).
+
+    ``moved`` is aggregated per PART, not per line: two lines of the same
+    product bank onto the same shelf, and the operator is told what landed
+    there, not the bookkeeping that got it there (the ``project_line_id`` on
+    each movement keeps that). ``nothing_to_bank`` is not "``moved`` is empty"
+    restated — it is the answer to a second press, which is a success and not
+    an error: the surplus was already banked.
+    """
+
+    moved: list[StockMovedOut] = []
+    nothing_to_bank: bool = False
+
+
+class LineProductOut(BaseModel):
+    """What the order card's cover strip needs about one line's product.
+
+    A filename would be the wrong thing to send: the effective cover may be the
+    first picture ATTACHMENT rather than the ``cover_image_filename`` column, and
+    the strip fetches ``GET /products/{id}/cover-image`` either way. So the flag,
+    not the name — this replaced ``product_cover_filenames`` in pass 4.
+    """
+
+    product_id: int
+    has_cover: bool
+
+
+# ``ProjectListResponse`` above annotates ``line_products`` with a forward
+# reference so the class can live here, at the end, where the parallel passes'
+# edits to this file cannot collide with it.
+ProjectListResponse.model_rebuild()

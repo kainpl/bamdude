@@ -22,6 +22,7 @@ import { Button } from '../Button';
 import { LoadingBlock } from '../LoadingBlock';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { Select } from '../Select';
 
 const PAGE_SIZES: LabelPageSize[] = ['A4', 'A5', 'letter'];
 
@@ -240,16 +241,17 @@ export function LabelSheetEditor() {
 
             <label className="block text-xs text-bambu-gray">
               {t('labelSheets.pageSize')}
-              <select
+              <Select
+                size="sm"
+                className="mt-1 w-full"
                 value={draft.page_size}
                 disabled={readOnly}
                 onChange={(e) => setDraft({ ...draft, page_size: e.target.value as LabelPageSize })}
-                className="mt-1 w-full px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
               >
                 {PAGE_SIZES.map((size) => (
                   <option key={size} value={size}>{t(`labelSheets.page.${size}`)}</option>
                 ))}
-              </select>
+              </Select>
             </label>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -279,15 +281,15 @@ export function LabelSheetEditor() {
               <Button size="sm" disabled={readOnly || save.isPending} onClick={() => save.mutate()}>
                 {t('common.save')}
               </Button>
-              <select
+              <Select
+                size="sm"
                 value={designId ?? ''}
                 onChange={(e) => setDesignId(Number(e.target.value))}
-                className="px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
               >
                 {(designs ?? []).map((row) => (
                   <option key={row.id} value={row.id}>{row.name}</option>
                 ))}
-              </select>
+              </Select>
               <Button
                 size="sm"
                 variant="secondary"

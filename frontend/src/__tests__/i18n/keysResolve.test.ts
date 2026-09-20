@@ -102,7 +102,6 @@ const KNOWN_MISSING = new Set([
   'inventory.kProfileSaveFailed',
   'inventory.restoreFailed',
   'inventory.restoreSpoolNotFound',
-  'inventory.saveFailed',
   'inventory.spoolWeightManagedBySpoolman',
   'inventory.spoolmanCatalogLoadFailed',
   'inventory.spoolmanSpools',

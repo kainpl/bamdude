@@ -8,7 +8,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from backend.app.i18n import escape_md, get_language, t
-from backend.app.services.telegram_handlers.common import NS, has_perm
+from backend.app.services.telegram_handlers.common import NS, deny_out_of_scope, has_perm
 
 if TYPE_CHECKING:
     from backend.app.models.telegram_chat import TelegramChat
@@ -35,6 +35,8 @@ async def cb_maintenance_list(
 
     if printer_id is None:
         printer_id = int(callback.data.split(":")[2])
+        if await deny_out_of_scope(callback, tg_chat, printer_id):
+            return
     await callback.answer()
 
     from backend.app.api.routes.maintenance import _get_printer_maintenance_internal, ensure_default_types
@@ -135,6 +137,8 @@ async def cb_maintenance_done(callback: CallbackQuery, tg_chat: TelegramChat | N
     parts = callback.data.split(":")
     item_id = int(parts[2])
     printer_id = int(parts[3])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     # A trailing ":n" means the press came from a maintenance-due
     # notification (not the in-bot list) — see notification_service.
     from_notification = len(parts) > 4 and parts[4] == "n"

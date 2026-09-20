@@ -40,7 +40,7 @@ async def alice(db_session) -> User:
 class TestScopeRegistry:
     def test_allowed_scopes_is_an_exact_set(self):
         """A new scope must be added deliberately, never by accident."""
-        assert set(ALLOWED_SCOPES) == {"camera_stream", "camwall", "overlay"}
+        assert set(ALLOWED_SCOPES) == {"camera_stream", "camwall", "overlay", "monitor"}
 
     def test_stream_scopes_is_an_explicit_allowlist(self):
         """The stream gate names its scopes — it is never "any scope"."""

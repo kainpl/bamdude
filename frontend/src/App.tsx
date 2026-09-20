@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { LoadingBlock } from './components/LoadingBlock';
 import { api } from './api/client';
@@ -13,8 +13,13 @@ import { StatsPage } from './pages/StatsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { ProfilesPage } from './pages/ProfilesPage';
 import { MaintenancePage } from './pages/MaintenancePage';
-import { ProjectsPage } from './pages/ProjectsPage';
-import { ProjectDetailPage } from './pages/ProjectDetailPage';
+import { OrdersPage } from './pages/orders/OrdersPage';
+import { ProductsPage } from './pages/products/ProductsPage';
+import { ProductPage } from './pages/products/ProductPage';
+import { CustomersPage } from './pages/customers/CustomersPage';
+import { CustomerPage } from './pages/customers/CustomerPage';
+import { StockPage } from './pages/stock/StockPage';
+import { OrderPage } from './pages/orders/OrderPage';
 import { FileManagerPage } from './pages/FileManagerPage';
 import { LibraryTrashPage } from './pages/LibraryTrashPage';
 import { ArchiveTrashPage } from './pages/ArchiveTrashPage';
@@ -28,7 +33,7 @@ import InventoryPage from './pages/InventoryPage';
 import { SystemInfoPage } from './pages/SystemInfoPage';
 import { LoginPage } from './pages/LoginPage';
 import { SetupPage } from './pages/SetupPage';
-import { NotificationsPage } from './pages/NotificationsPage';
+import { NotificationCenterPage } from './pages/NotificationCenterPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { usePrintProgressTitle } from './hooks/usePrintProgressTitle';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
@@ -39,14 +44,10 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ColorCatalogProvider } from './contexts/ColorCatalogContext';
 import { ConnectionProvider } from './contexts/ConnectionContext';
 import { useConnectionToast } from './hooks/useConnectionToast';
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 1000 * 60,
-      retry: 1,
-    },
-  },
-});
+import { createAppQueryClient } from './utils/appQueryClient';
+// Built in `utils/appQueryClient` so a test can build the same client — the
+// cache carries the "could not refresh" toast, which is behaviour, not config.
+const queryClient = createAppQueryClient();
 
 function WebSocketProvider({ children }: { children: React.ReactNode }) {
   useWebSocket();
@@ -193,8 +194,8 @@ class ErrorBoundary extends React.Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-8">
-          <div className="max-w-lg w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl p-6 text-center">
+        <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-4">
+          <div className="max-w-lg w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl p-4 text-center">
             <h1 className="text-xl font-bold text-white mb-2">Something went wrong</h1>
             <p className="text-bambu-gray text-sm mb-4">{this.state.error?.message}</p>
             <details className="text-left mb-4">
@@ -241,6 +242,10 @@ function App() {
 
                 {/* Camera page - standalone, no layout, no WebSocket (doesn't need real-time updates) */}
                 <Route path="/camera/:printerId" element={<CameraPage />} />
+                {/* The same page for a camera that belongs to no printer.
+                    Declared BEFORE nothing in particular — "standalone" is not a
+                    number, so it cannot collide with the route above. */}
+                <Route path="/camera/standalone/:cameraId" element={<CameraPage />} />
 
                 {/* Stream overlay page - standalone for OBS/streaming embeds, no auth required */}
                 <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
@@ -259,8 +264,13 @@ function App() {
                   <Route path="stats" element={<StatsPage />} />
                   <Route path="profiles" element={<ProfilesPage />} />
                   <Route path="maintenance" element={<MaintenancePage />} />
-                  <Route path="projects" element={<ProjectsPage />} />
-                  <Route path="projects/:id" element={<ProjectDetailPage />} />
+                  <Route path="projects" element={<OrdersPage />} />
+                  <Route path="projects/:id" element={<OrderPage />} />
+                  <Route path="products" element={<ProductsPage />} />
+                  <Route path="products/:id" element={<ProductPage />} />
+                  <Route path="customers" element={<CustomersPage />} />
+                  <Route path="customers/:id" element={<CustomerPage />} />
+                  <Route path="stock" element={<StockPage />} />
                   <Route path="inventory" element={<InventoryPage />} />
                   <Route path="files" element={<FileManagerPage />} />
                   <Route path="files/trash" element={<LibraryTrashPage />} />
@@ -271,7 +281,7 @@ function App() {
                   <Route path="users" element={<Navigate to="/settings?tab=users" replace />} />
                   <Route path="groups" element={<Navigate to="/settings?tab=users" replace />} />
                   <Route path="system" element={<SystemInfoPage />} />
-                  <Route path="notifications" element={<NotificationsPage />} />
+                  <Route path="notifications" element={<PermissionRoute permission="notifications:inbox"><NotificationCenterPage /></PermissionRoute>} />
                   <Route path="external/:id" element={<ExternalLinkPage />} />
                 </Route>
               </Routes>

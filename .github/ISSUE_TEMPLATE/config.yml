@@ -1,1 +1,26 @@
+# Template chooser — what a reporter sees under "New issue".
+#
+# The forms in this folder come in pairs: NN-<slug>.yml (English) followed by
+# its Ukrainian copy, <slug>.uk.yml with the next prefix. GitHub has no
+# localisation of its own for issue forms, so the reporter picks a language
+# here; both copies apply the same labels and title prefix, and
+# backend/tests/unit/test_issue_form_parity.py keeps their shape identical.
+# The chooser lists files alphanumerically, hence the numeric prefixes.
+#
+# Blank issues stay on: the maintainer's own quick notes go through them, and
+# the in-app Bug button creates issues through the API, which never sees this
+# chooser anyway.
 blank_issues_enabled: true
+contact_links:
+  - name: Question or idea · Питання чи ідея
+    url: https://github.com/kainpl/bamdude/discussions
+    about: Ask how something works, or talk a feature through before it becomes an issue. · Запитати, як щось працює, або обговорити ідею до того, як вона стане issue.
+  - name: Security vulnerability · Вразливість
+    url: https://github.com/kainpl/bamdude/security/advisories/new
+    about: Report privately, never through a public issue — see SECURITY.md. · Повідомити приватно, ніколи через публічний issue — див. SECURITY.md.
+  - name: Documentation · Документація
+    url: https://docs.bamdude.top/
+    about: Installation, first printer, features, troubleshooting — English and Ukrainian. · Встановлення, перший принтер, функції, усунення несправностей — англійською та українською.
+  - name: Telegram · BamDude Friends
+    url: https://t.me/+3KQl2uNtOwo3NTgy
+    about: The community chat — quick questions, farm talk, release news. · Спільнота — швидкі питання, фермерські розмови, новини релізів.

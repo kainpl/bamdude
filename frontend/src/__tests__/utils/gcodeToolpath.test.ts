@@ -2,8 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 
 import { parseGcodeToolpath, layersByFilament, filterLayersByType, ToolpathType } from '../../lib/gcodeToolpath';
-// @ts-expect-error -- vendored build output; typed by its sibling .d.ts, which
-// vitest's resolver does not pick up for a bare .js import.
+// Vendored build output, typed by its sibling .d.ts.
 import { buildSegmentData, makeToolpath, TYPE_COLOR } from '../../lib/vendor/toolpathRenderer.js';
 
 /**

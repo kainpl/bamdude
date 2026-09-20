@@ -57,6 +57,46 @@ class TestLibraryFoldersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_create_folder_archive_id_is_a_dead_field(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """The folder-to-archive link was cut from the API (archives are print
+        history, not a filing destination — folder-to-project is the surviving
+        link). A payload that still sends ``archive_id`` is neither rejected nor
+        honoured: pydantic's default ``extra="ignore"`` drops it silently, and
+        the create proceeds as a plain, unlinked folder."""
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+
+        data = {"name": "Still Unlinked", "archive_id": archive.id}
+        response = await async_client.post("/api/v1/library/folders", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["name"] == "Still Unlinked"
+        assert "archive_id" not in result
+        assert "archive_name" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_folder_archive_id_is_a_dead_field(
+        self, async_client: AsyncClient, folder_factory, archive_factory, printer_factory, db_session
+    ):
+        """Same dead field on the update path — re-pointing a folder at an
+        archive via the payload no longer links anything."""
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+        folder = await folder_factory(name="Old Name")
+
+        data = {"name": "New Name", "archive_id": archive.id}
+        response = await async_client.put(f"/api/v1/library/folders/{folder.id}", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["name"] == "New Name"
+        assert "archive_id" not in result
+        assert "archive_name" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_create_nested_folder(self, async_client: AsyncClient, folder_factory, db_session):
         """Verify nested folder can be created."""
         parent = await folder_factory(name="Parent")
@@ -393,6 +433,484 @@ class TestLibraryFilesAPI:
         assert response.status_code == 200
         ids = {f["id"] for f in response.json()}
         assert ids == {ext_a.id, ext_b.id}
+
+    # =================================================================
+    # Server-driven list (task 1, 2026-08-29): paging, filters, sort in SQL.
+    # ``include_root=false`` is used throughout below (existing convention,
+    # see test_list_files_internal_only) so a bare filter narrows across
+    # EVERY file regardless of folder placement, not just root-level ones.
+    # =================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_q_filters_by_filename(self, async_client: AsyncClient, file_factory, db_session):
+        """`q` matches a substring of the on-disk filename."""
+        match = await file_factory(filename="octopus_vase.3mf")
+        await file_factory(filename="other_thing.3mf")
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&q=octopus")
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {match.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_q_filters_by_print_name(self, async_client: AsyncClient, file_factory, db_session):
+        """`q` ALSO matches the parsed print_name inside ``file_metadata`` —
+        the same two fields the client's search bar checks (FileManagerPage.tsx)."""
+        match = await file_factory(filename="raw123.3mf", file_metadata={"print_name": "Dragon Egg"})
+        await file_factory(filename="raw456.3mf", file_metadata={"print_name": "Other Thing"})
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&q=dragon")
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {match.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_file_type_filter(self, async_client: AsyncClient, file_factory, db_session):
+        """`file_type` narrows to an exact match on `LibraryFile.file_type`."""
+        stl = await file_factory(filename="part.stl", file_type="stl")
+        await file_factory(filename="part.3mf", file_type="3mf")
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&file_type=stl")
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {stl.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_unprinted_only_filter(self, async_client: AsyncClient, file_factory, db_session):
+        """`unprinted_only` keeps files with zero successful completions —
+        `print_count == 0` — matching the client's `!f.print_count` predicate."""
+        unprinted = await file_factory(filename="fresh.3mf", print_count=0)
+        await file_factory(filename="used.3mf", print_count=3)
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&unprinted_only=true")
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {unprinted.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_unprinted_only_agrees_with_print_count_field(
+        self, async_client: AsyncClient, file_factory, db_session
+    ):
+        """The filter's semantics must agree EXACTLY with the print_count value
+        the same endpoint reports on each row — otherwise the file-manager
+        badge and this filter would disagree about what "unprinted" means."""
+        zero = await file_factory(filename="a.3mf", print_count=0)
+        printed = await file_factory(filename="b.3mf", print_count=2)
+
+        unfiltered = await async_client.get("/api/v1/library/files?include_root=false")
+        rows_by_id = {row["id"]: row for row in unfiltered.json()}
+        expected_unprinted_ids = {fid for fid, row in rows_by_id.items() if not row["print_count"]}
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&unprinted_only=true")
+        filtered_ids = {f["id"] for f in response.json()}
+
+        assert filtered_ids == expected_unprinted_ids
+        assert zero.id in filtered_ids
+        assert printed.id not in filtered_ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_username_filter(self, async_client: AsyncClient, file_factory, db_session):
+        """`username` matches a substring of the uploader's username — via
+        `LibraryFile.created_by_id`, the column `created_by_username` is
+        actually sourced from."""
+        from backend.app.models.user import User
+
+        alice = User(username="alice_smith")
+        bob = User(username="bob_jones")
+        db_session.add_all([alice, bob])
+        await db_session.commit()
+        await db_session.refresh(alice)
+        await db_session.refresh(bob)
+
+        alice_file = await file_factory(filename="a.3mf", created_by_id=alice.id)
+        await file_factory(filename="b.3mf", created_by_id=bob.id)
+        await file_factory(filename="ownerless.3mf")  # created_by_id NULL — never matches
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&username=alice")
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {alice_file.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_combined_filters_use_and_semantics(
+        self, async_client: AsyncClient, file_factory, db_session
+    ):
+        """Filters combine with AND — a file must satisfy every one of them,
+        not merely one."""
+        from backend.app.models.user import User
+
+        alice = User(username="alice_combo")
+        db_session.add(alice)
+        await db_session.commit()
+        await db_session.refresh(alice)
+
+        match = await file_factory(filename="combo_match.stl", file_type="stl", print_count=0, created_by_id=alice.id)
+        await file_factory(  # wrong file_type
+            filename="combo_wrong_type.3mf", file_type="3mf", print_count=0, created_by_id=alice.id
+        )
+        await file_factory(  # already printed
+            filename="combo_printed.stl", file_type="stl", print_count=1, created_by_id=alice.id
+        )
+        await file_factory(filename="combo_other_user.stl", file_type="stl", print_count=0)  # wrong uploader
+
+        response = await async_client.get(
+            "/api/v1/library/files?include_root=false&file_type=stl&unprinted_only=true&username=alice_combo"
+        )
+        assert response.status_code == 200
+        ids = {f["id"] for f in response.json()}
+        assert ids == {match.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_sort_by_name_uses_print_name_when_present(
+        self, async_client: AsyncClient, file_factory, db_session
+    ):
+        """`name` orders by COALESCE(print_name, filename) — client parity:
+        `a.print_name || a.filename` (FileManagerPage.tsx)."""
+        # Filename alone would sort this LAST ("zzz…"), but its print_name
+        # sorts FIRST ("aaa…") — proving the column actually used is the
+        # coalesced one, not the bare filename.
+        with_print_name = await file_factory(filename="zzz_raw.3mf", file_metadata={"print_name": "aaa_object"})
+        plain = await file_factory(filename="mmm_plain.3mf")
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&sort_by=name_asc&page=1")
+        assert response.status_code == 200
+        body = response.json()
+        assert [f["id"] for f in body["items"]] == [with_print_name.id, plain.id]
+
+        response_desc = await async_client.get("/api/v1/library/files?include_root=false&sort_by=name_desc&page=1")
+        body_desc = response_desc.json()
+        assert [f["id"] for f in body_desc["items"]] == [plain.id, with_print_name.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_sort_by_size(self, async_client: AsyncClient, file_factory, db_session):
+        small = await file_factory(filename="s.3mf", file_size=100)
+        big = await file_factory(filename="b.3mf", file_size=999999)
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&sort_by=size_asc&page=1")
+        assert response.status_code == 200
+        assert [f["id"] for f in response.json()["items"]] == [small.id, big.id]
+
+        response_desc = await async_client.get("/api/v1/library/files?include_root=false&sort_by=size_desc&page=1")
+        assert [f["id"] for f in response_desc.json()["items"]] == [big.id, small.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_sort_by_type(self, async_client: AsyncClient, file_factory, db_session):
+        three_mf = await file_factory(filename="a.3mf", file_type="3mf")
+        gcode = await file_factory(filename="g.gcode", file_type="gcode")
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&sort_by=type_asc&page=1")
+        assert response.status_code == 200
+        assert [f["id"] for f in response.json()["items"]] == [three_mf.id, gcode.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_sort_by_date_uses_activity_not_created_at(
+        self, async_client: AsyncClient, file_factory, db_session
+    ):
+        """`date` orders by `COALESCE(fs_modified_at, updated_at)` (#2680,
+        `_FILE_ACTIVITY`) — NEVER bare `created_at`. Seeded so the two
+        disagree: the file created FIRST has the MOST RECENT activity."""
+        from datetime import datetime, timedelta
+
+        now = datetime.utcnow()
+        created_first_touched_last = await file_factory(
+            filename="recent_activity.3mf",
+            created_at=now - timedelta(days=5),
+            fs_modified_at=now,
+        )
+        created_last_touched_first = await file_factory(
+            filename="old_activity.3mf",
+            created_at=now,
+            fs_modified_at=now - timedelta(days=5),
+        )
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&sort_by=date_asc&page=1")
+        assert response.status_code == 200
+        # Ascending by activity: the row touched 5 days ago sorts first, even
+        # though it was CREATED after the other one.
+        assert [f["id"] for f in response.json()["items"]] == [
+            created_last_touched_first.id,
+            created_first_touched_last.id,
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_pagination_tiebreak_no_repeats_no_skips(
+        self, async_client: AsyncClient, file_factory, db_session
+    ):
+        """A low-cardinality sort (every file shares one file_type) still must
+        not repeat or skip a row across pages — the `LibraryFile.id.desc()`
+        tiebreak (same rule as `ArchiveService.list_archives`: "this list PAGES")."""
+        files = [await file_factory(filename=f"tie_{i}.3mf", file_type="3mf") for i in range(5)]
+
+        seen: list[int] = []
+        for page in (1, 2, 3):
+            response = await async_client.get(
+                f"/api/v1/library/files?include_root=false&file_type=3mf&sort_by=type_asc&page={page}&per_page=2"
+            )
+            assert response.status_code == 200
+            seen.extend(f["id"] for f in response.json()["items"])
+
+        assert len(seen) == len(set(seen)) == 5
+        assert set(seen) == {f.id for f in files}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_meta_total_is_filtered_count(self, async_client: AsyncClient, file_factory, db_session):
+        """`meta.total` reflects the FILTERED result set, not the whole table."""
+        for i in range(3):
+            await file_factory(filename=f"stl_{i}.stl", file_type="stl")
+        for i in range(4):
+            await file_factory(filename=f"mf_{i}.3mf", file_type="3mf")
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&file_type=stl&page=1&per_page=2")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["meta"]["total"] == 3
+        assert len(body["items"]) == 2
+        assert body["meta"]["current_page"] == 1
+        assert body["meta"]["per_page"] == 2
+        assert body["meta"]["last_page"] == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_all_true_skips_pagination(self, async_client: AsyncClient, file_factory, db_session):
+        """`page` present + `all=true` wins — every matching row comes back in
+        one page, same escape hatch as `ArchiveService.list_archives`."""
+        files = [await file_factory(filename=f"all_{i}.3mf") for i in range(5)]
+
+        response = await async_client.get("/api/v1/library/files?include_root=false&page=1&per_page=2&all=true")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["items"]) == 5
+        assert {f["id"] for f in body["items"]} == {f.id for f in files}
+        assert body["meta"]["total"] == 5
+        assert body["meta"]["current_page"] == 1
+        assert body["meta"]["last_page"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_legacy_shape_unchanged(
+        self, async_client: AsyncClient, folder_factory, file_factory, db_session
+    ):
+        """Compat pin (task 1): a call with only `folder_id` — the shape every
+        existing caller has always used — must still return a flat JSON array
+        with the same field set, never the new paginated envelope."""
+        folder = await folder_factory()
+        lib_file = await file_factory(folder_id=folder.id, filename="legacy.3mf")
+
+        response = await async_client.get(f"/api/v1/library/files?folder_id={folder.id}")
+        assert response.status_code == 200
+        body = response.json()
+        assert isinstance(body, list)
+        assert len(body) == 1
+        row = body[0]
+        expected_fields = {
+            "id",
+            "folder_id",
+            "product_ids",
+            "is_external",
+            "filename",
+            "file_type",
+            "file_tags",
+            "file_size",
+            "thumbnail_path",
+            "duplicate_count",
+            "created_by_id",
+            "created_by_username",
+            "created_at",
+            "fs_modified_at",
+            "print_name",
+            "print_time_seconds",
+            "filament_used_grams",
+            "object_count",
+            "skip_objects_supported",
+            "sliced_for_model",
+            "swap_compatible",
+            "is_multi_plate",
+            "filament_types",
+            "plate_summaries",
+            "source_type",
+            "source_url",
+            "notes_count",
+            "print_count",
+            "tags",
+        }
+        assert set(row.keys()) == expected_fields
+        assert row["id"] == lib_file.id
+        assert row["filename"] == "legacy.3mf"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_multi_plate_row_leads_with_plate_one_and_carries_every_plates_slice(
+        self, async_client: AsyncClient, folder_factory, file_factory
+    ):
+        """spec §4 - plate 1's figures at the top (never a sum), one seven-field slice per plate."""
+        folder = await folder_factory()
+        plates = [
+            {
+                "index": 1,
+                "name": "Body",
+                "objects": ["body"],
+                "object_count": 2,
+                "has_thumbnail": True,
+                "print_time_seconds": 3600,
+                "filament_used_grams": 40.0,
+                "total_layers": 100,
+                "filaments": [
+                    {"slot_id": 1, "type": "PETG", "color": "#000000", "used_grams": 30.0, "used_meters": 10.0},
+                    {"slot_id": 2, "type": "PLA", "color": "#ffffff", "used_grams": 10.0, "used_meters": 3.0},
+                    {"slot_id": 3, "type": "PETG", "color": "#ff0000", "used_grams": 0.0, "used_meters": 0.0},
+                ],
+            },
+            {
+                "index": 2,
+                "name": None,
+                "objects": ["lid"],
+                "object_count": 1,
+                "has_thumbnail": False,
+                "print_time_seconds": 900,
+                "filament_used_grams": 5.5,
+                "total_layers": 20,
+                "filaments": [{"slot_id": 1, "type": "TPU", "color": "#00ff00", "used_grams": 5.5, "used_meters": 2.0}],
+            },
+        ]
+        await file_factory(
+            folder_id=folder.id,
+            filename="multi.gcode.3mf",
+            file_metadata={
+                # What a pre-change list summed: 4500 s / 45.5 g / 3 objects. None of it may show.
+                "print_time_seconds": 4500,
+                "filament_used_grams": 45.5,
+                "filament_type": "PETG, PLA, TPU",
+                "printable_objects": {"1": "body", "2": "body", "3": "lid"},
+                "is_multi_plate": True,
+                "plates": plates,
+            },
+        )
+        (row,) = (await async_client.get(f"/api/v1/library/files?folder_id={folder.id}")).json()
+        assert (row["print_time_seconds"], row["filament_used_grams"], row["object_count"]) == (3600, 40.0, 2)
+        assert row["filament_types"] == ["PETG", "PLA"]  # plate 1's, slot order, deduplicated
+        assert [p["index"] for p in row["plate_summaries"]] == [1, 2]
+        assert row["plate_summaries"][1] == {
+            "index": 2,
+            "name": None,
+            "print_time_seconds": 900,
+            "filament_used_grams": 5.5,
+            "object_count": 1,
+            "filament_types": ["TPU"],
+            "has_thumbnail": False,
+        }
+        assert "total_layers" not in row["plate_summaries"][0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_single_plate_legacy_and_mesh_rows_carry_types_but_no_slice(
+        self, async_client: AsyncClient, folder_factory, file_factory
+    ):
+        folder = await folder_factory()
+        await file_factory(
+            folder_id=folder.id,
+            filename="one.gcode.3mf",
+            file_metadata={
+                "print_time_seconds": 1200,
+                "filament_used_grams": 12.0,
+                "is_multi_plate": False,
+                "plates": [
+                    {
+                        "index": 1,
+                        "name": None,
+                        "objects": ["a"],
+                        "object_count": 1,
+                        "has_thumbnail": True,
+                        "print_time_seconds": 1200,
+                        "filament_used_grams": 12.0,
+                        "filaments": [
+                            {"slot_id": 1, "type": "PLA", "color": "#fff", "used_grams": 12.0, "used_meters": 4.0}
+                        ],
+                    }
+                ],
+            },
+        )
+        # Uploaded before m023: no plates cache, only the top-level snapshot.
+        await file_factory(
+            folder_id=folder.id,
+            filename="legacy.gcode.3mf",
+            file_metadata={"print_time_seconds": 600, "filament_type": "ASA, ASA"},
+        )
+        await file_factory(folder_id=folder.id, filename="mesh.stl", file_type="stl", file_metadata={})
+        rows = {
+            r["filename"]: r for r in (await async_client.get(f"/api/v1/library/files?folder_id={folder.id}")).json()
+        }
+        assert rows["one.gcode.3mf"]["filament_types"] == ["PLA"] and rows["one.gcode.3mf"]["plate_summaries"] == []
+        assert rows["one.gcode.3mf"]["print_time_seconds"] == 1200
+        assert rows["legacy.gcode.3mf"]["filament_types"] == ["ASA"]
+        assert rows["legacy.gcode.3mf"]["print_time_seconds"] == 600
+        assert rows["mesh.stl"]["filament_types"] == [] and rows["mesh.stl"]["plate_summaries"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_files_legacy_default_order_vs_explicit_name_asc(
+        self, async_client: AsyncClient, folder_factory, file_factory, db_session
+    ):
+        """The bug this pins: a bare legacy call (`sort_by` omitted entirely)
+        must keep exactly today's `ORDER BY filename` — NOT the `name_asc`
+        default value's `COALESCE(print_name, filename)` — since `sort_by`
+        can't tell "omitted" apart from "explicitly name_asc" unless the route
+        treats them as separate branches. Seeded so filename-order and
+        coalesce-order actively DISAGREE (mixed print_name presence — common,
+        not an edge case): the SAME three files, called two ways, must come
+        back in two DIFFERENT orders."""
+        folder = await folder_factory()
+        # Filename sorts this FIRST, but its print_name would sort it LAST
+        # under coalesce.
+        low_name_high_print = await file_factory(
+            folder_id=folder.id, filename="1_low.3mf", file_metadata={"print_name": "9_high"}
+        )
+        # No print_name at all — coalesce falls back to filename, same order
+        # either way. Keeps the middle position stable so only the outer two
+        # need to flip to prove the branch actually used.
+        mid_name_no_print = await file_factory(folder_id=folder.id, filename="5_mid.3mf")
+        # Filename sorts this LAST, but its print_name would sort it FIRST
+        # under coalesce.
+        high_name_low_print = await file_factory(
+            folder_id=folder.id, filename="9_high.3mf", file_metadata={"print_name": "1_low"}
+        )
+
+        # Bare legacy call — no sort_by at all — must stay in FILENAME order.
+        legacy_response = await async_client.get(f"/api/v1/library/files?folder_id={folder.id}")
+        assert legacy_response.status_code == 200
+        legacy_body = legacy_response.json()
+        assert isinstance(legacy_body, list)  # still the flat legacy shape, not the envelope
+        assert [f["id"] for f in legacy_body] == [
+            low_name_high_print.id,
+            mid_name_no_print.id,
+            high_name_low_print.id,
+        ]
+
+        # Explicit `sort_by=name_asc` on the IDENTICAL data must use the
+        # COALESCE(print_name, filename) order instead — the opposite order on
+        # the two print_name-carrying rows, pinning the two paths apart.
+        explicit_response = await async_client.get(
+            f"/api/v1/library/files?folder_id={folder.id}&sort_by=name_asc&page=1&per_page=50"
+        )
+        assert explicit_response.status_code == 200
+        explicit_items = explicit_response.json()["items"]
+        assert [f["id"] for f in explicit_items] == [
+            high_name_low_print.id,
+            mid_name_no_print.id,
+            low_name_high_print.id,
+        ]
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -1233,12 +1751,12 @@ class TestLibraryPathHelpers:
         from backend.app.api.routes.library import to_absolute_path
         from backend.app.core.config import settings
 
-        rel_path = "archive/library/files/test.3mf"
+        rel_path = "library/files/test.3mf"
         abs_path = to_absolute_path(rel_path)
 
         assert abs_path is not None
         assert abs_path.is_absolute()
-        expected = str(settings.base_dir / "archive" / "library" / "files" / "test.3mf")
+        expected = str(settings.base_dir / "library" / "files" / "test.3mf")
         assert str(abs_path) == expected
 
     def test_to_absolute_path_handles_already_absolute(self):
@@ -1474,3 +1992,332 @@ class TestLibraryPermissions:
         )
         # Viewers don't have delete_own or delete_all permissions
         assert response.status_code == 403
+
+
+class TestLibraryProductLinksAPI:
+    """Files and folders file under PRODUCTS, and one door writes every side.
+
+    The link used to be file→project, and the routes wrote the pivot themselves.
+    Now ``services/product_sync`` owns ``product_files`` and the ``ProductPlate``
+    rows together, so what these tests really pin is that each endpoint goes
+    through that door: a link a route wrote by hand would leave the plates
+    behind, and a product's recipe would name a file it has no plate for.
+    """
+
+    @pytest.fixture
+    async def folder_factory(self, db_session):
+        _counter = [0]
+
+        async def _create(**kwargs):
+            from backend.app.models.library import LibraryFolder
+
+            _counter[0] += 1
+            defaults = {"name": f"Folder {_counter[0]}"}
+            defaults.update(kwargs)
+            folder = LibraryFolder(**defaults)
+            db_session.add(folder)
+            await db_session.commit()
+            await db_session.refresh(folder)
+            return folder
+
+        return _create
+
+    @pytest.fixture
+    async def product_factory(self, db_session):
+        _counter = [0]
+
+        async def _create(**kwargs):
+            from backend.app.models.product import Product
+
+            _counter[0] += 1
+            defaults = {"name": f"Product {_counter[0]}"}
+            defaults.update(kwargs)
+            product = Product(**defaults)
+            db_session.add(product)
+            await db_session.commit()
+            await db_session.refresh(product)
+            return product
+
+        return _create
+
+    @pytest.fixture
+    async def sliced_file_factory(self, db_session):
+        """A printable single-plate file — the sync only plants plates for a
+        container it could actually print."""
+        _counter = [0]
+
+        async def _create(**kwargs):
+            from backend.app.models.library import LibraryFile
+
+            _counter[0] += 1
+            defaults = {
+                "filename": f"part_{_counter[0]}.gcode.3mf",
+                "file_path": f"/test/path/part_{_counter[0]}.gcode.3mf",
+                "file_size": 1024,
+                "file_type": "gcode",
+            }
+            defaults.update(kwargs)
+            lib_file = LibraryFile(**defaults)
+            db_session.add(lib_file)
+            await db_session.commit()
+            await db_session.refresh(lib_file)
+            return lib_file
+
+        return _create
+
+    @staticmethod
+    async def _plates(db_session, *, product_id: int, library_file_id: int) -> list[int]:
+        from sqlalchemy import select
+
+        from backend.app.models.product import ProductPlate
+
+        rows = (
+            await db_session.execute(
+                select(ProductPlate.plate_index).where(
+                    ProductPlate.product_id == product_id,
+                    ProductPlate.library_file_id == library_file_id,
+                )
+            )
+        ).scalars()
+        return sorted(rows)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_folder_with_products(self, async_client: AsyncClient, product_factory):
+        product = await product_factory(name="Lamp")
+        response = await async_client.post(
+            "/api/v1/library/folders", json={"name": "Lamp parts", "product_ids": [product.id]}
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert [p["id"] for p in body["products"]] == [product.id]
+        assert body["products"][0]["name"] == "Lamp"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_folder_with_an_unknown_product_is_404(self, async_client: AsyncClient):
+        response = await async_client.post("/api/v1/library/folders", json={"name": "Nowhere", "product_ids": [4242]})
+        assert response.status_code == 404
+        assert "4242" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_updating_a_folder_with_an_unknown_product_is_404(self, async_client: AsyncClient, folder_factory):
+        folder = await folder_factory()
+        response = await async_client.put(f"/api/v1/library/folders/{folder.id}", json={"product_ids": [4242]})
+        assert response.status_code == 404
+        assert "4242" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_linking_a_folder_mirrors_onto_its_files_and_plants_plates(
+        self, async_client: AsyncClient, db_session, folder_factory, sliced_file_factory, product_factory
+    ):
+        """The whole reason a folder link exists: the files inside join too, and
+        each one gets the plate row that makes it printable for that product."""
+        folder = await folder_factory(name="Lamp parts")
+        lib_file = await sliced_file_factory(folder_id=folder.id)
+        product = await product_factory()
+
+        response = await async_client.put(f"/api/v1/library/folders/{folder.id}", json={"product_ids": [product.id]})
+        assert response.status_code == 200, response.text
+        assert [p["id"] for p in response.json()["products"]] == [product.id]
+
+        file_response = await async_client.get(f"/api/v1/library/files/{lib_file.id}")
+        assert [p["id"] for p in file_response.json()["products"]] == [product.id]
+        assert await self._plates(db_session, product_id=product.id, library_file_id=lib_file.id) == [0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unlinking_the_folder_takes_the_plates_with_it(
+        self, async_client: AsyncClient, db_session, folder_factory, sliced_file_factory, product_factory
+    ):
+        folder = await folder_factory()
+        lib_file = await sliced_file_factory(folder_id=folder.id)
+        product = await product_factory()
+        await async_client.put(f"/api/v1/library/folders/{folder.id}", json={"product_ids": [product.id]})
+
+        response = await async_client.delete(f"/api/v1/library/folders/{folder.id}/products/{product.id}")
+        assert response.status_code == 204
+
+        file_response = await async_client.get(f"/api/v1/library/files/{lib_file.id}")
+        assert file_response.json()["products"] == []
+        assert await self._plates(db_session, product_id=product.id, library_file_id=lib_file.id) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unlinking_a_folder_that_is_not_linked_is_a_no_op(
+        self, async_client: AsyncClient, folder_factory, product_factory
+    ):
+        folder = await folder_factory()
+        product = await product_factory()
+        response = await async_client.delete(f"/api/v1/library/folders/{folder.id}/products/{product.id}")
+        assert response.status_code == 204
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_file_links_directly_and_keeps_its_plate(
+        self, async_client: AsyncClient, db_session, sliced_file_factory, product_factory
+    ):
+        lib_file = await sliced_file_factory()
+        product = await product_factory()
+
+        response = await async_client.put(f"/api/v1/library/files/{lib_file.id}", json={"product_ids": [product.id]})
+        assert response.status_code == 200, response.text
+        assert [p["id"] for p in response.json()["products"]] == [product.id]
+        assert await self._plates(db_session, product_id=product.id, library_file_id=lib_file.id) == [0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_file_unlinks_with_an_empty_list(
+        self, async_client: AsyncClient, db_session, sliced_file_factory, product_factory
+    ):
+        """``[]`` means unlink everything — the documented difference from
+        ``None``, which leaves the links alone."""
+        lib_file = await sliced_file_factory()
+        product = await product_factory()
+        await async_client.put(f"/api/v1/library/files/{lib_file.id}", json={"product_ids": [product.id]})
+
+        response = await async_client.put(f"/api/v1/library/files/{lib_file.id}", json={"product_ids": []})
+        assert response.status_code == 200, response.text
+        assert response.json()["products"] == []
+        assert await self._plates(db_session, product_id=product.id, library_file_id=lib_file.id) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_renaming_a_file_leaves_its_products_alone(
+        self, async_client: AsyncClient, sliced_file_factory, product_factory
+    ):
+        """``product_ids`` omitted is not ``product_ids: []`` — a PUT that only
+        renames must not quietly unfile the row."""
+        lib_file = await sliced_file_factory()
+        product = await product_factory()
+        await async_client.put(f"/api/v1/library/files/{lib_file.id}", json={"product_ids": [product.id]})
+
+        response = await async_client.put(
+            f"/api/v1/library/files/{lib_file.id}", json={"filename": "renamed.gcode.3mf"}
+        )
+        assert response.status_code == 200, response.text
+        assert [p["id"] for p in response.json()["products"]] == [product.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unlink_endpoint_drops_one_product_and_keeps_the_rest(
+        self, async_client: AsyncClient, db_session, sliced_file_factory, product_factory
+    ):
+        lib_file = await sliced_file_factory()
+        keep = await product_factory(name="Keep")
+        drop = await product_factory(name="Drop")
+        await async_client.put(f"/api/v1/library/files/{lib_file.id}", json={"product_ids": [keep.id, drop.id]})
+
+        response = await async_client.delete(f"/api/v1/library/files/{lib_file.id}/products/{drop.id}")
+        assert response.status_code == 204
+
+        file_response = await async_client.get(f"/api/v1/library/files/{lib_file.id}")
+        assert [p["id"] for p in file_response.json()["products"]] == [keep.id]
+        assert await self._plates(db_session, product_id=keep.id, library_file_id=lib_file.id) == [0]
+        assert await self._plates(db_session, product_id=drop.id, library_file_id=lib_file.id) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_folders_by_product(self, async_client: AsyncClient, folder_factory, product_factory):
+        linked = await folder_factory(name="Linked")
+        await folder_factory(name="Unlinked")
+        product = await product_factory()
+        await async_client.put(f"/api/v1/library/folders/{linked.id}", json={"product_ids": [product.id]})
+
+        response = await async_client.get(f"/api/v1/library/folders/by-product/{product.id}")
+        assert response.status_code == 200, response.text
+        assert [f["id"] for f in response.json()] == [linked.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_files_filtered_by_product_unions_direct_and_inherited(
+        self, async_client: AsyncClient, folder_factory, sliced_file_factory, product_factory
+    ):
+        """A file belongs to a product directly OR through its folder, and the
+        product page has to show both groups in one listing."""
+        product = await product_factory()
+        folder = await folder_factory()
+        inherited = await sliced_file_factory(folder_id=folder.id, filename="inherited.gcode.3mf")
+        direct = await sliced_file_factory(filename="direct.gcode.3mf")
+        stranger = await sliced_file_factory(filename="stranger.gcode.3mf")
+
+        await async_client.put(f"/api/v1/library/folders/{folder.id}", json={"product_ids": [product.id]})
+        await async_client.put(f"/api/v1/library/files/{direct.id}", json={"product_ids": [product.id]})
+
+        response = await async_client.get(f"/api/v1/library/files?product_id={product.id}")
+        assert response.status_code == 200, response.text
+        ids = {row["id"] for row in response.json()}
+        assert ids == {inherited.id, direct.id}
+        assert stranger.id not in ids
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_product_linked_folder_is_not_deletable_without_delete_all(
+        self, db_session, folder_factory, product_factory
+    ):
+        """A folder filed under a product holds somebody's work, so clearing it
+        is an admin action even when it looks empty. Asked of the guard itself —
+        the route just relays its answer."""
+        from backend.app.api.routes.library import _restricted_folder_delete_blocker
+        from backend.app.services.product_sync import apply_folder_products
+
+        folder = await folder_factory()
+        product = await product_factory()
+        assert await _restricted_folder_delete_blocker(db_session, folder) is None
+
+        await apply_folder_products(db_session, folder_id=folder.id, product_ids=[product.id])
+        await db_session.commit()
+
+        blocker = await _restricted_folder_delete_blocker(db_session, folder)
+        assert blocker is not None and "product" in blocker
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_hard_deleting_a_file_takes_its_product_links_and_plates(
+        self, async_client: AsyncClient, db_session, sliced_file_factory, product_factory, tmp_path
+    ):
+        """Nothing may outlive the row it points at.
+
+        ``product_files.library_file_id`` and ``product_plates.library_file_id``
+        are both ``ON DELETE CASCADE``, which PostgreSQL honours and SQLite —
+        where ``PRAGMA foreign_keys`` is never turned on — ignores completely.
+        The ORM clears the pivot for a ``db.delete(file)`` and does nothing at
+        all for the plates, so both are removed explicitly at every hard-delete
+        site. Left behind, a product's recipe names a plate of a file that no
+        longer exists, and the product page renders an entry nothing can open.
+
+        An EXTERNAL file is the hard-delete door that needs no waiting: the
+        bytes live outside BamDude, so there is nothing to restore and
+        ``trash_or_purge`` deletes the row outright instead of trashing it.
+        """
+        from sqlalchemy import func, select
+
+        from backend.app.models.product import ProductPlate, product_files
+
+        on_disk = tmp_path / "external.gcode.3mf"
+        on_disk.write_bytes(b"sliced")
+        lib_file = await sliced_file_factory(filename="external.gcode.3mf", file_path=str(on_disk), is_external=True)
+        product = await product_factory()
+        await async_client.put(f"/api/v1/library/files/{lib_file.id}", json={"product_ids": [product.id]})
+        # Held as a plain int: the row is about to be gone, and touching an
+        # expired ORM attribute afterwards is a lazy load (MissingGreenlet).
+        file_id = lib_file.id
+
+        async def _counts() -> tuple[int, int]:
+            pivot = await db_session.scalar(
+                select(func.count()).select_from(product_files).where(product_files.c.library_file_id == file_id)
+            )
+            plates = await db_session.scalar(
+                select(func.count()).select_from(ProductPlate).where(ProductPlate.library_file_id == file_id)
+            )
+            return pivot or 0, plates or 0
+
+        assert await _counts() == (1, 1), "the link and its plate must exist before the delete proves anything"
+
+        response = await async_client.delete(f"/api/v1/library/files/{file_id}")
+        assert response.status_code == 200, response.text
+        assert response.json()["trashed"] is False, "an external file is purged, not trashed"
+
+        assert await _counts() == (0, 0)

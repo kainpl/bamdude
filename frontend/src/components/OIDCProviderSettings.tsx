@@ -9,6 +9,7 @@ import { Button } from './Button';
 import { Toggle } from './Toggle';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
+import { Select } from './Select';
 
 const EMPTY_FORM: OIDCProviderCreate = {
   name: '',
@@ -128,8 +129,10 @@ function ProviderForm({
         </div>
         <div>
           <label className={labelCls}>{t('settings.oidc.form.defaultGroup')}</label>
-          <select
-            className={inputCls}
+          <Select
+            size="lg"
+            tone="raised"
+            className="w-full"
             value={form.default_group_id ?? ''}
             onChange={(e) => set('default_group_id', e.target.value ? Number(e.target.value) : null)}
           >
@@ -137,7 +140,7 @@ function ProviderForm({
             {groupsList?.map((g) => (
               <option key={g.id} value={g.id}>{g.name}</option>
             ))}
-          </select>
+          </Select>
           <p className="text-bambu-gray text-xs mt-1">{t('settings.oidc.form.defaultGroupHelp')}</p>
         </div>
       </div>
@@ -263,7 +266,7 @@ export function OIDCProviderSettings() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Header */}
       <Card id="card-oidc">
         <CardHeader>
@@ -300,7 +303,7 @@ export function OIDCProviderSettings() {
       {providers && providers.length === 0 && !showCreate && (
         <Card id="card-oidc-empty">
           <CardContent>
-            <div className="text-center py-8 space-y-3">
+            <div className="text-center py-4 space-y-3">
               <Globe className="w-12 h-12 text-bambu-gray mx-auto" />
               <p className="text-bambu-gray">{t('settings.oidc.empty')}</p>
               <Button variant="primary" size="sm" onClick={() => setShowCreate(true)} className="inline-flex items-center gap-2">

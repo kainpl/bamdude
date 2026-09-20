@@ -148,7 +148,7 @@ async def _init_target_schema() -> None:
         # FK off so DROP order across the dependency graph can't surface a
         # constraint error mid-rebuild. Required even though the connect
         # event doesn't enable FKs by default — defensive against future
-        # changes to ``_set_sqlite_pragmas``.
+        # changes to ``configure_sqlite_connection``.
         await conn.execute(text("PRAGMA foreign_keys = OFF"))
         # FTS triggers fire AFTER INSERT/UPDATE/DELETE on print_archives;
         # dropping print_archives auto-drops them, but explicit pre-drop

@@ -22,7 +22,7 @@ const gridLine = sourceLines.find((line) => line.includes('lg:grid-cols-[minmax(
 describe('SliceModal layout', () => {
   it('puts the body in a two-column grid', () => {
     expect(gridLine, 'the two-column grid').toBeDefined();
-    expect(gridLine).toContain('lg:gap-5');
+    expect(gridLine).toContain('lg:gap-4');
     expect(gridLine).toContain('lg:items-start');
   });
 
@@ -39,13 +39,12 @@ describe('SliceModal layout', () => {
     // at the single-column `max-w-xl` (36rem). A 20rem left column plus the gap
     // left the 348-option panel about 13rem — worse than the one column it
     // replaced. The two must switch together or the layout is a downgrade.
-    const frame = sourceLines.find((line) =>
-      line.includes('max-h-[85vh] flex flex-col rounded-lg'),
-    );
-
-    expect(frame, 'the modal frame').toBeDefined();
-    expect(frame).toContain('max-w-xl');
-    expect(frame).toContain('lg:max-w-5xl');
+    //
+    // The frame is the modal shell's panel now, so the base width is its `size`
+    // and the breakpoint override rides along in `panelClassName` — the shell
+    // appends that after the size class, so `lg:` still wins.
+    expect(modalSource, 'the base width').toContain('size="xl"');
+    expect(modalSource, 'the wide width').toContain('panelClassName="lg:max-w-5xl"');
   });
 
   it('keeps the settings panel open and its toggle inert when it owns a column', () => {

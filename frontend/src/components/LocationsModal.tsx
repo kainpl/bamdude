@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { MapPin, Plus, Loader2, Pencil, Trash2, X } from 'lucide-react';
+import { MapPin, Plus, Loader2, Pencil, Trash2 } from 'lucide-react';
 import { api, type StorageLocation } from '../api/client';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
+import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
 import { inventoryLocationsQueryKey, invalidateInventoryLocations } from '../utils/inventoryQueries';
 
@@ -88,25 +89,6 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
     setName('');
   }, [saveMutation.isPending]);
 
-  // Esc closes the inner editor first; if it's closed, Esc closes the outer
-  // modal — but only when neither save nor delete is mid-flight, so a stray
-  // keypress during a network round-trip doesn't drop the user back into the
-  // inventory page with an orphaned spinner.
-  useEffect(() => {
-    if (!open) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      if (saveMutation.isPending || deleteMutation.isPending) return;
-      if (editorOpen) {
-        closeEditor();
-      } else if (!deleteTarget) {
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [open, editorOpen, deleteTarget, saveMutation.isPending, deleteMutation.isPending, closeEditor, onClose]);
-
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     saveMutation.mutate();
@@ -118,44 +100,28 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
   const editorTitleId = 'location-editor-title';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div
-        className="absolute inset-0 bg-black/60"
-        onClick={() => {
-          if (saveMutation.isPending || deleteMutation.isPending) return;
-          onClose();
-        }}
-      />
-      <div
-        className="relative w-full max-w-2xl mx-4 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl max-h-[90vh] flex flex-col"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={modalTitleId}
-      >
-        <div className="flex items-center justify-between gap-4 px-6 py-4 border-b border-bambu-dark-tertiary">
-          <div>
-            <h2 id={modalTitleId} className="text-lg font-semibold text-white flex items-center gap-2">
-              <MapPin className="w-5 h-5 text-bambu-green" />
-              {t('locations.title')}
-            </h2>
-            <p className="text-bambu-gray text-sm mt-0.5">{t('locations.subtitle')}</p>
-          </div>
-          <div className="flex items-center gap-2">
+    <>
+      <Modal
+        onClose={onClose}
+        labelledBy={modalTitleId}
+        closeDisabled={saveMutation.isPending || deleteMutation.isPending}
+        header={
+          <div className="flex flex-1 items-center justify-between gap-4 min-w-0">
+            <div className="min-w-0">
+              <h2 id={modalTitleId} className="text-lg font-semibold text-white flex items-center gap-2">
+                <MapPin className="w-5 h-5 text-bambu-green" />
+                {t('locations.title')}
+              </h2>
+              <p className="text-bambu-gray text-sm mt-0.5">{t('locations.subtitle')}</p>
+            </div>
             <Button onClick={openCreate}>
               <Plus className="w-4 h-4" />
               {t('locations.add')}
             </Button>
-            <button
-              type="button"
-              className="p-1.5 text-bambu-gray hover:text-white rounded"
-              onClick={onClose}
-              aria-label={t('common.close')}
-            >
-              <X className="w-5 h-5" />
-            </button>
           </div>
-        </div>
-
+        }
+        size="4xl"
+      >
         <div className="overflow-y-auto">
           {isLoading ? (
             <div className="flex items-center justify-center py-16 text-bambu-gray">
@@ -216,17 +182,11 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
             </table>
           )}
         </div>
-      </div>
+      </Modal>
 
       {editorOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/60" onClick={closeEditor} />
-          <div
-            className="relative w-full max-w-md mx-4 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl p-6 shadow-2xl"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={editorTitleId}
-          >
+        <Modal onClose={closeEditor} hideClose labelledBy={editorTitleId} size="md">
+          <div className="p-4">
             <h3 id={editorTitleId} className="text-lg font-semibold text-white mb-4">
               {editing ? t('locations.edit') : t('locations.add')}
             </h3>
@@ -255,7 +215,7 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
               </div>
             </form>
           </div>
-        </div>
+        </Modal>
       )}
 
       {deleteTarget && (
@@ -269,6 +229,6 @@ export function LocationsModal({ open, onClose, onPickLocation }: LocationsModal
           onCancel={() => setDeleteTarget(null)}
         />
       )}
-    </div>
+    </>
   );
 }

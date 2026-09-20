@@ -158,7 +158,7 @@ async def cmd_camera(message: Message, tg_chat=None) -> None:
     if not has_perm(tg_chat, "camera:view"):
         return
 
-    printers = await get_printers_data()
+    printers = await get_printers_data(tg_chat)
     connected = [p for p in printers if p["connected"]]
 
     if not connected:
@@ -171,7 +171,7 @@ async def cmd_camera(message: Message, tg_chat=None) -> None:
 
         from backend.app.core.database import async_session
         from backend.app.models.printer import Printer
-        from backend.app.services.camera import capture_camera_frame_bytes
+        from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
         async with async_session() as db:
             result = await db.execute(select(Printer).where(Printer.id == connected[0]["id"]))
@@ -179,7 +179,17 @@ async def cmd_camera(message: Message, tg_chat=None) -> None:
 
         if printer:
             try:
-                jpeg = await capture_camera_frame_bytes(printer.ip_address, printer.access_code, printer.model)
+                jpeg = (
+                    await capture(
+                        CameraCaptureRequest.builtin(
+                            ip_address=printer.ip_address,
+                            access_code=printer.access_code,
+                            model=printer.model,
+                            purpose="telegram",
+                            printer_id=printer.id,
+                        )
+                    )
+                ).frame
                 if jpeg:
                     from aiogram.types import BufferedInputFile
 

@@ -35,7 +35,7 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-export function ThemeProvider({ children }: { children: ReactNode }) {
+export function ThemeProvider({ children, syncServer = true }: { children: ReactNode; syncServer?: boolean }) {
   // Mode
   const [mode, setModeState] = useState<ThemeMode>(() => {
     const stored = localStorage.getItem('theme-mode') as ThemeMode | null;
@@ -91,6 +91,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   // Sync from API on mount
   useEffect(() => {
+    if (!syncServer) return;
     api.getSettings().then((settings) => {
       // Dark settings
       if (settings.dark_style) {
@@ -119,7 +120,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         localStorage.setItem('light-accent', settings.light_accent);
       }
     }).catch(() => {});
-  }, []);
+  }, [syncServer]);
 
   // Apply theme classes based on current mode
   useEffect(() => {
@@ -160,34 +161,34 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setDarkStyle = (v: ThemeStyle) => {
     setDarkStyleState(v);
     localStorage.setItem('dark-style', v);
-    api.updateSettings({ dark_style: v }).catch(() => {});
+    if (syncServer) api.updateSettings({ dark_style: v }).catch(() => {});
   };
   const setDarkBackground = (v: DarkBackground) => {
     setDarkBackgroundState(v);
     localStorage.setItem('dark-background', v);
-    api.updateSettings({ dark_background: v }).catch(() => {});
+    if (syncServer) api.updateSettings({ dark_background: v }).catch(() => {});
   };
   const setDarkAccent = (v: ThemeAccent) => {
     setDarkAccentState(v);
     localStorage.setItem('dark-accent', v);
-    api.updateSettings({ dark_accent: v }).catch(() => {});
+    if (syncServer) api.updateSettings({ dark_accent: v }).catch(() => {});
   };
 
   // Light setters
   const setLightStyle = (v: ThemeStyle) => {
     setLightStyleState(v);
     localStorage.setItem('light-style', v);
-    api.updateSettings({ light_style: v }).catch(() => {});
+    if (syncServer) api.updateSettings({ light_style: v }).catch(() => {});
   };
   const setLightBackground = (v: LightBackground) => {
     setLightBackgroundState(v);
     localStorage.setItem('light-background', v);
-    api.updateSettings({ light_background: v }).catch(() => {});
+    if (syncServer) api.updateSettings({ light_background: v }).catch(() => {});
   };
   const setLightAccent = (v: ThemeAccent) => {
     setLightAccentState(v);
     localStorage.setItem('light-accent', v);
-    api.updateSettings({ light_accent: v }).catch(() => {});
+    if (syncServer) api.updateSettings({ light_accent: v }).catch(() => {});
   };
   // Deliberately NOT synced to the server, unlike the theme settings above:
   // "show progress in my tab" is a property of this browser window, not of the

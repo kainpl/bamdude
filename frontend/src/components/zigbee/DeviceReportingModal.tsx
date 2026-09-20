@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X } from 'lucide-react';
 
 import { api } from '../../api/client';
 import type { DeviceSettings, DeviceSettingsTarget } from '../../api/client';
 import { REPORTING_STATUS_KEY, reportingStatus } from '../../utils/reportingStatus';
 import type { AppliedEntry } from '../../utils/reportingStatus';
+import { Modal } from '../Modal';
 import { Button } from '../Button';
 
 interface Props {
@@ -30,6 +30,7 @@ const FIELDS: { name: keyof DeviceSettingsTarget; labelKey: string }[] = [
  */
 export function DeviceReportingModal({ ieee, deviceName, onClose }: Props) {
   const { t } = useTranslation();
+  const headingId = useId();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<Record<string, DeviceSettingsTarget>>({});
   const [poll, setPoll] = useState<number | null>(null);
@@ -83,81 +84,78 @@ export function DeviceReportingModal({ ieee, deviceName, onClose }: Props) {
   const settings = data;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary rounded-xl w-full max-w-2xl max-h-[90vh] overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
-          <div>
-            <h2 className="text-lg font-semibold text-white">{t('settings.zigbee.reporting.title')}</h2>
-            <p className="text-sm text-bambu-gray">{settings?.name || deviceName}</p>
-          </div>
-          <button onClick={onClose} className="p-2 text-bambu-gray" aria-label={t('common.close')}>
-            <X className="w-5 h-5" />
-          </button>
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      header={
+        <div className="min-w-0">
+          <h2 id={headingId} className="text-lg font-semibold text-white">
+            {t('settings.zigbee.reporting.title')}
+          </h2>
+          <p className="text-sm text-bambu-gray">{settings?.name || deviceName}</p>
         </div>
+      }
+      size="2xl"
+    >
+      <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(90vh-140px)]">
+        {/* A device off the mesh is an ordinary state since sensors are listed
+            from our rows -- so it gets the reason, not an empty form. */}
+        {error ? (
+          <p className="text-sm text-amber-600 dark:text-amber-400">{(error as Error).message}</p>
+        ) : isLoading || !settings ? (
+          <div className="h-32" />
+        ) : (
+          <>
+            {Object.keys(settings.desired).map((key) => (
+              <Target
+                key={key}
+                name={key}
+                unit={settings.units[key] ?? ''}
+                editable={settings.editable[key] ?? []}
+                value={draft[key] ?? settings.desired[key]}
+                applied={settings.applied[key]}
+                onChange={(next) => setDraft({ ...draft, [key]: next })}
+              />
+            ))}
 
-        <div className="p-6 space-y-5 overflow-y-auto max-h-[calc(90vh-140px)]">
-          {/* A device off the mesh is an ordinary state since sensors are listed
-              from our rows -- so it gets the reason, not an empty form. */}
-          {error ? (
-            <p className="text-sm text-amber-600 dark:text-amber-400">{(error as Error).message}</p>
-          ) : isLoading || !settings ? (
-            <div className="h-32" />
-          ) : (
-            <>
-              {Object.keys(settings.desired).map((key) => (
-                <Target
-                  key={key}
-                  name={key}
-                  unit={settings.units[key] ?? ''}
-                  editable={settings.editable[key] ?? []}
-                  value={draft[key] ?? settings.desired[key]}
-                  applied={settings.applied[key]}
-                  onChange={(next) => setDraft({ ...draft, [key]: next })}
-                />
-              ))}
-
-              <div className="border-t border-bambu-dark-tertiary pt-4 space-y-3">
-                {settings.poll_supported ? (
-                  <Seconds
-                    id="poll"
-                    label={t('settings.zigbee.reporting.poll')}
-                    value={poll ?? settings.poll_seconds}
-                    onChange={setPoll}
-                  />
-                ) : (
-                  // Explained, not hidden: a field that vanishes leaves the
-                  // reader wondering where it went.
-                  <p className="text-xs text-bambu-gray">{t('settings.zigbee.reporting.pollUnsupported')}</p>
-                )}
+            <div className="border-t border-bambu-dark-tertiary pt-4 space-y-3">
+              {settings.poll_supported ? (
                 <Seconds
-                  id="stale"
-                  label={t('settings.zigbee.reporting.staleAfter')}
-                  value={stale ?? settings.stale_after_seconds}
-                  onChange={setStale}
+                  id="poll"
+                  label={t('settings.zigbee.reporting.poll')}
+                  value={poll ?? settings.poll_seconds}
+                  onChange={setPoll}
                 />
-              </div>
+              ) : (
+                // Explained, not hidden: a field that vanishes leaves the
+                // reader wondering where it went.
+                <p className="text-xs text-bambu-gray">{t('settings.zigbee.reporting.pollUnsupported')}</p>
+              )}
+              <Seconds
+                id="stale"
+                label={t('settings.zigbee.reporting.staleAfter')}
+                value={stale ?? settings.stale_after_seconds}
+                onChange={setStale}
+              />
+            </div>
 
-              {note && <p className="text-sm text-bambu-green">{note}</p>}
-              {problem && <p className="text-sm text-status-error">{problem}</p>}
-            </>
-          )}
-        </div>
-
-        {settings && !error && (
-          <div className="flex items-center justify-between gap-2 px-6 py-4 border-t border-bambu-dark-tertiary">
-            <Button variant="secondary" onClick={() => reset.mutate()} disabled={reset.isPending}>
-              {t('settings.zigbee.reporting.reset')}
-            </Button>
-            <Button onClick={() => save.mutate()} disabled={save.isPending}>
-              {t('common.save')}
-            </Button>
-          </div>
+            {note && <p className="text-sm text-bambu-green">{note}</p>}
+            {problem && <p className="text-sm text-status-error">{problem}</p>}
+          </>
         )}
       </div>
-    </div>
+
+      {settings && !error && (
+        <div className="flex items-center justify-between gap-2 px-4 py-4 border-t border-bambu-dark-tertiary">
+          <Button variant="secondary" onClick={() => reset.mutate()} disabled={reset.isPending}>
+            {t('settings.zigbee.reporting.reset')}
+          </Button>
+          <Button onClick={() => save.mutate()} disabled={save.isPending}>
+            {t('common.save')}
+          </Button>
+        </div>
+      )}
+    </Modal>
   );
 }
 

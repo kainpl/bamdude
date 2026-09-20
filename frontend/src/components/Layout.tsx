@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
-import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate, useLocation } from 'react-router';
 import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, Cpu, Thermometer, type LucideIcon } from 'lucide-react';
 import { GitHubIcon, TelegramIcon, MakerWorldIcon } from './BrandIcons';
 import { useTranslation } from 'react-i18next';
@@ -15,15 +15,21 @@ import { useQuery, useQueries } from '@tanstack/react-query';
 import { api, supportApi, type Permission } from '../api/client';
 import { getIconByName } from './IconPicker';
 import { useIsSidebarCompact } from '../hooks/useIsSidebarCompact';
+import { usePendingQueueItems } from '../hooks/useQueueItems';
 import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
 import { useUnknownTagPrompt } from '../hooks/useUnknownTagPrompt';
+import { useInboxUnreadCount } from '../hooks/useInboxUnreadCount';
 import { UnknownSpoolModal } from './UnknownSpoolModal';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import { Card, CardHeader, CardContent } from './Card';
+import { CardContent } from './Card';
+import { PasswordField } from './PasswordField';
+import { checkPasswordComplexity, isPasswordValid } from '../utils/password';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
+import { isAnyModalOpen } from './modalStack';
+import { Modal } from './Modal';
 
 
 // Sidebar groups (for visual section dividers + labels). Group membership
@@ -255,14 +261,6 @@ export function Layout() {
     }
   }, [defaultSidebarData?.default_sidebar_order, setSidebarOrder, user, authEnabled]);
 
-  // Check advanced auth status for conditional nav items
-  const { data: advancedAuthStatus } = useQuery({
-    queryKey: ['advancedAuthStatus'],
-    queryFn: api.getAdvancedAuthStatus,
-    staleTime: 5 * 60 * 1000, // 5 minutes
-    enabled: authEnabled,
-  });
-
   const { data: updateCheck } = useQuery({
     queryKey: ['updateCheck'],
     queryFn: api.checkForUpdates,
@@ -315,14 +313,12 @@ export function Layout() {
     refetchOnWindowFocus: true,
   });
 
-  // Fetch pending queue items count for badge
-  const { data: queueItems } = useQuery({
-    queryKey: ['queue', 'pending'],
-    queryFn: () => api.getQueue(undefined, 'pending'),
-    staleTime: 5 * 1000, // 5 seconds
-    refetchInterval: 5 * 1000, // Refresh every 5 seconds
-    refetchOnWindowFocus: true,
-  });
+  // The badge's pending list is the SHARED one (`hooks/useQueueItems`), not a
+  // private query. This component is mounted on every page, so its own
+  // `['queue', 'pending']` entry meant an order page or the Queue page held two
+  // cache entries and two polls for one answer — and the two could disagree for
+  // as long as their intervals differed. The shared hook owns the cadence.
+  const { data: queueItems } = usePendingQueueItems();
   // Auto-queue work not yet routed to a printer. The badge shows the *total*
   // amount of waiting work — the split between "queued on a printer" and
   // "awaiting routing" is what the Queue page's stats bar is for; there is no
@@ -336,6 +332,10 @@ export function Layout() {
     refetchOnWindowFocus: true,
   });
   const pendingQueueCount = (queueItems?.length ?? 0) + (unassignedAutoItems?.length ?? 0);
+
+  // The inbox belongs to whoever holds the permission; with auth off nothing is gated.
+  const inboxVisible = !authEnabled || hasPermission('notifications:inbox');
+  const { data: unreadCount = 0 } = useInboxUnreadCount(inboxVisible);
 
   // Check if any printer with pending queue items needs plate clearing
   const queuePrinterIds = useMemo(() => {
@@ -404,7 +404,7 @@ export function Layout() {
       makerworld: 'makerworld:view',
       firmware: 'firmware:read',
       settings: 'settings:read',
-      notifications: 'notifications:user_email',
+      notifications: 'notifications:inbox',
       system: 'system:read',
     };
 
@@ -416,8 +416,6 @@ export function Layout() {
           : hasPermission(required);
         if (!granted) return true;
       }
-      // notifications nav item also requires advanced auth to be enabled and user_notifications_enabled setting
-      if (id === 'notifications' && (!authEnabled || !advancedAuthStatus?.advanced_auth_enabled || (settings?.user_notifications_enabled === false))) return true;
       return false;
     };
 
@@ -615,16 +613,23 @@ export function Layout() {
     }
   };
 
-  // Redirect to default view on initial load
+  // Redirect to the default view on initial load — MOUNT-ONLY on purpose.
+  // "Printers" is the index route (`to: '/'`), so this effect cannot key off
+  // every pathname change: a deliberate click on Printers is a navigation to
+  // `/` and was being swallowed by the redirect, landing the user on their
+  // default view instead. It bit exactly once per page load (the ref) and was
+  // invisible to anyone whose default view IS Printers (the `!== '/'` guard),
+  // which is why it survived so long. The question here is "where did the user
+  // ENTER the app", asked once, not "are we at `/` right now".
   useEffect(() => {
-    if (!hasRedirected.current && location.pathname === '/') {
-      const defaultView = getDefaultView();
-      if (defaultView !== '/') {
-        hasRedirected.current = true;
-        navigate(defaultView, { replace: true });
-      }
+    if (hasRedirected.current || location.pathname !== '/') return;
+    const defaultView = getDefaultView();
+    if (defaultView !== '/') {
+      hasRedirected.current = true;
+      navigate(defaultView, { replace: true });
     }
-  }, [location.pathname, navigate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('sidebarExpanded', String(sidebarExpanded));
@@ -656,11 +661,31 @@ export function Layout() {
     return () => window.removeEventListener('plate-not-empty', handlePlateNotEmpty);
   }, [hasPermission]);
 
+  // A file dropped beside its drop zone must not open in the browser and take
+  // the app with it. Only real file drags: in-app drags (queue cards, sidebar
+  // items) carry their own dataTransfer types and keep their own handling.
+  useEffect(() => {
+    const swallowFileDrop = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
+    };
+    window.addEventListener('dragover', swallowFileDrop);
+    window.addEventListener('drop', swallowFileDrop);
+    return () => {
+      window.removeEventListener('dragover', swallowFileDrop);
+      window.removeEventListener('drop', swallowFileDrop);
+    };
+  }, []);
+
   // Global keyboard shortcuts for navigation
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     const target = e.target as HTMLElement;
     // Ignore if typing in an input/textarea
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+      return;
+    }
+    // Number-key navigation must not fire under a modal — the shortcuts page
+    // has promised this since it was written; the stack makes it true.
+    if (isAnyModalOpen()) {
       return;
     }
 
@@ -694,9 +719,6 @@ export function Layout() {
         case '?':
           e.preventDefault();
           setShowShortcuts(true);
-          break;
-        case 'Escape':
-          setShowShortcuts(false);
           break;
       }
     }
@@ -798,44 +820,64 @@ export function Layout() {
             title="BamDude"
           >
             <img
-              src={resolvedMode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png'}
+              src={resolvedMode === 'dark' ? '/img/brand/lockup-compact-on-dark.svg' : '/img/brand/lockup-compact-on-light.svg'}
               alt="BamDude"
-              className="h-8"
+              className="h-8 w-auto"
             />
           </a>
-          {/* Bug report — the compact-layout home of the floating bubble. */}
-          <button
-            onClick={() => setBugReportOpen(true)}
-            className="ml-auto p-2 -mr-2 rounded-lg text-red-500 hover:bg-bambu-dark-tertiary transition-colors"
-            title={t('bugReport.title')}
-            aria-label={t('bugReport.title')}
-          >
-            <Bug className="w-5 h-5" />
-          </button>
+          <div className="ml-auto flex items-center gap-1">
+            {inboxVisible && (
+              <NavLink
+                to="/notifications"
+                className="relative p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
+                title={t('nav.notifications')}
+                aria-label={t('nav.notifications')}
+              >
+                <Bell className="w-5 h-5 text-white" />
+                {unreadCount > 0 && (
+                  <span className="absolute top-0.5 right-0.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-bold rounded-full bg-yellow-500 text-black">
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </span>
+                )}
+              </NavLink>
+            )}
+            {/* Bug report — the compact-layout home of the floating bubble. */}
+            <button
+              onClick={() => setBugReportOpen(true)}
+              className="p-2 -mr-2 rounded-lg text-red-500 hover:bg-bambu-dark-tertiary transition-colors"
+              title={t('bugReport.title')}
+              aria-label={t('bugReport.title')}
+            >
+              <Bug className="w-5 h-5" />
+            </button>
+          </div>
         </header>
       )}
 
       {/* Compact Drawer Backdrop */}
       {isSidebarCompact && mobileDrawerOpen && (
+        // not-a-modal: drawer
         <div
-          className="fixed inset-0 bg-black/60 z-40 transition-opacity"
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 transition-opacity"
           onClick={() => setMobileDrawerOpen(false)}
         />
       )}
 
       {/* Sidebar / Mobile Drawer */}
+      {/* z-[49]: above the drawer's own backdrop and the header (both z-40),
+          below the modal layer (z = 50 + stack position) — the drawer is
+          inside #root, which the modal stack marks inert while a dialog is
+          open, so a drawer painting over one would be visible but dead. */}
       <aside
         className={`bg-bambu-dark-secondary border-r border-bambu-dark-tertiary flex flex-col transition-all duration-300 ${
           isSidebarCompact
-            ? `fixed inset-y-0 left-0 z-50 w-72 transform ${mobileDrawerOpen ? 'translate-x-0' : '-translate-x-full'}`
+            ? `fixed inset-y-0 left-0 z-[49] w-72 transform ${mobileDrawerOpen ? 'translate-x-0' : '-translate-x-full'}`
             : `fixed inset-y-0 left-0 z-30 ${sidebarExpanded ? 'w-64' : 'w-16'}`
         }`}
       >
         {/* Logo (clickable — opens the public landing page in a new tab).
-            Collapsed sidebar uses the standalone icon (favicon-style,
-            android-chrome-192 — pre-cropped square, no wordmark to
-            partial-letter-clip); expanded uses the theme-aware wordmark
-            PNG. */}
+            Expanded: the compact lock-up (mark + wordmark, no tagline).
+            Collapsed rail: the mark alone — the lock-up would clip mid-letter. */}
         <div className={`border-b border-bambu-dark-tertiary flex items-center justify-center ${isSidebarCompact || sidebarExpanded ? 'p-4' : 'p-2'}`}>
           <a
             href={LANDING_URL}
@@ -847,11 +889,11 @@ export function Layout() {
             <img
               src={
                 isSidebarCompact || sidebarExpanded
-                  ? (resolvedMode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png')
-                  : '/img/android-chrome-192x192.png'
+                  ? (resolvedMode === 'dark' ? '/img/brand/lockup-compact-on-dark.svg' : '/img/brand/lockup-compact-on-light.svg')
+                  : (resolvedMode === 'dark' ? '/img/brand/mark-on-dark-64.png' : '/img/brand/mark-on-light-64.png')
               }
               alt="BamDude"
-              className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-12 w-12 rounded'}
+              className={isSidebarCompact || sidebarExpanded ? 'h-12 w-auto' : 'h-10 w-10'}
             />
           </a>
         </div>
@@ -999,8 +1041,9 @@ export function Layout() {
 
                 const { to, icon: Icon, labelKey } = navItem;
                 const showQueueBadge = id === 'queue' && pendingQueueCount > 0;
-                const badgeCount = showQueueBadge ? pendingQueueCount : 0;
-                const showBadge = showQueueBadge;
+                const showInboxBadge = id === 'notifications' && unreadCount > 0;
+                const badgeCount = showQueueBadge ? pendingQueueCount : showInboxBadge ? unreadCount : 0;
+                const showBadge = showQueueBadge || showInboxBadge;
                 const showClearPlateDot = id === 'printers' && needsClearPlate;
 
                 return (
@@ -1342,189 +1385,153 @@ export function Layout() {
 
       {/* Plate Detection Alert Modal */}
       {plateDetectionAlert && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[100] p-4">
-          <div className="bg-bambu-dark-secondary border-2 border-yellow-500 rounded-xl shadow-2xl max-w-md w-full animate-in fade-in zoom-in duration-200">
-            <div className="p-6 text-center">
-              <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-yellow-500/20 flex items-center justify-center">
-                <svg className="w-10 h-10 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-              </div>
-              <h2 className="text-xl font-bold text-yellow-700 dark:text-yellow-400 mb-2">
-                {t('plateAlert.title')}
-              </h2>
-              <p className="text-lg text-white mb-2">
-                {plateDetectionAlert.printer_name}
-              </p>
-              <p className="text-bambu-gray mb-6">
-                {t('plateAlert.message')}
-              </p>
-              <button
-                onClick={() => setPlateDetectionAlert(null)}
-                className="w-full py-3 px-6 bg-yellow-500 hover:bg-yellow-600 text-black font-semibold rounded-lg transition-colors"
-              >
-                {t('plateAlert.understand')}
-              </button>
+        // The yellow accent border is this alert's whole point; an inline style
+        // beats the shell's `border-bambu-dark-tertiary` whatever the emit order.
+        <Modal
+          onClose={() => setPlateDetectionAlert(null)}
+          hideClose
+          ariaLabel={t('plateAlert.title')}
+          size="md"
+          panelClassName="animate-in fade-in zoom-in duration-200"
+          panelStyle={{ borderWidth: 2, borderColor: 'var(--color-yellow-500)' }}
+        >
+          <div className="p-4 text-center">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-yellow-500/20 flex items-center justify-center">
+              <svg className="w-10 h-10 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
             </div>
+            <h2 className="text-xl font-bold text-yellow-700 dark:text-yellow-400 mb-2">
+              {t('plateAlert.title')}
+            </h2>
+            <p className="text-lg text-white mb-2">
+              {plateDetectionAlert.printer_name}
+            </p>
+            <p className="text-bambu-gray mb-4">
+              {t('plateAlert.message')}
+            </p>
+            <button
+              onClick={() => setPlateDetectionAlert(null)}
+              className="w-full py-3 px-4 bg-yellow-500 hover:bg-yellow-600 text-black font-semibold rounded-lg transition-colors"
+            >
+              {t('plateAlert.understand')}
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Change Password Modal */}
       {showChangePasswordModal && (
-        <div
-          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-          onClick={() => {
+        <Modal
+          onClose={() => {
             setShowChangePasswordModal(false);
             setChangePasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
           }}
+          title={t('changePassword.title')}
+          icon={<Key className="w-5 h-5 text-bambu-green" />}
+          size="md"
         >
-          <Card
-            className="w-full max-w-md"
-            onClick={(e: React.MouseEvent) => e.stopPropagation()}
-          >
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Key className="w-5 h-5 text-bambu-green" />
-                  <h2 className="text-lg font-semibold text-white">{t('changePassword.title')}</h2>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
+          <CardContent>
+            <div className="space-y-4">
+              {/* Hidden username anchor so password-manager extensions (1Password,
+                  Bitwarden, browser built-ins) key the Change Password flow to
+                  the current user instead of hunting the DOM for a generic text
+                  input (which used to latch onto the Printers-page search bar
+                  and render it as a masked field — upstream #597d961b). */}
+              <input
+                type="text"
+                name="username"
+                autoComplete="username"
+                value={user?.username ?? ''}
+                readOnly
+                hidden
+                aria-hidden="true"
+                tabIndex={-1}
+              />
+              {/* No rules on the current password: they describe the NEW one,
+                  and an account created before they existed is still valid. */}
+              <PasswordField
+                label={t('changePassword.currentPassword')}
+                value={changePasswordData.currentPassword}
+                onChange={(currentPassword) => setChangePasswordData({ ...changePasswordData, currentPassword })}
+                placeholder={t('changePassword.currentPasswordPlaceholder')}
+                autoComplete="current-password"
+              />
+              <PasswordField
+                label={t('changePassword.newPassword')}
+                value={changePasswordData.newPassword}
+                onChange={(newPassword) => setChangePasswordData({ ...changePasswordData, newPassword })}
+                placeholder={t('changePassword.newPasswordPlaceholder')}
+                showRules
+              />
+              <PasswordField
+                label={t('changePassword.confirmPassword')}
+                value={changePasswordData.confirmPassword}
+                onChange={(confirmPassword) => setChangePasswordData({ ...changePasswordData, confirmPassword })}
+                placeholder={t('changePassword.confirmPasswordPlaceholder')}
+                mustMatch={changePasswordData.newPassword}
+              />
+            </div>
+            <div className="mt-4 flex justify-end gap-3">
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setShowChangePasswordModal(false);
+                  setChangePasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
+                }}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                onClick={async () => {
+                  if (changePasswordData.newPassword !== changePasswordData.confirmPassword) {
+                    showToast(t('changePassword.passwordsDoNotMatch'), 'error');
+                    return;
+                  }
+                  const ruleKey = checkPasswordComplexity(changePasswordData.newPassword);
+                  if (ruleKey) {
+                    showToast(t(ruleKey), 'error');
+                    return;
+                  }
+                  setChangePasswordLoading(true);
+                  try {
+                    await api.changePassword(changePasswordData.currentPassword, changePasswordData.newPassword);
+                    showToast(t('changePassword.success'), 'success');
                     setShowChangePasswordModal(false);
                     setChangePasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
-                  }}
-                >
-                  <X className="w-5 h-5" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {/* Hidden username anchor so password-manager extensions (1Password,
-                    Bitwarden, browser built-ins) key the Change Password flow to
-                    the current user instead of hunting the DOM for a generic text
-                    input (which used to latch onto the Printers-page search bar
-                    and render it as a masked field — upstream #597d961b). */}
-                <input
-                  type="text"
-                  name="username"
-                  autoComplete="username"
-                  value={user?.username ?? ''}
-                  readOnly
-                  hidden
-                  aria-hidden="true"
-                  tabIndex={-1}
-                />
-                <div>
-                  <label className="block text-sm font-medium text-white mb-2">
-                    {t('changePassword.currentPassword')}
-                  </label>
-                  <input
-                    type="password"
-                    value={changePasswordData.currentPassword}
-                    onChange={(e) => setChangePasswordData({ ...changePasswordData, currentPassword: e.target.value })}
-                    className="w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
-                    placeholder={t('changePassword.currentPasswordPlaceholder')}
-                    autoComplete="current-password"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-white mb-2">
-                    {t('changePassword.newPassword')}
-                  </label>
-                  <input
-                    type="password"
-                    value={changePasswordData.newPassword}
-                    onChange={(e) => setChangePasswordData({ ...changePasswordData, newPassword: e.target.value })}
-                    className="w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
-                    placeholder={t('changePassword.newPasswordPlaceholder')}
-                    autoComplete="new-password"
-                    minLength={6}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-white mb-2">
-                    {t('changePassword.confirmPassword')}
-                  </label>
-                  <input
-                    type="password"
-                    value={changePasswordData.confirmPassword}
-                    onChange={(e) => setChangePasswordData({ ...changePasswordData, confirmPassword: e.target.value })}
-                    className={`w-full px-4 py-3 bg-bambu-dark-secondary border rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors ${
-                      changePasswordData.confirmPassword && changePasswordData.newPassword !== changePasswordData.confirmPassword
-                        ? 'border-red-500'
-                        : 'border-bambu-dark-tertiary'
-                    }`}
-                    placeholder={t('changePassword.confirmPasswordPlaceholder')}
-                    autoComplete="new-password"
-                    minLength={6}
-                  />
-                  {changePasswordData.confirmPassword && changePasswordData.newPassword !== changePasswordData.confirmPassword && (
-                    <p className="text-red-700 dark:text-red-400 text-xs mt-1">{t('changePassword.passwordsDoNotMatch')}</p>
-                  )}
-                </div>
-              </div>
-              <div className="mt-6 flex justify-end gap-3">
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    setShowChangePasswordModal(false);
-                    setChangePasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
-                  }}
-                >
-                  {t('common.cancel')}
-                </Button>
-                <Button
-                  onClick={async () => {
-                    if (changePasswordData.newPassword !== changePasswordData.confirmPassword) {
-                      showToast(t('changePassword.passwordsDoNotMatch'), 'error');
-                      return;
-                    }
-                    if (changePasswordData.newPassword.length < 6) {
-                      showToast(t('changePassword.passwordTooShort'), 'error');
-                      return;
-                    }
-                    setChangePasswordLoading(true);
-                    try {
-                      await api.changePassword(changePasswordData.currentPassword, changePasswordData.newPassword);
-                      showToast(t('changePassword.success'), 'success');
-                      setShowChangePasswordModal(false);
-                      setChangePasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
-                    } catch (error: unknown) {
-                      const message = error instanceof Error ? error.message : t('changePassword.failed');
-                      showToast(message, 'error');
-                    } finally {
-                      setChangePasswordLoading(false);
-                    }
-                  }}
-                  disabled={changePasswordLoading || !changePasswordData.currentPassword || !changePasswordData.newPassword || changePasswordData.newPassword !== changePasswordData.confirmPassword || changePasswordData.newPassword.length < 6}
-                >
-                  {changePasswordLoading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      {t('changePassword.changing')}
-                    </>
-                  ) : (
-                    <>
-                      <Key className="w-4 h-4" />
-                      {t('changePassword.title')}
-                    </>
-                  )}
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+                  } catch (error: unknown) {
+                    const message = error instanceof Error ? error.message : t('changePassword.failed');
+                    showToast(message, 'error');
+                  } finally {
+                    setChangePasswordLoading(false);
+                  }
+                }}
+                disabled={changePasswordLoading || !changePasswordData.currentPassword || !changePasswordData.newPassword || changePasswordData.newPassword !== changePasswordData.confirmPassword || !isPasswordValid(changePasswordData.newPassword)}
+              >
+                {changePasswordLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    {t('changePassword.changing')}
+                  </>
+                ) : (
+                  <>
+                    <Key className="w-4 h-4" />
+                    {t('changePassword.title')}
+                  </>
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Modal>
       )}
 
       {/* ⚠️ The panel always mounts HERE, at the Layout root. It must not move
           into the header alongside its compact-layout trigger: the header is
           `fixed z-40` and so its own stacking context, which would cap the
-          z-50 panel at the header's level and bury it under every ordinary
-          modal in the app. */}
+          panel at the header's level whatever its own z-index says. At the
+          Layout root it sits at `z-[49]`, one below the modal layer
+          (z = 50 + stack position) — above the header, and never over a dialog
+          it would be inert under. */}
       <BugReportBubble
         showTrigger={!isSidebarCompact}
         open={bugReportOpen}

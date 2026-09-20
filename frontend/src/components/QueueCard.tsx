@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type DragEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -37,7 +37,6 @@ import {
   Layers,
   Ungroup,
   GripVertical,
-  CheckSquare,
   Pencil,
   MoreVertical,
   Upload,
@@ -46,6 +45,7 @@ import {
   ListPlus,
   Copy,
 } from 'lucide-react';
+import { SelectionBox } from './SelectionBox';
 import { BatchActionDialog } from './Queue/BatchActionDialog';
 import { CopyQueueModal } from './CopyQueueModal';
 import { copyableItems, withCurrentPrint } from '../lib/copyQueue';
@@ -63,10 +63,16 @@ import { formatETA, formatDuration } from '../utils/date';
 import { getBedTypeInfo } from '../utils/bedType';
 import { mapModelCode } from '../utils/printer';
 import { queueResumePayload } from '../utils/queueStatus';
+import { invalidateQueueViews } from '../utils/queryInvalidation';
+import { usePlateDefects } from '../hooks/usePlateDefects';
+import { PlateDefectsRow } from './PlateDefectsRow';
+import { QueueSourceIndicator } from './QueueSourceIndicator';
 
 interface QueueCardProps {
   queue: PrinterQueue;
   onEditItem?: (item: PrintQueueItem) => void;
+  /** WindowVirtualGrid must measure a full card; normal grids can defer it. */
+  virtualized?: boolean;
 }
 
 // 6 distinct hues for batch grouping — intentionally avoids green (success)
@@ -114,7 +120,7 @@ function StatusBadge({ status, t }: { status: string; t: (key: string) => string
   );
 }
 
-export function QueueCard({ queue, onEditItem }: QueueCardProps) {
+export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -196,33 +202,8 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     mutationFn: (data: { status?: 'idle' | 'paused'; is_paused?: boolean; auto_distribute_eligible?: boolean }) =>
       api.updateQueue(queue.id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['queues'] });
-      queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
+      invalidateQueueViews(queryClient);
       showToast(t('queueCard.toast.statusUpdated'), 'success');
-    },
-    onError: (err: Error) => {
-      showToast(err.message, 'error');
-    },
-  });
-
-  // Clear plate mutation
-  // The other answer to a full plate — see services/plate_hold on the backend.
-  const repeatPrintMutation = useMutation({
-    mutationFn: () => api.repeatPrint(queue.printer_id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
-      queryClient.invalidateQueries({ queryKey: ['printerStatus', queue.printer_id] });
-      showToast(t('queue.repeatPrintSuccess'), 'success');
-    },
-    onError: (error: Error) => showToast(error.message, 'error'),
-  });
-
-  const clearPlateMutation = useMutation({
-    mutationFn: () => api.clearPlate(queue.printer_id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
-      queryClient.invalidateQueries({ queryKey: ['printerStatus', queue.printer_id] });
-      showToast(t('queue.clearPlateSuccess'), 'success');
     },
     onError: (err: Error) => {
       showToast(err.message, 'error');
@@ -233,7 +214,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
   const startItemMutation = useMutation({
     mutationFn: (itemId: number) => api.startQueueItem(itemId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
+      invalidateQueueViews(queryClient);
       queryClient.invalidateQueries({ queryKey: ['printerStatus', queue.printer_id] });
       showToast(t('queueCard.toast.itemStarted'), 'success');
     },
@@ -246,7 +227,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
   const cancelItemMutation = useMutation({
     mutationFn: (itemId: number) => api.cancelQueueItem(itemId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
+      invalidateQueueViews(queryClient);
       showToast(t('queue.toast.cancelled'), 'success');
     },
     onError: (err: Error) => {
@@ -276,15 +257,14 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     mutationFn: () => api.stopPrint(queue.printer_id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['printerStatus', queue.printer_id] });
-      queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
+      invalidateQueueViews(queryClient);
       showToast(t('queueCard.toast.stopped'), 'success');
     },
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
   // ── Queue item commands (reorder / bump / clone / skip / toggle / retry) ──
-  const invalidateQueue = () =>
-    queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
+  const invalidateQueue = () => invalidateQueueViews(queryClient);
 
   const reorderMutation = useMutation({
     mutationFn: ({ id, direction }: { id: number; direction: 'up' | 'down' }) =>
@@ -559,14 +539,12 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     () => withCurrentPrint(copyableItems(queueRows), status),
     [queueRows, status],
   );
-  const copyDroppedCount = queueRows.length - copyableItems(queueRows).length;
   const canCopyQueue = copySourceItems.length > 0;
 
   const copyQueueModal = copyOpen ? (
     <CopyQueueModal
       source={queue}
       items={copySourceItems}
-      droppedCount={copyDroppedCount}
       onCancel={() => setCopyOpen(false)}
       onConfirm={(files, printerIds) => {
         setCopyOpen(false);
@@ -594,16 +572,17 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
       // The card IS the printer, so the run is pinned to it — shown in the
       // dialog and not untickable, rather than hidden. A copy run pins the
       // printers it was aimed at instead; PrintModal queues to every one of
-      // them and maps filament per printer, so one dialog per item covers the
-      // whole copy.
+      // them and maps filament per printer, so one dialog covers a whole GROUP
+      // of items across every target printer. (Once per item until copies
+      // learned to group — the plate still rides on each item, so nothing is
+      // expanded.)
       initialSelectedPrinterIds={copyTargetIds ?? [queue.printer_id]}
       lockPrinterSelection
       lockDispatchMode
       onDone={() => {
         setDroppedForQueue(null);
         setCopyTargetIds(null);
-        queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
-        queryClient.invalidateQueries({ queryKey: ['queues'] });
+        invalidateQueueViews(queryClient);
       }}
     />
   ) : null;
@@ -615,6 +594,40 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
     (status?.state === 'FINISH' || status?.state === 'FAILED') &&
     !!status?.awaiting_plate_clear &&
     hasAutoDispatchItems;
+
+  // The defects counters beside this pair — the same hook the printer card and
+  // its queue widget use, so the Queue page is not the one place without them.
+  // Declared after `needsClearPlate` because the query is gated on it.
+  const queueDefects = usePlateDefects(queue.printer_id, needsClearPlate);
+
+  // The other answer to a full plate — see services/plate_hold on the backend.
+  const repeatPrintMutation = useMutation({
+    mutationFn: () => api.repeatPrint(queue.printer_id, queueDefects.body()),
+    onSuccess: (result) => {
+      invalidateQueueViews(queryClient);
+      queryClient.invalidateQueries({ queryKey: ['printerStatus', queue.printer_id] });
+      showToast(t('queue.repeatPrintSuccess'), 'success');
+      queueDefects.afterAnswer(result.ledger_refused_parts);
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+      queueDefects.afterFailedAnswer();
+    },
+  });
+
+  const clearPlateMutation = useMutation({
+    mutationFn: () => api.clearPlate(queue.printer_id, queueDefects.body()),
+    onSuccess: (result) => {
+      invalidateQueueViews(queryClient);
+      queryClient.invalidateQueries({ queryKey: ['printerStatus', queue.printer_id] });
+      showToast(t('queue.clearPlateSuccess'), 'success');
+      queueDefects.afterAnswer(result.ledger_refused_parts);
+    },
+    onError: (err: Error) => {
+      showToast(err.message, 'error');
+      queueDefects.afterFailedAnswer();
+    },
+  });
 
   // Find the current printing item (first printing-status item from pending query, or use status info)
   const currentPrintName = status?.subtask_name || status?.current_print;
@@ -651,6 +664,8 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
   return (
     <div
       className="relative"
+      data-live-status-printer-id={queue.printer_id}
+      style={virtualized ? undefined : { contentVisibility: 'auto', containIntrinsicSize: '480px' }}
       onDragEnter={handleCardDragEnter}
       onDragOver={handleCardDragOver}
       onDragLeave={handleCardDragLeave}
@@ -887,6 +902,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
         {/* Clear plate section */}
         {needsClearPlate && (
           <div>
+            <PlateDefectsRow defects={queueDefects} className="mb-2" />
             {clearPlateMutation.isSuccess ? (
               <div className="w-full py-2 px-3 rounded-lg bg-bambu-green/10 border border-bambu-green/20 text-bambu-green text-sm flex items-center justify-center gap-2">
                 <CircleCheck className="w-4 h-4" />
@@ -894,18 +910,20 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
               </div>
             ) : (
               <div className="flex gap-2">
-                <button
-                  onClick={() => repeatPrintMutation.mutate()}
-                  disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
-                  className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                  {repeatPrintMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <RotateCcw className="w-4 h-4" />
-                  )}
-                  {t('queue.repeatPrint')}
-                </button>
+                {status?.repeat_available !== false && (
+                  <button
+                    onClick={() => repeatPrintMutation.mutate()}
+                    disabled={repeatPrintMutation.isPending || !hasPermission('printers:clear_plate')}
+                    className="flex-1 py-2 px-3 rounded-lg bg-bambu-green/20 border border-bambu-green/40 text-bambu-green hover:bg-bambu-green/30 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {repeatPrintMutation.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <RotateCcw className="w-4 h-4" />
+                    )}
+                    {t('queue.repeatPrint')}
+                  </button>
+                )}
                 <button
                   onClick={() => clearPlateMutation.mutate()}
                   disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}
@@ -1030,7 +1048,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
             {/* Gradient fade + expand button */}
             {hiddenCount > 0 && !expanded && (
               <div className="relative">
-                <div className="absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-bambu-dark-secondary to-transparent pointer-events-none" />
+                <div className="absolute inset-x-0 -top-4 h-6 bg-gradient-to-t from-bambu-dark-secondary to-transparent pointer-events-none" />
                 <button
                   onClick={() => setExpanded(true)}
                   className="w-full flex items-center justify-center gap-1 py-1 text-xs text-bambu-gray hover:text-white transition-colors"
@@ -1215,9 +1233,9 @@ function PendingItemRow({
             aria-pressed={selected}
           >
             {selected ? (
-              <CheckSquare className="w-3.5 h-3.5 text-bambu-green" />
+              <SelectionBox checked={true} className="w-3.5 h-3.5" />
             ) : (
-              <Square className="w-3.5 h-3.5" />
+              <SelectionBox checked={false} className="w-3.5 h-3.5" />
             )}
           </button>
         )}
@@ -1260,6 +1278,14 @@ function PendingItemRow({
                 />
               );
             })()}
+            {/* Does this job own the bytes it prints (m173)? Same place and
+                same size as the plate icon above, for the same reason: it lines
+                up down the column and the row keeps its geometry. Renders
+                nothing at all for an external print or an older server. */}
+            <QueueSourceIndicator
+              state={item.source_storage}
+              className="w-3 h-3"
+            />
             <p className="text-xs text-white truncate flex-1">{name}</p>
             {isInBatch && batchAccent && (
               <span className={`text-[9px] px-1 rounded ${batchAccent.badge} font-medium`}>
@@ -1354,6 +1380,7 @@ function PendingItemRow({
             </button>
             {menuOpen && (
               <>
+                {/* not-a-modal: menu */}
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
                 <div className="absolute right-0 top-full mt-1 z-20 min-w-[180px] rounded-md bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-xl py-1 text-xs">
                   {item.archive_id && (
@@ -1566,6 +1593,14 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
             return (
               <div key={item.id} className="flex items-center gap-2 py-1 px-2 rounded bg-red-500/5 group">
                 <X className="w-3 h-3 text-red-600 dark:text-red-400 flex-shrink-0" />
+                {/* A failed row keeps its saved file ON PURPOSE, so Retry has
+                    something to print — the tooltip says so where the operator
+                    is looking at the row that is holding it (spec §10). */}
+                <QueueSourceIndicator
+                  state={item.source_storage}
+                  held
+                  className="w-3 h-3"
+                />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-white truncate">{name}</p>
                   {item.error_message && (
@@ -1598,6 +1633,11 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
             return (
               <div key={item.id} className="flex items-center gap-2 py-1 px-2 rounded bg-bambu-dark-tertiary/40 group">
                 <Ban className="w-3 h-3 text-bambu-gray flex-shrink-0" />
+                <QueueSourceIndicator
+                  state={item.source_storage}
+                  held
+                  className="w-3 h-3"
+                />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-white truncate">{name}</p>
                   {item.error_message && (
@@ -1630,6 +1670,11 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
             return (
               <div key={item.id} className="flex items-center gap-2 py-1 px-2 rounded bg-yellow-500/5 group">
                 <Pause className="w-3 h-3 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
+                <QueueSourceIndicator
+                  state={item.source_storage}
+                  held
+                  className="w-3 h-3"
+                />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-white truncate">{name}</p>
                 </div>

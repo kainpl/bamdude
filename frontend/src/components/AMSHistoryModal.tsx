@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useId, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { X, Droplets, Thermometer, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { Droplets, Thermometer, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -16,6 +16,7 @@ import { api, type AMSHistoryResponse } from '../api/client';
 import { parseUTCDate, applyTimeFormat, type TimeFormat } from '../utils/date';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
+import { Modal } from './Modal';
 
 interface AMSHistoryModalProps {
   isOpen: boolean;
@@ -54,6 +55,7 @@ export function AMSHistoryModal({
 }: AMSHistoryModalProps) {
   const { t } = useTranslation();
   const { resolvedMode: themeMode } = useTheme();
+  const headingId = useId();
   const [timeRange, setTimeRange] = useState<TimeRange>('24h');
   const [mode, setMode] = useState<'humidity' | 'temperature'>(initialMode);
   const isDark = themeMode === 'dark';
@@ -64,16 +66,6 @@ export function AMSHistoryModal({
   });
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';
-
-  // Close on Escape key
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
 
   const hours = TIME_RANGES.find(r => r.value === timeRange)?.hours || 24;
 
@@ -171,237 +163,223 @@ export function AMSHistoryModal({
   const textSecondary = 'var(--text-muted)';
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
-      <div
-        className="rounded-xl w-full max-w-4xl max-h-[90vh] overflow-hidden shadow-xl"
-        style={{ backgroundColor: modalBg }}
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div
-          className="flex items-center justify-between px-6 py-4 border-b"
-          style={{ borderColor }}
-        >
-          <div>
-            <h2 className="text-lg font-semibold" style={{ color: textPrimary }}>
-              {amsLabel} {t('common.history', 'History')}
-            </h2>
-            <p className="text-sm" style={{ color: textSecondary }}>{printerName}</p>
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      header={
+        <div>
+          <h2 id={headingId} className="text-lg font-semibold" style={{ color: textPrimary }}>
+            {amsLabel} {t('common.history', 'History')}
+          </h2>
+          <p className="text-sm" style={{ color: textSecondary }}>{printerName}</p>
+        </div>
+      }
+      size="4xl"
+    >
+      {/* Content */}
+      <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(90vh-80px)]">
+        {/* Time Range & Mode Selector */}
+        <div className="flex items-center justify-between max-[550px]:flex-col max-[550px]:items-start max-[550px]:gap-3">
+          <div className="inline-flex gap-1 rounded-lg p-1 max-w-full flex-wrap w-fit" style={{ backgroundColor: cardBg }}>
+            <button
+              onClick={() => setMode('humidity')}
+              className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors ${
+                mode === 'humidity' ? 'bg-blue-600 text-white' : ''
+              }`}
+              style={mode !== 'humidity' ? { color: textSecondary } : undefined}
+            >
+              <Droplets className="w-4 h-4" />
+              {t('common.humidity', 'Humidity')}
+            </button>
+            <button
+              onClick={() => setMode('temperature')}
+              className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors ${
+                mode === 'temperature' ? 'bg-orange-600 text-white' : ''
+              }`}
+              style={mode !== 'temperature' ? { color: textSecondary } : undefined}
+            >
+              <Thermometer className="w-4 h-4" />
+              {t('common.temperature', 'Temperature')}
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-lg transition-colors"
-            style={{ color: textSecondary }}
-          >
-            <X className="w-5 h-5" />
-          </button>
+
+          <div className="inline-flex gap-1 rounded-lg p-1 max-w-full flex-wrap w-fit" style={{ backgroundColor: cardBg }}>
+            {TIME_RANGES.map(range => (
+              <button
+                key={range.value}
+                onClick={() => setTimeRange(range.value)}
+                className={`px-3 py-1 text-sm rounded-md transition-colors ${
+                  timeRange === range.value ? 'bg-bambu-green text-white' : ''
+                }`}
+                style={timeRange !== range.value ? { color: textSecondary } : undefined}
+              >
+                {range.label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/* Content */}
-        <div className="p-6 space-y-6 overflow-y-auto max-h-[calc(90vh-80px)]">
-          {/* Time Range & Mode Selector */}
-          <div className="flex items-center justify-between max-[550px]:flex-col max-[550px]:items-start max-[550px]:gap-3">
-            <div className="inline-flex gap-1 rounded-lg p-1 max-w-full flex-wrap w-fit" style={{ backgroundColor: cardBg }}>
-              <button
-                onClick={() => setMode('humidity')}
-                className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors ${
-                  mode === 'humidity' ? 'bg-blue-600 text-white' : ''
-                }`}
-                style={mode !== 'humidity' ? { color: textSecondary } : undefined}
-              >
-                <Droplets className="w-4 h-4" />
-                {t('common.humidity', 'Humidity')}
-              </button>
-              <button
-                onClick={() => setMode('temperature')}
-                className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors ${
-                  mode === 'temperature' ? 'bg-orange-600 text-white' : ''
-                }`}
-                style={mode !== 'temperature' ? { color: textSecondary } : undefined}
-              >
-                <Thermometer className="w-4 h-4" />
-                {t('common.temperature', 'Temperature')}
-              </button>
+        {/* Stats Cards */}
+        <div className="grid grid-cols-4 gap-4 max-[550px]:grid-cols-2">
+          {mode === 'humidity' ? (
+            <>
+              <div className="rounded-lg p-4 max-[550px]:order-2" style={{ backgroundColor: cardBg }}>
+                <p className="text-xs" style={{ color: textSecondary }}>{t('common.current', 'Current')}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-2xl font-bold" style={{ color: getHumidityColor(currentHumidity) }}>
+                    {currentHumidity != null ? `${currentHumidity}%` : '-'}
+                  </p>
+                  <TrendIcon trend={humidityTrend} />
+                </div>
+              </div>
+              <div className="rounded-lg p-4 max-[550px]:order-4" style={{ backgroundColor: cardBg }}>
+                <p className="text-xs" style={{ color: textSecondary }}>{t('common.average', 'Average')}</p>
+                <p className="text-2xl font-bold" style={{ color: textPrimary }}>
+                  {data?.avg_humidity != null ? `${data.avg_humidity}%` : '-'}
+                </p>
+              </div>
+              <div className="rounded-lg p-4 max-[550px]:order-1" style={{ backgroundColor: cardBg }}>
+                <p className="text-xs" style={{ color: textSecondary }}>{t('common.min', 'Min')}</p>
+                <p className="text-2xl font-bold text-green-500">
+                  {data?.min_humidity != null ? `${data.min_humidity}%` : '-'}
+                </p>
+              </div>
+              <div className="rounded-lg p-4 max-[550px]:order-3" style={{ backgroundColor: cardBg }}>
+                <p className="text-xs" style={{ color: textSecondary }}>{t('common.max', 'Max')}</p>
+                <p className="text-2xl font-bold text-red-500">
+                  {data?.max_humidity != null ? `${data.max_humidity}%` : '-'}
+                </p>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="rounded-lg p-4 max-[550px]:order-2" style={{ backgroundColor: cardBg }}>
+                <p className="text-xs" style={{ color: textSecondary }}>{t('common.current', 'Current')}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-2xl font-bold" style={{ color: getTempColor(currentTemp) }}>
+                    {currentTemp != null ? `${currentTemp}°C` : '-'}
+                  </p>
+                  <TrendIcon trend={tempTrend} />
+                </div>
+              </div>
+              <div className="rounded-lg p-4 max-[550px]:order-4" style={{ backgroundColor: cardBg }}>
+                <p className="text-xs" style={{ color: textSecondary }}>{t('common.average', 'Average')}</p>
+                <p className="text-2xl font-bold" style={{ color: textPrimary }}>
+                  {data?.avg_temperature != null ? `${data.avg_temperature}°C` : '-'}
+                </p>
+              </div>
+              <div className="rounded-lg p-4 max-[550px]:order-1" style={{ backgroundColor: cardBg }}>
+                <p className="text-xs" style={{ color: textSecondary }}>{t('common.min', 'Min')}</p>
+                <p className="text-2xl font-bold text-blue-500">
+                  {data?.min_temperature != null ? `${data.min_temperature}°C` : '-'}
+                </p>
+              </div>
+              <div className="rounded-lg p-4 max-[550px]:order-3" style={{ backgroundColor: cardBg }}>
+                <p className="text-xs" style={{ color: textSecondary }}>{t('common.max', 'Max')}</p>
+                <p className="text-2xl font-bold text-red-500">
+                  {data?.max_temperature != null ? `${data.max_temperature}°C` : '-'}
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Chart */}
+        <div className="rounded-lg p-4" style={{ backgroundColor: cardBg }}>
+          {isLoading ? (
+            <div className="h-[300px] flex items-center justify-center" style={{ color: textSecondary }}>
+              {t('common.loading', 'Loading...')}
             </div>
-
-            <div className="inline-flex gap-1 rounded-lg p-1 max-w-full flex-wrap w-fit" style={{ backgroundColor: cardBg }}>
-              {TIME_RANGES.map(range => (
-                <button
-                  key={range.value}
-                  onClick={() => setTimeRange(range.value)}
-                  className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                    timeRange === range.value ? 'bg-bambu-green text-white' : ''
-                  }`}
-                  style={timeRange !== range.value ? { color: textSecondary } : undefined}
-                >
-                  {range.label}
-                </button>
-              ))}
+          ) : error ? (
+            <div className="h-[300px] flex items-center justify-center text-red-500">
+              {t('common.error', 'Error loading data')}
             </div>
-          </div>
+          ) : chartData.length === 0 ? (
+            <div className="h-[300px] flex items-center justify-center" style={{ color: textSecondary }}>
+              {t('common.noData', 'No data available for this time range')}
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#3d3d3d' : '#e5e7eb'} />
+                <XAxis
+                  dataKey="time"
+                  type="number"
+                  domain={[Date.now() - hours * 60 * 60 * 1000, Date.now()]}
+                  tickFormatter={(ts) => {
+                    const date = new Date(ts);
+                    if (hours > 24) {
+                      return date.toLocaleDateString([], { day: 'numeric', month: 'short' });
+                    }
+                    return date.toLocaleTimeString([], applyTimeFormat({ hour: '2-digit', minute: '2-digit' }, timeFormat));
+                  }}
+                  stroke={isDark ? '#9ca3af' : '#6b7280'}
+                  tick={{ fontSize: 12 }}
+                />
+                <YAxis
+                  stroke={isDark ? '#9ca3af' : '#6b7280'}
+                  tick={{ fontSize: 12 }}
+                  domain={mode === 'humidity' ? [0, 100] : ['auto', 'auto']}
+                  tickFormatter={(value) => mode === 'humidity' ? `${value}%` : `${value}°C`}
+                />
+                <Tooltip
+                  contentStyle={{
+                    // Recharts renders the tooltip as an HTML <div>, not SVG,
+                    // so the var() caveat above does not apply here — these
+                    // resolve against :root and follow the user's background
+                    // variant like the rest of the modal.
+                    backgroundColor: modalBg,
+                    border: `1px solid ${borderColor}`,
+                    borderRadius: '8px',
+                    color: textPrimary,
+                  }}
+                  labelFormatter={(ts) => new Date(ts).toLocaleString(undefined, applyTimeFormat({
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  }, timeFormat))}
+                  formatter={(value) => [
+                    mode === 'humidity' ? `${value ?? 0}%` : `${value ?? 0}°C`,
+                    mode === 'humidity' ? 'Humidity' : 'Temperature'
+                  ]}
+                />
+                <Legend />
 
-          {/* Stats Cards */}
-          <div className="grid grid-cols-4 gap-4 max-[550px]:grid-cols-2">
-            {mode === 'humidity' ? (
-              <>
-                <div className="rounded-lg p-4 max-[550px]:order-2" style={{ backgroundColor: cardBg }}>
-                  <p className="text-xs" style={{ color: textSecondary }}>{t('common.current', 'Current')}</p>
-                  <div className="flex items-center gap-2">
-                    <p className="text-2xl font-bold" style={{ color: getHumidityColor(currentHumidity) }}>
-                      {currentHumidity != null ? `${currentHumidity}%` : '-'}
-                    </p>
-                    <TrendIcon trend={humidityTrend} />
-                  </div>
-                </div>
-                <div className="rounded-lg p-4 max-[550px]:order-4" style={{ backgroundColor: cardBg }}>
-                  <p className="text-xs" style={{ color: textSecondary }}>{t('common.average', 'Average')}</p>
-                  <p className="text-2xl font-bold" style={{ color: textPrimary }}>
-                    {data?.avg_humidity != null ? `${data.avg_humidity}%` : '-'}
-                  </p>
-                </div>
-                <div className="rounded-lg p-4 max-[550px]:order-1" style={{ backgroundColor: cardBg }}>
-                  <p className="text-xs" style={{ color: textSecondary }}>{t('common.min', 'Min')}</p>
-                  <p className="text-2xl font-bold text-green-500">
-                    {data?.min_humidity != null ? `${data.min_humidity}%` : '-'}
-                  </p>
-                </div>
-                <div className="rounded-lg p-4 max-[550px]:order-3" style={{ backgroundColor: cardBg }}>
-                  <p className="text-xs" style={{ color: textSecondary }}>{t('common.max', 'Max')}</p>
-                  <p className="text-2xl font-bold text-red-500">
-                    {data?.max_humidity != null ? `${data.max_humidity}%` : '-'}
-                  </p>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="rounded-lg p-4 max-[550px]:order-2" style={{ backgroundColor: cardBg }}>
-                  <p className="text-xs" style={{ color: textSecondary }}>{t('common.current', 'Current')}</p>
-                  <div className="flex items-center gap-2">
-                    <p className="text-2xl font-bold" style={{ color: getTempColor(currentTemp) }}>
-                      {currentTemp != null ? `${currentTemp}°C` : '-'}
-                    </p>
-                    <TrendIcon trend={tempTrend} />
-                  </div>
-                </div>
-                <div className="rounded-lg p-4 max-[550px]:order-4" style={{ backgroundColor: cardBg }}>
-                  <p className="text-xs" style={{ color: textSecondary }}>{t('common.average', 'Average')}</p>
-                  <p className="text-2xl font-bold" style={{ color: textPrimary }}>
-                    {data?.avg_temperature != null ? `${data.avg_temperature}°C` : '-'}
-                  </p>
-                </div>
-                <div className="rounded-lg p-4 max-[550px]:order-1" style={{ backgroundColor: cardBg }}>
-                  <p className="text-xs" style={{ color: textSecondary }}>{t('common.min', 'Min')}</p>
-                  <p className="text-2xl font-bold text-blue-500">
-                    {data?.min_temperature != null ? `${data.min_temperature}°C` : '-'}
-                  </p>
-                </div>
-                <div className="rounded-lg p-4 max-[550px]:order-3" style={{ backgroundColor: cardBg }}>
-                  <p className="text-xs" style={{ color: textSecondary }}>{t('common.max', 'Max')}</p>
-                  <p className="text-2xl font-bold text-red-500">
-                    {data?.max_temperature != null ? `${data.max_temperature}°C` : '-'}
-                  </p>
-                </div>
-              </>
-            )}
-          </div>
+                {/* Threshold lines */}
+                {mode === 'humidity' ? (
+                  <>
+                    <ReferenceLine y={humidityGood} stroke="#22a352" strokeDasharray="5 5" label={{ value: 'Good', fill: '#22a352', fontSize: 10 }} />
+                    <ReferenceLine y={humidityFair} stroke="#d4a017" strokeDasharray="5 5" label={{ value: 'Fair', fill: '#d4a017', fontSize: 10 }} />
+                  </>
+                ) : (
+                  <>
+                    <ReferenceLine y={tempGood} stroke="#22a352" strokeDasharray="5 5" label={{ value: 'Good', fill: '#22a352', fontSize: 10 }} />
+                    <ReferenceLine y={tempFair} stroke="#d4a017" strokeDasharray="5 5" label={{ value: 'Fair', fill: '#d4a017', fontSize: 10 }} />
+                  </>
+                )}
 
-          {/* Chart */}
-          <div className="rounded-lg p-4" style={{ backgroundColor: cardBg }}>
-            {isLoading ? (
-              <div className="h-[300px] flex items-center justify-center" style={{ color: textSecondary }}>
-                {t('common.loading', 'Loading...')}
-              </div>
-            ) : error ? (
-              <div className="h-[300px] flex items-center justify-center text-red-500">
-                {t('common.error', 'Error loading data')}
-              </div>
-            ) : chartData.length === 0 ? (
-              <div className="h-[300px] flex items-center justify-center" style={{ color: textSecondary }}>
-                {t('common.noData', 'No data available for this time range')}
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#3d3d3d' : '#e5e7eb'} />
-                  <XAxis
-                    dataKey="time"
-                    type="number"
-                    domain={[Date.now() - hours * 60 * 60 * 1000, Date.now()]}
-                    tickFormatter={(ts) => {
-                      const date = new Date(ts);
-                      if (hours > 24) {
-                        return date.toLocaleDateString([], { day: 'numeric', month: 'short' });
-                      }
-                      return date.toLocaleTimeString([], applyTimeFormat({ hour: '2-digit', minute: '2-digit' }, timeFormat));
-                    }}
-                    stroke={isDark ? '#9ca3af' : '#6b7280'}
-                    tick={{ fontSize: 12 }}
-                  />
-                  <YAxis
-                    stroke={isDark ? '#9ca3af' : '#6b7280'}
-                    tick={{ fontSize: 12 }}
-                    domain={mode === 'humidity' ? [0, 100] : ['auto', 'auto']}
-                    tickFormatter={(value) => mode === 'humidity' ? `${value}%` : `${value}°C`}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      // Recharts renders the tooltip as an HTML <div>, not SVG,
-                      // so the var() caveat above does not apply here — these
-                      // resolve against :root and follow the user's background
-                      // variant like the rest of the modal.
-                      backgroundColor: modalBg,
-                      border: `1px solid ${borderColor}`,
-                      borderRadius: '8px',
-                      color: textPrimary,
-                    }}
-                    labelFormatter={(ts) => new Date(ts).toLocaleString(undefined, applyTimeFormat({
-                      year: 'numeric',
-                      month: 'short',
-                      day: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    }, timeFormat))}
-                    formatter={(value) => [
-                      mode === 'humidity' ? `${value ?? 0}%` : `${value ?? 0}°C`,
-                      mode === 'humidity' ? 'Humidity' : 'Temperature'
-                    ]}
-                  />
-                  <Legend />
+                <Line
+                  type="monotone"
+                  dataKey={mode}
+                  name={mode === 'humidity' ? 'Humidity' : 'Temperature'}
+                  stroke={mode === 'humidity' ? '#3b82f6' : '#f97316'}
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                  connectNulls={true}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
 
-                  {/* Threshold lines */}
-                  {mode === 'humidity' ? (
-                    <>
-                      <ReferenceLine y={humidityGood} stroke="#22a352" strokeDasharray="5 5" label={{ value: 'Good', fill: '#22a352', fontSize: 10 }} />
-                      <ReferenceLine y={humidityFair} stroke="#d4a017" strokeDasharray="5 5" label={{ value: 'Fair', fill: '#d4a017', fontSize: 10 }} />
-                    </>
-                  ) : (
-                    <>
-                      <ReferenceLine y={tempGood} stroke="#22a352" strokeDasharray="5 5" label={{ value: 'Good', fill: '#22a352', fontSize: 10 }} />
-                      <ReferenceLine y={tempFair} stroke="#d4a017" strokeDasharray="5 5" label={{ value: 'Fair', fill: '#d4a017', fontSize: 10 }} />
-                    </>
-                  )}
-
-                  <Line
-                    type="monotone"
-                    dataKey={mode}
-                    name={mode === 'humidity' ? 'Humidity' : 'Temperature'}
-                    stroke={mode === 'humidity' ? '#3b82f6' : '#f97316'}
-                    strokeWidth={2}
-                    dot={false}
-                    activeDot={{ r: 4 }}
-                    connectNulls={true}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-
-          {/* Info */}
-          <div className="text-xs text-center" style={{ color: textSecondary }}>
-            {t('amsHistory.recordingInfo', 'Data is recorded every 5 minutes while the printer is connected')}
-          </div>
+        {/* Info */}
+        <div className="text-xs text-center" style={{ color: textSecondary }}>
+          {t('amsHistory.recordingInfo', 'Data is recorded every 5 minutes while the printer is connected')}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

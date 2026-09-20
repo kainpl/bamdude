@@ -194,7 +194,7 @@ describe('AMSHistoryModal', () => {
     }
   });
 
-  it('calls onClose when clicking backdrop', async () => {
+  it('does NOT close when the backdrop is clicked', async () => {
     const onClose = vi.fn();
     render(<AMSHistoryModal {...defaultProps} onClose={onClose} />);
 
@@ -202,12 +202,9 @@ describe('AMSHistoryModal', () => {
       expect(screen.getByText('AMS-A History')).toBeInTheDocument();
     });
 
-    // Click on backdrop (the fixed overlay)
-    const backdrop = document.querySelector('.fixed.inset-0');
-    if (backdrop) {
-      fireEvent.click(backdrop);
-      expect(onClose).toHaveBeenCalled();
-    }
+    const backdrop = screen.getByRole('dialog').parentElement as HTMLElement;
+    fireEvent.click(backdrop);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('does not close when clicking modal content', async () => {

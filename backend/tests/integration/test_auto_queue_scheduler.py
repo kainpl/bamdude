@@ -16,19 +16,58 @@ The full per-printer dispatch (FTP / MQTT) is NOT tested here — these
 tests only verify the auto-queue → print_queue handoff.
 """
 
+import json
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
 
+from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
+from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
+from backend.app.models.product import Product, ProductPart, ProductPlate
+from backend.app.models.project import Project
+from backend.app.models.project_line import ProjectLine
 from backend.app.models.settings import Settings
 from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
+from backend.app.services.farm_forecast import model_key
+from backend.app.services.printer_feed_snapshot import FeedTelemetry, snapshot_from_state
+from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+
+_test_models = {}
+
+
+@pytest.fixture
+def routing_item(tmp_path):
+    """Scheduler scenarios carry readable source evidence, as real intake now guarantees."""
+    count = 0
+
+    def make(**kwargs):
+        nonlocal count
+        count += 1
+        path = write_routing_3mf(
+            tmp_path / f"item-{count}.3mf",
+            {
+                1: [
+                    {"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"},
+                ]
+            },
+            model=kwargs.get("target_model", "A1MINI"),
+        )
+        return AutoQueueItem(
+            library_file=LibraryFile(
+                filename=path.name, file_path=str(path), file_type="gcode", file_size=path.stat().st_size
+            ),
+            **kwargs,
+        )
+
+    return make
 
 
 def _idle_status(filament_types: list[str], colors: list[str] | None = None) -> SimpleNamespace:
@@ -54,6 +93,7 @@ def _drying_status(filament_types: list[str], colors: list[str] | None = None) -
 
 async def _make_printer_with_queue(db_session, printer_factory, **kwargs):
     p = await printer_factory(**kwargs)
+    _test_models[p.id] = p.model
     pq = PrinterQueue(id=p.id, printer_id=p.id)
     db_session.add(pq)
     await db_session.commit()
@@ -77,6 +117,16 @@ def _patch_printer_manager(idle_ids: set[int], status_map: dict | None = None, a
     def get_status_side_effect(pid):
         return status_map.get(pid, _idle_status(["PLA"]))
 
+    def get_snapshot(pid):
+        status = get_status_side_effect(pid)
+        telemetry = FeedTelemetry()
+        telemetry.observe({"print": status.raw_data}, _test_models.get(pid, "A1MINI"))
+        return snapshot_from_state(
+            pid,
+            _test_models.get(pid, "A1MINI"),
+            SimpleNamespace(connected=pid in idle_ids, connection_generation=1, feed_telemetry=telemetry),
+        )
+
     def is_connected_side_effect(pid):
         return pid in idle_ids
 
@@ -87,12 +137,14 @@ def _patch_printer_manager(idle_ids: set[int], status_map: dict | None = None, a
         patch.multiple(
             "backend.app.services.auto_queue_eligibility.printer_manager",
             is_connected=is_connected_side_effect,
+            get_feed_snapshot=get_snapshot,
             get_status=get_status_side_effect,
             is_awaiting_plate_clear=is_awaiting_pc_side_effect,
         ),
         patch.multiple(
             "backend.app.services.print_scheduler.printer_manager",
             is_connected=is_connected_side_effect,
+            get_feed_snapshot=get_snapshot,
             get_status=get_status_side_effect,
             is_awaiting_plate_clear=is_awaiting_pc_side_effect,
         ),
@@ -122,15 +174,24 @@ async def scheduler(monkeypatch, db_session):
 class TestAutoQueueSchedulerTick:
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_assigns_to_idle_printer_with_matching_model(self, db_session, scheduler, printer_factory) -> None:
+    async def test_assigns_to_idle_printer_with_matching_model(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
         printer, pq = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
 
-        item = AutoQueueItem(target_model="A1MINI", status="pending", position=1)
+        item = routing_item(target_model="A1MINI", status="pending", position=1)
         db_session.add(item)
         await db_session.commit()
 
         p_elig, p_sched, p_ams = _patch_printer_manager({printer.id})
-        with p_elig, p_sched, p_ams:
+        with (
+            p_elig,
+            p_sched,
+            p_ams,
+            patch(
+                "backend.app.services.auto_queue_scheduler.ws_manager.send_queue_changed", new_callable=AsyncMock
+            ) as queue_changed,
+        ):
             await scheduler.tick()
 
         await db_session.refresh(item)
@@ -147,14 +208,17 @@ class TestAutoQueueSchedulerTick:
         assert len(pq_items) == 1
         assert pq_items[0].source_auto_item_id == item.id
         assert pq_items[0].position == 1
+        queue_changed.assert_awaited_once_with(printer.id)
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_sets_waiting_reason_when_no_printer_matches(self, db_session, scheduler, printer_factory) -> None:
+    async def test_sets_waiting_reason_when_no_printer_matches(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
         # P1S printer, but auto item wants A1MINI → no match
         await _make_printer_with_queue(db_session, printer_factory, model="P1S")
 
-        item = AutoQueueItem(target_model="A1MINI", status="pending", position=1)
+        item = routing_item(target_model="A1MINI", status="pending", position=1)
         db_session.add(item)
         await db_session.commit()
 
@@ -165,11 +229,13 @@ class TestAutoQueueSchedulerTick:
         await db_session.refresh(item)
         assert item.status == "pending"
         assert item.waiting_reason is not None
-        assert "A1MINI" in item.waiting_reason
+        assert "A1 Mini" in item.waiting_reason
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_a_stalled_tick_says_so_at_info(self, db_session, scheduler, printer_factory, caplog) -> None:
+    async def test_a_stalled_tick_says_so_at_info(
+        self, db_session, scheduler, printer_factory, caplog, routing_item
+    ) -> None:
         """The visibility gap behind an unexplainable support bundle.
 
         A farm reported "the queue stopped moving". Three support bundles came
@@ -179,7 +245,7 @@ class TestAutoQueueSchedulerTick:
         it simply never reached the log.
         """
         await _make_printer_with_queue(db_session, printer_factory, model="P1S")
-        db_session.add(AutoQueueItem(target_model="A1MINI", status="pending", position=1))
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
         await db_session.commit()
 
         p_elig, p_sched, p_ams = _patch_printer_manager(set())
@@ -187,17 +253,17 @@ class TestAutoQueueSchedulerTick:
             await scheduler.tick()
 
         assert "placed nothing this tick" in caplog.text
-        assert "A1MINI" in caplog.text, "the reason itself has to be in the log, not just the fact of a stall"
+        assert "A1 Mini" in caplog.text, "the reason itself has to be in the log, not just the fact of a stall"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_a_persistent_stall_does_not_repeat_every_tick(
-        self, db_session, scheduler, printer_factory, caplog
+        self, db_session, scheduler, printer_factory, caplog, routing_item
     ) -> None:
         """At 30s a permanently stuck queue would write 120 identical lines an
         hour and bury everything else in the support log."""
         await _make_printer_with_queue(db_session, printer_factory, model="P1S")
-        db_session.add(AutoQueueItem(target_model="A1MINI", status="pending", position=1))
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
         await db_session.commit()
 
         p_elig, p_sched, p_ams = _patch_printer_manager(set())
@@ -223,9 +289,11 @@ class TestRoutingIsNotDispatching:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_a_gated_printer_still_receives_the_work(self, db_session, scheduler, printer_factory) -> None:
+    async def test_a_gated_printer_still_receives_the_work(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
         printer, pq = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
-        db_session.add(AutoQueueItem(target_model="A1MINI", status="pending", position=1))
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
         await db_session.commit()
 
         p_elig, p_sched, p_ams = _patch_printer_manager(
@@ -244,12 +312,14 @@ class TestRoutingIsNotDispatching:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_a_ready_printer_is_preferred_over_a_gated_one(self, db_session, scheduler, printer_factory) -> None:
+    async def test_a_ready_printer_is_preferred_over_a_gated_one(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
         """Not a filter, but still a preference — work should land where it can
         start now, when there is a choice."""
         gated, gated_q = await _make_printer_with_queue(db_session, printer_factory, name="gated", model="A1MINI")
         ready, ready_q = await _make_printer_with_queue(db_session, printer_factory, name="ready", model="A1MINI")
-        db_session.add(AutoQueueItem(target_model="A1MINI", status="pending", position=1))
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
         await db_session.commit()
 
         p_elig, p_sched, p_ams = _patch_printer_manager(
@@ -287,14 +357,14 @@ class TestRequirePreviousSuccessRoutesAround:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_a_gated_item_goes_to_the_healthy_printer(self, db_session, scheduler, printer_factory) -> None:
+    async def test_a_gated_item_goes_to_the_healthy_printer(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
         broken, broken_q = await _make_printer_with_queue(db_session, printer_factory, name="broken", model="A1MINI")
         healthy, healthy_q = await _make_printer_with_queue(db_session, printer_factory, name="healthy", model="A1MINI")
         await self._finish(db_session, broken_q.id, "failed", minutes_ago=5)
 
-        db_session.add(
-            AutoQueueItem(target_model="A1MINI", status="pending", position=1, require_previous_success=True)
-        )
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1, require_previous_success=True))
         await db_session.commit()
 
         p_elig, p_sched, p_ams = _patch_printer_manager({broken.id, healthy.id})
@@ -309,12 +379,14 @@ class TestRequirePreviousSuccessRoutesAround:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_an_ungated_item_still_uses_the_printer(self, db_session, scheduler, printer_factory) -> None:
+    async def test_an_ungated_item_still_uses_the_printer(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
         broken, broken_q = await _make_printer_with_queue(db_session, printer_factory, name="broken", model="A1MINI")
         await self._finish(db_session, broken_q.id, "failed", minutes_ago=5)
 
         db_session.add(
-            AutoQueueItem(target_model="A1MINI", status="pending", position=1, require_previous_success=False)
+            routing_item(target_model="A1MINI", status="pending", position=1, require_previous_success=False)
         )
         await db_session.commit()
 
@@ -328,14 +400,12 @@ class TestRequirePreviousSuccessRoutesAround:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_when_every_candidate_just_failed_the_reason_says_so(
-        self, db_session, scheduler, printer_factory
+        self, db_session, scheduler, printer_factory, routing_item
     ) -> None:
         broken, broken_q = await _make_printer_with_queue(db_session, printer_factory, name="broken", model="A1MINI")
         await self._finish(db_session, broken_q.id, "failed", minutes_ago=5)
 
-        db_session.add(
-            AutoQueueItem(target_model="A1MINI", status="pending", position=1, require_previous_success=True)
-        )
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1, require_previous_success=True))
         await db_session.commit()
 
         p_elig, p_sched, p_ams = _patch_printer_manager({broken.id})
@@ -344,17 +414,17 @@ class TestRequirePreviousSuccessRoutesAround:
 
         item = (await db_session.execute(select(AutoQueueItem))).scalars().one()
         assert item.status == "pending"
-        assert "Previous print failed" in (item.waiting_reason or "")
+        assert "previous print failed" in (item.waiting_reason or "").lower()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_the_flag_is_carried_onto_the_per_printer_row(self, db_session, scheduler, printer_factory) -> None:
+    async def test_the_flag_is_carried_onto_the_per_printer_row(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
         """Eligibility only proves the printer was clean at routing time; the
         per-printer scheduler re-checks at dispatch, which needs the flag."""
         printer, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
-        db_session.add(
-            AutoQueueItem(target_model="A1MINI", status="pending", position=1, require_previous_success=True)
-        )
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1, require_previous_success=True))
         await db_session.commit()
 
         p_elig, p_sched, p_ams = _patch_printer_manager({printer.id})
@@ -375,9 +445,11 @@ class TestAStalledQueueTellsTheOperator:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_the_operator_is_told_once_per_cause(self, db_session, scheduler, printer_factory) -> None:
+    async def test_the_operator_is_told_once_per_cause(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
         await _make_printer_with_queue(db_session, printer_factory, model="P1S")
-        db_session.add(AutoQueueItem(target_model="A1MINI", status="pending", position=1))
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
         await db_session.commit()
 
         sent = AsyncMock()
@@ -393,13 +465,15 @@ class TestAStalledQueueTellsTheOperator:
             await scheduler.tick()
 
         assert sent.await_count == 1, "a stuck queue must not message the operator every 30 seconds"
-        assert "A1MINI" in sent.await_args.kwargs["waiting_reason"]
+        assert "A1 Mini" in sent.await_args.kwargs["waiting_reason"]
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_a_tick_that_places_work_tells_nobody(self, db_session, scheduler, printer_factory) -> None:
+    async def test_a_tick_that_places_work_tells_nobody(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
         printer, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
-        db_session.add(AutoQueueItem(target_model="A1MINI", status="pending", position=1))
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
         await db_session.commit()
 
         sent = AsyncMock()
@@ -416,11 +490,13 @@ class TestAStalledQueueTellsTheOperator:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_a_failing_notification_does_not_break_the_tick(self, db_session, scheduler, printer_factory) -> None:
+    async def test_a_failing_notification_does_not_break_the_tick(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
         """Routing is the job; telling someone about it is not allowed to stop
         the scheduler from running the next tick."""
         await _make_printer_with_queue(db_session, printer_factory, model="P1S")
-        db_session.add(AutoQueueItem(target_model="A1MINI", status="pending", position=1))
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
         await db_session.commit()
 
         boom = AsyncMock(side_effect=RuntimeError("telegram is down"))
@@ -438,13 +514,13 @@ class TestAStalledQueueTellsTheOperator:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_busy_printer_excluded(self, db_session, scheduler, printer_factory) -> None:
+    async def test_busy_printer_excluded(self, db_session, scheduler, printer_factory, routing_item) -> None:
         printer, pq = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
         # Mark queue as printing — should be in busy_printers
         pq.status = "printing"
         await db_session.commit()
 
-        item = AutoQueueItem(target_model="A1MINI", status="pending", position=1)
+        item = routing_item(target_model="A1MINI", status="pending", position=1)
         db_session.add(item)
         await db_session.commit()
 
@@ -458,12 +534,12 @@ class TestAStalledQueueTellsTheOperator:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_batch_fan_out_2_printers_4_items(self, db_session, scheduler, printer_factory) -> None:
+    async def test_batch_fan_out_2_printers_4_items(self, db_session, scheduler, printer_factory, routing_item) -> None:
         p1, _ = await _make_printer_with_queue(db_session, printer_factory, name="A1m-01", model="A1MINI")
         p2, _ = await _make_printer_with_queue(db_session, printer_factory, name="A1m-02", model="A1MINI")
 
         items = [
-            AutoQueueItem(
+            routing_item(
                 target_model="A1MINI",
                 status="pending",
                 position=i + 1,
@@ -494,10 +570,10 @@ class TestAStalledQueueTellsTheOperator:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_skips_manual_start(self, db_session, scheduler, printer_factory) -> None:
+    async def test_skips_manual_start(self, db_session, scheduler, printer_factory, routing_item) -> None:
         printer, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
 
-        item = AutoQueueItem(target_model="A1MINI", status="pending", position=1, manual_start=True)
+        item = routing_item(target_model="A1MINI", status="pending", position=1, manual_start=True)
         db_session.add(item)
         await db_session.commit()
 
@@ -510,11 +586,11 @@ class TestAStalledQueueTellsTheOperator:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_skips_future_scheduled(self, db_session, scheduler, printer_factory) -> None:
+    async def test_skips_future_scheduled(self, db_session, scheduler, printer_factory, routing_item) -> None:
         printer, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
 
         future = datetime.now(timezone.utc) + timedelta(hours=1)
-        item = AutoQueueItem(target_model="A1MINI", status="pending", position=1, scheduled_time=future)
+        item = routing_item(target_model="A1MINI", status="pending", position=1, scheduled_time=future)
         db_session.add(item)
         await db_session.commit()
 
@@ -527,7 +603,9 @@ class TestAStalledQueueTellsTheOperator:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_sjf_been_jumped_marks_longer_peers(self, db_session, scheduler, printer_factory) -> None:
+    async def test_sjf_been_jumped_marks_longer_peers(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
         # Enable SJF
         sjf = Settings(key="queue_shortest_first", value="true")
         db_session.add(sjf)
@@ -537,9 +615,9 @@ class TestAStalledQueueTellsTheOperator:
         # 3 items: long-unknown, short, long-known.
         # ORDER BY (sjf): target_model, been_jumped DESC, print_time ASC NULLS LAST, position
         # Without been_jumped marks: short (300) comes first, then long_known (3600), then long_unknown (NULL last)
-        long_unknown = AutoQueueItem(target_model="A1MINI", status="pending", position=1, print_time_seconds=None)
-        short = AutoQueueItem(target_model="A1MINI", status="pending", position=2, print_time_seconds=300)
-        long_known = AutoQueueItem(target_model="A1MINI", status="pending", position=3, print_time_seconds=3600)
+        long_unknown = routing_item(target_model="A1MINI", status="pending", position=1, print_time_seconds=None)
+        short = routing_item(target_model="A1MINI", status="pending", position=2, print_time_seconds=300)
+        long_known = routing_item(target_model="A1MINI", status="pending", position=3, print_time_seconds=3600)
         for it in (long_unknown, short, long_known):
             db_session.add(it)
         await db_session.commit()
@@ -579,12 +657,12 @@ class TestAutoQueueDryingPriority:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_drying_printer_eligible_when_block_disabled(
-        self, monkeypatch, db_session, scheduler, printer_factory
+        self, monkeypatch, db_session, scheduler, printer_factory, routing_item
     ) -> None:
         printer, pq = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
         self._mark_drying(monkeypatch, printer.id)
 
-        item = AutoQueueItem(target_model="A1MINI", status="pending", position=1)
+        item = routing_item(target_model="A1MINI", status="pending", position=1)
         db_session.add(item)
         await db_session.commit()
 
@@ -600,13 +678,13 @@ class TestAutoQueueDryingPriority:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_a_drying_printer_is_still_routed_to_when_the_block_is_on(
-        self, monkeypatch, db_session, scheduler, printer_factory
+        self, monkeypatch, db_session, scheduler, printer_factory, routing_item
     ) -> None:
         db_session.add(Settings(key="queue_drying_block", value="true"))
         printer, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
         self._mark_drying(monkeypatch, printer.id)
 
-        item = AutoQueueItem(target_model="A1MINI", status="pending", position=1)
+        item = routing_item(target_model="A1MINI", status="pending", position=1)
         db_session.add(item)
         await db_session.commit()
 
@@ -623,7 +701,7 @@ class TestAutoQueueDryingPriority:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_idle_printer_preferred_over_drying(
-        self, monkeypatch, db_session, scheduler, printer_factory
+        self, monkeypatch, db_session, scheduler, printer_factory, routing_item
     ) -> None:
         drying_p, drying_pq = await _make_printer_with_queue(
             db_session, printer_factory, name="A1m-dry", model="A1MINI"
@@ -631,7 +709,7 @@ class TestAutoQueueDryingPriority:
         idle_p, idle_pq = await _make_printer_with_queue(db_session, printer_factory, name="A1m-idle", model="A1MINI")
         self._mark_drying(monkeypatch, drying_p.id)
 
-        item = AutoQueueItem(target_model="A1MINI", status="pending", position=1)
+        item = routing_item(target_model="A1MINI", status="pending", position=1)
         db_session.add(item)
         await db_session.commit()
 
@@ -650,3 +728,384 @@ class TestAutoQueueDryingPriority:
         pq_items = result.scalars().all()
         assert len(pq_items) == 1
         assert pq_items[0].queue_id == idle_pq.id
+
+
+# ---------- rebalancing across models (spec 2026-09-10) ----------
+
+
+def _plate_file(tmp_path, filename: str, model: str, *, seconds: int, hooks: int) -> LibraryFile:
+    """A sliced single-plate file for ``model`` making ``hooks`` hooks in ``seconds``.
+
+    A real routing 3MF on disk, because the rebalancer reads the target plate
+    through the strict source reader before it converts anything — and the 3MF's
+    own ``prediction`` carries ``seconds`` too, since the plan decides on
+    ``file_metadata`` while the converted row's estimate comes from the read.
+    """
+    path = write_routing_3mf(
+        tmp_path / filename,
+        {1: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}]},
+        model=model,
+        prediction=seconds,
+    )
+    return LibraryFile(
+        filename=filename,
+        file_path=str(path),
+        file_size=path.stat().st_size,
+        file_type="gcode",
+        file_metadata={
+            "sliced_for_model": model,
+            "print_time_seconds": seconds,
+            "plates": [
+                {
+                    "index": 1,
+                    "printable_objects": {str(i + 1): ("hook" if i == 0 else f"hook_{i + 1}") for i in range(hooks)},
+                    "print_time_seconds": seconds,
+                    "filaments": [{"slot_id": 1, "type": "PLA"}],
+                }
+            ],
+        },
+    )
+
+
+async def rebalance_farm(db_session, printer_factory, tmp_path, *, mini_seconds: int = 1000):
+    """One P1S two hours into a print, one idle A1 mini; a 6-hook order line with one
+    pending P1S print of a 6-hook plate; the same hooks sliced two per plate for the mini.
+
+    Returns a namespace: p1s, mini, mini_q, big, small, project, line, item.
+    """
+    p1s, p1s_q = await _make_printer_with_queue(db_session, printer_factory, name="P1S-1", model="P1S")
+    mini, mini_q = await _make_printer_with_queue(db_session, printer_factory, name="Mini-1", model="A1MINI")
+    p1s_q.status = "printing"
+    db_session.add(
+        PrintArchive(
+            printer_id=p1s.id, status="printing", print_time_seconds=7200, filename="running", file_path="", file_size=0
+        )
+    )
+    big = _plate_file(tmp_path, "hooks-p1s.gcode.3mf", "P1S", seconds=3600, hooks=6)
+    small = _plate_file(tmp_path, "hooks-mini.gcode.3mf", "A1MINI", seconds=mini_seconds, hooks=2)
+    product = Product(name="Hook")
+    db_session.add_all([big, small, product])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            ProductPart(
+                product_id=product.id, kind="printed", name="hook", name_key="hook", qty_per_unit=1, aliases=["hook"]
+            ),
+            ProductPlate(product_id=product.id, library_file_id=big.id, plate_index=0),
+            ProductPlate(product_id=product.id, library_file_id=small.id, plate_index=0),
+        ]
+    )
+    project = Project(name="Hooks", status="active")
+    db_session.add(project)
+    await db_session.flush()
+    line = ProjectLine(project_id=project.id, product_id=product.id, quantity=6)
+    db_session.add(line)
+    await db_session.flush()
+    item = AutoQueueItem(
+        library_file_id=big.id,
+        plate_id=1,
+        project_id=project.id,
+        project_line_id=line.id,
+        target_model="P1S",
+        required_filament_types=json.dumps(["PLA"]),
+        print_time_seconds=3600,
+        status="pending",
+        position=1,
+    )
+    db_session.add(item)
+    await db_session.commit()
+    return SimpleNamespace(
+        p1s=p1s, mini=mini, mini_q=mini_q, big=big, small=small, project=project, line=line, item=item
+    )
+
+
+async def _pending_rows(db_session) -> list[AutoQueueItem]:
+    return list(
+        (
+            await db_session.execute(
+                select(AutoQueueItem)
+                .where(AutoQueueItem.status == "pending")
+                .order_by(AutoQueueItem.position, AutoQueueItem.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+class TestRebalanceAcrossModels:
+    """The tick moves a busy model's pending line work to an idle model when that
+    finishes sooner — parts-based (6 hooks → three 2-hook mini prints), behind a
+    setting that is off by default, and never touching what the operator pinned."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_setting_off_moves_nothing(self, db_session, scheduler, printer_factory, tmp_path) -> None:
+        farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+        await db_session.refresh(farm.item)
+        assert (farm.item.status, farm.item.target_model, farm.item.rebalanced_at) == ("pending", "P1S", None)
+        assert len(await _pending_rows(db_session)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_setting_on_moves_six_hooks_as_three_mini_prints_and_the_next_tick_places_one(
+        self, db_session, scheduler, printer_factory, tmp_path
+    ) -> None:
+        farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+        db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
+        await db_session.commit()
+
+        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+
+        rows = await _pending_rows(db_session)
+        assert len(rows) == 3, "one converted in place, two created"
+        converted = next(r for r in rows if r.id == farm.item.id)
+        assert (converted.library_file_id, model_key(converted.target_model), converted.plate_id) == (
+            farm.small.id,
+            model_key("A1MINI"),
+            1,
+        )
+        assert converted.rebalanced_from_model == "P1S" and converted.rebalanced_at is not None
+        assert converted.print_time_seconds == 1000 and converted.position == 1
+        assert json.loads(converted.required_filament_types) == ["PLA"]
+        for r in rows:
+            assert (r.project_line_id, r.project_id, model_key(r.target_model)) == (
+                farm.line.id,
+                farm.project.id,
+                model_key("A1MINI"),
+            )
+            assert r.rebalanced_from_model == "P1S" and r.batch_id == converted.batch_id and r.batch_id is not None
+
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+        placed = (await db_session.execute(select(PrintQueueItem))).scalars().all()
+        assert len(placed) == 1 and placed[0].queue_id == farm.mini_q.id
+        assert placed[0].source_auto_item_id == converted.id, "the converted row is first in queue order"
+        assert len(await _pending_rows(db_session)) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_slower_model_does_not_take_the_work(
+        self, db_session, scheduler, printer_factory, tmp_path
+    ) -> None:
+        """Three mini prints of 5000 s = 15000 s; home is free in 7200 s and prints in 3600 s = 10800 s."""
+        farm = await rebalance_farm(db_session, printer_factory, tmp_path, mini_seconds=5000)
+        db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
+        await db_session.commit()
+        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+        await db_session.refresh(farm.item)
+        assert (farm.item.target_model, farm.item.rebalanced_at) == ("P1S", None)
+        assert len(await _pending_rows(db_session)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_gated_receiver_only_looks_free(self, db_session, scheduler, printer_factory, tmp_path) -> None:
+        """An empty queue is not readiness: a mini still waiting for its plate clear receives nothing."""
+        farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+        db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
+        await db_session.commit()
+        p_elig, p_sched, p_ams = _patch_printer_manager(
+            {farm.p1s.id, farm.mini.id},
+            status_map={farm.mini.id: _finished_status(["PLA"])},
+            awaiting_ids={farm.mini.id},
+        )
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+        await db_session.refresh(farm.item)
+        assert farm.item.target_model == "P1S"
+        assert len(await _pending_rows(db_session)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize("queue_status", ["paused", "error"])
+    async def test_a_queue_that_would_never_dispatch_is_no_home(
+        self, db_session, scheduler, printer_factory, tmp_path, queue_status
+    ) -> None:
+        """A paused or errored queue may not RECEIVE work: ``check_queue`` never
+        dispatches from one, so the move would land there, the next tick would answer
+        ``home_model_idle`` for ever, and nothing would print."""
+        farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+        farm.mini_q.status = queue_status
+        db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
+        await db_session.commit()
+        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+        await db_session.refresh(farm.item)
+        assert (farm.item.target_model, farm.item.rebalanced_at) == ("P1S", None)
+        assert len(await _pending_rows(db_session)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_pinned_item_stays(self, db_session, scheduler, printer_factory, tmp_path) -> None:
+        farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+        farm.item.filament_overrides = json.dumps(
+            [{"slot_id": 1, "type": "PLA", "color": "#FFFFFF", "force_color_match": True}]
+        )
+        db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
+        await db_session.commit()
+        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+        await db_session.refresh(farm.item)
+        assert (farm.item.target_model, farm.item.rebalanced_at) == ("P1S", None)
+        assert len(await _pending_rows(db_session)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_line_is_left_alone_for_five_minutes_after_a_move(
+        self, db_session, scheduler, printer_factory, tmp_path
+    ) -> None:
+        farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+        db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
+        await db_session.commit()
+        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+        moved = await _pending_rows(db_session)
+        assert len(moved) == 3
+
+        # Park the moved prints (staged rows are neither placed nor moved) so the
+        # mini stays idle — then the ONLY thing between a second P1S print of the
+        # same line and that idle mini is the cooldown.
+        for row in moved:
+            row.manual_start = True
+        second = AutoQueueItem(
+            library_file_id=farm.big.id,
+            plate_id=1,
+            project_id=farm.project.id,
+            project_line_id=farm.line.id,
+            target_model="P1S",
+            required_filament_types=json.dumps(["PLA"]),
+            print_time_seconds=3600,
+            status="pending",
+            position=9,
+        )
+        db_session.add(second)
+        await db_session.commit()
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+        await db_session.refresh(second)
+        assert (second.target_model, second.rebalanced_at) == ("P1S", None), "cooldown: the line was moved seconds ago"
+
+        # Ten minutes later the line is fair game again.
+        for row in moved:
+            row.rebalanced_at = row.rebalanced_at - timedelta(minutes=10)
+        await db_session.commit()
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+        await db_session.refresh(second)
+        assert second.rebalanced_from_model == "P1S" and model_key(second.target_model) == model_key("A1MINI")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_creation_that_refuses_leaves_the_row_exactly_as_it_was(
+        self, monkeypatch, db_session, scheduler, printer_factory, tmp_path
+    ) -> None:
+        """A move is all-or-nothing, and the writer refusing is where that is decided.
+
+        ``add_items_to_auto_queue`` refuses the companions (a dangling
+        ``project_id``, a line that is not the order's) and the tick's blanket
+        ``except`` swallows it, so without the field-by-field restore below the
+        line would keep ONE print of a 2-hook plate where six hooks were owed
+        and never learn that four went missing.
+
+        ⚠️ The *mechanism* that makes a half-move durable changed on
+        2026-09-13: the writer now commits FIRST and copies the bytes into the
+        queue spool afterwards, so durability no longer needs an autoflush or
+        the tick's commit — the converted row is already on disk while the copy
+        runs. The restore this test pins is what covers a writer refusal; the
+        crash-during-copy window is named in ``queue_rebalance._apply`` and is
+        closed by capturing before the row is mutated.
+        """
+        from backend.app.services import queue_rebalance
+
+        farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+        db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
+        await db_session.commit()
+
+        async def _refuse(*_args, **_kwargs):
+            raise HTTPException(404, "Project not found")
+
+        monkeypatch.setattr(queue_rebalance, "add_items_to_auto_queue", _refuse)
+
+        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+
+        await db_session.refresh(farm.item)
+        assert (farm.item.library_file_id, farm.item.plate_id, farm.item.target_model) == (
+            farm.big.id,
+            1,
+            "P1S",
+        )
+        assert (farm.item.print_time_seconds, farm.item.batch_id) == (3600, None)
+        assert (farm.item.rebalanced_at, farm.item.rebalanced_from_model) == (None, None)
+        assert json.loads(farm.item.required_filament_types) == ["PLA"]
+        assert len(await _pending_rows(db_session)) == 1, "no companion row was created either"
+
+        # The same run, called directly, names the reason — and counts nothing.
+        # ⚠️ Inside the patch: outside it no printer is connected, so the run
+        # would refuse for want of a receiver and never reach the writer.
+        with p_elig, p_sched, p_ams:
+            result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+        assert (result.converted, result.created, result.moved_parts) == (0, 0, 0)
+        assert (farm.item.id, "creation_failed") in result.skipped
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_companions_the_writer_already_committed_are_deleted_when_the_stamping_fails(
+        self, monkeypatch, db_session, scheduler, printer_factory, tmp_path
+    ) -> None:
+        """The writer COMMITS, so forgetting its rows is not undoing them.
+
+        ``add_items_to_auto_queue`` succeeds and commits — the converted row and
+        its two companions are durable — and the ``flush`` of the stamping loop
+        right after it fails. Restoring the row's fields is then only half the
+        undo: the companions would stay, filed under the line, unstamped (so no
+        cooldown holds the line) and covering parts nobody owes — six hooks
+        queued as ten.
+        """
+        from backend.app.services import queue_rebalance
+
+        farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+        db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
+        await db_session.commit()
+
+        real_writer = queue_rebalance.add_items_to_auto_queue
+        real_flush = db_session.flush
+
+        async def _fail_once(*args, **kwargs):
+            db_session.flush = real_flush  # only the stamping flush fails; the undo needs the real one
+            raise RuntimeError("flush failed")
+
+        async def _commit_then_arm_the_flush(*args, **kwargs):
+            rows = await real_writer(*args, **kwargs)
+            db_session.flush = _fail_once
+            return rows
+
+        monkeypatch.setattr(queue_rebalance, "add_items_to_auto_queue", _commit_then_arm_the_flush)
+
+        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+
+        rows = await _pending_rows(db_session)
+        assert len(rows) == 1, "the two committed companions were deleted"
+        await db_session.refresh(farm.item)
+        assert (farm.item.library_file_id, farm.item.plate_id, farm.item.target_model) == (farm.big.id, 1, "P1S")
+        assert (farm.item.print_time_seconds, farm.item.batch_id) == (3600, None)
+        assert (farm.item.rebalanced_at, farm.item.rebalanced_from_model) == (None, None)
+
+        with p_elig, p_sched, p_ams:
+            result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+        assert (result.converted, result.created, result.moved_parts) == (0, 0, 0)
+        assert (farm.item.id, "creation_failed") in result.skipped
+        assert len(await _pending_rows(db_session)) == 1

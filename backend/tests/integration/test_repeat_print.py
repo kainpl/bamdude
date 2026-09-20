@@ -77,6 +77,38 @@ async def test_the_previous_run_is_let_go(db_session, printer_factory):
     assert again.waiting_reason is None
 
 
+async def test_a_repeat_keeps_the_origin_it_was_born_with(db_session, printer_factory):
+    """⚠️ **The whole reason ``origin`` lives on the row and is not derived.**
+
+    A repeat re-arms the row, so the row that a moment ago was a claim held by
+    an externally-started print is now genuinely ``pending`` and will be
+    dispatched by the scheduler — it looks, at that instant, exactly like work
+    somebody queued. Deriving the answer at completion would therefore get it
+    wrong, and BamDude would announce "queue finished" for a print nobody ever
+    put in a queue: the very noise m160 removes.
+
+    Repeating means "do again exactly what was done", and what was done was an
+    external print.
+    """
+    printer, _, row = await _finished(db_session, printer_factory)
+    row.origin = "external"
+    await db_session.commit()
+
+    again = await answer_by_repeating(db_session, printer.id)
+
+    assert again.origin == "external"
+    assert again.status == "pending", "sanity: it really did become an ordinary pending row"
+
+
+async def test_a_repeat_of_queued_work_stays_queued_work(db_session, printer_factory):
+    """The other half of the rule — the gate must not silence a real queue."""
+    printer, _, _ = await _finished(db_session, printer_factory)
+
+    again = await answer_by_repeating(db_session, printer.id)
+
+    assert again.origin == "queue"
+
+
 async def test_the_retry_budget_is_reset(db_session, printer_factory):
     """⚠️ Without this a series of repeats exhausts the dispatch cap and the row
     fails "after N attempts" although every one of them succeeded."""
@@ -153,6 +185,49 @@ async def test_the_route_refuses_when_nothing_is_waiting(async_client, db_sessio
     resp = await async_client.post(f"/api/v1/printers/{printer.id}/repeat-print")
 
     assert resp.status_code == 409
+
+
+class TestTheStatusSaysWhetherRepeatIsPossible:
+    """The card shows Repeat only when the route could answer it. ``409 No
+    finished print is waiting`` from a button the card itself put on screen was
+    the report (2026-09-04): the gate had armed with no row behind it."""
+
+    def _state(self):
+        from backend.app.services.bambu_mqtt import PrinterState
+
+        state = PrinterState()
+        state.connected = True
+        state.state = "FINISH"
+        return state
+
+    async def _status(self, async_client, printer_id, *, gate_armed: bool):
+        from unittest.mock import MagicMock, patch
+
+        with patch("backend.app.api.routes.printers.printer_manager") as pm:
+            pm.get_status = MagicMock(return_value=self._state())
+            pm.is_awaiting_plate_clear = MagicMock(return_value=gate_armed)
+            resp = await async_client.get(f"/api/v1/printers/{printer_id}/status")
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    async def test_true_when_the_gate_is_armed_over_a_held_row(self, async_client, db_session, printer_factory):
+        printer, _, _ = await _finished(db_session, printer_factory)
+        body = await self._status(async_client, printer.id, gate_armed=True)
+        assert body["awaiting_plate_clear"] is True
+        assert body["repeat_available"] is True
+
+    async def test_false_when_the_gate_is_armed_over_nothing(self, async_client, db_session, printer_factory):
+        printer = await printer_factory()
+        db_session.add(PrinterQueue(id=printer.id, printer_id=printer.id))
+        await db_session.commit()
+        body = await self._status(async_client, printer.id, gate_armed=True)
+        assert body["awaiting_plate_clear"] is True
+        assert body["repeat_available"] is False
+
+    async def test_false_when_the_gate_is_not_armed(self, async_client, db_session, printer_factory):
+        printer, _, _ = await _finished(db_session, printer_factory)
+        body = await self._status(async_client, printer.id, gate_armed=False)
+        assert body["repeat_available"] is False
 
 
 async def test_a_held_success_releases_the_previous_success_gate(db_session, printer_factory):
@@ -315,3 +390,38 @@ class TestRepeatingSomethingWithNoFileIsRefused:
 
         assert again.status == "pending"
         assert again.archive_id is None
+
+
+async def test_repeat_retains_rules_and_original_archive_after_execution_rewrite(db_session, printer_factory, tmp_path):
+    import json
+
+    from backend.app.services.filament_policy import serialize_policy
+    from backend.app.services.filament_routing import RoutingPolicy
+
+    printer, _, row = await _finished(db_session, printer_factory)
+    row.library_file_id = None
+    policy = RoutingPolicy(
+        force_color_match=False, filament_overrides=({"slot_id": 2, "force_color_match": True, "color": "#FF0000"},)
+    )
+    saved = json.loads(serialize_policy(policy, archive_id=5, plate_id=2, printer_id=printer.id))
+    saved["runtime"] = {"blocked_revision": "old"}
+    row.filament_routing = json.dumps(saved)
+    await db_session.commit()
+    # The source guard of Repeat requires an actual archive row/file for archive-only rows.
+    from backend.app.models.archive import PrintArchive
+
+    source_path = tmp_path / "original.3mf"
+    source_path.write_bytes(b"repeat source")
+    db_session.add_all(
+        [
+            PrintArchive(id=i, filename="original.3mf", file_path=str(source_path), file_size=1, status="completed")
+            for i in (5, 7)
+        ]
+    )
+    await db_session.commit()
+    again = await answer_by_repeating(db_session, printer.id)
+    assert again.archive_id == 5
+    snapshot = json.loads(again.filament_routing)
+    assert snapshot["force_color_match"] is False
+    assert snapshot["filament_overrides"] == list(policy.filament_overrides)
+    assert "runtime" not in snapshot

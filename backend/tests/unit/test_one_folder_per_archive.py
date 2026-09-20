@@ -1,19 +1,21 @@
-"""One archive belongs to at most one folder.
+"""One archive belongs to at most one folder — DB-level, no longer API-reachable.
 
 ``library_folders.archive_id`` was a plain nullable FK, so any number of folders
 could claim one archive — while the archives page only ever drew the first it
 found (``linkedFolders[0]``). A second binding existed in the database and
 nowhere on screen.
 
-⚠️ **The route refuses rather than steals.** Re-pointing an archive silently
-would unlink whichever folder held it — a folder the person doing this is not
-looking at and may not know exists. Naming the holder costs one step and
-destroys nothing.
+The unique index below still guards the column at the DB level (m133), but the
+folder-to-archive LINK itself was later cut entirely from the API (archives are
+print history, not a filing destination — folder-to-project is the surviving
+link). ``LibraryFolder.archive_id`` stays dormant: the column and its index are
+untouched (migrations are frozen), and no route can ever set it again, so the
+route-level "refuse rather than steal" write-path gate this file used to test
+was deleted along with the endpoints that called it.
 
-⚠️ **The unique index is what makes it true**; the 409 is what makes it
-explainable. Without the index a future writer that forgets to ask would put the
-database back into the state the archives page cannot show. Without the 409, the
-same writer's user meets an integrity error.
+⚠️ **The unique index is what makes it true** for whatever legacy data still
+carries a value. Without the index a future writer that forgets to ask would put
+the database back into the state the archives page cannot show.
 
 ⚠️ **NULLs are exempt.** Unlinked folders are the ordinary case, and both SQLite
 and PostgreSQL allow any number of NULLs in a unique index — which is the whole
@@ -24,7 +26,6 @@ from __future__ import annotations
 
 import inspect
 
-from backend.app.api.routes import library as library_routes
 from backend.app.migrations import m133_one_folder_per_archive as m133
 from backend.app.models.library import LibraryFolder
 
@@ -75,26 +76,3 @@ class TestTheMigrationResolvesDuplicatesFirst:
 
         assert "logger.warning" in src
         assert "clearing" in src
-
-
-class TestTheRouteGate:
-    def _source(self) -> str:
-        src = inspect.getsource(library_routes._assert_archive_unclaimed)
-        return "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
-
-    def test_it_refuses_with_409_and_names_the_holder(self) -> None:
-        src = self._source()
-
-        assert "409" in src
-        assert "holder.name" in src
-
-    def test_it_excludes_the_folder_being_edited(self) -> None:
-        """⚠️ Otherwise re-saving a folder that already holds the archive would
-        refuse on the strength of its own binding."""
-        assert "LibraryFolder.id != folder_id" in self._source()
-
-    def test_both_write_paths_ask(self) -> None:
-        """Creating a folder with an archive and re-pointing an existing one are
-        two doors into the same table."""
-        for fn in (library_routes.create_folder, library_routes.update_folder):
-            assert "_assert_archive_unclaimed" in inspect.getsource(fn)

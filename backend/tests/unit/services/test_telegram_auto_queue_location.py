@@ -24,6 +24,7 @@ from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
 from backend.app.models.printer_location import PrinterLocation
 from backend.app.services.telegram_handlers.queue_scene import _add_to_auto_queue, _locations_for_model
+from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
 
 @pytest.fixture
@@ -118,9 +119,14 @@ class TestWhichPlacesAreWorthOffering:
 
 class TestTheAnswerReachesTheRow:
     @pytest.mark.asyncio
-    async def test_the_chosen_place_lands_on_the_item(self, db_session, session_factory, printer_factory):
+    async def test_the_chosen_place_lands_on_the_item(self, db_session, session_factory, printer_factory, tmp_path):
         shelf = await _place(db_session, "Shelf 1")
-        lib = LibraryFile(filename="cube.3mf", file_path="library/cube.3mf", file_type="3mf", file_size=1)
+        lib = LibraryFile(
+            filename="cube.3mf",
+            file_path=str(write_routing_3mf(tmp_path / "cube.3mf", {1: [{"id": 1, "type": "PLA", "used_g": "1"}]})),
+            file_type="3mf",
+            file_size=1,
+        )
         db_session.add(lib)
         await db_session.commit()
 
@@ -131,9 +137,14 @@ class TestTheAnswerReachesTheRow:
         assert (item.target_model, item.target_location_id) == ("P1S", shelf.id)
 
     @pytest.mark.asyncio
-    async def test_declining_the_step_leaves_the_item_unrestricted(self, db_session, session_factory):
+    async def test_declining_the_step_leaves_the_item_unrestricted(self, db_session, session_factory, tmp_path):
         """ "Anywhere" is an answer, and it has to mean the farm — not a place."""
-        lib = LibraryFile(filename="cube.3mf", file_path="library/cube.3mf", file_type="3mf", file_size=1)
+        lib = LibraryFile(
+            filename="cube.3mf",
+            file_path=str(write_routing_3mf(tmp_path / "cube.3mf", {1: [{"id": 1, "type": "PLA", "used_g": "1"}]})),
+            file_type="3mf",
+            file_size=1,
+        )
         db_session.add(lib)
         await db_session.commit()
 

@@ -74,7 +74,7 @@ export function SensorsPopover({ onClose, onPinnedChange }: Props) {
               <Loader2 className="w-6 h-6 text-bambu-gray animate-spin" />
             </div>
           ) : sensors.length === 0 ? (
-            <div className="text-center py-6 px-4">
+            <div className="text-center py-4 px-4">
               <Thermometer className="w-8 h-8 text-bambu-gray mx-auto mb-2" />
               <p className="text-sm text-bambu-gray">{t('settings.zigbee.sensors.empty')}</p>
             </div>

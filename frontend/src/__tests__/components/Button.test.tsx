@@ -95,7 +95,7 @@ describe('Button', () => {
       render(<Button size="lg">Large</Button>);
 
       const button = screen.getByRole('button');
-      expect(button.className).toContain('px-6');
+      expect(button.className).toContain('px-4');
       expect(button.className).toContain('py-3');
     });
   });

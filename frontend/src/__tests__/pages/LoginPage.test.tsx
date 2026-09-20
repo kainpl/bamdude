@@ -28,7 +28,7 @@ describe('LoginPage', () => {
       });
 
       expect(screen.getByLabelText(/Username/i)).toBeInTheDocument();
-      expect(screen.getByLabelText(/Password/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/^Password$/i)).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Sign in/i })).toBeInTheDocument();
     });
 
@@ -65,10 +65,10 @@ describe('LoginPage', () => {
       });
 
       await user.type(screen.getByLabelText(/Username/i), 'testuser');
-      await user.type(screen.getByLabelText(/Password/i), 'testpassword');
+      await user.type(screen.getByLabelText(/^Password$/i), 'testpassword');
 
       expect(screen.getByLabelText(/Username/i)).toHaveValue('testuser');
-      expect(screen.getByLabelText(/Password/i)).toHaveValue('testpassword');
+      expect(screen.getByLabelText(/^Password$/i)).toHaveValue('testpassword');
     });
   });
 
@@ -108,7 +108,7 @@ describe('LoginPage', () => {
       });
 
       await user.type(screen.getByLabelText(/Username/i), 'validuser');
-      await user.type(screen.getByLabelText(/Password/i), 'validpass');
+      await user.type(screen.getByLabelText(/^Password$/i), 'validpass');
       await user.click(screen.getByRole('button', { name: /Sign in/i }));
 
       // Verify the login endpoint was called
@@ -147,7 +147,7 @@ describe('LoginPage', () => {
       });
 
       await user.type(screen.getByLabelText(/Username/i), 'testuser');
-      await user.type(screen.getByLabelText(/Password/i), 'testpass');
+      await user.type(screen.getByLabelText(/^Password$/i), 'testpass');
       await user.click(screen.getByRole('button', { name: /Sign in/i }));
 
       // Check for loading state - button text should change to "Logging in..."

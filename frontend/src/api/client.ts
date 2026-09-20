@@ -1,11 +1,39 @@
-import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateObjectsResponse } from '../types/plates';
+/**
+ * The wire, typed once for the whole app.
+ *
+ * ⚠️ **A string union here is a claim about the SERVER, not a preference.** Keep
+ * a field narrow only where the server documents a closed set and validates it
+ * (`ProductAttachment.source` / `category` — a Pydantic `Literal` refuses
+ * anything else); where the server emits an open set the union follows the
+ * server and stays wide (`DiagnosticCheck.id`, whose members a backend release
+ * adds to freely — two of them went unnamed here for months while the modal
+ * rendered them regardless). A union narrower than the wire does not prevent
+ * the value arriving; it only makes TypeScript describe a payload nobody sends.
+ */
+import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateMetadata, PlateObjectsResponse } from '../types/plates';
+import type { MonitorSnapshot, MonitorView } from '../features/monitor/types';
+import { isMonitorKioskLocation } from '../features/monitor/location';
+import { createPrinterStatusBatcher } from './printerStatusBatch';
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /**
+   * The machine-readable refusal code, when the server sent one.
+   *
+   * ⚠️ **The message is prose and must never be branched on** (CLAUDE.md). A
+   * refusal the frontend has to REACT to carries a code in its detail —
+   * `{code, params, message}` for the filament-routing / queue-source family,
+   * `{error, message}` elsewhere — and this is where that code arrives, so a
+   * caller can tell `source_copy_busy` (ask again) from `source_unreadable`
+   * (the file is gone) without matching English sentences that are translated
+   * server-side anyway.
+   */
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -78,6 +106,9 @@ function scheduleProactiveRefresh() {
     window.clearTimeout(proactiveRefreshTimer);
     proactiveRefreshTimer = null;
   }
+  // A TV opened in an already signed-in browser must never refresh or use
+  // that wider session just because a shared module was imported.
+  if (isMonitorKioskLocation()) return;
   const exp = tokenExpiryMs();
   if (exp === null) return;
   // Jitter, because the deadline is derived from the token itself: every tab
@@ -136,6 +167,64 @@ export function withStreamToken(url: string): string {
   if (!streamToken) return url;
   const sep = url.includes('?') ? '&' : '?';
   return `${url}${sep}token=${encodeURIComponent(streamToken)}`;
+}
+
+/**
+ * A multipart upload, which `request()` cannot carry.
+ *
+ * `request()` sets `Content-Type: application/json` on every call; with a
+ * `FormData` body that header would replace the one the browser writes, and the
+ * multipart boundary would be lost — the server then sees a body it cannot
+ * parse and answers 422 on a perfectly good file. So the headers are built by
+ * hand here and the content type is deliberately left to `fetch`.
+ *
+ * ⚠️ **Everything else about the call is `request()`'s, deliberately.** The
+ * proactive pre-expiry refresh, the reactive 401 → refresh → retry, the
+ * session-invalidated broadcast and the `ApiError` (not a bare `Error`, which
+ * no caller can branch on) all come from the same two helpers `request()` uses.
+ * They were missing here for one release, and the cost was specific: an upload
+ * started on a tab that had been idle past the access token's hour died with a
+ * bare "Not authenticated" toast and lost the file the operator had picked,
+ * while every JSON call beside it recovered silently.
+ *
+ * A `FormData` body survives the retry: `fetch` serialises it per call, it is
+ * not a consumed stream.
+ */
+async function sendForm<T>(
+  endpoint: string,
+  formData: FormData,
+  method: 'POST' | 'PUT' = 'POST',
+  __isRetry = false,
+): Promise<T> {
+  if (authToken && !__isRetry && isTokenNearExpiry()) {
+    await refreshAccessToken();
+  }
+  // ⚠️ The same timezone header `request()` sends. A multipart call is a call
+  // like any other — a product import answers with dated notes, an upload's
+  // response carries `uploaded_at` — and "every request carries it" is the only
+  // version of this rule that cannot be forgotten on the next new endpoint.
+  // No `Content-Type`: the browser sets it, boundary and all.
+  const headers: Record<string, string> = {
+    ...(clientTimeZone ? { 'X-Client-Timezone': clientTimeZone } : {}),
+  };
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    method,
+    headers,
+    body: formData,
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    // Either throws, or says "refreshed — send it again".
+    await handleErrorResponse(response, __isRetry);
+    return sendForm<T>(endpoint, formData, method, true);
+  }
+  const contentLength = response.headers.get('content-length');
+  if (response.status === 204 || contentLength === '0') {
+    return undefined as T;
+  }
+  return response.json();
 }
 
 /**
@@ -334,6 +423,69 @@ function formatErrorDetail(detail: unknown, status: number): string {
   return `HTTP ${status}`;
 }
 
+/**
+ * The refusal path shared by `request()` and `sendForm()`.
+ *
+ * Returns only when the caller should RE-SEND the same call with `__isRetry`
+ * set — the access token has just been refreshed. Every other outcome throws.
+ * There is deliberately no boolean to check: a caller that forgot to branch on
+ * it would swallow the failure and return `undefined` as if the request had
+ * succeeded.
+ *
+ * ⚠️ `ApiError`, never a bare `Error`, so callers can branch on the HTTP status
+ * — `useWebSocket` / `AuthContext` / `StreamOverlayPage` classify a 401/403 as
+ * a definitive AUTH decision (stop) against a transient 5xx/network blip
+ * (retry), and `InventoryPage` keys 404/503 handling off `err.status`.
+ */
+async function handleErrorResponse(response: Response, __isRetry: boolean): Promise<void> {
+  const error = await response.json().catch(() => ({}));
+  const message = formatErrorDetail(error.detail, response.status);
+  const code = refusalCode(error.detail);
+
+  if (response.status === 401) {
+    const refreshable = !__isRetry && REFRESH_ERROR_MESSAGES.some(m => message.includes(m));
+    if (refreshable) {
+      // Try to refresh once. Coalesced across concurrent 401s.
+      const ok = await refreshAccessToken();
+      if (ok) return;
+      // Refresh failed (no cookie, replay detected, refresh expired, etc.)
+      // — fall through to the invalidated-session path below.
+    }
+    const terminal =
+      REFRESH_ERROR_MESSAGES.some(m => message.includes(m)) ||
+      NON_REFRESHABLE_401_MESSAGES.some(m => message.includes(m));
+    if (terminal) {
+      setAuthToken(null);
+      // Broadcast so AuthContext can clear React state and redirect to
+      // /login. Before sliding-session (§18.14) this was the first line
+      // of defence; after sliding-session it's the last resort — refresh
+      // was already attempted and failed.
+      window.dispatchEvent(
+        new CustomEvent('bamdude:auth-invalidated', { detail: { reason: 'token-expired', message } }),
+      );
+    }
+  }
+
+  throw new ApiError(message, response.status, code);
+}
+
+/**
+ * The machine code inside a refusal detail, or `undefined`.
+ *
+ * Two shapes are in the wild and both are canon: `{code, params, message}`
+ * (filament routing and the queue-source taxonomy) and `{error, message}`
+ * (everything the frontend has to branch on elsewhere). Read in that order and
+ * only when the value is a string — a Pydantic 422's `detail` is an array, and
+ * a bare-string detail has no code at all.
+ */
+function refusalCode(detail: unknown): string | undefined {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
+  const d = detail as Record<string, unknown>;
+  if (typeof d.code === 'string') return d.code;
+  if (typeof d.error === 'string') return d.error;
+  return undefined;
+}
+
 // Resolved once: it cannot change without the page being reloaded, and calling
 // into Intl on every request would be noise. Empty string when the runtime has
 // no zone to report, in which case the header is omitted and the server answers
@@ -395,43 +547,9 @@ async function request<T>(
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    const detail = error.detail;
-    const message = formatErrorDetail(detail, response.status);
-
-    if (response.status === 401) {
-      const refreshable =
-        !__isRetry &&
-        REFRESH_ERROR_MESSAGES.some(m => message.includes(m));
-      if (refreshable) {
-        // Try to refresh once. Coalesced across concurrent 401s.
-        const ok = await refreshAccessToken();
-        if (ok) {
-          return request<T>(endpoint, options, true);
-        }
-        // Refresh failed (no cookie, replay detected, refresh expired, etc.)
-        // — fall through to the invalidated-session path below.
-      }
-      const terminal =
-        REFRESH_ERROR_MESSAGES.some(m => message.includes(m)) ||
-        NON_REFRESHABLE_401_MESSAGES.some(m => message.includes(m));
-      if (terminal) {
-        setAuthToken(null);
-        // Broadcast so AuthContext can clear React state and redirect to
-        // /login. Before sliding-session (§18.14) this was the first line
-        // of defence; after sliding-session it's the last resort — refresh
-        // was already attempted and failed.
-        window.dispatchEvent(
-          new CustomEvent('bamdude:auth-invalidated', { detail: { reason: 'token-expired', message } }),
-        );
-      }
-    }
-
-    // Throw ApiError (not a bare Error) so callers can branch on the HTTP
-    // status — e.g. useWebSocket / AuthContext / StreamOverlayPage classify a
-    // 401/403 as a definitive AUTH decision (stop) vs a transient 5xx/network
-    // blip (retry), and InventoryPage keys 404/503 handling off ``err.status``.
-    throw new ApiError(message, response.status);
+    // Either throws, or says "refreshed — send it again".
+    await handleErrorResponse(response, __isRetry);
+    return request<T>(endpoint, options, true);
   }
 
   // Handle empty responses (204 No Content, etc.)
@@ -462,6 +580,41 @@ export interface PrinterLocationListItem extends PrinterLocation {
   queued_count: number;
 }
 
+/** A label a printer carries. Flat — a tag has no parent. */
+export interface PrinterTag {
+  id: number;
+  name: string;
+  /** `#rrggbb` from the fixed palette, or null for the neutral chip. */
+  color: string | null;
+}
+
+export interface PrinterTagListItem extends PrinterTag {
+  printer_count: number;
+  /** Chosen as a staggered-start group in Settings; the backend refuses to delete it while true. */
+  is_stagger_group: boolean;
+}
+
+/** A camera that belongs to no printer — a room, a shelf, a dryer.
+ *  NOT a printer's external camera, which is columns on the printer and
+ *  replaces that printer's own camera for every consumer of its frames. */
+export interface Camera {
+  id: number;
+  name: string;
+  camera_type: 'mjpeg' | 'rtsp' | 'snapshot' | 'usb';
+  url: string;
+  snapshot_url: string | null;
+  rotation: number;
+  enabled: boolean;
+  location_id: number | null;
+  location_name: string | null;
+}
+
+export type CameraCreate = Omit<Camera, 'id' | 'location_name'>;
+export type CameraUpdate = Partial<CameraCreate>;
+
+/** `printers.camera_light_auto`: the per-printer answer, or defer to the farm's toggle. */
+export type CameraLightPolicy = 'inherit' | 'on' | 'off';
+
 export interface Printer {
   id: number;
   name: string;
@@ -476,6 +629,9 @@ export interface Printer {
   // location changes it everywhere at once because everything points at the id.
   location: PrinterLocation | null;
   location_id: number | null;
+  // Labels, resolved. Objects for display; `tag_ids` is what a form posts back.
+  tags: PrinterTag[];
+  tag_ids: number[];
   nozzle_count: number;  // 1 or 2, auto-detected from MQTT
   is_active: boolean;
   // Soft-retire (#archived): archived printers are hidden from the whole app +
@@ -492,12 +648,15 @@ export interface Printer {
   external_camera_enabled: boolean;
   external_camera_snapshot_url: string | null;  // optional single-frame override (#1177)
   camera_rotation: number;  // 0, 90, 180, 270 degrees
+  // Chamber light for the camera: defer to the farm setting, or decide here
+  camera_light_auto: CameraLightPolicy;
   plate_detection_enabled: boolean;  // Check plate before print
   plate_detection_roi?: PlateDetectionROI;  // ROI for plate detection
   stagger_interval_minutes: number;  // Per-printer stagger interval override (0 = system default)
   swap_mode_enabled: boolean;  // A1 Mini plate swapper
   swap_profile: string | null;  // Active swap-mode variant (see /macros/swap-profiles)
   require_plate_clear: boolean;  // Require plate-clear confirmation before next queued print
+  ams_policies: AmsPolicies;     // What this printer may be TOLD about its manually assigned slots
   created_at: string;
   updated_at: string;
 }
@@ -519,6 +678,61 @@ export interface HMSActionBody {
   print_error: string;  // full_code echoed back (8 or 16 hex chars)
   action: string;  // one of the HMSAction values
   job_id: string | null;  // subtask_id snapshot, optional
+}
+
+// AMS backup-compatibility emulation: a manually assigned slot can be
+// ADVERTISED to the printer under a different profile so the firmware groups it
+// with its peers for auto-refill. The policy says how far the advertised
+// profile may drift from the real spool.
+export interface BackupCompatibilityPolicy {
+  normalize_color: boolean;
+  canonical_color_rgba: string;  // RRGGBBFF, opaque
+  generic_base_material: boolean;
+}
+
+export interface AmsPolicies {
+  backup_compatibility: BackupCompatibilityPolicy;
+}
+
+export const DEFAULT_BACKUP_COMPATIBILITY: BackupCompatibilityPolicy = {
+  normalize_color: false,
+  canonical_color_rgba: '000000FF',
+  generic_base_material: false,
+};
+
+/** One slot in the bulk re-advertise preview / result. */
+export interface BackupCompatibilityApplyRow {
+  ams_id: number;
+  tray_id: number;
+  slot: string;
+  source: 'internal' | 'spoolman';
+  spool: string;
+  actual: { tray_info_idx: string; tray_type: string; tray_color: string; cols: string[]; setting_id: string };
+  advertised: { tray_info_idx: string; tray_type: string; tray_color: string; cols: string[]; setting_id: string };
+  // 'revert' — the policy no longer projects this slot, but it was advertised
+  // before, so the ACTUAL plan is re-published and the overlay forgets it.
+  action: 'apply' | 'revert' | 'skip';
+  reasons: string[];
+  published: boolean | null;
+  kprofile: 'kept' | 'skipped' | null;
+}
+
+export interface BackupCompatibilityApplyResult {
+  dry_run: boolean;
+  rows: BackupCompatibilityApplyRow[];
+  applied: number;
+  skipped: number;
+  would_apply?: number;
+  /** The walk could not read Spoolman: the rows are HALF the farm, not all of it. */
+  spoolman_unavailable?: boolean;
+}
+
+/** The spool BEHIND an advertised profile (backup-compatibility emulation). Present only while the printer echoes what we advertised. */
+export interface AmsTrayActual {
+  tray_color: string | null;
+  tray_type: string | null;
+  tray_info_idx: string | null;
+  cols?: string[];
 }
 
 export interface AMSTray {
@@ -548,6 +762,11 @@ export interface AMSTray {
   drying_time: number | null;      // RFID-recommended drying time (hours)
   state: number | null;            // AMS tray state: 9=empty, 10=spool present not loaded, 11=loaded
   exists?: boolean | null;         // Firmware tray_exist_bits: spool physically present (non-RFID → "?" not "Empty")
+  // The real spool while the slot advertises a different profile; null/absent
+  // whenever nothing is masked. Everything that reasons about the SPOOL reads
+  // it; everything that reasons about the FIRMWARE keeps reading the live
+  // fields above, because the firmware only ever sees what we advertised.
+  actual?: AmsTrayActual | null;
 }
 
 export interface AMSUnit {
@@ -685,6 +904,9 @@ export interface PrinterStatus {
   } | null;
   cover_url: string | null;
   hms_errors: HMSError[];
+  // Stack entries the operator hid on this printer until the printer drops
+  // them — excluded from hms_errors, listed here so the modal can un-hide.
+  hms_muted?: HMSError[];
   // Pause classification (RUNNING→PAUSE edge, see hms_errors.classify_pause_reason).
   // pause_reason: normalised key for routing — 'user' | 'filament_runout' |
   //   'door_open' | 'presence_check' | 'file_pause_command' |
@@ -725,6 +947,9 @@ export interface PrinterStatus {
   speed_level: number;
   // Chamber light on/off
   chamber_light: boolean;
+  // Whether the printer has a light BamDude can switch (it reported a
+  // chamber_light node); false until the first report of a connection
+  has_chamber_light?: boolean;
   // Active extruder for dual nozzle (0=right, 1=left)
   active_extruder: number;
   // AMS mapping - which AMS is connected to which nozzle
@@ -830,11 +1055,19 @@ export interface PrinterStatus {
   developer_mode: boolean | null;
   // AMS Filament Backup (auto_switch_filament): true = on, false = off, null = unknown (#1766)
   ams_auto_switch_filament: boolean | null;
+  // Firmware-reported ``filam_bak`` groups: extruder id -> global AMS tray ids.
+  ams_backup_groups?: Record<string, number[][]> | null;
   // Currently executing macro name (null = no macro running)
   macro_executing: string | null;
   // Queue plate-clear gate (#961): true means the printer is waiting on user
   // confirmation before the next auto-dispatch; false means the gate is released.
   awaiting_plate_clear: boolean;
+  // Whether "Repeat" has a finished queue row to re-arm. The gate can be armed
+  // with nothing behind it (a print on a queue-less printer, one already
+  // running when BamDude came up, a completion handler still fetching the
+  // 3MF), and Repeat then answered 409 to a button the card itself had drawn.
+  // Optional: an older backend does not send it, and then the button stays.
+  repeat_available?: boolean;
   // AMS drying support
   supports_drying: boolean;
   // AMS "Print While Drying" — drying that runs concurrently with an active print
@@ -851,6 +1084,7 @@ export interface PrinterCreate {
   access_code: string;
   model?: string;
   location_id?: number | null;
+  tag_ids?: number[];
   auto_archive?: boolean;
   // Maintenance Mode (#1476). Backend already gates MQTT, queue dispatch,
   // scheduler, metrics and the print picker on this; PATCH /printers/{id}
@@ -863,12 +1097,14 @@ export interface PrinterCreate {
   external_camera_enabled?: boolean;
   external_camera_snapshot_url?: string | null;  // optional single-frame override (#1177)
   camera_rotation?: number;
+  camera_light_auto?: CameraLightPolicy;
   plate_detection_enabled?: boolean;
   plate_detection_roi?: PlateDetectionROI;
   stagger_interval_minutes?: number;
   swap_mode_enabled?: boolean;
   swap_profile?: string | null;
   require_plate_clear?: boolean;
+  ams_policies?: { backup_compatibility?: BackupCompatibilityPolicy };
 }
 
 // Plate Detection
@@ -922,11 +1158,54 @@ export interface ArchiveDuplicate {
   match_type: 'exact' | 'similar';  // 'exact' = hash match, 'similar' = name match
 }
 
+export interface ArchivePart {
+  id: number;
+  name: string;
+  name_key: string;
+  quantity: number;
+  defective: number;
+}
+
+export interface ArchivePartDefect {
+  id: number;
+  defective: number;
+}
+
+/** What came out bad: per part when the print has rows, else one flat count.
+ *  Absolute values; the server clamps to each row's (or the print's) quantity. */
+export interface DefectsWriteBody {
+  parts?: ArchivePartDefect[];
+  defective_count?: number;
+}
+
+export interface OrderPrintDefects {
+  archive_id: number;
+  quantity: number;
+  defective_count: number;
+  parts: ArchivePart[];
+}
+
+export interface WaitingPrint {
+  archive_id: number;
+  print_name: string | null;
+  status: string;
+  quantity: number;
+  defective_count: number;
+  parts: ArchivePart[];
+}
+
 export interface Archive {
   id: number;
   printer_id: number | null;
   project_id: number | null;
+  /** Pass 2: which line of the order this print counts against. NULL means the
+   *  print is bound to the order but to no line — the order's "other prints". */
+  project_line_id: number | null;
   project_name: string | null;
+  /** The library file this print was dispatched from (m014). NULL for an
+   *  external print or one whose source was never matched into the library —
+   *  a print card can only link to `/archives?file=<id>` when it is set. */
+  library_file_id: number | null;
   filename: string;
   file_path: string;
   file_size: number;
@@ -1003,31 +1282,91 @@ export interface Archive {
   // User tracking (Issue #206)
   created_by_id: number | null;
   created_by_username: string | null;
+  // Parts (parts ledger items associated with this archive)
+  parts?: ArchivePart[];
 }
 
-export interface ArchiveSlim {
-  id: number;
-  printer_id: number | null;
-  print_name: string | null;
-  filename: string;
-  print_time_seconds: number | null;
-  actual_time_seconds: number | null;
-  filament_used_grams: number | null;
-  filament_type: string | null;
-  filament_color: string | null;
-  status: string;
-  started_at: string | null;
-  completed_at: string | null;
-  // Filament only — grams x price per spool, plus the untracked remainder at
-  // the default rate. Electricity is NOT in here; it is the two fields below.
-  cost: number | null;
-  // Measured electricity for this print, when a smart plug covered it. Null on
-  // a printer without one, and null outside per-print energy tracking mode.
-  energy_kwh: number | null;
-  energy_cost: number | null;
+/**
+ * GET /statistics/aggregate — everything the Stats page and the archive calendar
+ * fold, folded on the server.
+ *
+ * Sized by the date range rather than by the number of prints. It replaces
+ * `GET /archives/slim`, which returned at most 10 000 rows newest-first with no
+ * total and no flag, so on a busy farm "all time" quietly meant "the last few
+ * weeks" and the calendar quietly lost the start of its own month.
+ *
+ * Bucket keys are already local to this browser's zone (sent as
+ * `X-Client-Timezone`), so they are read as-is — never re-parsed as UTC.
+ */
+export interface BucketMetrics {
+  prints: number;
+  completed: number;
+  failed: number;
+  grams: number;
+  cost: number;
+  energy_cost: number;
   quantity: number;
-  created_at: string;
-  thumbnail_path: string | null;
+  seconds: number;
+}
+
+export interface AggregateBucket {
+  /** `2026-09-08` when granularity is `day`, `2026-09-08T14` when `hour`. */
+  at: string;
+  /** Keyed on created_at: the activity calendar, heat-map and weekday habits. */
+  started: BucketMetrics;
+  /** Keyed on completed_at ?? created_at: the archive calendar and trends. */
+  ended: BucketMetrics;
+}
+
+export interface AggregateHourCell { hour: number; prints: number; failures: number }
+export interface AggregatePrinterRow {
+  printer_id: number | null;
+  prints: number;
+  grams: number;
+  seconds: number;
+  completed: number;
+  failed: number;
+}
+export interface AggregateMaterialRow {
+  material: string;
+  prints: number;
+  grams: number;
+  seconds: number;
+  completed: number;
+  failed: number;
+}
+export interface AggregateColorRow { color: string; prints: number; grams: number }
+export interface AggregateDurationRow { bucket: string; prints: number }
+export interface AggregateTotals {
+  prints: number;
+  completed: number;
+  failed: number;
+  grams: number;
+  cost: number;
+  energy_kwh: number;
+  energy_cost: number;
+  quantity: number;
+  seconds: number;
+  printers: number;
+}
+export interface AggregateRecords {
+  longest: { archive_id: number; print_name: string | null; seconds: number } | null;
+  heaviest: { archive_id: number; print_name: string | null; grams: number } | null;
+  costliest: { archive_id: number; print_name: string | null; total: number; cost: number; energy_cost: number } | null;
+  success_streak: number;
+}
+
+export interface ArchiveAggregate {
+  timezone: string;
+  granularity: 'day' | 'hour';
+  buckets: AggregateBucket[];
+  by_hour_of_day: AggregateHourCell[];
+  by_printer: AggregatePrinterRow[];
+  by_material: AggregateMaterialRow[];
+  by_color: AggregateColorRow[];
+  by_duration: AggregateDurationRow[];
+  totals: AggregateTotals;
+  records: AggregateRecords;
 }
 
 export interface PaginationMeta {
@@ -1071,6 +1410,11 @@ export interface ArchiveListParams {
 }
 
 
+export interface DefectsByPrinter {
+  printed: number;
+  defective: number;
+}
+
 export interface ArchiveStats {
   total_prints: number;
   successful_prints: number;
@@ -1083,6 +1427,9 @@ export interface ArchiveStats {
   prints_by_printer: Record<string, number>;
   average_time_accuracy: number | null;
   time_accuracy_by_printer: Record<string, number> | null;
+  /** Completed prints in the period: what came off each printer's plates and
+   *  how much went in the bin. Optional — an older backend says nothing. */
+  defects_by_printer?: Record<string, DefectsByPrinter>;
   // Two pairs, deliberately. `print_*` is measured between the start and end of
   // each print and honours the date filter; `total_*` is what the plugs
   // themselves counted, idle included, and all-time comes from their lifetime
@@ -1182,134 +1529,12 @@ export interface SimilarArchive {
   match_score: number;
 }
 
-// Project types
-export interface ProjectStats {
-  total_archives: number;
-  total_items: number;  // Sum of quantities (total items printed)
-  completed_prints: number;  // Usable parts: completed quantities less defective_parts
-  /** Scrap among completed prints, already subtracted from completed_prints. */
-  defective_parts: number;
-  failed_prints: number;
-  queued_prints: number;
-  in_progress_prints: number;
-  total_print_time_hours: number;
-  total_filament_grams: number;
-  progress_percent: number | null;  // Plates progress (total_archives / target_count)
-  parts_progress_percent: number | null;  // Parts progress (completed_prints / target_parts_count)
-  estimated_cost: number;
-  total_energy_kwh: number;
-  total_energy_cost: number;
-  remaining_prints: number | null;  // Remaining plates
-  remaining_parts: number | null;  // Remaining parts
-  bom_total_items: number;
-  bom_completed_items: number;
-  bom_cost: number;
-}
-
-export interface ProjectChildPreview {
-  id: number;
-  name: string;
-  color: string | null;
-  status: string;
-  progress_percent: number | null;
-}
-
-export interface Project {
-  id: number;
-  name: string;
-  description: string | null;
-  color: string | null;
-  status: string;  // active, completed, archived
-  target_count: number | null;  // Target number of plates/print jobs
-  target_parts_count: number | null;  // Target number of parts/objects
-  notes: string | null;
-  attachments: ProjectAttachment[] | null;
-  tags: string | null;
-  due_date: string | null;
-  priority: string;  // low, normal, high, urgent
-  budget: number | null;
-  is_template: boolean;
-  template_source_id: number | null;
-  parent_id: number | null;
-  parent_name: string | null;
-  children: ProjectChildPreview[];
-  // B.2 (#1155) — external link rendered as a clickable icon next to the
-  // project name. Validated http(s) on the wire; null = no link.
-  url: string | null;
-  // B.2 (#1155) — filename of the cover photo inside the project's
-  // attachments dir; serves as the card's hero image. Null = no cover.
-  cover_image_filename: string | null;
-  created_at: string;
-  updated_at: string;
-  stats?: ProjectStats;
-  /** Everything under this project, its own prints included. Present only when
-   *  it actually has sub-projects — a second figure rather than a widening of
-   *  `stats`, whose meaning is unchanged. */
-  rollup_stats?: ProjectStats | null;
-}
-
 export interface ProjectAttachment {
   filename: string;
   original_name: string;
   size: number;
   uploaded_at: string;
 }
-
-export interface ArchivePreview {
-  id: number;
-  print_name: string | null;
-  thumbnail_path: string | null;
-  status: string;
-  filament_type: string | null;
-  filament_color: string | null;
-}
-
-export interface ProjectListItem {
-  id: number;
-  name: string;
-  description: string | null;
-  color: string | null;
-  status: string;
-  target_count: number | null;  // Target number of plates/print jobs
-  target_parts_count: number | null;  // Target number of parts/objects
-  budget: number | null;
-  created_at: string;
-  // Card-level metadata the shared edit dialog seeds itself from — must match
-  // the full Project payload or editing from the list submits defaults (#2536).
-  tags: string | null;
-  due_date: string | null;
-  priority: string;
-  archive_count: number;  // Number of print jobs (plates)
-  total_items: number;  // Sum of quantities (total items printed, including failed)
-  completed_count: number;  // Sum of quantities for completed prints only (parts)
-  defective_count: number;  // Scrap off completed plates — already subtracted from completed_count
-  failed_count: number;  // Sum of quantities for failed prints
-  queue_count: number;
-  progress_percent: number | null;  // Plates progress
-  archives: ArchivePreview[];
-  url: string | null;
-  cover_image_filename: string | null;
-  /** Nesting, so the grid can group and the parent picker can rule out a
-   *  loop before the server has to. */
-  parent_id: number | null;
-  is_template: boolean;
-}
-
-export interface ProjectCreate {
-  name: string;
-  description?: string;
-  color?: string;
-  target_count?: number;
-  target_parts_count?: number;
-  notes?: string;
-  tags?: string;
-  due_date?: string;
-  priority?: string;
-  budget?: number | null;
-  parent_id?: number;
-  url?: string | null;
-}
-
 
 /** Built-in inventory bulk delete/archive/restore result (#1795). */
 export interface BulkActionResult {
@@ -1335,146 +1560,6 @@ export interface SpoolmanBulkResult {
   errors: { id: number; status: number; detail: string }[];
 }
 
-export interface ProjectUpdate {
-  name?: string;
-  description?: string;
-  color?: string;
-  status?: string;
-  // 0 = "don't measure this project in plates/parts" (that progress bar is
-  // hidden); null clears the target entirely.
-  target_count?: number | null;
-  target_parts_count?: number | null;
-  notes?: string;
-  // null clears (the backend keys off model_fields_set), like budget/url.
-  tags?: string | null;
-  due_date?: string | null;
-  priority?: string;
-  budget?: number | null;
-  parent_id?: number;
-  url?: string | null;
-}
-
-// BOM Types - Tracks sourced/purchased parts (hardware, electronics, etc.)
-export interface BOMItem {
-  id: number;
-  project_id: number;
-  name: string;
-  quantity_needed: number;
-  quantity_acquired: number;
-  unit_price: number | null;
-  sourcing_url: string | null;
-  archive_id: number | null;
-  archive_name: string | null;
-  stl_filename: string | null;
-  remarks: string | null;
-  sort_order: number;
-  is_complete: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface BOMItemCreate {
-  name: string;
-  quantity_needed?: number;
-  unit_price?: number;
-  sourcing_url?: string;
-  archive_id?: number;
-  stl_filename?: string;
-  remarks?: string;
-}
-
-export interface BOMItemUpdate {
-  name?: string;
-  quantity_needed?: number;
-  quantity_acquired?: number;
-  unit_price?: number;
-  sourcing_url?: string;
-  archive_id?: number;
-  stl_filename?: string;
-  remarks?: string;
-}
-
-// Project Export/Import Types
-export interface BOMItemExport {
-  name: string;
-  quantity_needed: number;
-  quantity_acquired: number;
-  unit_price: number | null;
-  sourcing_url: string | null;
-  stl_filename: string | null;
-  remarks: string | null;
-}
-
-export interface LinkedFolderExport {
-  name: string;
-}
-
-export interface ProjectExport {
-  name: string;
-  description: string | null;
-  color: string | null;
-  status: string;
-  target_count: number | null;
-  target_parts_count: number | null;
-  notes: string | null;
-  tags: string | null;
-  due_date: string | null;
-  priority: string;
-  budget: number | null;
-  bom_items: BOMItemExport[];
-  linked_folders: LinkedFolderExport[];
-}
-
-export interface ProjectImport {
-  name: string;
-  description?: string;
-  color?: string;
-  status?: string;
-  target_count?: number;
-  target_parts_count?: number;
-  notes?: string;
-  tags?: string;
-  due_date?: string;
-  priority?: string;
-  budget?: number | null;
-  bom_items?: BOMItemExport[];
-  linked_folders?: LinkedFolderExport[];
-}
-
-// Print Plan Types
-export interface PrintPlanItem {
-  id: number;
-  library_file_id: number;
-  copies: number;
-  order_index: number;
-  filename: string;
-  print_name: string | null;
-  file_type: string;
-  thumbnail_path: string | null;
-  swap_compatible: boolean;
-  filament_grams: number | null;
-  print_time_seconds: number | null;
-  object_count: number | null;
-  cost_per_copy: number | null;
-  total_filament_grams: number | null;
-  total_print_time_seconds: number | null;
-  total_objects: number | null;
-  total_cost: number | null;
-  // Per-(project, file) progress: count of completed archives + the
-  // derived ``copies - printed_count`` remainder (clamped at 0).
-  printed_count: number;
-  remaining_count: number;
-}
-
-export interface PrintPlanResponse {
-  items: PrintPlanItem[];
-  totals_filament_grams: number;
-  totals_print_time_seconds: number;
-  totals_objects: number;
-  totals_cost: number;
-  default_filament_cost_per_kg: number;
-}
-
 // Timeline Types
 export interface TimelineEvent {
   event_type: string;
@@ -1482,6 +1567,951 @@ export interface TimelineEvent {
   title: string;
   description: string | null;
   metadata: Record<string, unknown> | null;
+}
+
+// ---------------------------------------------------------------------------
+// Orders / products / customers (projects redesign, pass 2)
+//
+// These mirror the pass-1 wire schemas one field per field — see
+// `backend/app/schemas/{customer,product,project}.py`. They replaced the
+// legacy `Project*` / BOM / print-plan / template types, which went out with
+// the pages that read them.
+//
+// "Order" is the UI's name for what the backend still calls a project — the
+// endpoint paths stay `/projects/*`, so a function name and a URL deliberately
+// disagree here. The wire is the thing that cannot be renamed cheaply.
+// ---------------------------------------------------------------------------
+
+/** `active` is the only OPEN status. The other two are closed ledgers. */
+export type ProjectStatus = 'active' | 'completed' | 'cancelled';
+export type ProjectPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+/**
+ * One part of a product, counted against one order line. `need` is what the
+ * line asks for, `usable` what has been printed and is not scrap, `surplus`
+ * what was printed beyond the need — all server-computed, never derived here.
+ */
+export interface PartFigures {
+  part_id: number;
+  name: string;
+  qty_per_unit: number;
+  need: number;
+  usable: number;
+  in_progress: number;
+  remaining: number;
+  surplus: number;
+}
+
+export interface ProjectLine {
+  id: number;
+  product_id: number;
+  product_name: string;
+  quantity: number;
+  material: string | null;
+  color: string | null;
+  note: string | null;
+  sort_order: number;
+  units_printed: number;
+  /** Kits taken off the product's free stock instead of being printed (pass 8,
+   *  Decision 4). Read back from the LEDGER, so it is what was actually
+   *  reserved — the server clamps the request to `min(asked, quantity,
+   *  kits_available)` — and not what the dialog asked for. `units_printed`
+   *  stays prints only; "done" is the two added, which is what `progress` is. */
+  from_stock_units: number;
+  progress: number;
+  parts: PartFigures[];
+  /** Archives attributed to this line, in processing order. One archive can
+   *  appear under two lines — this is not a partition of the order's prints. */
+  archive_ids: number[];
+  prints_in_progress: number;
+  prints_queued: number;
+}
+
+export interface ProjectLineCreate {
+  product_id: number;
+  quantity?: number;
+  material?: string | null;
+  color?: string | null;
+  note?: string | null;
+  /** Kits to reserve off the product's free stock. Omitted means zero, and the
+   *  dialog omits it rather than sending a 0 nobody typed. */
+  from_stock_units?: number;
+}
+
+export interface ProjectLineUpdate {
+  quantity?: number;
+  material?: string | null;
+  color?: string | null;
+  note?: string | null;
+  sort_order?: number;
+  /** ⚠️ Absent (or null) leaves the reservation ALONE; a number REWRITES it —
+   *  release + reserve in one server transaction. Unlike `quantity`, this field
+   *  has a meaningful "don't touch it", which is why the line editor sends it
+   *  only when the operator moved the box. */
+  from_stock_units?: number | null;
+}
+
+/** A purchased part rolled up across every line of the order. */
+export interface ProcurementRow {
+  part_id: number;
+  name: string;
+  need: number;
+  acquired: number;
+  remaining: number;
+}
+
+export interface ProjectFigures {
+  ordered: number;
+  printed: number;
+  complete: number;
+  remaining: number;
+  total_time_seconds: number;
+  total_filament_grams: number;
+  /** Actual filament portion of `total_cost`; older servers omit it. */
+  total_filament_cost?: number;
+  /** Actual electricity portion of `total_cost`; older servers omit it. */
+  total_energy_cost?: number;
+  total_cost: number;
+  defective: number;
+  /** null when the order carries no price — not zero, which would read as
+   *  "sold at cost". */
+  margin: number | null;
+  progress: number;
+  other_prints_count: number;
+  all_printed: boolean;
+  /** Σ over the lines of what was taken off free stock (pass 8). `ordered` and
+   *  `printed` stay literal — the customer ordered that many, the farm printed
+   *  this many — and this is the third number beside them. */
+  from_stock_units: number;
+  /** What «Списати надлишок» would still move, in PARTS (Ruling 30): Σ over the
+   *  lines and their parts of `surplus − already_banked`. The bank button is
+   *  enabled on exactly this and on nothing it computes itself — it gated on
+   *  the surplus before, which banking never lowers, so it stayed lit for ever
+   *  over an order that answered "nothing to bank". */
+  bankable_surplus: number;
+  prints_in_progress: number;
+  prints_queued: number;
+}
+
+export interface Order {
+  id: number;
+  name: string;
+  customer_id: number | null;
+  customer_name: string | null;
+  description: string | null;
+  color: string | null;
+  status: ProjectStatus;
+  notes: string | null;
+  attachments: ProjectAttachment[] | null;
+  tags: string | null;
+  due_date: string | null;
+  priority: ProjectPriority;
+  price: number | null;
+  url: string | null;
+  cover_image_filename: string | null;
+  created_at: string;
+  updated_at: string;
+  lines: ProjectLine[];
+  procurement: ProcurementRow[];
+  figures: ProjectFigures;
+  /** Prints bound to the order that no line could take. */
+  other_archive_ids: number[];
+}
+
+export interface OrderListItem {
+  id: number;
+  name: string;
+  customer_id: number | null;
+  customer_name: string | null;
+  color: string | null;
+  status: ProjectStatus;
+  due_date: string | null;
+  priority: ProjectPriority;
+  price: number | null;
+  tags: string | null;
+  cover_image_filename: string | null;
+  created_at: string;
+  lines_count: number;
+  ordered: number;
+  printed: number;
+  progress: number;
+  /**
+   * Kits taken off free stock across the order (pass 8, Decision 5) — shown on
+   * the card beside `printed` when it is greater than zero.
+   *
+   * The order's own sum, CAPPED per line by the server (`project_figures`), so
+   * it is the same number the order page's figures tile shows. `printed` and
+   * `ordered` beside it stay literal: one is prints, the other is the shelf.
+   */
+  from_stock_units: number;
+  /** One entry per line, in line order. The id is what the card's cover URL is
+   *  built from, so a line whose product HAS a cover shows it and one that has
+   *  none keeps its place as a placeholder. */
+  line_products: LineProduct[];
+  prints_in_progress: number;
+  prints_queued: number;
+}
+
+/** An order line's product, reduced to what a card strip needs. */
+export interface LineProduct {
+  product_id: number;
+  has_cover: boolean;
+}
+
+export interface OrderCreate {
+  name: string;
+  customer_id?: number | null;
+  description?: string | null;
+  color?: string | null;
+  notes?: string | null;
+  tags?: string | null;
+  due_date?: string | null;
+  priority?: ProjectPriority;
+  price?: number | null;
+  url?: string | null;
+}
+
+export interface OrderUpdate {
+  name?: string;
+  description?: string | null;
+  color?: string | null;
+  status?: ProjectStatus;
+  notes?: string | null;
+  tags?: string | null;
+  url?: string | null;
+  customer_id?: number | null;
+  due_date?: string | null;
+  priority?: ProjectPriority;
+  price?: number | null;
+}
+
+/** The three filters compose server-side; `product_id` selects orders that
+ *  have a line of that product. */
+export interface OrderListParams {
+  status?: ProjectStatus;
+  customer_id?: number;
+  product_id?: number;
+}
+
+// ---- the print plan (pass 3) ----
+//
+// One contiguous block mirroring `backend/app/schemas/project.py`'s own plan
+// block. Every `part_id → count` map the engine speaks in becomes a list of
+// `PlanPartCount` on the wire, sorted by part id, with the names resolved by
+// the route.
+
+/** One part, counted. */
+export interface PlanPartCount {
+  part_id: number;
+  name: string;
+  count: number;
+}
+
+/**
+ * One plate of the plan, printed `count` times.
+ *
+ * ⚠️ `print_time_seconds` / `filament_used_grams` / `cost` are **per print** —
+ * `count` is the multiplier, which is what lets the block redo the arithmetic
+ * while the operator edits the count. `useful`, by contrast, is **aggregated
+ * over the row's prints** and clipped to what was still outstanding at each
+ * pick, so it is NOT the plate's per-print yield: see `planMath.ts`.
+ */
+export interface PlanRow {
+  /** `ProductPlate.id` — NOT the slicer's plate index. */
+  plate_id: number;
+  library_file_id: number;
+  /** 0 means the whole file rather than a numbered plate. */
+  plate_index: number;
+  filename: string;
+  count: number;
+  useful: PlanPartCount[];
+  print_time_seconds: number | null;
+  filament_used_grams: number | null;
+  cost: number | null;
+  /** Sliced, but the file carries no estimate — the plate was ranked on its
+   *  useful count alone. */
+  time_unknown: boolean;
+  /** The short printer-model name this plate's file was sliced for, or null
+   *  when the file names none — which is "we do not know", never "any". */
+  printer_model: string | null;
+  /** The line's other candidate plates that make exactly the same counted
+   *  parts. Empty is the ordinary case; see `PlanAlternative`. */
+  alternatives: PlanAlternative[];
+}
+
+/**
+ * Another plate of the row's line that makes exactly the same counted parts.
+ *
+ * The same part is routinely sliced once per printer model — two files, one
+ * yield — and the engine's greedy picks one of them, so the other file used to
+ * be invisible in the plan block. The block offers these as a file switch on
+ * the row, preselects the one whose `printer_model` matches the printer being
+ * sent to, and can split the row's count across them: the auto-queue routes an
+ * item by `target_model`, so a file only ever reaches its own printers.
+ *
+ * ⚠️ The figures are **per print**, like a row's. There is deliberately no
+ * count: the counted yield is identical by construction, so the row's count is
+ * the count whichever file is chosen — only the time, the weight and the cost
+ * move with the switch.
+ */
+export interface PlanAlternative {
+  /** `ProductPlate.id`. */
+  plate_id: number;
+  library_file_id: number;
+  /** 0 means the whole file rather than a numbered plate. */
+  plate_index: number;
+  filename: string;
+  printer_model: string | null;
+  print_time_seconds: number | null;
+  filament_used_grams: number | null;
+  cost: number | null;
+  time_unknown: boolean;
+}
+
+export interface LinePlan {
+  line_id: number;
+  product_id: number;
+  product_name: string;
+  material: string | null;
+  /** Non-zero entries only. */
+  outstanding_before: PlanPartCount[];
+  rows: PlanRow[];
+  /** Non-zero entries only. */
+  surplus_after: PlanPartCount[];
+  /** Parts still outstanding that no candidate plate yields at all — the count
+   *  is what is missing, and there is nothing to print for it yet. */
+  unsatisfiable: PlanPartCount[];
+  /** `ProductPlate` ids eligible for this line. */
+  candidates: number[];
+  /** `ProductPlate` ids skipped because they are not sliced. */
+  not_sliced: number[];
+  /** This line's pending, unassigned auto-queue rows — the Rebalance button shows off it.
+   *  Optional: a server that predates the field says nothing, which reads as 0. */
+  pending_auto_prints?: number;
+}
+
+export interface PlanTotals {
+  prints: number;
+  /** null as soon as ONE row has no estimate. */
+  print_time_seconds: number | null;
+  filament_used_grams: number;
+  /** null when the farm has no filament rate. */
+  cost: number | null;
+}
+
+export interface OrderPlan {
+  lines: LinePlan[];
+  totals: PlanTotals;
+  /** The engine's iteration guard stopped the covering, so these rows are a
+   *  PREFIX of the plan: printing all of them still leaves work. Optional
+   *  because a server that predates the flag says nothing, which reads the
+   *  same as "not truncated". */
+  truncated?: boolean;
+}
+
+/**
+ * One order a plate could be filed under, and the line it would land on.
+ *
+ * The list arrives ranked — the orders that still need the plate first, then by
+ * priority, deadline and age — so a picker renders it in the order given and
+ * does NOT re-sort. `outstanding_prints` is prints of THIS plate, and it is the
+ * order plan's own number, so the dialog and the plan block never disagree; `0`
+ * means the line is already covered and stays choosable, because printing ahead
+ * is legitimate.
+ *
+ * ⚠️ One ORDER can appear twice, on two lines of two different products that
+ * both hold the plate — which is why the label needs `product_name` as well.
+ * `priority` is a rank (0 = low … 3 = urgent), not the stored word; nothing has
+ * to display it.
+ */
+export interface OrderCandidate {
+  project_id: number;
+  project_name: string;
+  project_line_id: number;
+  product_id: number;
+  product_name: string;
+  outstanding_prints: number;
+  priority: number;
+  deadline: string | null;
+  created_at: string;
+  /** The line's own material, or null for a line that takes any. One ORDER can
+   *  appear several times — every line whose product holds this plate and whose
+   *  material accepts it is offered — so this is what tells two of them apart. */
+  line_material: string | null;
+}
+
+export interface PlanEnqueueItem {
+  /** `ProductPlate.id`. */
+  plate_id: number;
+  /** 1…999, server-validated. */
+  count: number;
+  line_id: number;
+}
+
+// ---- orders from files (spec 2026-09-06) ----
+
+export interface PartsPreviewPlate { plate_index: number; sliced: boolean; print_time_seconds: number | null }
+export interface PartsPreviewFile { id: number; filename: string; sliced_for_model: string | null; plates: PartsPreviewPlate[] }
+export interface PartsPreviewYield { library_file_id: number; plate_index: number; count: number }
+export interface PartsPreviewPart { name_key: string; name: string; yields: PartsPreviewYield[] }
+export interface PartsPreviewCatalogProduct {
+  id: number;
+  name: string;
+  parts: { id: number; name: string; qty_per_unit: number }[];
+}
+export interface PartsPreview {
+  files: PartsPreviewFile[];
+  parts: PartsPreviewPart[];
+  /** The one catalogue product linking EVERY selected file, else null. */
+  catalog_product: PartsPreviewCatalogProduct | null;
+}
+
+export type OrderFromFilesRequest =
+  | { kind: 'job'; name: string; file_ids: number[]; targets: Record<string, number> }
+  | { kind: 'catalog'; name: string; product_id: number; file_ids: number[]; quantity: number }
+  | { kind: 'plates'; library_file_id: number; plates: { plate_index: number; copies: number }[]; name?: string };
+
+/** `auto` = the auto-queue distributor picks the printer; `printer` = that
+ *  printer's own queue. Naming a printer is a ROUTING choice, never a dispatch
+ *  one — nothing here or downstream asks whether it is ready.
+ *
+ *  ⚠️ A union, not one shape with an optional id: the server's own validator
+ *  422s a `printer` target with no `printer_id` and an `auto` target that names
+ *  one, and a type that admits both pairings only lets the mistake reach it.
+ *
+ *  ⚠️ **`printer` is served by the API and by nothing in the UI**, and that is
+ *  the ruling, not an omission. `PlanBlock` always sends `kind: 'auto'`: the
+ *  block plans a whole ORDER, and a picker on its "whole plan to queue" button
+ *  would pin every line of it to one machine — the question the auto-queue
+ *  distributor exists to answer. A single plate does have a per-row way to a
+ *  named printer ("to printer…", which opens `PrintModal` on its printer leg),
+ *  so the arm here is for API clients driving the plan endpoint directly. */
+export type PlanEnqueueTarget = { kind: 'auto' } | { kind: 'printer'; printer_id: number };
+
+export interface PlanEnqueueRequest {
+  items: PlanEnqueueItem[];
+  target: PlanEnqueueTarget;
+}
+
+export interface PlanEnqueueCreated {
+  line_id: number;
+  plate_id: number;
+  queue_item_ids: number[];
+}
+
+export interface PlanEnqueueResponse {
+  created: PlanEnqueueCreated[];
+}
+
+export interface RebalanceSkipped {
+  item_id: number;
+  /** One of the backend's closed list — translated under `autoQueue.rebalance.skipped.<reason>`. */
+  reason: string;
+}
+
+export interface RebalanceResult {
+  converted: number;
+  created: number;
+  cancelled: number;
+  moved_parts: number;
+  skipped: RebalanceSkipped[];
+}
+
+/** The server's own bound on `POST /auto-queue/rebalance`: `item_ids` is
+ * validated as 1..64, so a longer selection is sent as several requests. */
+const REBALANCE_CHUNK = 64;
+
+// ---- customers ----
+
+/** What the list endpoint computes — one grouped query, nothing archive-derived. */
+export interface CustomerListFigures {
+  projects: number;
+  active: number;
+  completed: number;
+  cancelled: number;
+  total_price: number;
+}
+
+/** The detail endpoint's superset. Reading a list row for `printed` is the
+ *  mistake this split exists to make visible. */
+export interface CustomerFigures extends CustomerListFigures {
+  ordered: number;
+  printed: number;
+  total_cost: number;
+}
+
+export interface Customer {
+  id: number;
+  name: string;
+  contact: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  figures: CustomerListFigures | CustomerFigures;
+}
+
+export interface CustomerCreate {
+  name: string;
+  contact?: string | null;
+  notes?: string | null;
+}
+
+export interface CustomerUpdate {
+  name?: string;
+  contact?: string | null;
+  notes?: string | null;
+}
+
+// ---- products ----
+
+/** A printed part is produced by a plate; a purchased one is bought, and is
+ *  what the order's procurement list is made of. */
+export type ProductPartKind = 'printed' | 'purchased';
+
+/** Lightweight product reference embedded in library file/folder responses —
+ *  enough to render a chip without a follow-up fetch. */
+export interface ProductRef {
+  id: number;
+  name: string;
+  is_active: boolean;
+}
+
+export interface ProductPart {
+  id: number;
+  kind: ProductPartKind;
+  name: string;
+  /** Normalised name the plate walk matches on. */
+  name_key: string;
+  qty_per_unit: number;
+  /** Extra keys that also mean this part. Never null. */
+  aliases: string[];
+  /** True when the part was discovered from a plate rather than typed. */
+  auto: boolean;
+  unit_price: number | null;
+  sourcing_url: string | null;
+  remarks: string | null;
+  sort_order: number;
+  /** What is on the shelf for this part (pass 8) — a SUM over the ledger, never
+   *  a column, poured in by every route that answers with a part. `0` for a
+   *  part that holds no stock and for one that is not counted at all (purchased,
+   *  or `qty_per_unit = 0`); the two read alike here on purpose, because both
+   *  mean "nothing to take".
+   *
+   *  ⚠️ **Not what the stock SECTION reads.** «Вільний залишок» asks
+   *  `GET /products/{id}/stock` (`useProductStock`), which answers the shelf,
+   *  `kits_available` and the ledger in one request. This field is here for the
+   *  routes that answer with a single part — creating one, editing one, merging
+   *  two — where the caller has a part in hand and no stock response beside it.
+   *  Rendering a product's shelf out of these would be a second reading of the
+   *  same ledger, one part at a time. */
+  stock_balance: number;
+}
+
+export interface ProductPartCreate {
+  kind: ProductPartKind;
+  name: string;
+  qty_per_unit?: number;
+  unit_price?: number | null;
+  sourcing_url?: string | null;
+  remarks?: string | null;
+}
+
+export interface ProductPartUpdate {
+  name?: string;
+  qty_per_unit?: number;
+  unit_price?: number | null;
+  sourcing_url?: string | null;
+  remarks?: string | null;
+  sort_order?: number;
+}
+
+export interface PlateYieldEntry {
+  part_id: number;
+  name: string;
+  count: number;
+}
+
+/** An object on the plate that matches no part yet — the prompt to add one. */
+export interface PlateUnassignedEntry {
+  name_key: string;
+  count: number;
+}
+
+export interface PlateRecipe {
+  id: number;
+  library_file_id: number;
+  /** 0 means the whole file rather than a numbered plate. */
+  plate_index: number;
+  filename: string;
+  sliced: boolean;
+  /** `yield` is the wire name — a JS keyword only inside a generator, so it
+   *  is a legal property here. */
+  yield: PlateYieldEntry[];
+  unassigned: PlateUnassignedEntry[];
+  materials: string[];
+  colors: string[];
+  print_time_seconds: number | null;
+  filament_used_grams: number | null;
+}
+
+/** The four buckets a product attachment sits in. `pictures` IS the gallery;
+ *  the other three are the attachments section, and nothing is ever in both. */
+export type AttachmentCategory = 'pictures' | 'bom_docs' | 'assembly' | 'other';
+
+/**
+ * One typed attachment — the JSON entry on the product row, its bytes on disk.
+ *
+ * `source` says whose it is: a `3mf` entry was read out of `source_file_id` and
+ * is REPLACED wholesale when that file is re-read, while `manual` (uploaded
+ * here) and `import` (restored from an export ZIP) entries are the operator's
+ * and are never touched by a fill.
+ */
+export interface ProductAttachment {
+  category: AttachmentCategory;
+  filename: string;
+  original_name: string;
+  size: number;
+  sort_order: number;
+  source: 'manual' | '3mf' | 'import';
+  source_file_id: number | null;
+  uploaded_at: string | null;
+}
+
+/** Who made the product exist — see backend `models.product.ProductOrigin`. */
+export type ProductOrigin = 'catalog' | 'adhoc_job' | 'adhoc_plate';
+
+export interface ProductListItem {
+  id: number;
+  name: string;
+  is_active: boolean;
+  origin: ProductOrigin;
+  origin_file_id: number | null;
+  origin_plate_index: number | null;
+  cover_image_filename: string | null;
+  /** The EFFECTIVE cover — the explicit column OR the first picture. A card
+   *  renders `GET /products/{id}/cover-image` on this and never on the column,
+   *  which is null for every product whose cover is the implicit default. */
+  has_cover: boolean;
+  parts_count: number;
+  plates_count: number;
+  lines_count: number;
+  /** Whole units the free stock can already make (pass 8) — `min` over the
+   *  counted parts of `balance / qty_per_unit`, floored. Carried by the LIST
+   *  response at no extra request, so the card reads it directly. */
+  kits_available: number;
+}
+
+export interface Product extends ProductListItem {
+  description: string | null;
+  notes: string | null;
+  designer: string | null;
+  license: string | null;
+  source_url: string | null;
+  design_id: string | null;
+  attachments: ProductAttachment[];
+  parts: ProductPart[];
+  library_file_ids: number[];
+  library_folder_ids: number[];
+  /** Units made for orders — every order status, the usable units attributed
+   *  to each line, NOT capped at the line's need (an order that printed 3 of an
+   *  ordered 2 reports 3, exactly as its order page does — see
+   *  `order_metrics.units_delivered`). Still not "units ever printed": a print
+   *  nobody ordered is not in it. */
+  units_printed_total: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Free stock of product parts (projects redesign, pass 8)
+//
+// Mirrors `backend/app/schemas/product.py` (`StockBalanceOut`,
+// `StockMovementOut`, `ProductStockOut`, `StockAdjustIn`) and
+// `schemas/project.py` (`StockMovedOut`, `BankSurplusResponse`) one field per
+// field. Stock is a LEDGER of movements, never a counter — every number below
+// is a sum the server computed, and nothing here adds anything up.
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a movement was written — the closed set of
+ * `backend/app/services/part_stock.py::REASONS`, copied for the same reason
+ * `STOCK_NOTE_TOKENS` is. Each maps to a `stock.reason.*` label in both
+ * locales; an unknown reason is shown as its own token rather than a blank,
+ * because a row with no reason at all is worse than an untranslated one.
+ */
+export const STOCK_REASONS = [
+  'surplus_banked',
+  'unfiled_print',
+  'reserved_for_order',
+  'reservation_released',
+  'manual',
+] as const;
+
+export type StockReason = (typeof STOCK_REASONS)[number];
+
+/**
+ * Every `note` the BACKEND writes — a closed set of tokens, never a sentence.
+ *
+ * ⚠️ **Source of truth: `backend/app/services/part_stock.py::NOTE_TOKENS`.**
+ * Copied rather than derived because nothing on this side can import Python;
+ * the copy is pinned by `ProductStock.test.tsx`, which also checks that each
+ * token has a `stock.note.*` label in both locales. A movement whose note is
+ * NOT one of these is the operator's own words and is shown verbatim — that is
+ * the whole reason the backend's half is tokens (Ruling 17): a sentence written
+ * once in English is read in the operator's language for the life of the
+ * ledger, and cannot be translated after the fact.
+ */
+export const STOCK_NOTE_TOKENS = [
+  'order_cancelled',
+  'line_deleted',
+  'project_deleted',
+  'reservation_rewritten',
+  'filed_under_order',
+  'unfiled_from_order',
+  'counted_by_operator',
+  'defects_recorded',
+] as const;
+
+export type StockNoteToken = (typeof STOCK_NOTE_TOKENS)[number];
+
+/** One counted part and what is on its shelf. `qty_per_unit` rides along
+ *  because the page's question is "how many kits", which is
+ *  `balance / qty_per_unit` per part. */
+export interface StockBalance {
+  part_id: number;
+  name: string;
+  qty_per_unit: number;
+  balance: number;
+}
+
+/**
+ * One row of the ledger.
+ *
+ * ⚠️ **`part_name` is the name, and a lookup in `balances` is not.** A part
+ * that stopped counting keeps its history but leaves `balances`, so its
+ * movements name a `part_id` no balance carries.
+ *
+ * `note` is a TOKEN from the backend's closed set for everything the server
+ * wrote (translated through `stock.note.*`) and the operator's own words for a
+ * hand correction (shown verbatim) — see `STOCK_NOTE_TOKENS`.
+ */
+export interface StockMovement {
+  id: number;
+  part_id: number;
+  part_name: string;
+  /** Signed: `+` onto the shelf, `−` off it. A reversal is a movement too. */
+  delta: number;
+  reason: string;
+  project_line_id: number | null;
+  /** Resolved server-side from the line — both null once the line is detached. */
+  order_id: number | null;
+  order_name: string | null;
+  archive_id: number | null;
+  note: string | null;
+  created_by: number | null;
+  created_at: string;
+}
+
+/**
+ * How many movements `GET /products/{id}/stock` is asked for.
+ *
+ * Exported because the section has to SAY when it is showing a truncated
+ * ledger: a full page of exactly this many rows is indistinguishable from a
+ * complete history, and a product with two years of prints has plenty more.
+ * One constant, read by the request and by the footer that reports it.
+ */
+export const STOCK_MOVEMENT_LIMIT = 200;
+
+/** `GET /products/{id}/stock`. `balances` is counted parts only; `movements` is
+ *  deliberately NOT filtered that way and comes newest first. */
+export interface ProductStock {
+  balances: StockBalance[];
+  kits_available: number;
+  movements: StockMovement[];
+}
+
+/** `POST /products/{id}/stock/adjust` — the operator's hand correction. The
+ *  note is REQUIRED: a movement whose reason is `manual` says nothing at all
+ *  unless the person making it does. */
+export interface StockAdjust {
+  part_id: number;
+  /** Never zero — the server refuses one (422). */
+  delta: number;
+  note: string;
+}
+
+/** One part's change of stock, as the operator is told about it. */
+export interface StockMoved {
+  part_id: number;
+  name: string;
+  delta: number;
+}
+
+/** `GET /stock` — one product's row on the Stock tab. */
+export interface StockReservation {
+  line_id: number;
+  order_id: number;
+  order_name: string;
+  /** Always > 0 — a line holding nothing is not listed. */
+  kits: number;
+}
+
+export interface StockProduct {
+  id: number;
+  name: string;
+  /** The catalog flag — the tab MARKS a hidden product, never hides it. */
+  is_active: boolean;
+  origin: string;
+  kits_available: number;
+  /** Counted parts only, in the product's own part order. */
+  parts: StockBalance[];
+  /** Lines of ACTIVE orders holding kits; kits desc, then order name. */
+  reservations: StockReservation[];
+}
+
+export interface StockSummary {
+  products: StockProduct[];
+}
+
+export interface StockSummaryParams {
+  q?: string;
+  /** Server default is true; send `false` to include empty shelves. */
+  with_stock?: boolean;
+}
+
+/** A ledger row as the farm journal shows it — the product page's row plus
+ *  the product it belongs to. */
+export interface StockMovementRow extends StockMovement {
+  product_id: number;
+  product_name: string;
+}
+
+export interface StockMovementsPage {
+  items: StockMovementRow[];
+  /** The id to continue from; null when the ledger is exhausted. */
+  next_before_id: number | null;
+}
+
+export interface StockMovementsParams {
+  product_id?: number;
+  part_id?: number;
+  reason?: string;
+  before_id?: number | null;
+  limit?: number;
+}
+
+/** Rows per journal page — the request's `limit` and the hook's page size. */
+export const STOCK_JOURNAL_PAGE = 50;
+
+/** `POST /projects/{id}/bank-surplus`. `nothing_to_bank` is not "`moved` is
+ *  empty" restated — it is the answer to a second press, which is a success. */
+export interface BankSurplusResponse {
+  moved: StockMoved[];
+  nothing_to_bank: boolean;
+}
+
+/** One member of an `Auxiliaries/` folder inside a 3MF. `url` is built by the
+ *  server, which decides whether the picture route or the download route can
+ *  serve it — that split is a server rule, not one to re-derive here. */
+export interface CardAux {
+  name: string;
+  zip_path: string;
+  size: number;
+  url: string;
+}
+
+/** What a 3MF says about itself. `error` set means the file could not be read;
+ *  the card screen degrades and the request still succeeded. */
+export interface CardData {
+  title: string | null;
+  description: string | null;
+  designer: string | null;
+  designer_user_id: string | null;
+  license: string | null;
+  copyright: string | null;
+  creation_date: string | null;
+  modification_date: string | null;
+  origin: string | null;
+  profile_title: string | null;
+  profile_description: string | null;
+  profile_cover: string | null;
+  profile_user_id: string | null;
+  profile_user_name: string | null;
+  design_model_id: string | null;
+  design_profile_id: string | null;
+  design_region: string | null;
+  auxiliaries: Record<string, CardAux[]>;
+  error: string | null;
+}
+
+/**
+ * What a card fill did, or refused to do — a CODE plus params, never prose.
+ *
+ * ⚠️ The phrasing lives in `products.card.notes.*` in BOTH locales, because the
+ * server has no idea which language the operator reads. A new code on the wire
+ * with no key here renders as its own key; that is the trade for never
+ * shipping an untranslatable English sentence out of the backend.
+ */
+export interface CardNote {
+  code:
+    | 'file_missing'
+    | 'unreadable'
+    | 'filled_field'
+    | 'replaced_files'
+    | 'imported_files'
+    | 'skipped_extension'
+    | 'skipped_too_large'
+    | 'skipped_unreadable'
+    | 'skipped_unsaved'
+    | 'nothing_to_fill'
+    // Import-only. Everything a ZIP claimed that this farm could not take.
+    | 'import_file_missing'
+    | 'import_file_refused'
+    | 'import_part_duplicate_key'
+    | 'import_plate_missing'
+    | 'import_bad_category'
+    | 'import_attachment_missing'
+    | 'import_bad_name'
+    | 'import_cover_missing';
+  params: Record<string, string | number>;
+}
+
+export interface RereadResponse {
+  product: Product;
+  notes: CardNote[];
+}
+
+/** `POST /products/import`. ⚠️ `warnings` are `CardNote` CODES like every other
+ *  card answer — the phrasing lives in `products.card.notes.*`, in both
+ *  locales, because the server has no idea which language the operator reads. */
+export interface ProductImportResponse {
+  product: Product;
+  warnings: CardNote[];
+}
+
+export interface ProductCreate {
+  name: string;
+  description?: string | null;
+  notes?: string | null;
+  designer?: string | null;
+  license?: string | null;
+  source_url?: string | null;
+  design_id?: string | null;
+}
+
+/** `Partial<ProductCreate>` rather than `extends ProductCreate`: an interface
+ *  may not relax a required member of the one it extends, and every field is
+ *  optional on a PATCH. */
+export interface ProductUpdate extends Partial<ProductCreate> {
+  is_active?: boolean;
+  origin?: 'catalog';
+}
+
+export interface ProductListParams {
+  /** Unset = both; `false` is a real filter, so it is sent as `active=false`. */
+  active?: boolean;
+  q?: string;
+  include_adhoc?: boolean;
 }
 
 // API Key types
@@ -1565,6 +2595,8 @@ export interface CameraDiagnoseStage {
   status: 'ok' | 'failed' | 'skipped';
   duration_ms: number;
   code: string | null;
+  /** Whether the successful first-frame test opened its own capture or joined one already in flight. */
+  source?: 'fresh' | 'coalesced' | null;
 }
 
 export interface CameraDiagnoseResult {
@@ -1578,6 +2610,18 @@ export interface CameraDiagnoseResult {
   stages: CameraDiagnoseStage[];
   // i18n key under `camera.diagnose.summary.*`.
   summary_code: string;
+  /** Descriptive Bambu Studio catalog metadata. It does not select a transport. */
+  catalog_capabilities?: Record<string, unknown>;
+}
+
+export interface CameraStreamStatus {
+  active: boolean;
+  stalled: boolean;
+  has_frames: boolean;
+  seconds_since_frame: number | null;
+  stream_uptime: number | null;
+  source: 'rtsp' | 'chamber_image' | 'external' | null;
+  subscribers: number;
 }
 
 // Connection diagnostic (GET /printers/{id}/diagnostic and
@@ -1593,7 +2637,13 @@ export interface DiagnosticCheck {
     | 'network_mode'
     | 'subnet'
     | 'mqtt_auth'
-    | 'developer_mode';
+    | 'developer_mode'
+    // ⚠️ These two were emitted by ``services/printer_diagnostic.py`` for
+    // months without being named here — the modal renders every check the
+    // same way, so a missing member costs nothing at runtime and shows up
+    // only when a test writes the id out. Grep that file when adding a check.
+    | 'external_storage'
+    | 'printer_publishing';
   status: DiagnosticStatus;
   params: Record<string, string | number>;
 }
@@ -1658,6 +2708,10 @@ export interface LongLivedTokenCreate {
 export interface AppSettings {
   save_thumbnails: boolean;
   capture_finish_photo: boolean;
+  // Switch the chamber light on for the camera when it is off, and back off after
+  camera_light_auto: boolean;
+  // ...and also for Obico's frames, which run the whole print
+  camera_light_auto_obico: boolean;
   /** Remove a recording from the printer once its archive has a copy. Opt-in. */
   delete_timelapse_after_attach: boolean;
   archive_3mf_retention_enabled: boolean;
@@ -1699,6 +2753,8 @@ export interface AppSettings {
   sensor_history_retention_days?: number;  // days to keep sensor measurement history
   plug_power_sample_seconds?: number;  // how often plugs that never report are read
   log_retention_days: number;  // days to keep historical bamdude-YYYY-MM-DD.log archives
+  slow_query_ms: number;  // log SQL statements slower than this (ms); 0 = off
+  slow_request_ms: number;  // log HTTP requests slower than this (ms); 0 = off
   // Queue auto-drying settings
   queue_drying_enabled: boolean;  // Auto-dry AMS between queued prints
   queue_drying_block: boolean;  // Block queue until drying completes
@@ -1708,6 +2764,8 @@ export interface AppSettings {
   ams_humidity_thresholds: string;  // JSON blob of per-filament humidity thresholds (#1605)
   // Auto-queue routing
   queue_shortest_first: boolean;  // SJF + been_jumped guard for the auto-queue scheduler
+  auto_queue_rebalance_models: boolean;  // Move an order line's pending prints to idle printers of another model when that finishes sooner (spec 2026-09-10)
+  auto_order_for_batches: boolean;  // A multi-print batch from the print dialog proposes a new order when nothing open needs the plate
   prefer_lowest_filament: boolean;  // Drain the emptiest compatible spool first — honoured by AutoQueue AND by the Print dialog's auto-match
   // Preheat & heat-soak before queued prints (#1468)
   preheat_enabled: boolean;  // Master toggle / default for new queue items (false = dispatch immediately)
@@ -1806,6 +2864,17 @@ export interface AppSettings {
   stagger_interval_minutes: number;
   stagger_wait_for_bed: boolean;
   stagger_strict_for_direct_dispatch: boolean;
+  // ETA forecast allowances (vault 60-specs/farm-forecast-v2-spec 7)
+  forecast_upload_seconds: number;
+  forecast_plate_clear_minutes: number;
+  // Staggered start by group (electrical phases). The id lists are JSON arrays
+  // kept as strings on the wire, like every structured setting here.
+  stagger_split_by_tags: boolean;
+  stagger_group_tag_ids: string;
+  stagger_tag_limits: string;
+  stagger_split_by_location: boolean;
+  stagger_group_location_ids: string;
+  stagger_location_limits: string;
   // LDAP authentication
   ldap_enabled: boolean;
   ldap_server_url: string;
@@ -1903,6 +2972,9 @@ export interface CamWallPrinter {
   layer_num: number | null;
   total_layers: number | null;
   hms_errors: HMSError[];
+  // Stack entries the operator hid on this printer until the printer drops
+  // them — excluded from hms_errors, listed here so the modal can un-hide.
+  hms_muted?: HMSError[];
 }
 
 // Streaming-overlay feed (upstream #2613). The subset of print state the
@@ -3182,16 +4254,39 @@ export interface DiscoveredTasmotaDevice {
  *  string form. 'auto' is only offered on models whose firmware supports it. */
 export type CalibrationMode = 'off' | 'auto' | 'on';
 
+/** Whether a queued job owns a local copy of the bytes it prints (m173).
+ *  `ready` — the copy is there and verified, so the job no longer depends on the
+ *  share, the library row or the archive it came from; `preparing` — being
+ *  captured right now; `legacy` — no copy yet, it still depends on its original
+ *  source; `broken` — a copy was taken and no longer answers for it; `exempt` —
+ *  an external print or a calibration job, which never had a source to copy. */
+export type QueueSourceStorage = 'ready' | 'preparing' | 'legacy' | 'broken' | 'exempt';
+
 // Print Queue types
 export interface PrintQueueItem {
+  filament_routing?: FilamentRoutingSnapshot | null;
   id: number;
   queue_id: number;
   printer_id?: number | null;  // Convenience - resolved from queue
   project_id?: number | null;
+  /** Pass 2: which line of the order this job counts against. Carried queue →
+   *  dispatcher → archive; NULL means the job is bound to the order but to no
+   *  line of it. */
+  project_line_id?: number | null;
+  /** The order's name, so a surface can say where the row is filed without a
+   *  second request (the copy-queue dialog). Null under no order. */
+  project_name?: string | null;
   waiting_reason: string | null;
   archive_id: number | null;
   library_file_id: number | null;
   position: number;
+  /** Who put this row here. 'direct' and 'external' rows are claims a running
+   *  print holds, not work anybody scheduled — they raise no queue events. */
+  origin: 'queue' | 'direct' | 'external';
+  /** Every row the add call created, in creation order — a quantity becomes
+   *  rows, not a column. Only the add response carries it; a listing leaves it
+   *  null, because there the question does not arise. */
+  created_item_ids?: number[] | null;
   scheduled_time: string | null;
   auto_off_after: boolean;
   manual_start: boolean;
@@ -3226,6 +4321,20 @@ export interface PrintQueueItem {
   error_message: string | null;
   created_at: string;
   batch_id?: string | null;
+  /** Whether this job owns a local copy of the bytes it prints (m173). */
+  source_storage?: QueueSourceStorage;
+  /** Size of that copy, where known. */
+  source_size_bytes?: number | null;
+  /**
+   * Whether `getQueueItemSourceThumbnail(id)` has a picture for this row: the
+   * render of the job's own plate inside the bytes it captured (m173, spec §4).
+   *
+   * ⚠️ A boolean, unlike the two `*_thumbnail` fields below, which are server
+   * DISK PATHS — they say a picture exists and the id says where to ask for it.
+   * A job whose original rows are gone has no such id, which is exactly why it
+   * needs this. `false` means draw the empty state; never ask and never guess.
+   */
+  source_thumbnail?: boolean;
   archive_name?: string | null;
   archive_thumbnail?: string | null;
   library_file_name?: string | null;
@@ -3254,6 +4363,23 @@ export interface StaggerSlotInfo {
   state: 'heating' | 'interval_wait';
   seconds_to_free: number;
   interval_seconds: number;
+  /** No picked tag / location — counts in every group, because its phase is unknown. */
+  wildcard: boolean;
+}
+
+export interface StaggerGroup {
+  tag_id: number | null;
+  location_id: number | null;
+  /** "Фаза 1 · Цех 2"; null for the single global group when nothing is split. */
+  label: string | null;
+  /** The tag's own colour when the group is one tag; null otherwise. */
+  color: string | null;
+  /** The cap THIS group starts under — the global number unless a per-tag or per-location override lowers it. */
+  cap: number;
+  occupied: number;
+  free_slots: number;
+  next_free_in_seconds: number | null;
+  slots: StaggerSlotInfo[];
 }
 
 export interface StaggerState {
@@ -3261,15 +4387,75 @@ export interface StaggerState {
   concurrent: number;
   interval_minutes: number;
   wait_for_bed: boolean;
-  slots: StaggerSlotInfo[];
-  free_slots: number;
-  next_free_in_seconds: number | null;
+  split: { by_tags: boolean; by_location: boolean };
+  groups: StaggerGroup[];
 }
 
+// ---- farm forecast (spec 2026-09-06) ----
+
+/** One machine's «free at» — the running head, its queue, and the staged work the simulation dealt to it. */
+export interface PrinterForecast {
+  printer_id: number;
+  free_at: string | null;
+  free_seconds: number;
+  /** This machine's own rows without an estimate — why its number can read 0 while it is busy. */
+  unknown_prints: number;
+}
+export interface FarmForecast {
+  free_at: string | null;
+  free_seconds: number;
+  /** Rows in the queues with no estimate — why «free at» can read 0m while printers are busy. */
+  unknown_prints: number;
+  /** Every non-archived printer — what the «free at» sorts of the printers and queue pages order by. */
+  printers: PrinterForecast[];
+}
+export interface RowForecast { plate_id: number; proposed_split: Record<number, number> | null }
+export interface LineForecast {
+  line_id: number;
+  now_eta: string | null; now_seconds: number | null;
+  after_eta: string | null; after_seconds: number | null;
+  unknown_prints: number; unroutable_prints: number;
+  rows: RowForecast[];
+}
+export interface OrderForecast {
+  project_id: number;
+  now_eta: string | null; now_seconds: number | null;
+  after_eta: string | null; after_seconds: number | null;
+  /** Σ estimates of the plan's prints; null when no print has one; 0 when nothing is left to plan. */
+  machine_seconds: number | null;
+  unknown_prints: number; unroutable_prints: number;
+  /** Active orders ranked ahead (priority → due → age). */
+  ahead_count: number;
+  /** What the simulation does not model: `stagger` | `plate_clear` | `drying` | `prep`. */
+  assumptions: string[];
+}
+export interface OrderForecastDetail extends OrderForecast { lines: LineForecast[] }
+export interface ForecastBatch { farm: FarmForecast; orders: OrderForecast[] }
+
+// ---- filament needs (spec 2026-09-07) ----
+export interface NeedRow {
+  material: string;
+  colour: string | null;
+  need_g: number;
+  have_g: number | null; have_type_g: number | null; short_g: number | null;
+  unknown_prints: number;
+}
+export interface FarmRow extends NeedRow { orders_count: number }
+export interface OrderNeeds { project_id: number; rows: NeedRow[]; unknown_prints: number; stock_unavailable: boolean; assumptions: string[] }
+export interface FarmNeeds { rows: FarmRow[]; orders_count: number; unknown_prints: number; stock_unavailable: boolean; assumptions: string[] }
+
 export interface PrintQueueItemCreate {
+  feed_policy?: FeedPolicy;
+  force_color_match?: boolean;
+  allow_base_material_match?: boolean;
+  filament_overrides?: AutoQueueFilamentOverride[];
   queue_id: number;  // Required - which printer's queue
+  /** Put this new block before other pending work on the selected printer. */
+  enqueue_position?: 'end' | 'next';
   archive_id?: number | null;
   library_file_id?: number | null;
+  /** Existing queued row whose immutable managed source is reused. */
+  source_queue_item_id?: number | null;
   scheduled_time?: string | null;
   auto_off_after?: boolean;
   manual_start?: boolean;
@@ -3293,9 +4479,25 @@ export interface PrintQueueItemCreate {
   quantity?: number;
   // Project to associate the resulting archive with
   project_id?: number;
+  // Pass 2: and which line of it the resulting print counts against.
+  project_line_id?: number | null;
+}
+
+/** Source metadata for copying a saved queue row without reopening its original. */
+export interface QueueCopySourceProfile {
+  item_id: number;
+  filename: string;
+  sliced_for_model: string | null;
+  swap_compatible: boolean;
+  plates: PlateMetadata[];
+  is_multi_plate: boolean;
 }
 
 export interface PrintQueueItemUpdate {
+  feed_policy?: FeedPolicy;
+  force_color_match?: boolean;
+  allow_base_material_match?: boolean;
+  filament_overrides?: AutoQueueFilamentOverride[];
   queue_id?: number | null;  // Move to different queue
   position?: number;
   scheduled_time?: string | null;
@@ -3326,6 +4528,8 @@ export interface PrinterQueue {
   printer_name?: string | null;
   printer_model?: string | null;
   printer_location?: PrinterLocation | null;
+  /** The printer's tags, the same objects the printer itself lists. */
+  printer_tags?: PrinterTag[];
   status: 'idle' | 'printing' | 'paused' | 'error';
   is_paused: boolean;
   auto_distribute_eligible: boolean;
@@ -3371,6 +4575,32 @@ export interface PrintQueueBulkUpdateResponse {
   message: string;
 }
 
+export type FeedPolicy = 'auto' | 'ams_only' | 'external_only';
+export interface FilamentRoutingSnapshot {
+  version: number;
+  mode: 'auto' | 'pinned';
+  feed_policy: FeedPolicy;
+  force_color_match: boolean;
+  allow_base_material_match?: boolean;
+  filament_overrides: AutoQueueFilamentOverride[];
+  review_required?: boolean;
+}
+export interface RoutingPreview {
+  advisory_unavailable?: boolean;
+  evaluated_at?: string;
+  plates: {
+    requested_plate_id: number;
+    plate_id: number | null;
+    status: 'ok' | 'unavailable';
+    reason: { code: string; message: string } | null;
+    model: string | null;
+    filaments: { slot_id: number; type: string; color: string | null; nozzle_id: number | null; used_grams: number }[];
+    groups: { key: string; model: string; nozzles: number; ams: 'present' | 'absent' | 'unknown';
+      total: number; compatible: number; unknown: number; incompatible: number; ready: number;
+      reasons: { code: string; message: string; count: number }[] }[];
+  }[];
+}
+
 // Auto Queue types — see backend/app/schemas/auto_queue.py
 export interface AutoQueueFilamentOverride {
   slot_id: number;
@@ -3384,16 +4614,19 @@ export interface AutoQueueFilamentOverride {
 }
 
 export interface AutoQueueItem {
+  feed_policy?: FeedPolicy;
   id: number;
   archive_id: number | null;
   library_file_id: number | null;
   project_id: number | null;
+  project_line_id?: number | null;
   target_model: string | null;
   target_location: PrinterLocation | null;
   target_location_id: number | null;
   required_filament_types: string[] | null;
   filament_overrides: AutoQueueFilamentOverride[] | null;
   force_color_match: boolean;
+  allow_base_material_match?: boolean;
   plate_id: number | null;
   position: number;
   scheduled_time: string | null;
@@ -3411,7 +4644,7 @@ export interface AutoQueueItem {
   execute_swap_macros: boolean;
   swap_macro_events: string[] | null;
   selected_macro_ids: number[] | null;
-  status: 'pending' | 'assigned' | 'cancelled';
+  status: 'pending' | 'assigned' | 'cancelled' | 'failed';
   waiting_reason: string | null;
   assigned_to_item_id: number | null;
   assigned_at: string | null;
@@ -3419,6 +4652,15 @@ export interface AutoQueueItem {
   print_time_seconds: number | null;
   been_jumped: boolean;
   batch_id: string | null;
+  /** Whether this row owns a local copy of the bytes its work prints (m173).
+   *  Never `exempt` — the external and calibration exceptions only ever reach a
+   *  per-printer row. */
+  source_storage?: QueueSourceStorage;
+  /** Size of that copy, where known. */
+  source_size_bytes?: number | null;
+  /** m171: set when the rebalancer moved this row's work here from another model. */
+  rebalanced_at?: string | null;
+  rebalanced_from_model?: string | null;
   created_at: string;
   created_by_id: number | null;
   archive_name?: string | null;
@@ -3438,14 +4680,18 @@ export interface AutoQueueStats {
 }
 
 export interface AutoQueueItemCreate {
+  feed_policy?: FeedPolicy;
   archive_id?: number | null;
   library_file_id?: number | null;
   project_id?: number | null;
+  // Pass 2: which line of the order the resulting print counts against.
+  project_line_id?: number | null;
   target_model?: string | null;
   target_location_id?: number | null;
   required_filament_types?: string[] | null;
   filament_overrides?: AutoQueueFilamentOverride[] | null;
   force_color_match?: boolean;
+  allow_base_material_match?: boolean;
   plate_id?: number | null;
   plate_ids?: number[] | null;
   /** Runs wanted per plate, keyed by plate index. A plate left out takes
@@ -3469,12 +4715,14 @@ export interface AutoQueueItemCreate {
 }
 
 export interface AutoQueueItemUpdate {
+  feed_policy?: FeedPolicy;
   position?: number | null;
   target_model?: string | null;
   target_location_id?: number | null;
   required_filament_types?: string[] | null;
   filament_overrides?: AutoQueueFilamentOverride[] | null;
   force_color_match?: boolean | null;
+  allow_base_material_match?: boolean | null;
   scheduled_time?: string | null;
   manual_start?: boolean | null;
   auto_off_after?: boolean | null;
@@ -3572,7 +4820,7 @@ export interface SlotPresetMapping {
 
 
 // Notification Provider types
-export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'bark' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant';
+export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'bark' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant' | 'signal';
 
 export interface NotificationProvider {
   id: number;
@@ -3626,6 +4874,8 @@ export interface NotificationProvider {
   // Stock forecasting (scaffold, upstream #1184)
   on_stock_reorder_alert: boolean;
   on_stock_break_alert: boolean;
+  // Progress-milestone duration floor (#28): null = inherit global
+  progress_min_duration_minutes: number | null;
   // Quiet hours
   quiet_hours_enabled: boolean;
   quiet_hours_start: string | null;
@@ -3633,8 +4883,8 @@ export interface NotificationProvider {
   // Daily digest
   daily_digest_enabled: boolean;
   daily_digest_time: string | null;
-  // Printer filter
-  printer_id: number | null;
+  // Printer scope: null = all printers, [ids] = only those
+  printer_ids: number[] | null;
   // Status tracking
   last_success: string | null;
   last_error: string | null;
@@ -3696,6 +4946,7 @@ export interface NotificationProviderCreate {
   // Stock forecasting (scaffold)
   on_stock_reorder_alert?: boolean;
   on_stock_break_alert?: boolean;
+  progress_min_duration_minutes?: number | null;
   // Quiet hours
   quiet_hours_enabled?: boolean;
   quiet_hours_start?: string | null;
@@ -3703,8 +4954,8 @@ export interface NotificationProviderCreate {
   // Daily digest
   daily_digest_enabled?: boolean;
   daily_digest_time?: string | null;
-  // Printer filter
-  printer_id?: number | null;
+  // Printer scope: null = all printers, [ids] = only those
+  printer_ids?: number[] | null;
 }
 
 export interface NotificationProviderUpdate {
@@ -3759,6 +5010,7 @@ export interface NotificationProviderUpdate {
   // Stock forecasting (scaffold)
   on_stock_reorder_alert?: boolean;
   on_stock_break_alert?: boolean;
+  progress_min_duration_minutes?: number | null;
   // Quiet hours
   quiet_hours_enabled?: boolean;
   quiet_hours_start?: string | null;
@@ -3766,8 +5018,8 @@ export interface NotificationProviderUpdate {
   // Daily digest
   daily_digest_enabled?: boolean;
   daily_digest_time?: string | null;
-  // Printer filter
-  printer_id?: number | null;
+  // Printer scope: null = all printers, [ids] = only those
+  printer_ids?: number[] | null;
 }
 
 // Git Backup types
@@ -4123,7 +5375,173 @@ export interface InventorySpool {
   storage_location?: string | null;
   location_id?: number | null;
   purchase_location?: string | null;
-  k_profiles?: SpoolKProfile[];
+  /** Nested K-profiles. `null` on paged list rows unless the request sent
+   *  `include_k_profiles=true` (task 4) — "not requested", distinct from
+   *  "requested, none" (`[]`). Legacy flat responses always carry the array. */
+  k_profiles?: SpoolKProfile[] | null;
+  /** Informational: present only on the spool returned by the Spoolman slot
+   *  assign, and only when that assign REPLACED a different spool on the slot
+   *  (spec 2026-09-13 §3.3). The dialog reports the replacement from its own
+   *  display names, so nothing branches on this — it is for logs and scripts. */
+  replaced_spoolman_spool_id?: number | null;
+}
+
+// ── Server-driven spool list (task 4, 2026-08-29 server-driven-lists) ────────
+// Params for the paged GET /inventory/spools surface (tasks 1-3). Consumed
+// only by getSpoolsPaged / getSpoolGroupsPaged / getSpoolIds below — every
+// other consumer stays on the legacy flat `getSpools`.
+export interface SpoolListParams {
+  /** ⚠️ ALWAYS send this from tab-scoped UI: the paged branch ignores the
+   *  legacy `include_archived` entirely, and omitting `archived` means "both
+   *  tabs at once" — a view the old client never had (T1 review finding 6). */
+  archived?: 'active' | 'archived';
+  usage?: 'used' | 'new' | 'lowstock';
+  material?: string;
+  brand?: string;
+  /** Raw color_name values. Colour-name resolution stays client-side (the
+   *  colour catalog lives in ColorCatalogProvider): the page groups the
+   *  facets' raw (color_name, rgba) pairs by resolved name and sends the
+   *  chosen group's raw lists back — see the facets endpoint (task 2). */
+  colors?: string[];
+  /** Raw rgba values, matched only where color_name IS NULL. */
+  color_rgbas?: string[];
+  /** Exact category, or '__none__' for uncategorised. */
+  category?: string;
+  catalog_id?: number;
+  /** Location id digits, or '__none__' for no location. */
+  location_id?: string;
+  stock?: 'stock' | 'configured';
+  assigned?: 'assigned' | 'unassigned';
+  q?: string;
+  /** `<column>_asc|_desc` over the server sort map (task 1). Grouped mode
+   *  accepts only display_name/material/brand/color_name — the page
+   *  sanitizes before sending (a 400 must be unreachable from the UI). */
+  sort_by?: string;
+  page?: number;
+  per_page?: number;
+  all?: boolean;
+  /** Cards-view opt-in: serialize each row's full k_profiles array (JSON
+   *  null otherwise). Serialization-only on the server — rows are
+   *  eager-loaded either way. */
+  include_k_profiles?: boolean;
+}
+
+/** Slim paged list row — an InventorySpool whose `k_profiles` is null unless
+ *  `include_k_profiles` asked for it, plus the scalar count. */
+export type SpoolListItem = InventorySpool & { k_profile_count: number };
+
+export interface SpoolListPage {
+  items: SpoolListItem[];
+  meta: PaginationMeta;
+}
+
+/** One grouped-mode row (`group_similar=true`, task 3). Text key fields come
+ *  back COALESCED (`''` where the column is NULL — that IS the key); compare
+ *  null-vs-empty against `representative`'s raw fields, never these. */
+export interface SpoolGroupItem {
+  material: string;
+  subtype: string;
+  brand: string;
+  color_name: string;
+  rgba: string;
+  label_weight: number;
+  group_count: number;
+  /** Complete member ids, ascending — group expansion + selection feed. */
+  ids: number[];
+  /**
+   * Real sums over the members. Members may be started (only a spool loaded
+   * in a printer stays out of a group), so the header must read these rather
+   * than multiply the representative's figures by `group_count`.
+   */
+  remaining_total: number;
+  weight_used_total: number;
+  /** The min(id) member, in the slim list projection. */
+  representative: SpoolListItem;
+}
+
+export interface SpoolGroupPage {
+  items: SpoolGroupItem[];
+  meta: PaginationMeta;
+}
+
+export interface SpoolFacetColor {
+  color_name: string | null;
+  rgba: string | null;
+}
+
+/** Distinct dropdown values under one archived tab (task 2). Locations are
+ *  deliberately absent — the dropdown already reads GET /inventory/locations.
+ *  ⚠️ Exactly these five keys: `hasUncategorized`/`hasUnsetStorageLocation`
+ *  are NOT in the contract — the page offers the "None" buckets
+ *  unconditionally instead (a zero-row filter is harmless). */
+export interface SpoolFacets {
+  materials: string[];
+  brands: string[];
+  categories: string[];
+  catalog_ids: number[];
+  colors: SpoolFacetColor[];
+}
+
+/** One chip of the stats bar's "By material" card. Served heaviest-first. */
+export interface InventoryMaterialStat {
+  material: string;
+  count: number;
+  remaining_g: number;
+}
+
+/** GET /inventory/stats (task 5) — the stats bar, aggregated server-side.
+ *  Scopes differ per field, exactly as the client memo it replaced had them:
+ *  `total_spools` counts every row (archived included — it is the "Reset all
+ *  usage" target count, not a card); `total_consumed_g` also spans archived
+ *  rows (past consumption is history); everything else is live spools only. */
+export interface InventoryStats {
+  total_spools: number;
+  active_spools: number;
+  total_weight_g: number;
+  total_consumed_g: number;
+  by_material: InventoryMaterialStat[];
+  low_stock_count: number;
+}
+
+/** Shared query-string builder for the paged spool surface. `page` is ALWAYS
+ *  sent — it is the compat switch that flips GET /inventory/spools from the
+ *  legacy flat array to the `{items, meta}` envelope (same convention as
+ *  getLibraryFilesPaged). */
+function spoolListSearchParams(params: SpoolListParams): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (params.archived) qs.set('archived', params.archived);
+  if (params.usage) qs.set('usage', params.usage);
+  if (params.material) qs.set('material', params.material);
+  if (params.brand) qs.set('brand', params.brand);
+  for (const c of params.colors ?? []) qs.append('colors', c);
+  for (const r of params.color_rgbas ?? []) qs.append('color_rgbas', r);
+  if (params.category) qs.set('category', params.category);
+  if (params.catalog_id !== undefined) qs.set('catalog_id', String(params.catalog_id));
+  if (params.location_id) qs.set('location_id', params.location_id);
+  if (params.stock) qs.set('stock', params.stock);
+  if (params.assigned) qs.set('assigned', params.assigned);
+  if (params.q) qs.set('q', params.q);
+  if (params.sort_by) qs.set('sort_by', params.sort_by);
+  if (params.include_k_profiles) qs.set('include_k_profiles', 'true');
+  qs.set('page', String(params.page ?? 1));
+  if (params.all) {
+    qs.set('all', 'true');
+  } else if (params.per_page) {
+    qs.set('per_page', String(params.per_page));
+  }
+  return qs;
+}
+
+/** The filter-only subset for GET /inventory/spools/ids — same predicates as
+ *  the paged list, no paging/sort (the endpoint takes none). */
+function spoolFilterSearchParams(params: SpoolListParams): URLSearchParams {
+  const qs = spoolListSearchParams(params);
+  qs.delete('page');
+  qs.delete('per_page');
+  qs.delete('all');
+  qs.delete('sort_by');
+  qs.delete('include_k_profiles');
+  return qs;
 }
 
 // Spool label printing (B.1).
@@ -4379,6 +5797,96 @@ export interface SpoolUsageRecord {
   created_at: string;
 }
 
+// ── Farm-wide usage history — the Inventory page's History view (2026-09-01) ─
+// The paged shape of GET /inventory/usage. Each row arrives with the spool's
+// identity and the printer's NAME already on it: this list shows rows for
+// spools the inventory list is not showing (archived, filtered out, deleted),
+// so a client-side lookup against the spool list would render rows with no
+// identity at all.
+
+/** The spool a usage row charged, as it is NOW. Carries every field a display
+ *  -name template can read (`SpoolNameFields`), because the name is composed in
+ *  the browser and a row must read exactly like the same spool does in the
+ *  table and on the cards. */
+export interface SpoolUsageSpoolRef {
+  id: number;
+  material: string | null;
+  subtype: string | null;
+  brand: string | null;
+  color_name: string | null;
+  rgba: string | null;
+  slicer_filament_name: string | null;
+  note: string | null;
+  label_weight: number | null;
+  weight_used: number | null;
+  cost_per_kg: number | null;
+  purchase_date: string | null;
+  filament_diameter: string | null;
+  lot: number | null;
+  /** The spool has since been retired. The row stays — a history is never
+   *  filtered by that — and the view marks it so nobody hunts a shelf. */
+  archived: boolean;
+}
+
+export interface SpoolUsageListItem {
+  id: number;
+  spool_id: number;
+  created_at: string;
+  weight_used: number;
+  percent_used: number;
+  status: string;
+  cost: number | null;
+  print_name: string | null;
+  archive_id: number | null;
+  printer_id: number | null;
+  printer_name: string | null;
+  /** A retired printer is labelled generically, never by a name that may have
+   *  been reused since — `printerLabel()` is the one place that decides. */
+  printer_archived: boolean;
+  /** Null only when the row outlived its spool — `spool_id` still names it. */
+  spool: SpoolUsageSpoolRef | null;
+}
+
+export interface SpoolUsagePage {
+  items: SpoolUsageListItem[];
+  meta: PaginationMeta;
+  /** Across the whole filter, not the page on screen. `cost` is null when no
+   *  matching row carries one — 0.00 would read as "free", not "unpriced". */
+  totals: { weight_used: number; cost: number | null };
+}
+
+export interface SpoolUsageFacets {
+  statuses: string[];
+  printers: { id: number; name: string | null; archived: boolean }[];
+  materials: string[];
+  brands: string[];
+}
+
+export interface UsageHistoryParams {
+  q?: string;
+  /** Repeatable — any of them matches. */
+  status?: string[];
+  /** Printer id as digits, or '__none__' for rows charged to no printer. */
+  printer_id?: string;
+  spool_id?: number;
+  material?: string;
+  brand?: string;
+  /** The SPOOL's state. ⚠️ Omitted means BOTH, and that is this view's default —
+   *  unlike the spool list, where a tab is always one or the other. */
+  archived?: 'active' | 'archived';
+  /** Whether the SPOOL sits in a printer. Omitted means both. */
+  assigned?: 'assigned' | 'unassigned';
+  /** Absolute instants, NOT calendar days: the picker's local days are turned
+   *  into UTC boundaries here, because only the client knows the timezone.
+   *  `date_to` is EXCLUSIVE — send the start of the day after. */
+  date_from?: string;
+  date_to?: string;
+  sort_by?: string;
+  page?: number;
+  per_page?: number;
+  all?: boolean;
+}
+
 export interface SpoolKProfile {
   id: number;
   spool_id: number;
@@ -4419,11 +5927,17 @@ export interface SpoolAssignment {
   pending_config?: boolean;  // Slot was empty at assign time; will configure on insert
   created_at: string;
   ams_label?: string | null;  // User-defined friendly name for the AMS unit
+  /** Informational: the spool this assign replaced on the slot, `null` for a
+   *  first assignment and for the idempotent re-assign of the same spool
+   *  (spec 2026-09-13 §3.3). Nothing in the UI branches on it — the replace
+   *  toast is composed from the dialog's own display names. */
+  replaced_spool_id?: number | null;
 }
 
 // Stock forecasting (upstream #1184) — per-SKU reorder configuration +
-// shopping list. Algorithm runs entirely in ForecastPanel; these types
-// describe the persistence layer.
+// shopping list. The forecast math itself is server-side since the
+// 2026-08-29 forecast-server-side cycle (backend forecast_engine is the one
+// math owner); these types describe the persistence layer.
 export interface FilamentSkuSettings {
   id: number;
   material: string;
@@ -4456,6 +5970,123 @@ export interface ShoppingListItemCreate {
   color_name: string | null;
   quantity_spools: number;
   note?: string | null;
+}
+
+// ── Server-computed forecast (task 4, 2026-08-29 forecast-server-side) ──────
+// Wire mirror of backend/app/schemas/forecast.py — every Optional stays
+// nullable, dates are "YYYY-MM-DD" UTC calendar days rendered as-is (spec
+// §2.1 deviation). The panel is a renderer: nothing here is recomputed.
+
+/** One finished SKU row — `forecast_engine.SkuForecastRow`, serialized. */
+export interface SkuForecastRow {
+  material: string | null;
+  subtype: string | null;
+  brand: string | null;
+  color_name: string | null;
+  /** The group's swatch — first non-null rgba, live spools preferred. */
+  rgba: string | null;
+  total_spools: number;
+  total_remaining_g: number;
+  total_label_g: number;
+  /** Mean label_weight over EVERY spool of the SKU, archived included — the
+   *  one archived-inclusive weight on this row (every total above describes
+   *  live STOCK). null, never 0, when no spool of the SKU carries a label
+   *  weight, so a consumer's own fallback beats a fabricated size. */
+  avg_spool_label_g: number | null;
+  total_used_g: number;
+  rate_g_day: number | null;
+  rate_tier: 'history' | 'delta' | 'none';
+  std_dev: number | null;
+  eff_lead_time_days: number;
+  /** Always a real number in practice (placeholder margin at rate null). */
+  safety_stock_g: number | null;
+  /** 0.0 at rate null — never null in practice; schema mirror keeps the |null. */
+  reorder_point_g: number | null;
+  days_remaining: number | null;
+  projected_empty_date: string | null;
+  days_until_rop: number | null;
+  /** Clamped at today server-side while days_until_rop keeps its raw negative. */
+  reorder_trigger_date: string | null;
+  stock_break_alert: boolean;
+  reorder_alert: boolean;
+  alerts_snoozed: boolean;
+  /** LIVE spools of the group, ascending id — the lazy expanded row's exact
+   *  membership (the spool list cannot filter on subtype or NULL fields). */
+  spool_ids: number[];
+  /** Promised to active orders - plan not yet printed plus what waits in the
+   *  queues - projected onto this SKU by the server. 0 with no orders. */
+  reserved_g: number;
+  /** max(0, total_remaining_g - reserved_g). Drives Reorder By and the reorder alert. */
+  free_g: number;
+  /** reserved_g > total_remaining_g - orders need more than the shelf holds. */
+  over_committed: boolean;
+}
+
+/** Need in a material+colour no live SKU carries - listed under the table, never a row. */
+export interface UnmatchedReserved {
+  material: string;
+  colour: string | null;
+  grams: number;
+}
+
+export interface ForecastListPage {
+  items: SkuForecastRow[];
+  meta: PaginationMeta;
+  /** Un-snoozed alert rows across the WHOLE farm — filters never move it. */
+  alert_count: number;
+  global_lead_time_days: number;
+  unmatched_reserved: UnmatchedReserved[];
+}
+
+export interface ForecastListParams {
+  page?: number;
+  per_page?: number;
+  all?: boolean;
+  /** `<key>_asc|_desc` over material|spools|used|days_left|stock|empty_by|
+   *  reorder_by. ⚠️ An unknown key is a REAL 400 — persisted values must be
+   *  sanitized BEFORE they reach a request (ForecastPanel.sanitizeSort). */
+  sort_by?: string;
+  material?: string;
+  brand?: string;
+  alerts_only?: boolean;
+}
+
+export interface ForecastChartSeriesEntry {
+  sku: {
+    material: string | null;
+    subtype: string | null;
+    brand: string | null;
+    color_name: string | null;
+  };
+  rgba: string | null;
+  /** The dashed per-series reference line. */
+  rop_g: number;
+  /** Day-bucketed burn, sparse (only days with usage), ascending dates. */
+  usage: [string, number][];
+  /** Depletion from today at the row's rate; clamps at 0 and stops there. */
+  projection: [string, number][];
+}
+
+export interface ForecastChartResponse {
+  series: ForecastChartSeriesEntry[];
+}
+
+export interface ForecastLogisticsRow {
+  /** Join key to the shopping-list rows the panel already holds. */
+  item_id: number;
+  /** Null = the "no usage data" case (no forecast row, or no positive rate).
+   *  When present the arrival date appears TWICE (pre/post bump) so a
+   *  type="linear" area renders the vertical step. */
+  series: [string, number][] | null;
+  arrival_day: number | null;
+  rop_g: number | null;
+  safety_stock_g: number | null;
+  /** The break banner's headline number — the client's stockBreaksAt memo
+   *  verbatim, served. NOT derivable from the series (rounding zeroes a day
+   *  later in general) — always render from this field. */
+  stock_break_day: number | null;
+  /** Guaranteed === (stock_break_day !== null). */
+  stock_break_before_arrival: boolean;
 }
 
 // Update types
@@ -4646,7 +6277,7 @@ export type Permission =
   | 'camera:view'
   | 'maintenance:read' | 'maintenance:create' | 'maintenance:update' | 'maintenance:delete'
   | 'kprofiles:read' | 'kprofiles:create' | 'kprofiles:update' | 'kprofiles:delete'
-  | 'notifications:read' | 'notifications:create' | 'notifications:update' | 'notifications:delete' | 'notifications:user_email'
+  | 'notifications:read' | 'notifications:create' | 'notifications:update' | 'notifications:delete' | 'notifications:user_email' | 'notifications:inbox'
   | 'notification_templates:read' | 'notification_templates:update'
   | 'external_links:read' | 'external_links:create' | 'external_links:update' | 'external_links:delete'
   | 'discovery:scan'
@@ -4718,6 +6349,61 @@ export interface UserEmailPreferences {
   notify_print_complete: boolean;
   notify_print_failed: boolean;
   notify_print_stopped: boolean;
+}
+
+// In-app inbox (spec: notification-center)
+export type InboxSeverity = 'info' | 'warning' | 'error';
+
+export interface InboxItem {
+  id: number;
+  event_type: string;
+  severity: InboxSeverity;
+  group: string;
+  title: string;
+  message: string;
+  printer_id: number | null;
+  printer_name: string | null;
+  extra_data: Record<string, unknown> | null;
+  created_at: string;
+  read_at: string | null;
+}
+
+export interface InboxListResponse {
+  items: InboxItem[];
+  /** The WHOLE inbox's unread count — it feeds the sidebar badge, not this page. */
+  unread_count: number;
+  /** Meta named as Archives and Inventory name theirs, so `PaginationBar` reads it directly. */
+  total: number;
+  current_page: number;
+  per_page: number;
+  last_page: number;
+}
+
+/** The ONE filter shape. The list reads it, and so do read-all and clear — the
+ *  same filter decides what is shown, what is marked read and what is DELETED. */
+export interface InboxFilters {
+  unread_only?: boolean;
+  severity?: InboxSeverity;
+  printer_id?: number;
+  event_type?: string;
+  /** ISO string in **UTC** — build it with `Date#toISOString()`, never a local
+   *  `toString()`/`toLocaleString()` slice. The backend converts an
+   *  offset-bearing value correctly, but a local time carrying NO offset is
+   *  read as UTC and silently shifts the window — and this same value decides
+   *  what read-all marks and what clear deletes. */
+  since?: string;
+}
+
+export interface InboxSubscriptionEvent {
+  event_type: string;
+  severity: InboxSeverity;
+  group: string;
+  subscribed: boolean;
+}
+
+export interface InboxSubscriptions {
+  is_default: boolean;
+  events: InboxSubscriptionEvent[];
 }
 
 // Per-(user, printer-model) saved PrintModal toggles. Lives on the
@@ -4982,6 +6668,12 @@ export interface TestSMTPResponse {
 export interface AdvancedAuthStatus {
   advanced_auth_enabled: boolean;
   smtp_configured: boolean;
+  // Whether self-service password recovery can actually work here: SMTP is
+  // configured AND local login is on. The server owns this rule (see
+  // `is_password_reset_available`) so the offer on the login page and the
+  // answer from /auth/forgot-password cannot disagree — they did, and the link
+  // promised an e-mail the API refused to send.
+  password_reset_available: boolean;
   // #1589: false hides the username/password form on the LoginPage; the env
   // var BAMDUDE_LOCAL_LOGIN=true on the server flips this back to true so the
   // recovery path remains visible.
@@ -5529,7 +7221,33 @@ export interface UsageProjection {
   slots?: UsageProjectionSlot[];
 }
 
+const printerStatusReads = createPrinterStatusBatcher(
+  id => request<PrinterStatus>(`/printers/${id}/status`, { signal: AbortSignal.timeout(15_000) }),
+  ids => request<Record<string, PrinterStatus>>(`/printers/status/batch?${ids.map(id => `ids=${id}`).join('&')}`, { signal: AbortSignal.timeout(15_000) }),
+  () => new ApiError('Printer not found', 404),
+);
+
+// Only tracks outstanding reads; never stores a second status cache.
+export const recordLivePrinterStatus = printerStatusReads.update;
+
+/** Serialise inbox filters ONCE, for every route that takes them (list,
+ *  read-all, clear). Only what is set travels: an empty value must not reach
+ *  the server as a bare `?printer_id=`, and the three routes must agree or a
+ *  bulk action would act on a different set than the one on screen. */
+function inboxQuery(params: InboxFilters): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (params.unread_only) qs.set('unread_only', 'true');
+  if (params.severity) qs.set('severity', params.severity);
+  if (params.printer_id) qs.set('printer_id', String(params.printer_id));
+  if (params.event_type) qs.set('event_type', params.event_type);
+  if (params.since) qs.set('since', params.since);
+  return qs;
+}
+
 export const api = {
+  getMonitorSnapshot: (view: MonitorView, signal?: AbortSignal) =>
+    request<MonitorSnapshot>(`/monitor/snapshot?view=${view}`, { signal }),
+  getMonitorForecast: (signal?: AbortSignal) => request<FarmForecast>('/queue/forecast', { signal }),
   // Authentication
   getAuthStatus: () => request<AuthStatus>('/auth/status'),
   getEncryptionStatus: () => request<EncryptionStatus>('/auth/encryption-status'),
@@ -5706,6 +7424,26 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  // In-app inbox
+  getInbox: (params: InboxFilters & { page?: number; per_page?: number } = {}) => {
+    const qs = inboxQuery(params);
+    if (params.page) qs.set('page', String(params.page));
+    // -1 is the size selector's "All"; the endpoint spells that `all=true`.
+    if (params.per_page === -1) qs.set('all', 'true');
+    else if (params.per_page) qs.set('per_page', String(params.per_page));
+    return request<InboxListResponse>(`/inbox/?${qs}`);
+  },
+  getInboxUnreadCount: () => request<{ unread_count: number }>('/inbox/unread-count'),
+  markInboxRead: (id: number) => request<InboxItem>(`/inbox/${id}/read`, { method: 'POST' }),
+  markInboxAllRead: (params: InboxFilters = {}) =>
+    request<{ updated: number }>(`/inbox/read-all?${inboxQuery(params)}`, { method: 'POST' }),
+  deleteInboxItem: (id: number) => request<void>(`/inbox/${id}`, { method: 'DELETE' }),
+  clearInbox: (params: InboxFilters = {}) =>
+    request<{ deleted: number }>(`/inbox/?${inboxQuery(params)}`, { method: 'DELETE' }),
+  getInboxSubscriptions: () => request<InboxSubscriptions>('/inbox/subscriptions'),
+  updateInboxSubscriptions: (events: string[] | null) =>
+    request<InboxSubscriptions>('/inbox/subscriptions', { method: 'PUT', body: JSON.stringify({ events }) }),
+
   // Groups
   getPermissions: () => request<PermissionsListResponse>('/groups/permissions'),
   getGroups: () => request<Group[]>('/groups/'),
@@ -5756,6 +7494,14 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  // Re-advertise every assigned, loaded, non-RFID slot under the printer's
+  // backup-compatibility policy. A dry run answers the preview without
+  // touching MQTT; a real apply is refused while a print runs.
+  applyAmsBackupCompatibility: (id: number, dryRun: boolean) =>
+    request<BackupCompatibilityApplyResult>(`/printers/${id}/ams-policies/backup-compatibility/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ dry_run: dryRun }),
+    }),
   deletePrinter: (id: number, deleteArchives: boolean = true) =>
     request<{ status: string; archives_deleted: boolean }>(
       `/printers/${id}?delete_archives=${deleteArchives}`,
@@ -5774,6 +7520,18 @@ export const api = {
     request<PrinterLocation>(`/printer-locations/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deletePrinterLocation: (id: number) =>
     request<{ deleted: number }>(`/printer-locations/${id}`, { method: 'DELETE' }),
+  getPrinterTags: () => request<{ tags: PrinterTagListItem[] }>('/printer-tags'),
+  createPrinterTag: (name: string, color: string | null = null) =>
+    request<PrinterTag>('/printer-tags', { method: 'POST', body: JSON.stringify({ name, color }) }),
+  /**
+   * `color` absent keeps the current one; `color: null` clears it.
+   *
+   * ⚠️ `name` is required by the backend schema (the patch model inherits the
+   * create one), so a colour change sends the name the tag already has.
+   */
+  updatePrinterTag: (id: number, patch: { name?: string; color?: string | null }) =>
+    request<PrinterTag>(`/printer-tags/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deletePrinterTag: (id: number) => request<{ deleted: number }>(`/printer-tags/${id}`, { method: 'DELETE' }),
   getDeveloperModeWarnings: () =>
     request<{ printer_id: number; name: string }[]>('/printers/developer-mode-warnings'),
   getAvailableFilaments: (model: string, locationId?: number) => {
@@ -5781,8 +7539,7 @@ export const api = {
     if (locationId) params.set('location_id', String(locationId));
     return request<Array<{ type: string; color: string; tray_info_idx: string; tray_sub_brands: string; extruder_id: number | null }>>(`/printers/available-filaments?${params}`);
   },
-  getPrinterStatus: (id: number) =>
-    request<PrinterStatus>(`/printers/${id}/status`),
+  getPrinterStatus: printerStatusReads.get,
   refreshPrinterStatus: (id: number) =>
     request<{ status: string }>(`/printers/${id}/refresh-status`, {
       method: 'POST',
@@ -5814,16 +7571,31 @@ export const api = {
     request<{ success: boolean; message: string }>(`/printers/${printerId}/print/resume`, {
       method: 'POST',
     }),
-  clearPlate: (printerId: number) =>
-    request<{ success: boolean; message: string }>(`/printers/${printerId}/clear-plate`, {
-      method: 'POST',
-    }),
+  // Both answers to a full plate may carry the print's defects (spec 2026-09-11 §5);
+  // without a body they behave exactly as before.
+  // `ledger_refused_parts` counts the product parts whose free-stock correction
+  // the ledger refused (already spent) — the answer's defects were saved either
+  // way, and the operator is told there is a hand correction to make. 0 when no
+  // defects travelled with the answer, and absent on an older backend.
+  clearPlate: (printerId: number, body?: { defects: DefectsWriteBody }) =>
+    request<{ success: boolean; message: string; ledger_refused_parts?: number }>(
+      `/printers/${printerId}/clear-plate`,
+      {
+        method: 'POST',
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      },
+    ),
   // The other answer to a full plate: re-arm the job that just finished and
   // print it again. Same permission as clearPlate — two answers, one question.
-  repeatPrint: (printerId: number) =>
-    request<{ success: boolean; item_id: number }>(`/printers/${printerId}/repeat-print`, {
-      method: 'POST',
-    }),
+  repeatPrint: (printerId: number, body?: { defects: DefectsWriteBody }) =>
+    request<{ success: boolean; item_id: number; ledger_refused_parts?: number }>(
+      `/printers/${printerId}/repeat-print`,
+      {
+        method: 'POST',
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      },
+    ),
+  getWaitingPrint: (printerId: number) => request<WaitingPrint>(`/printers/${printerId}/waiting-print`),
   startCalibration: (printerId: number, options: {
     bed_leveling?: boolean;
     vibration?: boolean;
@@ -6030,6 +7802,19 @@ export const api = {
   // HMS Errors
   clearHMSErrors: (printerId: number) =>
     request<{ success: boolean; message: string }>(`/printers/${printerId}/hms/clear`, { method: 'POST' }),
+
+  // Hide / un-hide one hms[] stack entry on one printer, by its full 16-char
+  // code, until the printer itself drops it. Clear cannot touch the stack.
+  muteHMSError: (printerId: number, fullCode: string) =>
+    request<{ success: boolean }>(`/printers/${printerId}/hms/mute`, {
+      method: 'POST',
+      body: JSON.stringify({ full_code: fullCode }),
+    }),
+  unmuteHMSError: (printerId: number, fullCode: string) =>
+    request<{ success: boolean }>(`/printers/${printerId}/hms/unmute`, {
+      method: 'POST',
+      body: JSON.stringify({ full_code: fullCode }),
+    }),
 
   executeHMSAction: (printerId: number, data: HMSActionBody) =>
     request<{ success: boolean; message: string }>(`/printers/${printerId}/hms/execute-action`, {
@@ -6249,6 +8034,10 @@ export const api = {
       printer_id: number;
       path: string;
       filename: string;
+      // The archive the file on the printer was recognised as, when one exists.
+      // Its plate thumbnails are what `thumbnail_url` points at on that path;
+      // null means the 3MF was read from the printer instead.
+      archive_id: number | null;
       plates: Array<{
         index: number;
         name: string | null;
@@ -6267,14 +8056,9 @@ export const api = {
       }>;
       is_multi_plate: boolean;
     }>(`/printers/${printerId}/files/plates?path=${encodeURIComponent(path)}${storageParam(storage)}`),
-  getPrinterFilePlateThumbnail: (
-    printerId: number,
-    plateIndex: number,
-    path: string,
-    storage?: PrinterStorage,
-  ) =>
-    `${API_BASE}/printers/${printerId}/files/plate-thumbnail/${plateIndex}` +
-    `?path=${encodeURIComponent(path)}${storageParam(storage)}`,
+  // No per-plate image URL here on purpose: an <img> cannot carry the
+  // Authorization header, so `getPrinterFilePlates` answers each plate's
+  // `thumbnail_url` itself — an anonymous archive route or a data URL.
   downloadPrinterFile: async (printerId: number, path: string, storage?: PrinterStorage): Promise<void> => {
     const headers: Record<string, string> = {};
     if (authToken) {
@@ -6413,14 +8197,25 @@ export const api = {
     bytes_freed: number;
     errors: string[];
   }>(overrideDays ? `/archives/cleanup/run?days=${overrideDays}` : '/archives/cleanup/run', { method: 'POST' }),
-  getArchivesSlim: (dateFrom?: string, dateTo?: string) => {
+  getArchiveAggregate: (dateFrom?: string, dateTo?: string) => {
     const params = new URLSearchParams();
     if (dateFrom) params.set('date_from', dateFrom);
     if (dateTo) params.set('date_to', dateTo);
     const qs = params.toString();
-    return request<ArchiveSlim[]>(`/archives/slim${qs ? `?${qs}` : ''}`);
+    return request<ArchiveAggregate>(`/statistics/aggregate${qs ? `?${qs}` : ''}`);
   },
   getArchive: (id: number) => request<Archive>(`/archives/${id}`),
+  /**
+   * Count one old order-less print into its product's free stock (pass 8).
+   *
+   * New prints are credited automatically; history deliberately is not, because
+   * nobody knows which of last year's order-less prints were shipped. This is
+   * the operator vouching for one of them. 409 for a print filed under an order
+   * or one already standing on the shelf; an EMPTY list is a legitimate answer
+   * (the plate may belong to no product).
+   */
+  countArchiveIntoStock: (id: number) =>
+    request<StockMoved[]>(`/archives/${id}/count-into-stock`, { method: 'POST' }),
   getNo3MFWarning: () => request<{ has_fallback: boolean }>('/archives/no-3mf-warning'),
   searchArchives: (query: string, options?: {
     printerId?: number;
@@ -6442,6 +8237,10 @@ export const api = {
   updateArchive: (id: number, data: {
     printer_id?: number | null;
     project_id?: number | null;
+    // Pass 2. ⚠️ The server rejects (400) a line that belongs to a different
+    // order than the one being set, and moving `project_id` without naming a
+    // line silently clears a now-stale one.
+    project_line_id?: number | null;
     print_name?: string;
     is_favorite?: boolean;
     tags?: string;
@@ -6453,6 +8252,7 @@ export const api = {
     quantity?: number;
     defective_count?: number;
     external_url?: string | null;
+    parts_defective?: { id: number; defective: number }[];
   }) =>
     request<Archive>(`/archives/${id}`, {
       method: 'PATCH',
@@ -6475,7 +8275,7 @@ export const api = {
     if (options?.dateFrom) params.set('date_from', options.dateFrom);
     if (options?.dateTo) params.set('date_to', options.dateTo);
     const qs = params.toString();
-    return request<ArchiveStats>(`/archives/stats${qs ? `?${qs}` : ''}`);
+    return request<ArchiveStats>(`/statistics/overview${qs ? `?${qs}` : ''}`);
   },
   // Tag management
   getTags: () => request<TagInfo[]>('/archives/tags'),
@@ -6489,7 +8289,7 @@ export const api = {
       method: 'DELETE',
     }),
   recalculateCosts: () =>
-    request<{ message: string; updated: number }>('/archives/recalculate-costs', { method: 'POST' }),
+    request<{ message: string; updated: number }>('/statistics/recalculate-costs', { method: 'POST' }),
   getFailureAnalysis: (options?: { days?: number; dateFrom?: string; dateTo?: string; printerId?: number; projectId?: number }) => {
     const params = new URLSearchParams();
     if (options?.days) params.set('days', String(options.days));
@@ -6498,7 +8298,7 @@ export const api = {
     if (options?.printerId) params.set('printer_id', String(options.printerId));
     if (options?.projectId) params.set('project_id', String(options.projectId));
     const qs = params.toString();
-    return request<FailureAnalysis>(`/archives/analysis/failures${qs ? `?${qs}` : ''}`);
+    return request<FailureAnalysis>(`/statistics/failures${qs ? `?${qs}` : ''}`);
   },
   compareArchives: (archiveIds: number[]) =>
     request<ArchiveComparison>(`/archives/compare?archive_ids=${archiveIds.join(',')}`),
@@ -6560,7 +8360,7 @@ export const api = {
     if (authToken) {
       headers['Authorization'] = `Bearer ${authToken}`;
     }
-    const response = await fetch(`${API_BASE}/archives/stats/export?${params}`, { headers });
+    const response = await fetch(`${API_BASE}/statistics/export?${params}`, { headers });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       throw new Error(error.detail || `HTTP ${response.status}`);
@@ -6938,6 +8738,7 @@ export const api = {
         used_grams: number;
         used_meters: number;
         used_in_plate?: boolean;
+        filament_type?: string;
       }>;
     }>(`/archives/${archiveId}/filament-requirements${qs ? `?${qs}` : ''}`);
   },
@@ -6954,6 +8755,10 @@ export const api = {
       plate_id?: number;
       plate_name?: string;
       ams_mapping?: number[];
+      feed_policy?: FeedPolicy;
+      force_color_match?: boolean;
+      allow_base_material_match?: boolean;
+      filament_overrides?: AutoQueueFilamentOverride[];
       timelapse?: boolean;
       bed_levelling?: CalibrationMode;
       flow_cali?: CalibrationMode;
@@ -7271,6 +9076,25 @@ export const api = {
   getZigbeePorts: () => request<{ ports: ZigbeePort[] }>('/zigbee/ports'),
   getZigbeeDevices: () => request<{ devices: ZigbeeDevice[] }>('/zigbee/devices'),
   getZigbeeSensors: () => request<{ sensors: ZigbeeSensor[] }>('/zigbee/sensors'),
+
+  // Cameras that belong to no printer. The list carries the URL because it
+  // feeds the settings screen where that URL is typed; the wall's own feeds
+  // (below and in the kiosk call) never do.
+  getCameras: () => request<Camera[]>('/cameras/'),
+  createCamera: (data: CameraCreate) =>
+    request<Camera>('/cameras/', { method: 'POST', body: JSON.stringify(data) }),
+  updateCamera: (id: number, data: CameraUpdate) =>
+    request<Camera>(`/cameras/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteCamera: (id: number) => request<{ deleted: number }>(`/cameras/${id}`, { method: 'DELETE' }),
+  testCameraSource: (data: { url: string; camera_type: string }) =>
+    request<{ success?: boolean; error?: string }>('/cameras/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getCamWallCameras: (token: string) =>
+    request<{ id: number; name: string; rotation: number; location_id: number | null }[]>(
+      `/camwall/cameras?token=${encodeURIComponent(token)}`,
+    ),
   getDeviceSettings: (ieee: string) =>
     request<DeviceSettings>(`/zigbee/devices/${encodeURIComponent(ieee)}/settings`),
   updateDeviceSettings: (
@@ -7395,11 +9219,41 @@ export const api = {
     return request<PrintQueueItem[]>(`/queue/?${params}`);
   },
   getQueueItem: (id: number) => request<PrintQueueItem>(`/queue/${id}`),
+  /**
+   * The picture of a queued job's OWN captured bytes (m173, spec §4 / A09).
+   *
+   * ⚠️ **Fetched, not linked.** Unlike `getArchiveThumbnail` /
+   * `getLibraryFileThumbnailUrl`, whose routes are deliberately public, this one
+   * is behind the same `queue:read_all` / `queue:read_own` split as the queue
+   * list itself — a picture is content, and a reader who cannot see the row may
+   * not see its picture. An `<img src>` cannot carry a bearer token, and the
+   * camera stream token beside it carries no identity, so it could not express
+   * "their row, not yours". Hence the blob dance, the same one
+   * `downloadProductExport` does for a permissioned file: the bytes are fetched
+   * with the session's token and `useQueueRowPicture` hands `<img>` an object
+   * URL. Ask only when the row's `source_thumbnail` is true.
+   */
+  getQueueItemSourceThumbnail: async (id: number): Promise<Blob> => {
+    const headers: Record<string, string> = {};
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/queue/${id}/source-thumbnail`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new ApiError(formatErrorDetail(error.detail, response.status), response.status);
+    }
+    return response.blob();
+  },
   addToQueue: (data: PrintQueueItemCreate) =>
     request<PrintQueueItem>('/queue/', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  addNextQueueBlock: (items: PrintQueueItemCreate[]) =>
+    request<PrintQueueItem[]>('/queue/next-block', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
+  getQueueCopySource: (itemId: number) => request<QueueCopySourceProfile>(`/queue/${itemId}/copy-source`),
   updateQueueItem: (id: number, data: PrintQueueItemUpdate) =>
     request<PrintQueueItem>(`/queue/${id}`, {
       method: 'PATCH',
@@ -7408,6 +9262,7 @@ export const api = {
   removeFromQueue: (id: number) =>
     request<{ message: string }>(`/queue/${id}`, { method: 'DELETE' }),
   getStaggerState: () => request<StaggerState>('/queue/stagger-state'),
+  getQueueForecast: () => request<FarmForecast>('/queue/forecast'),
   // Queue item commands
   reorderQueueItem: (id: number, direction: 'up' | 'down') =>
     request<{ moved: number; direction: string; block_size: number }>(
@@ -7477,13 +9332,18 @@ export const api = {
     }),
 
   // Auto Queue — single global router-queue above per-printer queues
-  getAutoQueue: (status?: 'pending' | 'assigned' | 'cancelled', batchId?: string) => {
+  getAutoQueue: (status?: 'pending' | 'assigned' | 'cancelled' | 'failed' | 'pending,failed', batchId?: string) => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     if (batchId) params.set('batch_id', batchId);
     const qs = params.toString();
     return request<AutoQueueItem[]>(`/auto-queue/${qs ? `?${qs}` : ''}`);
   },
+  previewAutoQueueRouting: (data: { archive_id?: number; library_file_id?: number; plate_ids: number[];
+    target_location_id?: number | null; feed_policy?: FeedPolicy; force_color_match: boolean;
+    allow_base_material_match: boolean;
+    filament_overrides?: AutoQueueFilamentOverride[] }) =>
+    request<RoutingPreview>('/auto-queue/routing-preview', { method: 'POST', body: JSON.stringify(data) }),
   getAutoQueueStats: () => request<AutoQueueStats>('/auto-queue/stats'),
   getAutoQueueItem: (id: number) => request<AutoQueueItem>(`/auto-queue/${id}`),
   addToAutoQueue: (data: AutoQueueItemCreate) =>
@@ -7505,6 +9365,37 @@ export const api = {
     }),
   assignAutoQueueNow: (id: number) =>
     request<AutoQueueItem>(`/auto-queue/${id}/assign-now`, { method: 'POST' }),
+  retryAutoQueue: (id: number) =>
+    request<AutoQueueItem>(`/auto-queue/${id}/retry`, { method: 'POST' }),
+  /**
+   * Rebalance the named rows across printer models (spec 2026-09-10).
+   *
+   * ⚠️ **Chunked by 64, because the endpoint refuses more** (`item_ids` is
+   * `1..64` on `AutoQueueRebalanceRequest`). The `×N` action sends every copy of
+   * a collapsed run, and a run of 150 — the scenario the feature was built for —
+   * would come back as a raw 422 toast. The chunks go one at a time: each one
+   * moves rows and consumes idle capacity the next one must see.
+   */
+  rebalanceAutoQueueItems: async (itemIds: number[]): Promise<RebalanceResult> => {
+    const chunks: number[][] = [];
+    for (let i = 0; i < itemIds.length; i += REBALANCE_CHUNK) chunks.push(itemIds.slice(i, i + REBALANCE_CHUNK));
+    // An empty selection still asks, and the server still refuses it — the
+    // chunking must not turn a caller's mistake into a silent success.
+    if (chunks.length === 0) chunks.push([]);
+    const merged: RebalanceResult = { converted: 0, created: 0, cancelled: 0, moved_parts: 0, skipped: [] };
+    for (const chunk of chunks) {
+      const page = await request<RebalanceResult>('/auto-queue/rebalance', {
+        method: 'POST',
+        body: JSON.stringify({ item_ids: chunk }),
+      });
+      merged.converted += page.converted;
+      merged.created += page.created;
+      merged.cancelled += page.cancelled;
+      merged.moved_parts += page.moved_parts;
+      merged.skipped.push(...page.skipped);
+    }
+    return merged;
+  },
   // One edit for every still-pending copy of a batch (position excluded
   // server-side so a group edit cannot undo a manual reorder).
   updateAutoQueueBatch: (batchId: string, data: AutoQueueItemUpdate) =>
@@ -7636,6 +9527,7 @@ export const api = {
 
   // Notification Providers
   getNotificationProviders: () => request<NotificationProvider[]>('/notifications/'),
+  getNotificationEvents: () => request<ProviderEventInfo[]>('/notifications/events'),
   getNotificationProvider: (id: number) => request<NotificationProvider>(`/notifications/${id}`),
   createNotificationProvider: (data: NotificationProviderCreate) =>
     request<NotificationProvider>('/notifications/', {
@@ -7978,8 +9870,35 @@ export const api = {
   getAuthoredFamilies: () => request<{ families: AuthoredFamily[] }>('/filament-families/authored'),
 
   // Inventory
+  // ⚠️ LEGACY flat list — signature and shape pinned (task 4, 2026-08-29
+  // server-driven-lists). Never send `page` from here: `page` flips the
+  // endpoint to the `{items, meta}` envelope. Four consumers depend on
+  // exactly this flat full shape (re-grepped 2026-08-29):
+  //   AssignSpoolModal.tsx, ConfigureAmsSlotModal.tsx,
+  //   SpoolDisplayNameSettings.tsx, SpoolFormModal.tsx.
+  // InventoryPage itself now rides the paged fns below.
   getSpools: (includeArchived = false) =>
     request<InventorySpool[]>(`/inventory/spools?include_archived=${includeArchived}`),
+  // Server-driven variants (task 4) — the ONLY callers allowed to set `page`.
+  getSpoolsPaged: (params: SpoolListParams = {}) =>
+    request<SpoolListPage>(`/inventory/spools?${spoolListSearchParams(params)}`),
+  getSpoolGroupsPaged: (params: SpoolListParams = {}) => {
+    const qs = spoolListSearchParams(params);
+    qs.set('group_similar', 'true');
+    return request<SpoolGroupPage>(`/inventory/spools?${qs}`);
+  },
+  /** Every id matching the filters — the explicit "Select all N matching"
+   *  feed (task 2). The caller materializes the answer into a selection id
+   *  set; bulk actions stay selection-scoped, never filter-scoped. 400 over
+   *  the server's sanity cap (50 000). */
+  getSpoolIds: (params: SpoolListParams = {}) =>
+    request<{ ids: number[] }>(`/inventory/spools/ids?${spoolFilterSearchParams(params)}`),
+  /** Distinct dropdown values under one archived tab (task 2). */
+  getSpoolFacets: (archived?: 'active' | 'archived') =>
+    request<SpoolFacets>(`/inventory/spools/facets${archived ? `?archived=${archived}` : ''}`),
+  /** The stats bar, aggregated server-side (task 5). Farm-wide and
+   *  unfiltered — the memo it replaced read the whole feed, not the filter. */
+  getInventoryStats: () => request<InventoryStats>('/inventory/stats'),
   getSpool: (id: number) => request<InventorySpool>(`/inventory/spools/${id}`),
   // ── CSV import/export (#1576) ────────────────────────────────────────────
   // dry_run=true → preview (no write); omitted → real import. Both share one
@@ -7988,10 +9907,13 @@ export const api = {
     uploadSpoolsCsv<CsvImportPreview>(file, true, options),
   importSpoolsCsv: (file: File, options?: CsvImportOptions): Promise<CsvImportResult> =>
     uploadSpoolsCsv<CsvImportResult>(file, false, options),
-  exportSpoolsCsv: async (options?: CsvExportOptions): Promise<void> => {
+  exportSpoolsCsv: async (options?: CsvExportOptions, filters?: SpoolListParams): Promise<void> => {
     const headers: Record<string, string> = {};
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-    const params = new URLSearchParams();
+    // Export is the complete CURRENT filtered set, not the current table page.
+    // Reuse the ids endpoint's builder because it preserves every list filter
+    // while deliberately stripping page, page size, grouping and sorting.
+    const params = spoolFilterSearchParams(filters ?? { archived: 'active' });
     if (options?.delimiter && options.delimiter !== 'comma') params.set('delimiter', options.delimiter);
     if (options?.decimal && options.decimal !== 'dot') params.set('decimal', options.decimal);
     if (options?.encoding && options.encoding !== 'utf-8') params.set('encoding', options.encoding);
@@ -8209,9 +10131,15 @@ export const api = {
   // How the assign dialog should treat a mid-print assignment right now:
   // 'prompt' (paused — ask), 'optin' (running after a pause — checkbox),
   // 'none' (replacement physically impossible — plain assignment).
-  getReplacementWindow: (printerId: number) =>
+  /** ⚠️ Name the slot. A replacement charges what printed so far to the spool
+   *  that came out, so a slot holding nothing cannot be one — without this the
+   *  dialog asks an unanswerable question every time an empty slot is filled
+   *  mid-print. A slot whose reel ran out still counts as holding one: the
+   *  assignment is deliberately kept while the print runs. */
+  getReplacementWindow: (printerId: number, amsId?: number, trayId?: number) =>
     request<{ mode: 'prompt' | 'optin' | 'none'; pause_layer: number | null }>(
-      `/inventory/assignments/replacement-window/${printerId}`,
+      `/inventory/assignments/replacement-window/${printerId}` +
+        (amsId != null && trayId != null ? `?ams_id=${amsId}&tray_id=${trayId}` : ''),
     ),
   getAssignments: (printerId?: number) =>
     request<SpoolAssignment[]>(`/inventory/assignments${printerId ? `?printer_id=${printerId}` : ''}`),
@@ -8274,8 +10202,38 @@ export const api = {
     }),
   getSpoolUsageHistory: (spoolId: number, limit = 50) =>
     request<SpoolUsageRecord[]>(`/inventory/spools/${spoolId}/usage?limit=${limit}`),
-  getAllUsageHistory: (limit = 100, printerId?: number) =>
-    request<SpoolUsageRecord[]>(`/inventory/usage?limit=${limit}${printerId ? `&printer_id=${printerId}` : ''}`),
+  /** Farm-wide usage history, PAGED — the History view's one feed (2026-09-01).
+   *
+   *  ⚠️ `page` is mandatory here and is set below whatever the caller passes.
+   *  The unpaged form of this endpoint answers a flat array honouring only
+   *  `limit`, and its last client caller was the ForecastPanel's 5000-row
+   *  download that the forecast-server-side cycle deleted; two tests still pin
+   *  that nothing fetches it that way. Reaching this table from the browser is
+   *  fine — reaching all of it at once is what was wrong. */
+  getUsageHistory: (params: UsageHistoryParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set('q', params.q);
+    for (const status of params.status ?? []) qs.append('status', status);
+    if (params.printer_id) qs.set('printer_id', params.printer_id);
+    if (params.spool_id !== undefined) qs.set('spool_id', String(params.spool_id));
+    if (params.material) qs.set('material', params.material);
+    if (params.brand) qs.set('brand', params.brand);
+    if (params.archived) qs.set('archived', params.archived);
+    if (params.assigned) qs.set('assigned', params.assigned);
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    if (params.sort_by) qs.set('sort_by', params.sort_by);
+    qs.set('page', String(params.page ?? 1));
+    if (params.all) {
+      qs.set('all', 'true');
+    } else if (params.per_page) {
+      qs.set('per_page', String(params.per_page));
+    }
+    return request<SpoolUsagePage>(`/inventory/usage?${qs}`);
+  },
+  /** The History view's dropdown options — computed over every usage row, not
+   *  over the current selection, so narrowing one filter never empties another. */
+  getUsageHistoryFacets: () => request<SpoolUsageFacets>('/inventory/usage/facets'),
   clearSpoolUsageHistory: (spoolId: number) =>
     request<InventorySpool>(`/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
   deleteSpoolUsageRecord: (spoolId: number, usageId: number) =>
@@ -8306,6 +10264,49 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ status }),
     }),
+  // ── Server-computed forecast (task 4, 2026-08-29 forecast-server-side) ────
+  // The four feeds the Forecast tab renders from — every number computed by
+  // the backend forecast_engine; the panel sends its table state as params.
+  getForecast: (params: ForecastListParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.sort_by) qs.set('sort_by', params.sort_by);
+    if (params.material) qs.set('material', params.material);
+    if (params.brand) qs.set('brand', params.brand);
+    if (params.alerts_only) qs.set('alerts_only', 'true');
+    qs.set('page', String(params.page ?? 1));
+    if (params.all) {
+      qs.set('all', 'true');
+    } else if (params.per_page) {
+      qs.set('per_page', String(params.per_page));
+    }
+    return request<ForecastListPage>(`/inventory/forecast?${qs}`);
+  },
+  getForecastChart: (days: 7 | 30 | 180) =>
+    request<ForecastChartResponse>(`/inventory/forecast/chart?days=${days}`),
+  getForecastLogistics: () => request<ForecastLogisticsRow[]>('/inventory/forecast/logistics'),
+  /** Server-generated shopping-list CSV via the house binary-download idiom
+   *  (direct fetch + blob + anchor — same as exportSpoolsCsv above; request()
+   *  would try to JSON-parse the body). */
+  downloadShoppingListCsv: async (): Promise<void> => {
+    const headers: Record<string, string> = {};
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/inventory/shopping-list/export.csv`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const disposition = response.headers.get('Content-Disposition');
+    const filename = parseContentDispositionFilename(disposition) || 'shopping-list.csv';
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  },
   getFilamentPresets: () =>
     request<SlicerSetting[]>('/cloud/filaments'),
 
@@ -8390,7 +10391,7 @@ export const api = {
   testCameraConnection: (printerId: number) =>
     request<{ success: boolean; message?: string; error?: string }>(`/printers/${printerId}/camera/test`),
   getCameraStatus: (printerId: number) =>
-    request<{ active: boolean; stalled: boolean }>(`/printers/${printerId}/camera/status`),
+    request<CameraStreamStatus>(`/printers/${printerId}/camera/status`),
   // Camera diagnostic (#1395 follow-up) — staged check the operator
   // can run inline to self-diagnose "connection lost" before opening a
   // ticket. The modal renders one row per stage and looks up the
@@ -8517,48 +10518,336 @@ export const api = {
     request<ExternalLink>(`/external-links/${id}/icon`, { method: 'DELETE' }),
   getExternalLinkIconUrl: (id: number) => `${API_BASE}/external-links/${id}/icon`,
 
-  // Projects
-  getProjects: (status?: string) => {
-    const params = new URLSearchParams();
-    if (status) params.set('status', status);
-    return request<ProjectListItem[]>(`/projects/?${params}`);
-  },
-  getProject: (id: number) => request<Project>(`/projects/${id}`),
-  createProject: (data: ProjectCreate) =>
-    request<Project>('/projects/', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  updateProject: (id: number, data: ProjectUpdate) =>
-    request<Project>(`/projects/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    }),
-  deleteProject: (id: number) =>
-    request<{ message: string }>(`/projects/${id}`, { method: 'DELETE' }),
-  /** Copy a project's setup into a new active one. Never moves: the source keeps everything. */
-  duplicateProject: (id: number, data: { name?: string; include_children?: boolean } = {}) =>
-    request<Project>(`/projects/${id}/duplicate`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
   getProjectArchives: (id: number, limit = 100, offset = 0) =>
     request<Archive[]>(`/projects/${id}/archives?limit=${limit}&offset=${offset}`),
-  addArchivesToProject: (projectId: number, archiveIds: number[]) =>
-    request<{ message: string }>(`/projects/${projectId}/add-archives`, {
-      method: 'POST',
-      body: JSON.stringify({ archive_ids: archiveIds }),
-    }),
   removeArchivesFromProject: (projectId: number, archiveIds: number[]) =>
     request<{ message: string }>(`/projects/${projectId}/remove-archives`, {
       method: 'POST',
       body: JSON.stringify({ archive_ids: archiveIds }),
     }),
-  addQueueItemsToProject: (projectId: number, queueItemIds: number[]) =>
-    request<{ message: string }>(`/projects/${projectId}/add-queue`, {
+  getOrderPrintParts: (orderId: number, archiveId: number) =>
+    request<OrderPrintDefects>(`/projects/${orderId}/archives/${archiveId}/parts`),
+  recordOrderPrintDefects: (orderId: number, archiveId: number, body: DefectsWriteBody) =>
+    request<OrderPrintDefects>(`/projects/${orderId}/archives/${archiveId}/defects`, {
       method: 'POST',
-      body: JSON.stringify({ queue_item_ids: queueItemIds }),
+      body: JSON.stringify(body),
     }),
+
+  // Orders (projects redesign, pass 2)
+  //
+  // The UI calls them orders; the endpoints are still `/projects/*` — including
+  // the two archive calls just above. Every one
+  // of the mutating calls answers with the WHOLE order — figures included —
+  // because a line edit moves the totals, so callers replace the cached order
+  // rather than patching a field into it.
+  getOrders: (params: OrderListParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set('status', params.status);
+    if (params.customer_id != null) qs.set('customer_id', String(params.customer_id));
+    if (params.product_id != null) qs.set('product_id', String(params.product_id));
+    return request<OrderListItem[]>(`/projects/?${qs}`);
+  },
+  getOrder: (id: number) => request<Order>(`/projects/${id}`),
+  createOrder: (data: OrderCreate) =>
+    request<Order>('/projects/', { method: 'POST', body: JSON.stringify(data) }),
+  updateOrder: (id: number, data: OrderUpdate) =>
+    request<Order>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteOrder: (id: number) =>
+    request<{ message: string }>(`/projects/${id}`, { method: 'DELETE' }),
+  duplicateOrder: (id: number, name?: string) =>
+    request<Order>(`/projects/${id}/duplicate`, {
+      method: 'POST',
+      body: JSON.stringify({ name: name ?? null }),
+    }),
+  addOrderLine: (orderId: number, data: ProjectLineCreate) =>
+    request<Order>(`/projects/${orderId}/lines`, { method: 'POST', body: JSON.stringify(data) }),
+  updateOrderLine: (orderId: number, lineId: number, data: ProjectLineUpdate) =>
+    request<Order>(`/projects/${orderId}/lines/${lineId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteOrderLine: (orderId: number, lineId: number) =>
+    request<Order>(`/projects/${orderId}/lines/${lineId}`, { method: 'DELETE' }),
+  updateOrderProcurement: (orderId: number, partId: number, quantityAcquired: number) =>
+    request<Order>(`/projects/${orderId}/procurement/${partId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ quantity_acquired: quantityAcquired }),
+    }),
+  /** `lineId` omitted binds the prints to the order without a line — the
+   *  server then files them under `other_archive_ids`. The null is explicit so
+   *  "no line chosen" cannot be read as "field forgotten". */
+  addArchivesToOrder: (orderId: number, archiveIds: number[], lineId?: number | null) =>
+    request<{ message: string }>(`/projects/${orderId}/add-archives`, {
+      method: 'POST',
+      body: JSON.stringify({ archive_ids: archiveIds, project_line_id: lineId ?? null }),
+    }),
+
+  /** What to print next for every line of the order. Computed on every read,
+   *  never cached server-side: a second call after enqueuing plans that much
+   *  less. */
+  /**
+   * Move this order's overprint onto its products' shelves (pass 8, Decision 2).
+   *
+   * Never automatic, and pressing it twice moves only what has appeared since —
+   * so `nothing_to_bank` is a SUCCESS, not an error, and reads "the surplus was
+   * already banked".
+   */
+  bankOrderSurplus: (orderId: number) =>
+    request<BankSurplusResponse>(`/projects/${orderId}/bank-surplus`, { method: 'POST' }),
+
+  getOrderPlan: (id: number) => request<OrderPlan>(`/projects/${id}/plan`),
+  enqueueOrderPlan: (id: number, body: PlanEnqueueRequest) =>
+    request<PlanEnqueueResponse>(`/projects/${id}/plan/enqueue`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  rebalanceOrderLine: (orderId: number, lineId: number) =>
+    request<RebalanceResult>(`/projects/${orderId}/lines/${lineId}/rebalance`, { method: 'POST' }),
+  /**
+   * The ETA of a page of orders.
+   *
+   * ⚠️ **Chunked by 200, because the endpoint refuses more.** A list of every
+   * order in the farm is a normal thing to render, and a 400 there is not a
+   * "no estimate" — it blanks the whole column. The farm header is the same
+   * snapshot in every chunk, so the first one's is kept.
+   */
+  getOrdersForecast: async (ids: number[]): Promise<ForecastBatch> => {
+    const chunks: number[][] = [];
+    for (let i = 0; i < ids.length; i += 200) chunks.push(ids.slice(i, i + 200));
+    if (chunks.length === 0) chunks.push([]);
+    const pages = await Promise.all(
+      chunks.map((chunk) => request<ForecastBatch>(`/projects/forecast?ids=${chunk.join(',')}`)),
+    );
+    return { farm: pages[0].farm, orders: pages.flatMap((p) => p.orders) };
+  },
+  getOrderForecast: (id: number) => request<OrderForecastDetail>(`/projects/${id}/forecast`),
+  getOrderFilament: (id: number) => request<OrderNeeds>(`/projects/${id}/filament`),
+  getOrdersFilament: () => request<FarmNeeds>('/projects/filament'),
+
+  // Customers
+  getCustomers: () => request<Customer[]>('/customers/'),
+  getCustomer: (id: number) => request<Customer>(`/customers/${id}`),
+  createCustomer: (data: CustomerCreate) =>
+    request<Customer>('/customers/', { method: 'POST', body: JSON.stringify(data) }),
+  updateCustomer: (id: number, data: CustomerUpdate) =>
+    request<Customer>(`/customers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteCustomer: (id: number) =>
+    request<{ message: string }>(`/customers/${id}`, { method: 'DELETE' }),
+
+  // Products
+  getProducts: (params: ProductListParams = {}) => {
+    const qs = new URLSearchParams();
+    // `!= null`, not truthiness: `active=false` is a filter, not an absence.
+    if (params.active != null) qs.set('active', String(params.active));
+    if (params.q) qs.set('q', params.q);
+    if (params.include_adhoc) qs.set('include_adhoc', 'true');
+    return request<ProductListItem[]>(`/products/?${qs}`);
+  },
+  getProduct: (id: number) => request<Product>(`/products/${id}`),
+  createProduct: (data: ProductCreate) =>
+    request<Product>('/products/', { method: 'POST', body: JSON.stringify(data) }),
+  createProductFromFile: (libraryFileId: number) =>
+    request<Product>(`/products/from-file/${libraryFileId}`, { method: 'POST' }),
+  updateProduct: (id: number, data: ProductUpdate) =>
+    request<Product>(`/products/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteProduct: (id: number) =>
+    request<{ message: string }>(`/products/${id}`, { method: 'DELETE' }),
+  duplicateProduct: (id: number, name?: string) =>
+    request<Product>(`/products/${id}/duplicate`, {
+      method: 'POST',
+      body: JSON.stringify({ name: name ?? null }),
+    }),
+  /** The product's free stock: the shelf, how many kits it makes, and the
+   *  ledger that got it there (newest first, capped by `limit`). */
+  getProductStock: (id: number, limit: number = STOCK_MOVEMENT_LIMIT) =>
+    request<ProductStock>(`/products/${id}/stock?limit=${limit}`),
+  /** A hand correction. 409 when it would take a balance below zero, 422 for a
+   *  part that holds no stock — the server's own sentence is in `detail`, which
+   *  is what `ApiError.message` carries. */
+  adjustProductStock: (id: number, data: StockAdjust) =>
+    request<StockMovement>(`/products/${id}/stock/adjust`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  /** The Stock tab's summary: every product with a shelf, its kits, balances
+   *  and the active orders holding its kits. */
+  getStockSummary: (params: StockSummaryParams = {}) => {
+    const search = new URLSearchParams();
+    if (params.q) search.set('q', params.q);
+    if (params.with_stock === false) search.set('with_stock', 'false');
+    const qs = search.toString();
+    return request<StockSummary>(`/stock${qs ? `?${qs}` : ''}`);
+  },
+  /** One keyset page of the farm journal, newest first. */
+  getStockMovements: (params: StockMovementsParams = {}) => {
+    const search = new URLSearchParams();
+    if (params.product_id != null) search.set('product_id', String(params.product_id));
+    if (params.part_id != null) search.set('part_id', String(params.part_id));
+    if (params.reason) search.set('reason', params.reason);
+    if (params.before_id != null) search.set('before_id', String(params.before_id));
+    search.set('limit', String(params.limit ?? STOCK_JOURNAL_PAGE));
+    return request<StockMovementsPage>(`/stock/movements?${search.toString()}`);
+  },
+
+  getProductPlates: (id: number) => request<PlateRecipe[]>(`/products/${id}/plates`),
+  createProductPart: (productId: number, data: ProductPartCreate) =>
+    request<ProductPart>(`/products/${productId}/parts`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateProductPart: (productId: number, partId: number, data: ProductPartUpdate) =>
+    request<ProductPart>(`/products/${productId}/parts/${partId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteProductPart: (productId: number, partId: number) =>
+    request<{ message: string }>(`/products/${productId}/parts/${partId}`, { method: 'DELETE' }),
+  mergeProductPart: (productId: number, targetPartId: number, sourcePartId: number) =>
+    request<ProductPart>(`/products/${productId}/parts/${targetPartId}/merge`, {
+      method: 'POST',
+      body: JSON.stringify({ source_part_id: sourcePartId }),
+    }),
+  addProductPartAlias: (productId: number, partId: number, nameKey: string) =>
+    request<ProductPart>(`/products/${productId}/parts/${partId}/aliases`, {
+      method: 'POST',
+      body: JSON.stringify({ name_key: nameKey }),
+    }),
+  /** The key travels in the query string, not a body — DELETE with a payload
+   *  is not carried reliably by every proxy in front of this app. */
+  removeProductPartAlias: (productId: number, partId: number, nameKey: string) =>
+    request<ProductPart>(
+      `/products/${productId}/parts/${partId}/aliases?name_key=${encodeURIComponent(nameKey)}`,
+      { method: 'DELETE' },
+    ),
+  /** Replaces the whole set of directly-linked files. `[]` unlinks them all. */
+  setProductFiles: (productId: number, libraryFileIds: number[]) =>
+    request<Product>(`/products/${productId}/files`, {
+      method: 'PUT',
+      body: JSON.stringify({ library_file_ids: libraryFileIds }),
+    }),
+  unlinkProductFile: (productId: number, fileId: number) =>
+    request<Product>(`/products/${productId}/files/${fileId}`, { method: 'DELETE' }),
+  setProductFolders: (productId: number, libraryFolderIds: number[]) =>
+    request<Product>(`/products/${productId}/folders`, {
+      method: 'PUT',
+      body: JSON.stringify({ library_folder_ids: libraryFolderIds }),
+    }),
+  unlinkProductFolder: (productId: number, folderId: number) =>
+    request<Product>(`/products/${productId}/folders/${folderId}`, { method: 'DELETE' }),
+  getFoldersByProduct: (productId: number) =>
+    request<LibraryFolder[]>(`/library/folders/by-product/${productId}`),
+
+  // ---- Product attachments, cover and card (pass 4) ----
+  getProductAttachments: (productId: number) =>
+    request<ProductAttachment[]>(`/products/${productId}/attachments`),
+  /** The category travels as a form field beside the file: it decides which
+   *  extension allowlist the server checks, which is the only thing standing
+   *  between this route and an executable in the attachments directory. */
+  uploadProductAttachment: (productId: number, file: File, category: AttachmentCategory) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('category', category);
+    return sendForm<ProductAttachment>(`/products/${productId}/attachments`, formData);
+  },
+  /** Bearer-authenticated download — fetch it and save the blob; an `<a href>`
+   *  cannot carry the token and would 401 into a file that looks corrupt. */
+  getProductAttachmentUrl: (productId: number, filename: string) =>
+    `${API_BASE}/products/${productId}/attachments/${encodeURIComponent(filename)}`,
+  /** ⚠️ The segment is `attachment-image`, NOT `attachments/…/image`. It is a
+   *  unique path so `main.py`'s whitelist can let an `<img>` request REACH the
+   *  route's own stream-token gate without also opening the bearer-only
+   *  download that lives under `/attachments/`. */
+  getProductAttachmentImageUrl: (productId: number, filename: string) =>
+    withStreamToken(`${API_BASE}/products/${productId}/attachment-image/${encodeURIComponent(filename)}`),
+  deleteProductAttachment: (productId: number, filename: string) =>
+    request<ProductAttachment[]>(`/products/${productId}/attachments/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+    }),
+  /** Rewrites ONE category's order; the others keep theirs. */
+  reorderProductAttachments: (productId: number, category: AttachmentCategory, filenames: string[]) =>
+    request<ProductAttachment[]>(`/products/${productId}/attachments/order`, {
+      method: 'PATCH',
+      body: JSON.stringify({ category, filenames }),
+    }),
+  /** Picks a picture that is already in the gallery as the explicit cover. */
+  setProductCover: (productId: number, filename: string) =>
+    request<{ status: string; filename: string }>(`/products/${productId}/cover-image`, {
+      method: 'PUT',
+      body: JSON.stringify({ filename }),
+    }),
+  /** Uploads a DEDICATED cover — stored beside the gallery and deliberately not
+   *  listed in it. Same route as the pick; the server branches on the body. */
+  uploadProductCover: (productId: number, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return sendForm<{ status: string; filename: string; size: number }>(
+      `/products/${productId}/cover-image`,
+      formData,
+      'PUT',
+    );
+  },
+  getProductCoverImageUrl: (productId: number) =>
+    withStreamToken(`${API_BASE}/products/${productId}/cover-image`),
+  /** Clears the explicit choice; the first-picture default resumes. */
+  deleteProductCover: (productId: number) =>
+    request<{ status: string }>(`/products/${productId}/cover-image`, { method: 'DELETE' }),
+  /** Fills the product's BLANK card fields from a linked file again and
+   *  replaces that file's `3mf` attachments. Never overwrites a value somebody
+   *  typed — the notes say what was left alone. */
+  rereadProductCard: (productId: number, fileId: number) =>
+    request<RereadResponse>(`/products/${productId}/card/reread?file_id=${fileId}`, { method: 'POST' }),
+  /** The orders this plate could be filed under, ranked; `[]` is ordinary and
+   *  means no open order wants it. `plateIndex` is the SLICER plate index —
+   *  the same number the queue row carries as `plate_id` — and `0` asks about
+   *  the whole file. */
+  getOrderCandidates: (fileId: number, plateIndex: number) =>
+    request<OrderCandidate[]>(`/library/files/${fileId}/order-candidates?plate_index=${plateIndex}`),
+  previewPartsOfFiles: (fileIds: number[]) =>
+    request<PartsPreview>('/library/files/parts-preview', { method: 'POST', body: JSON.stringify({ file_ids: fileIds }) }),
+  createOrderFromFiles: (body: OrderFromFilesRequest) =>
+    request<Order>('/projects/from-files', { method: 'POST', body: JSON.stringify(body) }),
+  getLibraryFileCard: (fileId: number) => request<CardData>(`/library/files/${fileId}/card`),
+  /**
+   * The whole product as a ZIP, saved through the blob dance.
+   *
+   * The route is behind `PROJECTS_READ` and this app authenticates with a
+   * bearer token, which an `<a href>` cannot carry — the link would 401 and the
+   * browser would save the error body under the operator's filename.
+   *
+   * The name comes off `Content-Disposition`, `filename*=UTF-8''…` first: the
+   * product name is the operator's and is routinely not ASCII, and the ASCII
+   * `filename=` beside it is the server's transliterated fallback.
+   */
+  downloadProductExport: async (productId: number): Promise<void> => {
+    const headers: Record<string, string> = {};
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/products/${productId}/export`, { headers });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new ApiError(formatErrorDetail(error.detail, response.status), response.status);
+    }
+    const name =
+      parseContentDispositionFilename(response.headers.get('Content-Disposition')) || `product_${productId}.zip`;
+    const url = window.URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  },
+  /** ⚠️ `folder_id` is a DESTINATION for files nobody already has, not a link:
+   *  the server never joins that folder to the product, because "every file in
+   *  here belongs to this product" is not what an operator said by importing
+   *  into their Downloads folder. Omitted entirely when nothing was picked —
+   *  the server then reuses or makes a root folder named after the product. */
+  importProduct: (file: File, folderId?: number | null) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (folderId != null) formData.append('folder_id', String(folderId));
+    return sendForm<ProductImportResponse>('/products/import', formData);
+  },
 
   // Project Attachments
   uploadProjectAttachment: async (projectId: number, file: File): Promise<{
@@ -8623,94 +10912,9 @@ export const api = {
   deleteProjectCoverImage: (projectId: number) =>
     request<{ status: string }>(`/projects/${projectId}/cover-image`, { method: 'DELETE' }),
 
-  // BOM (Bill of Materials)
-  getProjectBOM: (projectId: number) =>
-    request<BOMItem[]>(`/projects/${projectId}/bom`),
-  createBOMItem: (projectId: number, data: BOMItemCreate) =>
-    request<BOMItem>(`/projects/${projectId}/bom`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  updateBOMItem: (projectId: number, itemId: number, data: BOMItemUpdate) =>
-    request<BOMItem>(`/projects/${projectId}/bom/${itemId}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    }),
-  deleteBOMItem: (projectId: number, itemId: number) =>
-    request<{ status: string; message: string }>(`/projects/${projectId}/bom/${itemId}`, {
-      method: 'DELETE',
-    }),
-
-  // Print Plan (per-project list of .3mf library files with copies + order)
-  getProjectPrintPlan: (projectId: number) =>
-    request<PrintPlanResponse>(`/projects/${projectId}/print-plan`),
-  updatePrintPlanItem: (projectId: number, libraryFileId: number, copies: number) =>
-    request<PrintPlanItem>(`/projects/${projectId}/print-plan/${libraryFileId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ copies }),
-    }),
-  reorderPrintPlan: (projectId: number, libraryFileIds: number[]) =>
-    request<PrintPlanResponse>(`/projects/${projectId}/print-plan/reorder`, {
-      method: 'POST',
-      body: JSON.stringify({ library_file_ids: libraryFileIds }),
-    }),
-
-  // Templates
-  getTemplates: () => request<ProjectListItem[]>('/projects/templates'),
-  createTemplateFromProject: (projectId: number) =>
-    request<Project>(`/projects/${projectId}/create-template`, { method: 'POST' }),
-  createProjectFromTemplate: (templateId: number, name?: string) =>
-    request<Project>(`/projects/from-template/${templateId}${name ? `?name=${encodeURIComponent(name)}` : ''}`, {
-      method: 'POST',
-    }),
-
   // Timeline
   getProjectTimeline: (projectId: number, limit = 50) =>
     request<TimelineEvent[]>(`/projects/${projectId}/timeline?limit=${limit}`),
-
-  // Project Export/Import
-  exportProjectJson: (projectId: number) =>
-    request<ProjectExport>(`/projects/${projectId}/export?format=json`),
-  importProject: (data: ProjectImport) =>
-    request<Project>('/projects/import', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-  importProjectFile: async (file: File): Promise<Project> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/projects/import/file`, {
-      method: 'POST',
-      headers,
-      body: formData,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.json();
-  },
-  exportProjectZip: async (projectId: number): Promise<{ blob: Blob; filename: string }> => {
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/projects/${projectId}/export`, {
-      headers,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    const contentDisposition = response.headers.get('Content-Disposition');
-    const filename = parseContentDispositionFilename(contentDisposition) || `project_${projectId}.zip`;
-    const blob = await response.blob();
-    return { blob, filename };
-  },
 
   // API Keys
   getAPIKeys: () => request<APIKey[]>('/api-keys/'),
@@ -8751,6 +10955,7 @@ export const api = {
   },
 
   // System Info
+  getDatabaseHealth: () => request<DbHealth>('/system/database'),
   getSystemInfo: () => request<SystemInfo>('/system/info'),
   getSystemHealth: () => request<SystemHealthResult>('/system/health'),
   getStorageUsage: (options?: { refresh?: boolean }) => {
@@ -8807,25 +11012,23 @@ export const api = {
       method: 'POST',
     }),
   getLibraryScanJob: (jobId: number) => request<LibraryScanJob>(`/library/scan-jobs/${jobId}`),
-  getLibraryFoldersByProject: (projectId: number) =>
-    request<LibraryFolder[]>(`/library/folders/by-project/${projectId}`),
-  getLibraryFoldersByArchive: (archiveId: number) =>
-    request<LibraryFolder[]>(`/library/folders/by-archive/${archiveId}`),
 
   getLibraryFiles: (
     folderId?: number | null,
     includeRoot = true,
-    projectId?: number,
     scope?: 'internal' | 'external',
     tagIds: number[] = [],
     recursive = false,
+    /** The product filter — the product's direct files ∪ the files of its
+     *  linked folders. */
+    productId?: number,
   ) => {
     const params = new URLSearchParams();
     if (folderId !== undefined && folderId !== null) {
       params.set('folder_id', String(folderId));
     }
-    if (projectId !== undefined) {
-      params.set('project_id', String(projectId));
+    if (productId !== undefined) {
+      params.set('product_id', String(productId));
     }
     params.set('include_root', String(includeRoot));
     // #1621: scope the top-level view to managed vs external storage.
@@ -8839,6 +11042,42 @@ export const api = {
     // folder-scoped behavior.
     if (recursive) params.set('recursive', 'true');
     return request<LibraryFileListItem[]>(`/library/files?${params}`);
+  },
+  // Server-driven variant (task 2, 2026-08-29 server-driven-lists) — the ONLY
+  // caller allowed to set `page`, which is what flips GET /library/files from
+  // the legacy flat array to the `{items, meta}` envelope (task 1). Carries
+  // the full filter/sort/paging surface task 1 added; used exclusively by
+  // FileManagerPage. LibraryPickerModal stays on the legacy `getLibraryFiles`
+  // above — see the comment at its call site.
+  getLibraryFilesPaged: (params: LibraryFileListParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.folder_id !== undefined && params.folder_id !== null) {
+      qs.set('folder_id', String(params.folder_id));
+    }
+    if (params.product_id !== undefined) qs.set('product_id', String(params.product_id));
+    if (params.include_root !== undefined) qs.set('include_root', String(params.include_root));
+    if (params.scope === 'internal') qs.set('internal_only', 'true');
+    else if (params.scope === 'external') qs.set('external_only', 'true');
+    for (const tagId of params.tag_ids ?? []) qs.append('tag_ids', String(tagId));
+    if (params.recursive) qs.set('recursive', 'true');
+    if (params.folder_scope) qs.set('folder_scope', 'true');
+    if (params.q) qs.set('q', params.q);
+    if (params.file_type) qs.set('file_type', params.file_type);
+    if (params.unprinted_only) qs.set('unprinted_only', 'true');
+    if (params.username) qs.set('username', params.username);
+    if (params.sort_by) qs.set('sort_by', params.sort_by);
+    // `page` is ALWAYS sent (default 1) — that is the compat switch the
+    // backend reads to return the paginated envelope instead of the legacy
+    // flat array. `all` skips the LIMIT server-side but still needs `page`
+    // present for the same reason (see the route's `paginate = page is not
+    // None` branch).
+    qs.set('page', String(params.page ?? 1));
+    if (params.all) {
+      qs.set('all', 'true');
+    } else if (params.per_page) {
+      qs.set('per_page', String(params.per_page));
+    }
+    return request<LibraryFileListPage>(`/library/files?${qs}`);
   },
   getLibraryFolderReadme: (folderId: number) =>
     request<FolderReadmeResponse>(`/library/folders/${folderId}/readme`),
@@ -8928,16 +11167,6 @@ export const api = {
     }),
   deleteLibraryFile: (id: number) =>
     request<{ status: string; message: string; trashed: boolean }>(`/library/files/${id}`, { method: 'DELETE' }),
-
-  // m044: drop a single (file, project) pivot row without read-modify-write
-  // on the whole list. Used by ProjectDetailPage's "remove from this project"
-  // affordance. Idempotent: missing pivot is a no-op (204).
-  removeLibraryFileFromProject: (fileId: number, projectId: number) =>
-    request<void>(`/library/files/${fileId}/projects/${projectId}`, { method: 'DELETE' }),
-
-  // m044: symmetric for folders.
-  removeLibraryFolderFromProject: (folderId: number, projectId: number) =>
-    request<void>(`/library/folders/${folderId}/projects/${projectId}`, { method: 'DELETE' }),
 
   // ========== Library Trash (#1008) ==========
   previewLibraryPurge: (olderThanDays: number, includeNeverPrinted: boolean = true) =>
@@ -9068,6 +11297,10 @@ export const api = {
       plate_id?: number;
       plate_name?: string;
       ams_mapping?: number[];
+      feed_policy?: FeedPolicy;
+      force_color_match?: boolean;
+      allow_base_material_match?: boolean;
+      filament_overrides?: AutoQueueFilamentOverride[];
       bed_levelling?: CalibrationMode;
       flow_cali?: CalibrationMode;
       layer_inspect?: boolean;
@@ -9080,6 +11313,9 @@ export const api = {
       selected_macro_ids?: number[] | null;
       quantity?: number;
       project_id?: number;
+      /** Pass 2: which line of the order the resulting print counts against.
+       *  Only meaningful alongside `project_id`. */
+      project_line_id?: number | null;
       cleanup_library_after_dispatch?: boolean;
     }
   ) =>
@@ -9102,6 +11338,8 @@ export const api = {
     }),
   getLibraryFilePlates: (fileId: number) =>
     request<LibraryFilePlatesResponse>(`/library/files/${fileId}/plates`),
+  getLibraryGroupingMetadata: (ids: number[]) =>
+    request<LibraryGroupingMetadata[]>(`/library/grouping-metadata?ids=${ids.join(',')}`),
 
   // Read-only plate object preview. One call for both sources: they differ only
   // in how the file is found. The archive route takes no plate — it answers for
@@ -9136,6 +11374,7 @@ export const api = {
         used_grams: number;
         used_meters: number;
         used_in_plate?: boolean;
+        filament_type?: string;
       }>;
     }>(`/library/files/${fileId}/filament-requirements${qs ? `?${qs}` : ''}`);
   },
@@ -9430,6 +11669,8 @@ export interface TelegramChat {
   quiet_hours_enabled: boolean;
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
+  progress_min_duration_minutes: number | null;
+  printer_ids: number[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -9445,6 +11686,8 @@ export interface TelegramChatCreate {
   quiet_hours_enabled?: boolean;
   quiet_hours_start?: string | null;
   quiet_hours_end?: string | null;
+  progress_min_duration_minutes?: number | null;
+  printer_ids?: number[] | null;
 }
 
 export interface TelegramChatUpdate {
@@ -9457,6 +11700,26 @@ export interface TelegramChatUpdate {
   quiet_hours_enabled?: boolean;
   quiet_hours_start?: string | null;
   quiet_hours_end?: string | null;
+  progress_min_duration_minutes?: number | null;
+  printer_ids?: number[] | null;
+}
+
+/**
+ * One event a notification provider can subscribe to, as `GET /notifications/events`
+ * returns it. The provider form and the provider card render their toggles from this
+ * list instead of keeping their own — theirs had drifted to 18 of the 34 flags.
+ */
+export interface ProviderEventInfo {
+  /** The provider column, e.g. `on_print_start`. */
+  flag: string;
+  /** Catalog events this flag governs — one, or several for the sensor aggregates. */
+  event_types: string[];
+  /** Catalog group: print / printer / filament / ams / queue / inventory / sensors. */
+  group: string;
+  /** Catalog severity; for an aggregate, the strictest of its events. */
+  severity: string;
+  /** Whether a new provider subscribes to it. */
+  default: boolean;
 }
 
 export interface NotifyEventInfo {
@@ -9508,11 +11771,84 @@ export interface AMSHistoryResponse {
 }
 
 // System Info types
+/**
+ * GET /system/database — what the database can say about itself.
+ *
+ * ⚠️ `mode` is not the dialect: `DATABASE_URL=embedded` reaches the engine as a
+ * PostgreSQL URL, so "BamDude runs this server" / "a Windows service runs it" /
+ * "somebody else's server" can only come from the backend's own settings.
+ *
+ * Every field is nullable because every probe is guarded on its own; the ones
+ * that failed are named in `probes_failed` rather than silently reading as
+ * "no data".
+ */
+export interface DbPoolStatus {
+  dialect: string | null;
+  config: Record<string, unknown> | null;
+  current_size: number | null;
+  checked_out: number | null;
+  checked_in: number | null;
+  overflow: number | null;
+}
+
+export interface DbSlowStatement {
+  statement: string;
+  count: number;
+  total_ms: number;
+  mean_ms: number;
+}
+
+export interface DbInstrumentation {
+  query_threshold_ms: number;
+  request_threshold_ms: number;
+  source: 'pg_stat_statements' | 'in_process';
+  reason: string | null;
+  slowest: DbSlowStatement[];
+}
+
+export interface DbSqliteHealth {
+  journal_mode: string | null;
+  page_size: number | null;
+  page_count: number | null;
+  freelist_count: number | null;
+  busy_timeout_ms: number | null;
+  cache_size: number | null;
+  wal_bytes: number | null;
+  shm_bytes: number | null;
+}
+
+export interface DbPostgresHealth {
+  connections: { used: number; max: number };
+  cache_hit_ratio: number | null;
+  commits: number;
+  rollbacks: number;
+  deadlocks: number;
+  temp_files: number;
+  temp_bytes: number;
+}
+
+export interface DbHealth {
+  engine: string;
+  version: string | null;
+  mode: 'sqlite' | 'embedded' | 'embedded_service' | 'external';
+  size_bytes: number | null;
+  pool: DbPoolStatus | null;
+  instrumentation: DbInstrumentation;
+  sqlite: DbSqliteHealth | null;
+  postgres: DbPostgresHealth | null;
+  largest_tables: { table: string; bytes: number; rows: number }[] | null;
+  scans: { table: string; seq_scan: number; idx_scan: number }[] | null;
+  probes_failed: string[];
+}
+
 export interface SystemInfo {
   app: {
     version: string;
     base_dir: string;
     archive_dir: string;
+    started_at: string | null;
+    uptime_seconds: number | null;
+    uptime_formatted: string | null;
   };
   database: {
     engine: 'SQLite' | 'PostgreSQL';
@@ -9615,23 +11951,12 @@ export interface StorageUsageResponse {
 
 // Library (File Manager) types
 
-// m044: lightweight project reference embedded in folder/file responses.
-// Carries enough for the UI to render the colored project chip without a
-// follow-up fetch. Mirrors backend `ProjectRef` schema.
-export interface ProjectRef {
-  id: number;
-  name: string;
-  color: string | null;
-}
-
 export interface LibraryFolderTree {
+  /** Products this folder is a design for (m158). Empty array = unattached. */
+  products: ProductRef[];
   id: number;
   name: string;
   parent_id: number | null;
-  // m044: M2M project links. Empty array = unattached.
-  projects: ProjectRef[];
-  archive_id: number | null;
-  archive_name: string | null;
   is_external: boolean;
   external_path: string | null;
   external_readonly: boolean;
@@ -9667,9 +11992,8 @@ export interface LibraryFolder {
   id: number;
   name: string;
   parent_id: number | null;
-  projects: ProjectRef[];
-  archive_id: number | null;
-  archive_name: string | null;
+  /** What the folder's files are a design for. Empty array = unattached. */
+  products: ProductRef[];
   is_external: boolean;
   external_path: string | null;
   external_readonly: boolean;
@@ -9690,9 +12014,9 @@ export interface FolderReadmeResponse {
 export interface LibraryFolderCreate {
   name: string;
   parent_id?: number | null;
-  // m044: list of project IDs to associate the folder with on creation.
-  project_ids?: number[];
-  archive_id?: number | null;
+  /** Products to link the folder to on creation. Cascades to its files
+   *  server-side. */
+  product_ids?: number[];
 }
 
 export interface ExternalFolderCreate {
@@ -9706,10 +12030,10 @@ export interface ExternalFolderCreate {
 export interface LibraryFolderUpdate {
   name?: string;
   parent_id?: number | null;
-  // m044: undefined = leave links untouched, [] = unlink from every
-  // project, otherwise replace the whole list.
-  project_ids?: number[];
-  archive_id?: number | null;  // 0 to unlink
+  // undefined = leave links untouched, [] = unlink from every product,
+  // otherwise replace the whole list. A change cascades to the folder's
+  // child files.
+  product_ids?: number[];
 }
 
 export interface LibraryFileDuplicate {
@@ -9806,8 +12130,8 @@ export interface LibraryFile {
   id: number;
   folder_id: number | null;
   folder_name: string | null;
-  // m044: M2M project links. Empty array = unattached.
-  projects: ProjectRef[];
+  /** What this file is a design for. Empty array = unattached. */
+  products: ProductRef[];
   is_external: boolean;
   filename: string;
   file_path: string;
@@ -9855,12 +12179,26 @@ export interface LibraryFile {
   source_url?: string | null;
 }
 
+/** One plate as the library card pages through it (vault 60-specs/library-multiplate-card-spec 4).
+ *  Deeper detail - grams per slot, object names, bed, layers - stays behind /plates. */
+export interface PlateSummary {
+  index: number;
+  name: string | null;
+  print_time_seconds: number | null;
+  filament_used_grams: number | null;
+  object_count: number | null;
+  filament_types: string[];
+  has_thumbnail: boolean;
+}
+
 export interface LibraryFileListItem {
   id: number;
   folder_id: number | null;
-  // m044: M2M project IDs only (names omitted to keep list payload small —
-  // resolve names from a global ``projects`` query when rendering).
-  project_ids: number[];
+  /** ⚠️ The LIST carries product IDS, not the `ProductRef[]` the single-file
+   *  response has — names are omitted to keep the payload small. Anything that
+   *  needs a name resolves it from a `['products']` query; anything that only
+   *  counts links reads `product_ids.length`. */
+  product_ids: number[];
   is_external: boolean;
   filename: string;
   file_type: string;
@@ -9892,6 +12230,12 @@ export interface LibraryFileListItem {
   // Used to gate gallery rendering — single-plate files skip the per-card
   // gallery fetch entirely.
   is_multi_plate?: boolean;
+  // spec 4 - plate 1's (or the only plate's) filament types in slot order, and
+  // one compact slice per plate for a multi-plate file (empty otherwise). The
+  // card pages through the slices without a /plates fetch. OPTIONAL: legacy
+  // msw mocks build partial file shapes.
+  filament_types?: string[];
+  plate_summaries?: PlateSummary[];
   // Provenance (m033) — same semantics as ``LibraryFile``.
   source_type?: string | null;
   source_url?: string | null;
@@ -9903,6 +12247,65 @@ export interface LibraryFileListItem {
   // which is the computed system-badge array. OPTIONAL because legacy msw
   // mocks build partial file shapes; read sites use ``file.tags ?? []``.
   tags?: LibraryTagSummary[];
+}
+
+/** One plate, reduced to what decides its group. Colour is deliberately absent. */
+export interface LibraryGroupingPlate {
+  index: number;
+  /** Sorted filament TYPES this plate needs. Never colours. */
+  filament_types: string[];
+  bed_type: string | null;
+}
+
+/** Everything the queue sequencer needs to group a file, straight from the DB. */
+export interface LibraryGroupingMetadata {
+  file_id: number;
+  filename: string;
+  sliced_for_model: string | null;
+  nozzle_diameter: number | null;
+  bed_type: string | null;
+  /** Empty for a file that was never parsed — cannot be grouped, never
+   *  "matches anything". */
+  plates: LibraryGroupingPlate[];
+}
+
+// Full query surface of GET /library/files (task 1, 2026-08-29
+// server-driven-lists) — consumed only by ``getLibraryFilesPaged``.
+// ``folder_id`` / ``product_id`` / ``include_root`` / ``scope`` / ``tag_ids``
+// / ``recursive`` mirror ``getLibraryFiles``'s positional params exactly.
+// ⚠️ ``product_id``, not ``project_id``: the filter is "this PRODUCT's files"
+// (its direct files ∪ the files of its linked folders), and an order has never
+// had files of its own. The name here was the one the server never read.
+export interface LibraryFileListParams {
+  folder_id?: number | null;
+  /** The product filter — the product's direct files ∪ the files of its
+   *  linked folders, exactly as ``getLibraryFiles``' last positional param. */
+  product_id?: number;
+  include_root?: boolean;
+  scope?: 'internal' | 'external';
+  tag_ids?: number[];
+  recursive?: boolean;
+  /** Intersect tag filtering with folder_id rather than treating tags as global. */
+  folder_scope?: boolean;
+  q?: string;
+  file_type?: string;
+  unprinted_only?: boolean;
+  username?: string;
+  // `<name|date|size|type>_<asc|desc>` — see FileManagerPage's SortField/
+  // SortDirection state, joined with an underscore (NOT ArchivesPage's
+  // hyphen — the two endpoints picked different separators).
+  sort_by?: string;
+  page?: number;
+  per_page?: number;
+  all?: boolean;
+}
+
+// Envelope returned by GET /library/files when `page` is present — mirrors
+// backend LibraryFileListPage / PaginationMeta (same field names as
+// PaginatedArchiveResponse's `meta`).
+export interface LibraryFileListPage {
+  items: LibraryFileListItem[];
+  meta: PaginationMeta;
 }
 
 // #1268 — user-authored library tags. Cross-cutting labels applied to
@@ -9951,9 +12354,10 @@ export const LIBRARY_FILE_NOTE_MAX_LENGTH = 1000;
 export interface LibraryFileUpdate {
   filename?: string;
   folder_id?: number | null;
-  // m044: undefined = leave untouched, [] = unlink from every project,
-  // otherwise replace the whole list.
-  project_ids?: number[];
+  // undefined = leave untouched, [] = unlink from every product, otherwise
+  // replace the whole list. ⚠️ A move without this field inherits the target
+  // folder's products — send it explicitly when the move must NOT re-link.
+  product_ids?: number[];
   notes?: string | null;
 }
 
@@ -10509,21 +12913,22 @@ export const supportApi = {
   clearLogs: () =>
     request<{ message: string }>('/support/logs', { method: 'DELETE' }),
 
-  // Historical log archive management — populated by daily rotation.
-  // Files matching ``bamdude-YYYY-MM-DD.log`` only; backend enforces
-  // path-traversal guard.
+  // The current log is separate from daily archives; only archives can be deleted.
   listLogArchives: () =>
-    request<{ archives: { filename: string; size_bytes: number; mtime: string }[] }>(
+    request<{
+      archives: { filename: string; size_bytes: number; mtime: string }[];
+      current?: { filename: string; size_bytes: number; mtime: string } | null;
+    }>(
       '/support/log-archives',
     ),
 
   downloadLogArchive: async (filename: string) => {
     const headers: Record<string, string> = {};
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-    const response = await fetch(
-      `${API_BASE}/support/log-archives/${encodeURIComponent(filename)}/download`,
-      { headers },
-    );
+    const path = filename === 'bamdude.log'
+      ? '/support/logs/download'
+      : `/support/log-archives/${encodeURIComponent(filename)}/download`;
+    const response = await fetch(`${API_BASE}${path}`, { headers });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       throw new Error(error.detail || `HTTP ${response.status}`);

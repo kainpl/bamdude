@@ -55,7 +55,9 @@ const union = {
 function mapOne(reqs: { filaments: Array<Record<string, unknown>> }) {
   const loaded = buildLoadedFilaments(twoTrayPrinter());
   return buildAmsMapping(
-    buildFilamentComparison(reqs as Parameters<typeof buildFilamentComparison>[0], loaded, {})
+    // Double cast: some callers hand this a requirement list with fields
+    // missing on purpose, which is what the mapping is being asked about.
+    buildFilamentComparison(reqs as unknown as Parameters<typeof buildFilamentComparison>[0], loaded, {})
   );
 }
 

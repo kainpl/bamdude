@@ -280,8 +280,13 @@ def parse_version(version: str) -> tuple:
     # Strip daily build suffix (e.g., "0.2.2b4-daily.20260313" -> "0.2.2b4")
     version = re.sub(r"-daily\.\d+$", "", version)
 
-    # Match version pattern: major.minor.patch[.micro][b|beta|alpha|rc]N
-    match = re.match(r"(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?(?:b|beta|alpha|rc)?(\d+)?", version)
+    # Match version pattern: major.minor.patch[.micro][a|b|beta|alpha|rc]N
+    # ``a`` is in the alternation because a bare-letter alpha is a shape this
+    # project actually uses (``0.5.6a1``, local builds); without it the suffix
+    # went unconsumed, every alpha parsed as prerelease number 0, and a2 did
+    # not sort above a1. The letters-anywhere test below is what marks such a
+    # version as a prerelease at all, so that half always worked.
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?(?:a|b|beta|alpha|rc)?(\d+)?", version)
 
     if match:
         major = int(match.group(1))
@@ -305,6 +310,21 @@ def parse_version(version: str) -> tuple:
             parts.append(int(num) if num else 0)
 
     return tuple(parts) + (0, 0, 0)
+
+
+def _prerelease_stage(version: str) -> int:
+    """How far along a prerelease is: alpha < beta < rc, release last.
+
+    ``parse_version`` keeps the prerelease NUMBER but not which letter carried
+    it, so this reads the letter off the string. A version with no prerelease
+    letter answers the highest value — it is only ever compared against another
+    version of the same base and the same prerelease flag, where both sides are
+    releases and the stage cancels out.
+    """
+    match = re.search(r"\d+\.\d+\.\d+(?:\.\d+)?[-_.]?(a|alpha|b|beta|rc)", version.lstrip("v"), re.IGNORECASE)
+    if not match:
+        return 3
+    return {"a": 0, "alpha": 0, "b": 1, "beta": 1, "rc": 2}[match.group(1).lower()]
 
 
 def is_newer_version(latest: str, current: str) -> bool:
@@ -341,12 +361,19 @@ def is_newer_version(latest: str, current: str) -> bool:
             # latest is prerelease, current is release -> latest is NOT newer
             return False
 
-        # Both are same type (both release or both prerelease)
-        # Compare prerelease numbers
+        # Both are same type (both release or both prerelease).
+        # Compare the prerelease STAGE first, then its number: the parsed tuple
+        # keeps only the number, so 0.5.6a1 and 0.5.6b1 look identical there and
+        # a running alpha would never be told about the matching beta (2026-09-13,
+        # when local alpha builds started carrying ``0.5.6a1``). The stage is read
+        # off the string, which is the only place it survives.
         latest_prerelease_num = latest_parsed[5] if len(latest_parsed) > 5 else 0
         current_prerelease_num = current_parsed[5] if len(current_parsed) > 5 else 0
 
-        return latest_prerelease_num > current_prerelease_num
+        return (_prerelease_stage(latest), latest_prerelease_num) > (
+            _prerelease_stage(current),
+            current_prerelease_num,
+        )
 
     except Exception:
         return False

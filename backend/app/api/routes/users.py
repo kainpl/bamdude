@@ -23,6 +23,7 @@ from backend.app.models.oidc_provider import UserOIDCLink
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
+from backend.app.models.user_notification import UserNotification
 from backend.app.models.user_otp_code import UserOTPCode
 from backend.app.models.user_totp import UserTOTP
 from backend.app.schemas.auth import (
@@ -95,9 +96,12 @@ async def create_user(
     advanced_auth_setting = result.scalar_one_or_none()
     advanced_auth_enabled = advanced_auth_setting and advanced_auth_setting.value.lower() == "true"
 
-    # Check if username already exists (case-insensitive)
+    # Check if username already exists (case-insensitive). Any match means it
+    # exists — ``scalar_one_or_none()`` would raise ``MultipleResultsFound`` (a
+    # 500 instead of this refusal) on an install that already holds two rows
+    # differing only by case, which the pre-Unicode-fold check allowed in.
     existing_user = await db.execute(select(User).where(func.lower(User.username) == func.lower(user_data.username)))
-    if existing_user.scalar_one_or_none():
+    if existing_user.scalars().first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already exists",
@@ -117,9 +121,9 @@ async def create_user(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email is required when advanced authentication is enabled",
             )
-        # Check if email already exists (case-insensitive)
+        # Check if email already exists (case-insensitive) — any match means it exists, as above.
         existing_email = await db.execute(select(User).where(func.lower(User.email) == func.lower(user_data.email)))
-        if existing_email.scalar_one_or_none():
+        if existing_email.scalars().first():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already exists",
@@ -274,11 +278,12 @@ async def update_user(
             )
 
     if user_data.username is not None:
-        # Check if new username already exists (case-insensitive)
+        # Check if new username already exists (case-insensitive) — any match means it exists,
+        # so this reads the first row rather than raising on two case variants (see create_user).
         existing_user = await db.execute(
             select(User).where(func.lower(User.username) == func.lower(user_data.username), User.id != user_id)
         )
-        if existing_user.scalar_one_or_none():
+        if existing_user.scalars().first():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Username already exists",
@@ -286,11 +291,11 @@ async def update_user(
         user.username = user_data.username
 
     if user_data.email is not None:
-        # Check if new email already exists (case-insensitive)
+        # Check if new email already exists (case-insensitive) — any match means it exists, as above.
         existing_email = await db.execute(
             select(User).where(func.lower(User.email) == func.lower(user_data.email), User.id != user_id)
         )
-        if existing_email.scalar_one_or_none():
+        if existing_email.scalars().first():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already exists",
@@ -421,7 +426,23 @@ async def delete_user(
         )
 
     if delete_items:
-        # Delete all items created by this user
+        # Delete all items created by this user.
+        #
+        # ⚠️ The stock ledger is cut loose FIRST. This is a bulk Core DELETE, so
+        # it never reaches ``ArchiveService.delete_archive`` and never runs its
+        # ``part_stock.detach_archive`` — and ``product_part_stock_movements``
+        # declares ON DELETE SET NULL, which only PostgreSQL applies (this
+        # codebase never sets ``PRAGMA foreign_keys = ON``). Left attached, the
+        # movements keep an ``archive_id`` naming nothing; on SQLite the next
+        # print to inherit that rowid then finds its credit already standing and
+        # is silently never counted into stock. The movements themselves stay:
+        # the parts are on a shelf whatever happened to the print history.
+        from backend.app.services import part_stock
+
+        _doomed_archive_ids = (
+            (await db.execute(select(PrintArchive.id).where(PrintArchive.created_by_id == user_id))).scalars().all()
+        )
+        await part_stock.detach_archives(db, list(_doomed_archive_ids))
         await db.execute(delete(PrintArchive).where(PrintArchive.created_by_id == user_id))
         # Detach print_queue back-references before the bulk delete — SQLite
         # foreign_keys=OFF means ON DELETE clauses won't fire on their own.
@@ -442,6 +463,18 @@ async def delete_user(
         await db.execute(
             update(PrintQueueItem).where(PrintQueueItem.library_file_id.in_(_doomed_files)).values(library_file_id=None)
         )
+        # ⚠️ And the product links + plates. This is a Core DELETE, so it never
+        # goes near the ORM: not even the ``product_files`` secondary rows the
+        # ORM would have cleared for a ``db.delete(file)`` are removed, and
+        # ``product_plates`` has no ORM cascade from a library file at all.
+        # Both FKs say ON DELETE CASCADE, which PostgreSQL honours and SQLite
+        # ignores — so the ids are collected first and cleaned explicitly.
+        from backend.app.services.product_sync import purge_file_product_links
+
+        _doomed_file_ids = (
+            (await db.execute(select(LibraryFile.id).where(LibraryFile.created_by_id == user_id))).scalars().all()
+        )
+        await purge_file_product_links(db, list(_doomed_file_ids))
         await db.execute(delete(LibraryFile).where(LibraryFile.created_by_id == user_id))
     else:
         # Explicitly set created_by_id to NULL for all items (ensures consistent behavior
@@ -479,6 +512,8 @@ async def delete_user(
     await db.execute(delete(UserTOTP).where(UserTOTP.user_id == user_id))
     await db.execute(delete(UserOTPCode).where(UserOTPCode.user_id == user_id))
     await db.execute(delete(LongLivedToken).where(LongLivedToken.user_id == user_id))
+    # The in-app inbox is one-to-many per user; SQLite never fires the CASCADE.
+    await db.execute(delete(UserNotification).where(UserNotification.user_id == user_id))
 
     await db.delete(user)
     await db.commit()
@@ -514,13 +549,6 @@ async def change_own_password(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Current password is incorrect",
-        )
-
-    # Validate new password
-    if len(password_data.new_password) < 6:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New password must be at least 6 characters",
         )
 
     # Fetch user from this session to ensure changes are persisted

@@ -1,5 +1,9 @@
+import csv
+import io
 import json
 import logging
+import math
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 import httpx
@@ -20,14 +24,26 @@ from backend.app.core.websocket import ws_manager
 from backend.app.models.ams_label import AmsLabel
 from backend.app.models.color_catalog import ColorCatalogEntry
 from backend.app.models.location import Location
+from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_catalog import SpoolCatalogEntry
 from backend.app.models.spool_k_profile import SpoolKProfile
 from backend.app.models.user import User
+from backend.app.schemas.archive import PaginationMeta
+from backend.app.schemas.forecast import (
+    ForecastChartResponse,
+    ForecastChartSeries,
+    ForecastChartSku,
+    ForecastListPage,
+    ForecastLogisticsRow,
+    SkuForecastRowResponse,
+    UnmatchedReservedResponse,
+)
 from backend.app.schemas.location import LocationCreate, LocationResponse, LocationUpdate
 from backend.app.schemas.spool import (
+    InventoryStatsResponse,
     SpoolAssignmentCreate,
     SpoolAssignmentResponse,
     SpoolBulkCreate,
@@ -36,10 +52,22 @@ from backend.app.schemas.spool import (
     SpoolCreate,
     SpoolKProfileBase,
     SpoolKProfileResponse,
+    SpoolListItem,
+    SpoolListPage,
     SpoolResponse,
     SpoolUpdate,
 )
-from backend.app.schemas.spool_usage import SpoolUsageHistoryResponse
+from backend.app.schemas.spool_usage import (
+    SpoolUsageFacetPrinter,
+    SpoolUsageFacets,
+    SpoolUsageHistoryResponse,
+    SpoolUsageListItem,
+    SpoolUsagePage,
+    SpoolUsageSpoolRef,
+    SpoolUsageTotals,
+)
+from backend.app.services import forecast_engine, inventory_service, spool_usage_service
+from backend.app.services.filament_needs import Needs
 from backend.app.services.location_service import (
     DUPLICATE_LOCATION_NAME,
     assign_location_name,
@@ -75,6 +103,27 @@ async def _validate_family_id(db: AsyncSession, family_id: str | None) -> None:
 
     if (await resolve_tray(db, family_id)).family is None:
         raise HTTPException(status_code=422, detail="unknown filament family")
+
+
+async def _derive_family_from_slicer(db: AsyncSession, data: dict) -> None:
+    """Fill ``filament_family_id`` from ``slicer_filament`` when the payload
+    names a slicer code but no family — through the one resolver that still
+    understands every legacy format (``filament_identity.resolve_raw``).
+
+    The spool form used to derive the link itself, client-side, with a
+    "strip the S off GFS" rule — which for the support families (``GFS00``
+    Support W, ``GFS04`` PVA …) produced an id that exists nowhere, and the
+    route then refused its own client's edit with ``unknown filament family``
+    (2026-09-04). Resolution is the server's; the client sends what it has.
+    Nothing resolvable leaves an honest NULL, and an id sent explicitly is
+    still validated by :func:`_validate_family_id` after this."""
+    if data.get("filament_family_id") or not data.get("slicer_filament"):
+        return
+    from backend.app.services.filament_identity import resolve_raw
+
+    resolved = await resolve_raw(db, data["slicer_filament"])
+    if resolved.family:
+        data["filament_family_id"] = resolved.family.filament_id
 
 
 async def _safe_autolink(db: AsyncSession, spool: Spool) -> None:
@@ -131,7 +180,6 @@ async def apply_spool_to_slot_via_mqtt(
         if spool.subtype
         else spool.material
     )
-    tray_color = spool.rgba or "FFFFFFFF"
 
     nozzle_diameter = "0.4"
     if state and state.nozzles:
@@ -158,53 +206,53 @@ async def apply_spool_to_slot_via_mqtt(
     # inside the builder). current_tray_info_idx / current_tray_type are
     # accepted for signature stability but no longer consulted — the family
     # model does not reuse a foreign tray id.
+    from backend.app.services.ams_backup_compatibility import kprofile_allowed, live_tray_for
     from backend.app.services.slot_assignment import build_slot_assignment
+    from backend.app.services.slot_assignment_publish import publish_projected_slot
 
     # ⚠️ The model lives in the manager's model cache, NOT on PrinterInfo
     # (name + serial only) — ``info.model`` was an AttributeError on every
     # call; only mocks (auto-attributes) kept it green.
+    supports_user_preset = bool(getattr(state, "support_user_preset", False))
+    printer_model = printer_manager.get_model(printer_id)
     plan = await build_slot_assignment(
         db,
         spool=spool,
-        printer_model=printer_manager.get_model(printer_id),
+        printer_model=printer_model,
         nozzle_diameter=nozzle_diameter,
-        supports_user_preset=bool(getattr(state, "support_user_preset", False)),
+        supports_user_preset=supports_user_preset,
     )
     for note in plan.warnings:
         logger.info("Spool assign: %s", note)
+
+    # The K-profile half below keys off the ACTUAL family, never the advertised
+    # one — the spool's own calibration is what should be printed with.
     effective_tray_info_idx = plan.tray_info_idx
-    effective_setting_id = plan.setting_id
-    tray_type = plan.tray_type or tray_type
-    temp_min, temp_max = plan.nozzle_temp_min, plan.nozzle_temp_max
 
-    # a. Set filament setting
-    client.ams_set_filament_setting(
+    # a. Project under the printer's policy, set the filament setting (and
+    # register its read-back verification), remember what was masked. One
+    # helper for all three assignment paths — the actual plan stays the spool's
+    # truth, only what the printer is told changes.
+    printer_row = await db.get(Printer, printer_id)
+    _, projection = await publish_projected_slot(
+        db,
+        client,
+        printer=printer_row,
+        printer_id=printer_id,
         ams_id=ams_id,
         tray_id=tray_id,
-        tray_info_idx=effective_tray_info_idx,
-        tray_type=tray_type,
+        actual_plan=plan,
+        live_tray=live_tray_for(state, ams_id, tray_id),
+        spool_tag_uid=spool.tag_uid,
+        spool_tray_uuid=spool.tray_uuid,
+        material=spool.material,
+        extra_colors=spool.extra_colors,
+        printer_model=printer_model,
+        nozzle_diameter=nozzle_diameter,
+        supports_user_preset=supports_user_preset,
         tray_sub_brands=tray_sub_brands,
-        tray_color=tray_color,
-        nozzle_temp_min=temp_min,
-        nozzle_temp_max=temp_max,
-        setting_id=effective_setting_id,
-        cols=plan.cols,
-        ctype=plan.ctype,
-    )
-
-    # Register a read-back verification so the next AMS pushes can confirm the
-    # tray actually accepted this assignment (upstream #2582). We record the same
-    # effective filament id we pushed; the client fires on_assignment_verified on
-    # match/timeout. Colour is informational only — the match keys on the filament
-    # id the printer echoes back. ``cali_idx`` starts unknown because our K-profile
-    # push below resolves it live inside ``apply_active_calibration_to_slot``,
-    # which calls ``note_assignment_cali_idx`` to fill it in.
-    client.register_assignment_verification(
-        ams_id=ams_id,
-        tray_id=tray_id,
-        tray_info_idx=effective_tray_info_idx,
-        tray_color=tray_color,
-        cali_idx=None,
+        tray_type_fallback=tray_type,
+        source="internal",
     )
 
     # b. Push extrusion calibration via the unified helper. The helper
@@ -219,7 +267,7 @@ async def apply_spool_to_slot_via_mqtt(
         spool=spool, slot_tray_info_idx=effective_tray_info_idx or None, db=db
     )
     nozzle_vt = str(getattr(state, "nozzle_volume_type", "standard") or "standard")
-    if effective_filament_id:
+    if effective_filament_id and kprofile_allowed(projection):
         await apply_active_calibration_to_slot(
             db=db,
             printer_id=printer_id,
@@ -991,20 +1039,440 @@ async def sync_from_filamentcolors(
 
 # ── Spool CRUD ───────────────────────────────────────────────────────────────
 
+# Every endpoint taking ``location_id`` MUST declare it with this pattern —
+# anything else reaches ``int(location_id)`` in ``build_spool_filters``, where
+# a non-numeric value raises ValueError uncaught into a 500 (T1 review finding
+# 3). One shared constant so the list/ids endpoints can't drift apart; a
+# pattern mismatch becomes a clean 422 like any other bad param.
+_LOCATION_ID_PATTERN = r"^(__none__|\d+)$"
 
-@router.get("/spools", response_model=list[SpoolResponse])
+# Sanity cap for ``GET /spools/ids`` (spec §3.4): nobody bulk-edits this many
+# spools; a bigger answer means a pathological call, refused with a 400 rather
+# than materializing an unbounded id list.
+_SPOOL_IDS_CAP = 50_000
+
+
+def _spool_to_list_item(
+    s: Spool, *, include_k_profiles: bool = False, archived_printer_ids: set[int] | None = None
+) -> SpoolListItem:
+    """Slim list-row projection — every ``SpoolListItem`` field, built
+    explicitly (never ``model_validate(s)``: ``k_profile_count`` has no
+    matching ORM attribute). ``s.k_profiles`` must already be eager-loaded
+    (``list_spools`` always ``selectinload``s it) — the async ORM has no
+    implicit lazy load, so touching an unloaded relationship here would raise,
+    not silently N+1.
+
+    ``include_k_profiles`` (task 4, 2026-08-29): serialize the full
+    ``k_profiles`` array too — the cards-view opt-in (see
+    ``SpoolListItem``'s docstring). The rows are eager-loaded regardless, so
+    this is a serialization-only switch, never an extra query."""
+    # ⚠️ A K-profile on an ARCHIVED printer is history, not an option. Archiving
+    # retires a machine and hides it everywhere while keeping its history, so a
+    # spool calibrated on it still carries the link — and showing it here reads
+    # as a profile you could use. The PA tab already counts only live printers
+    # ("doesn't inflate the badge past the printers actually offered for
+    # assignment"); the card and this badge were serialised straight off the
+    # relationship and counted everything. One farm's spool read 11 on the card
+    # against 7 in the dialog, its other 4 printers having been archived.
+    #
+    # ``None`` means the caller did not ask the question (single-spool reads,
+    # where the full set is the point) and everything is kept.
+    visible_k_profiles = (
+        s.k_profiles
+        if archived_printer_ids is None
+        else [kp for kp in s.k_profiles if kp.printer_id not in archived_printer_ids]
+    )
+    return SpoolListItem(
+        id=s.id,
+        material=s.material,
+        subtype=s.subtype,
+        color_name=s.color_name,
+        rgba=s.rgba,
+        brand=s.brand,
+        label_weight=s.label_weight,
+        core_weight=s.core_weight,
+        core_weight_catalog_id=s.core_weight_catalog_id,
+        weight_used=s.weight_used,
+        weight_used_baseline=s.weight_used_baseline,
+        slicer_filament=s.slicer_filament,
+        slicer_filament_name=s.slicer_filament_name,
+        filament_family_id=s.filament_family_id,
+        nozzle_temp_min=s.nozzle_temp_min,
+        nozzle_temp_max=s.nozzle_temp_max,
+        note=s.note,
+        added_full=s.added_full,
+        tag_uid=s.tag_uid,
+        tray_uuid=s.tray_uuid,
+        data_origin=s.data_origin,
+        tag_type=s.tag_type,
+        cost_per_kg=s.cost_per_kg,
+        purchase_date=s.purchase_date,
+        last_used=s.last_used,
+        encode_time=s.encode_time,
+        filament_diameter=s.filament_diameter,
+        lot=s.lot,
+        weight_locked=s.weight_locked,
+        last_scale_weight=s.last_scale_weight,
+        last_weighed_at=s.last_weighed_at,
+        extra_colors=s.extra_colors,
+        effect_type=s.effect_type,
+        category=s.category,
+        low_stock_threshold_pct=s.low_stock_threshold_pct,
+        storage_location=s.storage_location,
+        location_id=s.location_id,
+        purchase_location=s.purchase_location,
+        archived_at=s.archived_at,
+        created_at=s.created_at,
+        updated_at=s.updated_at,
+        k_profile_count=len(visible_k_profiles),
+        k_profiles=(
+            [SpoolKProfileResponse.model_validate(kp) for kp in visible_k_profiles] if include_k_profiles else None
+        ),
+    )
+
+
+class SpoolGroupItem(BaseModel):
+    """One row of the grouped list mode (``group_similar=true``, task 3): the
+    6-column group key + membership + the min(id) member as representative
+    (slim list projection — same ``SpoolListItem`` the flat paged mode
+    returns). The text key fields carry the COALESCED key value (``''`` where
+    the underlying column is NULL — the client key's ``|| ''`` fold).
+
+    ⚠️ No ``lot``: it stopped being a key on 2026-09-07 (an operator numbering
+    each spool's lot individually got one group per spool), so a group may span
+    lots and has no single one to report. The representative still carries its
+    own.
+
+    ⚠️ Members may be started (2026-09-10 — only a spool loaded in a printer
+    stays out of a group), so their remaining weights differ:
+    ``remaining_total`` and ``weight_used_total`` are the real sums over the
+    members, and a client must use them for the header figure rather than
+    multiply the representative's by ``group_count``."""
+
+    material: str
+    subtype: str
+    brand: str
+    color_name: str
+    rgba: str
+    label_weight: int
+    group_count: int
+    ids: list[int]
+    remaining_total: float
+    weight_used_total: float
+    representative: SpoolListItem
+
+
+class SpoolGroupPage(BaseModel):
+    items: list[SpoolGroupItem]
+    meta: PaginationMeta
+
+
+@router.get("/spools", response_model=None)
 async def list_spools(
     include_archived: bool = False,
+    archived: str | None = Query(None, description="'active' or 'archived' — paged mode only"),
+    usage: str | None = Query(None, description="'used', 'new', or 'lowstock'"),
+    material: str | None = Query(None),
+    brand: str | None = Query(None),
+    colors: list[str] = Query(
+        default_factory=list,
+        description="Raw color_name values (resolved-name matching stays client-side — see facets, task 2)",
+    ),
+    color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
+    category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
+    catalog_id: int | None = Query(None),
+    location_id: str | None = Query(
+        None,
+        # A stale/hand-edited deep-link is exactly the shape this endpoint
+        # bakes into a shareable URL, so this must never be a 500 — see
+        # _LOCATION_ID_PATTERN's comment (review finding 3).
+        pattern=_LOCATION_ID_PATTERN,
+        description="Location id, or '__none__' for no location",
+    ),
+    stock: str | None = Query(None, description="'stock' or 'configured'"),
+    assigned: str | None = Query(None, description="'assigned' or 'unassigned'"),
+    q: str | None = Query(
+        None, description="Tokenised match over brand/material/color_name/subtype/note/slicer_filament_name"
+    ),
+    sort_by: str | None = Query(
+        None,
+        description=(
+            "<column>_asc|_desc — see inventory_service._spool_sort_columns plus "
+            "the special-cased 'display_name' and 'location' keys. Omitted keeps "
+            "the legacy material/brand/color_name ordering."
+        ),
+    ),
+    page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
+    per_page: int = Query(50, ge=1, le=200),
+    all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
+    group_similar: bool = Query(
+        False,
+        description=(
+            "Paged mode only: rows become GROUPS of similar spools "
+            "(material|subtype|brand|color_name|rgba|label_weight|lot) — "
+            "see SpoolGroupItem. Requires page; restricts sort_by to the "
+            "group-key subset (400 otherwise)."
+        ),
+    ),
+    include_k_profiles: bool = Query(
+        False,
+        description=(
+            "Paged mode only: serialize the full k_profiles array on each "
+            "row (and on grouped representatives) instead of null — the "
+            "cards-view opt-in (task 4). Serialization-only: the rows are "
+            "eager-loaded either way."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
-):
-    """List all spools, excluding archived by default."""
-    query = select(Spool).options(selectinload(Spool.k_profiles))
-    if not include_archived:
-        query = query.where(Spool.archived_at.is_(None))
-    query = query.order_by(Spool.material, Spool.brand, Spool.color_name)
-    result = await db.execute(query)
-    return list(result.scalars().all())
+) -> list[SpoolResponse] | SpoolListPage | SpoolGroupPage:
+    """List spools.
+
+    Server-driven list (task 1, 2026-08-29 — mirrors ``ArchiveService.
+    list_archives`` / the library file list): every filter param feeds
+    ``inventory_service.build_spool_filters``, the SAME list driving both the
+    page query and ``meta.total``. ``page`` is the compat switch — omit it
+    (and every param below except ``include_archived``) and the response
+    stays today's flat ``list[SpoolResponse]`` (full shape, ``k_profiles``
+    included) — every existing caller (4 other frontend components, the
+    Cloud Link remote op) depends on exactly that shape and never sends
+    ``page``. Pass ``page`` and the response becomes
+    ``{"items": [...], "meta": {total, current_page, per_page, last_page}}``
+    of the slimmer ``SpoolListItem`` (see its docstring for what's dropped).
+
+    ⚠️ **``include_archived`` is read ONLY on the legacy (no-``page``) branch —
+    the paged branch ignores it entirely and relies on the new ``archived``
+    param instead.** The deleted client's Active/Archived tab was strictly
+    binary (never both at once); omitting ``archived`` in paged mode is,
+    correctly per this endpoint's general "omit a param, get no filter for
+    that dimension" contract, "show both" — not "active only" like the old
+    default. A caller migrating to the paged mode (Task 4) must always send
+    ``archived=active`` or ``archived=archived`` explicitly; sending
+    ``page=1&include_archived=false`` and expecting the archived rows to stay
+    hidden is a silent no-op (review finding 6).
+
+    **Grouped mode (task 3):** ``group_similar=true`` (paged mode only —
+    without ``page`` it's a 400, never a silent flat-shaped answer) makes the
+    rows ``SpoolGroupItem`` GROUPS under the SAME filters: filters first,
+    then grouping, then pagination over GROUPS — ``meta.total`` counts
+    groups. The key and the merge-eligibility rule (used/assigned spools
+    never merge) port the deleted client's ``spoolGroupKey`` + consumers
+    exactly — see ``inventory_service._spool_group_key_exprs``. ``sort_by``
+    is restricted to the group-key subset (``display_name``, ``material``,
+    ``brand``, ``color_name`` — 400 otherwise, deliberately stricter than
+    the flat mode's permissive fallback).
+    """
+    if page is None:
+        if group_similar:
+            raise HTTPException(
+                status_code=400,
+                detail="group_similar requires the paged mode — send page (grouped rows only exist in the envelope)",
+            )
+        spools = await inventory_service.list_spools(db, include_archived=include_archived)
+        return [SpoolResponse.model_validate(s) for s in spools]
+
+    if group_similar:
+        # Fail fast, before any DB work — the service re-checks for direct
+        # callers (same defense-in-depth as build_spool_filters' ValueError
+        # contract on location_id).
+        try:
+            inventory_service.assert_group_sort_supported(sort_by)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    filters = await inventory_service.build_spool_filters(
+        db,
+        archived=archived,
+        usage=usage,
+        material=material,
+        brand=brand,
+        colors=colors or None,
+        color_rgbas=color_rgbas or None,
+        category=category,
+        catalog_id=catalog_id,
+        location_id=location_id,
+        stock=stock,
+        assigned=assigned,
+        q=q,
+    )
+
+    offset, limit = (0, None) if all else ((page - 1) * per_page, per_page)
+
+    # Which printers are retired — so a K-profile left behind on one is not
+    # offered as if it were still a choice (see ``_spool_to_list_item``). One
+    # scalar query for the whole page, not one per spool.
+    archived_printer_ids = set((await db.execute(select(Printer.id).where(Printer.archived.is_(True)))).scalars().all())
+
+    if group_similar:
+        total = await inventory_service.count_spool_groups(db, filters=filters)
+        groups = await inventory_service.list_spool_groups(
+            db, filters=filters, sort_by=sort_by, limit=limit, offset=offset
+        )
+        return SpoolGroupPage(
+            items=[
+                SpoolGroupItem(
+                    material=g["material"],
+                    subtype=g["subtype"],
+                    brand=g["brand"],
+                    color_name=g["color_name"],
+                    rgba=g["rgba"],
+                    label_weight=g["label_weight"],
+                    group_count=g["group_count"],
+                    ids=g["ids"],
+                    remaining_total=g["remaining_total"],
+                    weight_used_total=g["weight_used_total"],
+                    representative=_spool_to_list_item(
+                        g["representative"],
+                        include_k_profiles=include_k_profiles,
+                        archived_printer_ids=archived_printer_ids,
+                    ),
+                )
+                for g in groups
+            ],
+            meta=PaginationMeta(
+                total=total,
+                current_page=1 if all else page,
+                per_page=(total or 1) if all else per_page,
+                last_page=1 if all else max(1, math.ceil(total / per_page)),
+            ),
+        )
+
+    total = await inventory_service.count_spools(db, filters=filters)
+    spools = await inventory_service.list_spools(db, filters=filters, sort_by=sort_by, limit=limit, offset=offset)
+
+    last_page = 1 if all else max(1, math.ceil(total / per_page))
+    return SpoolListPage(
+        items=[
+            _spool_to_list_item(s, include_k_profiles=include_k_profiles, archived_printer_ids=archived_printer_ids)
+            for s in spools
+        ],
+        meta=PaginationMeta(
+            total=total,
+            current_page=1 if all else page,
+            per_page=(total or 1) if all else per_page,
+            last_page=last_page,
+        ),
+    )
+
+
+# ── Ids + facets — server-driven selection feeds (task 2, 2026-08-29) ────────
+# Declared (like /spools/export below) before the dynamic `/spools/{spool_id}`
+# route so the literal `ids` / `facets` segments match here instead of being
+# parsed as an int id.
+
+
+class SpoolIdsResponse(BaseModel):
+    ids: list[int]
+
+
+class SpoolColorFacet(BaseModel):
+    color_name: str | None
+    rgba: str | None
+
+
+class SpoolFacetsResponse(BaseModel):
+    materials: list[str]
+    brands: list[str]
+    categories: list[str]
+    catalog_ids: list[int]
+    colors: list[SpoolColorFacet]
+
+
+@router.get("/spools/ids", response_model=SpoolIdsResponse)
+async def list_spool_ids(
+    archived: str | None = Query(None, description="'active' or 'archived'"),
+    usage: str | None = Query(None, description="'used', 'new', or 'lowstock'"),
+    material: str | None = Query(None),
+    brand: str | None = Query(None),
+    colors: list[str] = Query(default_factory=list, description="Raw color_name values"),
+    color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
+    category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
+    catalog_id: int | None = Query(None),
+    location_id: str | None = Query(
+        None,
+        pattern=_LOCATION_ID_PATTERN,
+        description="Location id, or '__none__' for no location",
+    ),
+    stock: str | None = Query(None, description="'stock' or 'configured'"),
+    assigned: str | None = Query(None, description="'assigned' or 'unassigned'"),
+    q: str | None = Query(
+        None, description="Tokenised match over brand/material/color_name/subtype/note/slicer_filament_name"
+    ),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> SpoolIdsResponse:
+    """The ids of every spool matching the given filters — the "Select all N
+    matching the filter" feed (spec §3.4).
+
+    Takes the SAME filter + ``q`` params as the paged ``GET /spools`` (both
+    feed ``inventory_service.build_spool_filters``, so the id set is exactly
+    the rows the list shows), no paging/sort. The client materializes the
+    answer into an explicit selection id set — bulk actions stay
+    selection-scoped, never filter-scoped (the CLAUDE.md invariant). Refuses
+    with 400 when more than ``_SPOOL_IDS_CAP`` rows match.
+    """
+    filters = await inventory_service.build_spool_filters(
+        db,
+        archived=archived,
+        usage=usage,
+        material=material,
+        brand=brand,
+        colors=colors or None,
+        color_rgbas=color_rgbas or None,
+        category=category,
+        catalog_id=catalog_id,
+        location_id=location_id,
+        stock=stock,
+        assigned=assigned,
+        q=q,
+    )
+    ids = await inventory_service.list_spool_ids(db, filters=filters, limit=_SPOOL_IDS_CAP + 1)
+    if len(ids) > _SPOOL_IDS_CAP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"More than {_SPOOL_IDS_CAP} spools match — narrow the filter before selecting all",
+        )
+    return SpoolIdsResponse(ids=ids)
+
+
+@router.get("/spools/facets", response_model=SpoolFacetsResponse)
+async def spool_facets(
+    archived: str | None = Query(None, description="'active' or 'archived' — scope the facets to one tab"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> SpoolFacetsResponse:
+    """Distinct filter-dropdown values under the active archived tab (spec
+    §3.6) — the server-driven replacement for deriving dropdown options from
+    the full client-side array.
+
+    Carries ONLY the dimensions with no existing source: materials, brands,
+    categories, used catalog ids, and RAW ``(color_name, rgba)`` pairs (the
+    client resolves and groups those by display name — the colour catalog
+    lives client-side in ``ColorCatalogProvider``). Locations deliberately
+    absent: the dropdown already reads ``GET /inventory/locations``.
+    """
+    filters = await inventory_service.build_spool_filters(db, archived=archived)
+    facets = await inventory_service.spool_facets(db, filters=filters)
+    return SpoolFacetsResponse(**facets)
+
+
+@router.get("/stats", response_model=InventoryStatsResponse)
+async def inventory_stats(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> InventoryStatsResponse:
+    """The Inventory stats bar, aggregated in SQL (task 5, 2026-08-29).
+
+    Retires the page's LAST full-table fetch: the five cards were computed by
+    a client memo over an ``all=true`` feed of every spool. ``total_spools``
+    rides along for the "Reset all usage" control, the second consumer of that
+    same feed.
+
+    Unfiltered on purpose — these are farm-wide figures, unaffected by the
+    table's filters (the shipped memo read the whole feed too, never
+    ``filteredSpools``).
+    """
+    return InventoryStatsResponse(**await inventory_service.inventory_stats(db))
 
 
 # ── CSV import / export (#1576) ──────────────────────────────────────────────
@@ -1020,20 +1488,47 @@ async def export_spools_csv(
     delimiter: Literal["comma", "semicolon", "tab"] = Query("comma"),
     decimal: Literal["dot", "comma"] = Query("dot"),
     encoding: Literal["utf-8", "utf-8-bom"] = Query("utf-8"),
+    archived: Literal["active", "archived"] = Query("active"),
+    usage: Literal["used", "new", "lowstock"] | None = Query(None),
+    material: str | None = Query(None),
+    brand: str | None = Query(None),
+    colors: list[str] = Query(default_factory=list),
+    color_rgbas: list[str] = Query(default_factory=list),
+    category: str | None = Query(None),
+    catalog_id: int | None = Query(None),
+    location_id: str | None = Query(None, pattern=_LOCATION_ID_PATTERN),
+    stock: Literal["stock", "configured"] | None = Query(None),
+    assigned: Literal["assigned", "unassigned"] | None = Query(None),
+    q: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
-    """Export the active inventory as CSV (same schema the importer accepts).
+    """Export every spool matching the inventory-list filters as CSV.
 
     The locale knobs exist because a spreadsheet is usually the next stop:
     a European locale wants ``;`` cells and ``,`` decimals to see columns and
-    numbers, and Windows Excel needs the BOM to read UTF-8 at all.
+    numbers, and Windows Excel needs the BOM to read UTF-8 at all. Pagination
+    is intentionally absent: an export is the complete matching set, never
+    merely the page currently visible in the table.
     """
     from datetime import datetime, timezone
 
-    query = select(Spool).where(Spool.archived_at.is_(None)).order_by(Spool.material, Spool.brand, Spool.color_name)
-    result = await db.execute(query)
-    spools = list(result.scalars().all())
+    filters = await inventory_service.build_spool_filters(
+        db,
+        archived=archived,
+        usage=usage,
+        material=material,
+        brand=brand,
+        colors=colors or None,
+        color_rgbas=color_rgbas or None,
+        category=category,
+        catalog_id=catalog_id,
+        location_id=location_id,
+        stock=stock,
+        assigned=assigned,
+        q=q,
+    )
+    spools = await inventory_service.list_spools(db, filters=filters)
     content = serialize(spools, delimiter=delimiter, decimal=decimal, bom=encoding == "utf-8-bom")
     # Date-stamp the filename so repeat exports don't overwrite each other in
     # the browser's default download folder.
@@ -1164,11 +1659,12 @@ async def create_spool(
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Create a new spool."""
-    await _validate_family_id(db, spool_data.filament_family_id)
     try:
         payload = await prepare_internal_spool_payload(db, spool_data.model_dump(), set(spool_data.model_fields_set))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _derive_family_from_slicer(db, payload)
+    await _validate_family_id(db, payload.get("filament_family_id"))
     spool = Spool(**payload)
     db.add(spool)
     await db.commit()
@@ -1197,6 +1693,8 @@ async def bulk_create_spools(
         template = await prepare_internal_spool_payload(db, data.spool.model_dump(), set(data.spool.model_fields_set))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _derive_family_from_slicer(db, template)
+    await _validate_family_id(db, template.get("filament_family_id"))
     base_lot = template.get("lot")
     start_lot = base_lot if isinstance(base_lot, int) and base_lot > 0 else 1
     for i in range(data.quantity):
@@ -1246,6 +1744,7 @@ async def bulk_update_spools(
     if not spools:
         raise HTTPException(404, "No spools found")
 
+    await _derive_family_from_slicer(db, update_data)
     await _validate_family_id(db, update_data.get("filament_family_id"))
     for spool in spools:
         for field, value in update_data.items():
@@ -1358,31 +1857,12 @@ async def update_spool(
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Update a spool."""
-    result = await db.execute(select(Spool).where(Spool.id == spool_id))
-    spool = result.scalar_one_or_none()
-    if not spool:
-        raise HTTPException(404, "Spool not found")
-
-    update_data = spool_data.model_dump(exclude_unset=True)
     try:
-        update_data = await prepare_internal_spool_payload(db, update_data, set(spool_data.model_fields_set))
+        return await inventory_service.update_spool(db, spool_id, spool_data)
+    except inventory_service.SpoolNotFoundError:
+        raise HTTPException(404, "Spool not found") from None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    # Auto-lock weight when user explicitly sets weight_used
-    if "weight_used" in update_data and "weight_locked" not in update_data:
-        update_data["weight_locked"] = True
-
-    await _validate_family_id(db, update_data.get("filament_family_id"))
-    for field, value in update_data.items():
-        setattr(spool, field, value)
-
-    await db.commit()
-    # Re-link when the family / resolved filament_id changed (or on any save —
-    # cheap and keeps links current with the spool's current preset).
-    if "filament_family_id" in update_data or "slicer_filament" in update_data:
-        await _safe_autolink(db, spool)
-    result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
-    return result.scalar_one()
 
 
 @router.post("/spools/{spool_id}/relink-kprofiles")
@@ -1531,6 +2011,31 @@ async def list_k_profiles(
     return list(result.scalars().all())
 
 
+def k_profile_links_to_keep(
+    *,
+    existing: list,
+    payload_printer_ids: set[int],
+    archived_printer_ids: set[int],
+    connected_printer_ids: set[int],
+) -> list:
+    """Of a spool's existing K-profile links, the ones this save must NOT touch.
+
+    ⚠️ **Silence is only a decision about printers the client could see.** The
+    PA tab builds its payload from the printers it can offer — connected and
+    not archived — so a full replace destroyed every other link: a profile on a
+    printer that has since been archived, or one that merely happened to be
+    offline while the dialog was open. Neither was ever presented, neither was
+    ever unticked, and both were gone on the first save of that spool. On the
+    reporting farm 896 of 2443 links sat in that position.
+
+    A printer NAMED in the payload is spoken for regardless — the client
+    clearly had an opinion about it, even if it dropped off the network between
+    opening the dialog and the save landing.
+    """
+    spoken_for = payload_printer_ids | (connected_printer_ids - archived_printer_ids)
+    return [link for link in existing if link.printer_id not in spoken_for]
+
+
 @router.put("/spools/{spool_id}/k-profiles", response_model=list[SpoolKProfileResponse])
 async def replace_k_profiles(
     spool_id: int,
@@ -1547,9 +2052,29 @@ async def replace_k_profiles(
     if not (await db.execute(select(Spool).where(Spool.id == spool_id))).scalar_one_or_none():
         raise HTTPException(404, "Spool not found")
 
-    existing = await db.execute(select(SpoolKProfile).where(SpoolKProfile.spool_id == spool_id))
-    for old in existing.scalars().all():
-        await db.delete(old)
+    from backend.app.services.printer_manager import printer_manager
+
+    existing = (await db.execute(select(SpoolKProfile).where(SpoolKProfile.spool_id == spool_id))).scalars().all()
+    archived_printer_ids = set((await db.execute(select(Printer.id).where(Printer.archived.is_(True)))).scalars().all())
+    connected_printer_ids = {
+        pid
+        for (pid,) in (await db.execute(select(Printer.id))).all()
+        if (client := printer_manager.get_client(pid)) is not None and client.state.connected
+    }
+    # ⚠️ Replace only what the client could speak for — see
+    # ``k_profile_links_to_keep``. A blanket delete took out every link the PA
+    # tab was never able to offer (archived printer, or simply one that was
+    # offline just then), so any save of any spool quietly dropped them.
+    survivors = k_profile_links_to_keep(
+        existing=existing,
+        payload_printer_ids={p.printer_id for p in profiles},
+        archived_printer_ids=archived_printer_ids,
+        connected_printer_ids=connected_printer_ids,
+    )
+    survivor_ids = {link.id for link in survivors}
+    for old in existing:
+        if old.id not in survivor_ids:
+            await db.delete(old)
 
     new_links: list[SpoolKProfile] = []
     for p in profiles:
@@ -1568,7 +2093,10 @@ async def replace_k_profiles(
     await db.commit()
     for link in new_links:
         await db.refresh(link)
-    return new_links
+    # The response is what the spool now holds, survivors included — the client
+    # replaces its state from it, and omitting them would make the links look
+    # deleted until the next full read.
+    return survivors + new_links
 
 
 async def _find_or_create_filament_calibration_for_link(db: AsyncSession, p: SpoolKProfileBase):
@@ -1658,6 +2186,8 @@ async def _find_or_create_filament_calibration_for_link(db: AsyncSession, p: Spo
 @router.get("/assignments/replacement-window/{printer_id}")
 async def get_replacement_window(
     printer_id: int,
+    ams_id: int | None = None,
+    tray_id: int | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_VIEW_ASSIGNMENTS),
 ):
@@ -1668,10 +2198,15 @@ async def get_replacement_window(
     default-off checkbox (the swap, if any, happened at that pause).
     ``none`` — no active print or never paused: a physical replacement is
     impossible, plain assignment (wrong-link correction) with no friction.
+
+    Naming the slot narrows it further: an assignment into a slot that holds
+    nothing replaces nothing, so it answers ``none`` however the print is doing.
+    ⚠️ "Holds nothing" is read from the assignment, never from the AMS tray — a
+    reel that ran out leaves the tray empty and the link in place on purpose.
     """
     from backend.app.services.print_usage_journal import manual_replacement_window
 
-    window = await manual_replacement_window(db, printer_id)
+    window = await manual_replacement_window(db, printer_id, ams_id=ams_id, tray_id=tray_id)
     if window is None:
         return {"mode": "none", "pause_layer": None}
     return {"mode": window["mode"], "pause_layer": window["pause_layer"]}
@@ -1832,6 +2367,19 @@ async def assign_spool(
         )
     )
     old = existing.scalar_one_or_none()
+    # What this assignment displaces, read before the row goes (spec 2026-09-13
+    # §3.3). Reported on the response so the UI can offer Replace in one step;
+    # the replace itself is unchanged — an occupied slot is never refused.
+    replaced_spool_id = old.spool_id if old and old.spool_id != data.spool_id else None
+    if replaced_spool_id is not None:
+        logger.info(
+            "Slot %s/%s/%s: spool %s replaced with %s",
+            data.printer_id,
+            data.ams_id,
+            data.tray_id,
+            replaced_spool_id,
+            data.spool_id,
+        )
     if old:
         await db.delete(old)
         await db.flush()
@@ -1949,6 +2497,7 @@ async def assign_spool(
     response = SpoolAssignmentResponse.model_validate(resp)
     response.configured = configured
     response.pending_config = pending_config
+    response.replaced_spool_id = replaced_spool_id
 
     await ws_manager.broadcast(
         {
@@ -1984,6 +2533,12 @@ async def unassign_spool(
 
     await db.delete(assignment)
     await db.commit()
+
+    # With the assignment gone there is no spool left behind the mask, so the
+    # printer's own tray values become the truth again.
+    from backend.app.services import ams_advertised_overlay as overlay
+
+    overlay.forget(printer_id, ams_id, tray_id)
 
     await ws_manager.broadcast(
         {
@@ -2129,25 +2684,169 @@ async def get_spool_usage_history(
     return list(result.scalars().all())
 
 
-@router.get("/usage", response_model=list[SpoolUsageHistoryResponse])
-async def get_all_usage_history(
-    limit: int = 100,
-    printer_id: int | None = None,
+_USAGE_PRINTER_ID_PATTERN = r"^(__none__|\d+)$"
+
+
+@router.get("/usage/facets", response_model=SpoolUsageFacets)
+async def get_usage_history_facets(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
-    """Get global usage history, optionally filtered by printer."""
-    from backend.app.models.spool_usage_history import SpoolUsageHistory
+    """The dropdown options for the History view's filters.
 
-    query = (
-        select(SpoolUsageHistory)
-        .order_by(SpoolUsageHistory.created_at.desc(), SpoolUsageHistory.id.desc())
-        .limit(limit)
+    Computed over EVERY usage row, not over the current selection — see
+    ``spool_usage_service.usage_facets``. Declared before the plain ``/usage``
+    route so the literal path segment matches here.
+    """
+    facets = await spool_usage_service.usage_facets(db, filters=[])
+    return SpoolUsageFacets(
+        statuses=facets["statuses"],
+        printers=[SpoolUsageFacetPrinter(**row) for row in facets["printers"]],
+        materials=facets["materials"],
+        brands=facets["brands"],
     )
-    if printer_id is not None:
-        query = query.where(SpoolUsageHistory.printer_id == printer_id)
-    result = await db.execute(query)
-    return list(result.scalars().all())
+
+
+@router.get("/usage", response_model=None)
+async def get_all_usage_history(
+    limit: int = 100,
+    printer_id: str | None = Query(
+        None,
+        # A sentinel rides in this param (``__none__`` = charged to no printer),
+        # so it is a validated string rather than an int — the same shape
+        # ``location_id`` uses on the spool list. A legacy caller sending a bare
+        # id still matches the pattern and still means what it always did.
+        pattern=_USAGE_PRINTER_ID_PATTERN,
+        description="Printer id, or '__none__' for rows recorded against no printer",
+    ),
+    spool_id: int | None = Query(None, description="Paged mode only"),
+    status: list[str] = Query(default_factory=list, description="Paged mode only; repeatable — any of them matches"),
+    material: str | None = Query(None, description="Paged mode only"),
+    brand: str | None = Query(None, description="Paged mode only"),
+    archived: str | None = Query(
+        None,
+        pattern="^(active|archived)$",
+        description="Paged mode only; the SPOOL's state. Omitted means BOTH — the default here, unlike /spools",
+    ),
+    assigned: str | None = Query(
+        None,
+        pattern="^(assigned|unassigned)$",
+        description="Paged mode only; whether the SPOOL sits in a printer. Omitted means both",
+    ),
+    date_from: datetime | None = Query(None, description="Paged mode only; inclusive, an absolute instant (UTC)"),
+    date_to: datetime | None = Query(None, description="Paged mode only; EXCLUSIVE, an absolute instant (UTC)"),
+    q: str | None = Query(None, description="Paged mode only; tokenised match over print name, spool and printer"),
+    sort_by: str | None = Query(
+        None,
+        description=(
+            "<column>_asc|_desc — see spool_usage_service._usage_sort_columns "
+            "plus the composite 'spool' key. Omitted keeps newest-first."
+        ),
+    ),
+    page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
+    per_page: int = Query(50, ge=1, le=200),
+    all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> list[SpoolUsageHistoryResponse] | SpoolUsagePage:
+    """Global filament-usage history.
+
+    Server-driven list (2026-09-01 — the Inventory page's History view), on the
+    same contract as ``GET /spools``: every filter param feeds
+    ``spool_usage_service.build_usage_filters``, the SAME condition list driving
+    the page query, ``meta.total`` and ``totals``.
+
+    ``page`` is the compat switch. Omit it and the response stays today's flat
+    ``list[SpoolUsageHistoryResponse]`` honouring only ``limit`` and
+    ``printer_id`` — this endpoint is public API and predates the view. Pass it
+    and the response becomes ``{"items": [...], "meta": {...}, "totals": {...}}``
+    of ``SpoolUsageListItem``, which carries the spool's identity and the
+    printer's NAME resolved in the same query.
+
+    ⚠️ ``totals`` covers the whole filter, not the page — that is the number the
+    view exists to show, and one computed over the fifty visible rows would
+    answer a question nobody asked.
+    """
+    if page is None:
+        from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+        query = (
+            select(SpoolUsageHistory)
+            .order_by(SpoolUsageHistory.created_at.desc(), SpoolUsageHistory.id.desc())
+            .limit(limit)
+        )
+        if printer_id == "__none__":
+            query = query.where(SpoolUsageHistory.printer_id.is_(None))
+        elif printer_id is not None:
+            query = query.where(SpoolUsageHistory.printer_id == int(printer_id))
+        result = await db.execute(query)
+        return [SpoolUsageHistoryResponse.model_validate(row) for row in result.scalars().all()]
+
+    filters = spool_usage_service.build_usage_filters(
+        display_name_template=await inventory_service.spool_display_template(db),
+        statuses=status or None,
+        printer_id=printer_id,
+        spool_id=spool_id,
+        material=material,
+        brand=brand,
+        archived=archived,
+        assigned=assigned,
+        date_from=date_from,
+        date_to=date_to,
+        q=q,
+    )
+
+    offset, page_limit = (0, None) if all else ((page - 1) * per_page, per_page)
+
+    total = await spool_usage_service.count_usage(db, filters=filters)
+    rows = await spool_usage_service.list_usage(db, filters=filters, sort_by=sort_by, limit=page_limit, offset=offset)
+    totals = await spool_usage_service.usage_totals(db, filters=filters)
+
+    return SpoolUsagePage(
+        items=[
+            SpoolUsageListItem(
+                id=row.id,
+                spool_id=row.spool_id,
+                created_at=row.created_at,
+                weight_used=row.weight_used,
+                percent_used=row.percent_used,
+                status=row.status,
+                cost=row.cost,
+                print_name=row.print_name,
+                archive_id=row.archive_id,
+                printer_id=row.printer_id,
+                printer_name=printer.name if printer else None,
+                printer_archived=bool(printer and printer.archived),
+                spool=None
+                if spool is None
+                else SpoolUsageSpoolRef(
+                    id=spool.id,
+                    material=spool.material,
+                    subtype=spool.subtype,
+                    brand=spool.brand,
+                    color_name=spool.color_name,
+                    rgba=spool.rgba,
+                    slicer_filament_name=spool.slicer_filament_name,
+                    note=spool.note,
+                    label_weight=spool.label_weight,
+                    weight_used=spool.weight_used,
+                    cost_per_kg=spool.cost_per_kg,
+                    purchase_date=spool.purchase_date,
+                    filament_diameter=spool.filament_diameter,
+                    lot=spool.lot,
+                    archived=spool.archived_at is not None,
+                ),
+            )
+            for row, spool, printer in rows
+        ],
+        meta=PaginationMeta(
+            total=total,
+            current_page=1 if all else page,
+            per_page=(total or 1) if all else per_page,
+            last_page=1 if all else max(1, math.ceil(total / per_page)),
+        ),
+        totals=SpoolUsageTotals(weight_used=totals["weight_used"], cost=totals["cost"]),
+    )
 
 
 async def _return_usage_weight(db: AsyncSession, spool: "Spool | None", rows: list) -> None:
@@ -2375,6 +3074,39 @@ async def sync_weights_from_ams(
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def tray_holds_filament(tray: dict) -> bool:
+    """Is there filament physically in this AMS slot?
+
+    ⚠️ ``exists`` (decoded from the printer's ``tray_exist_bits``) is the slot's
+    own presence sensor and answers this directly and identically on every
+    model, so it wins whenever it is present. The fallback below is the older
+    reading of the same question and stays for pushes that carry no bit:
+
+    * ``state == 11`` is Bambu's "filament fed to extruder";
+    * some firmwares never set it — A1 Mini BMCU 01.07.02.00 and P1S Standard
+      AMS 00.00.06.75 both always report ``state=3`` — so a non-empty
+      ``tray_type`` outside the explicit empty states 9/10 counts too (upstream
+      Bambuddy #1322 / f45aaea9);
+    * ``state ∈ {9, 10}`` stays authoritative over a stale type.
+
+    ⚠️ The fallback cannot see an UNLABELLED reel: no RFID and never configured
+    means no ``tray_type``, and on a ``state=3`` firmware the slot then reads
+    as empty while holding filament. The presence bit is exactly what closes
+    that gap — which is why it is asked first, not last.
+
+    ⚠️ **The external spool holder has no honest presence flag on any model** —
+    an empty holder still reports filament, and BambuStudio shows it loaded as
+    well. A ``vt_tray`` entry therefore carries no ``exists`` key here (only AMS
+    trays are annotated), so it lands on the fallback, which is all anyone has
+    for it. Never annotate the external's flag to "fix" that.
+    """
+    exists = tray.get("exists")
+    if exists is not None:
+        return bool(exists)
+    state = tray.get("state")
+    return state == 11 or (state not in (9, 10) and bool((tray.get("tray_type") or "").strip()))
 
 
 def _find_tray_in_ams_data(ams_data: list, ams_id: int, tray_id: int) -> dict | None:
@@ -2624,6 +3356,375 @@ async def clear_shopping_list(
     deleted = len(result.fetchall())
     await db.commit()
     return {"deleted": deleted}
+
+
+# ── Server-computed forecast (task 3, 2026-08-29 forecast-server-side) ────────
+#
+# The four endpoints the Forecast tab renders from. Every number comes from
+# `forecast_engine.compute_forecast` (the ONE math owner); sorting, filtering,
+# paging and the CSV happen HERE over the finished rows — tens of them — so
+# exactly one page's worth leaves the server. The sort semantics port the
+# client comparator (ForecastPanel.tsx:361-399) verbatim, including its
+# direction-blind 999999 days_left sentinel, plus a stable 4-part-SKU-key
+# tiebreak the client never needed (it re-sorted a whole in-memory array; a
+# paged walk cannot afford ties resolved by chance).
+
+_FORECAST_SORT_KEYS = frozenset(
+    {"material", "spools", "used", "days_left", "stock", "empty_by", "reorder_by", "reserved", "free"}
+)
+_FORECAST_DEFAULT_SORT = "material_asc"  # the client's loadSort fallback: key 'material', dir 'asc'
+_FORECAST_CHART_DAY_CHOICES = (7, 30, 180)  # the client's CHART_TIMEFRAMES
+
+# Today's client downloadCsv header strings, en locale (CSV files are data,
+# not UI — the same ruling the client CSV lived by; spec §3).
+_SHOPPING_LIST_CSV_HEADERS = [
+    "Qty",
+    "Material",
+    "Brand",
+    "Subtype",
+    "Color",
+    "Weight (g)",
+    "Lead Time (d)",
+    "Expected Restock",
+    "Status",
+    "Note",
+]
+
+
+def _js_round(value: float) -> int:
+    """JS Math.round — halves go UP (toward +∞) where Python's round() banks
+    to even. The chart/logistics gram values are ported client pixels; the tie
+    behavior stays identical."""
+    return math.floor(value + 0.5)
+
+
+def _forecast_has_alert(row: forecast_engine.SkuForecastRow) -> bool:
+    """The client's badge predicate: an un-snoozed stock-break, reorder, or over-commitment.
+
+    Over-commitment counts even with no rate (spec §6) — it is a fact about
+    promises, not about pace, and a rate-less row would otherwise hide the one
+    alarm it can raise.
+    """
+    return (row.stock_break_alert or row.reorder_alert or row.over_committed) and not row.alerts_snoozed
+
+
+def _forecast_sort_rows(
+    rows: list[forecast_engine.SkuForecastRow], sort_by: str | None
+) -> list[forecast_engine.SkuForecastRow]:
+    """The client comparator, server-side, over finished rows.
+
+    Dateless rows sink to the end whatever the direction (the client flips the
+    Infinity sentinel WITH the direction); ``days_left`` instead keeps the
+    client's direction-blind 999999 — so rate-less rows LEAD a descending
+    days_left sort, a quirk ported deliberately rather than "fixed".
+    """
+    sort_by = sort_by or _FORECAST_DEFAULT_SORT
+    key_name, sep, direction = sort_by.rpartition("_")
+    if not sep or direction not in ("asc", "desc") or key_name not in _FORECAST_SORT_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported sort_by — expected <key>_asc|_desc with key one of: "
+                + ", ".join(sorted(_FORECAST_SORT_KEYS))
+            ),
+        )
+    descending = direction == "desc"
+    dateless = -math.inf if descending else math.inf
+
+    def primary(row: forecast_engine.SkuForecastRow) -> float | str:
+        if key_name == "material":
+            # The client's composite: [material, subtype ?? '', brand ?? ''].join(' ').toLowerCase()
+            return " ".join((row.material or "", row.subtype or "", row.brand or "")).lower()
+        if key_name == "spools":
+            return row.total_spools
+        if key_name == "used":
+            return row.total_used_g
+        if key_name == "days_left":
+            return row.days_remaining if row.days_remaining is not None else 999999
+        if key_name == "stock":
+            return row.total_remaining_g
+        if key_name == "reserved":
+            return row.reserved_g
+        if key_name == "free":
+            return row.free_g
+        anchor = row.projected_empty_date if key_name == "empty_by" else row.reorder_trigger_date
+        return anchor.toordinal() if anchor is not None else dateless
+
+    # Two stable passes: collapsed SKU key first, the primary second. Python's
+    # sort keeps equal elements in place even with reverse=True, so equal
+    # primaries stay in ascending-SKU order in BOTH directions — which is what
+    # makes a page walk over ties repeat-free and skip-free.
+    ordered = sorted(rows, key=lambda r: forecast_engine.sku_key(r.material, r.subtype, r.brand, r.color_name))
+    ordered.sort(key=primary, reverse=descending)
+    return ordered
+
+
+@router.get("/forecast", response_model=ForecastListPage)
+async def get_inventory_forecast(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    all: bool = Query(False, description="Skip pagination and return every matching row"),
+    sort_by: str | None = Query(
+        None, description="<key>_asc|_desc over the client sort-key set; omitted means material_asc"
+    ),
+    material: str | None = Query(None, description="Exact match"),
+    brand: str | None = Query(None, description="Exact match"),
+    alerts_only: bool = Query(False, description="Only rows with an un-snoozed stock-break or reorder alert"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(Permission.INVENTORY_READ, Permission.INVENTORY_FORECAST_READ),
+) -> ForecastListPage:
+    """One server-sorted, server-filtered page of finished forecast rows.
+
+    ``alert_count`` counts un-snoozed alert rows across the WHOLE farm — the
+    client's badge read the unfiltered set, so the filters must not move it;
+    ``meta.total`` counts the filtered set.
+    """
+    result = await forecast_engine.compute_forecast_full(db)
+    rows = result.rows
+    alert_count = sum(1 for r in rows if _forecast_has_alert(r))
+
+    if material is not None:
+        rows = [r for r in rows if r.material == material]
+    if brand is not None:
+        rows = [r for r in rows if r.brand == brand]
+    if alerts_only:
+        rows = [r for r in rows if _forecast_has_alert(r)]
+
+    ordered = _forecast_sort_rows(rows, sort_by)
+    total = len(ordered)
+    page_rows = ordered if all else ordered[(page - 1) * per_page : (page - 1) * per_page + per_page]
+
+    return ForecastListPage(
+        items=[SkuForecastRowResponse.model_validate(r) for r in page_rows],
+        meta=PaginationMeta(
+            total=total,
+            current_page=1 if all else page,
+            per_page=(total or 1) if all else per_page,
+            last_page=1 if all else max(1, math.ceil(total / per_page)),
+        ),
+        alert_count=alert_count,
+        global_lead_time_days=await forecast_engine._global_lead_time_days(db),
+        unmatched_reserved=[
+            UnmatchedReservedResponse(material=u.material, colour=u.colour, grams=u.grams)
+            for u in result.unmatched_reserved
+        ],
+    )
+
+
+@router.get("/forecast/chart", response_model=ForecastChartResponse)
+async def get_inventory_forecast_chart(
+    days: int = Query(30, description="7, 30 or 180 — the client's chart timeframes"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(Permission.INVENTORY_READ, Permission.INVENTORY_FORECAST_READ),
+) -> ForecastChartResponse:
+    """The top-5 SKUs by burned grams: day-bucketed usage + depletion projection.
+
+    The usage series is a NEW capability (spec §2.2 as corrected after the T2
+    review — the shipped client chart drew the projection only): the record of
+    what was burned, reset spools included. The projection ports
+    ``buildProjectionSeries`` — Math.round for display, clamp at zero, stop
+    after pushing the first zero.
+    """
+    if days not in _FORECAST_CHART_DAY_CHOICES:
+        raise HTTPException(status_code=400, detail="days must be one of 7, 30, 180")
+
+    # ⚠️ The engine's clock, not a second wall-clock read of our own. All three
+    # forecast routes did the latter and passed the result in, which bypassed
+    # any pin a test had set - see forecast_engine.now_utc().
+    now = forecast_engine.now_utc()
+    today = now.date()
+    # No orders are read here: the chart, the logistics bumps and the shopping
+    # list all draw from the PHYSICAL remaining and never touch a reorder date
+    # (vault 60-specs/forecast-reserved-by-orders-spec 3), so loading the farm
+    # need would be a plan-engine walk per request for nothing.
+    rows = await forecast_engine.compute_forecast(db, now=now, reserved=Needs())
+
+    # The client drops rate-less rows BEFORE ranking (`dailyRateG !== null`),
+    # then takes the 5 biggest consumers. The stable sort keeps the collapsed-
+    # SKU order compute_forecast returns as the deterministic tie order.
+    candidates = [r for r in rows if r.rate_g_day is not None]
+    candidates.sort(key=lambda r: r.total_used_g, reverse=True)
+    top = candidates[:5]
+
+    sku_keys = [(r.material, r.subtype, r.brand, r.color_name) for r in top]
+    usage = await forecast_engine.usage_day_series(db, sku_keys=sku_keys, days=days, now=now) if sku_keys else {}
+
+    series: list[ForecastChartSeries] = []
+    for row in top:
+        rate = row.rate_g_day
+        projection: list[tuple[date, int]] = []
+        for offset in range(days + 1):
+            raw = max(0.0, row.total_remaining_g - rate * offset)
+            projection.append((today + timedelta(days=offset), _js_round(raw)))
+            if raw == 0:
+                break
+        series.append(
+            ForecastChartSeries(
+                sku=ForecastChartSku(
+                    material=row.material, subtype=row.subtype, brand=row.brand, color_name=row.color_name
+                ),
+                rgba=row.rgba,
+                rop_g=row.reorder_point_g,
+                usage=usage.get((row.material, row.subtype, row.brand, row.color_name), []),
+                projection=projection,
+            )
+        )
+    return ForecastChartResponse(series=series)
+
+
+@router.get("/forecast/logistics", response_model=list[ForecastLogisticsRow])
+async def get_inventory_forecast_logistics(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(Permission.INVENTORY_READ, Permission.INVENTORY_FORECAST_READ),
+) -> list[ForecastLogisticsRow]:
+    """``CartLogisticsRow``'s computation for every shopping-list item, in the
+    shopping-list GET's order (added_at desc — the set the panel renders).
+
+    The series keeps the client's vertical-step trick: the arrival date appears
+    twice (just-before, just-after the parcel lands). An item whose SKU has no
+    forecast row or no positive rate gets ``series: null`` — the client's
+    "no usage data" placeholder case, never an error.
+    """
+    from backend.app.models.shopping_list import ShoppingListItem
+
+    # ⚠️ The engine's clock, not a second wall-clock read of our own. All three
+    # forecast routes did the latter and passed the result in, which bypassed
+    # any pin a test had set - see forecast_engine.now_utc().
+    now = forecast_engine.now_utc()
+    today = now.date()
+    # No orders are read here: the chart, the logistics bumps and the shopping
+    # list all draw from the PHYSICAL remaining and never touch a reorder date
+    # (vault 60-specs/forecast-reserved-by-orders-spec 3), so loading the farm
+    # need would be a plan-engine walk per request for nothing.
+    rows = await forecast_engine.compute_forecast(db, now=now, reserved=Needs())
+    by_key = {forecast_engine.sku_key(r.material, r.subtype, r.brand, r.color_name): r for r in rows}
+
+    items = (await db.execute(select(ShoppingListItem).order_by(ShoppingListItem.added_at.desc()))).scalars().all()
+
+    out: list[ForecastLogisticsRow] = []
+    for item in items:
+        row = by_key.get(forecast_engine.sku_key(item.material, item.subtype, item.brand, item.color_name))
+        if row is None or row.rate_g_day is None or row.rate_g_day <= 0:
+            out.append(
+                ForecastLogisticsRow(
+                    item_id=item.id,
+                    series=None,
+                    arrival_day=None,
+                    rop_g=None,
+                    safety_stock_g=None,
+                    stock_break_day=None,
+                    stock_break_before_arrival=False,
+                )
+            )
+            continue
+
+        rate = row.rate_g_day
+        lead = row.eff_lead_time_days
+        # The row's own archived-INCLUSIVE spool size — one rule for every
+        # consumer of "how big is a spool of this SKU" (the client's cart
+        # dialog, its bridge-gap count, the CSV below). The live totals cannot
+        # answer it: a SKU held only by the archived window serves
+        # total_spools 0, and the arrival bump would then be sized at the
+        # fabricated 1000 g while the dialog that ordered it used the real
+        # mean. None (no spool of the SKU carries a label weight at all) is
+        # the ONLY case the guess survives.
+        avg_spool_g = row.avg_spool_label_g if row.avg_spool_label_g is not None else 1000.0
+        arrival_g = item.quantity_spools * avg_spool_g
+        stock_at_arrival = max(0.0, row.total_remaining_g - rate * lead)
+        peak_g = stock_at_arrival + arrival_g
+        clamped_max = min(lead + math.ceil(peak_g / rate) + 5, 365)
+
+        series: list[tuple[date, int]] = []
+        for offset in range(clamped_max + 1):
+            day = today + timedelta(days=offset)
+            if offset == lead:
+                series.append((day, _js_round(stock_at_arrival)))
+                series.append((day, _js_round(peak_g)))
+            elif offset < lead:
+                series.append((day, _js_round(max(0.0, row.total_remaining_g - rate * offset))))
+            else:
+                series.append((day, _js_round(max(0.0, peak_g - rate * (offset - lead)))))
+
+        # The client's stockBreaksAt memo verbatim (ForecastPanel.tsx:1701-1706):
+        # floor(remaining/rate) when it lands before the lead time, else null —
+        # this is the banner's user-facing number, and the flag is exactly its
+        # non-nullness (hasBreak = stockBreaksAt !== null). NOT the series'
+        # first zero: rounding puts that a day later in general.
+        zero_day = math.floor(row.total_remaining_g / rate)
+        stock_break_day = zero_day if zero_day < lead else None
+
+        out.append(
+            ForecastLogisticsRow(
+                item_id=item.id,
+                series=series,
+                arrival_day=lead,
+                rop_g=row.reorder_point_g,
+                safety_stock_g=row.safety_stock_g,
+                stock_break_day=stock_break_day,
+                stock_break_before_arrival=stock_break_day is not None,
+            )
+        )
+    return out
+
+
+@router.get("/shopping-list/export.csv")
+async def export_shopping_list_csv(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequireAnyPermission(Permission.INVENTORY_READ, Permission.INVENTORY_FORECAST_READ),
+) -> Response:
+    """The shopping list as CSV — today's client ``downloadCsv``, server-made.
+
+    Columns and the everything-quoted style are the client's; the restock date
+    is ISO instead of the viewer-locale format (the server has no viewer
+    locale — a named deviation, the columns otherwise identical).
+    """
+    from backend.app.models.shopping_list import ShoppingListItem
+
+    # ⚠️ The engine's clock, not a second wall-clock read of our own. All three
+    # forecast routes did the latter and passed the result in, which bypassed
+    # any pin a test had set - see forecast_engine.now_utc().
+    now = forecast_engine.now_utc()
+    today = now.date()
+    # No orders are read here: the chart, the logistics bumps and the shopping
+    # list all draw from the PHYSICAL remaining and never touch a reorder date
+    # (vault 60-specs/forecast-reserved-by-orders-spec 3), so loading the farm
+    # need would be a plan-engine walk per request for nothing.
+    rows = await forecast_engine.compute_forecast(db, now=now, reserved=Needs())
+    by_key = {forecast_engine.sku_key(r.material, r.subtype, r.brand, r.color_name): r for r in rows}
+    global_lead = await forecast_engine._global_lead_time_days(db)
+
+    items = (await db.execute(select(ShoppingListItem).order_by(ShoppingListItem.added_at.desc()))).scalars().all()
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, quoting=csv.QUOTE_ALL)
+    writer.writerow(_SHOPPING_LIST_CSV_HEADERS)
+    for item in items:
+        row = by_key.get(forecast_engine.sku_key(item.material, item.subtype, item.brand, item.color_name))
+        # Same served mean as the logistics bump above (and the client's cart
+        # dialog) — the Weight column must not price an archived-only SKU's
+        # order at a fabricated 1000 g/spool.
+        avg_spool_g = row.avg_spool_label_g if row is not None and row.avg_spool_label_g is not None else 1000.0
+        lead = row.eff_lead_time_days if row is not None else global_lead
+        restock = (today + timedelta(days=lead)).isoformat() if lead > 0 else ""
+        writer.writerow(
+            [
+                item.quantity_spools,
+                item.material,
+                item.brand or "",
+                item.subtype or "",
+                item.color_name or "",
+                _js_round(item.quantity_spools * avg_spool_g),
+                lead or "",
+                restock,
+                item.status or "pending",
+                item.note or "",
+            ]
+        )
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="shopping-list.csv"'},
+    )
 
 
 class CreateSpoolFromSlotRequest(BaseModel):

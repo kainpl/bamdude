@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Loader2, AlertTriangle } from 'lucide-react';
+import { Save, Loader2, AlertTriangle } from 'lucide-react';
 import { api } from '../api/client';
 import type { TelegramChat, TelegramChatCreate, TelegramChatUpdate, NotifyEventInfo } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { Toggle } from './Toggle';
+import { Select } from './Select';
 
 interface AddTelegramChatModalProps {
   chat?: TelegramChat | null;
@@ -24,6 +26,13 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
   const [isActive, setIsActive] = useState(chat?.is_active ?? false);
   const [notifyEvents, setNotifyEvents] = useState<string[] | null>(chat?.notify_events ?? null);
   const [dailyDigest, setDailyDigest] = useState(chat?.daily_digest ?? false);
+  // Per-chat progress-milestone floor (#28): '' = inherit the global value,
+  // '0' = always send, N = mute prints estimated shorter than N minutes.
+  const [progressMinDuration, setProgressMinDuration] = useState<string>(
+    chat?.progress_min_duration_minutes != null ? String(chat.progress_min_duration_minutes) : ''
+  );
+  // Printer scope (m157): null = all printers, [ids] = only those.
+  const [printerIds, setPrinterIds] = useState<number[] | null>(chat?.printer_ids ?? null);
   const [quietHoursEnabled, setQuietHoursEnabled] = useState(chat?.quiet_hours_enabled ?? false);
   const [quietHoursStart, setQuietHoursStart] = useState(chat?.quiet_hours_start ?? '22:00');
   const [quietHoursEnd, setQuietHoursEnd] = useState(chat?.quiet_hours_end ?? '07:00');
@@ -36,6 +45,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
   // not carry. Telegram chat setup is an admin screen anyway.
   const { data: users } = useQuery({ queryKey: ['users'], queryFn: api.getUsers });
   const { data: eventTypes } = useQuery({ queryKey: ['telegram-events'], queryFn: api.getTelegramEvents });
+  const { data: printers } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters });
 
   // Pull the telegram provider so we can warn the operator when the
   // chat-side daily_digest opt-in won't take effect (provider digest off).
@@ -46,13 +56,6 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
   const telegramProvider = providers?.find((p) => p.provider_type === 'telegram') ?? null;
   const providerDigestOn = telegramProvider?.daily_digest_enabled ?? false;
   const showDigestProviderWarning = dailyDigest && telegramProvider != null && !providerDigestOn;
-
-  // Close on Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
 
   // Auto-fill group from user
   const handleUserChange = (newUserId: number | null) => {
@@ -103,6 +106,9 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
       quiet_hours_enabled: quietHoursEnabled,
       quiet_hours_start: quietHoursEnabled ? quietHoursStart : null,
       quiet_hours_end: quietHoursEnabled ? quietHoursEnd : null,
+      progress_min_duration_minutes:
+        progressMinDuration === '' ? null : Math.min(10080, Math.max(0, parseInt(progressMinDuration) || 0)),
+      printer_ids: printerIds,
     };
 
     if (isEditing) {
@@ -147,6 +153,8 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
     printer_error: 'notifications.printerError',
     ai_failure_detection: 'notifications.aiFailureDetection',
     filament_low: 'notifications.lowFilamentLabel',
+    filament_deficit: 'notifications.filamentDeficit',
+    filament_runout: 'notifications.filamentRunout',
     stock_break_alert: 'notifications.stockBreakAlert',
     stock_reorder_alert: 'notifications.stockReorderAlert',
     maintenance_due: 'notifications.maintenanceDue',
@@ -181,192 +189,248 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 overflow-y-auto" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-lg my-8 max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
-          <h2 className="text-lg font-semibold text-white">
-            {isEditing ? t('telegram.editChat') : t('telegram.addChat')}
-          </h2>
-          <button onClick={onClose} className="text-bambu-gray hover:text-white transition-colors">
-            <X className="w-5 h-5" />
-          </button>
+    <Modal
+      onClose={onClose}
+      title={isEditing ? t('telegram.editChat') : t('telegram.addChat')}
+      size="lg"
+    >
+      {/* Form */}
+      <form onSubmit={handleSubmit} className="px-4 py-4 space-y-4">
+        {error && (
+          <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-red-700 dark:text-red-400 text-sm">
+            {error}
+          </div>
+        )}
+
+        {/* Chat ID */}
+        <div>
+          <label className="block text-sm text-bambu-gray mb-1">Chat ID *</label>
+          <input
+            type="text"
+            value={chatId}
+            onChange={(e) => setChatId(e.target.value)}
+            disabled={isEditing}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm disabled:opacity-50 focus:outline-none focus:ring-1 focus:ring-bambu-green"
+            placeholder="123456789"
+          />
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="px-6 py-4 space-y-4">
-          {error && (
-            <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-red-700 dark:text-red-400 text-sm">
-              {error}
+        {/* Label */}
+        <div>
+          <label className="block text-sm text-bambu-gray mb-1">{t('telegram.label')}</label>
+          <input
+            type="text"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-bambu-green"
+            placeholder={t('telegram.labelPlaceholder')}
+          />
+        </div>
+
+        {/* User (optional) */}
+        <div>
+          <label className="block text-sm text-bambu-gray mb-1">
+            {t('telegram.user')} <span className="text-bambu-gray/50">({t('telegram.optional')})</span>
+          </label>
+          <Select
+            className="w-full"
+            value={userId ?? ''}
+            onChange={(e) => handleUserChange(e.target.value ? parseInt(e.target.value) : null)}
+          >
+            <option value="">{t('telegram.noUser')}</option>
+            {users?.map(u => (
+              <option key={u.id} value={u.id}>{u.username}</option>
+            ))}
+          </Select>
+        </div>
+
+        {/* Role (group) */}
+        <div>
+          <label className="block text-sm text-bambu-gray mb-1">{t('telegram.role')} *</label>
+          <Select
+            className="w-full"
+            value={groupId ?? ''}
+            onChange={(e) => setGroupId(e.target.value ? parseInt(e.target.value) : null)}
+          >
+            <option value="">{t('telegram.notAssigned')}</option>
+            {groups?.map(g => (
+              <option key={g.id} value={g.id}>{g.name}</option>
+            ))}
+          </Select>
+          {userId && (
+            <p className="text-xs text-bambu-gray/60 mt-1">{t('telegram.roleAutoFill')}</p>
+          )}
+        </div>
+
+        {/* Active toggle */}
+        <div className="flex items-center justify-between py-1">
+          <label className="text-sm text-white">{t('telegram.active')}</label>
+          <Toggle
+            checked={isActive}
+            onChange={setIsActive}
+          />
+        </div>
+
+        {/* Printer scope (m157): which printers this chat sees —
+            notifications AND bot control. All printers by default; a
+            narrowed chat browses, prints to and commands only its list. */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-sm text-white">{t('telegram.printerScope')}</label>
+              <p className="text-xs text-bambu-gray">{t('telegram.printerScopeDescription')}</p>
+            </div>
+            <Toggle
+              checked={printerIds === null}
+              onChange={(all) => setPrinterIds(all ? null : [])}
+            />
+          </div>
+          {printerIds !== null && (
+            <div className="space-y-1 bg-bambu-dark rounded border border-bambu-dark-tertiary p-3 max-h-40 overflow-y-auto">
+              {(printers ?? []).map((p) => (
+                <label
+                  key={p.id}
+                  className="flex items-center gap-2 text-xs text-white cursor-pointer hover:bg-bambu-dark-tertiary rounded px-1 py-0.5"
+                >
+                  <input
+                    type="checkbox"
+                    checked={printerIds.includes(p.id)}
+                    onChange={() =>
+                      setPrinterIds(
+                        printerIds.includes(p.id)
+                          ? printerIds.filter((id) => id !== p.id)
+                          : [...printerIds, p.id]
+                      )
+                    }
+                    className="accent-bambu-green w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                  />
+                  {p.name}
+                </label>
+              ))}
+              {printerIds.length === 0 && (
+                <p className="text-[10px] text-amber-500">{t('telegram.printerScopeEmpty')}</p>
+              )}
             </div>
           )}
+        </div>
 
-          {/* Chat ID */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">Chat ID *</label>
-            <input
-              type="text"
-              value={chatId}
-              onChange={(e) => setChatId(e.target.value)}
-              disabled={isEditing}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm disabled:opacity-50 focus:outline-none focus:ring-1 focus:ring-bambu-green"
-              placeholder="123456789"
-            />
-          </div>
-
-          {/* Label */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">{t('telegram.label')}</label>
-            <input
-              type="text"
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-bambu-green"
-              placeholder={t('telegram.labelPlaceholder')}
-            />
-          </div>
-
-          {/* User (optional) */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">
-              {t('telegram.user')} <span className="text-bambu-gray/50">({t('telegram.optional')})</span>
-            </label>
-            <select
-              value={userId ?? ''}
-              onChange={(e) => handleUserChange(e.target.value ? parseInt(e.target.value) : null)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-bambu-green"
-            >
-              <option value="">{t('telegram.noUser')}</option>
-              {users?.map(u => (
-                <option key={u.id} value={u.id}>{u.username}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Role (group) */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">{t('telegram.role')} *</label>
-            <select
-              value={groupId ?? ''}
-              onChange={(e) => setGroupId(e.target.value ? parseInt(e.target.value) : null)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-bambu-green"
-            >
-              <option value="">{t('telegram.notAssigned')}</option>
-              {groups?.map(g => (
-                <option key={g.id} value={g.id}>{g.name}</option>
-              ))}
-            </select>
-            {userId && (
-              <p className="text-xs text-bambu-gray/60 mt-1">{t('telegram.roleAutoFill')}</p>
-            )}
-          </div>
-
-          {/* Active toggle */}
-          <div className="flex items-center justify-between py-1">
-            <label className="text-sm text-white">{t('telegram.active')}</label>
+        {/* Quiet Hours */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-sm text-white">{t('notifications.quietHoursDnd')}</label>
             <Toggle
-              checked={isActive}
-              onChange={setIsActive}
+              checked={quietHoursEnabled}
+              onChange={setQuietHoursEnabled}
             />
           </div>
-
-          {/* Quiet Hours */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-sm text-white">{t('notifications.quietHoursDnd')}</label>
-              <Toggle
-                checked={quietHoursEnabled}
-                onChange={setQuietHoursEnabled}
-              />
-            </div>
-            {quietHoursEnabled && (
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-bambu-gray mb-1">{t('notifications.quietStart')}</label>
-                  <input
-                    type="time"
-                    value={quietHoursStart}
-                    onChange={(e) => setQuietHoursStart(e.target.value)}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-bambu-gray mb-1">{t('notifications.quietEnd')}</label>
-                  <input
-                    type="time"
-                    value={quietHoursEnd}
-                    onChange={(e) => setQuietHoursEnd(e.target.value)}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
+          {quietHoursEnabled && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-bambu-gray mb-1">{t('notifications.quietStart')}</label>
+                <input
+                  type="time"
+                  value={quietHoursStart}
+                  onChange={(e) => setQuietHoursStart(e.target.value)}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                />
               </div>
-            )}
-          </div>
-
-          {/* Daily Digest — opt-in only; the time itself is configured on
-              the bot/provider so all subscribed chats receive at the same
-              moment. */}
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <label className="text-sm text-white">{t('telegram.dailyDigest')}</label>
-              <Toggle
-                checked={dailyDigest}
-                onChange={setDailyDigest}
-              />
-            </div>
-            {dailyDigest && telegramProvider && providerDigestOn && telegramProvider.daily_digest_time && (
-              <p className="text-xs text-bambu-gray">
-                {t('telegram.dailyDigestProviderTime', { time: telegramProvider.daily_digest_time })}
-              </p>
-            )}
-            {showDigestProviderWarning && (
-              <div className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
-                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                <span>{t('telegram.dailyDigestProviderOff')}</span>
+              <div>
+                <label className="block text-xs text-bambu-gray mb-1">{t('notifications.quietEnd')}</label>
+                <input
+                  type="time"
+                  value={quietHoursEnd}
+                  onChange={(e) => setQuietHoursEnd(e.target.value)}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                />
               </div>
-            )}
-          </div>
+            </div>
+          )}
+        </div>
 
-          {/* Notification Events */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-2">{t('telegram.notifyEvents')}</label>
-            <div className="space-y-3 bg-bambu-dark rounded border border-bambu-dark-tertiary p-3 max-h-60 overflow-y-auto">
-              {Object.entries(eventsByCategory).map(([category, events]) => (
-                <div key={category}>
-                  <p className="text-xs text-bambu-gray font-medium mb-1">{CATEGORY_KEYS[category] ? t(CATEGORY_KEYS[category]) : category}</p>
-                  <div className="space-y-1">
-                    {events.map(event => (
-                      <label key={event.event_type} className="flex items-center gap-2 text-xs text-white cursor-pointer hover:bg-bambu-dark-tertiary rounded px-1 py-0.5">
-                        <input
-                          type="checkbox"
-                          checked={activeEvents.includes(event.event_type)}
-                          onChange={() => toggleEvent(event.event_type)}
-                          className="w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                        />
+        {/* Daily Digest — opt-in only; the time itself is configured on
+            the bot/provider so all subscribed chats receive at the same
+            moment. */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <label className="text-sm text-white">{t('telegram.dailyDigest')}</label>
+            <Toggle
+              checked={dailyDigest}
+              onChange={setDailyDigest}
+            />
+          </div>
+          {dailyDigest && telegramProvider && providerDigestOn && telegramProvider.daily_digest_time && (
+            <p className="text-xs text-bambu-gray">
+              {t('telegram.dailyDigestProviderTime', { time: telegramProvider.daily_digest_time })}
+            </p>
+          )}
+          {showDigestProviderWarning && (
+            <div className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+              <span>{t('telegram.dailyDigestProviderOff')}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Notification Events */}
+        <div>
+          <label className="block text-sm text-bambu-gray mb-2">{t('telegram.notifyEvents')}</label>
+          <div className="space-y-3 bg-bambu-dark rounded border border-bambu-dark-tertiary p-3 max-h-60 overflow-y-auto">
+            {Object.entries(eventsByCategory).map(([category, events]) => (
+              <div key={category}>
+                <p className="text-xs text-bambu-gray font-medium mb-1">{CATEGORY_KEYS[category] ? t(CATEGORY_KEYS[category]) : category}</p>
+                <div className="space-y-1">
+                  {events.map(event => (
+                    <label key={event.event_type} className="flex items-center gap-2 text-xs text-white cursor-pointer hover:bg-bambu-dark-tertiary rounded px-1 py-0.5">
+                      <input
+                        type="checkbox"
+                        checked={activeEvents.includes(event.event_type)}
+                        onChange={() => toggleEvent(event.event_type)}
+                        className="accent-bambu-green w-3.5 h-3.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                      />
+                      <span>
                         {EVENT_LABEL_KEYS[event.event_type] ? t(EVENT_LABEL_KEYS[event.event_type]) : event.label}
-                      </label>
-                    ))}
-                  </div>
+                        {/* TG events are configured strictly per chat (m045), so
+                            the duration floor (#28) is a PER-CHAT value edited
+                            right here — no global fallback, each chat carries
+                            its own (empty/0 = always). A click on the input is
+                            interactive, so it does not toggle the surrounding
+                            checkbox label. */}
+                        {event.event_type === 'print_progress' && (
+                          <span className="mt-0.5 flex items-center gap-1.5 text-[10px] leading-tight text-bambu-gray">
+                            {t('notifications.progressFloorLabel')}
+                            <input
+                              type="number"
+                              min={0}
+                              max={10080}
+                              step={5}
+                              value={progressMinDuration}
+                              placeholder="0"
+                              onChange={(e) => setProgressMinDuration(e.target.value)}
+                              className="w-14 px-1 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-[10px] text-center focus:border-bambu-green focus:outline-none"
+                            />
+                            {t('notifications.progressFloorUnit')}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
+        </div>
 
-          {/* Actions */}
-          <div className="flex gap-3 pt-2">
-            <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
-              {t('telegram.cancel')}
-            </Button>
-            <Button type="submit" disabled={isPending} className="flex-1">
-              {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              {isEditing ? t('telegram.save') : t('telegram.add')}
-            </Button>
-          </div>
-        </form>
-      </div>
-    </div>
+        {/* Actions */}
+        <div className="flex gap-3 pt-2">
+          <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
+            {t('telegram.cancel')}
+          </Button>
+          <Button type="submit" disabled={isPending} className="flex-1">
+            {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {isEditing ? t('telegram.save') : t('telegram.add')}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }

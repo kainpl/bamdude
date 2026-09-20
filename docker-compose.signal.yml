@@ -1,0 +1,80 @@
+# signal-cli-rest-api in its own container — an override for docker-compose.yml.
+#
+# When to use this: you want BamDude's "Signal CLI API" notification provider
+# and you do not already run a signal-cli-rest-api somewhere. This file adds
+# that service next to BamDude, the way docker-compose.postgres.yml adds a
+# database. Enable it by listing both files in COMPOSE_FILE (docker-install.sh
+# writes this into .env when you say yes to the sidecar):
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.signal.yml
+#
+# (With the PostgreSQL sidecar too, list all three — the order does not
+# matter.) Then `docker compose up -d`.
+#
+# ⚠️ NETWORKING — the same fork as the PostgreSQL sidecar. The base compose runs
+# BamDude with `network_mode: host` (for printer discovery), and a host-network
+# container is NOT on the Compose bridge, so it cannot reach this service by
+# the name `signal-api`. Two cases:
+#   • Linux (host networking, the default): this file publishes the API on
+#     127.0.0.1:${SIGNAL_API_PORT:-8081}, and BamDude reaches it there. In the
+#     provider form set   Signal API URL = http://127.0.0.1:8081
+#   • Docker Desktop (macOS/Windows, where docker-install.sh removes host mode
+#     and maps ports): BamDude is on the bridge and reaches this service by
+#     name. Set                Signal API URL = http://signal-api:8080
+# docker-install.sh prints the right one for your platform.
+#
+# ⚠️ ONLY ON LOOPBACK, NEVER 0.0.0.0. signal-cli-rest-api has no authentication
+# of its own: whoever can reach the port can send messages from your number.
+# The loopback publish stays on Docker Desktop too — not for BamDude, but for
+# YOUR BROWSER: linking the number happens on a page this container serves
+# (see below). From another machine use an SSH tunnel:
+#   ssh -L 8081:127.0.0.1:8081 user@your-server
+#
+# TWO STEPS NO SCRIPT CAN DO FOR YOU, after `up -d`:
+#   1. Give the container a Signal number. Easiest: link it to the Signal
+#      account on your phone as a secondary device — open
+#        http://127.0.0.1:8081/v1/qrcodelink?device_name=BamDude
+#      and scan the QR code in Signal → Settings → Linked devices. (Registering
+#      a brand-new number is also possible; it needs SMS/voice verification and
+#      usually a captcha — the docs walk through it.)
+#   2. In BamDude: Settings → Notifications → Add → "Signal CLI API", with the
+#      URL for your platform (above) and the linked number as the sender.
+#
+# The account's keys live in the `bamdude_signal` volume. They are NOT part of
+# BamDude's backup — the volume belongs to signal-cli, not to BamDude. Lose the
+# volume and you link again; nothing else is affected.
+#
+# Deliberately NOT here:
+#   • no `depends_on` from bamdude — notifications are optional, and BamDude
+#     must start whether or not this container is up (unlike the database);
+#   • no environment for bamdude — unlike DATABASE_URL, the provider is created
+#     in the UI, so this file touches only its own service.
+
+services:
+  signal-api:
+    # Pinned to a release, not `latest`: a signal-cli upgrade occasionally
+    # requires re-linking the device, and a silent `docker compose pull` would
+    # then stop notifications without a word. Bump deliberately.
+    image: bbernhard/signal-cli-rest-api:0.100
+    container_name: bamdude-signal-api
+    environment:
+      # One long-lived signal-cli daemon. `normal` starts a JVM per request
+      # (seconds per notification) and, like `native`, does not receive
+      # continuously — and an account that never receives eventually stops
+      # being able to send. Costs ~160 MB resident before an account is linked.
+      - MODE=json-rpc
+    ports:
+      - "127.0.0.1:${SIGNAL_API_PORT:-8081}:8080"
+    volumes:
+      - bamdude_signal:/home/.local/share/signal-cli
+    healthcheck:
+      # `/v1/health` answers 204 once the daemon is up (curl ships in the image).
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  bamdude_signal:

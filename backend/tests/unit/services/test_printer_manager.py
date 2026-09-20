@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from backend.app.services.printer_manager import (
+    PrinterInfo,
     PrinterManager,
     drying_screen_only,
     get_derived_status_name,
@@ -73,6 +74,20 @@ class TestPrinterManager:
     def test_init_loop_is_none(self, manager):
         """Verify event loop is initially None."""
         assert manager._loop is None
+
+    def test_update_printer_name_refreshes_existing_callback_info(self, manager):
+        info = PrinterInfo("Old name", "SERIAL")
+        manager._printer_info[7] = info
+
+        manager.update_printer_name(7, "New name")
+
+        assert manager.get_printer(7) is info
+        assert (info.name, info.serial_number) == ("New name", "SERIAL")
+
+    def test_update_printer_name_does_not_create_disconnected_cache_entry(self, manager):
+        manager.update_printer_name(7, "New name")
+
+        assert manager.get_printer(7) is None
 
     # ========================================================================
     # Tests for callback setters
@@ -845,6 +860,31 @@ class TestPrinterStateToDict:
         assert len(result["ams"][0]["tray"]) == 1
         assert result["ams"][0]["tray"][0]["tray_color"] == "FF0000"
 
+    def test_tray_actual_comes_from_the_overlay(self, mock_state):
+        from backend.app.services import ams_advertised_overlay as overlay
+        from backend.app.services.ams_advertised_overlay import OverlayEntry
+
+        # No try/finally: the autouse ``_clean_advertised_overlay`` fixture in
+        # conftest empties the process-global store around every test.
+        mock_state.raw_data = {
+            "ams": [
+                {"id": 0, "tray": [{"id": 1, "tray_type": "PETG", "tray_color": "000000FF", "tray_info_idx": "GFG99"}]}
+            ],
+            "vt_tray": [],
+        }
+        overlay.replace_printer(
+            5, {(0, 1): OverlayEntry("PETG", "FF0000FF", "GFG00", ("FF0000FF",), "000000FF", "GFG99", "internal")}
+        )
+        tray = printer_state_to_dict(mock_state, printer_id=5)["ams"][0]["tray"][0]
+        assert tray["tray_color"] == "000000FF"  # live stays live
+        assert tray["actual"] == {
+            "tray_color": "FF0000FF",
+            "tray_type": "PETG",
+            "tray_info_idx": "GFG00",
+            "cols": ["FF0000FF"],
+        }
+        assert printer_state_to_dict(mock_state, printer_id=6)["ams"][0]["tray"][0]["actual"] is None
+
     def test_empty_tag_uid_becomes_none(self, mock_state):
         """Verify empty tag_uid is converted to None."""
         mock_state.raw_data = {
@@ -959,7 +999,7 @@ class TestPrinterStateToDict:
         """Verify cover_url is added for running prints."""
         result = printer_state_to_dict(mock_state, printer_id=1)
 
-        assert result["cover_url"] == "/api/v1/printers/1/cover"
+        assert result["cover_url"] == "/api/v1/printers/1/camera-cover"
 
     def test_current_plate_id_extracted_from_gcode_file(self, mock_state):
         """Verify current_plate_id is parsed from a Bambu plate path (upstream #881)."""

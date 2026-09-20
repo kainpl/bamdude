@@ -1,7 +1,6 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useId, useCallback } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
-  X,
   Save,
   Film,
   Play,
@@ -16,6 +15,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { api } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { formatMediaTime } from '../utils/date';
@@ -36,6 +36,7 @@ export function TimelapseEditorModal({
   onSave,
 }: TimelapseEditorModalProps) {
   const { showToast } = useToast();
+  const headingId = useId();
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
@@ -95,17 +96,6 @@ export function TimelapseEditorModal({
       setTrimEnd(videoInfo.duration);
     }
   }, [videoInfo?.duration, trimEnd]);
-
-  // Close on Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
 
   // Video event handlers
   useEffect(() => {
@@ -232,23 +222,16 @@ export function TimelapseEditorModal({
   const trimmedDuration = trimEnd - trimStart;
   const outputDuration = trimmedDuration / speed;
 
-  if (isLoadingInfo) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
-        <div className="flex items-center gap-3 text-white">
-          <Loader2 className="w-6 h-6 animate-spin" />
-          Loading video info...
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
-      <div className="relative bg-bambu-dark-secondary rounded-xl max-w-5xl w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary shrink-0">
-          <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      size="5xl"
+      panelClassName="overflow-hidden"
+      bodyClassName="flex flex-col"
+      header={
+        <div className="flex flex-1 items-center justify-between min-w-0">
+          <h3 id={headingId} className="text-lg font-semibold text-white flex items-center gap-2">
             <Film className="w-5 h-5 text-bambu-green" />
             Edit Timelapse
           </h3>
@@ -271,16 +254,19 @@ export function TimelapseEditorModal({
                 </>
               )}
             </Button>
-            <button
-              onClick={onClose}
-              className="p-1 hover:bg-bambu-dark-tertiary rounded transition-colors"
-            >
-              <X className="w-5 h-5 text-bambu-gray" />
-            </button>
           </div>
         </div>
-
-        {/* Content */}
+      }
+    >
+      {/* Content — one dialog for both states: the video info arrives into the
+          same shell the editor sits in, rather than a second overlay of its
+          own that would remount (and re-take focus) the moment it loaded. */}
+      {isLoadingInfo ? (
+        <div className="flex flex-1 items-center justify-center gap-3 text-white">
+          <Loader2 className="w-6 h-6 animate-spin" />
+          Loading video info...
+        </div>
+      ) : (
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {/* Video Preview */}
           <div className="relative">
@@ -294,6 +280,9 @@ export function TimelapseEditorModal({
 
             {/* Play overlay */}
             {!isPlaying && (
+              // The play control lies over the video preview inside this
+              // dialog: it starts playback, it dismisses nothing.
+              // not-a-modal: viewer
               <button
                 onClick={togglePlay}
                 className="absolute inset-0 flex items-center justify-center bg-black/30 hover:bg-black/40 transition-colors"
@@ -497,7 +486,7 @@ export function TimelapseEditorModal({
                 </button>
               </div>
             ) : (
-              <label className="flex flex-col items-center justify-center gap-2 p-6 border-2 border-dashed border-bambu-dark-tertiary rounded-lg cursor-pointer hover:border-bambu-green/50 transition-colors">
+              <label className="flex flex-col items-center justify-center gap-2 p-4 border-2 border-dashed border-bambu-dark-tertiary rounded-lg cursor-pointer hover:border-bambu-green/50 transition-colors">
                 <Upload className="w-8 h-8 text-bambu-gray" />
                 <span className="text-sm text-bambu-gray">
                   Drop audio file or click to upload
@@ -526,16 +515,16 @@ export function TimelapseEditorModal({
             </p>
           </div>
         </div>
+      )}
 
-        {/* Processing overlay */}
-        {processMutation.isPending && (
-          <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-4">
-            <Loader2 className="w-12 h-12 text-bambu-green animate-spin" />
-            <p className="text-white text-lg">Processing timelapse...</p>
-            <p className="text-bambu-gray text-sm">This may take a few moments</p>
-          </div>
-        )}
-      </div>
-    </div>
+      {/* Processing overlay */}
+      {processMutation.isPending && (
+        <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-4">
+          <Loader2 className="w-12 h-12 text-bambu-green animate-spin" />
+          <p className="text-white text-lg">Processing timelapse...</p>
+          <p className="text-bambu-gray text-sm">This may take a few moments</p>
+        </div>
+      )}
+    </Modal>
   );
 }

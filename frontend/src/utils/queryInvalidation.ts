@@ -1,0 +1,191 @@
+/**
+ * Which caches an order mutation moves — decided once, for every call site.
+ *
+ * ⚠️ **This file exists because the lists disagreed.** Every order mutation
+ * used to carry its own hand-written set of keys, and no two were the same:
+ * adding a line forgot `project-plan`, the order page forgot
+ * `project-archives`, the customer page forgot `customers`, and several forgot
+ * the customer keys altogether. The symptom is always a figure that is right
+ * after a reload and wrong before one, and it is always blamed on the server.
+ * A new order mutation calls `invalidateOrderViews` and is done; it does not
+ * get to have an opinion about the list.
+ *
+ * ⚠️ **Every key is invalidated as a PREFIX, deliberately.** An archive
+ * re-filed from one order to another leaves the order it LEFT wrong too, and
+ * the call site that moved it usually knows only where it landed. The same
+ * goes for `customer`: an order can move between customers. Invalidating a
+ * prefix costs nothing off the pages that read it — TanStack refetches only
+ * queries that are currently *active*, and these six are mounted nowhere else.
+ *
+ * ⚠️ **On an order page it is NOT free**, and one key needs care because of
+ * it: `project-plan` carries the operator's unsaved counts, so `PlanBlock`
+ * reseeds on the plan's CONTENT rather than on the fact of a refetch. A key
+ * added to this list that holds unsaved edits needs the same treatment.
+ *
+ * ⚠️ **The product keys are here because STOCK moves with an order** (pass 8,
+ * Ruling 29). A line reserves kits off a product's shelf and a deleted line, a
+ * cancelled order or a deleted order puts them back; a completed order-less
+ * print credits one. Six call sites released stock and invalidated none of it,
+ * so «Вільний залишок» and the catalog cards kept the pre-release numbers until
+ * the page was reloaded — the classic "right after F5, wrong before it". The
+ * per-product scoping is given up deliberately: the helper's whole job is that
+ * a call site does not get to have an opinion about the list, and a prefix
+ * costs nothing off a page that is not mounted.
+ */
+
+import type { QueryClient } from '@tanstack/react-query';
+
+/**
+ * The caches an order mutation can move, as key prefixes.
+ *
+ * Exported as a list because `useWebSocket` cannot call the helper: its
+ * invalidations are debounced and staggered through one shared timer, so it
+ * needs the keys rather than the calls. One list, two consumers — the point of
+ * the whole file is that there is no second copy.
+ */
+export const ORDER_VIEW_KEYS = [
+  'projects', // the order cards' roll-up
+  'project', // an order page's own figures — the prefix, see above
+  'project-archives', // the Prints grid
+  'project-plan', // pass 3: what is still to print
+  'order-forecast', 'orders-forecast', // spec 2026-09-06: the ETA moves with the plan
+  'order-filament', 'orders-filament', // spec 2026-09-07: the need moves with the plan
+  'customers', // the customer tiles are computed from these orders
+  'customer', // and one customer's page with them — the prefix, see above
+  // pass 7: the orders a print dialog offers, and how many prints each still
+  // needs. It IS an order view — the number comes from the plan engine — and it
+  // is mounted only while such a dialog is open, so the prefix costs nothing
+  // off that dialog. See `invalidateOrderCandidates` for the narrow call.
+  'order-candidates',
+  // pass 8: the free stock an order's lines take off and put back — the shelf
+  // section, the product page's own `kits_available`, and the catalog cards
+  // that show it. Prefixes, so an order that moved another product's shelf
+  // (two lines, two products) is covered by one call. See the header.
+  'product-stock',
+  'product',
+  'products',
+  // stock tab (2026-09-10): the farm-wide shelf and its journal move with the
+  // same mutations that move a product's shelf — a reservation, a release, a
+  // bank, an order deleted — and with the print completions the socket
+  // reports. Prefixes: the page keys its queries by its filters.
+  'stock-summary',
+  'stock-movements',
+] as const;
+
+/**
+ * Mark the QUEUE views stale after a mutation that moved queued work.
+ *
+ * ⚠️ **`queue-forecast` is the reason this exists.** The queue page's
+ * «estimated remaining» tile is a server-side simulation over exactly the rows
+ * these mutations add, remove and reorder (spec 2026-09-06, Decision 5), and
+ * it was invalidated only by the two WebSocket print events and a 30 s
+ * interval. Queue a plate and the tile kept the old number until the interval
+ * came round — the classic "right after F5, wrong before it", and here it is
+ * the one figure the page exists to show.
+ *
+ * ⚠️ **`queue` is a PREFIX and the sweep is deliberately wide.** A queue
+ * mutation on one printer moves the farm's makespan, which is every printer's
+ * business; scoping this to the printer that was touched would leave the tile
+ * and the other cards behind. TanStack refetches only ACTIVE queries, so off
+ * the queue page it costs nothing, and on it the cost is one extra refetch per
+ * mutation — priced and accepted (ruling 2026-09-07, final review I3).
+ */
+export function invalidateQueueViews(qc: QueryClient): void {
+  qc.invalidateQueries({ queryKey: ['queues'] });
+  qc.invalidateQueries({ queryKey: ['queue'] });
+  qc.invalidateQueries({ queryKey: ['queue-forecast'] });
+}
+
+/** A spool was written, used or synced: the shelf moved, and with it every «need vs shelf» figure. */
+export function invalidateSpoolViews(qc: QueryClient): void {
+  qc.invalidateQueries({ queryKey: ['spools'] });
+  qc.invalidateQueries({ queryKey: ['order-filament'] });
+  qc.invalidateQueries({ queryKey: ['orders-filament'] });
+}
+
+/** What the caller touched. Read for call-site legibility today; see below. */
+export interface OrderViewScope {
+  orderId?: number;
+  customerId?: number;
+}
+
+/**
+ * Mark every order view stale after a mutation that could have moved one.
+ *
+ * `opts` is accepted so a call site can say WHAT it touched, and so that
+ * narrowing the invalidation later is an edit here rather than at forty call
+ * sites. It is not read today: every key above is a prefix, on purpose.
+ */
+export function invalidateOrderViews(qc: QueryClient, opts: OrderViewScope = {}): void {
+  void opts;
+  for (const key of ORDER_VIEW_KEYS) {
+    qc.invalidateQueries({ queryKey: [key] });
+  }
+}
+
+/**
+ * Mark the print dialogs' order proposal stale, and nothing else.
+ *
+ * ⚠️ **For a queue write that is not an order mutation** — `PrintModal`
+ * queueing a library file. Its `outstanding_prints` is what the picker shows
+ * ("still needs 5 prints"), the hook caches it for 30 s, and a second print of
+ * the same file inside that window would otherwise be offered the count from
+ * before the first. The dialog has no business invalidating the order PAGES,
+ * which it may not even be filing under — hence one key rather than
+ * `invalidateOrderViews`.
+ */
+export function invalidateOrderCandidates(qc: QueryClient): void {
+  qc.invalidateQueries({ queryKey: ['order-candidates'] });
+}
+
+type DeletedKind = 'order' | 'product' | 'customer';
+
+/** The list keys each kind of deletion leaves behind. */
+const DELETE_KEYS: Record<DeletedKind, readonly string[]> = {
+  // The customer survives the order and their totals move with it; `customer`
+  // is the prefix because the page that deleted it need not be the customer's.
+  // The product keys are here for the same reason they are in
+  // `ORDER_VIEW_KEYS` (Ruling 29): deleting an order releases every line's
+  // reservation and re-credits its finished prints, so the shelf moves — and
+  // the page that deleted it is usually a LIST, which knows no product at all.
+  order: ['projects', 'customers', 'customer', 'product-stock', 'product', 'products'],
+  // An order card renders the product's cover off the `projects` query.
+  product: ['products', 'projects'],
+  // The orders survive their customer and lose the denormalised name.
+  customer: ['customers', 'projects'],
+};
+
+/** The DETAIL key of one deleted row — an order's page is `['project', id]`. */
+const DETAIL_KEY: Record<DeletedKind, string> = {
+  order: 'project',
+  product: 'product',
+  customer: 'customer',
+};
+
+/**
+ * Mark the LISTS stale after a delete, and REMOVE the deleted row's own entry.
+ *
+ * ⚠️ **Removed, never invalidated.** Marking the deleted row's key stale asks
+ * TanStack to refetch something that no longer exists while the page is still
+ * mounted, which lands a 404 in the query and can flash the error state over a
+ * page that is already on its way out. `removeQueries` drops the entry instead:
+ * nothing is fetched and nothing is left to be read back.
+ *
+ * ⚠️ **The `id` is for LIST pages, and the three detail pages pass none.** From
+ * a list, the deleted row's detail entry is a stale record sitting in a cache
+ * nobody is watching, and the 60 s `staleTime` means the next click on a REUSED
+ * id — or a Back into a route that no longer exists — renders it from cache
+ * before any request goes out. From the row's OWN page the removal is
+ * `useForgetOnUnmount`'s job instead, run on unmount so the query is not pulled
+ * out from under the component still rendering it. Passing the id there would
+ * blank the page mid-navigation; passing none from a list leaves the ghost.
+ * That is why the parameter is optional rather than always required.
+ */
+export function invalidateAfterDelete(qc: QueryClient, kind: DeletedKind, id?: number): void {
+  for (const key of DELETE_KEYS[kind]) {
+    qc.invalidateQueries({ queryKey: [key] });
+  }
+  if (id !== undefined) {
+    qc.removeQueries({ queryKey: [DETAIL_KEY[kind], id], exact: true });
+  }
+}

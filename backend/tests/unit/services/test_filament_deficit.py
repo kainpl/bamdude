@@ -11,7 +11,7 @@ ways to cry wolf here are silent-data problems, not logic ones.
 
 from __future__ import annotations
 
-from backend.app.services.filament_deficit import compute_shortfalls
+from backend.app.services.filament_deficit import _slot_label, compute_shortfalls
 
 REQ = [{"slot_id": 0, "used_grams": 20.5}]
 LOADED = [
@@ -131,3 +131,20 @@ class TestSilenceIsNotEmptiness:
             )
             == []
         )
+
+
+class TestTheSlotLabel:
+    def test_every_kind_of_slot_gets_the_name_the_operator_uses(self):
+        """One label vocabulary for the whole app — the one the assignment
+        notifications coined. An external slot was ``@1``: the loaded-filament
+        list encodes it as ``ams_id = -1`` and the old formula did
+        ``chr(ord("A") - 1)``; an AMS-HT unit (``ams_id >= 128``) was ``Ext``."""
+        assert [_slot_label(g) for g in (0, 5, 26, 128, 129, 254, 255)] == [
+            "A1",
+            "B2",
+            "Lite-3",
+            "HT-A",
+            "HT-B",
+            "Ext-L",
+            "Ext-R",
+        ]

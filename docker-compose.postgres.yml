@@ -1,0 +1,68 @@
+# PostgreSQL in its own container — an override for docker-compose.yml.
+#
+# When to use this: you want PostgreSQL rather than the default SQLite. In
+# Docker this is THE PostgreSQL option, together with pointing DATABASE_URL at
+# a server you run yourself.
+#
+# ⚠️ The bundled PostgreSQL (DATABASE_URL=embedded) is NOT one of them. It is a
+# native-install feature (Linux service, the Windows installer): the BamDude
+# image runs as root and `initdb` refuses to run as root, which is PostgreSQL's
+# own rule. An earlier version of this note called the bundled one "the simpler
+# default" - in a container it is neither, and docker-install.sh no longer
+# offers it.
+#
+# This file keeps the database in its own official `postgres` image and its own
+# volume, so it upgrades independently of BamDude.
+#
+# Enable it by listing both files in COMPOSE_FILE (install/docker-install.sh
+# writes this into .env when you pick the sidecar):
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.postgres.yml
+#
+# Then set in .env: POSTGRES_PASSWORD (required) and DATABASE_URL.
+#
+# ⚠️ NETWORKING — read this. The base compose runs BamDude with
+# `network_mode: host` (for printer discovery), and a host-network container is
+# NOT on the Compose bridge, so it cannot reach this service by the name
+# `postgres`. Two cases:
+#   • Linux (host networking, the default): this file publishes PostgreSQL on
+#     127.0.0.1:5433, and BamDude reaches it there. Set
+#       DATABASE_URL=postgresql+asyncpg://bamdude:PASSWORD@127.0.0.1:5433/bamdude
+#   • Docker Desktop (macOS/Windows, where docker-install.sh removes host mode
+#     and maps ports): BamDude is on the bridge and reaches this service by
+#     name. Set
+#       DATABASE_URL=postgresql+asyncpg://bamdude:PASSWORD@postgres:5432/bamdude
+# docker-install.sh writes the right one for your platform.
+
+services:
+  postgres:
+    image: postgres:18
+    container_name: bamdude-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bamdude}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-bamdude}
+    # Published on loopback so a host-network BamDude can reach it (Linux). On
+    # Docker Desktop this is harmless; BamDude uses the service name instead.
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - bamdude_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bamdude} -d ${POSTGRES_DB:-bamdude}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  bamdude:
+    # DATABASE_URL comes from .env (docker-install.sh writes the platform-correct
+    # host); the database is only ready once PostgreSQL passes its healthcheck.
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  bamdude_pgdata:

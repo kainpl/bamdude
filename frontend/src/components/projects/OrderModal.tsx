@@ -1,0 +1,354 @@
+import { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { api } from '../../api/client';
+import type { Order, OrderCreate, OrderListItem, OrderUpdate, ProjectPriority, ProjectStatus } from '../../api/client';
+import { Button } from '../Button';
+import { Modal } from '../Modal';
+import { CustomerPicker } from '../pickers/CustomerPicker';
+import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { useToast } from '../../contexts/ToastContext';
+import { Select } from '../Select';
+
+/** Same nine presets as the old project colour picker — deliberately the only
+ *  part of that modal carried over into this one. */
+const ORDER_COLORS = [
+  '#ef4444', // red
+  '#f97316', // orange
+  '#eab308', // yellow
+  '#22c55e', // green
+  '#06b6d4', // cyan
+  '#3b82f6', // blue
+  '#8b5cf6', // violet
+  '#ec4899', // pink
+  '#6b7280', // gray
+];
+
+const FIELD_CLASS =
+  'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none';
+const LABEL_CLASS = 'block text-sm font-medium text-white mb-1';
+
+/**
+ * The price field as a number, or `fallback` when it cannot be read as one.
+ *
+ * An empty field means "no price" and is a real `null`; anything else that
+ * `Number()` cannot parse keeps whatever was there before, because `NaN`
+ * serialises to `null` and would clear a price nobody meant to clear.
+ *
+ * ⚠️ **That middle case cannot be typed.** The field is `type="number"`, and a
+ * browser reports an entry it cannot parse as the EMPTY STRING, never as the
+ * characters on screen — so `12,50` in a comma-decimal locale arrives here as
+ * `''`, which is a real null and does clear the price. The operator sees an
+ * empty field and the answer matches it. The `fallback` is for a value that
+ * never came through that input: autofill, a paste read before the browser
+ * normalises it, or the day this becomes a text field.
+ */
+function readPrice(raw: string, fallback: number | null): number | null {
+  if (raw.trim() === '') return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+interface OrderModalProps {
+  order?: OrderListItem | Order | null;
+  defaultCustomerId?: number | null;
+  onClose: () => void;
+}
+
+/**
+ * Create/edit dialog for one order.
+ *
+ * Line editing lives on the order page, not here (design decision 5) — this
+ * modal only ever touches the order's own fields. An edit sends only the
+ * fields that changed from what this modal was opened with: a list row lacks
+ * `description`/`url` entirely, so those two fields are hidden rather than
+ * shown as blank boxes a user could type into and silently overwrite text
+ * they were never shown.
+ *
+ * There is deliberately no `onSaved` callback — the same decision
+ * `CustomerModal` records: every call site here just closes the dialog, and the
+ * saved record reaches every list through `invalidateOrderViews` below. A prop
+ * nobody passes is a second way to learn the same fact, and the one that goes
+ * uncalled when somebody adds another call site.
+ */
+export function OrderModal({ order, defaultCustomerId, onClose }: OrderModalProps) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const { showToast } = useToast();
+  const isEdit = !!order;
+
+  // A list row (`OrderListItem`) carries neither field at all — not "empty",
+  // absent. Showing an input for either would invite typing into a box that
+  // looks blank but may not be: whatever gets typed REPLACES text the user
+  // was never shown. Only a full `Order` (or a brand new order) gets the field.
+  const hasDescription = !order || 'description' in order;
+  const hasUrl = !order || 'url' in order;
+  const initialDescription = order && 'description' in order ? (order.description ?? '') : '';
+  const initialUrl = order && 'url' in order ? (order.url ?? '') : '';
+  const initialColor = order?.color ?? null;
+  // `defaultCustomerId` (the page's customer filter) seeds only a NEW order —
+  // on edit the picker must reflect the order's own customer, or the page's
+  // active filter leaks into an order that has none.
+  const initialCustomerId = order ? (order.customer_id ?? null) : (defaultCustomerId ?? null);
+  const initialTags = order?.tags ?? null;
+  // `due_date` arrives as a full datetime string (`ProjectResponse`/
+  // `ProjectListResponse` declare it `datetime`, e.g. "2026-09-10T00:00:00"),
+  // but `<input type="date">` only accepts an exact `YYYY-MM-DD` — anything
+  // else is silently discarded, rendering the field blank. Normalise to the
+  // date-only form HERE, once, so both the seeded value and the edit-diff
+  // compare like with like (comparing the raw datetime against the trimmed
+  // input value would treat an untouched field as "changed" and resend it).
+  const initialDueDate = order?.due_date?.slice(0, 10) ?? null;
+  const initialPriority: ProjectPriority = order?.priority ?? 'normal';
+  const initialPrice = order?.price ?? null;
+  const initialStatus: ProjectStatus = order?.status ?? 'active';
+
+  const [name, setName] = useState(order?.name ?? '');
+  const [customerId, setCustomerId] = useState<number | null>(initialCustomerId);
+  const [description, setDescription] = useState(initialDescription);
+  const [color, setColor] = useState<string | null>(order ? initialColor : ORDER_COLORS[0]);
+  const [tags, setTags] = useState(initialTags ?? '');
+  const [dueDate, setDueDate] = useState(initialDueDate ?? '');
+  const [priority, setPriority] = useState<ProjectPriority>(initialPriority);
+  const [price, setPrice] = useState(initialPrice != null ? String(initialPrice) : '');
+  const [url, setUrl] = useState(initialUrl);
+  const [status, setStatus] = useState<ProjectStatus>(initialStatus);
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      if (order) {
+        const data: OrderUpdate = {};
+        if (name.trim() !== order.name) data.name = name.trim();
+        if (customerId !== initialCustomerId) data.customer_id = customerId;
+        const normDescription = description.trim() === '' ? null : description.trim();
+        if (normDescription !== (initialDescription === '' ? null : initialDescription)) data.description = normDescription;
+        if (color !== initialColor) data.color = color;
+        const normTags = tags.trim() === '' ? null : tags.trim();
+        if (normTags !== initialTags) data.tags = normTags;
+        const normDueDate = dueDate === '' ? null : dueDate;
+        if (normDueDate !== initialDueDate) data.due_date = normDueDate;
+        if (priority !== initialPriority) data.priority = priority;
+        // An unparseable value counts as "no change" — it can never serialise
+        // to the `null` that clears a price. See `readPrice` for what can and
+        // cannot reach it through a `type="number"` field.
+        const normPrice = readPrice(price, initialPrice);
+        if (normPrice !== initialPrice) data.price = normPrice;
+        const normUrl = url.trim() === '' ? null : url.trim();
+        if (normUrl !== (initialUrl === '' ? null : initialUrl)) data.url = normUrl;
+        if (status !== initialStatus) data.status = status;
+        return api.updateOrder(order.id, data);
+      }
+      const data: OrderCreate = {
+        name: name.trim(),
+        customer_id: customerId,
+        description: description.trim() === '' ? null : description.trim(),
+        color,
+        tags: tags.trim() === '' ? null : tags.trim(),
+        due_date: dueDate === '' ? null : dueDate,
+        priority,
+        price: readPrice(price, null),
+        url: url.trim() === '' ? null : url.trim(),
+      };
+      return api.createOrder(data);
+    },
+    onSuccess: (saved) => {
+      // ⚠️ Prefixes throughout, which is why this is one call and not a list
+      // per call site: an order can move between customers, so the customer it
+      // LEFT is stale as well as the one it landed on.
+      invalidateOrderViews(queryClient, { orderId: order?.id ?? saved.id });
+      showToast(t('orders.toast.saved'));
+      onClose();
+    },
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
+
+  const canSubmit = name.trim() !== '' && !mutation.isPending;
+
+  return (
+    <Modal
+      onClose={onClose}
+      title={isEdit ? t('orders.modal.editTitle') : t('orders.modal.createTitle')}
+      size="lg"
+      closeDisabled={mutation.isPending}
+    >
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (canSubmit) mutation.mutate();
+        }}
+      >
+        <div className="p-4 space-y-4">
+          <div>
+            <label className={LABEL_CLASS} htmlFor="order-name">
+              {t('orders.modal.name')}
+            </label>
+            <input
+              id="order-name"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className={FIELD_CLASS}
+              disabled={mutation.isPending}
+              required
+            />
+          </div>
+
+          <div>
+            <label className={LABEL_CLASS}>{t('orders.modal.customer')}</label>
+            <CustomerPicker value={customerId} onChange={setCustomerId} disabled={mutation.isPending} allowCreate />
+          </div>
+
+          {hasDescription && (
+            <div>
+              <label className={LABEL_CLASS} htmlFor="order-description">
+                {t('orders.modal.description')}
+              </label>
+              <textarea
+                id="order-description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className={`${FIELD_CLASS} min-h-[72px]`}
+                disabled={mutation.isPending}
+              />
+            </div>
+          )}
+
+          <div>
+            <label className={LABEL_CLASS}>{t('orders.modal.color')}</label>
+            <div className="flex gap-2 flex-wrap">
+              {ORDER_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setColor(c)}
+                  disabled={mutation.isPending}
+                  className={`w-8 h-8 rounded-full transition-transform ${
+                    color === c ? 'ring-2 ring-white ring-offset-2 ring-offset-bambu-dark-secondary scale-110' : ''
+                  }`}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className={LABEL_CLASS} htmlFor="order-tags">
+              {t('orders.modal.tags')}
+            </label>
+            <input
+              id="order-tags"
+              type="text"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              className={FIELD_CLASS}
+              disabled={mutation.isPending}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className={LABEL_CLASS} htmlFor="order-due-date">
+                {t('orders.modal.dueDate')}
+              </label>
+              <input
+                id="order-due-date"
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+                className={FIELD_CLASS}
+                disabled={mutation.isPending}
+              />
+            </div>
+            <div>
+              <label className={LABEL_CLASS} htmlFor="order-priority">
+                {t('orders.modal.priority')}
+              </label>
+              <Select
+                className="w-full"
+                id="order-priority"
+                value={priority}
+                onChange={(e) => setPriority(e.target.value as ProjectPriority)}
+                disabled={mutation.isPending}
+              >
+                {(['low', 'normal', 'high', 'urgent'] as const).map((p) => (
+                  <option key={p} value={p}>
+                    {t(`orders.priority.${p}`)}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className={LABEL_CLASS} htmlFor="order-price">
+                {t('orders.modal.price')}
+              </label>
+              <input
+                id="order-price"
+                type="number"
+                min="0"
+                value={price}
+                onChange={(e) => setPrice(e.target.value)}
+                className={FIELD_CLASS}
+                disabled={mutation.isPending}
+              />
+            </div>
+            {isEdit && (
+              <div>
+                <label className={LABEL_CLASS} htmlFor="order-status">
+                  {t('orders.modal.status')}
+                </label>
+                <Select
+                  className="w-full"
+                  id="order-status"
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as ProjectStatus)}
+                  disabled={mutation.isPending}
+                >
+                  {(['active', 'completed', 'cancelled'] as const).map((s) => (
+                    <option key={s} value={s}>
+                      {t(`orders.status.${s}`)}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
+          </div>
+
+          {hasUrl && (
+            <div>
+              <label className={LABEL_CLASS} htmlFor="order-url">
+                {t('orders.modal.url')}
+              </label>
+              <input
+                id="order-url"
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                className={FIELD_CLASS}
+                disabled={mutation.isPending}
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary">
+          <Button type="button" variant="secondary" onClick={onClose} disabled={mutation.isPending}>
+            {t('common.cancel')}
+          </Button>
+          <Button type="submit" disabled={!canSubmit}>
+            {mutation.isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : isEdit ? (
+              t('orders.modal.save')
+            ) : (
+              t('orders.modal.create')
+            )}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}

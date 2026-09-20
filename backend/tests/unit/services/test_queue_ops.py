@@ -94,6 +94,40 @@ async def _positions(db_session, queue_id: int) -> list[tuple[int, int]]:
     return [(r.id, r.position) for r in rows]
 
 
+class TestPlacePendingBlock:
+    async def test_next_precedes_and_reindexes_only_pending_rows(self, db_session, queue):
+        old_a = await _add_item(db_session, queue.id, position=4)
+        old_b = await _add_item(db_session, queue.id, position=9)
+        printing = await _add_item(db_session, queue.id, position=0, status="printing")
+        urgent_a = PrintQueueItem(queue_id=queue.id, status="pending")
+        urgent_b = PrintQueueItem(queue_id=queue.id, status="pending")
+
+        async with queue_ops.queue_scope_lock(db_session, queue.id):
+            await queue_ops.place_pending_block(db_session, queue.id, [urgent_a, urgent_b], enqueue_position="next")
+            db_session.add_all([urgent_a, urgent_b])
+            await db_session.commit()
+
+        assert await _positions(db_session, queue.id) == [
+            (urgent_a.id, 0),
+            (urgent_b.id, 1),
+            (old_a.id, 2),
+            (old_b.id, 3),
+        ]
+        await db_session.refresh(printing)
+        assert printing.position == 0
+
+    async def test_end_preserves_existing_positions(self, db_session, queue):
+        old = await _add_item(db_session, queue.id, position=9)
+        appended = PrintQueueItem(queue_id=queue.id, status="pending")
+
+        async with queue_ops.queue_scope_lock(db_session, queue.id):
+            await queue_ops.place_pending_block(db_session, queue.id, [appended])
+            db_session.add(appended)
+            await db_session.commit()
+
+        assert await _positions(db_session, queue.id) == [(old.id, 9), (appended.id, 10)]
+
+
 # ── resolve_block_ids / get_batch_pending_items ──────────────────────────────
 
 
@@ -524,3 +558,24 @@ class TestACloneCarriesEveryPrintOption:
         assert clone.dispatch_attempts in (0, None), "a clone must not inherit a spent retry budget"
         assert clone.source_auto_item_id is None
         assert clone.is_calibration in (False, None)
+
+    def test_the_captured_bytes_travel_with_the_clone(self):
+        """m173, named rather than left to the sweep above.
+
+        The generic guard passes just as happily when a column is added to
+        ``NOT_COPIED`` with a plausible sentence, and for these two that would be
+        the bug: a clone that dropped ``queue_source_id`` would fall back to
+        reading the original file — the one thing the queue spool exists to stop —
+        and one that dropped ``source_snapshot`` would keep the right bytes under
+        the wrong name, which ``source_display_filename`` then refuses to send to
+        a printer. So the decision is pinned here in both directions.
+        """
+        src = PrintQueueItem(queue_id=1, queue_source_id=77, source_snapshot={"version": 1, "format": "3mf"})
+
+        clone = queue_ops._copy_item_fields(src, None, 1)
+
+        assert clone.queue_source_id == 77
+        assert clone.source_snapshot == {"version": 1, "format": "3mf"}
+        assert not {"queue_source_id", "source_snapshot"} & self.NOT_COPIED, (
+            "a clone must print the same bytes under the same name — neither column may be dropped"
+        )

@@ -42,6 +42,7 @@ from pathlib import Path
 from sqlalchemy import text
 
 from backend.app.core.config import settings
+from backend.app.migrations.helpers import as_json
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +111,14 @@ async def seed(session_factory):
             new_meta = dict(meta)
             new_meta["plates"] = plates
             new_meta["is_multi_plate"] = len(plates) > 1
+            # ⚠️ ``as_json``: the bound parameter arrives as ``character varying`` and
+            # these columns are ``json`` on PostgreSQL, which does not cast implicitly.
+            # Same fault that crash-looped m157 on a tester's install (2026-09-09); it
+            # is latent here only because the loop runs solely for rows that still need
+            # backfilling. Bare on SQLite — a CAST there takes NUMERIC affinity and
+            # would turn the document into 0.
             await db.execute(
-                text("UPDATE library_files SET file_metadata = :m WHERE id = :id"),
+                text(f"UPDATE library_files SET file_metadata = {as_json(':m')} WHERE id = :id"),
                 {"m": json.dumps(new_meta), "id": row_id},
             )
             updated += 1

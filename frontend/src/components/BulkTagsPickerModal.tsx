@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Tag, Loader2, Plus, X } from 'lucide-react';
+import { Tag, Loader2, Plus } from 'lucide-react';
 
 import { api, type LibraryTag } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
 import { libraryTagsQueryKey } from '../utils/libraryTagsQuery';
 
@@ -111,17 +112,6 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
     },
   });
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !applyMutation.isPending && !createTagMutation.isPending) {
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose, applyMutation.isPending, createTagMutation.isPending]);
-
   if (!open) return null;
 
   const createDisabled =
@@ -129,137 +119,118 @@ export function BulkTagsPickerModal({ open, fileIds, onClose }: BulkTagsPickerMo
     createTagMutation.isPending ||
     tags.some((tg) => tg.name.toLowerCase() === newTagName.trim().toLowerCase());
 
-  const titleId = 'bulk-tags-picker-title';
-
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60" onClick={() => !applyMutation.isPending && onClose()} />
-      <div
-        className="relative w-full max-w-md mx-4 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl max-h-[90vh] flex flex-col"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-      >
-        <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-bambu-dark-tertiary">
-          <h3 id={titleId} className="text-base font-semibold text-white flex items-center gap-2">
-            <Tag className="w-4 h-4 text-bambu-green" />
-            {t('fileManager.tags.bulkTitle', { count: fileIds.length })}
-          </h3>
-          <button
-            type="button"
-            className="p-1.5 text-bambu-gray hover:text-white rounded"
-            onClick={onClose}
-            aria-label={t('common.close')}
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+    <Modal
+      onClose={onClose}
+      title={t('fileManager.tags.bulkTitle', { count: fileIds.length })}
+      icon={<Tag className="w-4 h-4 text-bambu-green" />}
+      size="md"
+      closeDisabled={applyMutation.isPending}
+    >
+      <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex gap-4 text-sm">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="radio"
+            name="bulk-action"
+            checked={action === 'add'}
+            onChange={() => setAction('add')}
+            className="accent-bambu-green"
+          />
+          <span className="text-white">{t('fileManager.tags.actionAdd')}</span>
+        </label>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="radio"
+            name="bulk-action"
+            checked={action === 'remove'}
+            onChange={() => setAction('remove')}
+            className="accent-bambu-green"
+          />
+          <span className="text-white">{t('fileManager.tags.actionRemove')}</span>
+        </label>
+      </div>
 
-        <div className="px-5 py-3 border-b border-bambu-dark-tertiary flex gap-4 text-sm">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="radio"
-              name="bulk-action"
-              checked={action === 'add'}
-              onChange={() => setAction('add')}
-              className="accent-bambu-green"
-            />
-            <span className="text-white">{t('fileManager.tags.actionAdd')}</span>
-          </label>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="radio"
-              name="bulk-action"
-              checked={action === 'remove'}
-              onChange={() => setAction('remove')}
-              className="accent-bambu-green"
-            />
-            <span className="text-white">{t('fileManager.tags.actionRemove')}</span>
-          </label>
-        </div>
+      <div className="px-4 py-3 border-b border-bambu-dark-tertiary">
+        <input
+          type="text"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder={t('fileManager.tags.searchPlaceholder')}
+          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
+        />
+      </div>
 
-        <div className="px-5 py-3 border-b border-bambu-dark-tertiary">
+      <div className="overflow-y-auto flex-1 min-h-[8rem] max-h-[24rem]">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-12 text-bambu-gray">
+            <Loader2 className="w-5 h-5 animate-spin mr-2" />
+            {t('common.loading')}
+          </div>
+        ) : filteredTags.length === 0 ? (
+          <div className="py-12 text-center text-bambu-gray text-sm">
+            {tags.length === 0 ? t('fileManager.tags.empty') : t('fileManager.tags.noMatches')}
+          </div>
+        ) : (
+          <ul className="divide-y divide-bambu-dark-tertiary/40">
+            {filteredTags.map((tg) => (
+              <li key={tg.id}>
+                <label className="flex items-center gap-3 px-4 py-2 hover:bg-bambu-dark-tertiary/30 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(tg.id)}
+                    onChange={() => toggleTag(tg.id)}
+                    className="accent-bambu-green"
+                  />
+                  <span className="text-sm text-white truncate flex-1">{tg.name}</span>
+                  <span className="text-xs text-bambu-gray">{tg.file_count}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {action === 'add' && (
+        <div className="px-4 py-3 border-t border-bambu-dark-tertiary flex gap-2">
           <input
             type="text"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder={t('fileManager.tags.searchPlaceholder')}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
+            value={newTagName}
+            onChange={(e) => setNewTagName(e.target.value)}
+            placeholder={t('fileManager.tags.createPlaceholder')}
+            maxLength={64}
+            className="flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !createDisabled) {
+                e.preventDefault();
+                createTagMutation.mutate(newTagName.trim());
+              }
+            }}
           />
-        </div>
-
-        <div className="overflow-y-auto flex-1 min-h-[8rem] max-h-[24rem]">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-12 text-bambu-gray">
-              <Loader2 className="w-5 h-5 animate-spin mr-2" />
-              {t('common.loading')}
-            </div>
-          ) : filteredTags.length === 0 ? (
-            <div className="py-12 text-center text-bambu-gray text-sm">
-              {tags.length === 0 ? t('fileManager.tags.empty') : t('fileManager.tags.noMatches')}
-            </div>
-          ) : (
-            <ul className="divide-y divide-bambu-dark-tertiary/40">
-              {filteredTags.map((tg) => (
-                <li key={tg.id}>
-                  <label className="flex items-center gap-3 px-5 py-2 hover:bg-bambu-dark-tertiary/30 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(tg.id)}
-                      onChange={() => toggleTag(tg.id)}
-                      className="accent-bambu-green"
-                    />
-                    <span className="text-sm text-white truncate flex-1">{tg.name}</span>
-                    <span className="text-xs text-bambu-gray">{tg.file_count}</span>
-                  </label>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {action === 'add' && (
-          <div className="px-5 py-3 border-t border-bambu-dark-tertiary flex gap-2">
-            <input
-              type="text"
-              value={newTagName}
-              onChange={(e) => setNewTagName(e.target.value)}
-              placeholder={t('fileManager.tags.createPlaceholder')}
-              maxLength={64}
-              className="flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !createDisabled) {
-                  e.preventDefault();
-                  createTagMutation.mutate(newTagName.trim());
-                }
-              }}
-            />
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => createTagMutation.mutate(newTagName.trim())}
-              disabled={createDisabled}
-            >
-              {createTagMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-              {t('fileManager.tags.createButton')}
-            </Button>
-          </div>
-        )}
-
-        <div className="px-5 py-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose} disabled={applyMutation.isPending}>
-            {t('common.cancel')}
-          </Button>
           <Button
             type="button"
-            onClick={() => applyMutation.mutate()}
-            disabled={selected.size === 0 || applyMutation.isPending || fileIds.length === 0}
+            variant="secondary"
+            onClick={() => createTagMutation.mutate(newTagName.trim())}
+            disabled={createDisabled}
           >
-            {applyMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
-            {action === 'add' ? t('fileManager.tags.applyAdd') : t('fileManager.tags.applyRemove')}
+            {createTagMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+            {t('fileManager.tags.createButton')}
           </Button>
         </div>
+      )}
+
+      <div className="px-4 py-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
+        <Button type="button" variant="secondary" onClick={onClose} disabled={applyMutation.isPending}>
+          {t('common.cancel')}
+        </Button>
+        <Button
+          type="button"
+          onClick={() => applyMutation.mutate()}
+          disabled={selected.size === 0 || applyMutation.isPending || fileIds.length === 0}
+        >
+          {applyMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+          {action === 'add' ? t('fileManager.tags.applyAdd') : t('fileManager.tags.applyRemove')}
+        </Button>
       </div>
-    </div>
+    </Modal>
   );
 }

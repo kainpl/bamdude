@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Calendar, Clock, Hand, Power, ShieldCheck } from 'lucide-react';
+import { Calendar, Clock, Hand, Power, ShieldCheck, SkipForward } from 'lucide-react';
 import type { ScheduleOptionsProps, ScheduleType } from './types';
 import {
   formatDateInput,
@@ -25,6 +25,7 @@ export function ScheduleOptionsPanel({
   dateFormat = 'system',
   timeFormat = 'system',
   canControlPrinter = true,
+  showRunNext = false,
 }: ScheduleOptionsProps) {
   const { t } = useTranslation();
   const [dateValue, setDateValue] = useState('');
@@ -67,7 +68,13 @@ export function ScheduleOptionsPanel({
   }, [options.scheduleType, options.scheduledTime, dateFormat, timeFormat, onChange, options]);
 
   const handleScheduleTypeChange = (scheduleType: ScheduleType) => {
-    onChange({ ...options, scheduleType });
+    onChange({
+      ...options,
+      scheduleType,
+      // Next is defined only for an ASAP job. The backend repeats this guard
+      // for API callers; resetting it here keeps the visible form honest.
+      enqueuePosition: scheduleType === 'asap' ? options.enqueuePosition : 'end',
+    });
   };
 
   const updateScheduledTime = (newDateValue: string, newTimeValue: string) => {
@@ -207,7 +214,7 @@ export function ScheduleOptionsPanel({
           <input
             ref={hiddenInputRef}
             type="datetime-local"
-            className="absolute opacity-0 pointer-events-none"
+            className="accent-bambu-green absolute opacity-0 pointer-events-none"
             style={{ top: 0, left: 0, width: 0, height: 0 }}
             value={options.scheduledTime}
             onChange={handleCalendarChange}
@@ -221,6 +228,26 @@ export function ScheduleOptionsPanel({
         </div>
       )}
 
+      {showRunNext && (
+        <div className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            id="enqueueNext"
+            checked={options.enqueuePosition === 'next'}
+            onChange={(e) => onChange({ ...options, enqueuePosition: e.target.checked ? 'next' : 'end' })}
+            disabled={options.scheduleType !== 'asap'}
+            className="accent-bambu-green mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green disabled:opacity-50"
+          />
+          <div className="min-w-0">
+            <label htmlFor="enqueueNext" className="text-sm flex items-center gap-1 text-bambu-gray">
+              <SkipForward className="w-3.5 h-3.5" />
+              {t('printModal.runNext')}
+            </label>
+            <p className="text-xs text-bambu-gray/70">{t('printModal.runNextHint')}</p>
+          </div>
+        </div>
+      )}
+
       {/* Auto power off */}
       <div className="flex items-center gap-2">
         <input
@@ -229,7 +256,7 @@ export function ScheduleOptionsPanel({
           checked={options.autoOffAfter}
           onChange={(e) => onChange({ ...options, autoOffAfter: e.target.checked })}
           disabled={!canControlPrinter}
-          className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green disabled:opacity-50"
+          className="accent-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green disabled:opacity-50"
         />
         <label htmlFor="autoOffAfter" className={`text-sm flex items-center gap-1 ${canControlPrinter ? 'text-bambu-gray' : 'text-bambu-gray/50'}`}>
           <Power className="w-3.5 h-3.5" />
@@ -245,7 +272,7 @@ export function ScheduleOptionsPanel({
           checked={options.requirePreviousSuccess}
           onChange={(e) => onChange({ ...options, requirePreviousSuccess: e.target.checked })}
           disabled={!canControlPrinter}
-          className="mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green disabled:opacity-50"
+          className="accent-bambu-green mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green disabled:opacity-50"
         />
         <div className="min-w-0">
           <label htmlFor="requirePreviousSuccess" className={`text-sm flex items-center gap-1 ${canControlPrinter ? 'text-bambu-gray' : 'text-bambu-gray/50'}`}>

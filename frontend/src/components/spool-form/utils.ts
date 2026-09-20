@@ -349,16 +349,33 @@ export function saveRecentColor(color: ColorPreset, currentRecent: ColorPreset[]
 // Cases:
 //   - "GFG99" / built-in filament_id → already correct, returned as-is.
 //   - "GFSG99" / cloud setting_id    → strip the "S" → "GFG99".
+//   - "GFS00" / a SUPPORT family     → returned as-is: the S is the family's
+//                                      own (Support W, Support G, PVA …), and
+//                                      its preset is "GFSS00".
 //   - "P<uuid>" / cloud user preset  → null (filament_id only available via
 //                                      ``api.getCloudSettingDetail``; the
 //                                      caller passes the resolved value via
 //                                      ``targetFilamentId`` instead).
 //   - numeric local-preset id        → null.
 //   - material name ("PETG")          → null (fallback to name-based match).
+//
+// ⚠️ "GFS" is not a reliable marker of a setting_id — decide by SHAPE. Every
+// Bambu family id is `GF` + one letter + two digits or `GF` + three letters +
+// two digits; no setting_id is. Deciding by prefix turned "GFS00" into "GF00",
+// an id that exists nowhere, and the form sent it as the spool's family — the
+// server refused with `unknown filament family`, so nothing on a support
+// spool in an AMS could be saved, not even its weight (2026-09-04). The
+// backend's `utils/filament_ids.py` applies the same rule; keep them equal.
+const FAMILY_ID_SHAPE = /^GF[A-Z](?:[A-Z]{2})?\d{2}$/;
+
 export function normalizeSlicerCodeToFilamentId(code: string | null | undefined): string | null {
   if (!code) return null;
   const base = code.includes('_') ? code.split('_')[0] : code;
-  if (base.startsWith('GFS') && base.length >= 5) return 'GF' + base.slice(3);
+  if (FAMILY_ID_SHAPE.test(base)) return base;
+  if (base.startsWith('GFS')) {
+    const stripped = 'GF' + base.slice(3);
+    if (FAMILY_ID_SHAPE.test(stripped)) return stripped;
+  }
   if (base.startsWith('GF')) return base;
   return null;
 }

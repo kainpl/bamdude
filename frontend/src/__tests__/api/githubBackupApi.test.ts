@@ -33,6 +33,8 @@ describe('Git Backup API Types', () => {
       backup_kprofiles: true,
       backup_cloud_profiles: true,
       backup_settings: false,
+      backup_spools: true,
+      backup_archives: false,
       enabled: true,
       provider: 'github',
       api_base_url: null,
@@ -63,6 +65,8 @@ describe('Git Backup API Types', () => {
       backup_kprofiles: true,
       backup_cloud_profiles: false,
       backup_settings: true,
+      backup_spools: true,
+      backup_archives: false,
       enabled: true,
       provider: 'gitlab',
       api_base_url: 'https://gitlab.example.com',
@@ -88,6 +92,7 @@ describe('Git Backup API Types', () => {
       last_backup_at: '2026-01-27T10:00:00Z',
       last_backup_status: 'success',
       next_scheduled_run: '2026-01-28T00:00:00Z',
+      restore_running: false,
     };
 
     expect(status.configured).toBe(true);
@@ -103,6 +108,7 @@ describe('Git Backup API Types', () => {
       last_backup_at: null,
       last_backup_status: null,
       next_scheduled_run: null,
+      restore_running: false,
     };
 
     expect(status.is_running).toBe(true);
@@ -170,6 +176,8 @@ describe('Git Backup API Endpoints', () => {
       backup_kprofiles: true,
       backup_cloud_profiles: true,
       backup_settings: false,
+      backup_spools: true,
+      backup_archives: false,
       enabled: true,
       provider: 'github',
       api_base_url: null,
@@ -203,6 +211,7 @@ describe('Git Backup API Endpoints', () => {
       last_backup_at: null,
       last_backup_status: null,
       next_scheduled_run: null,
+      restore_running: false,
     };
 
     server.use(

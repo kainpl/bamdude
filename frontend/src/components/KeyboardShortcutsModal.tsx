@@ -1,7 +1,6 @@
-import { useEffect } from 'react';
-import { X, Keyboard, ExternalLink } from 'lucide-react';
+import { Keyboard, ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Card, CardContent } from './Card';
+import { Modal } from './Modal';
 
 interface NavItem {
   id: string;
@@ -123,74 +122,50 @@ export function KeyboardShortcutsModal({ onClose, navItems, sidebarItems }: Keyb
   const { t } = useTranslation();
   const shortcuts = getShortcuts(sidebarItems, navItems, t);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
-
   return (
-    <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-      onClick={onClose}
+    <Modal
+      onClose={onClose}
+      title={t('shortcuts.title')}
+      icon={<Keyboard className="w-5 h-5 text-bambu-green" />}
+      size="md"
     >
-      <Card className="w-full max-w-md" onClick={(e) => e.stopPropagation()}>
-        <CardContent className="p-0">
-          <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-            <div className="flex items-center gap-2">
-              <Keyboard className="w-5 h-5 text-bambu-green" />
-              <h2 className="text-xl font-semibold text-white">{t('shortcuts.title')}</h2>
-            </div>
-            <button
-              onClick={onClose}
-              className="text-bambu-gray hover:text-white transition-colors"
-              title={t('common.close', 'Close')}
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-
-          <div className="p-4 space-y-6 max-h-[60vh] overflow-y-auto">
-            {shortcuts.map((section) => (
-              <div key={section.category}>
-                <h3 className="text-sm font-medium text-bambu-gray mb-3">{section.category}</h3>
-                <div className="space-y-2">
-                  {section.items.map((shortcut, idx) => (
-                    <div
-                      key={`${section.category}-${idx}`}
-                      className="flex items-center justify-between gap-3"
-                    >
-                      <span className="text-white text-sm flex items-center gap-1.5">
-                        {shortcut.description}
-                        {shortcut.isExternal && (
-                          <ExternalLink className="w-3 h-3 text-bambu-gray" />
-                        )}
+      <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+        {shortcuts.map((section) => (
+          <div key={section.category}>
+            <h3 className="text-sm font-medium text-bambu-gray mb-3">{section.category}</h3>
+            <div className="space-y-2">
+              {section.items.map((shortcut, idx) => (
+                <div
+                  key={`${section.category}-${idx}`}
+                  className="flex items-center justify-between gap-3"
+                >
+                  <span className="text-white text-sm flex items-center gap-1.5">
+                    {shortcut.description}
+                    {shortcut.isExternal && (
+                      <ExternalLink className="w-3 h-3 text-bambu-gray" />
+                    )}
+                  </span>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {shortcut.keys.map((key, i) => (
+                      <span key={i} className="flex items-center gap-1">
+                        {i > 0 && <span className="text-xs text-bambu-gray">+</span>}
+                        <KeyBadge>{key}</KeyBadge>
                       </span>
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        {shortcut.keys.map((key, i) => (
-                          <span key={i} className="flex items-center gap-1">
-                            {i > 0 && <span className="text-xs text-bambu-gray">+</span>}
-                            <KeyBadge>{key}</KeyBadge>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
+        ))}
+      </div>
 
-          <div className="p-4 border-t border-bambu-dark-tertiary">
-            <p className="text-xs text-bambu-gray text-center">
-              {t('shortcuts.footerPrefix')} <KeyBadge>Esc</KeyBadge>{' '}
-              {t('shortcuts.footerSuffix')}
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+      <div className="p-4 border-t border-bambu-dark-tertiary">
+        <p className="text-xs text-bambu-gray text-center">
+          {t('shortcuts.footerPrefix')} <KeyBadge>Esc</KeyBadge>{' '}
+          {t('shortcuts.footerSuffix')}
+        </p>
+      </div>
+    </Modal>
   );
 }

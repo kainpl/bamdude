@@ -1,10 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { CardSizeSwitch } from '../CardSizeSwitch';
 import {
   Search, X, ArrowUpNarrowWide, ArrowDownWideNarrow,
   LayoutGrid, List, Activity, Filter, SlidersHorizontal,
 } from 'lucide-react';
 import type { QueueSortOption as SortOption } from '../../utils/queueOrder';
+import { Select } from '../Select';
 
 type ViewMode = 'expanded' | 'all' | 'timeline';
 
@@ -29,6 +31,10 @@ interface QueueToolbarProps {
 
   viewMode: ViewMode;
   onViewModeChange: (value: ViewMode) => void;
+
+  /** S · M · L · XL — how many cards share a row in the cards view. */
+  cardSize: number;
+  onCardSizeChange: (size: number) => void;
 
   hideOffline: boolean;
   onHideOfflineToggle: () => void;
@@ -64,6 +70,7 @@ function OverflowMenu({
       </button>
       {isOpen && (
         <>
+          {/* not-a-modal: menu */}
           <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
           <div
             className="absolute right-0 top-full z-20 mt-1 min-w-48 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary p-2 shadow-xl"
@@ -102,6 +109,8 @@ export function QueueToolbar({
   onSortDirectionToggle,
   viewMode,
   onViewModeChange,
+  cardSize,
+  onCardSizeChange,
   hideOffline,
   onHideOfflineToggle,
 }: QueueToolbarProps) {
@@ -142,23 +151,25 @@ export function QueueToolbar({
     const fullWidth = inMenu ? 'w-full' : '';
     return (
       <>
-        <select
+        <Select
+          size="sm"
+          className={fullWidth}
           value={statusFilter}
           onChange={(e) => onStatusFilterChange(e.target.value)}
-          className={`h-8 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 text-white focus:border-bambu-green focus:outline-none ${fullWidth}`}
         >
           <option value="all">{t('printers.filter.allStatuses')}</option>
           <option value="printing">{t('printers.status.printing')}</option>
           <option value="paused">{t('printers.status.paused')}</option>
           <option value="idle">{t('printers.status.idle')}</option>
           <option value="error">{t('printers.status.error')}</option>
-        </select>
+        </Select>
 
         {availableLocations.length > 0 && (
-          <select
+          <Select
+            size="sm"
+            className={fullWidth}
             value={locationFilter}
             onChange={(e) => onLocationFilterChange(e.target.value)}
-            className={`h-8 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 text-white focus:border-bambu-green focus:outline-none ${fullWidth}`}
           >
             <option value="all">{t('printers.filter.allLocations')}</option>
             {availableLocations.map((loc) => (
@@ -167,7 +178,7 @@ export function QueueToolbar({
                 {loc.label}
               </option>
             ))}
-          </select>
+          </Select>
         )}
 
         <button
@@ -191,16 +202,20 @@ export function QueueToolbar({
     return (
       <>
         <div className={`flex items-center gap-1 ${fullWidth}`}>
-          <select
+          <Select
+            size="sm"
+            className={inMenu ? 'flex-1' : ''}
             value={sortBy}
             onChange={(e) => onSortByChange(e.target.value as SortOption)}
-            className={`h-8 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 text-white focus:border-bambu-green focus:outline-none ${inMenu ? 'flex-1' : ''}`}
           >
             <option value="name">{t('printers.sort.name')}</option>
             <option value="status">{t('printers.sort.status')}</option>
             <option value="model">{t('printers.sort.model')}</option>
             <option value="location">{t('printers.sort.location')}</option>
-          </select>
+            <option value="tag">{t('printers.sort.tag')}</option>
+            <option value="eta">{t('printers.sort.eta')}</option>
+            <option value="freeAt">{t('printers.sort.freeAt')}</option>
+          </Select>
           <button
             type="button"
             onClick={onSortDirectionToggle}
@@ -267,6 +282,12 @@ export function QueueToolbar({
             })}
           </div>
         )}
+
+        {/* Card size — only the cards view has a grid to size, so the list
+            and timeline views do not show the control at all. */}
+        {viewMode === 'expanded' && (
+          <CardSizeSwitch value={cardSize} onChange={onCardSizeChange} fullWidth={inMenu} />
+        )}
       </>
     );
   };
@@ -277,7 +298,7 @@ export function QueueToolbar({
       <div className="relative min-w-0 flex-1">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
         <input
-          type="search"
+          type="text"
           autoComplete="off"
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}

@@ -116,7 +116,7 @@ async def test_create_rejects_unsupported_scope(db_session, alice: User):
     whole point of ``overlay`` being its own scope (upstream #2613) is that it
     reveals the print filename, which a ``camera_stream`` token must never gain.
     """
-    assert {"camera_stream", "camwall", "overlay"} == set(ALLOWED_SCOPES)
+    assert {"camera_stream", "camwall", "overlay", "monitor"} == set(ALLOWED_SCOPES)
     with pytest.raises(ValueError, match="unsupported scope"):
         await create_token(
             db_session,

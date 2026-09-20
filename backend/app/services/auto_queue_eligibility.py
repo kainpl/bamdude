@@ -42,14 +42,20 @@ Returns a tuple ``(printer, waiting_reason)``:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.auto_queue import AutoQueueItem
+from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.auto_queue_ams import _normalize_color_for_compare
+from backend.app.services.filament_intake import read_item_requirements, routing_detail
+from backend.app.services.filament_policy import auto_policy
+from backend.app.services.filament_requirements import PrintRequirementsCache
+from backend.app.services.filament_routing import resolve_filament_routing
 from backend.app.services.print_scheduler import _canonical_filament_type, scheduler
 from backend.app.services.printer_location_service import load_tree, path_of, subtree_ids
 from backend.app.services.printer_manager import printer_manager
@@ -178,6 +184,35 @@ def _count_override_color_matches(printer_id: int, overrides: list[dict]) -> int
     return matches
 
 
+async def busy_printer_ids(db: AsyncSession) -> set[int]:
+    """The printers the router may not place on this tick.
+
+    A printer is off-limits when EITHER its queue is printing OR its queue
+    already holds a pending item, however that item got there — manual queue,
+    scheduled, a prior auto-route. The ``status='printing'`` clause alone is not
+    enough: between auto-queue tick N (which assigns items 1..K to K printers as
+    pending rows) and the per-printer scheduler's next tick (which flips
+    ``PrinterQueue.status`` as its synchronous prep walks the items in queue_id
+    order) there is a window where some printers have flipped and the lagging
+    ones have not. A tick that fires inside it sees the laggards as free and
+    double-stacks the next items onto them — every new auto item landing on the
+    same lagging printer. "Has any pending row" closes the gap: each tick places
+    at most one new item per printer, and the next placement waits until the
+    queue actually drains.
+
+    One function, so the rebalancer (``services/queue_rebalance.py``) reads the
+    same definition the tick does.
+    """
+    printing = await db.execute(select(PrinterQueue.printer_id).where(PrinterQueue.status == "printing"))
+    holding = await db.execute(
+        select(PrinterQueue.printer_id)
+        .join(PrintQueueItem, PrintQueueItem.queue_id == PrinterQueue.id)
+        .where(PrintQueueItem.status == "pending")
+        .distinct()
+    )
+    return {pid for (pid,) in printing.all()} | {pid for (pid,) in holding.all()}
+
+
 async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list[Printer], str, str]:
     """Every printer this item is allowed to run on, before any readiness is asked.
 
@@ -201,7 +236,6 @@ async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list
     query = (
         select(Printer)
         .join(PrinterQueue, PrinterQueue.printer_id == Printer.id)
-        .where(func.lower(Printer.model) == normalized_model.lower())
         .where(Printer.is_active.is_(True))
         .where(Printer.archived.is_(False))
         .where(PrinterQueue.auto_distribute_eligible.is_(True))
@@ -228,7 +262,8 @@ async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list
             location_suffix = f" in {path_of(tree, item.target_location_id)}"
 
     result = await db.execute(query)
-    return list(result.scalars().all()), normalized_model, location_suffix
+    printers = [p for p in result.scalars().all() if normalize_model_name(p.model) == normalized_model]
+    return printers, normalized_model, location_suffix
 
 
 async def offline_candidates_for(db: AsyncSession, item: AutoQueueItem, busy_printers: set[int]) -> list[Printer]:
@@ -255,146 +290,59 @@ async def offline_candidates_for(db: AsyncSession, item: AutoQueueItem, busy_pri
     ]
 
 
+@dataclass(frozen=True)
+class EligiblePrinter:
+    printer: Printer | None = None
+    reason: str | None = None
+    plan: object = None
+    requirements: object = None
+
+    def __iter__(self):
+        # Compatibility for callers that only display the result. Assignment
+        # consumers carry plan and requirements, never a second greedy mapping.
+        return iter((self.printer, self.reason))
+
+
 async def find_eligible_printer(
     db: AsyncSession,
     item: AutoQueueItem,
     busy_printers: set[int],
     require_plate_clear: bool = True,
-) -> tuple[Printer | None, str | None]:
-    """Find an idle printer that satisfies the auto-queue item's requirements.
-
-    The waiting_reason is a user-facing string describing why no printer
-    matched. Returns ``(None, None)`` only when ``target_model`` is missing.
-    """
+    *,
+    cache: PrintRequirementsCache | None = None,
+    prefer_lowest: bool = False,
+) -> EligiblePrinter:
+    if item.target_model:
+        printers, normalized_model, location_suffix = await printers_for_item(db, item)
+        if not printers:
+            return EligiblePrinter(reason=f"No active {normalized_model} printers{location_suffix} eligible")
+    req = await read_item_requirements(db, item, cache)
+    if req.status != "ok":
+        return EligiblePrinter(reason=routing_detail(req.reason)["message"], requirements=req)
+    item.plate_id = req.resolved_plate_id
     if not item.target_model:
-        return None, None
-
+        item.target_model = req.model
     printers, normalized_model, location_suffix = await printers_for_item(db, item)
-
     if not printers:
-        return None, f"No active {normalized_model} printers{location_suffix} eligible"
-
-    required_types = []
-    if item.required_filament_types:
-        try:
-            import json as _json
-
-            parsed = _json.loads(item.required_filament_types)
-            if isinstance(parsed, list):
-                required_types = [str(t) for t in parsed if t]
-        except (ValueError, TypeError):
-            logger.warning("Auto item %s: invalid required_filament_types JSON", item.id)
-
-    filament_overrides: list[dict] = []
-    if item.filament_overrides:
-        try:
-            import json as _json
-
-            parsed = _json.loads(item.filament_overrides)
-            if isinstance(parsed, list):
-                filament_overrides = [o for o in parsed if isinstance(o, dict)]
-        except (ValueError, TypeError):
-            logger.warning("Auto item %s: invalid filament_overrides JSON", item.id)
-
-    force_overrides = [o for o in filament_overrides if o.get("force_color_match")]
-    pref_overrides = [o for o in filament_overrides if not o.get("force_color_match")]
-
-    # ``queue_drying_block`` is deliberately NOT read here any more. It answers
-    # "may a print interrupt drying?", which is a dispatch question, and
-    # ``check_queue`` still asks it at dispatch. Routing a job to a drying
-    # printer costs nothing — it waits in that printer's queue, visibly, and a
-    # drying printer simply ranks below a ready one in the sort below.
-    printers_busy: list[str] = []
-    printers_offline: list[str] = []
-    # Candidates rejected by this item's require_previous_success gate (m116).
-    printers_after_failure: list[str] = []
-    printers_missing_filament: list[tuple[str, list[str]]] = []
-    candidates: list[tuple[Printer, bool, int]] = []  # (printer, ready_now, color_match_count)
-
+        return EligiblePrinter(reason=f"No active {normalized_model} printers{location_suffix} eligible")
+    policy = auto_policy(item)
+    candidates, reasons = [], []
     for printer in printers:
         if printer.id in busy_printers:
-            # Already claimed in this tick. Surface "missing color" if force-color
-            # would have failed anyway, so the user knows it needs a filament change.
-            if force_overrides and not pref_overrides:
-                missing_colors = _get_missing_force_color_slots(printer.id, force_overrides)
-                if missing_colors:
-                    printers_missing_filament.append((printer.name, missing_colors))
-                    continue
-            printers_busy.append(printer.name)
+            reasons.append(f"{printer.name}: " + routing_detail("printer_busy")["message"])
             continue
-
-        is_connected = printer_manager.is_connected(printer.id)
-        if not is_connected:
-            printers_offline.append(printer.name)
-            continue
-
-        # Readiness is a PREFERENCE here, never a gate — see the module
-        # docstring. Whether the printer can start *right now* is the per-printer
-        # scheduler's question, asked again at dispatch; asking it at routing
-        # time only stops work reaching the queue where it belongs.
-        is_ready = scheduler._is_printer_idle(printer.id, require_plate_clear)
-
-        # The require_previous_success gate, adapted to the distributor tier.
-        # Upstream, with one flat queue, marks the item *skipped* when the last
-        # print failed — it has nowhere else to send it. We do: the gate makes
-        # this printer unsuitable for this item and the search moves on, so a
-        # farm with one bad machine keeps routing to the others. If every
-        # candidate has just failed, the item waits (and now says why) instead of
-        # being skipped, which a later success on any of them undoes by itself.
         if item.require_previous_success and not await scheduler.previous_print_succeeded(db, printer.id):
-            printers_after_failure.append(printer.name)
+            reasons.append(f"{printer.name}: " + routing_detail("previous_print_failed")["message"])
             continue
-
-        if required_types:
-            missing = _get_missing_filament_types(printer.id, required_types)
-            if missing:
-                if force_overrides:
-                    force_color_map = {
-                        (o.get("type") or "").upper(): o.get("color_name") or o.get("color", "?")
-                        for o in force_overrides
-                    }
-                    missing = [
-                        f"{t} ({force_color_map[t_upper]})" if (t_upper := t.upper()) in force_color_map else t
-                        for t in missing
-                    ]
-                printers_missing_filament.append((printer.name, missing))
-                continue
-
-        if force_overrides:
-            missing_colors = _get_missing_force_color_slots(printer.id, force_overrides)
-            if missing_colors:
-                printers_missing_filament.append((printer.name, missing_colors))
-                continue
-
-        if pref_overrides:
-            color_matches = _count_override_color_matches(printer.id, pref_overrides)
-            if color_matches == 0:
-                pref_descriptions = [f"{o.get('type', '?')} ({o.get('color', '?')})" for o in pref_overrides]
-                printers_missing_filament.append((printer.name, pref_descriptions))
-                continue
-        else:
-            color_matches = 0
-        candidates.append((printer, is_ready, color_matches))
-
+        result = resolve_filament_routing(
+            req, policy, printer_manager.get_feed_snapshot(printer.id), prefer_lowest=prefer_lowest
+        )
+        if result.plan is None:
+            reasons.append(f"{printer.name}: " + routing_detail(result.reason)["message"])
+            continue
+        ready = scheduler._is_printer_idle(printer.id, require_plate_clear)
+        candidates.append((ready, result.plan.color_matches, -printer.id, printer, result.plan))
     if candidates:
-        # Ready first, then the best colour match. A printer that is merely
-        # drying, or holding the plate-clear gate, still takes work — it just
-        # loses to one that can start immediately.
-        candidates.sort(key=lambda c: (c[1], c[2]), reverse=True)
-        return candidates[0][0], None
-
-    reasons: list[str] = []
-    if printers_missing_filament:
-        if force_overrides and not pref_overrides and not printers_busy:
-            all_missing = sorted({c for _, cols in printers_missing_filament for c in cols})
-            return None, f"No matching material/color. Waiting on {', '.join(all_missing)}"
-        names_and_missing = [f"{name} (needs {', '.join(miss)})" for name, miss in printers_missing_filament]
-        reasons.append(f"Waiting for filament: {'; '.join(names_and_missing)}")
-    if printers_after_failure:
-        reasons.append(f"Previous print failed: {', '.join(printers_after_failure)}")
-    if printers_busy:
-        reasons.append(f"Busy: {', '.join(printers_busy)}")
-    if printers_offline:
-        reasons.append(f"Offline: {', '.join(printers_offline)}")
-
-    return None, " | ".join(reasons) if reasons else f"No available {normalized_model} printers{location_suffix}"
+        _, _, _, printer, plan = max(candidates, key=lambda c: c[:3])
+        return EligiblePrinter(printer, plan=plan, requirements=req)
+    return EligiblePrinter(reason=" | ".join(reasons))

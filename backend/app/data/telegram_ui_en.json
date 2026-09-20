@@ -177,6 +177,21 @@
     "status_cancelled": "Cancelled",
     "status_skipped": "Skipped"
   },
+  "defects": {
+    "btn_defects": "Defects…",
+    "prompt_part": "{name} ×{quantity} — how many came out bad?",
+    "prompt_flat": "{name} ({quantity} pcs) — how many came out bad?",
+    "btn_other": "other…",
+    "btn_none_rest": "no defects, done",
+    "btn_cancel": "Cancel",
+    "enter_count": "Send the number of defective parts (0–{max})",
+    "invalid": "Send a whole number from 0 to {max}",
+    "recorded_part": "{name}: {defective} of {quantity} bad",
+    "done": "Defects recorded: {defective} of {quantity}",
+    "ledger_refused": "⚠ The free-stock shelf could not be corrected for {count} part(s) — they were already spent; fix it by hand on the product page",
+    "gone": "This print no longer exists",
+    "cancelled": "Cancelled"
+  },
   "queue_add": {
     "title": "Add to Queue",
     "select_file": "Select a file:",
@@ -240,6 +255,7 @@
     "registered": "Chat registered. Ask admin to activate and assign a role in Settings.",
     "disabled": "This chat is disabled. Contact admin.",
     "pending_setup": "This chat is pending setup. Contact admin.",
-    "no_permission": "No permission"
+    "no_permission": "No permission",
+    "not_in_scope": "This printer is outside your chat's scope"
   }
 }

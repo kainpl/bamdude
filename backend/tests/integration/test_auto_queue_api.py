@@ -14,22 +14,31 @@ populated. A latent ``AttributeError`` would surface as 500 on POST or as
 the GET list collapsing on the first row.
 """
 
+from pathlib import Path
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
+
+from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+from backend.tests.unit.services.test_product_composition import counting_statements
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_post_auto_queue_with_archive_returns_200_and_includes_archive_name(
-    async_client: AsyncClient, db_session
+    async_client: AsyncClient, db_session, tmp_path
 ):
     from backend.app.models.archive import PrintArchive
 
     archive = PrintArchive(
         filename="multi_plate.3mf",
         print_name="Multi Plate Project",
-        file_path="/tmp/multi_plate.3mf",
+        file_path=str(
+            write_routing_3mf(
+                tmp_path / "multi_plate.3mf", {1: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}]}
+            )
+        ),
         file_size=1024,
         content_hash="aq_archive_hash_0001",
         status="completed",
@@ -50,13 +59,18 @@ async def test_post_auto_queue_with_archive_returns_200_and_includes_archive_nam
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_post_auto_queue_with_library_file_returns_200_and_includes_filename(
-    async_client: AsyncClient, db_session
+    async_client: AsyncClient, db_session, tmp_path
 ):
     from backend.app.models.library import LibraryFile
 
     library_file = LibraryFile(
         filename="part_x5.gcode.3mf",
-        file_path="library/files/aq_libfile_hash_0001.3mf",
+        file_path=str(
+            write_routing_3mf(
+                tmp_path / "aq_libfile_hash_0001.3mf",
+                {1: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}]},
+            )
+        ),
         file_type="gcode",
         file_size=2048,
         file_hash="aq_libfile_hash_0001",
@@ -76,7 +90,7 @@ async def test_post_auto_queue_with_library_file_returns_200_and_includes_filena
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_get_auto_queue_list_renders_with_loaded_relationships(async_client: AsyncClient, db_session):
+async def test_get_auto_queue_list_renders_with_loaded_relationships(async_client: AsyncClient, db_session, tmp_path):
     """GET /auto-queue/ must serialise every row's relationships without
     raising. The original AttributeError would surface on the first row
     that had a non-null archive / library_file."""
@@ -86,14 +100,22 @@ async def test_get_auto_queue_list_renders_with_loaded_relationships(async_clien
     archive = PrintArchive(
         filename="aq_get_archive.3mf",
         print_name="Archive Row",
-        file_path="/tmp/aq_get_archive.3mf",
+        file_path=str(
+            write_routing_3mf(
+                tmp_path / "aq_get_archive.3mf", {1: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}]}
+            )
+        ),
         file_size=1024,
         content_hash="aq_archive_hash_0002",
         status="completed",
     )
     library_file = LibraryFile(
         filename="aq_get_libfile.gcode.3mf",
-        file_path="library/files/aq_get_libfile.3mf",
+        file_path=str(
+            write_routing_3mf(
+                tmp_path / "aq_get_libfile.3mf", {1: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}]}
+            )
+        ),
         file_type="gcode",
         file_size=2048,
         file_hash="aq_libfile_hash_0002",
@@ -124,7 +146,7 @@ async def test_get_auto_queue_list_renders_with_loaded_relationships(async_clien
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_cancelling_an_unrouted_item_deletes_the_row(async_client: AsyncClient, db_session):
+async def test_cancelling_an_unrouted_item_deletes_the_row(async_client: AsyncClient, db_session, tmp_path):
     """Cancel before dispatch is a hard delete, not ``status='cancelled'``.
 
     A row that never reached a printer has no ``print_queue`` partner, and
@@ -145,7 +167,11 @@ async def test_cancelling_an_unrouted_item_deletes_the_row(async_client: AsyncCl
     archive = PrintArchive(
         filename="aq_cancel.3mf",
         print_name="Cancel Me",
-        file_path="/tmp/aq_cancel.3mf",
+        file_path=str(
+            write_routing_3mf(
+                tmp_path / "aq_cancel.3mf", {1: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}]}
+            )
+        ),
         file_size=1024,
         content_hash="aq_archive_hash_0003",
         status="completed",
@@ -175,7 +201,9 @@ async def test_cancelling_an_unrouted_item_deletes_the_row(async_client: AsyncCl
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_batch_edit_reaches_every_pending_copy_but_not_their_positions(async_client: AsyncClient, db_session):
+async def test_batch_edit_reaches_every_pending_copy_but_not_their_positions(
+    async_client: AsyncClient, db_session, tmp_path
+):
     """One edit for N identical copies; positions stay per-copy (a group edit
     that stacked the batch onto one slot would undo any manual reorder)."""
     from backend.app.models.auto_queue import AutoQueueItem
@@ -183,7 +211,11 @@ async def test_batch_edit_reaches_every_pending_copy_but_not_their_positions(asy
 
     library_file = LibraryFile(
         filename="aq_batch_edit.gcode.3mf",
-        file_path="library/files/aq_batch_edit.3mf",
+        file_path=str(
+            write_routing_3mf(
+                tmp_path / "aq_batch_edit.3mf", {1: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}]}
+            )
+        ),
         file_type="gcode",
         file_size=2048,
         file_hash="aq_libfile_hash_edit",
@@ -219,14 +251,18 @@ async def test_batch_edit_reaches_every_pending_copy_but_not_their_positions(asy
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_cancelling_a_batch_deletes_its_unrouted_rows(async_client: AsyncClient, db_session):
+async def test_cancelling_a_batch_deletes_its_unrouted_rows(async_client: AsyncClient, db_session, tmp_path):
     """Batch cancel follows the same rule as the single-item cancel."""
     from backend.app.models.auto_queue import AutoQueueItem
     from backend.app.models.library import LibraryFile
 
     library_file = LibraryFile(
         filename="aq_batch_cancel.gcode.3mf",
-        file_path="library/files/aq_batch_cancel.3mf",
+        file_path=str(
+            write_routing_3mf(
+                tmp_path / "aq_batch_cancel.3mf", {1: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}]}
+            )
+        ),
         file_type="gcode",
         file_size=2048,
         file_hash="aq_libfile_hash_0003",
@@ -246,3 +282,145 @@ async def test_cancelling_a_batch_deletes_its_unrouted_rows(async_client: AsyncC
 
     rows = (await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.batch_id == batch_id))).scalars().all()
     assert list(rows) == [], "batch cancel must delete un-routed rows"
+
+
+# ======================================================================
+# Filing an auto-queue row under its order line (spec pass 7, Decision 4a)
+# ======================================================================
+
+
+async def _order_catalog(db_session, tmp_path, *, materials, plates=((1, "PETG", "shade"),)):
+    """A product whose plates come from ``plates`` (index, filament, object),
+    and an order carrying one line per entry of ``materials``.
+
+    Returns (library file, order, lines). Each plate gets its own
+    ``ProductPlate`` at that exact index, so a multi-plate file can be asked
+    about plate by plate.
+    """
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.product import Product, ProductPart, ProductPlate
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+
+    lib_file = LibraryFile(
+        filename="lamp.gcode.3mf",
+        file_path=str(
+            write_routing_3mf(
+                tmp_path / "lamp.gcode.3mf",
+                {
+                    index: [{"id": 1, "type": filament, "color": "#FFFFFF", "used_g": "1"}]
+                    for index, filament, _ in plates
+                },
+            )
+        ),
+        file_type="gcode",
+        file_size=1,
+        file_metadata={
+            "plates": [
+                {
+                    "index": index,
+                    "printable_objects": {"1": obj},
+                    "print_time_seconds": 100,
+                    "filaments": [{"slot_id": 1, "type": filament}],
+                }
+                for index, filament, obj in plates
+            ]
+        },
+    )
+    product = Product(name="Lamp")
+    db_session.add_all([lib_file, product])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            ProductPart(product_id=product.id, kind="printed", name=obj, name_key=obj, qty_per_unit=1, aliases=[obj])
+            for _index, _filament, obj in plates
+        ]
+        + [
+            ProductPlate(product_id=product.id, library_file_id=lib_file.id, plate_index=index)
+            for index, _f, _o in plates
+        ]
+    )
+    order = Project(name="O", status="active", priority="normal")
+    db_session.add(order)
+    await db_session.flush()
+    lines = [
+        ProjectLine(project_id=order.id, product_id=product.id, quantity=2, material=material, sort_order=i)
+        for i, material in enumerate(materials)
+    ]
+    db_session.add_all(lines)
+    await db_session.commit()
+    return lib_file, order, lines
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_auto_queueing_with_only_an_order_files_the_unambiguous_line(
+    async_client: AsyncClient, db_session, tmp_path
+):
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    lib_file, order, lines = await _order_catalog(db_session, tmp_path, materials=["PLA", "PETG"])
+
+    r = await async_client.post(
+        "/api/v1/auto-queue/",
+        json={"library_file_id": lib_file.id, "project_id": order.id, "plate_id": 1},
+    )
+    assert r.status_code == 200, r.text
+
+    row = (await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.id == r.json()["id"]))).scalar_one()
+    assert (row.project_id, row.project_line_id) == (order.id, lines[1].id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_auto_queueing_leaves_the_line_null_when_two_lines_are_alike(
+    async_client: AsyncClient, db_session, tmp_path
+):
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    lib_file, order, _lines = await _order_catalog(db_session, tmp_path, materials=["PETG", "PETG"])
+
+    r = await async_client.post(
+        "/api/v1/auto-queue/",
+        json={"library_file_id": lib_file.id, "project_id": order.id, "plate_id": 1},
+    )
+    assert r.status_code == 200, r.text
+
+    row = (await db_session.execute(select(AutoQueueItem).where(AutoQueueItem.id == r.json()["id"]))).scalar_one()
+    assert row.project_id == order.id and row.project_line_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_line_is_resolved_per_plate_inside_the_fan_out(
+    async_client: AsyncClient, db_session, test_engine, tmp_path
+):
+    """⚠️ One request, two plates, two different lines — read once.
+
+    ``plate_ids`` fans out to a row per plate, and the plates of one 3MF can
+    carry different filaments — so the QUESTION is asked inside the loop. Asking
+    once for the whole request would file both rows under whichever plate was
+    read first, and half the order would count the other half's work.
+
+    The rows the question READS are another matter: the order's lines and the
+    library file depend on the order and the file, never on the plate index, so
+    they are loaded once before the loop (``order_filing.line_filer``). Calling
+    ``resolve_line_id`` per plate repeated both SELECTs per plate of a
+    multi-plate request, which is why the count is part of this test.
+    """
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    lib_file, order, lines = await _order_catalog(
+        db_session, tmp_path, materials=["PLA", "PETG"], plates=((1, "PLA", "base"), (2, "PETG", "shade"))
+    )
+
+    with counting_statements(test_engine, match="FROM project_lines") as lines_read:
+        r = await async_client.post(
+            "/api/v1/auto-queue/",
+            json={"library_file_id": lib_file.id, "project_id": order.id, "plate_ids": [1, 2]},
+        )
+    assert r.status_code == 200, r.text
+
+    rows = (await db_session.execute(select(AutoQueueItem).order_by(AutoQueueItem.plate_id))).scalars().all()
+    assert [(row.plate_id, row.project_line_id) for row in rows] == [(1, lines[0].id), (2, lines[1].id)]
+    assert len(lines_read) == 1, lines_read

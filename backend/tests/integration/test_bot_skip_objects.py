@@ -33,6 +33,10 @@ class _Chat:
     def has_permission(self, _perm: str) -> bool:
         return self._allowed
 
+    def allows_printer(self, _printer_id) -> bool:
+        # m157 printer scope: this double models an unscoped chat.
+        return True
+
 
 def _state(*, supported=True, objects=None, skipped=(), partskip=None):
     st = MagicMock()

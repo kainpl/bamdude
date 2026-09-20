@@ -42,7 +42,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.api.routes import camera as camera_routes
 from backend.app.models.cloud_link import CloudLinkAudit, CloudLinkPrinter
 from backend.app.models.printer import Printer
-from backend.app.services import camera as camera_service, external_camera as external_camera_service
+from backend.app.services import camera_runtime
+from backend.app.services.camera_metrics import CameraCaptureResult
 from backend.app.services.cloud_link import snapshot as snapshot_module
 from backend.app.services.cloud_link.commands import CAMERA_SNAPSHOT_KIND, CameraAuditBudget
 from backend.app.services.cloud_link.snapshot import capture_and_upload
@@ -154,8 +155,8 @@ async def set_up(
         await session.commit()
 
     uplink = Uplink(manager=FakeManager())
-    # What ``build_snapshot`` would have left behind: the publish set as it
-    # stood at connect time.
+    # What ``build_snapshot_chunks`` would have left behind: the publish set
+    # as it stood at connect time.
     uplink.set_publish_set({printer_id} if published else set())
     return uplink
 
@@ -173,9 +174,8 @@ async def camera_rows(session_factory) -> list[CloudLinkAudit]:
 def a_camera_holding(monkeypatch, frame: bytes | None, *, viewer_attached: bool = False) -> list:
     """Point the product's camera functions at ``frame``. Returns the call log.
 
-    Patched on the modules the implementation imports from, not on
-    :mod:`snapshot` — so a version of the agent that grew its own RTSP client
-    would sail past every one of these patches and fail the assertions below.
+    Patched on the product runtime boundary, not on :mod:`snapshot` — so a
+    version that grows its own RTSP client still fails the assertions below.
     """
     calls: list = []
 
@@ -183,17 +183,25 @@ def a_camera_holding(monkeypatch, frame: bytes | None, *, viewer_attached: bool 
         calls.append(("live_frame_for_capture", printer_id))
         return (True, frame) if viewer_attached else (False, None)
 
-    async def capture_camera_frame_bytes(**kwargs):
-        calls.append(("capture_camera_frame_bytes", kwargs))
-        return frame
-
-    async def capture_external(url, camera_type, timeout=15, snapshot_url=None):
-        calls.append(("capture_external_frame", url, camera_type, snapshot_url))
-        return frame
+    async def capture(request):
+        if request.kind == "builtin":
+            calls.append(
+                (
+                    "capture_camera_frame_bytes",
+                    {
+                        "ip_address": request.ip_address,
+                        "access_code": request.access_code,
+                        "model": request.model,
+                        "timeout": request.timeout,
+                    },
+                )
+            )
+        else:
+            calls.append(("capture_external_frame", request.url, request.camera_type, request.snapshot_url))
+        return CameraCaptureResult(frame, "fresh" if frame else None)
 
     monkeypatch.setattr(camera_routes, "live_frame_for_capture", live_frame_for_capture)
-    monkeypatch.setattr(camera_service, "capture_camera_frame_bytes", capture_camera_frame_bytes)
-    monkeypatch.setattr(external_camera_service, "capture_frame", capture_external)
+    monkeypatch.setattr(camera_runtime, "capture", capture)
     return calls
 
 
@@ -271,8 +279,8 @@ async def test_a_printer_no_longer_available_is_refused_though_the_allowlist_sti
 
     The in-memory publish set is only as current as the last snapshot, so a
     printer archived a second ago would still be in it. ``is_active AND NOT
-    archived`` — the same definition ``build_snapshot`` filters on — is what
-    actually decides, and it is read from the database at capture time.
+    archived`` — the same definition ``build_snapshot_chunks`` filters on — is
+    what actually decides, and it is read from the database at capture time.
     """
     portal, url = await upload_portal()
     uplink = await set_up(session_factory, url, **{field: value})
@@ -734,11 +742,11 @@ async def test_a_capture_that_explodes_is_contained_here_and_not_only_by_the_cal
     portal, url = await upload_portal()
     uplink = await set_up(session_factory, url)
 
-    async def exploding(**kwargs):
+    async def exploding(*_args, **_kwargs):
         raise RuntimeError("the camera stack fell over")
 
     monkeypatch.setattr(camera_routes, "live_frame_for_capture", lambda pid: (False, None))
-    monkeypatch.setattr(camera_service, "capture_camera_frame_bytes", exploding)
+    monkeypatch.setattr(camera_runtime, "capture", exploding)
 
     await capture_and_upload(
         session_factory=session_factory,

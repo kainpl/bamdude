@@ -1,51 +1,39 @@
-## Description
+## What and why
 
-<!-- Provide a brief description of your changes -->
+<!-- What changes for the person running BamDude, and why. Link the Discussion or issue if there was one. -->
 
-## Related Issue
-
-<!-- Link to the issue this PR addresses (if applicable) -->
 Fixes #
 
-## Type of Change
+## Type of change
 
-<!-- Mark the relevant option with an "x" -->
+- [ ] Bug fix
+- [ ] New feature or behaviour change
+- [ ] Refactor / internal (no user-visible change)
+- [ ] Documentation
+- [ ] Port from upstream Bambuddy — upstream commit/PR: <!-- link -->
 
-- [ ] Bug fix (non-breaking change that fixes an issue)
-- [ ] New feature (non-breaking change that adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to change)
-- [ ] Documentation update
-- [ ] Code refactoring
-- [ ] Performance improvement
-- [ ] Test addition or update
+## How I tested it
 
-## Changes Made
+<!-- Commands run, what you clicked, what you watched. -->
 
-<!-- List the specific changes made in this PR -->
-
--
--
--
-
-## Screenshots
-
-<!-- If applicable, add screenshots to demonstrate your changes -->
-
-## Testing
-
-<!-- Describe how you tested your changes -->
-
-- [ ] I have tested this on my local machine
-- [ ] I have tested with my printer model: <!-- e.g., X1C, P1S, A1 -->
+- [ ] Tested on a real printer — model + firmware: <!-- e.g. P1S 01.08.02, X1C 01.09.00 --> (required if the change sends G-code or MQTT commands)
+- [ ] Database: <!-- SQLite / PostgreSQL / both -->
+- [ ] Screenshots or a recording attached (UI changes; light + dark if styling changed)
 
 ## Checklist
 
-- [ ] My code follows the project's coding style
-- [ ] I have commented my code where necessary
-- [ ] I have updated the documentation (if needed)
-- [ ] My changes generate no new warnings
-- [ ] I have tested my changes thoroughly
+<!-- Everything here is checked by CI or by review — see CONTRIBUTING.md for the why behind each line. -->
 
-## Additional Notes
+- [ ] Branch is based on `dev` and the PR targets `dev`
+- [ ] `ruff check backend/ && ruff format --check backend/` is clean
+- [ ] `cd frontend && npm run lint && npm run typecheck && npm run i18n:check` is clean (`npm run typecheck`, not a bare `tsc --noEmit`)
+- [ ] Tests pass locally (`CAMERA_RUNTIME=inline pytest backend/tests/ -n auto --timeout=300 --timeout-method=thread` from the repo root, `npm run test:run`), and a test that fails without this change is included
+- [ ] Every new user-facing string exists in **both** `en` and `uk` (frontend locales, backend JSON pairs, `api_errors_uk.json` via `scripts/api_error_catalog.py sync`)
+- [ ] One bullet added to `CHANGELOG.md` under `[Unreleased]`
+- [ ] Schema change: model edited **and** a new `m<NNN>_*.py` migration added; no shipped migration edited
+- [ ] New `Permission`: mapped in `core/auth.py` (scope or denied) **and** seeded to Administrators in the migration
+- [ ] No changes under `static/`
 
-<!-- Add any additional information that reviewers should know -->
+## Notes for the reviewer
+
+<!-- Trade-offs, things you were unsure about, follow-ups you deliberately left out. -->

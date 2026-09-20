@@ -75,7 +75,7 @@ describe('ArchivesPage', () => {
           meta: { current_page: 1, per_page: 50, total: mockArchives.length, last_page: 1 },
         });
       }),
-      http.get('/api/v1/archives/stats', () => {
+      http.get('/api/v1/statistics/overview', () => {
         return HttpResponse.json(mockArchiveStats);
       }),
       http.get('/api/v1/printers/', () => {

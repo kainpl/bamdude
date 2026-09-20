@@ -1,9 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="static/img/bamdude_logo_dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="static/img/bamdude_logo_light.png">
-    <img src="static/img/bamdude_logo_dark.png" alt="BamDude Logo" width="300">
-  </picture>
+  <img src="static/img/brand/readme-banner-1600x400.png" alt="BamDude" width="640">
 </p>
 
 <h1 align="center">BamDude</h1>
@@ -71,6 +67,8 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy), aimed
 ### A queue built for a farm, in two tiers
 
 - **One queue per printer, plus an Auto-Queue that distributes between them.** Work you have already assigned waits in that printer's own queue. Work you have not goes to the Auto-Queue, which routes it to whichever printer can take it — matching filament type and colour, and preferring an idle printer without refusing a busy one.
+- **A queued file is independent of its original.** Accepting work makes one verified, immutable copy in `data/queue-sources/`. A laptop can sleep, an SMB share can disconnect, an external library file can be moved or deleted, and an archive can be cleaned without changing a job already in either queue. Copy Queue reuses that accepted copy for another compatible printer, then asks for that printer's current AMS mapping and options; it never needs the original again. Identical bytes are stored once and remain until their last printer-queue or Auto-Queue job is removed; portable backups include the queue copies that their database snapshot names.
+- **The Schedule dialog asks once per group, not once per file.** Files whose answers would coincide — same printer model and nozzle, same filament types, same build plate — are grouped, and one dialog stands for the group: the printer or auto-queue you chose, when it should start, how many copies, the print options and macros. Each file still keeps its own plates and gets its own filament mapping. A different filament *colour* does not split a group; a filament *type* nothing on the chosen printer can supply stops the run and shows you that file. Any group can be declined with a tick, and then its files are asked about one by one — already filled in with the answer you gave.
 - **A single dispatch layer.** Queued prints, prints started from the printer's own screen, and files sent straight from a slicer all leave through one dispatcher. It claims the printer for the whole plate change, creates exactly one archive per physical print, and runs the swap macro before letting the next job in.
 
 ### Firmware for the whole farm, not one printer at a time
@@ -92,7 +90,7 @@ Upstream can send a Telegram message — a notification channel, one way, over t
 - **Maintenance** — see what is overdue, mark it done, edit the hours
 - **Add a printer** — type an IP and let SSDP fill in the serial, name and model
 - **Multi-chat with roles** — every chat gets its own permission group, so a shop-floor chat and an admin chat are not the same thing
-- **Per-chat notification settings** — event types, quiet hours and the daily digest belong to the chat, not to a global switch
+- **Per-chat notification settings** — event types, printer scope, milestone floor, quiet hours and the daily digest belong to the chat, not to a global switch
 - **Actionable notifications** — "Clear plate" and "Mark maintenance done" are buttons in the message itself
 
 ### Zigbee, with no hub in between
@@ -115,11 +113,19 @@ Upstream can send a Telegram message — a notification channel, one way, over t
 - **A reconciliation sweep** compares what BamDude believes is printing against what the printers actually report, so a job that ended in a way nobody saw does not sit there forever claiming to be running.
 - **Two hashes per archive, because the file that prints is not always the file you handed over.** BamDude patches the 3MF on its way to the printer, so an archive records both the original and the bytes actually sent. Deduplication on disk keys off the original — the same plate printed on five printers is stored once — and deleting an archive removes the file only when the last reference to it goes.
 
-### Projects that plan the work, not just group it
+### Projects are orders, and they say what to print next
 
-- **A print plan** — per-file copies with live filament, time and cost totals and per-row printed/remaining counters, applied back to the project's own targets in one click.
-- **Defective parts count against the target.** A project that needs forty usable parts is not finished because forty came off the plates. Scrap is recorded per print and subtracted.
-- **A file or folder can belong to several projects at once** — many-to-many, with per-chip unlink rather than one owner per file.
+A project used to be a folder with a target number written on it. It is an **order** now: who it is for, what it is worth, when it is due — and lines that each say *product × quantity*. What a thing is made of is a property of the **product**, not of the order that happens to want twelve of them.
+
+- **Customers, orders, products — three lists that mean three different things.** A line names a product and a quantity, with a material that filters and a colour that only hints; the order above it carries the customer, the price (and therefore the margin), the priority and the deadline. A product carries its parts — printed ones with how many go into one unit, purchased ones with a price and a link — and its plates, a plate being no more than "this plate of this file makes these parts". The same part sliced once per printer model is two plates of one product, not two products.
+- **"What to print next", per line, recalculated on every read.** BamDude picks plates greedily by the useful parts they yield per hour of printing, until the line's shortfall is covered, and it subtracts what is already committed: prints in progress, everything sitting in both queues, and the kits a line has taken from stock. Nothing is cached, so putting six plates in the queue and asking again offers six fewer.
+- **A line whose parts are sliced for two machines is offered both.** Alternative plates of equal yield come with the row, and the count can be split across them — which is the only way one line's work reaches two printer models, because the auto-queue routes each file to the machines it was sliced for. Work sent from the plan carries the full print profile you saved for that model, macros and all, rather than the writer's own defaults.
+- **The split is a starting point, not a sentence.** With *Rebalance across printer models* on (off by default), idle printers of another model take a line's still-pending prints when that finishes the line sooner — recalculating plates and counts for that bed, so a 6-part plate becomes three 2-part prints on a mini, or two parts one print on a bigger bed with at most a plate's worth of surplus. The same procedure runs on demand from the line's **Rebalance** button and from any pending row or `×N` block on the auto-queue panel, which says why a row cannot move. Never moved: prints already handed to a printer, scheduled, staged, pinned to filament slots, aimed at a location, queued from an archive, or not filed under a line; a moved row wears a `← P1S` badge.
+- **A print is filed under its order where it is started.** The print and auto-queue dialogs ask "which order is this for?" and offer the orders that still need this plate first, with how many prints each still wants; the queue writers fill in the line themselves when exactly one line of the named order can accept the plate, and refuse to guess between two. An order is never guessed — one product stands in many orders, and only the person pressing Print knows which.
+- **A product's spare parts have a shelf of their own.** The plate that makes four lids for an order that wanted three leaves a fourth: bank it to the product's free stock, and the next order can take whole kits off the shelf instead of printing them. It is a ledger of movements rather than a stock column — every reservation, release, correction and credit is a row you can read — and a print that belongs to no order lands there by itself. Kits taken from stock count as done everywhere: the line's progress, the plan and the "everything is printed" banner all see them. The **Stock** tab shows every shelf on the farm at once — kits and balances per product, which active orders hold kits in reserve, and one journal of every movement — so the question is "what do we have", not "what does this product have".
+- **Defective parts still count against the target.** An order for forty usable parts is not finished because forty came off the plates. Scrap is recorded per print and subtracted.
+- **Defects are recorded where you stand.** Every completed print card on an order page shows printed and defective and offers **Defects…**; on the printer card the finished print's counters sit beside **Clear plate** and **Repeat**, and either answer carries them; in Telegram the completion message offers **Defects…** and both plate answers lead to a one-tap-per-part prompt. Statistics gain **Defects by printer**. A print already counted into free stock has its shelf credit corrected when defects are recorded later, in either direction.
+- **A file or folder belongs to the product** — many-to-many, so one shared file can feed several products, and each product then feeds however many orders ask for it.
 
 ### Locations that nest
 
@@ -133,6 +139,7 @@ Both projects can set a temperature, a fan speed and jog the bed. BamDude speaks
 - **The air duct as a whole**, not just a fan speed — mode, filtration and every fan the machine has, with each fan's controllability resolved per mode, and the steps the printer actually accepts rather than a made-up 0/25/50/75/100.
 - **The print options** Bambu Studio exposes and upstream never sends: air-print detection, auto-recovery, automatic filament switching, filament tangle, nozzle-blob detection, plate alignment, plate marking, plate type, air purification, sound, and saving remote prints to storage.
 - **The AMS as a device, not just slots** — calibrate it, switch its firmware personality, reset its sequence, change its user settings. Backed by a **Printer Settings** and an **AMS Settings** dialog, each writing through MQTT and recording every applied change in an audit table.
+- **AMS Backup compatibility emulation** — per printer, off by default: manually assigned spools can be advertised to the AMS under one canonical colour and/or the Generic profile of their base material, so the firmware treats several compatible spools as one auto-refill group. Only the advertisement changes — the spool, its colour, brand and accounting stay as they are, routing and dispatch keep matching the real spool, and RFID spools are never touched. The AMS Backup dialog applies the policy to the assigned slots with a preview and a per-slot reason, and the same button rolls them back; the printer's own reported backup groups stay the only proof a group actually formed.
 - **Filament calibration over MQTT** — Pressure Advance and flow-rate runs started, tracked and read back, with K-profiles per nozzle and per extruder.
 - **Timelapse storage** — which medium records it on a machine that has two, how much room is left there, and dropping the oldest recording to make room for the next one.
 - **The printer's answer is read back.** Commands carry an acknowledgement listener, so a refusal is reported as a refusal instead of as success — and temperature requests are bounded by the machine's own limits rather than by a fixed table.
@@ -206,9 +213,13 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - **Printer calibration** — bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed (model-aware, from UI and Telegram bot)
 - Real-time printer status via WebSocket
 - Live camera streaming & snapshots — **fan-out broadcaster** so multiple browser tabs / HA cards / Frigate share a single upstream connection (the printer itself only allows one)
-- **Camera Wall** — one live grid of every printer's camera; on-screen tiles stream live (configurable cap, default 4), off-screen tiles fall back to periodic snapshots, with per-tile offline / status / HMS-error overlays
+- **Camera Wall** — every tile opens as a snapshot with its last successful frame time; click one tile to make it the wall's only LIVE view, another to move it, or the same tile to stop it. Error and pause tiles remain visibly marked before a camera is opened. Signed-in tiles can raise the existing M-size printer card; token kiosks stay passive and redacted. Snapshots retain the last image while refreshing, and off-screen tiles pause.
+- **One floating camera** — another printer replaces the current popup, cancelling its old stream. Refresh, minimize, close and page navigation release the actual image request.
+- **Optional camera worker** — `CAMERA_RUNTIME=worker` moves camera transport and FFmpeg ownership to one supervised local process. `inline` remains the default. INFO logs record worker lifecycle, viewers, first-frame timing and stream completion for diagnosis. This is experimental isolation, not automatic hardware acceleration or a guarantee against browser/network bottlenecks. See the [setup and diagnostics guide](https://docs.bamdude.top/features/camera/#experimental-isolated-camera-process) and [technical notes](docs/camera-observability.md).
 - Streaming overlay for OBS
 - External camera support (MJPEG, RTSP, USB)
+- **Cameras that belong to no printer** — a view of the room, the shelf or the filament dryer, with its own name, source and optional location. It appears on the camera wall and the kiosk wall, opens in the same floating window a printer's camera does, and one upstream connection is shared by everyone watching. It feeds nothing else: no finish photo, no plate check, no Obico — a room has no printer to have them
+- **Light for the camera (off by default)** — switches the chamber light on before any use of the camera and off again afterwards: a photo in Telegram, a stream in the browser, the camera wall, the finish photo, the plate check. Only a light that was off is switched on, and only a light BamDude switched on is switched off; a light you set yourself is never touched
 - Build plate empty detection
 - Printer control (stop, pause, resume, light, speed)
 - **Skip Objects** — cancel individual parts mid-print instead of losing the plate to one failure. The plate is shown from above with a clickable numbered marker on each object, positioned from the slicer's own pick data; already-skipped parts stay visible so nothing shifts under the cursor, and a skip raises the archive's defective-part count from the printer's own report. Available in the web and in the Telegram bot, from the same marker placement
@@ -235,14 +246,19 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 ### Scheduling & Automation
 - Per-printer queues with status tracking (idle/printing/paused/error)
 - **Load a queue from the library** — a file picker on the printer card, the per-printer queue and the auto-queue: folder tree on the left, small cards on the right, and ticks that survive moving between folders, so a batch assembled from three folders is one selection. Only files that can actually run are offered — sliced, and on a printer only those sliced for that machine
-- **Copy one printer's queue onto other printers of the same model** — pick what and where, and the Schedule dialog opens once per item with every chosen printer pinned; filament is mapped per printer inside that one dialog, so three items across four printers is three dialogs, not twelve. A print started outside the queue counts as part of it
-- **Drop a batch of files** on a printer, its queue or the auto-queue — each file gets its own Schedule dialog with a `2 / 5` counter, and anything that cannot be printed says why, by name. On the auto-queue each item's target model comes from its own slicing and cannot be changed
+- **Copy one printer's queue onto other printers of the same model** — pick what and where, and the Schedule dialog opens once per *group* of items that would be answered the same way, with every chosen printer pinned; filament is mapped per printer inside that one dialog. Each copied item keeps the plate it was queued with, and any block you had grouped in the source queue comes out as a block on the target. A print started outside the queue counts as part of it
+- **Drop a batch of files** on a printer, its queue or the auto-queue — files that would be answered the same way are grouped and answered once, and anything that cannot be printed says why, by name. On the auto-queue each item's target model comes from its own slicing and cannot be changed
 - **Queue organization** — group prints into collapsible batches, drag-reorder by grip handle, and sort the Printers page by ETA; the timeline shows only committed schedules
+- **ETA that counts the waiting** — an order's *Ready ≈* and a printer's *free at* include staggered starts (per group, with the slots heating right now), the plate-clear confirmation and the file transfer plus preheat, read from the very state the scheduler gates on rather than a second copy of it
+- **Run next, without touching a running print** — the Schedule dialog can put an ASAP job before a selected printer's pending work. Several selected plates stay together as one block; each printer is changed independently, and Auto-Queue keeps its own routing order.
 - **The auto-queue is a real queue** — items listed in true dispatch order, batches expand into their copies, and everything drags: a batch as a block or a single copy anywhere in the order. Any copy (or a whole batch) edits in the same dialog the per-printer queue uses; with shortest-job-first the distributor owns the order and the handles hide
+- **Rebalance across printer models** — behind a setting (off by default) the distributor moves an order line's still-pending copies to idle printers of another model when that finishes the line sooner, recalculating plates and print counts for that model's bed; a line is left alone for five minutes after a move. The line's Rebalance button and the panel's per-row action run it on demand regardless of the setting
+- **Quantity says what it means.** With several printers picked, the Print dialog's number was always «on each of them». It now offers **Per printer** (still the default) or **Total**, dealt round-robin across the picked printers in list order, and a line under the field states the outcome: «4 × 3 printers = 12 in total» or «13 → A1-01: 5 · A1-02: 4 · A1-03: 4». Remembered per browser; the auto-queue's field was always a total.
 - **Per-printer Maintenance Mode** — park a printer out of service (drops out of dispatch, scheduler, auto-drying, and metrics, and disconnects MQTT) without deleting it
 - **Archive a printer** — soft-retire a sold/decommissioned printer: it disappears from the Printers page, every picker, queues, dispatch, the scheduler, and MQTT, while its full print history is kept. Blocked while printing; cancels the printer's pending queue items. Restore or permanently delete it under Settings → Printing → Archived printers. Distinct from Maintenance Mode, which only parks a printer temporarily and keeps its card visible
 - Auto error-pause on print failure (queue stops, user decides next step)
-- Staggered start for farms (limit concurrent heating, bed temp monitoring)
+- Staggered start for farms (limit concurrent heating — farm-wide or per electrical phase and room via printer tags and locations, each group with its own cap if needed; bed temp monitoring)
+- Printer tags with colours; the Printers page filters and groups by tag
 - **Swap Mode** — A1 Mini / A1 plate swapper with multi-profile support (Kit, STL, JobOx), auto-detect swap files, per-job event selection (start sequence / change table), plate-clear auto-bypass
 - **Swap macro auto-execution** — `swap_mode_start` before print, `swap_mode_change_table` after print, with ACK + stg_cur completion tracking, queue pause on failure
 - **Quick Vibration Check toggle** — per-job toggle; when disabled, 3MF gcode post-processor comments out `M970` commands, recalculates MD5 sidecars, repacks archive
@@ -269,25 +285,29 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - **User-authored tags** — cross-cutting labels with a tag-filter rail and a bulk Tag action (separate from the automatic format/provenance badges)
 - Sort folders **by recent activity**, search recursively **inside subfolders**, and per-folder Markdown **description panels** (renders README.md)
 - **All Files** now lists your own uploads; a new **External** sidebar entry holds linked-folder files
+- **One plate at a time on the card** — a multi-plate file is browsed with arrows and a plate counter, and the picture, print time, weight, object count and filament types on the card all belong to the plate on screen rather than to a whole-file total nobody prints; in list view a row shows plate 1 with an *N plates* count, and its thumbnail opens that same card in a window
 - **Per-plate gallery + 3D / G-code preview with build-volume wireframe** — multi-plate 3MFs expose every plate; library viewer hides tabs that don't apply to the file (e.g. no 3D tab for sliced `.gcode.3mf`); dual-handle layer slider (crop both top and bottom), travel-moves toggle, layer-play with 1× / 2× / 4× / 8× speeds, theme-synced canvas, wireframe / X-ray toggle, OBJ format support, Export-as-PNG
 - External folder mounting (NAS, USB)
 - STL / OBJ thumbnail generation — shaded surfaces with Lambertian lighting + transparent background so cards "float" on whatever theme is rendering them
 - Folder structure with drag-and-drop
 - Print directly or add to queue
-- **The same file is never stored twice** — every path a file can arrive by (upload, API, drop, project import, slicer output, Send-to-Printer, and linked NAS folders) checks the content hash first and reuses the library row that already holds those bytes. You are told which file was used instead; a row whose bytes went missing gets them back in place, keeping its name, folder, notes, tags, projects and print history. Restoring from the trash asks before it recreates a duplicate
+- **The same file is never stored twice** — every path a file can arrive by (upload, API, drop, product import, slicer output, Send-to-Printer, and linked NAS folders) checks the content hash first and reuses the library row that already holds those bytes. You are told which file was used instead; a row whose bytes went missing gets them back in place, keeping its name, folder, notes, tags, products and print history. Restoring from the trash asks before it recreates a duplicate
 - Duplicate detection
 - **Trash bin with restore** — soft-delete with configurable retention (default 30 days), background sweeper hard-deletes past the window, opt-in scheduled auto-purge for old library files + archives; trash UIs render thumbnails and a unified split-button (trash + caret dropdown for purge-old)
 
-### Projects
-- Group related prints
-- Track plates and parts
-- **Print plan table**: per-file copies with live filament/time/cost totals + per-row printed/remaining counters
-- **Headline "remaining" totals** on Print Jobs / Print Time / Filament Used cards (green when done, amber when there's work left)
-- **One-click "Apply to project"** in print plan + BOM totals rows — writes plate count, parts count, and budget (filament + materials cost) into the project's target fields; project edit modal also pre-fills from the plan + shows a "From plan: N" hint to re-sync after changes
-- Link folders or individual files from the File Manager — **many-to-many** (a file or folder can belong to several projects at once)
-- Per-chip unlink (`×` on each project chip) for granular detach
-- **Duplicate a project** — copies the print plan, the file and folder links, the BOM, the targets, notes, tags, budget and cover under a new name, and leaves the print history behind. The copy always starts **active**, whatever the original's status, because duplicating one is how new work begins; sub-projects come along if you ask
-- Import/Export as ZIP or JSON
+### Projects — Orders, Products, Customers
+- **Four lists under one section** — orders (what was asked for), products (how it is made), customers (who asked), stock (what is on the shelves)
+- **Order page** — price and margin in the header, headline figures, lines of *product × quantity* that expand into per-part progress, a purchased-parts checklist, the prints grouped **by the line they belong to**, the queue, a timeline, notes and attachments, and a banner offering to close the order once everything is printed
+- **"What to print next"** under the lines — plates chosen by useful parts per print hour until the shortfall is covered, with live filament / time / cost totals, alternative files per printer model and a split across them, and one click sends a row, a split or the whole plan to the auto-queue — a single row can also go straight to a chosen printer through the print dialog, which preselects the file sliced for that machine
+- **Product page** — composition (printed parts with per-unit counts, purchased parts with price and link), plates grouped by file, linked files and folders, free stock, and every order that asks for this product
+- **Free stock of product parts** — a movement ledger with a reason on every row, a bank-the-surplus button on the order, a hand correction with a note, and a per-line "from stock" reservation that every order figure counts as already done
+- **The order is asked for where the print starts** — the print and auto-queue dialogs offer the orders that still need this plate first — by priority, then deadline, then age, never by how much they still want — with how many prints each is still short; the archive editor and the order page can file (and un-file) a print afterwards
+- **Count a past print into stock** — a button in the archive editor for an order-less print whose parts are on the shelf but were never recorded
+- **Stock tab** — every product with a shelf, its kits and per-part balances, the active orders holding its kits in reserve (each a link), and one farm-wide movements journal with product and reason filters that loads older pages on demand; a hand correction from a product's row. Read-only over the same ledger; no new permission
+- Link folders or individual files from the File Manager to a **product** — **many-to-many** (a file or folder can belong to several products at once), with per-chip unlink
+- **Duplicate an order** — customer, lines, price, tags, notes, attachments and cover under a new name, always **active**, leaving the prints, queue items, stock reservations and purchasing progress with the original
+- **Duplicate a product** — composition with its aliases, card, attachments, cover, file and folder links
+- **Products import/export as ZIP** — the product, its files and its attachments; a product cannot be deleted while an order line still asks for it
 
 </td>
 <td width="50%" valign="top">
@@ -313,9 +333,12 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - 17 handler modules, 198 i18n keys (EN/UK), MarkdownV2 formatting
 
 ### Notifications
+- **A notification centre in the app, filled even with no channel configured** — the Bell in the sidebar is a per-user inbox: every farm event you subscribe to (a failed print, a filament runout, an AMS alarm, queue trouble, a sensor past its limit) lands there with a live unread count, read/unread kept per person, and filters by level, printer and period. An alarm about hardware no longer waits for somebody to set up a bot or a mail server first. Each person picks their own events — warnings and errors by default — history retention is a farm setting (30 days), and the per-user e-mail switches that used to be the whole Notifications page are now one tab inside the centre
 - Telegram (auto-restart bot on config change), Discord, Email, Pushover, ntfy, CallMeBot, **Bark** (free iOS push, no account)
-- Home Assistant, custom webhooks
+- Home Assistant, custom webhooks, **Signal CLI API** (self-hosted via signal-cli-rest-api, numbers or a group; in Docker, `docker-compose.signal.yml` runs that server next to BamDude and `docker-install.sh` offers it)
 - Customizable message templates (MarkdownV2 editor)
+- **Printer scope on every channel — all, one, or several printers** per provider, and per Telegram chat (where it also scopes the bot itself: lists, cameras, queue, controls)
+- **Progress-milestone duration floor** — mute 25/50/75% for prints shorter than N minutes, per chat and per provider
 - Per-chat quiet hours & daily digest (Telegram)
 - Actionable buttons: clear plate, mark maintenance done, pause/stop on progress
 - Print finish photo, filament usage details
@@ -338,9 +361,11 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - **Spool labels you draw yourself** — text, QR, barcode and a block of the spool's colour, placed by hand in Settings → Filament → Marking, with the live picture coming from the renderer that makes the printed file. Sheets of stock are a separate thing you can also draw, so any label prints on any paper; a design too big for a cell is refused rather than shrunk. The designs BamDude ships are a starting point you can redraw. [Manual](https://docs.bamdude.top/features/labels/)
 - **Print straight to a label printer on a desk** — BamDude renders and queues, the BamDude Bridge app on that machine comes and takes it; nothing is exposed and no port is opened. A design declares whether it is going out as colour through a driver or to a one-bit thermal head.
 - **Managed storage-locations catalog** — pick shelves/drawers/dryboxes from a managed list instead of free-text
-- **Colour-aware reorder forecasting** — per-colour runway with material/brand filters and lead-time overrides. Spools you archived still count as **what you burned** while no longer counting as **what you have**, so retiring an empty spool does not collapse the rate onto its fresh replacement; a material you have run out of entirely stays on the panel for 90 days, because that is precisely the one to reorder
+- **Colour-aware reorder forecasting** — per-colour runway with material/brand filters and lead-time overrides. Every row also shows what your active orders have already promised out of that colour, and the reorder date counts down from the free stock rather than from everything on the shelf; promise more than the shelf holds and the row says so. Spools you archived still count as **what you burned** while no longer counting as **what you have**, so retiring an empty spool does not collapse the rate onto its fresh replacement; a material you have run out of entirely stays on the panel for 90 days, because that is precisely the one to reorder
+- **A History view — the whole farm's filament ledger in one list.** A third view mode beside Table and Cards: every consumption record there is, with what was printed, off which spool, on which printer, how many grams and what it cost. Search, filters (printer, material, brand, outcome, a date range, and the spool's own active/archived and in-printer/on-shelf state), sorting and paging are all computed by the server, and the running total is for the whole filter rather than the page on screen. Rows for spools you have since archived or deleted are kept and marked, not hidden — the grams they carry were still printed.
+- **Inventory search matches the name you see.** The list shows a name built from your own template, and the search box matches that composed name — so `LU/PET` finds a spool named `SUNLU/PETG`. A spool's id and lot number are searchable whatever the template says.
 - **The manager remembers what you filtered to** — material, brand, colour, category, name, the archived tab, the usage and stock chips, the search box and the view all survive leaving the page, and "Clear filters" clears the memory too
-- **CSV import / export** of the local inventory
+- **CSV import / export** of the local inventory — export takes every spool matching the current list filters, not just the visible page
 - Opt-out toggle for auto-adding unknown RFID spools
 - Spoolman integration
 
@@ -382,7 +407,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 </tr>
 </table>
 
-**Plus:** Customizable themes, mobile responsive, multi-language (EN/UK), auto updates, database backup/restore, PostgreSQL support
+**Plus:** Customizable themes, mobile responsive, multi-language (EN/UK), auto updates, database backup/restore, PostgreSQL support — bundled or your own
 
 ---
 
@@ -433,15 +458,32 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --loop asyncio
 
 See [`install/README.md`](install/README.md#windows-installer-exe-windows-1011) for options, or [`installers/windows/`](installers/windows/) to build the installer yourself.
 
+> **SmartScreen:** the installer is not code-signed, so Windows shows "Windows protected your PC" on first run — click **More info → Run anyway**.
+
+### Choosing a database
+
+BamDude uses **SQLite** by default — nothing to set up. One variable, `DATABASE_URL`, switches it:
+
+| `DATABASE_URL` | Backend |
+|----------------|---------|
+| *empty / unset* | SQLite (default) |
+| `embedded` | a **PostgreSQL 18 that ships with BamDude** and that BamDude starts and stops for you |
+| `postgresql+asyncpg://…` | your own PostgreSQL server |
+
+The bundled server comes from our open-source [embedded-postgres](https://github.com/kainpl/embedded-postgres) package (PostgreSQL 18 + pgvector + pg_stat_statements; Linux x86_64/aarch64/armv7l, macOS, Windows) and arrives with the Python dependencies — nothing to install by hand. It lives under `DATA_DIR/postgres/`, listens on `127.0.0.1` only, and generates its own password. Pin `EMBEDDED_PG_PORT=6432` if you want to reach it with psql or DBeaver.
+
+Every installer asks which one you want: `install.sh --db sqlite|embedded|external`, a **Database** page in the Windows installer (where the bundled server can run as its own `BamDudePostgres` service), and the same question in `docker-install.sh`. Switching from SQLite imports your existing database automatically on the next start.
+
+Full manual: **<https://docs.bamdude.top/features/postgresql/>**
+
 ### Upgrading or migrating
 
-Full manual: **<https://docs.bamdude.top/getting-started/upgrading/>** ([source](https://github.com/kainpl/docs.bamdude.top)) — covers migration from Bambuddy 2.2.2, from Bambuddy-HE / BamDude 0.2.x, routine BamDude-to-BamDude updates, switching between self-install / Docker / GHCR, and rollback.
+Full manual: **<https://docs.bamdude.top/getting-started/upgrading/>** ([source](https://github.com/kainpl/docs.bamdude.top)) — covers migration from Bambuddy-HE / BamDude 0.2.x, routine BamDude-to-BamDude updates, switching between self-install / Docker / GHCR, and rollback.
 
 Short version:
 
-- **From Bambuddy 2.2.2** (tested & supported) — drop `bambuddy.db` into BamDude's `data/` and start. The `m000` migration imports automatically and renames the file to `bamdude.db`.
+- **From Bambuddy** — no longer supported since 0.6.0. BamDude forked at Bambuddy 2.2.2 and the two schemas have diverged too far for a one-time import; start BamDude with an empty data directory and re-add printers and spools.
 - **From Bambuddy-HE / BamDude 0.2.x / 0.3.x** (tested & supported) — Docker users run `install/migrate-volumes.sh` once to copy `bambuddy_he_*` → `bamdude_*`; native users just point the installer at the existing data dir.
-- **From Bambuddy 0.2.3 or newer** — ⚠️ not tested. BamDude diverged from upstream at 2.2.2 and applies its own migrations; newer upstream schemas may hit `no such column` errors on boot. Back up first, keep the Bambuddy data directory untouched, and file an issue if you hit a wall.
 
 ### Telegram Bot Setup
 
@@ -465,7 +507,7 @@ Short version:
 |-----------|------------|
 | Backend | Python, FastAPI, SQLAlchemy, aiogram 3.x |
 | Frontend | React 19, TypeScript, Tailwind CSS 4 |
-| Database | SQLite (default) or PostgreSQL |
+| Database | SQLite (default), your own PostgreSQL, or a bundled PostgreSQL 18 on native installs |
 | 3D Viewer | Three.js |
 | Communication | MQTT (TLS), FTPS |
 | Telegram | aiogram 3.x, MarkdownV2, FSM |
@@ -500,11 +542,23 @@ DEBUG=true uvicorn backend.app.main:app --reload --loop asyncio
 cd frontend && npm install && npm run dev
 ```
 
+Want to contribute? [CONTRIBUTING.md](CONTRIBUTING.md) has the setup, the checks
+CI runs and the house rules; [SECURITY.md](SECURITY.md) is for vulnerabilities.
+Working with a coding agent? [CLAUDE.md](CLAUDE.md) is the engineering guide it
+should read first ([AGENTS.md](AGENTS.md) points there for other tools), and
+each release attaches the repository's code graph (`bamdude-code-graph-*.json.gz`).
+
 ---
 
 ## License
 
 AGPL-3.0 License — see [LICENSE](LICENSE) for details.
+
+---
+
+## Privacy
+
+<https://docs.bamdude.top/privacy/>. BamDude talks to your printers on your own network. The only data it sends out is anonymised usage telemetry (on by default; opt out in Settings or with `TELEMETRY_DISABLED=true`) and the bug reports you file explicitly. Optional integrations you enable yourself (Telegram, Spoolman, Obico, an OIDC provider, …) send data to the services you configure, under those services' own policies.
 
 ---
 

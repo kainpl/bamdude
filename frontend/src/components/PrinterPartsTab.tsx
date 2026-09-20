@@ -23,7 +23,7 @@ export function PrinterPartsTab({ data, onRefetch }: Props) {
 
   return (
     <div className="space-y-4">
-      <div className={dual ? 'grid grid-cols-2 gap-6' : ''}>
+      <div className={dual ? 'grid grid-cols-2 gap-4' : ''}>
         {ordered.map((n) => (
           <NozzleCard
             key={n.id}

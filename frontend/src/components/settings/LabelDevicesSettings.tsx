@@ -102,7 +102,7 @@ export function LabelDevicesSettings() {
           checked={enabled}
           disabled={toggle.isPending}
           onChange={(e) => toggle.mutate(e.target.checked)}
-          className="w-4 h-4 mt-0.5 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+          className="accent-bambu-green w-4 h-4 mt-0.5 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
         />
         <span>
           <span className="text-white">{t('labelDevices.enableSubsystem')}</span>

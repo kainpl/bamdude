@@ -7,6 +7,8 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { SmartPlug, SmartPlugCreate, SmartPlugUpdate, DiscoveredTasmotaDevice } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
+import { Select } from './Select';
 
 interface AddSmartPlugModalProps {
   plug?: SmartPlug | null;
@@ -188,19 +190,14 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
     staleTime: 0,
   });
 
-  // Close on Escape key and cleanup scan polling
+  // Cleanup scan polling
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
       if (scanPollRef.current) {
         clearInterval(scanPollRef.current);
       }
     };
-  }, [onClose]);
+  }, []);
 
   // Start scanning for Tasmota devices (auto-detects network)
   const startScan = async () => {
@@ -445,1377 +442,1362 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
   const isPending = createMutation.isPending || updateMutation.isPending;
 
   return (
-    <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-      onClick={onClose}
+    <Modal
+      onClose={onClose}
+      title={isEditing ? t('smartPlugs.editTitle') : t('smartPlugs.addTitle')}
+      size="md"
     >
-      <div
-        className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-md max-h-[90vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary flex-shrink-0">
-          <h2 className="text-lg font-semibold text-white">
-            {isEditing ? t('smartPlugs.editTitle') : t('smartPlugs.addTitle')}
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-bambu-gray hover:text-white transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+      {/* Form */}
+      <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto">
+        {error && (
+          <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-400 dark:border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
+            {error}
+          </div>
+        )}
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto">
-          {error && (
-            <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-400 dark:border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
-              {error}
-            </div>
-          )}
+        {/* Plug Type Selector - only show when not editing.
+            A select rather than a row of buttons: five types no longer fit
+            across one row on a narrow screen, and the list is expected to keep
+            growing. */}
+        {!isEditing && (
+          <div>
+            <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.plugType')}</label>
+            <Select
+              className="w-full"
+              value={plugType}
+              onChange={(e) => {
+                setPlugType(e.target.value as typeof plugType);
+                setTestResult(null);
+                setError(null);
+              }}
+            >
+              <option value="tasmota">Tasmota</option>
+              <option value="homeassistant">Home Assistant</option>
+              <option value="mqtt">MQTT</option>
+              <option value="rest">REST</option>
+              <option value="zigbee">Zigbee</option>
+            </Select>
+          </div>
+        )}
 
-          {/* Plug Type Selector - only show when not editing.
-              A select rather than a row of buttons: five types no longer fit
-              across one row on a narrow screen, and the list is expected to keep
-              growing. */}
-          {!isEditing && (
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.plugType')}</label>
-              <select
-                value={plugType}
-                onChange={(e) => {
-                  setPlugType(e.target.value as typeof plugType);
-                  setTestResult(null);
-                  setError(null);
-                }}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-              >
-                <option value="tasmota">Tasmota</option>
-                <option value="homeassistant">Home Assistant</option>
-                <option value="mqtt">MQTT</option>
-                <option value="rest">REST</option>
-                <option value="zigbee">Zigbee</option>
-              </select>
-            </div>
-          )}
+        {/* Discovery Section - only show when not editing and Tasmota is selected */}
+        {!isEditing && plugType === 'tasmota' && (
+          <div className="space-y-3">
+            {/* Scan button - auto-detects network */}
+            {isScanning ? (
+              <Button type="button" variant="secondary" onClick={stopScan} className="w-full">
+                <X className="w-4 h-4" />
+                {t('smartPlugs.stopScanning')}
+              </Button>
+            ) : (
+              <Button type="button" variant="primary" onClick={startScan} className="w-full">
+                <Search className="w-4 h-4" />
+                {t('smartPlugs.discoverTasmota')}
+              </Button>
+            )}
 
-          {/* Discovery Section - only show when not editing and Tasmota is selected */}
-          {!isEditing && plugType === 'tasmota' && (
-            <div className="space-y-3">
-              {/* Scan button - auto-detects network */}
-              {isScanning ? (
-                <Button type="button" variant="secondary" onClick={stopScan} className="w-full">
-                  <X className="w-4 h-4" />
-                  {t('smartPlugs.stopScanning')}
-                </Button>
-              ) : (
-                <Button type="button" variant="primary" onClick={startScan} className="w-full">
-                  <Search className="w-4 h-4" />
-                  {t('smartPlugs.discoverTasmota')}
-                </Button>
-              )}
-
-              {/* Progress bar */}
-              {isScanning && scanProgress.total > 0 && (
-                <div className="space-y-1">
-                  <div className="flex justify-between text-xs text-bambu-gray">
-                    <span>{t('smartPlugs.addSmartPlug.scanningNetwork')}</span>
-                    <span>{scanProgress.scanned} / {scanProgress.total}</span>
-                  </div>
-                  <div className="w-full bg-bambu-dark-tertiary rounded-full h-2">
-                    <div
-                      className="bg-bambu-green h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${(scanProgress.scanned / scanProgress.total) * 100}%` }}
-                    />
-                  </div>
+            {/* Progress bar */}
+            {isScanning && scanProgress.total > 0 && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs text-bambu-gray">
+                  <span>{t('smartPlugs.addSmartPlug.scanningNetwork')}</span>
+                  <span>{scanProgress.scanned} / {scanProgress.total}</span>
                 </div>
-              )}
-
-              {/* Discovered devices */}
-              {discoveredDevices.length > 0 && (
-                <div className="space-y-2">
-                  <p className="text-xs text-bambu-gray">{t('smartPlugs.foundDevices', { count: discoveredDevices.length })}</p>
-                  <div className="max-h-40 overflow-y-auto space-y-1">
-                    {discoveredDevices.map((device) => (
-                      <button
-                        key={device.ip_address}
-                        type="button"
-                        onClick={() => selectDevice(device)}
-                        className="w-full flex items-center justify-between p-2 bg-bambu-dark hover:bg-bambu-dark-tertiary rounded-lg transition-colors text-left border border-bambu-dark-tertiary"
-                      >
-                        <div className="flex items-center gap-2">
-                          <Plug className="w-4 h-4 text-bambu-green" />
-                          <div>
-                            <p className="text-sm text-white">{device.name}</p>
-                            <p className="text-xs text-bambu-gray">{device.ip_address}</p>
-                          </div>
-                        </div>
-                        {device.state && (
-                          <span className={`flex items-center gap-1 text-xs ${
-                            device.state === 'ON' ? 'text-bambu-green' : 'text-bambu-gray'
-                          }`}>
-                            <Power className="w-3 h-3" />
-                            {device.state}
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
+                <div className="w-full bg-bambu-dark-tertiary rounded-full h-2">
+                  <div
+                    className="bg-bambu-green h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${(scanProgress.scanned / scanProgress.total) * 100}%` }}
+                  />
                 </div>
-              )}
+              </div>
+            )}
 
-              {!isScanning && discoveredDevices.length === 0 && scanProgress.total > 0 && (
-                <p className="text-xs text-bambu-gray text-center py-2">
-                  {t('smartPlugs.noDevicesFound')}
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Home Assistant Entity Selector - only show when HA is selected */}
-          {plugType === 'homeassistant' && (
-            <div className="space-y-3">
-              {/* HA not configured */}
-              {!haConfigured && (
-                <div className="space-y-3">
-                  <div className="p-3 bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-400 dark:border-yellow-500/50 rounded-lg text-sm text-yellow-700 dark:text-yellow-400">
-                    {t('smartPlugs.haNotConfigured')}{' '}
-                    <span className="font-medium">{t('smartPlugs.haSettingsPath')}</span>
-                  </div>
-                  <div>
-                    <label className="block text-sm text-bambu-gray mb-1 opacity-50">{t('smartPlugs.selectEntity')}</label>
-                    <select
-                      disabled
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray cursor-not-allowed opacity-50"
+            {/* Discovered devices */}
+            {discoveredDevices.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs text-bambu-gray">{t('smartPlugs.foundDevices', { count: discoveredDevices.length })}</p>
+                <div className="max-h-40 overflow-y-auto space-y-1">
+                  {discoveredDevices.map((device) => (
+                    <button
+                      key={device.ip_address}
+                      type="button"
+                      onClick={() => selectDevice(device)}
+                      className="w-full flex items-center justify-between p-2 bg-bambu-dark hover:bg-bambu-dark-tertiary rounded-lg transition-colors text-left border border-bambu-dark-tertiary"
                     >
-                      <option>{t('smartPlugs.addSmartPlug.chooseEntity')}</option>
-                    </select>
-                  </div>
+                      <div className="flex items-center gap-2">
+                        <Plug className="w-4 h-4 text-bambu-green" />
+                        <div>
+                          <p className="text-sm text-white">{device.name}</p>
+                          <p className="text-xs text-bambu-gray">{device.ip_address}</p>
+                        </div>
+                      </div>
+                      {device.state && (
+                        <span className={`flex items-center gap-1 text-xs ${
+                          device.state === 'ON' ? 'text-bambu-green' : 'text-bambu-gray'
+                        }`}>
+                          <Power className="w-3 h-3" />
+                          {device.state}
+                        </span>
+                      )}
+                    </button>
+                  ))}
                 </div>
-              )}
+              </div>
+            )}
 
-              {/* HA configured - show loading/entities */}
-              {haConfigured && (
-                <>
-                  {haEntitiesLoading && (
-                    <div className="flex items-center justify-center py-4 text-bambu-gray">
-                      <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                      {t('smartPlugs.loadingEntities')}
-                    </div>
-                  )}
+            {!isScanning && discoveredDevices.length === 0 && scanProgress.total > 0 && (
+              <p className="text-xs text-bambu-gray text-center py-2">
+                {t('smartPlugs.noDevicesFound')}
+              </p>
+            )}
+          </div>
+        )}
 
-                  {haEntitiesError && (
-                    <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-400 dark:border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
-                      {t('smartPlugs.failedToLoadEntities', { error: (haEntitiesError as Error).message })}
-                    </div>
-                  )}
+        {/* Home Assistant Entity Selector - only show when HA is selected */}
+        {plugType === 'homeassistant' && (
+          <div className="space-y-3">
+            {/* HA not configured */}
+            {!haConfigured && (
+              <div className="space-y-3">
+                <div className="p-3 bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-400 dark:border-yellow-500/50 rounded-lg text-sm text-yellow-700 dark:text-yellow-400">
+                  {t('smartPlugs.haNotConfigured')}{' '}
+                  <span className="font-medium">{t('smartPlugs.haSettingsPath')}</span>
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1 opacity-50">{t('smartPlugs.selectEntity')}</label>
+                  <Select
+                    tone="muted"
+                    className="w-full cursor-not-allowed opacity-50"
+                    disabled
+                  >
+                    <option>{t('smartPlugs.addSmartPlug.chooseEntity')}</option>
+                  </Select>
+                </div>
+              </div>
+            )}
 
-                  {/* Searchable Entity Dropdown */}
-                  {(() => {
-                    // Filter out entities already configured (except current plug when editing)
-                    const configuredEntityIds = existingPlugs
-                      ?.filter(p => p.ha_entity_id && p.id !== plug?.id)
-                      .map(p => p.ha_entity_id) || [];
-                    const availableEntities = (haEntities || []).filter(e => !configuredEntityIds.includes(e.entity_id));
-                    const selectedEntity = haEntities?.find(e => e.entity_id === haEntityId);
+            {/* HA configured - show loading/entities */}
+            {haConfigured && (
+              <>
+                {haEntitiesLoading && (
+                  <div className="flex items-center justify-center py-4 text-bambu-gray">
+                    <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                    {t('smartPlugs.loadingEntities')}
+                  </div>
+                )}
 
-                    return (
-                      <div ref={entityDropdownRef} className="relative">
-                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.selectEntity')}</label>
-                        <div className="relative">
-                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                          <input
-                            type="text"
-                            value={isEntityDropdownOpen ? haEntitySearch : (selectedEntity ? `${selectedEntity.friendly_name} (${selectedEntity.entity_id})` : '')}
-                            onChange={(e) => {
-                              setHaEntitySearch(e.target.value);
-                              if (!isEntityDropdownOpen) setIsEntityDropdownOpen(true);
-                            }}
-                            onFocus={() => {
-                              setIsEntityDropdownOpen(true);
+                {haEntitiesError && (
+                  <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-400 dark:border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
+                    {t('smartPlugs.failedToLoadEntities', { error: (haEntitiesError as Error).message })}
+                  </div>
+                )}
+
+                {/* Searchable Entity Dropdown */}
+                {(() => {
+                  // Filter out entities already configured (except current plug when editing)
+                  const configuredEntityIds = existingPlugs
+                    ?.filter(p => p.ha_entity_id && p.id !== plug?.id)
+                    .map(p => p.ha_entity_id) || [];
+                  const availableEntities = (haEntities || []).filter(e => !configuredEntityIds.includes(e.entity_id));
+                  const selectedEntity = haEntities?.find(e => e.entity_id === haEntityId);
+
+                  return (
+                    <div ref={entityDropdownRef} className="relative">
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.selectEntity')}</label>
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                        <input
+                          type="text"
+                          value={isEntityDropdownOpen ? haEntitySearch : (selectedEntity ? `${selectedEntity.friendly_name} (${selectedEntity.entity_id})` : '')}
+                          onChange={(e) => {
+                            setHaEntitySearch(e.target.value);
+                            if (!isEntityDropdownOpen) setIsEntityDropdownOpen(true);
+                          }}
+                          onFocus={() => {
+                            setIsEntityDropdownOpen(true);
+                            setHaEntitySearch('');
+                          }}
+                          placeholder={t('smartPlugs.addSmartPlug.placeholders.searchEntities')}
+                          className="w-full pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                        />
+                        {haEntityId && !isEntityDropdownOpen && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setHaEntityId('');
                               setHaEntitySearch('');
                             }}
-                            placeholder={t('smartPlugs.addSmartPlug.placeholders.searchEntities')}
-                            className="w-full pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                          />
-                          {haEntityId && !isEntityDropdownOpen && (
+                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-bambu-dark-tertiary rounded"
+                          >
+                            <X className="w-4 h-4 text-bambu-gray hover:text-white" />
+                          </button>
+                        )}
+                        {haEntitiesLoading && (
+                          <Loader2 className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray animate-spin" />
+                        )}
+                      </div>
+
+                      {/* Dropdown */}
+                      {isEntityDropdownOpen && (
+                        <div className="absolute z-50 w-full mt-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                          {haEntitiesLoading && (
+                            <div className="px-3 py-2 text-sm text-bambu-gray flex items-center gap-2">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              {t('smartPlugs.loading')}
+                            </div>
+                          )}
+                          {!haEntitiesLoading && availableEntities.length === 0 && (
+                            <div className="px-3 py-2 text-sm text-bambu-gray">
+                              {debouncedSearch
+                                ? t('smartPlugs.noEntitiesMatching', { search: debouncedSearch })
+                                : t('smartPlugs.noEntitiesAvailable')}
+                            </div>
+                          )}
+                          {!haEntitiesLoading && availableEntities.map((entity) => (
                             <button
+                              key={entity.entity_id}
                               type="button"
                               onClick={() => {
-                                setHaEntityId('');
+                                setHaEntityId(entity.entity_id);
+                                setIsEntityDropdownOpen(false);
                                 setHaEntitySearch('');
+                                // Auto-fill name
+                                if (!name) {
+                                  setName(entity.friendly_name);
+                                }
                               }}
-                              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-bambu-dark-tertiary rounded"
+                              className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary transition-colors ${
+                                entity.entity_id === haEntityId ? 'bg-bambu-green/20 text-bambu-green' : 'text-white'
+                              }`}
                             >
-                              <X className="w-4 h-4 text-bambu-gray hover:text-white" />
+                              <div className="font-medium">{entity.friendly_name}</div>
+                              <div className="text-xs text-bambu-gray flex items-center justify-between">
+                                <span>{entity.entity_id}</span>
+                                <span className={entity.state === 'on' ? 'text-bambu-green' : ''}>{entity.state}</span>
+                              </div>
                             </button>
-                          )}
-                          {haEntitiesLoading && (
-                            <Loader2 className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray animate-spin" />
-                          )}
+                          ))}
                         </div>
+                      )}
 
-                        {/* Dropdown */}
-                        {isEntityDropdownOpen && (
-                          <div className="absolute z-50 w-full mt-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                            {haEntitiesLoading && (
-                              <div className="px-3 py-2 text-sm text-bambu-gray flex items-center gap-2">
-                                <Loader2 className="w-4 h-4 animate-spin" />
-                                {t('smartPlugs.loading')}
-                              </div>
-                            )}
-                            {!haEntitiesLoading && availableEntities.length === 0 && (
-                              <div className="px-3 py-2 text-sm text-bambu-gray">
-                                {debouncedSearch
-                                  ? t('smartPlugs.noEntitiesMatching', { search: debouncedSearch })
-                                  : t('smartPlugs.noEntitiesAvailable')}
-                              </div>
-                            )}
-                            {!haEntitiesLoading && availableEntities.map((entity) => (
+                      <p className="text-xs text-bambu-gray mt-1">
+                        {debouncedSearch
+                          ? t('smartPlugs.searchingEntities', { count: availableEntities.length })
+                          : t('smartPlugs.showingEntities', { count: availableEntities.length })}
+                      </p>
+                    </div>
+                  );
+                })()}
+
+
+                {/* Energy Monitoring Section (Optional) */}
+                {haEntityId && haSensorEntities && haSensorEntities.length > 0 && (
+                  <div className="border-t border-bambu-dark-tertiary pt-4 mt-4 space-y-3">
+                    <div>
+                      <p className="text-white font-medium mb-1">{t('smartPlugs.energyMonitoringOptional')}</p>
+                      <p className="text-xs text-bambu-gray mb-3">
+                        {t('smartPlugs.energyMonitoringHint')}
+                      </p>
+                    </div>
+
+                    {/* Power Sensor (W) */}
+                    {(() => {
+                      const powerSensors = haSensorEntities.filter(s =>
+                        s.unit_of_measurement === 'W' || s.unit_of_measurement === 'kW' || s.unit_of_measurement === 'mW'
+                      );
+                      const filteredPowerSensors = powerSensorSearch
+                        ? powerSensors.filter(s =>
+                            s.entity_id.toLowerCase().includes(powerSensorSearch.toLowerCase()) ||
+                            s.friendly_name.toLowerCase().includes(powerSensorSearch.toLowerCase())
+                          )
+                        : powerSensors;
+                      const selectedPowerSensor = haSensorEntities.find(s => s.entity_id === haPowerEntity);
+
+                      return (
+                        <div ref={powerDropdownRef} className="relative">
+                          <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.powerSensorW')}</label>
+                          <div className="relative">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                            <input
+                              type="text"
+                              value={isPowerDropdownOpen ? powerSensorSearch : (selectedPowerSensor ? `${selectedPowerSensor.friendly_name} (${selectedPowerSensor.state} ${selectedPowerSensor.unit_of_measurement})` : '')}
+                              onChange={(e) => {
+                                setPowerSensorSearch(e.target.value);
+                                if (!isPowerDropdownOpen) setIsPowerDropdownOpen(true);
+                              }}
+                              onFocus={() => {
+                                setIsPowerDropdownOpen(true);
+                                setPowerSensorSearch('');
+                              }}
+                              placeholder={t('smartPlugs.addSmartPlug.placeholders.searchPowerSensors')}
+                              className="w-full pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                            />
+                            {haPowerEntity && !isPowerDropdownOpen && (
                               <button
-                                key={entity.entity_id}
                                 type="button"
                                 onClick={() => {
-                                  setHaEntityId(entity.entity_id);
-                                  setIsEntityDropdownOpen(false);
-                                  setHaEntitySearch('');
-                                  // Auto-fill name
-                                  if (!name) {
-                                    setName(entity.friendly_name);
-                                  }
-                                }}
-                                className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary transition-colors ${
-                                  entity.entity_id === haEntityId ? 'bg-bambu-green/20 text-bambu-green' : 'text-white'
-                                }`}
-                              >
-                                <div className="font-medium">{entity.friendly_name}</div>
-                                <div className="text-xs text-bambu-gray flex items-center justify-between">
-                                  <span>{entity.entity_id}</span>
-                                  <span className={entity.state === 'on' ? 'text-bambu-green' : ''}>{entity.state}</span>
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-
-                        <p className="text-xs text-bambu-gray mt-1">
-                          {debouncedSearch
-                            ? t('smartPlugs.searchingEntities', { count: availableEntities.length })
-                            : t('smartPlugs.showingEntities', { count: availableEntities.length })}
-                        </p>
-                      </div>
-                    );
-                  })()}
-
-
-                  {/* Energy Monitoring Section (Optional) */}
-                  {haEntityId && haSensorEntities && haSensorEntities.length > 0 && (
-                    <div className="border-t border-bambu-dark-tertiary pt-4 mt-4 space-y-3">
-                      <div>
-                        <p className="text-white font-medium mb-1">{t('smartPlugs.energyMonitoringOptional')}</p>
-                        <p className="text-xs text-bambu-gray mb-3">
-                          {t('smartPlugs.energyMonitoringHint')}
-                        </p>
-                      </div>
-
-                      {/* Power Sensor (W) */}
-                      {(() => {
-                        const powerSensors = haSensorEntities.filter(s =>
-                          s.unit_of_measurement === 'W' || s.unit_of_measurement === 'kW' || s.unit_of_measurement === 'mW'
-                        );
-                        const filteredPowerSensors = powerSensorSearch
-                          ? powerSensors.filter(s =>
-                              s.entity_id.toLowerCase().includes(powerSensorSearch.toLowerCase()) ||
-                              s.friendly_name.toLowerCase().includes(powerSensorSearch.toLowerCase())
-                            )
-                          : powerSensors;
-                        const selectedPowerSensor = haSensorEntities.find(s => s.entity_id === haPowerEntity);
-
-                        return (
-                          <div ref={powerDropdownRef} className="relative">
-                            <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.powerSensorW')}</label>
-                            <div className="relative">
-                              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                              <input
-                                type="text"
-                                value={isPowerDropdownOpen ? powerSensorSearch : (selectedPowerSensor ? `${selectedPowerSensor.friendly_name} (${selectedPowerSensor.state} ${selectedPowerSensor.unit_of_measurement})` : '')}
-                                onChange={(e) => {
-                                  setPowerSensorSearch(e.target.value);
-                                  if (!isPowerDropdownOpen) setIsPowerDropdownOpen(true);
-                                }}
-                                onFocus={() => {
-                                  setIsPowerDropdownOpen(true);
+                                  setHaPowerEntity('');
                                   setPowerSensorSearch('');
                                 }}
-                                placeholder={t('smartPlugs.addSmartPlug.placeholders.searchPowerSensors')}
-                                className="w-full pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                              />
-                              {haPowerEntity && !isPowerDropdownOpen && (
+                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-bambu-dark-tertiary rounded"
+                              >
+                                <X className="w-4 h-4 text-bambu-gray hover:text-white" />
+                              </button>
+                            )}
+                          </div>
+                          {isPowerDropdownOpen && (
+                            <div className="absolute z-50 w-full mt-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setHaPowerEntity('');
+                                  setIsPowerDropdownOpen(false);
+                                  setPowerSensorSearch('');
+                                }}
+                                className="w-full px-3 py-2 text-left text-sm text-bambu-gray hover:bg-bambu-dark-tertiary"
+                              >
+                                {t('smartPlugs.none')}
+                              </button>
+                              {filteredPowerSensors.map((sensor) => (
                                 <button
+                                  key={sensor.entity_id}
                                   type="button"
                                   onClick={() => {
-                                    setHaPowerEntity('');
-                                    setPowerSensorSearch('');
-                                  }}
-                                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-bambu-dark-tertiary rounded"
-                                >
-                                  <X className="w-4 h-4 text-bambu-gray hover:text-white" />
-                                </button>
-                              )}
-                            </div>
-                            {isPowerDropdownOpen && (
-                              <div className="absolute z-50 w-full mt-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setHaPowerEntity('');
+                                    setHaPowerEntity(sensor.entity_id);
                                     setIsPowerDropdownOpen(false);
                                     setPowerSensorSearch('');
                                   }}
-                                  className="w-full px-3 py-2 text-left text-sm text-bambu-gray hover:bg-bambu-dark-tertiary"
+                                  className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
+                                    sensor.entity_id === haPowerEntity ? 'bg-bambu-green/20 text-bambu-green' : 'text-white'
+                                  }`}
                                 >
-                                  {t('smartPlugs.none')}
+                                  <div className="font-medium">{sensor.friendly_name}</div>
+                                  <div className="text-xs text-bambu-gray">{sensor.entity_id} • {sensor.state} {sensor.unit_of_measurement}</div>
                                 </button>
-                                {filteredPowerSensors.map((sensor) => (
-                                  <button
-                                    key={sensor.entity_id}
-                                    type="button"
-                                    onClick={() => {
-                                      setHaPowerEntity(sensor.entity_id);
-                                      setIsPowerDropdownOpen(false);
-                                      setPowerSensorSearch('');
-                                    }}
-                                    className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
-                                      sensor.entity_id === haPowerEntity ? 'bg-bambu-green/20 text-bambu-green' : 'text-white'
-                                    }`}
-                                  >
-                                    <div className="font-medium">{sensor.friendly_name}</div>
-                                    <div className="text-xs text-bambu-gray">{sensor.entity_id} • {sensor.state} {sensor.unit_of_measurement}</div>
-                                  </button>
-                                ))}
-                                {filteredPowerSensors.length === 0 && (
-                                  <div className="px-3 py-2 text-sm text-bambu-gray">{t('smartPlugs.noMatchingSensors')}</div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
-
-                      {/* Energy Today (kWh) */}
-                      {(() => {
-                        const energySensors = haSensorEntities.filter(s =>
-                          s.unit_of_measurement === 'kWh' || s.unit_of_measurement === 'Wh' || s.unit_of_measurement === 'MWh'
-                        );
-                        const filteredEnergySensors = energyTodaySearch
-                          ? energySensors.filter(s =>
-                              s.entity_id.toLowerCase().includes(energyTodaySearch.toLowerCase()) ||
-                              s.friendly_name.toLowerCase().includes(energyTodaySearch.toLowerCase())
-                            )
-                          : energySensors;
-                        const selectedSensor = haSensorEntities.find(s => s.entity_id === haEnergyTodayEntity);
-
-                        return (
-                          <div ref={energyTodayDropdownRef} className="relative">
-                            <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.energyTodayKwh')}</label>
-                            <div className="relative">
-                              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                              <input
-                                type="text"
-                                value={isEnergyTodayDropdownOpen ? energyTodaySearch : (selectedSensor ? `${selectedSensor.friendly_name} (${selectedSensor.state} ${selectedSensor.unit_of_measurement})` : '')}
-                                onChange={(e) => {
-                                  setEnergyTodaySearch(e.target.value);
-                                  if (!isEnergyTodayDropdownOpen) setIsEnergyTodayDropdownOpen(true);
-                                }}
-                                onFocus={() => {
-                                  setIsEnergyTodayDropdownOpen(true);
-                                  setEnergyTodaySearch('');
-                                }}
-                                placeholder={t('smartPlugs.addSmartPlug.placeholders.searchEnergySensors')}
-                                className="w-full pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                              />
-                              {haEnergyTodayEntity && !isEnergyTodayDropdownOpen && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setHaEnergyTodayEntity('');
-                                    setEnergyTodaySearch('');
-                                  }}
-                                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-bambu-dark-tertiary rounded"
-                                >
-                                  <X className="w-4 h-4 text-bambu-gray hover:text-white" />
-                                </button>
+                              ))}
+                              {filteredPowerSensors.length === 0 && (
+                                <div className="px-3 py-2 text-sm text-bambu-gray">{t('smartPlugs.noMatchingSensors')}</div>
                               )}
                             </div>
-                            {isEnergyTodayDropdownOpen && (
-                              <div className="absolute z-50 w-full mt-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Energy Today (kWh) */}
+                    {(() => {
+                      const energySensors = haSensorEntities.filter(s =>
+                        s.unit_of_measurement === 'kWh' || s.unit_of_measurement === 'Wh' || s.unit_of_measurement === 'MWh'
+                      );
+                      const filteredEnergySensors = energyTodaySearch
+                        ? energySensors.filter(s =>
+                            s.entity_id.toLowerCase().includes(energyTodaySearch.toLowerCase()) ||
+                            s.friendly_name.toLowerCase().includes(energyTodaySearch.toLowerCase())
+                          )
+                        : energySensors;
+                      const selectedSensor = haSensorEntities.find(s => s.entity_id === haEnergyTodayEntity);
+
+                      return (
+                        <div ref={energyTodayDropdownRef} className="relative">
+                          <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.energyTodayKwh')}</label>
+                          <div className="relative">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                            <input
+                              type="text"
+                              value={isEnergyTodayDropdownOpen ? energyTodaySearch : (selectedSensor ? `${selectedSensor.friendly_name} (${selectedSensor.state} ${selectedSensor.unit_of_measurement})` : '')}
+                              onChange={(e) => {
+                                setEnergyTodaySearch(e.target.value);
+                                if (!isEnergyTodayDropdownOpen) setIsEnergyTodayDropdownOpen(true);
+                              }}
+                              onFocus={() => {
+                                setIsEnergyTodayDropdownOpen(true);
+                                setEnergyTodaySearch('');
+                              }}
+                              placeholder={t('smartPlugs.addSmartPlug.placeholders.searchEnergySensors')}
+                              className="w-full pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                            />
+                            {haEnergyTodayEntity && !isEnergyTodayDropdownOpen && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setHaEnergyTodayEntity('');
+                                  setEnergyTodaySearch('');
+                                }}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-bambu-dark-tertiary rounded"
+                              >
+                                <X className="w-4 h-4 text-bambu-gray hover:text-white" />
+                              </button>
+                            )}
+                          </div>
+                          {isEnergyTodayDropdownOpen && (
+                            <div className="absolute z-50 w-full mt-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setHaEnergyTodayEntity('');
+                                  setIsEnergyTodayDropdownOpen(false);
+                                  setEnergyTodaySearch('');
+                                }}
+                                className="w-full px-3 py-2 text-left text-sm text-bambu-gray hover:bg-bambu-dark-tertiary"
+                              >
+                                {t('smartPlugs.none')}
+                              </button>
+                              {filteredEnergySensors.map((sensor) => (
                                 <button
+                                  key={sensor.entity_id}
                                   type="button"
                                   onClick={() => {
-                                    setHaEnergyTodayEntity('');
+                                    setHaEnergyTodayEntity(sensor.entity_id);
                                     setIsEnergyTodayDropdownOpen(false);
                                     setEnergyTodaySearch('');
                                   }}
-                                  className="w-full px-3 py-2 text-left text-sm text-bambu-gray hover:bg-bambu-dark-tertiary"
+                                  className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
+                                    sensor.entity_id === haEnergyTodayEntity ? 'bg-bambu-green/20 text-bambu-green' : 'text-white'
+                                  }`}
                                 >
-                                  {t('smartPlugs.none')}
+                                  <div className="font-medium">{sensor.friendly_name}</div>
+                                  <div className="text-xs text-bambu-gray">{sensor.entity_id} • {sensor.state} {sensor.unit_of_measurement}</div>
                                 </button>
-                                {filteredEnergySensors.map((sensor) => (
-                                  <button
-                                    key={sensor.entity_id}
-                                    type="button"
-                                    onClick={() => {
-                                      setHaEnergyTodayEntity(sensor.entity_id);
-                                      setIsEnergyTodayDropdownOpen(false);
-                                      setEnergyTodaySearch('');
-                                    }}
-                                    className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
-                                      sensor.entity_id === haEnergyTodayEntity ? 'bg-bambu-green/20 text-bambu-green' : 'text-white'
-                                    }`}
-                                  >
-                                    <div className="font-medium">{sensor.friendly_name}</div>
-                                    <div className="text-xs text-bambu-gray">{sensor.entity_id} • {sensor.state} {sensor.unit_of_measurement}</div>
-                                  </button>
-                                ))}
-                                {filteredEnergySensors.length === 0 && (
-                                  <div className="px-3 py-2 text-sm text-bambu-gray">{t('smartPlugs.noMatchingSensors')}</div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
-
-                      {/* Total Energy (kWh) */}
-                      {(() => {
-                        const energySensors = haSensorEntities.filter(s =>
-                          s.unit_of_measurement === 'kWh' || s.unit_of_measurement === 'Wh' || s.unit_of_measurement === 'MWh'
-                        );
-                        const filteredEnergySensors = energyTotalSearch
-                          ? energySensors.filter(s =>
-                              s.entity_id.toLowerCase().includes(energyTotalSearch.toLowerCase()) ||
-                              s.friendly_name.toLowerCase().includes(energyTotalSearch.toLowerCase())
-                            )
-                          : energySensors;
-                        const selectedSensor = haSensorEntities.find(s => s.entity_id === haEnergyTotalEntity);
-
-                        return (
-                          <div ref={energyTotalDropdownRef} className="relative">
-                            <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.totalEnergyKwh')}</label>
-                            <div className="relative">
-                              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-                              <input
-                                type="text"
-                                value={isEnergyTotalDropdownOpen ? energyTotalSearch : (selectedSensor ? `${selectedSensor.friendly_name} (${selectedSensor.state} ${selectedSensor.unit_of_measurement})` : '')}
-                                onChange={(e) => {
-                                  setEnergyTotalSearch(e.target.value);
-                                  if (!isEnergyTotalDropdownOpen) setIsEnergyTotalDropdownOpen(true);
-                                }}
-                                onFocus={() => {
-                                  setIsEnergyTotalDropdownOpen(true);
-                                  setEnergyTotalSearch('');
-                                }}
-                                placeholder={t('smartPlugs.addSmartPlug.placeholders.searchEnergySensors')}
-                                className="w-full pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                              />
-                              {haEnergyTotalEntity && !isEnergyTotalDropdownOpen && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setHaEnergyTotalEntity('');
-                                    setEnergyTotalSearch('');
-                                  }}
-                                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-bambu-dark-tertiary rounded"
-                                >
-                                  <X className="w-4 h-4 text-bambu-gray hover:text-white" />
-                                </button>
+                              ))}
+                              {filteredEnergySensors.length === 0 && (
+                                <div className="px-3 py-2 text-sm text-bambu-gray">{t('smartPlugs.noMatchingSensors')}</div>
                               )}
                             </div>
-                            {isEnergyTotalDropdownOpen && (
-                              <div className="absolute z-50 w-full mt-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Total Energy (kWh) */}
+                    {(() => {
+                      const energySensors = haSensorEntities.filter(s =>
+                        s.unit_of_measurement === 'kWh' || s.unit_of_measurement === 'Wh' || s.unit_of_measurement === 'MWh'
+                      );
+                      const filteredEnergySensors = energyTotalSearch
+                        ? energySensors.filter(s =>
+                            s.entity_id.toLowerCase().includes(energyTotalSearch.toLowerCase()) ||
+                            s.friendly_name.toLowerCase().includes(energyTotalSearch.toLowerCase())
+                          )
+                        : energySensors;
+                      const selectedSensor = haSensorEntities.find(s => s.entity_id === haEnergyTotalEntity);
+
+                      return (
+                        <div ref={energyTotalDropdownRef} className="relative">
+                          <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.totalEnergyKwh')}</label>
+                          <div className="relative">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                            <input
+                              type="text"
+                              value={isEnergyTotalDropdownOpen ? energyTotalSearch : (selectedSensor ? `${selectedSensor.friendly_name} (${selectedSensor.state} ${selectedSensor.unit_of_measurement})` : '')}
+                              onChange={(e) => {
+                                setEnergyTotalSearch(e.target.value);
+                                if (!isEnergyTotalDropdownOpen) setIsEnergyTotalDropdownOpen(true);
+                              }}
+                              onFocus={() => {
+                                setIsEnergyTotalDropdownOpen(true);
+                                setEnergyTotalSearch('');
+                              }}
+                              placeholder={t('smartPlugs.addSmartPlug.placeholders.searchEnergySensors')}
+                              className="w-full pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                            />
+                            {haEnergyTotalEntity && !isEnergyTotalDropdownOpen && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setHaEnergyTotalEntity('');
+                                  setEnergyTotalSearch('');
+                                }}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-bambu-dark-tertiary rounded"
+                              >
+                                <X className="w-4 h-4 text-bambu-gray hover:text-white" />
+                              </button>
+                            )}
+                          </div>
+                          {isEnergyTotalDropdownOpen && (
+                            <div className="absolute z-50 w-full mt-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setHaEnergyTotalEntity('');
+                                  setIsEnergyTotalDropdownOpen(false);
+                                  setEnergyTotalSearch('');
+                                }}
+                                className="w-full px-3 py-2 text-left text-sm text-bambu-gray hover:bg-bambu-dark-tertiary"
+                              >
+                                {t('smartPlugs.none')}
+                              </button>
+                              {filteredEnergySensors.map((sensor) => (
                                 <button
+                                  key={sensor.entity_id}
                                   type="button"
                                   onClick={() => {
-                                    setHaEnergyTotalEntity('');
+                                    setHaEnergyTotalEntity(sensor.entity_id);
                                     setIsEnergyTotalDropdownOpen(false);
                                     setEnergyTotalSearch('');
                                   }}
-                                  className="w-full px-3 py-2 text-left text-sm text-bambu-gray hover:bg-bambu-dark-tertiary"
+                                  className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
+                                    sensor.entity_id === haEnergyTotalEntity ? 'bg-bambu-green/20 text-bambu-green' : 'text-white'
+                                  }`}
                                 >
-                                  {t('smartPlugs.none')}
+                                  <div className="font-medium">{sensor.friendly_name}</div>
+                                  <div className="text-xs text-bambu-gray">{sensor.entity_id} • {sensor.state} {sensor.unit_of_measurement}</div>
                                 </button>
-                                {filteredEnergySensors.map((sensor) => (
-                                  <button
-                                    key={sensor.entity_id}
-                                    type="button"
-                                    onClick={() => {
-                                      setHaEnergyTotalEntity(sensor.entity_id);
-                                      setIsEnergyTotalDropdownOpen(false);
-                                      setEnergyTotalSearch('');
-                                    }}
-                                    className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
-                                      sensor.entity_id === haEnergyTotalEntity ? 'bg-bambu-green/20 text-bambu-green' : 'text-white'
-                                    }`}
-                                  >
-                                    <div className="font-medium">{sensor.friendly_name}</div>
-                                    <div className="text-xs text-bambu-gray">{sensor.entity_id} • {sensor.state} {sensor.unit_of_measurement}</div>
-                                  </button>
-                                ))}
-                                {filteredEnergySensors.length === 0 && (
-                                  <div className="px-3 py-2 text-sm text-bambu-gray">{t('smartPlugs.noMatchingSensors')}</div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-
-          {/* MQTT Configuration - only show when MQTT is selected */}
-          {plugType === 'mqtt' && (
-            <div className="space-y-3">
-              {/* MQTT broker not configured */}
-              {!settings?.mqtt_broker && (
-                <div className="p-3 bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-400 dark:border-yellow-500/50 rounded-lg text-sm text-yellow-700 dark:text-yellow-400">
-                  {t('smartPlugs.mqttNotConfigured')}{' '}
-                  <span className="font-medium">{t('smartPlugs.mqttSettingsPath')}</span>
-                  {' '}{t('smartPlugs.mqttNotConfiguredSuffix')}
-                </div>
-              )}
-
-              {/* MQTT broker configured - show fields */}
-              {settings?.mqtt_broker && (
-                <>
-                  <div className="p-3 bg-blue-50 dark:bg-blue-500/10 border border-blue-300 dark:border-blue-500/30 rounded-lg text-sm text-blue-700 dark:text-blue-300">
-                    <p className="font-medium mb-1">{t('smartPlugs.monitorOnly')}</p>
-                    <p className="text-xs opacity-80">
-                      {t('smartPlugs.mqttMonitorOnlyDescription')}
-                    </p>
+                              ))}
+                              {filteredEnergySensors.length === 0 && (
+                                <div className="px-3 py-2 text-sm text-bambu-gray">{t('smartPlugs.noMatchingSensors')}</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
-                  {/* Power Section */}
-                  <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-                    <p className="text-white font-medium text-sm">{t('smartPlugs.powerMonitoring')}</p>
-                    <div>
-                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.topic')}</label>
-                      <input
-                        type="text"
-                        value={mqttPowerTopic}
-                        onChange={(e) => setMqttPowerTopic(e.target.value)}
-                        placeholder="zigbee2mqtt/shelly-working-room"
-                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.jsonPath')}</label>
-                        <input
-                          type="text"
-                          value={mqttPowerPath}
-                          onChange={(e) => setMqttPowerPath(e.target.value)}
-                          placeholder="power_l1"
-                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.multiplier')}</label>
-                        <input
-                          type="text"
-                          value={mqttPowerMultiplier}
-                          onChange={(e) => setMqttPowerMultiplier(e.target.value)}
-                          placeholder="1"
-                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                        />
-                      </div>
-                    </div>
-                    <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
-                      {t('smartPlugs.mqttPowerHint')}
-                    </p>
-                  </div>
-
-                  {/* Energy Section */}
-                  <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-                    <p className="text-white font-medium text-sm">{t('smartPlugs.energyMonitoring')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
-                    <div>
-                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.topic')}</label>
-                      <input
-                        type="text"
-                        value={mqttEnergyTopic}
-                        onChange={(e) => setMqttEnergyTopic(e.target.value)}
-                        placeholder="Same as power topic, or different"
-                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.jsonPath')}</label>
-                        <input
-                          type="text"
-                          value={mqttEnergyPath}
-                          onChange={(e) => setMqttEnergyPath(e.target.value)}
-                          placeholder="energy_l1"
-                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.multiplier')}</label>
-                        <input
-                          type="text"
-                          value={mqttEnergyMultiplier}
-                          onChange={(e) => setMqttEnergyMultiplier(e.target.value)}
-                          placeholder="1"
-                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                        />
-                      </div>
-                    </div>
-                    <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
-                      {t('smartPlugs.mqttEnergyHint')}
-                    </p>
-                  </div>
-
-                  {/* Lifetime Energy Section — separate from the one above
-                      because only a never-resetting counter can feed per-print
-                      energy, and most devices publish both figures in the same
-                      payload under different keys. */}
-                  <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-                    <p className="text-white font-medium text-sm">{t('smartPlugs.mqttEnergyTotalTitle')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
-                    <div>
-                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.topic')}</label>
-                      <input
-                        type="text"
-                        value={mqttEnergyTotalTopic}
-                        onChange={(e) => setMqttEnergyTotalTopic(e.target.value)}
-                        placeholder="Same as energy topic, or different"
-                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.mqttEnergyTotalPath')}</label>
-                        <input
-                          type="text"
-                          value={mqttEnergyTotalPath}
-                          onChange={(e) => setMqttEnergyTotalPath(e.target.value)}
-                          placeholder="energy"
-                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.multiplier')}</label>
-                        <input
-                          type="text"
-                          value={mqttEnergyTotalMultiplier}
-                          onChange={(e) => setMqttEnergyTotalMultiplier(e.target.value)}
-                          placeholder="1"
-                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                        />
-                      </div>
-                    </div>
-                    <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
-                      {t('smartPlugs.mqttEnergyTotalHint')}
-                    </p>
-                  </div>
-
-                  {/* Control Section */}
-                  <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-                    <p className="text-white font-medium text-sm">{t('smartPlugs.mqttControlTitle')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
-                    <div>
-                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.topic')}</label>
-                      <input
-                        type="text"
-                        value={mqttCommandTopic}
-                        onChange={(e) => setMqttCommandTopic(e.target.value)}
-                        placeholder="zigbee2mqtt/printer-plug/set"
-                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.mqttCommandOn')}</label>
-                        <input
-                          type="text"
-                          value={mqttCommandOn}
-                          onChange={(e) => setMqttCommandOn(e.target.value)}
-                          placeholder='{"state": "ON"}'
-                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.mqttCommandOff')}</label>
-                        <input
-                          type="text"
-                          value={mqttCommandOff}
-                          onChange={(e) => setMqttCommandOff(e.target.value)}
-                          placeholder='{"state": "OFF"}'
-                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                        />
-                      </div>
-                    </div>
-                    <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
-                      {t('smartPlugs.mqttCommandHint')}
-                    </p>
-                  </div>
-
-                  {/* State Section */}
-                  <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-                    <p className="text-white font-medium text-sm">{t('smartPlugs.stateMonitoring')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
-                    <div>
-                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.topic')}</label>
-                      <input
-                        type="text"
-                        value={mqttStateTopic}
-                        onChange={(e) => setMqttStateTopic(e.target.value)}
-                        placeholder="Same as power topic, or different"
-                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.jsonPath')}</label>
-                        <input
-                          type="text"
-                          value={mqttStatePath}
-                          onChange={(e) => setMqttStatePath(e.target.value)}
-                          placeholder="state_l1"
-                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.onValue')}</label>
-                        <input
-                          type="text"
-                          value={mqttStateOnValue}
-                          onChange={(e) => setMqttStateOnValue(e.target.value)}
-                          placeholder={t('smartPlugs.addSmartPlug.placeholders.mqttStateOnValue')}
-                          className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                        />
-                      </div>
-                    </div>
-                    <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
-                      {t('smartPlugs.mqttStateHint')}
-                    </p>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* REST API Section */}
-          {plugType === 'rest' && (
-            <div className="space-y-3">
-              {/* Control Section */}
-              <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-                <p className="text-white font-medium text-sm">{t('smartPlugs.restControl')}</p>
-                <div>
-                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restMethod')}</label>
-                  <select
-                    value={restMethod}
-                    onChange={(e) => setRestMethod(e.target.value)}
-                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  >
-                    <option value="GET">GET</option>
-                    <option value="POST">POST</option>
-                    <option value="PUT">PUT</option>
-                    <option value="PATCH">PATCH</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOnUrl')}</label>
-                  <input
-                    type="text"
-                    value={restOnUrl}
-                    onChange={(e) => { setRestOnUrl(e.target.value); setTestResult(null); }}
-                    placeholder="http://openhab:8080/rest/items/MyPlug"
-                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOnBody')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></label>
-                  <input
-                    type="text"
-                    value={restOnBody}
-                    onChange={(e) => setRestOnBody(e.target.value)}
-                    placeholder={t('smartPlugs.restBodyHint')}
-                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOffUrl')}</label>
-                  <input
-                    type="text"
-                    value={restOffUrl}
-                    onChange={(e) => { setRestOffUrl(e.target.value); setTestResult(null); }}
-                    placeholder="http://openhab:8080/rest/items/MyPlug"
-                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOffBody')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></label>
-                  <input
-                    type="text"
-                    value={restOffBody}
-                    onChange={(e) => setRestOffBody(e.target.value)}
-                    placeholder={t('smartPlugs.restBodyHint')}
-                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
+        {/* MQTT Configuration - only show when MQTT is selected */}
+        {plugType === 'mqtt' && (
+          <div className="space-y-3">
+            {/* MQTT broker not configured */}
+            {!settings?.mqtt_broker && (
+              <div className="p-3 bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-400 dark:border-yellow-500/50 rounded-lg text-sm text-yellow-700 dark:text-yellow-400">
+                {t('smartPlugs.mqttNotConfigured')}{' '}
+                <span className="font-medium">{t('smartPlugs.mqttSettingsPath')}</span>
+                {' '}{t('smartPlugs.mqttNotConfiguredSuffix')}
               </div>
+            )}
 
-              {/* Headers Section */}
-              <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-                <p className="text-white font-medium text-sm">{t('smartPlugs.restHeaders')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
-                <div>
-                  <textarea
-                    value={restHeaders}
-                    onChange={(e) => setRestHeaders(e.target.value)}
-                    placeholder={t('smartPlugs.restHeadersHint')}
-                    rows={2}
-                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none font-mono text-sm"
-                  />
+            {/* MQTT broker configured - show fields */}
+            {settings?.mqtt_broker && (
+              <>
+                <div className="p-3 bg-blue-50 dark:bg-blue-500/10 border border-blue-300 dark:border-blue-500/30 rounded-lg text-sm text-blue-700 dark:text-blue-300">
+                  <p className="font-medium mb-1">{t('smartPlugs.monitorOnly')}</p>
+                  <p className="text-xs opacity-80">
+                    {t('smartPlugs.mqttMonitorOnlyDescription')}
+                  </p>
                 </div>
+
+                {/* Power Section */}
+                <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                  <p className="text-white font-medium text-sm">{t('smartPlugs.powerMonitoring')}</p>
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.topic')}</label>
+                    <input
+                      type="text"
+                      value={mqttPowerTopic}
+                      onChange={(e) => setMqttPowerTopic(e.target.value)}
+                      placeholder="zigbee2mqtt/shelly-working-room"
+                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.jsonPath')}</label>
+                      <input
+                        type="text"
+                        value={mqttPowerPath}
+                        onChange={(e) => setMqttPowerPath(e.target.value)}
+                        placeholder="power_l1"
+                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.multiplier')}</label>
+                      <input
+                        type="text"
+                        value={mqttPowerMultiplier}
+                        onChange={(e) => setMqttPowerMultiplier(e.target.value)}
+                        placeholder="1"
+                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
+                    {t('smartPlugs.mqttPowerHint')}
+                  </p>
+                </div>
+
+                {/* Energy Section */}
+                <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                  <p className="text-white font-medium text-sm">{t('smartPlugs.energyMonitoring')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.topic')}</label>
+                    <input
+                      type="text"
+                      value={mqttEnergyTopic}
+                      onChange={(e) => setMqttEnergyTopic(e.target.value)}
+                      placeholder="Same as power topic, or different"
+                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.jsonPath')}</label>
+                      <input
+                        type="text"
+                        value={mqttEnergyPath}
+                        onChange={(e) => setMqttEnergyPath(e.target.value)}
+                        placeholder="energy_l1"
+                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.multiplier')}</label>
+                      <input
+                        type="text"
+                        value={mqttEnergyMultiplier}
+                        onChange={(e) => setMqttEnergyMultiplier(e.target.value)}
+                        placeholder="1"
+                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
+                    {t('smartPlugs.mqttEnergyHint')}
+                  </p>
+                </div>
+
+                {/* Lifetime Energy Section — separate from the one above
+                    because only a never-resetting counter can feed per-print
+                    energy, and most devices publish both figures in the same
+                    payload under different keys. */}
+                <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                  <p className="text-white font-medium text-sm">{t('smartPlugs.mqttEnergyTotalTitle')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.topic')}</label>
+                    <input
+                      type="text"
+                      value={mqttEnergyTotalTopic}
+                      onChange={(e) => setMqttEnergyTotalTopic(e.target.value)}
+                      placeholder="Same as energy topic, or different"
+                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.mqttEnergyTotalPath')}</label>
+                      <input
+                        type="text"
+                        value={mqttEnergyTotalPath}
+                        onChange={(e) => setMqttEnergyTotalPath(e.target.value)}
+                        placeholder="energy"
+                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.multiplier')}</label>
+                      <input
+                        type="text"
+                        value={mqttEnergyTotalMultiplier}
+                        onChange={(e) => setMqttEnergyTotalMultiplier(e.target.value)}
+                        placeholder="1"
+                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
+                    {t('smartPlugs.mqttEnergyTotalHint')}
+                  </p>
+                </div>
+
+                {/* Control Section */}
+                <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                  <p className="text-white font-medium text-sm">{t('smartPlugs.mqttControlTitle')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.topic')}</label>
+                    <input
+                      type="text"
+                      value={mqttCommandTopic}
+                      onChange={(e) => setMqttCommandTopic(e.target.value)}
+                      placeholder="zigbee2mqtt/printer-plug/set"
+                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.mqttCommandOn')}</label>
+                      <input
+                        type="text"
+                        value={mqttCommandOn}
+                        onChange={(e) => setMqttCommandOn(e.target.value)}
+                        placeholder='{"state": "ON"}'
+                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.mqttCommandOff')}</label>
+                      <input
+                        type="text"
+                        value={mqttCommandOff}
+                        onChange={(e) => setMqttCommandOff(e.target.value)}
+                        placeholder='{"state": "OFF"}'
+                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
+                    {t('smartPlugs.mqttCommandHint')}
+                  </p>
+                </div>
+
+                {/* State Section */}
+                <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                  <p className="text-white font-medium text-sm">{t('smartPlugs.stateMonitoring')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.topic')}</label>
+                    <input
+                      type="text"
+                      value={mqttStateTopic}
+                      onChange={(e) => setMqttStateTopic(e.target.value)}
+                      placeholder="Same as power topic, or different"
+                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.jsonPath')}</label>
+                      <input
+                        type="text"
+                        value={mqttStatePath}
+                        onChange={(e) => setMqttStatePath(e.target.value)}
+                        placeholder="state_l1"
+                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.onValue')}</label>
+                      <input
+                        type="text"
+                        value={mqttStateOnValue}
+                        onChange={(e) => setMqttStateOnValue(e.target.value)}
+                        placeholder={t('smartPlugs.addSmartPlug.placeholders.mqttStateOnValue')}
+                        className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-bambu-gray" style={{ whiteSpace: 'pre-line' }}>
+                    {t('smartPlugs.mqttStateHint')}
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* REST API Section */}
+        {plugType === 'rest' && (
+          <div className="space-y-3">
+            {/* Control Section */}
+            <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+              <p className="text-white font-medium text-sm">{t('smartPlugs.restControl')}</p>
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restMethod')}</label>
+                <Select
+                  tone="raised"
+                  className="w-full"
+                  value={restMethod}
+                  onChange={(e) => setRestMethod(e.target.value)}
+                >
+                  <option value="GET">GET</option>
+                  <option value="POST">POST</option>
+                  <option value="PUT">PUT</option>
+                  <option value="PATCH">PATCH</option>
+                </Select>
               </div>
-
-              {/* Status Polling Section (optional) */}
-              <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-                <p className="text-white font-medium text-sm">{t('smartPlugs.stateMonitoring')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
-                <div>
-                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restStatusUrl')}</label>
-                  <input
-                    type="text"
-                    value={restStatusUrl}
-                    onChange={(e) => setRestStatusUrl(e.target.value)}
-                    placeholder={t('smartPlugs.restStatusHint')}
-                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restStatusPath')}</label>
-                    <input
-                      type="text"
-                      value={restStatusPath}
-                      onChange={(e) => setRestStatusPath(e.target.value)}
-                      placeholder={t('smartPlugs.restPathHint')}
-                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restStatusOnValue')}</label>
-                    <input
-                      type="text"
-                      value={restStatusOnValue}
-                      onChange={(e) => setRestStatusOnValue(e.target.value)}
-                      placeholder="ON"
-                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Energy Monitoring (optional) */}
-              <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-                <p className="text-white font-medium text-sm">{t('smartPlugs.energyMonitoring')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
-
-                {/* Power */}
-                <div>
-                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restPowerUrl')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></label>
-                  <input
-                    type="text"
-                    value={restPowerUrl}
-                    onChange={(e) => setRestPowerUrl(e.target.value)}
-                    placeholder={t('smartPlugs.restPowerUrlHint')}
-                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restPowerPath')}</label>
-                    <input
-                      type="text"
-                      value={restPowerPath}
-                      onChange={(e) => setRestPowerPath(e.target.value)}
-                      placeholder={t('smartPlugs.restPathHint')}
-                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restPowerMultiplier')}</label>
-                    <input
-                      type="text"
-                      value={restPowerMultiplier}
-                      onChange={(e) => setRestPowerMultiplier(e.target.value)}
-                      placeholder="1"
-                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                {/* Energy */}
-                <div>
-                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyUrl')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></label>
-                  <input
-                    type="text"
-                    value={restEnergyUrl}
-                    onChange={(e) => setRestEnergyUrl(e.target.value)}
-                    placeholder={t('smartPlugs.restEnergyUrlHint')}
-                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyPath')}</label>
-                    <input
-                      type="text"
-                      value={restEnergyPath}
-                      onChange={(e) => setRestEnergyPath(e.target.value)}
-                      placeholder={t('smartPlugs.restPathHint')}
-                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyMultiplier')}</label>
-                    <input
-                      type="text"
-                      value={restEnergyMultiplier}
-                      onChange={(e) => setRestEnergyMultiplier(e.target.value)}
-                      placeholder="1"
-                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                {/* Lifetime counter — separate from "today" because a given endpoint
-                    may expose either, both or neither. Required for date-range
-                    energy stats and per-print energy, both of which need a
-                    monotonic total. */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyTotalPath')}</label>
-                    <input
-                      type="text"
-                      value={restEnergyTotalPath}
-                      onChange={(e) => setRestEnergyTotalPath(e.target.value)}
-                      placeholder={t('smartPlugs.restPathHint')}
-                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyTotalMultiplier')}</label>
-                    <input
-                      type="text"
-                      value={restEnergyTotalMultiplier}
-                      onChange={(e) => setRestEnergyTotalMultiplier(e.target.value)}
-                      placeholder="1"
-                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                <p className="text-xs text-bambu-gray">
-                  {t('smartPlugs.restEnergyHint')}
-                </p>
-                <p className="text-xs text-bambu-gray">
-                  {t('smartPlugs.restEnergyTotalHint')}
-                </p>
-              </div>
-
-              {/* Test Connection */}
-              {(restOnUrl.trim() || restOffUrl.trim()) && (
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={async () => {
-                      setTestResult(null);
-                      try {
-                        const url = restOnUrl.trim() || restOffUrl.trim();
-                        const result = await api.testRESTConnection(url, restMethod, restHeaders.trim() || null);
-                        setTestResult({ success: result.success });
-                        if (!result.success) {
-                          setError(result.error || t('smartPlugs.addSmartPlug.connectionFailed'));
-                        }
-                      } catch {
-                        setTestResult({ success: false });
-                        setError(t('smartPlugs.addSmartPlug.connectionFailed'));
-                      }
-                    }}
-                    className="w-full"
-                  >
-                    <Wifi className="w-4 h-4" />
-                    {t('smartPlugs.testConnection')}
-                  </Button>
-                </div>
-              )}
-              {testResult && (
-                <div className={`flex items-center gap-2 text-sm ${testResult.success ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}`}>
-                  {testResult.success ? <CheckCircle className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
-                  {testResult.success ? t('smartPlugs.connectionSuccess') : t('smartPlugs.addSmartPlug.connectionFailed')}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* IP Address - only show for Tasmota */}
-          {plugType === 'tasmota' && (
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.ipAddress')}</label>
-              <div className="flex gap-2">
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOnUrl')}</label>
                 <input
                   type="text"
-                  value={ipAddress}
-                  onChange={(e) => {
-                    setIpAddress(e.target.value);
-                    setTestResult(null);
-                  }}
-                  placeholder="192.168.1.100"
-                  className="flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={restOnUrl}
+                  onChange={(e) => { setRestOnUrl(e.target.value); setTestResult(null); }}
+                  placeholder="http://openhab:8080/rest/items/MyPlug"
+                  className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
                 />
+              </div>
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOnBody')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></label>
+                <input
+                  type="text"
+                  value={restOnBody}
+                  onChange={(e) => setRestOnBody(e.target.value)}
+                  placeholder={t('smartPlugs.restBodyHint')}
+                  className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOffUrl')}</label>
+                <input
+                  type="text"
+                  value={restOffUrl}
+                  onChange={(e) => { setRestOffUrl(e.target.value); setTestResult(null); }}
+                  placeholder="http://openhab:8080/rest/items/MyPlug"
+                  className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOffBody')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></label>
+                <input
+                  type="text"
+                  value={restOffBody}
+                  onChange={(e) => setRestOffBody(e.target.value)}
+                  placeholder={t('smartPlugs.restBodyHint')}
+                  className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Headers Section */}
+            <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+              <p className="text-white font-medium text-sm">{t('smartPlugs.restHeaders')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
+              <div>
+                <textarea
+                  value={restHeaders}
+                  onChange={(e) => setRestHeaders(e.target.value)}
+                  placeholder={t('smartPlugs.restHeadersHint')}
+                  rows={2}
+                  className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none font-mono text-sm"
+                />
+              </div>
+            </div>
+
+            {/* Status Polling Section (optional) */}
+            <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+              <p className="text-white font-medium text-sm">{t('smartPlugs.stateMonitoring')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restStatusUrl')}</label>
+                <input
+                  type="text"
+                  value={restStatusUrl}
+                  onChange={(e) => setRestStatusUrl(e.target.value)}
+                  placeholder={t('smartPlugs.restStatusHint')}
+                  className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restStatusPath')}</label>
+                  <input
+                    type="text"
+                    value={restStatusPath}
+                    onChange={(e) => setRestStatusPath(e.target.value)}
+                    placeholder={t('smartPlugs.restPathHint')}
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restStatusOnValue')}</label>
+                  <input
+                    type="text"
+                    value={restStatusOnValue}
+                    onChange={(e) => setRestStatusOnValue(e.target.value)}
+                    placeholder="ON"
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Energy Monitoring (optional) */}
+            <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+              <p className="text-white font-medium text-sm">{t('smartPlugs.energyMonitoring')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
+
+              {/* Power */}
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restPowerUrl')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></label>
+                <input
+                  type="text"
+                  value={restPowerUrl}
+                  onChange={(e) => setRestPowerUrl(e.target.value)}
+                  placeholder={t('smartPlugs.restPowerUrlHint')}
+                  className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restPowerPath')}</label>
+                  <input
+                    type="text"
+                    value={restPowerPath}
+                    onChange={(e) => setRestPowerPath(e.target.value)}
+                    placeholder={t('smartPlugs.restPathHint')}
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restPowerMultiplier')}</label>
+                  <input
+                    type="text"
+                    value={restPowerMultiplier}
+                    onChange={(e) => setRestPowerMultiplier(e.target.value)}
+                    placeholder="1"
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Energy */}
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyUrl')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></label>
+                <input
+                  type="text"
+                  value={restEnergyUrl}
+                  onChange={(e) => setRestEnergyUrl(e.target.value)}
+                  placeholder={t('smartPlugs.restEnergyUrlHint')}
+                  className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyPath')}</label>
+                  <input
+                    type="text"
+                    value={restEnergyPath}
+                    onChange={(e) => setRestEnergyPath(e.target.value)}
+                    placeholder={t('smartPlugs.restPathHint')}
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyMultiplier')}</label>
+                  <input
+                    type="text"
+                    value={restEnergyMultiplier}
+                    onChange={(e) => setRestEnergyMultiplier(e.target.value)}
+                    placeholder="1"
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Lifetime counter — separate from "today" because a given endpoint
+                  may expose either, both or neither. Required for date-range
+                  energy stats and per-print energy, both of which need a
+                  monotonic total. */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyTotalPath')}</label>
+                  <input
+                    type="text"
+                    value={restEnergyTotalPath}
+                    onChange={(e) => setRestEnergyTotalPath(e.target.value)}
+                    placeholder={t('smartPlugs.restPathHint')}
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyTotalMultiplier')}</label>
+                  <input
+                    type="text"
+                    value={restEnergyTotalMultiplier}
+                    onChange={(e) => setRestEnergyTotalMultiplier(e.target.value)}
+                    placeholder="1"
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <p className="text-xs text-bambu-gray">
+                {t('smartPlugs.restEnergyHint')}
+              </p>
+              <p className="text-xs text-bambu-gray">
+                {t('smartPlugs.restEnergyTotalHint')}
+              </p>
+            </div>
+
+            {/* Test Connection */}
+            {(restOnUrl.trim() || restOffUrl.trim()) && (
+              <div className="flex gap-2">
                 <Button
                   type="button"
                   variant="secondary"
-                  onClick={() => testMutation.mutate()}
-                  disabled={!ipAddress.trim() || testMutation.isPending}
+                  onClick={async () => {
+                    setTestResult(null);
+                    try {
+                      const url = restOnUrl.trim() || restOffUrl.trim();
+                      const result = await api.testRESTConnection(url, restMethod, restHeaders.trim() || null);
+                      setTestResult({ success: result.success });
+                      if (!result.success) {
+                        setError(result.error || t('smartPlugs.addSmartPlug.connectionFailed'));
+                      }
+                    } catch {
+                      setTestResult({ success: false });
+                      setError(t('smartPlugs.addSmartPlug.connectionFailed'));
+                    }
+                  }}
+                  className="w-full"
                 >
-                  {testMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Wifi className="w-4 h-4" />
-                  )}
-                  {t('smartPlugs.test')}
+                  <Wifi className="w-4 h-4" />
+                  {t('smartPlugs.testConnection')}
                 </Button>
               </div>
-            </div>
-          )}
-
-          {/* Test Result - only show for Tasmota */}
-          {plugType === 'tasmota' && testResult && (
-            <div className={`p-3 rounded-lg flex items-center gap-2 ${
-              testResult.success
-                ? 'bg-bambu-green/20 border border-bambu-green/50 text-bambu-green'
-                : 'bg-red-100 dark:bg-red-500/20 border border-red-400 dark:border-red-500/50 text-red-700 dark:text-red-400'
-            }`}>
-              {testResult.success ? (
-                <>
-                  <CheckCircle className="w-5 h-5" />
-                  <div>
-                    <p className="font-medium">{t('smartPlugs.connectedResult')}</p>
-                    <p className="text-sm opacity-80">
-                      {testResult.device_name && t('smartPlugs.deviceLabel', { name: testResult.device_name })}
-                      {t('smartPlugs.stateLabel', { state: testResult.state })}
-                    </p>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <WifiOff className="w-5 h-5" />
-                  <span>{t('smartPlugs.addSmartPlug.connectionFailed')}</span>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Name */}
-          <div>
-            <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.nameLabel')}</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={t('smartPlugs.addSmartPlug.placeholders.plugName')}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-            />
+            )}
+            {testResult && (
+              <div className={`flex items-center gap-2 text-sm ${testResult.success ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}`}>
+                {testResult.success ? <CheckCircle className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
+                {testResult.success ? t('smartPlugs.connectionSuccess') : t('smartPlugs.addSmartPlug.connectionFailed')}
+              </div>
+            )}
           </div>
+        )}
 
-          {/* Authentication (optional) - only show for Tasmota */}
-          {plugType === 'tasmota' && (
-            <>
+        {/* IP Address - only show for Tasmota */}
+        {plugType === 'tasmota' && (
+          <div>
+            <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.ipAddress')}</label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={ipAddress}
+                onChange={(e) => {
+                  setIpAddress(e.target.value);
+                  setTestResult(null);
+                }}
+                placeholder="192.168.1.100"
+                className="flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => testMutation.mutate()}
+                disabled={!ipAddress.trim() || testMutation.isPending}
+              >
+                {testMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Wifi className="w-4 h-4" />
+                )}
+                {t('smartPlugs.test')}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Test Result - only show for Tasmota */}
+        {plugType === 'tasmota' && testResult && (
+          <div className={`p-3 rounded-lg flex items-center gap-2 ${
+            testResult.success
+              ? 'bg-bambu-green/20 border border-bambu-green/50 text-bambu-green'
+              : 'bg-red-100 dark:bg-red-500/20 border border-red-400 dark:border-red-500/50 text-red-700 dark:text-red-400'
+          }`}>
+            {testResult.success ? (
+              <>
+                <CheckCircle className="w-5 h-5" />
+                <div>
+                  <p className="font-medium">{t('smartPlugs.connectedResult')}</p>
+                  <p className="text-sm opacity-80">
+                    {testResult.device_name && t('smartPlugs.deviceLabel', { name: testResult.device_name })}
+                    {t('smartPlugs.stateLabel', { state: testResult.state })}
+                  </p>
+                </div>
+              </>
+            ) : (
+              <>
+                <WifiOff className="w-5 h-5" />
+                <span>{t('smartPlugs.addSmartPlug.connectionFailed')}</span>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Name */}
+        <div>
+          <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.nameLabel')}</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t('smartPlugs.addSmartPlug.placeholders.plugName')}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+          />
+        </div>
+
+        {/* Authentication (optional) - only show for Tasmota */}
+        {plugType === 'tasmota' && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.username')}</label>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="admin"
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.password')}</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="********"
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-bambu-gray -mt-2">
+              {t('smartPlugs.authHint')}
+            </p>
+          </>
+        )}
+
+        {plugType === 'zigbee' && (
+          <ZigbeePlugFields
+            value={zigbeeIeee}
+            onChange={setZigbeeIeee}
+            excludeIeees={(existingPlugs ?? [])
+              .filter((p) => p.plug_type === 'zigbee' && p.id !== plug?.id && p.zigbee_ieee)
+              .map((p) => (p.zigbee_ieee as string).toLowerCase())}
+          />
+        )}
+
+        {/* Power-on behavior lives on the DEVICE, not in our DB — read and
+            written over the air, so it only renders for an existing plug.
+            Motivation: a plug that rebooted overnight came back with the
+            relay OFF because its start-up state said so (2026-08-27). */}
+        {isEditing && plugType === 'zigbee' && plug?.id != null && (
+          <PowerOnBehaviorField plugId={plug.id} />
+        )}
+
+        {/* Link to Printer — shown for EVERY type.
+            It used to be hidden for MQTT as "monitor-only", but phase 0 (m113)
+            gave MQTT plugs a command topic, so they control printer power
+            exactly like a Tasmota one. Hiding the binding withheld the very
+            capability that phase had just added. */}
+        {(
+          <div>
+            <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.linkToPrinter')}</label>
+            <Select
+              className="w-full"
+              value={printerId ?? ''}
+              onChange={(e) => setPrinterId(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">{t('smartPlugs.noPrinter')}</option>
+              {availablePrinters?.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+            <p className="text-xs text-bambu-gray mt-1">
+              {t('smartPlugs.linkingDescription')}
+            </p>
+            {/* Only meaningful once a printer is linked: distinguishes the mains
+                feed from an accessory on the same printer (#2629). */}
+            {printerId !== null && (
+              <label className="flex items-start gap-2 mt-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={controlsPrinterPower}
+                  onChange={(e) => setControlsPrinterPower(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 accent-bambu-green"
+                />
+                <span>
+                  <span className="block text-sm text-white">{t('smartPlugs.controlsPrinterPower')}</span>
+                  <span className="block text-xs text-bambu-gray">
+                    {t('smartPlugs.controlsPrinterPowerDescription')}
+                  </span>
+                </span>
+              </label>
+            )}
+
+            {/* Not a refusal. Several plugs per printer is a designed
+                situation (#2629) and the codebase resolves it by preference,
+                so this only removes the surprise of energy being measured
+                somewhere else. */}
+            {controlsPrinterPower && printerId !== null && existingMainsPlug && (
+              <p className="text-xs text-bambu-gray mt-2">
+                {t('smartPlugs.alreadyHasMainsPlug', { name: existingMainsPlug.name })}
+              </p>
+            )}
+
+            {/* Moving the plug that a running print is measured against would
+                otherwise leave an archive holding a delta across two different
+                meters. Say so before it happens, not after the figure is
+                missing. */}
+            {isEditing && plug?.printer_id && controlsPrinterPower && printerId !== plug.printer_id && (
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
+                {t('smartPlugs.rebindDropsInflightEnergy')}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Power Alerts */}
+        <div className="border-t border-bambu-dark-tertiary pt-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Bell className="w-4 h-4 text-bambu-green" />
+              <span className="text-white font-medium">{t('smartPlugs.powerAlerts')}</span>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={powerAlertEnabled}
+                onChange={(e) => setPowerAlertEnabled(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+            </label>
+          </div>
+          {powerAlertEnabled && (
+            <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.username')}</label>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.alertAbove')}</label>
                   <input
-                    type="text"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    placeholder="admin"
+                    type="number"
+                    value={powerAlertHigh}
+                    onChange={(e) => setPowerAlertHigh(e.target.value)}
+                    placeholder="e.g. 200"
+                    min="0"
+                    max="5000"
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.password')}</label>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.alertBelow')}</label>
                   <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="********"
+                    type="number"
+                    value={powerAlertLow}
+                    onChange={(e) => setPowerAlertLow(e.target.value)}
+                    placeholder="e.g. 10"
+                    min="0"
+                    max="5000"
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                 </div>
               </div>
-              <p className="text-xs text-bambu-gray -mt-2">
-                {t('smartPlugs.authHint')}
+              <p className="text-xs text-bambu-gray">
+                {t('smartPlugs.alertDescription')}
               </p>
-            </>
-          )}
-
-          {plugType === 'zigbee' && (
-            <ZigbeePlugFields
-              value={zigbeeIeee}
-              onChange={setZigbeeIeee}
-              excludeIeees={(existingPlugs ?? [])
-                .filter((p) => p.plug_type === 'zigbee' && p.id !== plug?.id && p.zigbee_ieee)
-                .map((p) => (p.zigbee_ieee as string).toLowerCase())}
-            />
-          )}
-
-          {/* Power-on behavior lives on the DEVICE, not in our DB — read and
-              written over the air, so it only renders for an existing plug.
-              Motivation: a plug that rebooted overnight came back with the
-              relay OFF because its start-up state said so (2026-08-27). */}
-          {isEditing && plugType === 'zigbee' && plug?.id != null && (
-            <PowerOnBehaviorField plugId={plug.id} />
-          )}
-
-          {/* Link to Printer — shown for EVERY type.
-              It used to be hidden for MQTT as "monitor-only", but phase 0 (m113)
-              gave MQTT plugs a command topic, so they control printer power
-              exactly like a Tasmota one. Hiding the binding withheld the very
-              capability that phase had just added. */}
-          {(
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.linkToPrinter')}</label>
-              <select
-                value={printerId ?? ''}
-                onChange={(e) => setPrinterId(e.target.value ? Number(e.target.value) : null)}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-              >
-                <option value="">{t('smartPlugs.noPrinter')}</option>
-                {availablePrinters?.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-bambu-gray mt-1">
-                {t('smartPlugs.linkingDescription')}
-              </p>
-              {/* Only meaningful once a printer is linked: distinguishes the mains
-                  feed from an accessory on the same printer (#2629). */}
-              {printerId !== null && (
-                <label className="flex items-start gap-2 mt-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={controlsPrinterPower}
-                    onChange={(e) => setControlsPrinterPower(e.target.checked)}
-                    className="mt-0.5 w-4 h-4 accent-bambu-green"
-                  />
-                  <span>
-                    <span className="block text-sm text-white">{t('smartPlugs.controlsPrinterPower')}</span>
-                    <span className="block text-xs text-bambu-gray">
-                      {t('smartPlugs.controlsPrinterPowerDescription')}
-                    </span>
-                  </span>
-                </label>
-              )}
-
-              {/* Not a refusal. Several plugs per printer is a designed
-                  situation (#2629) and the codebase resolves it by preference,
-                  so this only removes the surprise of energy being measured
-                  somewhere else. */}
-              {controlsPrinterPower && printerId !== null && existingMainsPlug && (
-                <p className="text-xs text-bambu-gray mt-2">
-                  {t('smartPlugs.alreadyHasMainsPlug', { name: existingMainsPlug.name })}
-                </p>
-              )}
-
-              {/* Moving the plug that a running print is measured against would
-                  otherwise leave an archive holding a delta across two different
-                  meters. Say so before it happens, not after the figure is
-                  missing. */}
-              {isEditing && plug?.printer_id && controlsPrinterPower && printerId !== plug.printer_id && (
-                <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
-                  {t('smartPlugs.rebindDropsInflightEnergy')}
-                </p>
-              )}
             </div>
           )}
+        </div>
 
-          {/* Power Alerts */}
+        {/* Schedule - not shown for MQTT plugs (monitor-only) */}
+        {plugType !== 'mqtt' && (
           <div className="border-t border-bambu-dark-tertiary pt-4">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <Bell className="w-4 h-4 text-bambu-green" />
-                <span className="text-white font-medium">{t('smartPlugs.powerAlerts')}</span>
+                <Clock className="w-4 h-4 text-bambu-green" />
+                <span className="text-white font-medium">{t('smartPlugs.dailySchedule')}</span>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={powerAlertEnabled}
-                  onChange={(e) => setPowerAlertEnabled(e.target.checked)}
+                  checked={scheduleEnabled}
+                  onChange={(e) => setScheduleEnabled(e.target.checked)}
                   className="sr-only peer"
                 />
                 <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
               </label>
             </div>
-            {powerAlertEnabled && (
+            {scheduleEnabled && (
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.alertAbove')}</label>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.turnOnAt')}</label>
                     <input
-                      type="number"
-                      value={powerAlertHigh}
-                      onChange={(e) => setPowerAlertHigh(e.target.value)}
-                      placeholder="e.g. 200"
-                      min="0"
-                      max="5000"
+                      type="time"
+                      value={scheduleOnTime}
+                      onChange={(e) => setScheduleOnTime(e.target.value)}
                       className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.alertBelow')}</label>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.turnOffAt')}</label>
                     <input
-                      type="number"
-                      value={powerAlertLow}
-                      onChange={(e) => setPowerAlertLow(e.target.value)}
-                      placeholder="e.g. 10"
-                      min="0"
-                      max="5000"
+                      type="time"
+                      value={scheduleOffTime}
+                      onChange={(e) => setScheduleOffTime(e.target.value)}
                       className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     />
                   </div>
                 </div>
                 <p className="text-xs text-bambu-gray">
-                  {t('smartPlugs.alertDescription')}
+                  {t('smartPlugs.scheduleDescription')}
                 </p>
               </div>
             )}
           </div>
+        )}
 
-          {/* Schedule - not shown for MQTT plugs (monitor-only) */}
-          {plugType !== 'mqtt' && (
-            <div className="border-t border-bambu-dark-tertiary pt-4">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-bambu-green" />
-                  <span className="text-white font-medium">{t('smartPlugs.dailySchedule')}</span>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={scheduleEnabled}
-                    onChange={(e) => setScheduleEnabled(e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
+        {/* Switchbar Visibility */}
+        <div className="border-t border-bambu-dark-tertiary pt-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <LayoutGrid className="w-4 h-4 text-bambu-green" />
+              <div>
+                <span className="text-white font-medium">{t('smartPlugs.showInSwitchbar')}</span>
+                <p className="text-xs text-bambu-gray">{t('smartPlugs.quickAccessSidebar')}</p>
               </div>
-              {scheduleEnabled && (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.turnOnAt')}</label>
-                      <input
-                        type="time"
-                        value={scheduleOnTime}
-                        onChange={(e) => setScheduleOnTime(e.target.value)}
-                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.turnOffAt')}</label>
-                      <input
-                        type="time"
-                        value={scheduleOffTime}
-                        onChange={(e) => setScheduleOffTime(e.target.value)}
-                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                  <p className="text-xs text-bambu-gray">
-                    {t('smartPlugs.scheduleDescription')}
-                  </p>
-                </div>
-              )}
             </div>
-          )}
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showInSwitchbar}
+                onChange={(e) => setShowInSwitchbar(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+            </label>
+          </div>
+        </div>
 
-          {/* Switchbar Visibility */}
+        {/* Printer Card Visibility - only for HA entities */}
+        {plugType === 'homeassistant' && (
           <div className="border-t border-bambu-dark-tertiary pt-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <LayoutGrid className="w-4 h-4 text-bambu-green" />
+                <Eye className="w-4 h-4 text-bambu-green" />
                 <div>
-                  <span className="text-white font-medium">{t('smartPlugs.showInSwitchbar')}</span>
-                  <p className="text-xs text-bambu-gray">{t('smartPlugs.quickAccessSidebar')}</p>
+                  <span className="text-white font-medium">{t('smartPlugs.showOnPrinterCard')}</span>
+                  <p className="text-xs text-bambu-gray">{t('smartPlugs.displayOnPrinterCard')}</p>
                 </div>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={showInSwitchbar}
-                  onChange={(e) => setShowInSwitchbar(e.target.checked)}
+                  checked={showOnPrinterCard}
+                  onChange={(e) => setShowOnPrinterCard(e.target.checked)}
                   className="sr-only peer"
                 />
                 <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
               </label>
             </div>
           </div>
+        )}
 
-          {/* Printer Card Visibility - only for HA entities */}
-          {plugType === 'homeassistant' && (
-            <div className="border-t border-bambu-dark-tertiary pt-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Eye className="w-4 h-4 text-bambu-green" />
-                  <div>
-                    <span className="text-white font-medium">{t('smartPlugs.showOnPrinterCard')}</span>
-                    <p className="text-xs text-bambu-gray">{t('smartPlugs.displayOnPrinterCard')}</p>
-                  </div>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={showOnPrinterCard}
-                    onChange={(e) => setShowOnPrinterCard(e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
-            </div>
-          )}
-
-          {/* Actions */}
-          <div className="flex gap-3 pt-2">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={onClose}
-              className="flex-1"
-            >
-              {t('smartPlugs.cancel')}
-            </Button>
-            <Button
-              type="submit"
-              disabled={isPending}
-              className="flex-1"
-            >
-              {isPending ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Save className="w-4 h-4" />
-              )}
-              {isEditing ? t('smartPlugs.save') : t('smartPlugs.add')}
-            </Button>
-          </div>
-        </form>
-      </div>
-    </div>
+        {/* Actions */}
+        <div className="flex gap-3 pt-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+            className="flex-1"
+          >
+            {t('smartPlugs.cancel')}
+          </Button>
+          <Button
+            type="submit"
+            disabled={isPending}
+            className="flex-1"
+          >
+            {isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4" />
+            )}
+            {isEditing ? t('smartPlugs.save') : t('smartPlugs.add')}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -1854,16 +1836,16 @@ function PowerOnBehaviorField({ plugId }: { plugId: number }) {
         <p className="text-xs text-bambu-gray italic">{t('smartPlugs.powerOn.unsupported')}</p>
       ) : (
         <>
-          <select
+          <Select
+            className="w-full"
             value={data.mode ?? 'previous'}
             disabled={mutation.isPending}
             onChange={(e) => mutation.mutate(e.target.value as 'on' | 'off' | 'previous')}
-            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-60"
           >
             <option value="previous">{t('smartPlugs.powerOn.previous')}</option>
             <option value="on">{t('smartPlugs.powerOn.alwaysOn')}</option>
             <option value="off">{t('smartPlugs.powerOn.alwaysOff')}</option>
-          </select>
+          </Select>
           <p className="text-xs text-bambu-gray mt-1">{t('smartPlugs.powerOn.hint')}</p>
         </>
       )}

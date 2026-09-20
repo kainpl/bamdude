@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Zap, Info } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -14,9 +15,17 @@ function formatDuration(seconds: number): string {
  * Electrical-load diagnostic strip shown at the top of QueuePage.
  *
  * Hidden when stagger is disabled.  Refreshes every 10 s so countdown
- * numbers stay fresh without requiring user interaction.  Tooltip lists
- * each printer currently holding a stagger slot with its state
- * (heating / interval_wait) and time to free.
+ * numbers stay fresh without requiring user interaction.
+ *
+ * One segment per group: with no split the backend sends a single unlabelled
+ * group and the line reads farm-wide, exactly as it always did; with a split
+ * on, each phase / room gets its own `label: occupied/cap` — the cap being
+ * the group's own, which a per-tag or per-location limit may have lowered.
+ *
+ * The tooltip lists every printer holding a slot with its state (heating /
+ * interval_wait) and time to free, grouped under its label and cap, and marks
+ * a wildcard printer — one with no chosen tag or location, which therefore
+ * counts in every group.
  */
 export function StaggerBanner() {
   const { t } = useTranslation();
@@ -29,15 +38,24 @@ export function StaggerBanner() {
 
   if (!data || !data.enabled) return null;
 
-  const occupied = data.slots.length;
-  const capacity = data.concurrent;
+  const farmWide = data.groups.length === 1 && data.groups[0].label === null;
 
-  const tooltip = data.slots.length === 0
+  const nextFree = data.groups
+    .map((g) => g.next_free_in_seconds)
+    .filter((s): s is number => s !== null && s > 0);
+  const soonest = nextFree.length ? Math.min(...nextFree) : null;
+
+  const tooltip = data.groups.every((g) => g.slots.length === 0)
     ? t('queue.stagger.allFree')
-    : data.slots
-        .map(s => {
-          const stateLabel = s.state === 'heating' ? t('queue.stagger.heating') : t('queue.stagger.intervalWait');
-          return `${s.printer_name}: ${stateLabel}, ${formatDuration(s.seconds_to_free)}`;
+    : data.groups
+        .filter((g) => g.slots.length > 0)
+        .map((g) => {
+          const rows = g.slots.map((s) => {
+            const stateLabel = s.state === 'heating' ? t('queue.stagger.heating') : t('queue.stagger.intervalWait');
+            const wild = s.wildcard ? ` (${t('queue.stagger.wildcard')})` : '';
+            return `  ${s.printer_name}${wild}: ${stateLabel}, ${formatDuration(s.seconds_to_free)}`;
+          });
+          return g.label ? [`${g.label} — ${g.occupied}/${g.cap}`, ...rows].join('\n') : rows.join('\n');
         })
         .join('\n');
 
@@ -47,13 +65,29 @@ export function StaggerBanner() {
       title={tooltip}
     >
       <Zap className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+      {/* ⚠️ The separators and the segment texts stay DIRECT text children of
+          this span: only the dots are elements. A segment wrapped in its own
+          span would split the line into pieces, and the line is asserted — and
+          read — as one sentence. */}
       <span className="text-white">
-        {t('queue.stagger.slots', { occupied, capacity })}
+        {farmWide
+          ? t('queue.stagger.slots', { occupied: data.groups[0].occupied, capacity: data.groups[0].cap })
+          : data.groups.map((g, index) => (
+              <Fragment key={`${g.tag_id ?? 'x'}:${g.location_id ?? 'x'}`}>
+                {index > 0 && ' · '}
+                {g.color && (
+                  <span
+                    className="inline-block w-2 h-2 rounded-full align-middle mr-1"
+                    style={{ backgroundColor: g.color }}
+                    aria-hidden
+                  />
+                )}
+                {t('queue.stagger.group', { label: g.label ?? '—', occupied: g.occupied, capacity: g.cap })}
+              </Fragment>
+            ))}
       </span>
-      {data.next_free_in_seconds !== null && data.next_free_in_seconds > 0 && (
-        <span className="text-bambu-gray">
-          · {t('queue.stagger.nextFreeIn', { duration: formatDuration(data.next_free_in_seconds) })}
-        </span>
+      {soonest !== null && (
+        <span className="text-bambu-gray">· {t('queue.stagger.nextFreeIn', { duration: formatDuration(soonest) })}</span>
       )}
       <Info className="w-3.5 h-3.5 text-bambu-gray ml-auto shrink-0" />
     </div>

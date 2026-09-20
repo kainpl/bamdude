@@ -1,10 +1,14 @@
 /**
  * Tests for the spool grouping logic used in InventoryPage.
  *
- * The grouping is a pure client-side computation:
+ * The grouping is a pure client-side computation (Spoolman mode; the local
+ * inventory groups server-side by the same rule):
  * - Spools with identical material+subtype+brand+color_name+rgba+label_weight are grouped
- * - Only unused (weight_used === 0) and unassigned spools are eligible for grouping
- * - Used or assigned spools always appear individually
+ *   (no lot since 2026-09-07)
+ * - Only a spool loaded in a printer (assigned) is kept out of a group; a
+ *   started spool on the shelf groups with its twins (2026-09-10 — before that
+ *   weight_used > 0 excluded as well)
+ * - Assigned spools always appear individually
  * - Groups with only 1 member remain as singles
  */
 
@@ -13,7 +17,7 @@ import type { InventorySpool, SpoolAssignment } from '../../api/client';
 
 // Replicate the grouping key function from InventoryPage (not exported)
 function spoolGroupKey(s: InventorySpool): string {
-  return `${s.material}|${s.subtype || ''}|${s.brand || ''}|${s.color_name || ''}|${s.rgba || ''}|${s.label_weight}|${s.lot ?? ''}`;
+  return `${s.material}|${s.subtype || ''}|${s.brand || ''}|${s.color_name || ''}|${s.rgba || ''}|${s.label_weight}`;
 }
 
 type DisplayItem =
@@ -28,7 +32,7 @@ function computeDisplayItems(
   const groups = new Map<string, InventorySpool[]>();
 
   for (const spool of sortedSpools) {
-    if (spool.weight_used > 0 || assignmentMap[spool.id]) {
+    if (assignmentMap[spool.id]) {
       // Will be added as singles in the walk below
     } else {
       const key = spoolGroupKey(spool);
@@ -42,7 +46,7 @@ function computeDisplayItems(
   const processedKeys = new Set<string>();
 
   for (const spool of sortedSpools) {
-    if (spool.weight_used > 0 || assignmentMap[spool.id]) {
+    if (assignmentMap[spool.id]) {
       items.push({ type: 'single', spool });
       continue;
     }
@@ -62,6 +66,15 @@ function computeDisplayItems(
 function makeSpool(overrides: Partial<InventorySpool> & { id: number }): InventorySpool {
   return {
     material: 'PLA',
+    purchase_date: null,
+    filament_diameter: '1.75',
+    lot: null,
+    last_scale_weight: null,
+    last_weighed_at: null,
+    extra_colors: null,
+    effect_type: null,
+    category: null,
+    low_stock_threshold_pct: null,
     subtype: 'Basic',
     brand: 'Polymaker',
     color_name: 'Red',
@@ -162,25 +175,21 @@ describe('computeDisplayItems', () => {
     expect(items.every((i) => i.type === 'single')).toBe(true);
   });
 
-  it('excludes used spools from groups', () => {
+  it('groups a started spool that is not in a printer with its full twins', () => {
     const spools = [
       makeSpool({ id: 1, weight_used: 0 }),
-      makeSpool({ id: 2, weight_used: 100 }), // used
+      makeSpool({ id: 2, weight_used: 100 }), // started, on the shelf
       makeSpool({ id: 3, weight_used: 0 }),
     ];
     const items = computeDisplayItems(spools, {});
-    // 1 group (id:1, id:3) + 1 single (id:2)
-    expect(items).toHaveLength(2);
-    const group = items.find((i) => i.type === 'group');
-    const single = items.find((i) => i.type === 'single');
-    expect(group).toBeDefined();
-    expect(single).toBeDefined();
-    if (group?.type === 'group') {
-      expect(group.spools).toHaveLength(2);
-      expect(group.spools.map((s) => s.id).sort()).toEqual([1, 3]);
-    }
-    if (single?.type === 'single') {
-      expect(single.spool.id).toBe(2);
+    expect(items).toHaveLength(1);
+    const group = items[0];
+    expect(group.type).toBe('group');
+    if (group.type === 'group') {
+      expect(group.spools.map((s) => s.id).sort()).toEqual([1, 2, 3]);
+      // the header sums what is really left, not count × the first member
+      const remaining = group.spools.reduce((sum, s) => sum + Math.max(0, s.label_weight - s.weight_used), 0);
+      expect(remaining).toBe(2900);
     }
   });
 
@@ -192,6 +201,8 @@ describe('computeDisplayItems', () => {
     ];
     const assignmentMap: Record<number, SpoolAssignment> = {
       2: {
+        id: 1,
+        created_at: '2026-01-01T00:00:00Z',
         spool_id: 2,
         printer_id: 1,
         printer_name: 'P1S',
@@ -239,16 +250,20 @@ describe('computeDisplayItems', () => {
   it('handles mix of groupable and non-groupable spools', () => {
     const spools = [
       makeSpool({ id: 1, material: 'PLA' }),                    // groupable
-      makeSpool({ id: 2, material: 'PLA', weight_used: 50 }),   // used → single
+      makeSpool({ id: 2, material: 'PLA', weight_used: 50 }),   // started, still groupable
       makeSpool({ id: 3, material: 'PLA' }),                    // groupable
       makeSpool({ id: 4, material: 'PETG' }),                   // different → single
     ];
     const items = computeDisplayItems(spools, {});
-    // PLA group (id:1,3) + PLA used single (id:2) + PETG single (id:4)
-    expect(items).toHaveLength(3);
+    // PLA group (id:1,2,3) + PETG single (id:4)
+    expect(items).toHaveLength(2);
+    expect(items[0].type).toBe('group');
+    if (items[0].type === 'group') {
+      expect(items[0].spools.map((s) => s.id)).toEqual([1, 2, 3]);
+    }
   });
 
-  it('returns all singles when no spools can be grouped', () => {
+  it('returns all singles when no spools share a key', () => {
     const spools = [
       makeSpool({ id: 1, material: 'PLA', weight_used: 100 }),
       makeSpool({ id: 2, material: 'PETG', weight_used: 200 }),

@@ -98,6 +98,7 @@ export function IconPicker({ value, onChange }: IconPickerProps) {
       {isOpen && (
         <>
           {/* Backdrop */}
+          {/* not-a-modal: popover */}
           <div
             className="fixed inset-0 z-40"
             onClick={() => setIsOpen(false)}

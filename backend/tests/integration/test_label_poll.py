@@ -172,16 +172,71 @@ class TestClaimingWork:
         assert (await async_client.post("/api/v1/label-devices/poll", json=REPORT)).status_code == 200
         assert (await async_client.post("/api/v1/label-devices/poll", json=REPORT)).status_code == 204
 
-    async def test_a_job_is_handed_out_exactly_once_under_concurrency(
-        self, async_client: AsyncClient, labels_enabled, a_device, a_queued_job
-    ):
+    async def test_a_job_is_handed_out_exactly_once_under_concurrency(self, tmp_path):
         """⚠️ A bridge that retries a request whose response it never saw must
         not be given the same job twice — which a SELECT-then-UPDATE would.
+
+        Driven against ``claim_next_job`` over a FILE-backed database so the
+        five claimants hold five real connections. Through the endpoint this
+        flaked for weeks: the harness's in-memory StaticPool shares ONE
+        aiosqlite connection between sessions, and five parallel commits
+        interleave into "cannot commit transaction - SQL statements in
+        progress" — a driver artifact that said nothing about the claim. The
+        sequential endpoint semantics stay pinned by the retry test above.
         """
-        results = await asyncio.gather(
-            *[async_client.post("/api/v1/label-devices/poll", json=REPORT) for _ in range(5)]
-        )
-        assert sum(1 for r in results if r.status_code == 200) == 1
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from backend.app.core.database import Base
+        from backend.app.services.label_dispatch import claim_next_job
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'labels.db'}", connect_args={"timeout": 15})
+        try:
+            async with engine.begin() as conn:
+                await conn.exec_driver_sql("PRAGMA journal_mode=WAL")
+                # Only the label tables: the full registry isn't imported in a
+                # standalone run, and create_all over ALL of Base then trips on
+                # foreign keys whose target modules nothing here imported.
+                await conn.run_sync(
+                    lambda sync_conn: Base.metadata.create_all(
+                        sync_conn, tables=[LabelDevice.__table__, LabelJob.__table__]
+                    )
+                )
+            maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+            async with maker() as session:
+                device = LabelDevice(
+                    installation_id=REPORT["installation_id"],
+                    driver="niimbot",
+                    model="B1",
+                    enabled=True,
+                    density=3,
+                    cassette_width_mm=40.0,
+                    cassette_height_mm=20.0,
+                    printer_reachable=True,
+                )
+                session.add(device)
+                await session.flush()
+                session.add(
+                    LabelJob(
+                        device_id=device.id,
+                        width_mm=40.0,
+                        height_mm=20.0,
+                        copies=2,
+                        image_png=b"\x89PNG\r\n\x1a\npretend",
+                        status="queued",
+                    )
+                )
+                await session.commit()
+                device_id = device.id
+
+            async def claim():
+                async with maker() as db:
+                    return await claim_next_job(db, device_id)
+
+            results = await asyncio.gather(*[claim() for _ in range(5)])
+            assert sum(1 for job in results if job is not None) == 1
+        finally:
+            await engine.dispose()
 
     async def test_a_device_nobody_adopted_gets_no_work(
         self, async_client: AsyncClient, labels_enabled, a_device, a_queued_job, db_session

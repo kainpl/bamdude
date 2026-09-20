@@ -232,8 +232,7 @@ class ObicoDetectionService:
         """
         # Late import to avoid cycles at module load time
         from backend.app.api.routes.camera import live_frame_for_capture
-        from backend.app.services.camera import capture_camera_frame_bytes
-        from backend.app.services.external_camera import capture_frame as capture_external_frame
+        from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
         async with async_session() as db:
             printer = await db.get(Printer, printer_id)
@@ -258,19 +257,28 @@ class ObicoDetectionService:
             return None
 
         if printer.external_camera_enabled and printer.external_camera_url:
-            return await capture_external_frame(
-                printer.external_camera_url,
-                printer.external_camera_type,
-                timeout=SNAPSHOT_CAPTURE_TIMEOUT,
-                snapshot_url=printer.external_camera_snapshot_url,
+            result = await capture(
+                CameraCaptureRequest.external(
+                    url=printer.external_camera_url,
+                    camera_type=printer.external_camera_type,
+                    snapshot_url=printer.external_camera_snapshot_url,
+                    timeout=SNAPSHOT_CAPTURE_TIMEOUT,
+                    purpose="obico",
+                    printer_id=printer_id,
+                )
             )
-
-        return await capture_camera_frame_bytes(
-            ip_address=printer.ip_address,
-            access_code=printer.access_code,
-            model=printer.model,
-            timeout=SNAPSHOT_CAPTURE_TIMEOUT,
-        )
+        else:
+            result = await capture(
+                CameraCaptureRequest.builtin(
+                    ip_address=printer.ip_address,
+                    access_code=printer.access_code,
+                    model=printer.model,
+                    timeout=SNAPSHOT_CAPTURE_TIMEOUT,
+                    purpose="obico",
+                    printer_id=printer_id,
+                )
+            )
+        return result.frame
 
     async def _check_printer(self, printer_id: int, status, settings: dict):
         task_name = getattr(status, "task_name", None) or getattr(status, "subtask_name", "") or ""
@@ -397,14 +405,20 @@ class ObicoDetectionService:
             for pid, state in self._states.items()
         }
 
-    def get_status(self, sensitivity: str = "medium") -> dict:
+    def get_status(self, sensitivity: str = "medium", *, active: bool = True) -> dict:
         # Report the thresholds for the configured sensitivity, not a hardcoded
         # "medium" — otherwise the Status panel always shows the medium row
         # regardless of the user's selection (#1469). thresholds() falls back
         # to the medium multiplier for any unrecognized value.
+        #
+        # ``is_running`` is the EFFECTIVE state: the loop is alive AND the
+        # caller says detection is on (enabled + an ML URL). The loop itself
+        # starts with the app and merely sleeps while the feature is off, so
+        # a bare task check answered "running" on a farm that never enabled
+        # Obico — the Status panel said Yes with the toggle off.
         low, high = thresholds(sensitivity)
         return {
-            "is_running": self._task is not None and not self._task.done(),
+            "is_running": active and self._task is not None and not self._task.done(),
             "last_error": self._last_error,
             "per_printer": self.get_per_printer(),
             "thresholds": {"low": low, "high": high},

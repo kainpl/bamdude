@@ -1,7 +1,11 @@
 import asyncio
+import base64
+import io
 import logging
 import re
+import time
 import zipfile
+import zlib
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -21,20 +25,28 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.ams_label import AmsLabel
+from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.models.printer_location import PrinterLocation
+from backend.app.models.printer_tag import PrinterTag
 from backend.app.models.user import User
+from backend.app.schemas.archive import ArchivePartRow
 from backend.app.schemas.printer import (
     AmsLabelBody,
     AMSTray,
+    AmsTrayActual,
     AMSUnit,
+    BackupCompatibilityApplyRequest,
+    DefectsWriteIn,
     DiagnosticRequest,
     FilaSwitchResponse,
     HmsActionBody,
     HMSErrorResponse,
+    HmsMuteBody,
     MQTTRecordingRequest,
     NozzleInfoResponse,
     NozzleRackSlot,
+    PlateAnswerIn,
     PrinterCreate,
     PrinterDiagnosticResult,
     PrinterResponse,
@@ -42,8 +54,14 @@ from backend.app.schemas.printer import (
     PrinterStatus,
     PrinterUpdate,
     PrintOptionsResponse,
+    WaitingPrintOut,
 )
 from backend.app.schemas.timelapse import TimelapseStorage
+from backend.app.services import ams_advertised_overlay, archive_parts
+from backend.app.services.ams_backup_compatibility import NAMESPACE as AMS_BACKUP_COMPAT_NAMESPACE
+from backend.app.services.ams_backup_compatibility_apply import bulk_apply, forget_printer_rebuild
+from backend.app.services.archive import find_archive_for_sd_file, parse_plates_from_3mf, sd_stem
+from backend.app.services.archive_defects import DefectsResult, DefectsWrite, record_defects
 from backend.app.services.bambu_ftp import (
     clear_sdcard_async,
     get_storage_info_async,
@@ -60,6 +78,7 @@ from backend.app.services.bambu_mqtt import (
 )
 from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
+from backend.app.services.plate_hold import has_waiting_row as _has_waiting_row, waiting_archive
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_location_service import load_tree, subtree_ids
@@ -81,6 +100,8 @@ from backend.app.services.printer_manager import (
     supports_drying_while_printing,
     uniform_tray_drying_hint,
 )
+from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
+from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import is_within, limits_for
@@ -197,6 +218,17 @@ async def _require_known_location(db, location_id: int | None) -> None:
         raise HTTPException(422, "No such location.")
 
 
+async def _require_known_tags(db, tag_ids: list[int]) -> None:
+    """Every id must name a tag, or the printer silently shows fewer labels than it was given."""
+    wanted = set(tag_ids)
+    if not wanted:
+        return
+    known = set((await db.execute(select(PrinterTag.id).where(PrinterTag.id.in_(wanted)))).scalars().all())
+    missing = sorted(wanted - known)
+    if missing:
+        raise HTTPException(422, f"No such tag: {', '.join(map(str, missing))}.")
+
+
 @router.post("/", response_model=PrinterResponse)
 async def create_printer(
     printer_data: PrinterCreate,
@@ -217,7 +249,17 @@ async def create_printer(
 
     await _require_known_location(db, printer_data.location_id)
 
-    printer = Printer(**printer_data.model_dump())
+    data = printer_data.model_dump()
+    tag_ids = data.pop("tag_ids", [])
+    await _require_known_tags(db, tag_ids)
+    # One namespaced JSON object, written whole — the validated policy, not the
+    # raw dump (which would carry a ``backup_compatibility: None`` for a create
+    # that sent nothing and shadow the column default).
+    patch = printer_data.ams_policies
+    data.pop("ams_policies", None)
+    if patch is not None and patch.backup_compatibility is not None:
+        data["ams_policies"] = {AMS_BACKUP_COMPAT_NAMESPACE: patch.backup_compatibility.model_dump()}
+    printer = Printer(**data)
 
     # Probe MQTT connectivity BEFORE persisting so a mistyped access code or
     # wrong IP doesn't leave a permanently-empty card on the dashboard
@@ -240,14 +282,16 @@ async def create_printer(
         )
 
     db.add(printer)
+    await db.flush()
+    await replace_links(db, printer.id, tag_ids)
     await db.commit()
     await db.refresh(printer)
 
-    # Auto-create printer queue
-    from backend.app.models.printer_queue import PrinterQueue
+    # Every printer has a queue, under its own id — the same guard the Telegram
+    # add path and startup use, so no path can forget it again.
+    from backend.app.services.printer_queues import ensure_printer_queue
 
-    queue = PrinterQueue(id=printer.id, printer_id=printer.id)
-    db.add(queue)
+    await ensure_printer_queue(db, printer.id)
     await db.commit()
 
     # Connect to the printer
@@ -461,6 +505,14 @@ async def update_printer(
         raise HTTPException(404, "Printer not found")
 
     update_data = printer_data.model_dump(exclude_unset=True)
+    if "tag_ids" in update_data:
+        # ``or []`` because the field is optional and an explicit null is a
+        # thing a GET → edit → PATCH client sends. It reads as "no tags", the
+        # same as ``location_id: null`` reads as "no place" — and without it
+        # ``set(None)`` would answer 500 instead.
+        tag_ids = update_data.pop("tag_ids") or []
+        await _require_known_tags(db, tag_ids)
+        await replace_links(db, printer_id, tag_ids)
     if "location_id" in update_data:
         await _require_known_location(db, update_data["location_id"])
 
@@ -479,11 +531,34 @@ async def update_printer(
             update_data["plate_detection_roi_w"] = None
             update_data["plate_detection_roi_h"] = None
 
+    # One namespaced JSON object. Every OTHER key survives (a future policy must
+    # not be wiped by a form that never heard of it), and the assignment is a NEW
+    # dict — SQLAlchemy JSON does not see in-place mutation.
+    #
+    # ⚠️ The namespace that IS sent is replaced WHOLESALE, defaults included:
+    # this is not a field-level merge, so a caller that sends
+    # ``{"normalize_color": true}`` alone also writes
+    # ``canonical_color_rgba: "000000FF"`` and ``generic_base_material: false``
+    # over whatever was there. A UI must send the full namespace it wants to end
+    # up with — ``printersEditPayload.backupCompatibilityPatch`` is what does
+    # that on our side.
+    if "ams_policies" in update_data:
+        merged = dict(printer.ams_policies or {})
+        patch = printer_data.ams_policies
+        if patch is not None and patch.backup_compatibility is not None:
+            merged[AMS_BACKUP_COMPAT_NAMESPACE] = patch.backup_compatibility.model_dump()
+        update_data["ams_policies"] = merged
+
     for field, value in update_data.items():
         setattr(printer, field, value)
 
     await db.commit()
     await db.refresh(printer)
+
+    # A name-only edit does not reconnect MQTT, but callbacks, notifications,
+    # and relays read the connected printer's lightweight in-memory info.
+    if "name" in update_data:
+        printer_manager.update_printer_name(printer_id, printer.name)
 
     # Reconnect if connection settings changed
     if any(k in update_data for k in ["ip_address", "access_code", "is_active"]):
@@ -662,16 +737,21 @@ async def archive_printer(
         cancel_result = await db.execute(
             sql_update(PrintQueueItem)
             .where(PrintQueueItem.queue_id.in_(queue_ids), PrintQueueItem.status == "pending")
-            .values(status="cancelled")
+            .values(status="cancelled", waiting_reason=None, waiting_reason_code=None, waiting_reason_checked_at=None)
         )
         cancelled = cancel_result.rowcount or 0
 
     await db.commit()
     await db.refresh(printer)
     printer_manager.disconnect_printer(printer_id)
+    # The advertised-profile overlay and the once-per-process rebuild mark are
+    # deliberately LEFT in place: archiving is reversible and the slots still
+    # hold what we published, so an unarchive finds the masks it left. The
+    # DELETE route forgets both (``ams_advertised_overlay.forget_printer`` +
+    # ``forget_printer_rebuild``) — there the id itself becomes free again.
     # A ``CloudLinkPrinter`` row survives archiving on purpose, so the allowlist
     # still names this machine — availability is filtered on the READ side, in
-    # ``Uplink.build_snapshot``. A running link is holding the set that snapshot
+    # ``Uplink.build_snapshot_chunks``. A running link is holding the set that snapshot
     # produced, and nothing about archiving reaches it: the printer is gone from
     # the whole app while the portal is still being told about it. This is what
     # makes it re-ask. Safe with no link running — the service returns at once.
@@ -731,11 +811,11 @@ async def delete_printer(
     """
     from sqlalchemy import delete as sql_delete
 
-    from backend.app.models.archive import PrintArchive
     from backend.app.models.maintenance import MaintenanceHistory, PrinterMaintenance
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer_queue import PrinterQueue
     from backend.app.services.archive import ArchiveService
+    from backend.app.services.queue_counters import detach_print_queue_refs
 
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
@@ -805,6 +885,14 @@ async def delete_printer(
     # long-lived queue ever held just to delete it row by row.
     queue_ids = (await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalars().all()
     if queue_ids:
+        # A printer-side item may be the dispatched half of an auto-queue row.
+        # Bulk DELETE bypasses the ordinary queue endpoint, so do its explicit
+        # SQLite-safe cleanup first: otherwise the router row keeps the queue
+        # source alive for ever after its printer is gone.
+        item_ids = (
+            (await db.execute(select(PrintQueueItem.id).where(PrintQueueItem.queue_id.in_(queue_ids)))).scalars().all()
+        )
+        await detach_print_queue_refs(db, item_ids)
         await db.execute(sql_delete(PrintQueueItem).where(PrintQueueItem.queue_id.in_(queue_ids)))
 
     # Everything whose FK already says it dies with the printer.
@@ -823,9 +911,22 @@ async def delete_printer(
     for model in PRINTER_CASCADE_MODELS:
         await db.execute(sql_delete(model).where(model.printer_id == printer_id))
 
+    # SQLite ignores ON DELETE CASCADE; the link rows go explicitly, like every
+    # other child row above.
+    await delete_links_for_printer(db, printer_id)
+
     await db.delete(printer)
     await db.commit()
 
+    from backend.app.services.camera_metrics import forget_printer
+
+    forget_printer(printer_id)
+    # Both halves of the advertised-profile memory: the entries themselves and
+    # the "this process already rebuilt it" mark. An id is reused by the next
+    # printer created, which would otherwise inherit a stranger's masked slots
+    # and never get a rebuild of its own.
+    ams_advertised_overlay.forget_printer(printer_id)
+    forget_printer_rebuild(printer_id)
     return {"status": "deleted", "archives_deleted": delete_archives}
 
 
@@ -849,6 +950,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
     from backend.app.models.cloud_link import CloudLinkPrinter
     from backend.app.models.filament_calibration import FilamentCalibration
     from backend.app.models.firmware import FirmwareBatchItem
+    from backend.app.models.hms_mute import HMSMutedEntry
     from backend.app.models.print_usage_event import PrintUsageEvent
     from backend.app.models.printer_setting_audit import PrinterSettingAudit
     from backend.app.models.spool_assignment import SpoolAssignment
@@ -865,6 +967,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
         CloudLinkPrinter,
         FilamentCalibration,
         FirmwareBatchItem,
+        HMSMutedEntry,
         PrintUsageEvent,
         PrinterSettingAudit,
         SpoolAssignment,
@@ -904,8 +1007,6 @@ async def resolve_current_archive_id(
     handler leaves one behind, and the archive of the print running NOW was
     created later.
     """
-    from backend.app.models.archive import PrintArchive
-
     if subtask_id:
         by_subtask = await db.execute(
             select(PrintArchive.id)
@@ -940,6 +1041,51 @@ async def get_printer_status(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
+    return await _build_printer_status(printer, db)
+
+
+@router.get("/status/batch", response_model=dict[int, PrinterStatus])
+async def get_printer_status_batch(
+    ids: list[int] = Query(min_length=1, max_length=100),
+    _=RequirePermission(Permission.PRINTERS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """One bounded REST snapshot for a fleet view, including WS-unavailable clients.
+
+    Missing IDs are omitted; each client caller can handle its own 404 without
+    failing the other cards. Uses the single-printer response builder verbatim.
+    """
+    started = time.monotonic()
+    printers = list((await db.scalars(select(Printer).where(Printer.id.in_(set(ids))))).all())
+    subtasks = {}
+    held = []
+    for printer in printers:
+        state = printer_manager.get_status(printer.id)
+        if state and state.state in ("RUNNING", "PAUSE"):
+            subtasks[printer.id] = state.subtask_id or None
+        if printer_manager.is_awaiting_plate_clear(printer.id):
+            held.append(printer.id)
+    archives = await current_archive_ids(db, subtasks)
+    waiting = await printers_with_waiting_rows(db, held)
+    statuses = {p.id: await _build_printer_status(p, db, archive_ids=archives, waiting_ids=waiting) for p in printers}
+    logger.debug(
+        "Printer status batch: requested=%s returned=%s elapsed=%.3fs",
+        len(ids),
+        len(statuses),
+        time.monotonic() - started,
+    )
+    return statuses
+
+
+async def _build_printer_status(
+    printer: Printer,
+    db: AsyncSession,
+    *,
+    archive_ids: dict[int, int | None] | None = None,
+    waiting_ids: set[int] | None = None,
+) -> PrinterStatus:
+    printer_id = printer.id
+
     state = printer_manager.get_status(printer_id)
     if not state:
         return PrinterStatus(
@@ -955,7 +1101,7 @@ async def get_printer_status(
     # Determine cover URL if there's an active print (including paused)
     cover_url = None
     if state.state in ("RUNNING", "PAUSE") and state.gcode_file:
-        cover_url = f"/api/v1/printers/{printer_id}/cover"
+        cover_url = f"/api/v1/printers/{printer_id}/camera-cover"
 
     # Convert HMS errors to response format
     hms_errors = [
@@ -969,6 +1115,19 @@ async def get_printer_status(
             full_code=e.full_code,
         )
         for e in (state.hms_errors or [])
+    ]
+    # Stack entries the operator hid on this printer (services/hms_mute).
+    hms_muted = [
+        HMSErrorResponse(
+            code=e.code,
+            attr=e.attr,
+            module=e.module,
+            severity=e.severity,
+            actions=e.actions,
+            job_id=e.job_id,
+            full_code=e.full_code,
+        )
+        for e in (getattr(state, "hms_muted", None) or [])
     ]
 
     # Parse AMS data from raw_data
@@ -1015,9 +1174,27 @@ async def get_printer_status(
                     k_value = kprofile_map[cali_idx]
 
                 _tray_cols, _tray_ctype = _tray_colours(tray_data, tray_data.get("tray_color"))
+                # The spool behind an advertised profile, exactly as the
+                # WebSocket shaper builds it (printer_state_to_dict). The two
+                # payloads describe the same tray and the frontend merges them,
+                # so a field only one of them carries flickers away on every
+                # refetch — see AmsTrayActual.
+                _overlay_entry = ams_advertised_overlay.effective(
+                    printer_id, int(ams_data.get("id", 0)), int(tray_data.get("id", 0)), tray_data
+                )
                 trays.append(
                     AMSTray(
                         id=tray_data.get("id", 0),
+                        actual=(
+                            AmsTrayActual(
+                                tray_color=_overlay_entry.actual_color,
+                                tray_type=_overlay_entry.actual_material,
+                                tray_info_idx=_overlay_entry.actual_variant,
+                                cols=list(_overlay_entry.actual_cols),
+                            )
+                            if _overlay_entry
+                            else None
+                        ),
                         tray_color=tray_data.get("tray_color"),
                         cols=_tray_cols,
                         ctype=_tray_ctype,
@@ -1232,7 +1409,11 @@ async def get_printer_status(
     current_plate_id: int | None = None
     if state.state in ("RUNNING", "PAUSE"):
         current_plate_id = resolve_plate_id(state)
-        current_archive_id = await resolve_current_archive_id(db, printer_id, state.subtask_id)
+        current_archive_id = (
+            await resolve_current_archive_id(db, printer_id, state.subtask_id)
+            if archive_ids is None
+            else archive_ids.get(printer_id)
+        )
 
     return PrinterStatus(
         id=printer_id,
@@ -1249,6 +1430,7 @@ async def get_printer_status(
         temperatures=temperatures,
         cover_url=cover_url,
         hms_errors=hms_errors,
+        hms_muted=hms_muted,
         ams=ams_units,
         ams_exists=ams_exists,
         vt_tray=vt_tray,
@@ -1275,6 +1457,7 @@ async def get_printer_status(
         supports_cooling_filter=bool((state.print_option_support or {}).get("cooling_filter")),
         speed_level=state.speed_level,
         chamber_light=state.chamber_light,
+        has_chamber_light=state.has_chamber_light,
         active_extruder=state.active_extruder,
         ams_mapping=ams_mapping,
         ams_extruder_map=ams_extruder_map,
@@ -1323,8 +1506,13 @@ async def get_printer_status(
         firmware_version=state.firmware_version,
         developer_mode=state.developer_mode if state else None,
         ams_auto_switch_filament=state.ams_auto_switch_filament if state else None,
+        ams_backup_groups=state.ams_backup_groups if state else None,
         macro_executing=state.macro_executing if state else None,
         awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
+        repeat_available=(
+            printer_manager.is_awaiting_plate_clear(printer_id)
+            and (await _has_waiting_row(db, printer_id) if waiting_ids is None else printer_id in waiting_ids)
+        ),
         supports_drying=supports_drying(printer.model, state.firmware_version),
         supports_drying_while_printing=supports_drying_while_printing(printer.model, state.firmware_version),
         drying_screen_only=drying_screen_only(printer.model),
@@ -1552,7 +1740,38 @@ def clear_cover_cache(printer_id: int) -> None:
     _cover_cache.pop(printer_id, None)
 
 
-@router.get("/{printer_id}/cover")
+# Plates + PNGs of a printer file that has NO archive: one FTP read per
+# (printer, storage, path) for five minutes, at most 32 entries. A file that
+# was printed never lands here — it is answered from the archive on disk.
+#
+# Like ``_cover_cache`` above this holds bytes (base64 inside the answer dict),
+# never on-disk paths, so clearing it can never reach the filesystem. The TTL is
+# short on purpose: a file on the card can be overwritten in place under the
+# same name, and nothing tells us when.
+_PLATES_CACHE_TTL = 300.0
+_PLATES_CACHE_MAX = 32
+_plates_cache: dict[tuple[int, str, str], tuple[float, dict]] = {}
+
+
+def _plates_cache_get(key: tuple[int, str, str]) -> dict | None:
+    hit = _plates_cache.get(key)
+    if hit is None:
+        return None
+    stamp, answer = hit
+    if time.monotonic() - stamp > _PLATES_CACHE_TTL:
+        _plates_cache.pop(key, None)
+        return None
+    return answer
+
+
+def _plates_cache_put(key: tuple[int, str, str], answer: dict) -> None:
+    if len(_plates_cache) >= _PLATES_CACHE_MAX:
+        oldest = min(_plates_cache, key=lambda k: _plates_cache[k][0])
+        _plates_cache.pop(oldest, None)
+    _plates_cache[key] = (time.monotonic(), answer)
+
+
+@router.get("/{printer_id}/camera-cover")
 async def get_printer_cover(
     printer_id: int,
     view: str | None = None,
@@ -1577,6 +1796,12 @@ async def get_printer_cover(
     endpoint returns 404 and the UI shows a placeholder; once the
     retry-download / reconnect / manual-retry flow fills the archive,
     the next cover request succeeds.
+
+    A 404 therefore means **nothing on disk at all** for this print: an
+    archive whose 3MF retention deleted still answers, from the PNG that
+    retention deliberately kept.  The exception is ``?view=top``, which
+    needs the 3MF — a ¾ render must never answer a top-down request — and
+    refuses for a cleaned row.
 
     Args:
         view: Optional view type. Use "top" for top-down build plate view (useful for skip objects).
@@ -1623,42 +1848,13 @@ async def get_printer_cover(
         if cache_key in _cover_cache[printer_id]:
             return Response(content=_cover_cache[printer_id][cache_key], media_type="image/png")
 
-    # Resolve the printing archive for this printer.  Match by print_name
-    # (== subtask_name) or filename variations.
-    from sqlalchemy import or_ as sa_or
-
-    from backend.app.models.archive import PrintArchive
-
-    subtask_base = subtask_name.replace(".gcode.3mf", "").replace(".3mf", "")
-    # Bambu firmware reports subtask_name with spaces collapsed to underscores
-    # (e.g. plate name "Modular Panels rear" → "Modular_Panels_rear"), while the
-    # archive keeps the original spaced filename. So an exact match misses
-    # multi-plate prints whose plate name contains spaces — normalise both sides
-    # to underscores. Mirrors build_filename_candidates() in archive_download.py.
-    subtask_us = subtask_base.replace(" ", "_")
-    filename_us = func.replace(PrintArchive.filename, " ", "_")
-    # No status filter: the printer state can be FINISH (archive already
-    # flipped to "completed") while the UI still asks for the cover.  Also
-    # require a non-empty file_path so a fallback row (3MF pending) doesn't
-    # shadow an older populated archive with the same name.
-    archive_result = await db.execute(
-        select(PrintArchive)
-        .where(PrintArchive.printer_id == printer_id)
-        .where(PrintArchive.file_path != "")
-        .where(
-            sa_or(
-                PrintArchive.print_name == subtask_base,
-                PrintArchive.filename == f"{subtask_base}.gcode.3mf",
-                PrintArchive.filename == f"{subtask_base}.3mf",
-                PrintArchive.filename == subtask_name,
-                filename_us == f"{subtask_us}.gcode.3mf",
-                filename_us == f"{subtask_us}.3mf",
-            )
-        )
-        .order_by(PrintArchive.created_at.desc())
-        .limit(1)
-    )
-    archive = archive_result.scalar_one_or_none()
+    # Resolve the printing archive for this printer. The match (spaces folded,
+    # suffix variants, no status filter, newest row with its 3MF *or* its
+    # retention-surviving PNG on disk) lives in find_archive_for_sd_file — read
+    # its docstring for why each part is there; the file manager asks the same
+    # question through it.
+    subtask_base = sd_stem(subtask_name)
+    archive = await find_archive_for_sd_file(db, printer_id, subtask_name)
     if archive is None:
         raise HTTPException(404, f"No archive with a local 3MF yet for '{subtask_base}' on printer {printer_id}")
 
@@ -1668,7 +1864,7 @@ async def get_printer_cover(
     #    wants to see), so we can short-circuit before the scan-fallback.
     if archive.thumbnail_path and view != "top":
         thumb_path = settings.base_dir / archive.thumbnail_path
-        if thumb_path.exists():
+        if thumb_path.is_file():
             image_data = thumb_path.read_bytes()
             if printer_id not in _cover_cache:
                 _cover_cache[printer_id] = {}
@@ -1678,8 +1874,19 @@ async def get_printer_cover(
     # 2. Otherwise open the 3MF from archive_dir and extract the thumbnail
     #    for the requested plate + view.
     local_3mf = settings.base_dir / archive.file_path
-    if not local_3mf.exists():
-        raise HTTPException(404, f"Archive file missing on disk: {archive.file_path}")
+    if not archive.file_path or not local_3mf.is_file():
+        # Two ways here, both a refusal rather than a failure:
+        #   * a retention-cleaned winner (3MF deleted, ``file_path=""``, only the
+        #     PNG left) asked with ?view=top — step 1 rightly refuses to answer a
+        #     top-down request with the ¾ render, and there is no 3MF to open;
+        #   * the file went between the resolver's check and this open (TOCTOU).
+        # ⚠️ ``is_file()``, matching the resolver, and the empty-path check
+        # first: ``base_dir / ""`` IS ``base_dir``, a directory that ``exists()``
+        # — the old check let ``zipfile`` open it and answered 500 to the Skip
+        # Objects modal, which requests ?view=top on every open.
+        # The stem, not ``archive.file_path``: a cleaned row's path is empty and
+        # the sentence rendered with nothing after the colon.
+        raise HTTPException(404, f"Archive file missing on disk: {subtask_base}")
 
     try:
         with zipfile.ZipFile(local_3mf, "r") as zf:
@@ -1926,268 +2133,143 @@ async def get_printer_file_plates(
     storage: str | None = None,
     _=RequirePermission(Permission.PRINTERS_FILES),
 ):
-    """Get available plates from a multi-plate 3MF file stored on a printer."""
-    import io
-    import json
+    """Plates of a 3MF on the printer's card — from the ARCHIVE when the file has
+    been printed, from ONE read of the printer otherwise.
 
-    import defusedxml.ElementTree as ET
-
+    Every print that ran on this printer left a ``print_archives`` row with the
+    3MF on disk and the printed plate's PNG beside it (``thumbnail_path``), so
+    for those files there is nothing to fetch: plates come from the archive's
+    cached ``extra_data["plates"]`` or its local file, and every
+    ``thumbnail_url`` points at the anonymous archive routes a plain ``<img>``
+    can load. A file that never printed is read once; its PNGs ride in this
+    answer as data URLs (the modal fetches it with its bearer token) and the
+    answer is cached briefly. There is deliberately no per-plate image route:
+    the old one re-downloaded the whole 3MF per plate and ``<img>`` could not
+    authenticate against it anyway.
+    """
     printer = await _load_printer_or_404(printer_id)
-    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
-
     filename = path.split("/")[-1]
+    empty = {
+        "printer_id": printer_id,
+        "path": path,
+        "filename": filename,
+        "plates": [],
+        "is_multi_plate": False,
+        "archive_id": None,
+    }
     if not filename.lower().endswith(".3mf"):
-        return {
-            "printer_id": printer_id,
-            "path": path,
-            "filename": filename,
-            "plates": [],
-            "is_multi_plate": False,
-        }
+        return empty
+
+    # A short-lived session, not ``Depends(get_db)``: the fallback below talks
+    # FTP, and holding the request's session across that is exactly the pool
+    # exhaustion #2572 / ``_load_printer_or_404`` exist to prevent. ⚠️ The zip
+    # parse inside ``_plates_from_archive`` is file I/O for the same reason, so it
+    # runs AFTER the block: the session maker is ``expire_on_commit=False`` and
+    # nothing commits here, so the row's loaded columns still read once it is
+    # detached — and the pooled connection is back before the parse starts.
+    async with database.async_session() as db:
+        archive = await find_archive_for_sd_file(db, printer_id, filename)
+    answer = None if archive is None else _plates_from_archive(printer_id, path, filename, archive)
+    if answer is not None:
+        return answer
+
+    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
+    key = (printer_id, resolved, path)
+    cached = _plates_cache_get(key)
+    if cached is not None:
+        return cached
 
     data = await transport_for(printer, resolved).read_bytes(path)
     if data is None:
         raise HTTPException(404, f"File not found: {path}")
-
-    plates = []
-
+    plates: list[dict] = []
     try:
         with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
-            namelist = zf.namelist()
-
-            # Find all plate gcode files to determine available plates
-            gcode_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".gcode")]
-
-            # If no gcode is present (source-only or unsliced), fall back to plate JSON/PNG
-            plate_indices: list[int] = []
-            if gcode_files:
-                for gf in gcode_files:
-                    try:
-                        plate_str = gf[15:-6]  # Remove "Metadata/plate_" and ".gcode"
-                        plate_indices.append(int(plate_str))
-                    except ValueError:
-                        pass  # Skip gcode files with non-numeric plate indices
-            else:
-                plate_json_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".json")]
-                plate_png_files = [
-                    n
-                    for n in namelist
-                    if n.startswith("Metadata/plate_")
-                    and n.endswith(".png")
-                    and "_small" not in n
-                    and "no_light" not in n
-                ]
-                plate_name_candidates = plate_json_files + plate_png_files
-                plate_re = re.compile(r"^Metadata/plate_(\d+)\.(json|png)$")
-                seen_indices: set[int] = set()
-                for name in plate_name_candidates:
-                    match = plate_re.match(name)
-                    if match:
-                        try:
-                            index = int(match.group(1))
-                        except ValueError:
-                            continue
-                        if index in seen_indices:
-                            continue
-                        seen_indices.add(index)
-                        plate_indices.append(index)
-
-            if not plate_indices:
-                return {
-                    "printer_id": printer_id,
-                    "path": path,
-                    "filename": filename,
-                    "plates": [],
-                    "is_multi_plate": False,
-                }
-
-            plate_indices.sort()
-
-            # Parse model_settings.config for plate names
-            plate_names = {}
-            if "Metadata/model_settings.config" in namelist:
-                try:
-                    model_content = zf.read("Metadata/model_settings.config").decode()
-                    model_root = ET.fromstring(model_content)
-                    for plate_elem in model_root.findall(".//plate"):
-                        plater_id = None
-                        plater_name = None
-                        for meta in plate_elem.findall("metadata"):
-                            key = meta.get("key")
-                            value = meta.get("value")
-                            if key == "plater_id" and value:
-                                try:
-                                    plater_id = int(value)
-                                except ValueError:
-                                    pass  # Skip plate with unparseable ID
-                            elif key == "plater_name" and value:
-                                plater_name = value.strip()
-                        if plater_id is not None and plater_name:
-                            plate_names[plater_id] = plater_name
-                except Exception:
-                    pass  # Plate names are optional; continue without them
-
-            # Parse slice_info.config for plate metadata
-            plate_metadata = {}
-            if "Metadata/slice_info.config" in namelist:
-                content = zf.read("Metadata/slice_info.config").decode()
-                root = ET.fromstring(content)
-
-                for plate_elem in root.findall(".//plate"):
-                    plate_info = {"filaments": [], "prediction": None, "weight": None, "name": None, "objects": []}
-
-                    plate_index = None
-                    for meta in plate_elem.findall("metadata"):
-                        key = meta.get("key")
-                        value = meta.get("value")
-                        if key == "index" and value:
-                            try:
-                                plate_index = int(value)
-                            except ValueError:
-                                pass  # Skip plate with unparseable index
-                        elif key == "prediction" and value:
-                            try:
-                                plate_info["prediction"] = int(value)
-                            except ValueError:
-                                pass  # Skip unparseable prediction; leave as None
-                        elif key == "weight" and value:
-                            try:
-                                plate_info["weight"] = float(value)
-                            except ValueError:
-                                pass  # Skip unparseable weight; leave as None
-
-                    # Get filaments used in this plate
-                    for filament_elem in plate_elem.findall("filament"):
-                        filament_id = filament_elem.get("id")
-                        filament_type = filament_elem.get("type", "")
-                        filament_color = filament_elem.get("color", "")
-                        used_g = filament_elem.get("used_g", "0")
-                        used_m = filament_elem.get("used_m", "0")
-
-                        try:
-                            used_grams = float(used_g)
-                        except (ValueError, TypeError):
-                            used_grams = 0
-
-                        if used_grams > 0 and filament_id:
-                            plate_info["filaments"].append(
-                                {
-                                    "slot_id": int(filament_id),
-                                    "type": filament_type,
-                                    "color": filament_color,
-                                    "used_grams": round(used_grams, 1),
-                                    "used_meters": float(used_m) if used_m else 0,
-                                }
-                            )
-
-                    plate_info["filaments"].sort(key=lambda x: x["slot_id"])
-
-                    # Collect object names
-                    for obj_elem in plate_elem.findall("object"):
-                        obj_name = obj_elem.get("name")
-                        if obj_name and obj_name not in plate_info["objects"]:
-                            plate_info["objects"].append(obj_name)
-
-                    # Set plate name
-                    if plate_index is not None:
-                        custom_name = plate_names.get(plate_index)
-                        if custom_name:
-                            plate_info["name"] = custom_name
-                        elif plate_info["objects"]:
-                            plate_info["name"] = plate_info["objects"][0]
-                        plate_metadata[plate_index] = plate_info
-
-            # Parse plate_*.json for object lists when slice_info is missing
-            plate_json_objects: dict[int, list[str]] = {}
-            for name in namelist:
-                match = re.match(r"^Metadata/plate_(\d+)\.json$", name)
-                if not match:
-                    continue
-                try:
-                    plate_index = int(match.group(1))
-                except ValueError:
-                    continue
-                try:
-                    payload = json.loads(zf.read(name).decode())
-                    bbox_objects = payload.get("bbox_objects", [])
-                    names: list[str] = []
-                    for obj in bbox_objects:
-                        obj_name = obj.get("name") if isinstance(obj, dict) else None
-                        if obj_name and obj_name not in names:
-                            names.append(obj_name)
-                    if names:
-                        plate_json_objects[plate_index] = names
-                except Exception:
-                    continue
-
-            # Build plate list
-            for idx in plate_indices:
-                meta = plate_metadata.get(idx, {})
-                has_thumbnail = f"Metadata/plate_{idx}.png" in namelist
-                objects = meta.get("objects", [])
-                if not objects:
-                    objects = plate_json_objects.get(idx, [])
-
-                plate_name = meta.get("name")
-                if not plate_name:
-                    plate_name = plate_names.get(idx)
-                if not plate_name and objects:
-                    plate_name = objects[0]
-
-                plates.append(
-                    {
-                        "index": idx,
-                        "name": plate_name,
-                        "objects": objects,
-                        "object_count": len(objects),
-                        "has_thumbnail": has_thumbnail,
-                        "thumbnail_url": f"/api/v1/printers/{printer_id}/files/plate-thumbnail/{idx}?path={path}",
-                        "print_time_seconds": meta.get("prediction"),
-                        "filament_used_grams": meta.get("weight"),
-                        "filaments": meta.get("filaments", []),
-                    }
-                )
-
-    except Exception as e:
+            names = set(zf.namelist())
+            for plate in parse_plates_from_3mf(zf):
+                png = f"Metadata/plate_{plate['index']}.png"
+                url = None
+                if png in names:
+                    url = "data:image/png;base64," + base64.b64encode(zf.read(png)).decode("ascii")
+                plates.append({**plate, "has_thumbnail": url is not None, "thumbnail_url": url})
+    except (zipfile.BadZipFile, EOFError, zlib.error) as e:
+        # A file half-written to the card is the usual cause; an empty picker is
+        # a better answer for it than a 500. ⚠️ ``zlib.error`` belongs here:
+        # a mangled deflate stream raises BadZipFile ("Bad CRC-32") most of the
+        # time and "invalid block type" the rest of it — measured 240/60 over 300
+        # random corruptions — so a guard without it fails one torn file in five.
         logger.warning("Failed to parse plates from printer file %s: %s", path, e)
+        return empty
+    answer = {**empty, "plates": plates, "is_multi_plate": len(plates) > 1}
+    _plates_cache_put(key, answer)
+    return answer
 
+
+def _plates_from_archive(printer_id: int, path: str, filename: str, archive: PrintArchive) -> dict | None:
+    """The answer for a file whose archive is on disk — no transport call, ever.
+
+    ``None`` means the archive has nothing to offer and the caller must read the
+    printer as if there were none: a retention-*cleaned* row (3MF deleted,
+    ``file_path`` blanked, only its extracted PNG kept) with no cached plates
+    cannot describe the plates at all, and ``base_dir / ""`` is a directory, not
+    a 3MF. When cached plates DO describe a row whose 3MF is not on disk, only
+    the printed plate has a picture — the per-plate route would open that missing
+    file, so its siblings answer ``None``. The gate is the file, not the column:
+    retention blanks ``file_path``, but a prune or a move leaves it naming a 3MF
+    that is gone, and a URL that 404s is worse than an honest ``null``.
+
+    ``has_thumbnail`` therefore means "a picture you can load", not "the 3MF had
+    one": it is recomputed from the URL, the same as on the read-the-printer
+    path, so a caller can key its placeholder off either field and never render
+    an ``<img>`` with a null source.
+    """
+    extra = archive.extra_data if isinstance(archive.extra_data, dict) else {}
+    cached = extra.get("plates")
+    local_3mf = settings.base_dir / archive.file_path if archive.file_path else None
+    local_3mf_on_disk = local_3mf is not None and local_3mf.is_file()  # one stat; the loop asks the same question
+    if isinstance(cached, list) and cached:
+        raw = cached
+    elif local_3mf_on_disk:
+        try:
+            with zipfile.ZipFile(local_3mf, "r") as zf:
+                raw = parse_plates_from_3mf(zf)
+        except (zipfile.BadZipFile, EOFError, OSError, zlib.error) as e:
+            # The archive on disk is unreadable — the printer may still hold the
+            # file, so fall through to the one read instead of failing the modal.
+            # ``zlib.error`` for the same reason as on the read path above.
+            logger.warning("Archive 3MF %s unreadable, reading the printer instead: %s", local_3mf, e)
+            return None
+    else:
+        return None
+
+    plates = []
+    for plate in raw:
+        idx = plate.get("index")
+        # The printed plate is asked FIRST, before the metadata gate:
+        # ``thumbnail_path`` is a fact about the archive directory, while
+        # ``has_thumbnail`` is one about the 3MF's ``Metadata/plate_N.png``. A
+        # thumbnail extracted or generated some other way makes the second False
+        # over a picture that exists, and answering ``null`` for it would be wrong.
+        if archive.thumbnail_path and archive.plate_index == idx:
+            url = f"/api/v1/archives/{archive.id}/thumbnail"  # the printed plate's PNG, already extracted
+        elif not plate.get("has_thumbnail"):
+            url = None
+        elif local_3mf_on_disk:
+            url = f"/api/v1/archives/{archive.id}/plate-thumbnail/{idx}"
+        else:
+            # The 3MF that URL would open is not there: ``file_path`` blanked is
+            # retention, set-but-gone is a prune or a move. Either way ``null``
+            # draws the modal's placeholder instead of an <img> that 404s.
+            url = None
+        plates.append({**plate, "has_thumbnail": url is not None, "thumbnail_url": url})
     return {
         "printer_id": printer_id,
         "path": path,
         "filename": filename,
         "plates": plates,
         "is_multi_plate": len(plates) > 1,
+        "archive_id": archive.id,
     }
-
-
-@router.get("/{printer_id}/files/plate-thumbnail/{plate_index}")
-async def get_printer_file_plate_thumbnail(
-    printer_id: int,
-    plate_index: int,
-    path: str = Query(..., description="Full path to the 3MF file on the printer"),
-    storage: str | None = None,
-    _=RequirePermission(Permission.PRINTERS_FILES),
-):
-    """Get a plate thumbnail image from a printer-stored 3MF file."""
-    import io
-
-    printer = await _load_printer_or_404(printer_id)
-    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
-
-    data = await transport_for(printer, resolved).read_bytes(path)
-    if data is None:
-        raise HTTPException(404, f"File not found: {path}")
-
-    try:
-        with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
-            thumb_path = f"Metadata/plate_{plate_index}.png"
-            if thumb_path in zf.namelist():
-                image_data = zf.read(thumb_path)
-                return Response(content=image_data, media_type="image/png")
-    except Exception:
-        pass  # Corrupt or unreadable 3MF; fall through to 404
-
-    raise HTTPException(status_code=404, detail=f"Thumbnail for plate {plate_index} not found")
 
 
 @router.post("/{printer_id}/files/download-zip")
@@ -2304,11 +2386,11 @@ async def import_printer_files_to_library(
 
     folder: LibraryFolder | None = None
     if folder_id is not None:
-        # Eager-load .projects so save_3mf_bytes_to_library's
-        # inherit_folder_projects() doesn't trip async lazy-load.
+        # Eager-load .products so save_3mf_bytes_to_library's
+        # inherit_folder_products() doesn't trip async lazy-load.
         folder = (
             await db.execute(
-                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.products))
             )
         ).scalar_one_or_none()
         if not folder:
@@ -2875,6 +2957,39 @@ async def configure_ams_slot(
     }
 
 
+@router.post("/{printer_id}/ams-policies/backup-compatibility/apply")
+async def apply_backup_compatibility(
+    printer_id: int,
+    body: BackupCompatibilityApplyRequest,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-advertise every assigned, loaded, non-RFID slot under the printer's backup-compatibility policy.
+
+    ``dry_run`` (default) answers the preview without touching MQTT. A real apply
+    is refused while a print runs — the firmware ignores slot changes mid-print
+    unpredictably — and needs a connected client.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+    client = printer_manager.get_client(printer_id)
+    if not body.dry_run:
+        if printer_manager.is_print_active(printer_id):
+            raise HTTPException(status_code=409, detail="Printer is printing")
+        if client is None or not client.state.connected:
+            raise HTTPException(status_code=400, detail="Printer not connected")
+    # A preview needs the live trays too: without them every slot reads empty
+    # and the answer is fiction rather than an empty AMS.
+    if printer_manager.get_status(printer_id) is None:
+        raise HTTPException(status_code=400, detail="Printer not connected")
+    outcome = await bulk_apply(db, printer, client, dry_run=body.dry_run)
+    if not body.dry_run and client is not None:
+        client.request_status_update()  # nudge a pushall so read-back verification and the overlay see the echo soon
+    return outcome
+
+
 @router.post("/{printer_id}/ams/{ams_id}/tray/{tray_id}/reset")
 async def reset_ams_slot(
     printer_id: int,
@@ -3035,7 +3150,6 @@ async def debug_simulate_print_complete(
     without needing to wait for an actual print to finish.
     """
     from backend.app.main import _active_prints, on_print_complete
-    from backend.app.models.archive import PrintArchive
 
     # Get the most recent archive for this printer
     result = await db.execute(
@@ -3115,10 +3229,61 @@ async def stop_print(
     return {"success": True, "message": "Print stop command sent"}
 
 
+async def _record_waiting_defects(
+    db: AsyncSession, printer_id: int, defects: DefectsWriteIn, actor_id: int | None
+) -> DefectsResult:
+    """Write the answer's defects onto the ONE print the gate is about, or 409.
+
+    Resolved before the answer itself — clearing deletes the row and repeating
+    re-arms it — and written under ``printers:clear_plate``: the operator at the
+    machine need not hold ``archives:update_all`` for a print somebody else
+    started, and the scope is exactly the print on the plate.
+
+    ⚠️ **Does not commit.** The answer that follows does (``answer_by_clearing``
+    / ``answer_by_repeating``, and ``get_db`` after them), and that is the
+    point: ``repeat_print`` can still refuse with a 409 after this ran
+    (``RepeatNotPossible``, or nothing left to re-arm), and a committed write
+    behind a failed request left the defects — and their free-stock ledger
+    movement — standing while the client was told nothing happened.
+    """
+    archive = await waiting_archive(db, printer_id)
+    if archive is None:
+        raise HTTPException(409, "No finished print is waiting on this printer")
+    return await record_defects(
+        db,
+        archive,
+        DefectsWrite(parts=tuple((p.id, p.defective) for p in defects.parts or ()), flat=defects.defective_count),
+        actor_id=actor_id,
+    )
+
+
+@router.get("/{printer_id}/waiting-print", response_model=WaitingPrintOut)
+async def get_waiting_print(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """The finished print waiting for Clear plate / Repeat, with its part rows —
+    what the card's defect counters are about. 404 when nothing waits."""
+    archive = await waiting_archive(db, printer_id)
+    if archive is None:
+        raise HTTPException(404, "No finished print is waiting on this printer")
+    rows = await archive_parts.load_rows(db, archive.id)
+    return WaitingPrintOut(
+        archive_id=archive.id,
+        print_name=archive.print_name or archive.filename,
+        status=archive.status,
+        quantity=int(archive.quantity or 0),
+        defective_count=int(archive.defective_count or 0),
+        parts=[ArchivePartRow.from_row(r) for r in rows],
+    )
+
+
 @router.post("/{printer_id}/clear-plate")
 async def clear_plate(
     printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_CLEAR_PLATE),
+    data: PlateAnswerIn | None = None,
+    current_user: User | None = RequirePermission(Permission.PRINTERS_CLEAR_PLATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Acknowledge that the build plate has been cleared after a finished/failed print.
@@ -3161,6 +3326,13 @@ async def clear_plate(
             f"Printer is not in FINISH, FAILED, or IDLE state (current: {state.state if state else 'unknown'})",
         )
 
+    # The defects travel with the answer — written before the row is answered
+    # away (spec 2026-09-11 §5). A body-less call is the old behaviour.
+    refused = 0
+    if data is not None and data.defects is not None:
+        result = await _record_waiting_defects(db, printer_id, data.defects, current_user.id if current_user else None)
+        refused = len(result.ledger_refused)
+
     printer_manager.set_awaiting_plate_clear(printer_id, False)
 
     # The finished row was held for this answer — see ``services/plate_hold``.
@@ -3168,13 +3340,23 @@ async def clear_plate(
 
     await answer_by_clearing(db, printer_id)
 
-    return {"success": True, "message": "Plate cleared, next print will start shortly"}
+    # ``ledger_refused_parts`` is reported HERE because here it can happen: the
+    # print on the plate is usually filed under no order, so its defects correct
+    # a free-stock credit — and parts already spent cannot be taken back off the
+    # shelf. The defects are kept either way (the archive is the print history);
+    # the card tells the operator there is a hand correction to make.
+    return {
+        "success": True,
+        "message": "Plate cleared, next print will start shortly",
+        "ledger_refused_parts": refused,
+    }
 
 
 @router.post("/{printer_id}/repeat-print")
 async def repeat_print(
     printer_id: int,
-    _=RequirePermission(Permission.PRINTERS_CLEAR_PLATE),
+    data: PlateAnswerIn | None = None,
+    current_user: User | None = RequirePermission(Permission.PRINTERS_CLEAR_PLATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Print the job that just finished again — the card's other answer to a full plate.
@@ -3197,6 +3379,13 @@ async def repeat_print(
     if result.scalar_one_or_none() is None:
         raise HTTPException(404, "Printer not found")
 
+    # The defects travel with the answer — written before the row is answered
+    # away (spec 2026-09-11 §5). A body-less call is the old behaviour.
+    refused = 0
+    if data is not None and data.defects is not None:
+        result = await _record_waiting_defects(db, printer_id, data.defects, current_user.id if current_user else None)
+        refused = len(result.ledger_refused)
+
     try:
         row = await answer_by_repeating(db, printer_id)
     except RepeatNotPossible as e:
@@ -3207,7 +3396,8 @@ async def repeat_print(
         raise HTTPException(409, "No finished print is waiting on this printer")
 
     printer_manager.set_awaiting_plate_clear(printer_id, False)
-    return {"success": True, "item_id": row.id}
+    # See ``clear_plate`` on why the refusal is reported here.
+    return {"success": True, "item_id": row.id, "ledger_refused_parts": refused}
 
 
 @router.post("/{printer_id}/print/pause")
@@ -3880,6 +4070,52 @@ async def clear_hms_errors(
     return {"success": True, "message": "HMS errors cleared"}
 
 
+@router.post("/{printer_id}/hms/mute")
+async def mute_hms_entry(
+    printer_id: int,
+    body: HmsMuteBody,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Hide one ``hms[]`` entry on this printer until the printer drops it.
+
+    The firmware owns the stack — ``/hms/clear`` empties the ``print_error``
+    register and nothing else, so an entry the printer keeps re-sending could
+    not be answered at all (a P2S code Bambu ships with no text, 2026-09-04).
+    The mute is per printer and per FULL code, persisted so a restart does not
+    ask the same question again, and it expires by itself when the entry leaves
+    the stack. See ``services/hms_mute``.
+    """
+    from backend.app.services.hms_mute import remember
+
+    if await db.get(Printer, printer_id) is None:
+        raise HTTPException(404, "Printer not found")
+    full_code = body.full_code.upper()
+    await remember(db, printer_id, full_code)
+    await db.commit()
+    printer_manager.apply_hms_mute(printer_id, full_code)
+    return {"success": True}
+
+
+@router.post("/{printer_id}/hms/unmute")
+async def unmute_hms_entry(
+    printer_id: int,
+    body: HmsMuteBody,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Show a hidden ``hms[]`` entry again — the operator changed their mind."""
+    from backend.app.services.hms_mute import forget
+
+    if await db.get(Printer, printer_id) is None:
+        raise HTTPException(404, "Printer not found")
+    full_code = body.full_code.upper()
+    await forget(db, printer_id, {full_code})
+    await db.commit()
+    printer_manager.apply_hms_unmute(printer_id, full_code)
+    return {"success": True}
+
+
 # Seconds the /hms/execute-action route waits for a printer status push before
 # deciding the firmware silently rejected the command (Bambu ACKs the QoS-1
 # publish at the broker but the printer can still drop a malformed HMS command).
@@ -3986,8 +4222,6 @@ async def get_printable_objects(
         # file is found (the old behaviour, which fails for many slicer prints).
         if not client.state.printable_objects:
             try:
-                from backend.app.models.archive import PrintArchive
-
                 ar = (
                     (
                         await db.execute(

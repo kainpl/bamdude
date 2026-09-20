@@ -34,7 +34,7 @@ export function FilterDropdown({
     <div className="relative">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white hover:border-bambu-gray-dark transition-colors"
+        className="flex items-center gap-2 pl-3 pr-2 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white hover:border-bambu-gray-dark transition-colors"
       >
         <span className="text-bambu-gray">{label}:</span>
         <span>{selectedOption?.label || 'All'}</span>
@@ -43,6 +43,7 @@ export function FilterDropdown({
 
       {isOpen && (
         <>
+          {/* not-a-modal: popover */}
           <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
           <div className="absolute top-full left-0 mt-1 min-w-[160px] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl z-20 py-1 max-h-60 overflow-y-auto">
             {options.map((option) => (

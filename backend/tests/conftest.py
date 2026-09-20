@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,6 +18,12 @@ import pytest
 # This must happen before settings/config are loaded
 os.environ["LOG_TO_FILE"] = "false"
 os.environ["DEBUG"] = "false"
+# ⚠️ And the suite reads NO ``.env``. Settings are a singleton built at import
+# and pydantic-settings resolves ``.env`` against the working directory, so
+# without this line the result of a test run depends on the machine it runs on
+# rather than on the code - which is exactly what happened on 2026-09-17.
+# ``setdefault``, so a deliberate override from the command line still wins.
+os.environ.setdefault("BAMDUDE_IGNORE_DOTENV", "1")
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
@@ -25,6 +32,22 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from backend.app.core.config import settings  # noqa: E402
 
 settings.log_to_file = False
+
+# ⚠️ Import every migration module NOW, before any test runs. 63 of them bind
+# ``is_sqlite`` / ``is_postgres`` at import (``from backend.app.core.db_dialect
+# import is_sqlite``), and several tests legitimately ``monkeypatch`` those two
+# names on ``db_dialect`` for one test. A migration imported for the first time
+# INSIDE such a test binds the patched lambda and keeps it after the patch is
+# undone — ``monkeypatch`` restores the attribute it changed, not the copies
+# other modules took of it. Found 2026-09-18: ``test_backup_schema_fidelity``
+# patches ``is_sqlite`` to False and calls ``dump_to_sqlite``, which discovers
+# (imports) every migration; ``test_migration_m124`` in the same worker then
+# created ``printer_locations`` with ``id SERIAL PRIMARY KEY`` on SQLite — not a
+# rowid alias, so every id was NULL — and failed one run in a few. Importing
+# them here binds the real functions while nothing is patched.
+from backend.app.migrations import _discover_migrations  # noqa: E402
+
+_discover_migrations()
 
 # Use a temp directory for plate calibration to avoid deleting real calibration files
 _test_plate_cal_dir = Path(tempfile.mkdtemp(prefix="bamdude_test_plate_cal_"))
@@ -43,6 +66,31 @@ from backend.app.core.database import Base  # noqa: E402
 
 # Use in-memory SQLite for tests
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _dialect_follows_the_test_database():
+    """Make ``is_postgres()`` agree with the database the tests actually use.
+
+    ``core/db_dialect`` decides the dialect from ``settings.database_url``, and
+    pydantic fills that from the developer's ``.env``. Tests run on in-memory
+    SQLite regardless — so a developer whose ``.env`` says
+    ``DATABASE_URL=embedded`` had every dialect-branching query emit PostgreSQL
+    SQL against SQLite, and 22 grouped-inventory tests failed on
+    ``no such function: array_agg``. The failures were entirely environmental:
+    the same tests passed for anyone whose ``.env`` was unset.
+
+    A test suite must not depend on which backend the machine happens to be
+    configured for, so the setting is pinned to the test engine's URL here.
+    Tests that DO exercise the PostgreSQL branch monkeypatch ``is_postgres``
+    directly (see ``test_migration_m167``) and are unaffected.
+    """
+    from backend.app.core.config import settings
+
+    original = settings.database_url
+    object.__setattr__(settings, "database_url", TEST_DATABASE_URL)
+    yield
+    object.__setattr__(settings, "database_url", original)
 
 
 @pytest.fixture(autouse=True)
@@ -105,6 +153,9 @@ def data_dir_isolation(monkeypatch, tmp_path):
     monkeypatch.setattr(app_settings, "data_dir", tmp_path, raising=False)
     monkeypatch.setattr(app_settings, "base_dir", tmp_path, raising=False)
     monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive", raising=False)
+    monkeypatch.setattr(app_settings, "library_dir", tmp_path / "library", raising=False)
+    monkeypatch.setattr(app_settings, "projects_dir", tmp_path / "projects", raising=False)
+    monkeypatch.setattr(app_settings, "products_dir", tmp_path / "products", raising=False)
 
 
 @pytest.fixture(scope="session")
@@ -122,91 +173,82 @@ def event_loop():
 
 
 @pytest.fixture
-async def test_engine():
-    """Create a test database engine."""
+async def test_engine(monkeypatch):
+    """Create a test database engine — and make the module-level session use it.
+
+    ``backend.app.core.database.async_session`` is how every service that owns its
+    own transaction opens one: the dispatcher, the schedulers, and (since the
+    queue spool) ``queue_sources.publish``, which deliberately does not borrow the
+    request's session because a publication must commit on its own. Left alone in
+    a test, that factory is bound to the engine built at import time — a *second*
+    in-memory SQLite database with no tables in it — so a service that opened it
+    failed with "no such table", naming a table the test had just created.
+
+    The ``client`` fixtures have patched it for exactly this reason since they
+    existed; binding it here gives every test with a database the same thing, so
+    a service under test writes into the database the assertions read. Tests that
+    want their own factory (``monkeypatch.setattr(bd, "async_session", ...)``)
+    still win — this is the default, not an override.
+
+    ⚠️ Two caveats, both about what this does NOT give you.
+
+    An **autouse** fixture that patched the same attribute without depending on
+    ``test_engine`` would be overridden here rather than the other way round:
+    pytest sets up the fixture a test asks for (directly or through
+    ``db_session`` / ``client``) after the autouse ones. None exists today; one
+    written later has to take ``test_engine`` as an argument to win.
+
+    And with ONE factory over one in-memory SQLite engine, every session shares a
+    single DBAPI connection (``StaticPool``), so a publication cannot *block* on a
+    transaction the caller left open — it silently joins it. A test that means to
+    prove a transaction was released before some long call therefore has to assert
+    the session's own state (``in_transaction()``); a probe write from another
+    session shows only that nothing rolled it back. The one place this is
+    load-bearing says so out loud:
+    ``integration/test_queue_add_captures_once.py::test_the_long_transaction_is_released_before_the_copy``.
+
+    The same shared connection has a sharper edge: closing ANY session is a
+    ROLLBACK for everyone on it. A request's ``get_db`` session closes when the
+    request ends, so a test that polls an endpoint while a service session is
+    mid-transaction can roll that service's uncommitted INSERT out from under
+    it — the ORM's next autoflush then reports ``StaleDataError: UPDATE …
+    0 rows matched``. Reproduced deterministically on 2026-09-18 (one
+    authenticated GET between a ``flush()`` and an autoflush). A test that
+    needs a background job's result awaits the job's task and reads the
+    endpoint once afterwards (``integration/test_slice_api.py::_wait_for_job``);
+    it does not poll over HTTP while the job runs.
+    """
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 
-    # Import all models to register them
-    # ⚠️ Keep this in step with the block in ``core/database.py::init_db`` — it is
-    # the SAME registry, written twice, and a name missing here is a table the
-    # test database silently does not have. That cost a debugging round on the
-    # delete-printer fix: ``spoolman_slot_assignments`` and
-    # ``slot_preset_mappings`` were absent from the harness only, so a statement
-    # that is fine in production failed under test with "no such table".
-    from backend.app.models import (
-        active_print_session,
-        active_print_spoolman,
-        ams_history,
-        ams_label,
-        api_key,
-        archive,
-        auth_ephemeral,
-        auto_queue,
-        bug_report,
-        calibration_audit,
-        calibration_session,
-        cloud_link,
-        color_catalog,
-        external_link,
-        filament_calibration,
-        filament_sku_settings,
-        firmware,
-        git_backup,
-        group,
-        kprofile_note,
-        label_device,
-        label_template,
-        library,
-        library_file_makerworld_meta,
-        library_file_note,
-        library_project_links,
-        library_scan,
-        local_preset,
-        location,
-        long_lived_token,
-        macro,
-        maintenance,
-        notification,
-        notification_template,
-        oidc_provider,
-        orca_base_cache,
-        print_options_preference,
-        print_queue,
-        print_usage_event,
-        printer,
-        printer_location,
-        printer_queue,
-        printer_sensor_history,
-        project,
-        project_bom,
-        project_print_plan,
-        settings,
-        shopping_list,
-        slicer_pipeline,
-        smart_plug,
-        smart_plug_energy_snapshot,
-        smart_plug_power_history,
-        smart_sensor,
-        smart_sensor_history,
-        smart_sensor_threshold,
-        spool,
-        spool_assignment,
-        spool_catalog,
-        spool_k_profile,
-        spool_usage_history,
-        spoolman_k_profile,
-        spoolman_slot_assignment,
-        telegram_chat,
-        user,
-        user_email_pref,
-        user_otp_code,
-        user_totp,
-        virtual_printer,
-        zigbee_device,
-    )
+    # The same connect listener production uses: pragmas plus the Unicode
+    # lower()/upper() that make ilike fold Cyrillic on SQLite. Without it a
+    # search test would pass on PostgreSQL and fail on the backend most
+    # installs run.
+    from sqlalchemy import event
+
+    from backend.app.core.database import configure_sqlite_connection
+
+    event.listen(engine.sync_engine, "connect", configure_sqlite_connection)
+
+    # The test database gets exactly the tables the application gets. The list
+    # of model modules lives in ``core/database.py::import_all_models`` — it used
+    # to be copied here too, and the copies drifted (a name missing here is a
+    # table the harness silently does not have, and a statement that is fine in
+    # production fails under test with "no such table").
+    from backend.app.core.database import import_all_models
+
+    import_all_models()
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    from backend.app.core import database as database_module
+
+    monkeypatch.setattr(
+        database_module,
+        "async_session",
+        async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False),
+    )
 
     yield engine
 
@@ -225,6 +267,49 @@ async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
     async_session_maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
     async with async_session_maker() as session:
         yield session
+
+
+_REAL_DIALECT_CHECKS = None
+
+
+@pytest.fixture(autouse=True)
+def _no_dialect_check_leaks():
+    """Fail the test that leaves a patched ``is_sqlite`` / ``is_postgres`` behind
+    in a module that bound it at import.
+
+    ``monkeypatch.setattr("backend.app.core.db_dialect.is_sqlite", ...)`` is
+    restored on ``db_dialect`` when the test ends. A module first imported
+    DURING that test (``from ... import is_sqlite``) keeps the lambda for the
+    rest of the process, and the failure lands on a test in another file that
+    ran minutes later — which is how the m124 flake stayed unexplained. This
+    runs after ``monkeypatch`` has undone its own changes (it was set up
+    before the test's own fixtures, so it is torn down after them), so
+    whatever still differs from the real function is a leak, and the test
+    that just ran is the one that caused it.
+    """
+    global _REAL_DIALECT_CHECKS
+    import sys
+    import types
+
+    from backend.app.core import db_dialect
+
+    if _REAL_DIALECT_CHECKS is None:
+        _REAL_DIALECT_CHECKS = {"is_sqlite": db_dialect.is_sqlite, "is_postgres": db_dialect.is_postgres}
+    yield
+    leaked = []
+    for modname, mod in list(sys.modules.items()):
+        if not modname.startswith("backend.app.") or modname == "backend.app.core.db_dialect":
+            continue
+        if not isinstance(mod, types.ModuleType):  # a test may park a stand-in object here
+            continue
+        for name, real in _REAL_DIALECT_CHECKS.items():
+            bound = getattr(mod, name, real)
+            if bound is not real:
+                leaked.append(f"{modname}.{name} -> {bound!r}")
+    assert not leaked, (
+        "this test left a patched dialect check bound in other modules — patch "
+        "`settings.database_url`, or import those modules before patching: " + "; ".join(leaked)
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -260,6 +345,28 @@ def _clean_zigbee_process_state():
 
 
 @pytest.fixture(autouse=True)
+def _clean_advertised_overlay():
+    """The advertised-profile overlay is process-global and survives a test.
+
+    Every assignment route now writes it (``ams_advertised_overlay.remember``),
+    so a route test leaves an entry keyed by whatever printer id its session
+    happened to allocate — usually 1, the same id the next file's status or
+    routing test uses. That entry is silent until the two also agree on the
+    advertised colour and preset, at which point a reader returns a spool the
+    test never assigned. Same class of leak as the Zigbee caches above.
+    """
+    from backend.app.services import ams_advertised_overlay, ams_backup_compatibility_apply
+
+    ams_advertised_overlay.forget_all()
+    # The deferred rebuild is once per PROCESS, so its "already done" set leaks
+    # between tests exactly like the store it fills.
+    ams_backup_compatibility_apply.reset_rebuilt()
+    yield
+    ams_advertised_overlay.forget_all()
+    ams_backup_compatibility_apply.reset_rebuilt()
+
+
+@pytest.fixture(autouse=True)
 async def _cancel_leaked_asyncio_tasks():
     """Cancel asyncio tasks that leaked past the test body.
 
@@ -288,9 +395,15 @@ async def _cancel_leaked_asyncio_tasks():
         await asyncio.gather(*pending, return_exceptions=True)
 
 
-@pytest.fixture
-async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, None]:
-    """Create an async test client."""
+@asynccontextmanager
+async def _build_client(test_engine, *, commit: bool) -> AsyncGenerator[AsyncClient, None]:
+    """Shared body of ``async_client`` and ``committing_client``.
+
+    The two differ only in whether the ``get_db`` override commits; everything
+    else — the patched module-level session makers, the seeded groups and admin,
+    the authenticated client, the engine disposal — is identical. Read the two
+    fixtures below for which one a test wants.
+    """
     from backend.app.core.database import async_session, get_db
     from backend.app.main import app
 
@@ -299,7 +412,18 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
 
     async def override_get_db():
         async with test_async_session() as session:
-            yield session
+            if not commit:
+                yield session
+                return
+            # Mirror production ``core/database.py::get_db``: commit once the
+            # handler has returned, roll back on anything that escapes it
+            # (BaseException, so a cancelled request rolls back too).
+            try:
+                yield session
+                await session.commit()
+            except BaseException:
+                await session.rollback()
+                raise
 
     app.dependency_overrides[get_db] = override_get_db
 
@@ -376,6 +500,41 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
         await real_engine.dispose()
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, None]:
+    """Create an async test client. Its ``get_db`` override does NOT commit.
+
+    Fine for the handlers written against it: every route module predating the
+    2026-09-02 orders redesign calls ``db.commit()`` itself, so the write is
+    durable before the request ends. A handler that only flushes needs
+    ``committing_client`` instead. Hundreds of tests use this fixture; do not
+    change its semantics without running the whole suite.
+    """
+    async with _build_client(test_engine, commit=False) as client:
+        yield client
+
+
+@pytest.fixture
+async def committing_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, None]:
+    """``async_client`` with a ``get_db`` override that commits, as production does.
+
+    The two coexist because the codebase holds two conventions at once. Legacy
+    route modules commit inside the handler, and ``async_client``'s override —
+    which only yields a session and closes it — is enough for them. Route
+    modules written for the orders redesign (customers, and projects from Task
+    10 on) deliberately never commit: production's ``core/database.py::get_db``
+    commits after the response, which is the single place a request's work is
+    made durable or rolled back. Under ``async_client`` such a handler's flush
+    is discarded when the session closes, so a POST followed by a GET returns
+    404 and the test lies about a route that works in production. Use this
+    fixture for those; use ``async_client`` for everything else. Making
+    ``async_client`` itself commit is the better end state but is a whole-suite
+    change, deferred to Task 11.
+    """
+    async with _build_client(test_engine, commit=True) as client:
+        yield client
 
 
 # ============================================================================
@@ -641,30 +800,30 @@ def notification_provider_factory(db_session):
     """Factory to create test notification providers."""
 
     async def _create_provider(**kwargs):
-        from backend.app.models.notification import NotificationProvider
+        from backend.app.models.notification import PROVIDER_EVENT_DEFAULTS, NotificationProvider
 
         config = kwargs.pop("config", {"server": "https://ntfy.sh", "topic": "test-topic"})
         if isinstance(config, dict):
             config = json.dumps(config)
+
+        # The factory keeps accepting per-event ``on_*`` booleans (the shape
+        # every test has always used) and folds them into the m157 JSON
+        # subscription list. Baseline: print start/complete/failed/stopped on,
+        # everything else off — the factory's historical defaults, kept so no
+        # test's expectations move.
+        events = dict.fromkeys(PROVIDER_EVENT_DEFAULTS, False)
+        for field in ("on_print_start", "on_print_complete", "on_print_failed", "on_print_stopped"):
+            events[field] = True
+        for field in list(kwargs):
+            if field in PROVIDER_EVENT_DEFAULTS:
+                events[field] = bool(kwargs.pop(field))
 
         defaults = {
             "name": "Test Provider",
             "provider_type": "ntfy",
             "enabled": True,
             "config": config,
-            "on_print_start": True,
-            "on_print_complete": True,
-            "on_print_failed": True,
-            "on_print_stopped": True,
-            "on_print_progress": False,
-            "on_print_missing_spool_assignment": False,
-            "on_printer_offline": False,
-            "on_printer_error": False,
-            "on_filament_low": False,
-            "on_maintenance_due": False,
-            "on_ams_humidity_high": False,
-            "on_ams_temperature_high": False,
-            "on_bed_cooled": False,
+            "subscribed_events": sorted(f for f, v in events.items() if v),
             "quiet_hours_enabled": False,
             "daily_digest_enabled": False,
         }
@@ -835,3 +994,42 @@ def assert_no_log_errors(capture_logs):
     errors = capture_logs.get_errors()
     if errors:
         pytest.fail(f"Unexpected log errors:\n{capture_logs.format_errors()}")
+
+
+@pytest.fixture
+async def raw_gcode_source(db_session, tmp_path):
+    """A real raw source for tests about claim bookkeeping, independent of 3MF routing."""
+    from backend.app.models.library import LibraryFile
+
+    path = tmp_path / "claim.gcode"
+    path.write_text("; synthetic raw G-code\n", encoding="utf-8")
+    source = LibraryFile(filename=path.name, file_path=str(path), file_type="gcode", file_size=path.stat().st_size)
+    db_session.add(source)
+    await db_session.commit()
+    return source
+
+
+@pytest.fixture
+def a_direct_capture():
+    """Take the capture a direct print takes before it claims a printer (m173).
+
+    ``queue_batch.claim_printer_for_direct_print`` refuses ``origin="direct"``
+    without one: BamDude captures what it sends (queue-source-spool spec S1), and
+    only the external claim — a print it never sent — has nothing to snapshot. A
+    test that only cares about the claim's bookkeeping still has to hand it a real
+    receipt, and this is that one line.
+
+    A **factory**, not a value: a receipt may be published once, so a test that
+    claims two printers needs two captures.
+
+    ⚠️ The source is named at the call and has no default. This used to fall back to
+    ``raw_gcode_source``, which made the fixture dependency materialise that row for
+    every test that took a capture — including the three that capture a file of
+    their own, where it left a library row nothing referenced.
+    """
+    from backend.app.services.queue_source_capture import capture_staged, plan_capture
+
+    async def capture(source=None, *, archive=None):
+        return await capture_staged(plan_capture(archive=archive, library_file=source))
+
+    return capture

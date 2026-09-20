@@ -182,7 +182,7 @@ class ExportService:
         Returns:
             Tuple of (file_bytes, filename, content_type)
         """
-        from backend.app.services.failure_analysis import FailureAnalysisService
+        from backend.app.services.statistics.failure_analysis import FailureAnalysisService
 
         # Get failure analysis data (includes stats)
         analysis_service = FailureAnalysisService(self.db)

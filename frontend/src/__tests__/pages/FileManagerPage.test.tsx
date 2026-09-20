@@ -23,18 +23,14 @@ const mockFolders = [
     name: 'Functional Parts',
     parent_id: null,
     file_count: 5,
-    projects: [],
-    archive_id: null,
-    archive_name: null,
+    products: [],
     children: [
       {
         id: 2,
         name: 'Brackets',
         parent_id: 1,
         file_count: 3,
-        projects: [],
-        archive_id: null,
-        archive_name: null,
+        products: [],
         children: [],
       },
     ],
@@ -44,9 +40,13 @@ const mockFolders = [
     name: 'Art Projects',
     parent_id: null,
     file_count: 2,
-    projects: [{ id: 1, name: 'My Art Project', color: null }],
-    archive_id: null,
-    archive_name: null,
+    // m158: folders link to PRODUCTS; the chip row reads `products` only.
+    // ⚠️ TWO of them, so the chip's tooltip has something to join — with one
+    // product `join(', ')` is indistinguishable from `products[0].name`.
+    products: [
+      { id: 1, name: 'My Art Product', is_active: true },
+      { id: 2, name: 'Retired Sculpture', is_active: false },
+    ],
     children: [],
   },
 ];
@@ -63,6 +63,7 @@ const mockFiles = [
     file_size: 1048576,
     file_type: 'gcode',
     file_tags: ['gcode', '3mf', 'sliced'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: '/thumbnails/1.png',
     print_name: 'Benchy',
@@ -77,6 +78,7 @@ const mockFiles = [
     file_size: 524288,
     file_type: 'stl',
     file_tags: ['stl', 'geometry'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: null,
     print_name: null,
@@ -91,6 +93,7 @@ const mockFiles = [
     file_size: 2048576,
     file_type: 'gcode',
     file_tags: ['gcode', '3mf', 'sliced'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: '/thumbnails/3.png',
     print_name: 'Cube',
@@ -112,13 +115,19 @@ describe('FileManagerPage', () => {
   beforeEach(() => {
     // Clear localStorage to ensure consistent view mode
     localStorage.clear();
+    window.history.replaceState({}, '', '/files');
 
     server.use(
       http.get('/api/v1/library/folders', () => {
         return HttpResponse.json(mockFolders);
       }),
       http.get('/api/v1/library/files', () => {
-        return HttpResponse.json(mockFiles);
+        // Server-driven (task 2, 2026-08-29): FileManagerPage always sends
+        // `page`, so the endpoint answers with the {items, meta} envelope.
+        return HttpResponse.json({
+          items: mockFiles,
+          meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+        });
       }),
       http.get('/api/v1/library/stats', () => {
         return HttpResponse.json(mockStats);
@@ -149,9 +158,6 @@ describe('FileManagerPage', () => {
       http.get('/api/v1/projects/', () => {
         return HttpResponse.json([{ id: 1, name: 'Test Project', color: '#00ae42' }]);
       }),
-      http.get('/api/v1/archives/', () => {
-        return HttpResponse.json([{ id: 1, print_name: 'Test Archive', filename: 'test.3mf' }]);
-      })
     );
   });
 
@@ -163,7 +169,10 @@ describe('FileManagerPage', () => {
       server.use(
         http.get('/api/v1/library/files', ({ request }) => {
           capturedIncludeRoot = new URL(request.url).searchParams.get('include_root');
-          return HttpResponse.json(mockFiles);
+          return HttpResponse.json({
+            items: mockFiles,
+            meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         }),
       );
 
@@ -187,9 +196,13 @@ describe('FileManagerPage', () => {
           capturedIncludeRoot = new URL(request.url).searchParams.get('include_root');
           // A library where the only file lives inside a subfolder — under
           // include_root=true this would render empty.
-          return HttpResponse.json([
+          const items = [
             { ...mockFiles[0], id: 99, filename: 'nested-only.3mf', folder_id: 2, print_name: null },
-          ]);
+          ];
+          return HttpResponse.json({
+            items,
+            meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         }),
       );
 
@@ -291,21 +304,78 @@ describe('FileManagerPage', () => {
       });
     });
 
-    it('shows nested folders', async () => {
+    it('shows only root folders by default', async () => {
+      server.use(
+        http.get('/api/v1/library/folders', () => HttpResponse.json([
+          {
+            ...mockFolders[0],
+            children: [{
+              ...mockFolders[0].children[0],
+              children: [{
+                id: 4,
+                name: 'Mounting Plates',
+                parent_id: 2,
+                file_count: 0,
+                products: [],
+                children: [],
+              }],
+            }],
+          },
+        ])),
+      );
       render(<FileManagerPage />);
 
-      await waitFor(() => {
-        expect(screen.getByText('Brackets')).toBeInTheDocument();
-      });
+      expect(await screen.findByText('Functional Parts')).toBeInTheDocument();
+      expect(screen.queryByText('Brackets')).not.toBeInTheDocument();
+    });
+
+    it('opens the ancestor chain for a folder selected by deep-link', async () => {
+      window.history.replaceState({}, '', '/files?folder=4');
+      server.use(
+        http.get('/api/v1/library/folders', () => HttpResponse.json([
+          {
+            ...mockFolders[0],
+            children: [{
+              ...mockFolders[0].children[0],
+              children: [{
+                id: 4,
+                name: 'Mounting Plates',
+                parent_id: 2,
+                file_count: 0,
+                products: [],
+                children: [],
+              }],
+            }],
+          },
+        ])),
+      );
+
+      render(<FileManagerPage />);
+
+      expect(await screen.findByText('Mounting Plates')).toBeInTheDocument();
     });
 
     it('shows linked folder indicator', async () => {
       render(<FileManagerPage />);
 
       await waitFor(() => {
-        // Art Projects has a project_id
+        // Art Projects is the one folder linked to a product.
         expect(screen.getByText('Art Projects')).toBeInTheDocument();
       });
+    });
+
+    it('names the products a folder is linked to in the chip tooltip', async () => {
+      // The chip is an icon and a count — the NAMES are only in its `title`,
+      // and they are the whole reason the chip is worth hovering. A product
+      // that has left the catalog is named there too: the link is a fact about
+      // the folder, not an offer to make one.
+      render(<FileManagerPage />);
+
+      const row = (await screen.findByText('Art Projects')).closest('div') as HTMLElement;
+      const chip = within(row).getByTitle('My Art Product, Retired Sculpture');
+      expect(chip).toBeInTheDocument();
+      // ...and the count beside it, because two names do not fit the row.
+      expect(within(chip).getByText('×2')).toBeInTheDocument();
     });
   });
 
@@ -393,12 +463,81 @@ describe('FileManagerPage', () => {
       });
     });
 
+    it('clears the search query from the input control', async () => {
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      const search = await screen.findByPlaceholderText('Search files...');
+      await user.type(search, 'benchy');
+      await user.click(screen.getByRole('button', { name: 'Clear' }));
+
+      expect(search).toHaveValue('');
+    });
+
+    it('searches the whole library by default and can be scoped to the selected folder', async () => {
+      const user = userEvent.setup();
+      let searchParams: URLSearchParams | null = null;
+      window.history.replaceState({}, '', '/files?folder=1');
+      server.use(
+        http.get('/api/v1/library/files', ({ request }) => {
+          const params = new URL(request.url).searchParams;
+          if (params.get('q') === 'benchy') searchParams = params;
+          return HttpResponse.json({
+            items: mockFiles,
+            meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
+        }),
+      );
+      render(<FileManagerPage />);
+
+      await user.type(await screen.findByPlaceholderText('Search files...'), 'benchy');
+      await waitFor(() => {
+        expect(searchParams?.get('folder_id')).toBeNull();
+        expect(searchParams?.get('include_root')).toBe('false');
+        expect(searchParams?.get('internal_only')).toBeNull();
+        expect(searchParams?.get('external_only')).toBeNull();
+      });
+
+      await user.click(screen.getByRole('button', { name: 'This folder and subfolders' }));
+      await waitFor(() => {
+        expect(searchParams?.get('folder_id')).toBe('1');
+        expect(searchParams?.get('recursive')).toBe('true');
+        expect(searchParams?.get('folder_scope')).toBe('true');
+      });
+    });
+
     it('has type filter', async () => {
       render(<FileManagerPage />);
 
       await waitFor(() => {
         expect(screen.getByText('All types')).toBeInTheDocument();
       });
+    });
+
+    it('offers a type present only on this page even when it is outside the common list', async () => {
+      // `file_type` is an OPEN set (`detect_file_type` returns any extension
+      // verbatim) — a MakerWorld ZIP's `instructions.pdf` is exactly the kind
+      // of oddball type the common hardcoded list was never going to carry,
+      // so the dropdown has to union it in from what this page actually has.
+      server.use(
+        http.get('/api/v1/library/files', () => {
+          const items = [
+            ...mockFiles,
+            { ...mockFiles[0], id: 99, filename: 'instructions.pdf', file_type: 'pdf', print_name: null },
+          ];
+          return HttpResponse.json({
+            items,
+            meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
+        }),
+      );
+
+      render(<FileManagerPage />);
+      await screen.findByText('Benchy');
+
+      const select = screen.getByDisplayValue('All types') as HTMLSelectElement;
+      const optionValues = Array.from(select.options).map((o) => o.value);
+      expect(optionValues).toContain('pdf');
     });
 
     it('has sort options', async () => {
@@ -503,7 +642,7 @@ describe('FileManagerPage', () => {
     it('shows empty state when no files', async () => {
       server.use(
         http.get('/api/v1/library/files', () => {
-          return HttpResponse.json([]);
+          return HttpResponse.json({ items: [], meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 } });
         })
       );
 
@@ -806,7 +945,7 @@ describe('FileManagerPage', () => {
           });
         }),
         http.get('/api/v1/library/files', () => {
-          return HttpResponse.json([
+          const items = [
             {
               id: 1,
               filename: 'test.3mf',
@@ -814,6 +953,7 @@ describe('FileManagerPage', () => {
               file_size: 1048576,
               file_type: '3mf',
               folder_id: null,
+              product_ids: [],
               thumbnail_path: null,
               print_name: 'Test File',
               print_time_seconds: 3600,
@@ -821,7 +961,11 @@ describe('FileManagerPage', () => {
               created_at: '2024-01-01T00:00:00Z',
               created_by_username: 'testuser',
             },
-          ]);
+          ];
+          return HttpResponse.json({
+            items,
+            meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         })
       );
 
@@ -842,7 +986,7 @@ describe('FileManagerPage', () => {
       });
 
       // User filter dropdown should not be present
-      expect(screen.queryByPlaceholderText('Filter by user')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Filter by user')).not.toBeInTheDocument();
     });
 
     it('shows "Uploaded By" column and user filter when auth is enabled', async () => {
@@ -855,7 +999,7 @@ describe('FileManagerPage', () => {
           });
         }),
         http.get('/api/v1/library/files', () => {
-          return HttpResponse.json([
+          const items = [
             {
               id: 1,
               filename: 'test.3mf',
@@ -863,6 +1007,7 @@ describe('FileManagerPage', () => {
               file_size: 1048576,
               file_type: '3mf',
               folder_id: null,
+              product_ids: [],
               thumbnail_path: null,
               print_name: 'Test File',
               print_time_seconds: 3600,
@@ -870,7 +1015,11 @@ describe('FileManagerPage', () => {
               created_at: '2024-01-01T00:00:00Z',
               created_by_username: 'testuser',
             },
-          ]);
+          ];
+          return HttpResponse.json({
+            items,
+            meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         }),
         http.get('/api/v1/users/', () => {
           return HttpResponse.json([
@@ -897,7 +1046,7 @@ describe('FileManagerPage', () => {
       });
 
       // User filter dropdown should be present
-      expect(screen.getByPlaceholderText('Filter by user')).toBeInTheDocument();
+      expect(screen.getByLabelText('Filter by user')).toBeInTheDocument();
 
       // Username should be displayed in the column
       expect(screen.getByText('testuser')).toBeInTheDocument();
@@ -912,15 +1061,11 @@ describe('FileManagerPage', () => {
         name: 'NAS Library',
         parent_id: null,
         file_count: 200,
-        project_id: null,
-        archive_id: null,
-        project_name: null,
-        archive_name: null,
         is_external: true,
         external_readonly: false,
         external_path: '/mnt/nas',
         children: [],
-        projects: [],
+        products: [],
       },
     ];
 
@@ -956,7 +1101,10 @@ describe('FileManagerPage', () => {
                 ? 'external'
                 : 'all',
           );
-          return HttpResponse.json(mockFiles);
+          return HttpResponse.json({
+            items: mockFiles,
+            meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+          });
         }),
       );
 
@@ -979,7 +1127,7 @@ describe('FileManagerPage', () => {
                 ? 'external'
                 : 'all',
           );
-          return HttpResponse.json([]);
+          return HttpResponse.json({ items: [], meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 } });
         }),
       );
 

@@ -54,7 +54,8 @@ MAX_TOKEN_LIFETIME_DAYS = 365
 #                   precisely because it reveals the part name; folding it into
 #                   camera_stream would silently give every token already handed
 #                   out for video the ability to read what is being printed.
-ALLOWED_SCOPES: frozenset[str] = frozenset({"camera_stream", "camwall", "overlay"})
+# monitor is metadata-only: deliberately absent from STREAM_SCOPES below.
+ALLOWED_SCOPES: frozenset[str] = frozenset({"camera_stream", "camwall", "overlay", "monitor"})
 
 # Scopes the camera stream / snapshot endpoints honour. A Cam Wall or overlay
 # token has to be able to pull the video its own view is showing.

@@ -20,6 +20,10 @@ function device(over: Partial<ZigbeeDevice> = {}): ZigbeeDevice {
   return {
     ieee: IEEE,
     nwk: 0xf6b4,
+    name: null,
+    kind: 'plug',
+    adopted: false,
+    measurements: [],
     manufacturer: 'SONOFF',
     model: 'S60ZBTPF',
     is_coordinator: false,
@@ -36,6 +40,7 @@ function radioUp() {
     reason: null,
     coordinator: null,
     network: null,
+    radio_changed: null,
   });
 }
 
@@ -89,6 +94,7 @@ describe('ZigbeePlugFields', () => {
       reason: 'no dongle',
       coordinator: null,
       network: null,
+      radio_changed: null,
     });
     vi.spyOn(api, 'getZigbeeDevices').mockResolvedValue({ devices: [] });
 

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Flame, Minus, Plus, Power, Square, Thermometer, X } from 'lucide-react';
+import { Flame, Minus, Plus, Power, Square, Thermometer } from 'lucide-react';
 import { api, ApiError, type PrinterStatus } from '../api/client';
+import { Modal } from './Modal';
 
 /**
  * One window for the three heaters — nozzle (or both), bed, chamber.
@@ -200,89 +201,77 @@ export function TemperatureModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-md"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-bambu-dark-tertiary">
-          <h3 className="text-sm font-semibold text-white">{t('printers.temperatureControl.title')}</h3>
-          <button onClick={onClose} className="text-bambu-gray hover:text-white transition-colors">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="p-4 space-y-1.5">
-          {rows.map((r) => {
-            const adjustable = canControl && !r.disabledReason;
-            const target = r.target ?? 0;
-            return (
-              <div key={r.key} className="px-2 py-2 rounded bg-bambu-dark">
-                <div className="flex items-center gap-2">
-                  {target > 0 ? (
-                    <Flame className={`w-4 h-4 shrink-0 ${r.tint}`} />
-                  ) : (
-                    <Thermometer className="w-4 h-4 shrink-0 text-bambu-gray/50" />
-                  )}
-                  <span className="text-xs text-white truncate flex-1 min-w-0">{r.label}</span>
-                  <span className="text-[11px] text-bambu-gray tabular-nums shrink-0">
-                    {Math.round(r.current ?? 0)}°C
-                  </span>
-                </div>
-
-                {adjustable ? (
-                  <div className="flex items-center gap-1 mt-1.5">
-                    <button
-                      onClick={() => step(r, -1)}
-                      disabled={Number(shown(r)) <= 0 || mutation.isPending}
-                      className="w-6 h-6 rounded bg-bambu-dark-tertiary text-bambu-gray hover:text-white disabled:opacity-40 flex items-center justify-center transition-colors"
-                      aria-label={t('printers.temperatureControl.decrease')}
-                    >
-                      <Minus className="w-3 h-3" />
-                    </button>
-                    <input
-                      type="number"
-                      value={shown(r)}
-                      onChange={(e) => setDraft((d) => ({ ...d, [r.key]: e.target.value }))}
-                      onBlur={() => commit(r)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') commit(r);
-                      }}
-                      className="w-16 px-1.5 py-1 rounded bg-bambu-dark-tertiary text-white text-[11px] text-center tabular-nums border border-transparent focus:border-bambu-green focus:outline-none"
-                    />
-                    <button
-                      onClick={() => step(r, 1)}
-                      disabled={Number(shown(r)) >= r.limits[1] || mutation.isPending}
-                      className="w-6 h-6 rounded bg-bambu-dark-tertiary text-bambu-gray hover:text-white disabled:opacity-40 flex items-center justify-center transition-colors"
-                      aria-label={t('printers.temperatureControl.increase')}
-                    >
-                      <Plus className="w-3 h-3" />
-                    </button>
-                    <span className="text-[10px] text-bambu-gray/70 tabular-nums ml-1">
-                      {r.limits[0]}–{r.limits[1]}°C
-                    </span>
-                    <button
-                      onClick={() => send(r, 0)}
-                      disabled={target <= 0 || mutation.isPending}
-                      className="ml-auto px-2 h-6 rounded bg-bambu-dark-tertiary text-[10px] text-bambu-gray hover:text-white disabled:opacity-40 flex items-center gap-1 transition-colors"
-                    >
-                      <Power className="w-3 h-3" />
-                      {t('printers.temperatureControl.turnOff')}
-                    </button>
-                  </div>
+    <Modal onClose={onClose} title={t('printers.temperatureControl.title')} size="md">
+      <div className="p-4 space-y-1.5">
+        {rows.map((r) => {
+          const adjustable = canControl && !r.disabledReason;
+          const target = r.target ?? 0;
+          return (
+            <div key={r.key} className="px-2 py-2 rounded bg-bambu-dark">
+              <div className="flex items-center gap-2">
+                {target > 0 ? (
+                  <Flame className={`w-4 h-4 shrink-0 ${r.tint}`} />
                 ) : (
-                  <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-bambu-gray">
-                    <Square className="w-3 h-3" />
-                    {r.disabledReason ?? t('printers.temperatureControl.noPermission')}
-                  </div>
+                  <Thermometer className="w-4 h-4 shrink-0 text-bambu-gray/50" />
                 )}
+                <span className="text-xs text-white truncate flex-1 min-w-0">{r.label}</span>
+                <span className="text-[11px] text-bambu-gray tabular-nums shrink-0">
+                  {Math.round(r.current ?? 0)}°C
+                </span>
               </div>
-            );
-          })}
 
-          {error && <p className="text-[11px] text-red-400 leading-relaxed">{error}</p>}
-        </div>
+              {adjustable ? (
+                <div className="flex items-center gap-1 mt-1.5">
+                  <button
+                    onClick={() => step(r, -1)}
+                    disabled={Number(shown(r)) <= 0 || mutation.isPending}
+                    className="w-6 h-6 rounded bg-bambu-dark-tertiary text-bambu-gray hover:text-white disabled:opacity-40 flex items-center justify-center transition-colors"
+                    aria-label={t('printers.temperatureControl.decrease')}
+                  >
+                    <Minus className="w-3 h-3" />
+                  </button>
+                  <input
+                    type="number"
+                    value={shown(r)}
+                    onChange={(e) => setDraft((d) => ({ ...d, [r.key]: e.target.value }))}
+                    onBlur={() => commit(r)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commit(r);
+                    }}
+                    className="w-16 px-1.5 py-1 rounded bg-bambu-dark-tertiary text-white text-[11px] text-center tabular-nums border border-transparent focus:border-bambu-green focus:outline-none"
+                  />
+                  <button
+                    onClick={() => step(r, 1)}
+                    disabled={Number(shown(r)) >= r.limits[1] || mutation.isPending}
+                    className="w-6 h-6 rounded bg-bambu-dark-tertiary text-bambu-gray hover:text-white disabled:opacity-40 flex items-center justify-center transition-colors"
+                    aria-label={t('printers.temperatureControl.increase')}
+                  >
+                    <Plus className="w-3 h-3" />
+                  </button>
+                  <span className="text-[10px] text-bambu-gray/70 tabular-nums ml-1">
+                    {r.limits[0]}–{r.limits[1]}°C
+                  </span>
+                  <button
+                    onClick={() => send(r, 0)}
+                    disabled={target <= 0 || mutation.isPending}
+                    className="ml-auto px-2 h-6 rounded bg-bambu-dark-tertiary text-[10px] text-bambu-gray hover:text-white disabled:opacity-40 flex items-center gap-1 transition-colors"
+                  >
+                    <Power className="w-3 h-3" />
+                    {t('printers.temperatureControl.turnOff')}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-bambu-gray">
+                  <Square className="w-3 h-3" />
+                  {r.disabledReason ?? t('printers.temperatureControl.noPermission')}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {error && <p className="text-[11px] text-red-400 leading-relaxed">{error}</p>}
       </div>
-    </div>
+    </Modal>
   );
 }

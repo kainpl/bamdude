@@ -1,8 +1,60 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
+from backend.app.schemas.printer_tag import PrinterTagOut
+from backend.app.utils.rgba import normalize_opaque_rgba
+
+
+class BackupCompatibilityPolicy(BaseModel):
+    """The ``backup_compatibility`` namespace of ``Printer.ams_policies``."""
+
+    normalize_color: bool = False
+    canonical_color_rgba: str = "000000FF"
+    generic_base_material: bool = False
+
+    @field_validator("canonical_color_rgba")
+    @classmethod
+    def _opaque_rrggbbff(cls, value: str) -> str:
+        """Only an opaque colour is a canonical colour.
+
+        The alpha byte is what the firmware compares when it decides whether two
+        trays are interchangeable, so a translucent value would emulate a
+        profile no spool can ever match — a silent no-op rather than a refusal.
+
+        The predicate itself lives in ``utils/rgba``: the policy reads the same
+        shape off a persisted row and CORRECTS it there, and two spellings of
+        "is this an opaque colour" is one spelling too many.
+        """
+        normalized = normalize_opaque_rgba(value)
+        if normalized is None:
+            raise ValueError("canonical_color_rgba must be an opaque RRGGBBFF colour")
+        return normalized
+
+
+class AmsPolicies(BaseModel):
+    """Every persisted AMS policy of a printer, one namespace per key.
+
+    Read off the ORM row, so a namespace a future release adds is simply
+    ignored here rather than breaking the response.
+    """
+
+    backup_compatibility: BackupCompatibilityPolicy = Field(default_factory=BackupCompatibilityPolicy)
+
+
+class AmsPoliciesPatch(BaseModel):
+    """What a PATCH may carry — a namespace left out is left alone, not reset."""
+
+    backup_compatibility: BackupCompatibilityPolicy | None = None
+
+
+class BackupCompatibilityApplyRequest(BaseModel):
+    """Bulk re-advertise. Preview by default — a real apply must be asked for."""
+
+    dry_run: bool = True
 
 
 class PrinterBase(BaseModel):
@@ -33,6 +85,7 @@ class PrinterBase(BaseModel):
     )
     model: str | None = None
     location_id: int | None = None
+    tag_ids: list[int] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -47,6 +100,8 @@ class PrinterBase(BaseModel):
     external_camera_enabled: bool = False
     external_camera_snapshot_url: str | None = None  # Optional single-frame override; upstream #1177
     camera_rotation: int = 0  # 0, 90, 180, 270 degrees
+    # Chamber light for the camera: defer to the farm, or decide here (services/camera_light)
+    camera_light_auto: Literal["inherit", "on", "off"] = "inherit"
     stagger_interval_minutes: int = 0
     swap_mode_enabled: bool = False
     swap_profile: str | None = None
@@ -58,6 +113,11 @@ class PrinterCreate(PrinterBase):
     # Direct exposure on PRINTERS_READ would let a Viewer connect to the printer's MQTT
     # and bypass RBAC (upstream 9a432f00).
     access_code: str = Field(..., min_length=1, max_length=20)
+    # The frontend's ``PrinterCreate`` has carried this field since the policy
+    # shipped; without it here a create that sent one was accepted and silently
+    # ignored, and the switch came back off. Same shape as the PATCH: the
+    # namespace is written whole or not at all (then the column default).
+    ams_policies: AmsPoliciesPatch | None = None
 
 
 class PlateDetectionROI(BaseModel):
@@ -79,6 +139,7 @@ class PrinterUpdate(BaseModel):
     access_code: str | None = None
     model: str | None = None
     location_id: int | None = None
+    tag_ids: list[int] | None = None
     is_active: bool | None = None
 
     @model_validator(mode="before")
@@ -95,12 +156,14 @@ class PrinterUpdate(BaseModel):
     external_camera_enabled: bool | None = None
     external_camera_snapshot_url: str | None = None  # upstream #1177
     camera_rotation: int | None = None  # 0, 90, 180, 270 degrees
+    camera_light_auto: Literal["inherit", "on", "off"] | None = None
     plate_detection_enabled: bool | None = None
     plate_detection_roi: PlateDetectionROI | None = None
     stagger_interval_minutes: int | None = None
     swap_mode_enabled: bool | None = None
     swap_profile: str | None = None
     require_plate_clear: bool | None = None
+    ams_policies: AmsPoliciesPatch | None = None
 
 
 class PrinterResponse(PrinterBase):
@@ -110,6 +173,9 @@ class PrinterResponse(PrinterBase):
     # form posts back; this is what anything displaying it reads, so neither has
     # to look the other up.
     location: PrinterLocationOut | None = None
+    # The labels, resolved — like ``location``, an object list for display and
+    # ``tag_ids`` (inherited) for what a form posts back.
+    tags: list[PrinterTagOut] = Field(default_factory=list)
     archived: bool = False
     # The persisted intent, not the live handler — which is what the support
     # bundle's checkbox list wants: "what did the operator switch on".
@@ -122,63 +188,31 @@ class PrinterResponse(PrinterBase):
     external_camera_enabled: bool = False
     external_camera_snapshot_url: str | None = None  # upstream #1177
     camera_rotation: int = 0  # 0, 90, 180, 270 degrees
+    camera_light_auto: Literal["inherit", "on", "off"] = "inherit"
     plate_detection_enabled: bool = False
+    # Assembled from the four flat columns by ``Printer.plate_detection_roi`` — a
+    # model property, because this response is validated straight off the ORM row.
     plate_detection_roi: PlateDetectionROI | None = None
     stagger_interval_minutes: int = 0
     swap_mode_enabled: bool = False
     swap_profile: str | None = None
+    # The whole namespaced object, defaults filled in — a row written before
+    # m175, or one whose namespace was never set, still answers with the
+    # policy that is in force rather than with an empty dict.
+    #
+    # ⚠️ Validated STRICTLY: a namespace whose shape does not parse (a
+    # translucent colour, say) fails this response — and on ``GET /printers/``
+    # that is the whole list, not one row. Acceptable because every writer goes
+    # through the typed schema above, which refuses such a value on the wire;
+    # the only way in is a hand-edited row. The SERVICE-side policy
+    # (``services/ams_backup_compatibility``) is the lenient reader that keeps
+    # the MQTT path working for exactly that case.
+    ams_policies: AmsPolicies = Field(default_factory=AmsPolicies)
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
-
-    @classmethod
-    def from_orm_with_roi(cls, printer) -> "PrinterResponse":
-        """Create response from ORM model, converting ROI fields to nested object."""
-        data = {
-            "id": printer.id,
-            "name": printer.name,
-            "serial_number": printer.serial_number,
-            "ip_address": printer.ip_address,
-            "model": printer.model,
-            "location_id": printer.location_id,
-            "location": (PrinterLocationOut.from_location(getattr(printer, "location", None))),
-            "auto_archive": printer.auto_archive,
-            "cleanup_after_print": printer.cleanup_after_print,
-            "mqtt_connection_timeout": printer.mqtt_connection_timeout,
-            "external_camera_url": printer.external_camera_url,
-            "external_camera_type": printer.external_camera_type,
-            "external_camera_enabled": printer.external_camera_enabled,
-            "external_camera_snapshot_url": printer.external_camera_snapshot_url,
-            "camera_rotation": printer.camera_rotation,
-            "is_active": printer.is_active,
-            "nozzle_count": printer.nozzle_count,
-            "print_hours_offset": printer.print_hours_offset,
-            "plate_detection_enabled": printer.plate_detection_enabled,
-            "stagger_interval_minutes": printer.stagger_interval_minutes,
-            "swap_mode_enabled": printer.swap_mode_enabled,
-            "swap_profile": printer.swap_profile,
-            "require_plate_clear": printer.require_plate_clear,
-            "created_at": printer.created_at,
-            "updated_at": printer.updated_at,
-        }
-        # Build ROI object if any ROI field is set
-        if any(
-            [
-                printer.plate_detection_roi_x is not None,
-                printer.plate_detection_roi_y is not None,
-                printer.plate_detection_roi_w is not None,
-                printer.plate_detection_roi_h is not None,
-            ]
-        ):
-            data["plate_detection_roi"] = PlateDetectionROI(
-                x=printer.plate_detection_roi_x or 0.15,
-                y=printer.plate_detection_roi_y or 0.35,
-                w=printer.plate_detection_roi_w or 0.70,
-                h=printer.plate_detection_roi_h or 0.55,
-            )
-        return cls(**data)
 
 
 class PrinterResponseWithSecret(PrinterResponse):
@@ -204,6 +238,16 @@ class HMSErrorResponse(BaseModel):
     full_code: str = ""
 
 
+class HmsMuteBody(BaseModel):
+    """Hide / un-hide one ``hms[]`` entry on one printer (services/hms_mute).
+
+    Only the 16-char stack key: an 8-char ``print_error`` fault is cleared by
+    the printer through ``/hms/clear``, never hidden by us.
+    """
+
+    full_code: str = Field(min_length=16, max_length=16, pattern=r"^[0-9A-Fa-f]{16}$")
+
+
 class HmsActionBody(BaseModel):
     # Canonical hex identifier (HMSErrorResponse.full_code): 8 chars for `print_error`
     # faults, 16 chars for `hms[]`-array faults. Length-bounded to those two valid shapes.
@@ -214,8 +258,29 @@ class HmsActionBody(BaseModel):
     job_id: str | None = Field(default=None, max_length=64)
 
 
+class AmsTrayActual(BaseModel):
+    """The spool BEHIND an advertised profile (backup-compatibility emulation).
+
+    ⚠️ ``PrinterStatus`` is a strict response model, so a field that is not
+    declared here is silently DROPPED from the REST payload — which is what
+    happened until 0.5.7: the WebSocket shaper
+    (``printer_manager.printer_state_to_dict``) carried ``actual`` and the REST
+    one (``routes/printers._build_printer_status``) did not, so every refetch
+    replaced the merged tray object with a masked one and the frontend fell
+    back to the advertised profile. Both shapers fill this; keep them in step.
+    """
+
+    tray_color: str | None = None
+    tray_type: str | None = None
+    tray_info_idx: str | None = None
+    cols: list[str] = []
+
+
 class AMSTray(BaseModel):
     id: int
+    # ``None`` whenever nothing is masked on this slot — the live fields below
+    # stay exactly as the printer reports them either way.
+    actual: AmsTrayActual | None = None
     tray_color: str | None = None
     tray_type: str | None = None
     tray_sub_brands: str | None = None  # Full name like "PLA Basic", "PETG HF"
@@ -386,6 +451,10 @@ class PrinterStatus(BaseModel):
     temperatures: dict | None = None
     cover_url: str | None = None
     hms_errors: list[HMSErrorResponse] = []
+    # Stack entries the operator hid on this printer (services/hms_mute) —
+    # excluded from ``hms_errors`` so badges, notifications and the relay all
+    # go quiet together; carried here so the modal can list and un-hide them.
+    hms_muted: list[HMSErrorResponse] = []
     ams: list[AMSUnit] = []
     ams_exists: bool = False
     vt_tray: list[AMSTray] = []  # Virtual tray / external spool(s)
@@ -438,6 +507,9 @@ class PrinterStatus(BaseModel):
     speed_level: int = 2
     # Chamber light on/off
     chamber_light: bool = False
+    # Whether the printer has a light we can switch (a chamber_light node in
+    # its lights_report); off until the first report of a connection.
+    has_chamber_light: bool = False
     # Active extruder for dual nozzle (0=right, 1=left)
     active_extruder: int = 0
     # AMS mapping for dual nozzle: which AMS is connected to which nozzle
@@ -537,12 +609,20 @@ class PrinterStatus(BaseModel):
     developer_mode: bool | None = None
     # AMS Filament Backup (auto_switch_filament): True = on, False = off, None = unknown (#1766)
     ams_auto_switch_filament: bool | None = None
+    # Firmware-reported ``filam_bak`` groups: extruder id -> lists of global tray ids.
+    # None means this printer/firmware has not reported the field.
+    ams_backup_groups: dict[int, list[list[int]]] | None = None
     # Currently executing macro name (None = no macro running)
     macro_executing: str | None = None
     # Queue plate-clear gate (#961): True means the printer is waiting on
     # user confirmation before the next auto-dispatch. False means the gate
     # is released (either never armed, or user/swap cleared it).
     awaiting_plate_clear: bool = False
+    # Whether "Repeat" has a finished queue row to re-arm. The gate can be
+    # armed with nothing behind it (a print on a queue-less printer, one that
+    # was already running when BamDude came up, or a completion handler still
+    # busy fetching the 3MF); the card draws Repeat only when this is True.
+    repeat_available: bool = False
     # AMS drying support
     supports_drying: bool = False
     # AMS "Print While Drying" — drying mid-print. Verified per Bambu wiki release notes;
@@ -608,3 +688,26 @@ class MQTTRecordingRequest(BaseModel):
     """
 
     enabled: bool
+
+
+class DefectsWriteIn(BaseModel):
+    """What came out bad on the print that is waiting on the plate: per part when
+    it has part rows, else one flat count. Absolute, clamped server-side."""
+
+    parts: list[ArchivePartDefective] | None = None
+    defective_count: int | None = Field(default=None, ge=0)
+
+
+class PlateAnswerIn(BaseModel):
+    """Optional body of Clear plate / Repeat: the defects travel with the answer."""
+
+    defects: DefectsWriteIn | None = None
+
+
+class WaitingPrintOut(BaseModel):
+    archive_id: int
+    print_name: str | None
+    status: str
+    quantity: int
+    defective_count: int
+    parts: list[ArchivePartRow] = []

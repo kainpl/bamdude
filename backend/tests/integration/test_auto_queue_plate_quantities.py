@@ -16,15 +16,21 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 
 from backend.app.models.auto_queue import AutoQueueItem
+from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
 
-async def _archive(db_session):
+async def _archive(db_session, tmp_path):
     from backend.app.models.archive import PrintArchive
 
     archive = PrintArchive(
         filename="three_plates.3mf",
         print_name="Three Plates",
-        file_path="/tmp/three_plates.3mf",
+        file_path=str(
+            write_routing_3mf(
+                tmp_path / "three_plates.3mf",
+                {i: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}] for i in (1, 2, 3)},
+            )
+        ),
         file_size=1024,
         content_hash="plate_qty_hash_0001",
         status="completed",
@@ -42,8 +48,8 @@ async def _rows(db_session):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_each_plate_gets_the_count_it_was_given(async_client: AsyncClient, db_session):
-    archive = await _archive(db_session)
+async def test_each_plate_gets_the_count_it_was_given(async_client: AsyncClient, db_session, tmp_path):
+    archive = await _archive(db_session, tmp_path)
 
     response = await async_client.post(
         "/api/v1/auto-queue/",
@@ -59,9 +65,11 @@ async def test_each_plate_gets_the_count_it_was_given(async_client: AsyncClient,
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_plate_left_out_of_the_map_falls_back_to_the_shared_quantity(async_client: AsyncClient, db_session):
+async def test_a_plate_left_out_of_the_map_falls_back_to_the_shared_quantity(
+    async_client: AsyncClient, db_session, tmp_path
+):
     """Partial maps are the normal case: the operator changes one plate."""
-    archive = await _archive(db_session)
+    archive = await _archive(db_session, tmp_path)
 
     response = await async_client.post(
         "/api/v1/auto-queue/",
@@ -77,9 +85,9 @@ async def test_a_plate_left_out_of_the_map_falls_back_to_the_shared_quantity(asy
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_without_the_map_nothing_changes(async_client: AsyncClient, db_session):
+async def test_without_the_map_nothing_changes(async_client: AsyncClient, db_session, tmp_path):
     """Every caller that predates this keeps its meaning."""
-    archive = await _archive(db_session)
+    archive = await _archive(db_session, tmp_path)
 
     response = await async_client.post(
         "/api/v1/auto-queue/",
@@ -92,10 +100,10 @@ async def test_without_the_map_nothing_changes(async_client: AsyncClient, db_ses
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_the_rows_still_share_one_batch(async_client: AsyncClient, db_session):
+async def test_the_rows_still_share_one_batch(async_client: AsyncClient, db_session, tmp_path):
     """A batch is "created together", so the TOTAL decides — not whether any
     single plate asked for more than one."""
-    archive = await _archive(db_session)
+    archive = await _archive(db_session, tmp_path)
 
     await async_client.post(
         "/api/v1/auto-queue/",
@@ -108,8 +116,8 @@ async def test_the_rows_still_share_one_batch(async_client: AsyncClient, db_sess
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_single_run_is_not_a_batch(async_client: AsyncClient, db_session):
-    archive = await _archive(db_session)
+async def test_a_single_run_is_not_a_batch(async_client: AsyncClient, db_session, tmp_path):
+    archive = await _archive(db_session, tmp_path)
 
     await async_client.post(
         "/api/v1/auto-queue/",
@@ -121,9 +129,9 @@ async def test_a_single_run_is_not_a_batch(async_client: AsyncClient, db_session
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_an_absurd_count_is_refused_rather_than_clamped(async_client: AsyncClient, db_session):
+async def test_an_absurd_count_is_refused_rather_than_clamped(async_client: AsyncClient, db_session, tmp_path):
     """Asking for 2000 copies is a mistake, and silently clamping hides it."""
-    archive = await _archive(db_session)
+    archive = await _archive(db_session, tmp_path)
 
     response = await async_client.post(
         "/api/v1/auto-queue/",

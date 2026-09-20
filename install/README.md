@@ -56,6 +56,8 @@ Installs BamDude with Python virtual environment and optional systemd/launchd se
 --tz TIMEZONE      Timezone (default: system timezone)
 --data-dir PATH    Data directory (default: INSTALL_PATH/data)
 --log-dir PATH     Log directory (default: INSTALL_PATH/logs)
+--db BACKEND       Database: sqlite (default) | embedded | external
+--database-url URL External database URL (implies --db external)
 --debug            Enable debug mode
 --log-level LEVEL  Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)
 --no-service       Skip systemd/launchd service setup

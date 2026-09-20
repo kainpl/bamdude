@@ -13,8 +13,8 @@ import { render } from '../utils';
 import { server } from '../mocks/server';
 import { FileManagerPage } from '../../pages/FileManagerPage';
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+vi.mock('react-router', async () => {
+  const actual = await vi.importActual<typeof import('react-router')>('react-router');
   return { ...actual, useNavigate: () => vi.fn() };
 });
 
@@ -33,6 +33,7 @@ const mockFiles = [
     file_size: 1048576,
     file_type: 'gcode',
     file_tags: ['gcode', '3mf'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: null,
     print_name: 'Benchy',
@@ -49,6 +50,7 @@ const mockFiles = [
     file_size: 524288,
     file_type: 'stl',
     file_tags: ['stl'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: null,
     print_name: null,
@@ -68,9 +70,16 @@ describe('per-file actions', () => {
     assigned = [];
     server.use(
       http.get('/api/v1/library/folders', () =>
-        HttpResponse.json([{ id: 5, name: 'Parts', parent_id: null, file_count: 0, projects: [], children: [] }]),
+        HttpResponse.json([{ id: 5, name: 'Parts', parent_id: null, file_count: 0, products: [], children: [] }]),
       ),
-      http.get('/api/v1/library/files', () => HttpResponse.json(mockFiles)),
+      // Server-driven (task 2, 2026-08-29): FileManagerPage always sends
+      // `page`, so the endpoint answers with the {items, meta} envelope.
+      http.get('/api/v1/library/files', () =>
+        HttpResponse.json({
+          items: mockFiles,
+          meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
+        }),
+      ),
       http.get('/api/v1/library/stats', () =>
         HttpResponse.json({
           total_files: 2,
@@ -203,5 +212,30 @@ describe('per-file actions', () => {
 
     await waitFor(() => expect(assigned).toHaveLength(1));
     expect(assigned[0]).toEqual({ file_ids: [1], tag_ids: [2], action: 'remove' });
+  });
+
+  it('lights the product chip on a file the list says is linked', async () => {
+    // ⚠️ The FILE LIST carries `product_ids` and no `products`. Reading only
+    // the latter leaves every card looking unlinked — and the dialog behind
+    // this chip then opens with nothing ticked and saves that emptiness over
+    // the real links.
+    server.use(
+      http.get('/api/v1/library/files', () =>
+        HttpResponse.json({
+          items: [{ ...mockFiles[0], product_ids: [1] }, mockFiles[1]],
+          meta: { total: 2, current_page: 1, per_page: 50, last_page: 1 },
+        }),
+      ),
+    );
+
+    render(<FileManagerPage />);
+    await screen.findByText('Benchy');
+
+    const linked = (await screen.findByText('Benchy')).closest('.group') as HTMLElement;
+    expect(within(linked).getByRole('button', { name: /linked to 1 product/i })).toBeInTheDocument();
+
+    // And the unlinked file offers the plain "link" action instead.
+    const plain = (await screen.findByText('bracket.stl')).closest('.group') as HTMLElement;
+    expect(within(plain).queryByRole('button', { name: /linked to/i })).not.toBeInTheDocument();
   });
 });

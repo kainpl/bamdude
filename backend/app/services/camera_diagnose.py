@@ -17,8 +17,8 @@ Stages
    RTSPS models, 6000 for the chamber-image-protocol A1 / P1 family).
    Distinguishes "printer down" / "firewall" / "LAN-only off" from
    stream-content problems.
-2. **first_frame** — call the existing ``capture_camera_frame_bytes``
-   pipeline (same code that powers /camera/snapshot) and verify at
+2. **first_frame** — call the existing camera-capture pipeline (the
+   same transport code that powers /camera/snapshot) and verify at
    least one JPEG comes back within the model's profile-derived
    timeout. Combines auth + protocol handshake + first keyframe into
    one stage because splitting RTSP's ``ffmpeg`` invocation is heavy
@@ -44,12 +44,10 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from backend.app.services.camera import (
-    capture_camera_frame_bytes,
-    get_camera_port,
-    is_chamber_image_model,
-)
+from backend.app.services.camera import get_camera_port, is_chamber_image_model
 from backend.app.services.camera_profiles import DEFAULT_PROFILE, get_camera_profile
+from backend.app.services.camera_runtime import CameraCaptureRequest, capture
+from backend.app.utils.printer_configs import camera_capability_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +70,14 @@ class CameraDiagnoseStage:
     # Optional machine-readable code for failures so the frontend can
     # render a stage-specific hint without parsing free-text errors.
     code: str | None = None
+    # A successful first-frame test may reuse a concurrent capture rather than
+    # opening another camera socket. This is correct and protects one-reader
+    # firmware; expose it so support does not mistake it for a fresh probe.
+    source: str | None = None
+    attempt_id: str | None = None
+    first_frame_ms: float | None = None
+    caller_wait_ms: float | None = None
+    cleanup_ms: float | None = None
 
 
 @dataclass
@@ -87,6 +93,9 @@ class CameraDiagnoseResult:
     stages: list[CameraDiagnoseStage] = field(default_factory=list)
     # i18n key. Frontend maps to a translated remediation hint.
     summary_code: str = ""
+    # Declarative Bambu Studio model metadata. This explains what the catalog
+    # says without treating it as proof that a live firmware supports a path.
+    catalog_capabilities: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -96,9 +105,21 @@ class CameraDiagnoseResult:
             "profile": self.profile,
             "overall_status": self.overall_status,
             "stages": [
-                {"name": s.name, "status": s.status, "duration_ms": s.duration_ms, "code": s.code} for s in self.stages
+                {
+                    "name": s.name,
+                    "status": s.status,
+                    "duration_ms": s.duration_ms,
+                    "code": s.code,
+                    "source": s.source,
+                    "attempt_id": s.attempt_id,
+                    "first_frame_ms": s.first_frame_ms,
+                    "caller_wait_ms": s.caller_wait_ms,
+                    "cleanup_ms": s.cleanup_ms,
+                }
+                for s in self.stages
             ],
             "summary_code": self.summary_code,
+            "catalog_capabilities": self.catalog_capabilities,
         }
 
 
@@ -162,19 +183,24 @@ async def _check_first_frame(
     access_code: str,
     model: str | None,
     timeout: int,
+    printer_id: int | None = None,
 ) -> CameraDiagnoseStage:
     """Stage 2 — capture one frame end-to-end. Combines auth + protocol
     handshake + first keyframe; either it works or it doesn't."""
     started = time.monotonic()
     try:
-        jpeg = await capture_camera_frame_bytes(
-            ip_address=ip_address,
-            access_code=access_code,
-            model=model,
-            timeout=timeout,
+        capture_result = await capture(
+            CameraCaptureRequest.builtin(
+                ip_address=ip_address,
+                access_code=access_code,
+                model=model,
+                timeout=timeout,
+                purpose="diagnose",
+                printer_id=printer_id,
+            )
         )
     except Exception as exc:  # noqa: BLE001 — see camera_profiles.py rationale
-        # capture_camera_frame_bytes can raise from many layers (ffmpeg
+        # The camera-capture pipeline can raise from many layers (ffmpeg
         # spawn, TLS proxy startup, asyncio.open_connection). For the
         # user-facing answer, any exception during the capture path is
         # "first frame failed" — drilling down is for the support log.
@@ -185,17 +211,26 @@ async def _check_first_frame(
             duration_ms=int((time.monotonic() - started) * 1000),
             code="capture_exception",
         )
-    if jpeg:
+    if capture_result.frame:
         return CameraDiagnoseStage(
             name="first_frame",
             status="ok",
             duration_ms=int((time.monotonic() - started) * 1000),
+            source=capture_result.source,
+            attempt_id=capture_result.attempt_id,
+            first_frame_ms=capture_result.first_frame_ms,
+            caller_wait_ms=capture_result.caller_wait_ms,
+            cleanup_ms=capture_result.cleanup_ms,
         )
     return CameraDiagnoseStage(
         name="first_frame",
         status="failed",
         duration_ms=int((time.monotonic() - started) * 1000),
         code="no_frame",
+        attempt_id=capture_result.attempt_id,
+        first_frame_ms=capture_result.first_frame_ms,
+        caller_wait_ms=capture_result.caller_wait_ms,
+        cleanup_ms=capture_result.cleanup_ms,
     )
 
 
@@ -248,6 +283,7 @@ async def diagnose_camera(
         profile=_profile_label(model),
         overall_status="ok",
         stages=[],
+        catalog_capabilities=camera_capability_catalog(model),
     )
 
     # Shortcut: the camera is currently streaming with a fresh frame.
@@ -280,7 +316,7 @@ async def diagnose_camera(
         return result
 
     # Stage 2
-    frame_stage = await _check_first_frame(ip_address, access_code, model, capture_timeout)
+    frame_stage = await _check_first_frame(ip_address, access_code, model, capture_timeout, printer_id=printer_id)
     result.stages.append(frame_stage)
     if frame_stage.status != "ok":
         result.overall_status = "failed"

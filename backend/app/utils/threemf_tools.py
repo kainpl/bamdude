@@ -504,10 +504,18 @@ def _group_extruder_indices(plates: list[XmlElement]) -> dict[int, int] | None:
     return table or None
 
 
+def _known_unused_filament(filament: XmlElement) -> bool:
+    """Only explicit zero usage proves a channel irrelevant to nozzle routing."""
+    try:
+        return float(filament.get("used_g")) == 0
+    except (TypeError, ValueError):
+        return False
+
+
 def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile, plate_id: int | None = None) -> dict[int, int] | None:
     """Extract per-slot nozzle/extruder mapping from a 3MF file.
 
-    On dual-nozzle printers (H2D, H2D Pro, H2C), each filament slot is assigned
+    On dual-nozzle printers, each used filament slot is assigned
     to a specific nozzle. The slicer may override user preferences when using
     "Auto For Flush" mode, so the actual assignment comes from slice_info.config
     group_id attributes, not from the user's filament_nozzle_map preference.
@@ -566,7 +574,9 @@ def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile, plate_id: int | None = 
             si_root = ET.fromstring(si_content)
             plates = _plates_in_scope(si_root, plate_id)
             group_extruders = _group_extruder_indices(plates)
-            filament_elems = [elem for plate in plates for elem in plate.findall(".//filament")]
+            filament_elems = [
+                elem for plate in plates for elem in plate.findall(".//filament") if not _known_unused_filament(elem)
+            ]
             for filament_elem in filament_elems:
                 group_id_str = filament_elem.get("group_id")
                 if group_id_str is not None:
@@ -655,7 +665,7 @@ def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile, plate_id: int | None = 
             slot_id = i + 1
             try:
                 slicer_ext = int(slicer_ext_str)
-                if slicer_ext < len(physical_extruder_map):
+                if 0 <= slicer_ext < len(physical_extruder_map):
                     nozzle_mapping[slot_id] = int(physical_extruder_map[slicer_ext])
             except (ValueError, TypeError, IndexError):
                 pass
@@ -877,6 +887,57 @@ def expand_to_project_slots(zf: zipfile.ZipFile, used: list[dict]) -> list[dict]
         out.append(leftover)
     out.sort(key=lambda f: f["slot_id"])
     return out
+
+
+def _first_plate_index(zf: zipfile.ZipFile) -> int | None:
+    """The index of the file's first declared plate, or ``None`` when unknown.
+
+    Only callers that name no plate of their own use this.  The legacy archive
+    preview may guess plate 1 for incomplete metadata, but a queue row must not:
+    it would present a render for a plate the row cannot prove it represents.
+    """
+    if "Metadata/slice_info.config" not in zf.namelist():
+        return None
+    try:
+        root = ET.fromstring(zf.read("Metadata/slice_info.config").decode())
+    except Exception:  # a truncated or non-XML config — not a plate statement
+        return None
+    plates = root.findall(".//plate")
+    if not plates:
+        return None
+    for metadata in plates[0].findall("metadata"):
+        if metadata.get("key") == "index":
+            try:
+                return int(metadata.get("value") or "")
+            except ValueError:
+                return None
+    return None
+
+
+def plate_picture_entry(zf: zipfile.ZipFile, plate_id: int | None) -> str | None:
+    """The ZIP entry holding the slicer's render of one plate, or ``None``.
+
+    The picture a queued job shows is recoverable from the bytes it owns (spec
+    §4, A09), and this is where the entry is named — once, so the queue's flag
+    and the route that serves it cannot disagree about which plate was meant.
+
+    ⚠️ Bambu identifies a plate with ``<metadata key="index" value="N"/>``
+    **inside** ``<plate>``, never a ``plate_idx`` attribute, so a caller that
+    names no plate is answered through the same child metadata
+    :func:`_plates_in_scope` reads — the trap that made ``plate_number`` inert
+    for months.
+
+    **No fallback to another plate's render**, deliberately, and unlike the
+    legacy ``archives.get_plate_preview`` chain: plate 1's picture shown for a
+    plate-3 job is a lying picture, and the plate is exactly what a multi-plate
+    queue row is about. ``Metadata/plate_N_small.png`` is not the picture either
+    — it is the printer's list icon, a different image at a different size.
+    """
+    index = plate_id if plate_id is not None else _first_plate_index(zf)
+    if index is None:
+        return None
+    entry = f"Metadata/plate_{index}.png"
+    return entry if entry in zf.namelist() else None
 
 
 # paint_color attr on <triangle> elements (per-face filament painting).

@@ -12,13 +12,22 @@ import {
   Pie,
   Cell,
 } from 'recharts';
-import type { ArchiveSlim } from '../api/client';
+import type { ArchiveAggregate } from '../api/client';
 import { MetricToggle, type Metric } from './MetricToggle';
-import { parseUTCDate } from '../utils/date';
+import { localDateOfBucket } from '../utils/date';
 import { formatWeight } from '../utils/weight';
 
 interface FilamentTrendsProps {
-  archives: ArchiveSlim[];
+  /**
+   * Aggregated on the server.
+   *
+   * ⚠️ This used to take every archive row of the range and fold it eight ways
+   * here. The multi-value split for materials and colours now happens on the
+   * server, with the same asymmetric rule: grams and seconds are divided evenly
+   * among the parts of "PLA, PETG", while print counts are credited whole to
+   * each part.
+   */
+  aggregate: ArchiveAggregate | undefined;
   currency?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -29,24 +38,24 @@ const COLORS = ['#00ae42', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const HOUR_SUFFIXES = ['12am', '1am', '2am', '3am', '4am', '5am', '6am', '7am', '8am', '9am', '10am', '11am', '12pm', '1pm', '2pm', '3pm', '4pm', '5pm', '6pm', '7pm', '8pm', '9pm', '10pm', '11pm'];
 
-export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: FilamentTrendsProps) {
+export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: FilamentTrendsProps) {
   const { t } = useTranslation();
   const [filamentTypeMetric, setFilamentTypeMetric] = useState<Metric>('weight');
   const [colorMetric, setColorMetric] = useState<Metric>('weight');
 
-  // Calculate daily usage data
+  const buckets = useMemo(() => aggregate?.buckets ?? [], [aggregate]);
+
+  // Daily usage, on the "ended" axis — the day a print finished is the day its
+  // filament was spent, which is the axis this chart has always used.
   const dailyData = useMemo(() => {
     const dataMap = new Map<string, { date: string; filament: number; cost: number; prints: number }>();
 
-    archives.forEach(archive => {
-      const date = parseUTCDate(archive.completed_at || archive.created_at) || new Date();
-      // Use local date string for grouping
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-
+    buckets.forEach(bucket => {
+      const key = bucket.at.split('T')[0];
       const existing = dataMap.get(key) || { date: key, filament: 0, cost: 0, prints: 0 };
-      existing.filament += archive.filament_used_grams || 0;
-      existing.cost += archive.cost || 0;
-      existing.prints += archive.quantity || 1;
+      existing.filament += bucket.ended.grams;
+      existing.cost += bucket.ended.cost;
+      existing.prints += bucket.ended.quantity;
       dataMap.set(key, existing);
     });
 
@@ -54,9 +63,9 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
       .sort((a, b) => a.date.localeCompare(b.date))
       .map(d => ({
         ...d,
-        dateLabel: new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        dateLabel: localDateOfBucket(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
       }));
-  }, [archives]);
+  }, [buckets]);
 
   // Compute effective span in days from props or archive spread
   const spanDays = useMemo(() => {
@@ -66,10 +75,10 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
     if (dateFrom) {
       return Math.max((Date.now() - new Date(dateFrom).getTime()) / 86400000, 0) + 1;
     }
-    if (archives.length < 2) return 0;
-    const times = archives.map(a => new Date(a.completed_at || a.created_at).getTime());
+    if (buckets.length < 2) return 0;
+    const times = buckets.map(b => localDateOfBucket(b.at).getTime());
     return (Math.max(...times) - Math.min(...times)) / 86400000;
-  }, [archives, dateFrom, dateTo]);
+  }, [buckets, dateFrom, dateTo]);
 
   // Calculate hourly data for short timeframes (≤ 7 days)
   const hourlyData = useMemo(() => {
@@ -78,30 +87,29 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
     const dataMap = new Map<string, { date: string; filament: number; cost: number; prints: number }>();
     const multiDay = spanDays > 1;
 
-    archives.forEach(archive => {
-      const date = parseUTCDate(archive.completed_at || archive.created_at) || new Date();
-      const h = date.getHours();
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}T${String(h).padStart(2, '0')}`;
-
-      const existing = dataMap.get(key) || { date: key, filament: 0, cost: 0, prints: 0 };
-      existing.filament += archive.filament_used_grams || 0;
-      existing.cost += archive.cost || 0;
-      existing.prints += archive.quantity || 1;
-      dataMap.set(key, existing);
+    // The server sends hourly buckets exactly when the range is a week or less,
+    // so there is nothing to re-bucket — a day-grained response simply yields
+    // no hourly points and the daily chart is used instead.
+    buckets.forEach(bucket => {
+      if (!bucket.at.includes('T')) return;
+      const existing = dataMap.get(bucket.at) || { date: bucket.at, filament: 0, cost: 0, prints: 0 };
+      existing.filament += bucket.ended.grams;
+      existing.cost += bucket.ended.cost;
+      existing.prints += bucket.ended.quantity;
+      dataMap.set(bucket.at, existing);
     });
 
     return Array.from(dataMap.values())
       .sort((a, b) => a.date.localeCompare(b.date))
       .map(d => {
-        const [datePart, hourPart] = d.date.split('T');
-        const dt = new Date(datePart);
-        const h = parseInt(hourPart, 10);
+        const dt = localDateOfBucket(d.date);
+        const h = dt.getHours();
         const label = multiDay
           ? `${DAY_NAMES[dt.getDay()]} ${HOUR_SUFFIXES[h]}`
           : HOUR_SUFFIXES[h];
         return { ...d, dateLabel: label };
       });
-  }, [archives, spanDays]);
+  }, [buckets, spanDays]);
 
   // Calculate weekly aggregated data when there are many daily points
   const weeklyData = useMemo(() => {
@@ -110,7 +118,7 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
     const dataMap = new Map<string, { week: string; filament: number; cost: number; prints: number }>();
 
     dailyData.forEach(day => {
-      const date = new Date(day.date);
+      const date = localDateOfBucket(day.date);
       const weekStart = new Date(date);
       weekStart.setDate(date.getDate() - date.getDay());
       const key = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(weekStart.getDate()).padStart(2, '0')}`;
@@ -126,109 +134,67 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
       .sort((a, b) => a.week.localeCompare(b.week))
       .map(d => ({
         date: d.week,
-        dateLabel: `Week of ${new Date(d.week).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`,
+        dateLabel: `Week of ${localDateOfBucket(d.week).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`,
         ...d,
       }));
   }, [dailyData]);
 
-  // Usage by filament type
-  const filamentTypeData = useMemo(() => {
-    const dataMap = new Map<string, number>();
+  // Usage by filament type. The "PLA, PETG" split and the even division of
+  // grams and seconds among its parts happen on the server now, under the same
+  // asymmetric rule this component used: measures divide, counts do not.
+  const materials = useMemo(() => aggregate?.by_material ?? [], [aggregate]);
 
-    archives.forEach(archive => {
-      const type = archive.filament_type || 'Unknown';
-      // Handle multiple types (e.g., "PLA, PETG")
-      const types = type.split(', ');
-      types.forEach(t => {
-        const grams = (archive.filament_used_grams || 0) / types.length;
-        dataMap.set(t, (dataMap.get(t) || 0) + grams);
-      });
-    });
-
-    return Array.from(dataMap.entries())
-      .map(([name, value]) => ({ name, value: Math.round(value) }))
-      .sort((a, b) => b.value - a.value);
-  }, [archives]);
+  const filamentTypeData = useMemo(
+    () =>
+      materials
+        .map(row => ({ name: row.material, value: Math.round(row.grams) }))
+        .sort((a, b) => b.value - a.value),
+    [materials],
+  );
 
   // Usage by filament type (print count)
-  const filamentTypePrintData = useMemo(() => {
-    const dataMap = new Map<string, number>();
-    archives.forEach(archive => {
-      const type = archive.filament_type || 'Unknown';
-      const types = type.split(', ');
-      types.forEach(t => {
-        dataMap.set(t, (dataMap.get(t) || 0) + 1);
-      });
-    });
-    return Array.from(dataMap.entries())
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value);
-  }, [archives]);
+  const filamentTypePrintData = useMemo(
+    () =>
+      materials
+        .map(row => ({ name: row.material, value: row.prints }))
+        .sort((a, b) => b.value - a.value),
+    [materials],
+  );
 
   // Usage by filament type (print time in hours)
-  const filamentTypeTimeData = useMemo(() => {
-    const dataMap = new Map<string, number>();
-    archives.forEach(archive => {
-      const type = archive.filament_type || 'Unknown';
-      const types = type.split(', ');
-      const seconds = (archive.actual_time_seconds || archive.print_time_seconds || 0) / types.length;
-      types.forEach(t => {
-        dataMap.set(t, (dataMap.get(t) || 0) + seconds);
-      });
-    });
-    return Array.from(dataMap.entries())
-      .map(([name, seconds]) => ({ name, value: Math.round((seconds / 3600) * 10) / 10 }))
-      .sort((a, b) => b.value - a.value);
-  }, [archives]);
+  const filamentTypeTimeData = useMemo(
+    () =>
+      materials
+        .map(row => ({ name: row.material, value: Math.round((row.seconds / 3600) * 10) / 10 }))
+        .sort((a, b) => b.value - a.value),
+    [materials],
+  );
 
-  // Success rate by filament type
-  const filamentSuccessData = useMemo(() => {
-    const map = new Map<string, { completed: number; failed: number }>();
-    archives.forEach(a => {
-      const isFailed = a.status === 'failed' || a.status === 'aborted' || a.status === 'cancelled';
-      if (a.status !== 'completed' && !isFailed) return;
-      const types = (a.filament_type || 'Unknown').split(', ');
-      types.forEach(type => {
-        const entry = map.get(type) || { completed: 0, failed: 0 };
-        if (a.status === 'completed') entry.completed++;
-        else entry.failed++;
-        map.set(type, entry);
-      });
-    });
-    return Array.from(map.entries())
-      .filter(([, v]) => v.completed + v.failed >= 2)
-      .map(([name, v]) => {
-        const total = v.completed + v.failed;
-        const rate = Math.round((v.completed / total) * 100);
-        return { name, rate, total };
-      })
-      .sort((a, b) => b.rate - a.rate);
-  }, [archives]);
+  // Success rate by filament type — only materials with at least two terminal
+  // prints, so one lucky spool cannot show a perfect record.
+  const filamentSuccessData = useMemo(
+    () =>
+      materials
+        .filter(row => row.completed + row.failed >= 2)
+        .map(row => {
+          const total = row.completed + row.failed;
+          return { name: row.material, rate: Math.round((row.completed / total) * 100), total };
+        })
+        .sort((a, b) => b.rate - a.rate),
+    [materials],
+  );
 
   // Color distribution
-  const colorData = useMemo(() => {
-    const colorMap = new Map<string, { count: number; weight: number }>();
-
-    archives.forEach(a => {
-      if (!a.filament_color) return;
-      const colors = a.filament_color.split(',').map(c => c.trim());
-      const weightPerColor = (a.filament_used_grams || 0) / colors.length;
-
-      colors.forEach(hex => {
-        const entry = colorMap.get(hex) || { count: 0, weight: 0 };
-        entry.count++;
-        entry.weight += weightPerColor;
-        colorMap.set(hex, entry);
-      });
-    });
-
-    return Array.from(colorMap.entries())
-      .map(([hex, data]) => ({
-        hex,
-        value: colorMetric === 'prints' ? data.count : Math.round(data.weight),
-      }))
-      .sort((a, b) => b.value - a.value);
-  }, [archives, colorMetric]);
+  const colorData = useMemo(
+    () =>
+      (aggregate?.by_color ?? [])
+        .map(row => ({
+          hex: row.color,
+          value: colorMetric === 'prints' ? row.prints : Math.round(row.grams),
+        }))
+        .sort((a, b) => b.value - a.value),
+    [aggregate, colorMetric],
+  );
 
   const activeFilamentTypeData =
     filamentTypeMetric === 'weight' ? filamentTypeData :
@@ -236,13 +202,14 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
     filamentTypeTimeData;
 
   const chartData = spanDays <= 7 && hourlyData.length > 0 ? hourlyData : weeklyData;
-  const totalFilament = archives.reduce((sum, a) => sum + (a.filament_used_grams || 0), 0);
-  const totalCost = archives.reduce((sum, a) => sum + (a.cost || 0), 0);
+  const totals = aggregate?.totals;
+  const totalFilament = totals?.grams ?? 0;
+  const totalCost = totals?.cost ?? 0;
   // Sum of per-print item quantities = total printed objects (NOT print jobs).
-  const totalObjects = archives.reduce((sum, a) => sum + (a.quantity || 1), 0);
+  const totalObjects = totals?.quantity ?? 0;
   // Number of print jobs (one archive = one print).
-  const totalPrints = archives.length;
-  const printerCount = new Set(archives.map(a => a.printer_id).filter(Boolean)).size;
+  const totalPrints = totals?.prints ?? 0;
+  const printerCount = totals?.printers ?? 0;
 
   return (
     <div className="space-y-4">

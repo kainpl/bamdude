@@ -35,14 +35,14 @@ import { Button } from '../components/Button';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
-import { api, type ArchiveSlim, type Printer } from '../api/client';
+import { api, type AggregateBucket, type ArchiveAggregate, type Printer, type DefectsByPrinter } from '../api/client';
 import { printerLabel, comparePrinterByLabel } from '../utils/printerLabel';
 import { PrintCalendar } from '../components/PrintCalendar';
 import { FilamentTrends } from '../components/FilamentTrends';
 import { Dashboard, type DashboardWidget } from '../components/Dashboard';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatWeight } from '../utils/weight';
-import { parseUTCDate, formatDuration } from '../utils/date';
+import { formatDuration, localDateOfBucket } from '../utils/date';
 import { MetricToggle, type Metric } from '../components/MetricToggle';
 
 // Timeframe types and helpers
@@ -282,7 +282,7 @@ function SuccessRateWidget({
   const circumference = radius * 2 * Math.PI;
 
   return (
-    <div className="flex items-center gap-6">
+    <div className="flex items-center gap-4">
       <div className="relative flex-shrink-0" style={{ width: gaugeSize, height: gaugeSize }}>
         <svg className="w-full h-full -rotate-90">
           <circle
@@ -402,7 +402,7 @@ function TimeAccuracyWidget({
     : [];
 
   return (
-    <div className="flex items-center gap-6">
+    <div className="flex items-center gap-4">
       <div className="relative flex-shrink-0" style={{ width: gaugeSize, height: gaugeSize }}>
         <svg className="w-full h-full -rotate-90">
           <circle
@@ -458,7 +458,7 @@ function TimeAccuracyWidget({
   );
 }
 
-function HourlyHeatmap({ printDates, dateFrom, dateTo }: { printDates: string[]; dateFrom: string; dateTo: string }) {
+function HourlyHeatmap({ buckets, dateFrom, dateTo }: { buckets: AggregateBucket[]; dateFrom: string; dateTo: string }) {
   const { days, hourlyCounts, maxCount } = useMemo(() => {
     const start = new Date(dateFrom + 'T00:00:00');
     const end = new Date(dateTo + 'T00:00:00');
@@ -474,20 +474,21 @@ function HourlyHeatmap({ printDates, dateFrom, dateTo }: { printDates: string[];
       current.setDate(current.getDate() + 1);
     }
 
-    // Count prints per (day, hour)
+    // Prints per (day, hour). The server sends hourly buckets for a range of a
+    // week or less, which is exactly when this chart is shown, and each key is
+    // already local — splitting it beats re-parsing it as an instant.
     const counts: Record<string, number> = {};
     let max = 0;
-    printDates.forEach(d => {
-      const date = parseUTCDate(d);
-      if (!date) return;
-      const dayKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-      const k = `${dayKey}-${date.getHours()}`;
-      counts[k] = (counts[k] || 0) + 1;
+    buckets.forEach(bucket => {
+      const [dayKey, hourPart] = bucket.at.split('T');
+      if (hourPart === undefined) return;
+      const k = `${dayKey}-${Number(hourPart)}`;
+      counts[k] = (counts[k] || 0) + bucket.started.prints;
       if (counts[k] > max) max = counts[k];
     });
 
     return { days, hourlyCounts: counts, maxCount: Math.max(1, max) };
-  }, [printDates, dateFrom, dateTo]);
+  }, [buckets, dateFrom, dateTo]);
 
   const getColor = (count: number) => {
     if (count === 0) return 'bg-bambu-dark';
@@ -560,12 +561,12 @@ function HourlyHeatmap({ printDates, dateFrom, dateTo }: { printDates: string[];
 }
 
 function PrintActivityWidget({
-  printDates,
+  buckets,
   size = 2,
   dateFrom,
   dateTo,
 }: {
-  printDates: string[];
+  buckets: AggregateBucket[];
   size?: 1 | 2 | 4;
   dateFrom?: string;
   dateTo?: string;
@@ -580,8 +581,18 @@ function PrintActivityWidget({
     return Infinity;
   }, [dateFrom, dateTo]);
 
+  // The calendar wants one number per local day; an hourly range folds up.
+  const dayCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    buckets.forEach(bucket => {
+      const day = bucket.at.split('T')[0];
+      counts[day] = (counts[day] || 0) + bucket.started.prints;
+    });
+    return counts;
+  }, [buckets]);
+
   if (spanDays <= 7 && dateFrom && dateTo) {
-    return <HourlyHeatmap printDates={printDates} dateFrom={dateFrom} dateTo={dateTo} />;
+    return <HourlyHeatmap buckets={buckets} dateFrom={dateFrom} dateTo={dateTo} />;
   }
 
   // Calculate months from the timeframe span, fall back to size-based default for all-time
@@ -589,21 +600,35 @@ function PrintActivityWidget({
   const months = spanDays === Infinity
     ? sizeDefault
     : Math.max(1, Math.ceil(spanDays / 30));
-  return <PrintCalendar printDates={printDates} months={months} />;
+  return <PrintCalendar dayCounts={dayCounts} months={months} />;
 }
 
 function PrinterStatsWidget({
   stats,
-  archives,
+  aggregate,
   printerById,
 }: {
-  stats: { prints_by_printer: Record<string, number> } | undefined;
-  archives: ArchiveSlim[];
+  stats: { prints_by_printer: Record<string, number>; defects_by_printer?: Record<string, DefectsByPrinter> } | undefined;
+  aggregate: ArchiveAggregate | undefined;
   printerById: Map<string, Printer>;
 }) {
   const { t } = useTranslation();
   const [printerMetric, setPrinterMetric] = useState<Metric>('weight');
   const [habitsMetric, setHabitsMetric] = useState<Metric>('weight');
+
+  // Defects by printer — completed prints only; worst rate first.
+  const defectRows = useMemo(() => {
+    const entries = Object.entries(stats?.defects_by_printer ?? {});
+    return entries
+      .map(([id, d]) => ({
+        id,
+        name: printerLabel(printerById.get(id), id, t),
+        printed: d.printed,
+        defective: d.defective,
+        rate: d.printed > 0 ? (d.defective / d.printed) * 100 : 0,
+      }))
+      .sort((a, b) => b.rate - a.rate || comparePrinterByLabel(a.id, b.id, printerById, t));
+  }, [stats, printerById, t]);
 
   // Per-printer data
   const printerData = useMemo(() => {
@@ -615,13 +640,13 @@ function PrinterStatsWidget({
         map.set(id, entry);
       });
     }
-    archives.forEach(a => {
-      if (!a.printer_id) return;
-      const id = String(a.printer_id);
+    (aggregate?.by_printer ?? []).forEach(row => {
+      if (!row.printer_id) return;
+      const id = String(row.printer_id);
       const entry = map.get(id) || { prints: 0, weight: 0, time: 0 };
-      entry.weight += a.filament_used_grams || 0;
-      entry.time += a.actual_time_seconds || a.print_time_seconds || 0;
-      if (!stats?.prints_by_printer) entry.prints++;
+      entry.weight += row.grams;
+      entry.time += row.seconds;
+      if (!stats?.prints_by_printer) entry.prints += row.prints;
       map.set(id, entry);
     });
     return Array.from(map.entries())
@@ -634,58 +659,40 @@ function PrinterStatsWidget({
       }))
       // By name, archived printers sunk to the bottom (chart renders index 0 at top).
       .sort((a, b) => comparePrinterByLabel(a.id, b.id, printerById, t));
-  }, [stats, archives, printerById, printerMetric, t]);
+  }, [stats, aggregate, printerById, printerMetric, t]);
 
-  // Hourly distribution (time of day)
-  const hourlyData = useMemo(() => {
-    const hours = Array.from({ length: 24 }, (_, i) => ({
-      hour: i,
-      label: HOUR_LABELS[i],
-      total: 0,
-      failures: 0,
-    }));
+  // Hourly distribution (time of day). The server keys these on started_at in
+  // this browser's own zone and still skips prints that never started.
+  const hourlyData = useMemo(
+    () =>
+      Array.from({ length: 24 }, (_, i) => ({
+        hour: i,
+        label: HOUR_LABELS[i],
+        total: aggregate?.by_hour_of_day[i]?.prints ?? 0,
+        failures: aggregate?.by_hour_of_day[i]?.failures ?? 0,
+      })),
+    [aggregate],
+  );
 
-    archives.forEach(a => {
-      if (!a.started_at) return;
-      const date = parseUTCDate(a.started_at);
-      if (!date) return;
-      const h = date.getHours();
-      hours[h].total++;
-      if (a.status === 'failed' || a.status === 'aborted' || a.status === 'cancelled') {
-        hours[h].failures++;
-      }
-    });
-
-    return hours;
-  }, [archives]);
-
-  // Duration distribution
+  // Duration distribution, bucketed server-side: the boundaries need each
+  // print's own duration, which no longer travels to the browser.
   const durationData = useMemo(() => {
-    const counts = DURATION_BUCKETS.map(b => ({ name: b.key, count: 0 }));
-    archives.forEach(a => {
-      const seconds = a.actual_time_seconds || a.print_time_seconds;
-      if (!seconds || seconds <= 0) return;
-      for (let i = 0; i < DURATION_BUCKETS.length; i++) {
-        if (seconds <= DURATION_BUCKETS[i].max) {
-          counts[i].count++;
-          break;
-        }
-      }
-    });
-    return counts;
-  }, [archives]);
+    const counts = new Map((aggregate?.by_duration ?? []).map(row => [row.bucket, row.prints]));
+    return DURATION_BUCKETS.map(b => ({ name: b.key, count: counts.get(b.key) ?? 0 }));
+  }, [aggregate]);
 
   // Habits (avg per day-of-week)
   const habitsData = useMemo(() => {
     const dayValues = [0, 0, 0, 0, 0, 0, 0];
     const weeksSet = new Set<string>();
-    archives.forEach(a => {
-      const date = parseUTCDate(a.created_at) || new Date(a.created_at);
+    (aggregate?.buckets ?? []).forEach(bucket => {
+      if (bucket.started.prints === 0) return;
+      const date = localDateOfBucket(bucket.at);
       let day = date.getDay() - 1;
       if (day < 0) day = 6;
-      if (habitsMetric === 'prints') dayValues[day]++;
-      else if (habitsMetric === 'weight') dayValues[day] += a.filament_used_grams || 0;
-      else dayValues[day] += (a.actual_time_seconds || a.print_time_seconds || 0) / 3600;
+      if (habitsMetric === 'prints') dayValues[day] += bucket.started.prints;
+      else if (habitsMetric === 'weight') dayValues[day] += bucket.started.grams;
+      else dayValues[day] += bucket.started.seconds / 3600;
       const weekStart = new Date(date);
       weekStart.setDate(date.getDate() - ((date.getDay() + 6) % 7));
       weeksSet.add(`${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(weekStart.getDate()).padStart(2, '0')}`);
@@ -695,7 +702,7 @@ function PrinterStatsWidget({
       name,
       avg: Math.round((dayValues[i] / numWeeks) * 10) / 10,
     }));
-  }, [archives, habitsMetric]);
+  }, [aggregate, habitsMetric]);
 
   const metricStyle = (m: Metric) => ({
     unit: m === 'weight' ? 'g' : m === 'time' ? 'h' : '',
@@ -739,7 +746,7 @@ function PrinterStatsWidget({
         {/* Print Duration */}
         <div className="bg-bambu-dark rounded-lg p-4">
           <h4 className="text-sm font-medium text-bambu-gray mb-3">{t('stats.printDuration')}</h4>
-          {archives.length > 0 ? (
+          {(aggregate?.totals.prints ?? 0) > 0 ? (
             <ResponsiveContainer width="100%" height={160}>
               <BarChart data={durationData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#3d3d3d" />
@@ -760,7 +767,7 @@ function PrinterStatsWidget({
             <h4 className="text-sm font-medium text-bambu-gray">{t('stats.printHabits')}</h4>
             <MetricToggle value={habitsMetric} onChange={setHabitsMetric} />
           </div>
-          {archives.length > 0 ? (
+          {(aggregate?.totals.prints ?? 0) > 0 ? (
             <ResponsiveContainer width="100%" height={160}>
               <BarChart data={habitsData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#3d3d3d" />
@@ -778,7 +785,7 @@ function PrinterStatsWidget({
         {/* Print Time of Day */}
         <div className="bg-bambu-dark rounded-lg p-4">
           <h4 className="text-sm font-medium text-bambu-gray mb-3">{t('stats.printTimeOfDay')}</h4>
-          {archives.length > 0 ? (
+          {(aggregate?.totals.prints ?? 0) > 0 ? (
             <ResponsiveContainer width="100%" height={160}>
               <BarChart data={hourlyData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#3d3d3d" />
@@ -794,26 +801,57 @@ function PrinterStatsWidget({
           )}
         </div>
       </div>
+
+      {/* Defects by printer — the "where" of the scrap (spec 2026-09-11 §6). */}
+      <div className="bg-bambu-dark rounded-lg p-4">
+        <h4 className="text-sm font-medium text-bambu-gray mb-3">{t('stats.defectsByPrinter')}</h4>
+        {defectRows.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" data-testid="defects-by-printer">
+              <thead>
+                <tr className="text-xs text-bambu-gray border-b border-bambu-dark-tertiary">
+                  <th scope="col" className="px-2 py-1.5 text-left font-medium">{t('stats.defectsPrinter')}</th>
+                  <th scope="col" className="px-2 py-1.5 text-right font-medium">{t('stats.defectsPrinted')}</th>
+                  <th scope="col" className="px-2 py-1.5 text-right font-medium">{t('stats.defectsCount')}</th>
+                  <th scope="col" className="px-2 py-1.5 text-right font-medium">{t('stats.defectsRate')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {defectRows.map((row) => (
+                  <tr key={row.id} className="border-b border-bambu-dark-tertiary/50">
+                    <td className="px-2 py-1.5 text-white">{row.name}</td>
+                    <td className="px-2 py-1.5 text-right text-white tabular-nums">{row.printed}</td>
+                    <td className="px-2 py-1.5 text-right text-white tabular-nums">{row.defective}</td>
+                    <td className="px-2 py-1.5 text-right text-white tabular-nums">{row.rate.toFixed(1)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-bambu-gray text-center py-4">{t('stats.noDefectData')}</p>
+        )}
+      </div>
     </div>
   );
 }
 
 function FilamentTrendsWidget({
-  archives,
+  aggregate,
   currency,
   dateFrom,
   dateTo,
 }: {
-  archives: Parameters<typeof FilamentTrends>[0]['archives'];
+  aggregate: ArchiveAggregate | undefined;
   currency: string;
   dateFrom?: string;
   dateTo?: string;
 }) {
   const { t } = useTranslation();
-  if (!archives || archives.length === 0) {
+  if (!aggregate || aggregate.totals.prints === 0) {
     return <p className="text-bambu-gray text-center py-4">{t('stats.noPrintData')}</p>;
   }
-  return <FilamentTrends archives={archives} currency={currency} dateFrom={dateFrom} dateTo={dateTo} />;
+  return <FilamentTrends aggregate={aggregate} currency={currency} dateFrom={dateFrom} dateTo={dateTo} />;
 }
 
 function FailureAnalysisWidget({ size = 1, dateFrom, dateTo, preset }: {
@@ -911,7 +949,7 @@ function FailureAnalysisWidget({ size = 1, dateFrom, dateTo, preset }: {
   );
 }
 
-function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; currency: string }) {
+function RecordsWidget({ aggregate, currency }: { aggregate: ArchiveAggregate | undefined; currency: string }) {
   const { t } = useTranslation();
 
   const records = useMemo(() => {
@@ -923,39 +961,26 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
       detail: string | null;
     }> = [];
 
-    if (archives.length === 0) return result;
+    if (!aggregate) return result;
 
-    // Records reflect successful output only — failed / aborted / cancelled
-    // prints (and in-progress ones) must not win "longest / heaviest / most
-    // expensive". (The archive set is already scoped to the selected period.)
-    const completed = archives.filter(a => a.status === 'completed');
+    // Every record below is decided by the server now, over the whole range
+    // rather than over the newest 10 000 rows the browser used to receive.
+    // Completed prints only: a cancelled twenty-hour run is not "the longest".
+    const records = aggregate.records;
 
-    // Find the completed archive with the highest value for a given field
-    const findMax = (getter: (a: ArchiveSlim) => number | null | undefined): { archive: ArchiveSlim | null; value: number } => {
-      let best: ArchiveSlim | null = null;
-      let bestVal = 0;
-      completed.forEach(a => {
-        const v = getter(a);
-        if (v && v > bestVal) { bestVal = v; best = a; }
-      });
-      return { archive: best, value: bestVal };
-    };
-
-    const longest = findMax(a => a.actual_time_seconds);
-    if (longest.archive) {
+    if (records.longest) {
       result.push({
         icon: Clock, iconColor: 'text-blue-600 dark:text-blue-400', label: t('stats.longestPrint'),
-        value: formatDuration(longest.value),
-        detail: longest.archive.print_name || null,
+        value: formatDuration(records.longest.seconds),
+        detail: records.longest.print_name || null,
       });
     }
 
-    const heaviest = findMax(a => a.filament_used_grams);
-    if (heaviest.archive) {
+    if (records.heaviest) {
       result.push({
         icon: Package, iconColor: 'text-orange-600 dark:text-orange-400', label: t('stats.heaviestPrint'),
-        value: formatWeight(heaviest.value),
-        detail: heaviest.archive.print_name || null,
+        value: formatWeight(records.heaviest.grams),
+        detail: records.heaviest.print_name || null,
       });
     }
 
@@ -968,38 +993,30 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
     // alone, which is how it has always been ranked. That is the honest
     // comparison: we do not know what it drew, and inventing a figure would put
     // a guess on the podium.
-    const printTotalCost = (a: ArchiveSlim) => (a.cost ?? 0) + (a.energy_cost ?? 0);
-    const costliest = findMax(printTotalCost);
-    if (costliest.archive) {
-      const winner: ArchiveSlim = costliest.archive;
+    if (records.costliest) {
       // Show the split when electricity actually moved the number, so the value
       // can be reconciled against the print's own page rather than looking like
       // the filament cost is wrong.
-      const energy = winner.energy_cost ?? 0;
+      const energy = records.costliest.energy_cost;
       const breakdown =
         energy > 0
-          ? `${t('stats.filamentCostShort')} ${currency}${(winner.cost ?? 0).toFixed(2)} + ${t('stats.energyCostShort')} ${currency}${energy.toFixed(2)}`
+          ? `${t('stats.filamentCostShort')} ${currency}${records.costliest.cost.toFixed(2)} + ${t('stats.energyCostShort')} ${currency}${energy.toFixed(2)}`
           : null;
       result.push({
         icon: DollarSign, iconColor: 'text-green-600 dark:text-green-400', label: t('stats.mostExpensivePrint'),
-        value: `${currency}${costliest.value.toFixed(2)}`,
-        detail: [winner.print_name || null, breakdown].filter(Boolean).join(' · ') || null,
+        value: `${currency}${records.costliest.total.toFixed(2)}`,
+        detail: [records.costliest.print_name || null, breakdown].filter(Boolean).join(' \u00b7 ') || null,
       });
     }
 
     // Busiest day — most prints completed in a single day (records = output).
-    const dayCounts = new Map<string, number>();
-    completed.forEach(a => {
-      const date = parseUTCDate(a.created_at) || new Date(a.created_at);
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-      dayCounts.set(key, (dayCounts.get(key) || 0) + 1);
-    });
+    // Derived data, so it stays here: the day buckets already carry it.
     let busiestDay = '';
     let busiestCount = 0;
-    dayCounts.forEach((count, day) => {
-      if (count > busiestCount) {
-        busiestCount = count;
-        busiestDay = day;
+    aggregate.buckets.forEach(bucket => {
+      if (bucket.started.completed > busiestCount) {
+        busiestCount = bucket.started.completed;
+        busiestDay = bucket.at;
       }
     });
     if (busiestCount > 1) {
@@ -1008,26 +1025,14 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
         iconColor: 'text-purple-600 dark:text-purple-400',
         label: t('stats.busiestDay'),
         value: `${busiestCount} ${t('common.prints')}`,
-        detail: (() => { const [y, m, d] = busiestDay.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); })(),
+        detail: localDateOfBucket(busiestDay).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
       });
     }
 
-    // Longest success streak within the period: order terminal prints
-    // chronologically and find the longest run of consecutive completions
-    // (a failed / aborted / cancelled print breaks the run).
-    const sorted = [...archives]
-      .filter(a => a.status === 'completed' || a.status === 'failed' || a.status === 'aborted' || a.status === 'cancelled')
-      .sort((a, b) => new Date(a.completed_at || a.created_at).getTime() - new Date(b.completed_at || b.created_at).getTime());
-    let streak = 0;
-    let curStreak = 0;
-    for (const a of sorted) {
-      if (a.status === 'completed') {
-        curStreak++;
-        if (curStreak > streak) streak = curStreak;
-      } else {
-        curStreak = 0;
-      }
-    }
+    // Longest run of consecutive completions within the period. Computed in SQL
+    // with a window function — it needs every print in order, which is exactly
+    // what no longer travels.
+    const streak = records.success_streak;
     if (streak > 0) {
       result.push({
         icon: Zap,
@@ -1039,7 +1044,7 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
     }
 
     return result;
-  }, [archives, currency, t]);
+  }, [aggregate, currency, t]);
 
   if (records.length === 0) {
     return <p className="text-bambu-gray text-center py-4">{t('stats.noArchiveData')}</p>;
@@ -1139,9 +1144,13 @@ export function StatsPage() {
     queryFn: api.getPrintersWithArchived,
   });
 
-  const { data: archives, refetch: refetchArchives } = useQuery({
-    queryKey: ['archivesSlim', effectiveDateRange.dateFrom, effectiveDateRange.dateTo],
-    queryFn: () => api.getArchivesSlim(effectiveDateRange.dateFrom, effectiveDateRange.dateTo),
+  // ⚠️ Aggregated on the server. This used to download every archive row of the
+  // range and fold it here, which on a busy farm hit the slim endpoint's
+  // undeclared 10 000-row cap: "all time" silently meant the newest few weeks
+  // and every chart on this page was drawn from a truncated history.
+  const { data: aggregate, refetch: refetchArchives } = useQuery({
+    queryKey: ['archiveAggregate', effectiveDateRange.dateFrom, effectiveDateRange.dateTo],
+    queryFn: () => api.getArchiveAggregate(effectiveDateRange.dateFrom, effectiveDateRange.dateTo),
   });
 
   const { data: settings } = useQuery({
@@ -1183,7 +1192,7 @@ export function StatsPage() {
 
   const currency = getCurrencySymbol(settings?.currency || 'USD');
   const printerById = new Map((printers || []).map((p) => [String(p.id), p]));
-  const printDates = useMemo(() => archives?.map((a) => a.created_at) || [], [archives]);
+  const activityBuckets = useMemo(() => aggregate?.buckets ?? [], [aggregate]);
 
   // Define dashboard widgets
   // Sizes: 1 = quarter (1/4), 2 = half (1/2), 4 = full width
@@ -1225,31 +1234,31 @@ export function StatsPage() {
     {
       id: 'print-activity',
       title: t('stats.printActivity'),
-      component: (size) => <PrintActivityWidget printDates={printDates} size={size} dateFrom={effectiveDateRange.dateFrom} dateTo={effectiveDateRange.dateTo} />,
+      component: (size) => <PrintActivityWidget buckets={activityBuckets} size={size} dateFrom={effectiveDateRange.dateFrom} dateTo={effectiveDateRange.dateTo} />,
       defaultSize: 2,
     },
     {
       id: 'records',
       title: t('stats.records'),
-      component: <RecordsWidget archives={archives || []} currency={currency} />,
+      component: <RecordsWidget aggregate={aggregate} currency={currency} />,
       defaultSize: 1,
     },
     {
       id: 'printer-stats',
       title: t('stats.printerStats'),
-      component: <PrinterStatsWidget stats={stats} archives={archives || []} printerById={printerById} />,
+      component: <PrinterStatsWidget stats={stats} aggregate={aggregate} printerById={printerById} />,
       defaultSize: 4,
     },
     {
       id: 'filament-trends',
       title: t('stats.filamentTrends'),
-      component: <FilamentTrendsWidget archives={archives || []} currency={currency} dateFrom={effectiveDateRange.dateFrom} dateTo={effectiveDateRange.dateTo} />,
+      component: <FilamentTrendsWidget aggregate={aggregate} currency={currency} dateFrom={effectiveDateRange.dateFrom} dateTo={effectiveDateRange.dateTo} />,
       defaultSize: 4,
     },
   ];
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="p-4 space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3"><BarChart3 className="w-6 h-6 text-bambu-green" />{t('stats.title')}</h1>
@@ -1344,6 +1353,7 @@ export function StatsPage() {
 
             {showTimeframePicker && (
               <>
+                {/* not-a-modal: popover */}
                 <div
                   className="fixed inset-0 z-10"
                   onClick={() => setShowTimeframePicker(false)}

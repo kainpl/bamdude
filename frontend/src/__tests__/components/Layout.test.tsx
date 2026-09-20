@@ -2,12 +2,25 @@
  * Tests for the Layout component.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { waitFor } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { act, fireEvent, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { Layout } from '../../components/Layout';
+import { register, unregister, _resetForTests } from '../../components/modalStack';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
+
+// The number-key guard is a call to `navigate`, not a DOM change: key `1` goes
+// to the first sidebar item, which is `/` — where the router already sits — so
+// a pathname assertion could not tell "navigated home" from "did nothing".
+// Spying on the router's navigate is the house pattern (see
+// LoginPageAuthedRedirect.test.tsx); NavLink keeps the real implementation, so
+// the sidebar-link tests in this file are untouched by it.
+const navigateSpy = vi.fn();
+vi.mock('react-router', async () => {
+  const actual = await vi.importActual<typeof import('react-router')>('react-router');
+  return { ...actual, useNavigate: () => navigateSpy };
+});
 
 describe('Layout', () => {
   beforeEach(() => {
@@ -52,7 +65,8 @@ describe('Layout', () => {
       }),
       http.get('/api/v1/printers/developer-mode-warnings', () => {
         return HttpResponse.json([]);
-      })
+      }),
+      http.get('/api/v1/inbox/unread-count', () => HttpResponse.json({ unread_count: 0 }))
     );
   });
 
@@ -76,6 +90,17 @@ describe('Layout', () => {
         expect(links.length).toBeGreaterThan(0);
       });
     });
+
+    it('renders the brand lock-up from the pack, never the old mascot', async () => {
+      render(<Layout />);
+      await waitFor(() => {
+        const logos = document.querySelectorAll<HTMLImageElement>('img[alt="BamDude"]');
+        expect(logos.length).toBeGreaterThan(0);
+        for (const img of logos) {
+          expect(img.getAttribute('src')).toMatch(/^\/img\/brand\/(lockup-compact-on-(dark|light)\.svg|mark-on-(dark|light)-64\.png)$/);
+        }
+      });
+    });
   });
 
   describe('navigation', () => {
@@ -97,6 +122,36 @@ describe('Layout', () => {
         const settingsLink = document.querySelector('a[href="/settings"]');
         expect(settingsLink).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('keyboard shortcuts', () => {
+    afterEach(() => {
+      _resetForTests();
+    });
+
+    it('number-key navigation is off while a modal is open', async () => {
+      render(<Layout />);
+      await waitFor(() => {
+        expect(document.querySelector('a[href="/settings"]')).toBeInTheDocument();
+      });
+
+      // A modal is on the stack: `1` must not move the app out from under it.
+      act(() => {
+        register('probe', [], { current: { onClose: vi.fn(), closeDisabled: false } }, { current: null });
+      });
+      navigateSpy.mockClear();
+      fireEvent.keyDown(document, { key: '1' });
+      expect(navigateSpy).not.toHaveBeenCalled();
+
+      // With the stack empty again the very same keypress navigates — so the
+      // assertion above pinned the guard, not a key handler that never worked.
+      act(() => {
+        unregister('probe');
+      });
+      navigateSpy.mockClear();
+      fireEvent.keyDown(document, { key: '1' });
+      expect(navigateSpy).toHaveBeenCalled();
     });
   });
 
@@ -334,6 +389,70 @@ describe('Layout', () => {
       expect(sidebarLink('/files')).toBeNull();
       expect(sidebarLink('/archives')).toBeNull();
       expect(sidebarLink('/queue')).toBeNull();
+    });
+  });
+
+  describe('default-view redirect', () => {
+    // `Printers` is the INDEX route (`to: '/'`), so "the app just opened" and
+    // "the user clicked Printers" are the same pathname. Keying the redirect
+    // off every navigation to `/` therefore ate the click: reload anywhere but
+    // `/`, go to any other page, click Printers — and you land on your default
+    // view instead. Once per page load, and invisible to anyone whose default
+    // view IS Printers, which is why it took a screen recording to see.
+    const sidebarLink = (href: string) =>
+      document.querySelector<HTMLAnchorElement>(`aside a[href="${href}"]`);
+
+    afterEach(() => {
+      window.localStorage.removeItem('defaultView');
+      window.history.pushState({}, '', '/');
+    });
+
+    it('redirects to the configured default view when the app is entered at /', async () => {
+      window.localStorage.setItem('defaultView', '/queue');
+      window.history.pushState({}, '', '/');
+      navigateSpy.mockClear();
+
+      render(<Layout />);
+
+      await waitFor(() => {
+        expect(navigateSpy).toHaveBeenCalledWith('/queue', { replace: true });
+      });
+    });
+
+    it('does not redirect when the app is entered anywhere else', async () => {
+      window.localStorage.setItem('defaultView', '/queue');
+      window.history.pushState({}, '', '/projects');
+      navigateSpy.mockClear();
+
+      render(<Layout />);
+      await waitFor(() => {
+        expect(sidebarLink('/settings')).toBeInTheDocument();
+      });
+
+      expect(navigateSpy).not.toHaveBeenCalledWith('/queue', { replace: true });
+    });
+
+    it('leaves a later click on Printers where the user aimed it', async () => {
+      window.localStorage.setItem('defaultView', '/queue');
+      window.history.pushState({}, '', '/projects');
+
+      render(<Layout />);
+      await waitFor(() => {
+        expect(sidebarLink('/settings')).toBeInTheDocument();
+      });
+
+      const printers = sidebarLink('/');
+      expect(printers).toBeInTheDocument();
+
+      navigateSpy.mockClear();
+      fireEvent.click(printers!, { button: 0 });
+
+      await waitFor(() => {
+        expect(window.location.pathname).toBe('/');
+      });
+      // The bounce was the Layout effect firing `navigate(defaultView,
+      // { replace: true })` the moment the pathname became `/`.
+      expect(navigateSpy).not.toHaveBeenCalledWith('/queue', { replace: true });
     });
   });
 });

@@ -1,0 +1,337 @@
+import { useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router';
+import { useTranslation } from 'react-i18next';
+import { Plus } from 'lucide-react';
+import { api } from '../../api/client';
+import type { OrderListItem, ProjectStatus } from '../../api/client';
+import { useAuth } from '../../contexts/AuthContext';
+import { useToast } from '../../contexts/ToastContext';
+import { ProjectsTabs } from '../../components/projects/ProjectsTabs';
+import { OrderCard } from '../../components/projects/OrderCard';
+import { OrdersTable } from '../../components/projects/OrdersTable';
+import { OrderModal } from '../../components/projects/OrderModal';
+import { FilamentStrip } from '../../components/projects/FilamentStrip';
+import { ConfirmModal } from '../../components/ConfirmModal';
+import { Button } from '../../components/Button';
+import { Select } from '../../components/Select';
+import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
+
+const GROUP_STORAGE_KEY = 'projects.groupByCustomer';
+const VIEW_STORAGE_KEY = 'projects.view';
+
+/** How many placeholder cards the first fetch draws. Enough to fill the top of
+ *  a normal window without pretending to know how many orders there are. */
+const SKELETON_CARDS = 6;
+
+/**
+ * The grid while the FIRST fetch is in flight.
+ *
+ * ⚠️ **`isLoading`, never `isFetching`.** A background refetch — every order
+ * mutation invalidates `['projects']` — still has the orders on screen, and
+ * replacing them with grey boxes for a moment is worse than showing figures
+ * that are one request old. TanStack's `isLoading` is exactly "pending with no
+ * data", which is the only state that has nothing to show.
+ *
+ * ⚠️ **The grey boxes are decoration; the STATUS is the sentence.** A grid of
+ * `aria-hidden` placeholders is silence to a screen reader — the page reads as
+ * having no orders, with nothing said about why. `role="status"` + `aria-busy`
+ * on the wrapper, with one visually-hidden line inside, is what announces the
+ * wait; the cards keep their `aria-hidden` so nobody hears six empty ones.
+ */
+function OrdersSkeleton() {
+  const { t } = useTranslation();
+  return (
+    <div role="status" aria-busy="true" data-testid="orders-skeleton">
+      <span className="sr-only">{t('common.loading')}</span>
+      <div aria-hidden="true" className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
+        {Array.from({ length: SKELETON_CARDS }, (_, i) => (
+          <div
+            key={i}
+            className="animate-pulse rounded-xl bg-bambu-dark-secondary border border-bambu-dark-tertiary overflow-hidden"
+          >
+            <div className="h-1.5 bg-bambu-dark-tertiary" />
+            <div className="p-4 flex gap-3">
+              <div className="w-20 h-20 flex-shrink-0 rounded-lg bg-bambu-dark" />
+              <div className="flex-1 space-y-2 py-1">
+                <div className="h-4 w-2/3 rounded bg-bambu-dark" />
+                <div className="h-3 w-1/3 rounded bg-bambu-dark" />
+                <div className="h-2 w-full rounded bg-bambu-dark" />
+                <div className="h-3 w-1/4 rounded bg-bambu-dark" />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** `Map` (not a plain object) so the group order matches first appearance in
+ *  the already-filtered list, rather than an object's own key-insertion
+ *  quirks with numeric-looking names. */
+function groupBy<T>(items: T[], keyFn: (item: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const key = keyFn(item);
+    const existing = groups.get(key);
+    if (existing) existing.push(item);
+    else groups.set(key, [item]);
+  }
+  return groups;
+}
+
+/**
+ * The order list: status tabs, a customer filter and an optional grouping.
+ *
+ * The list is fetched ONCE without a status filter — the tab counts need
+ * every status anyway, so the tabs filter the already-loaded list client-side
+ * rather than firing a second request per tab.
+ */
+export function OrdersPage() {
+  const { t } = useTranslation();
+  const { hasPermission } = useAuth();
+  const { showToast } = useToast();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+
+  const [tab, setTab] = useState<ProjectStatus | 'all'>('active');
+  const [customerId, setCustomerId] = useState<number | null>(null);
+  const [groupByCustomer, setGroupByCustomer] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(GROUP_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [view, setView] = useState<'cards' | 'table'>(() => {
+    try {
+      return localStorage.getItem(VIEW_STORAGE_KEY) === 'table' ? 'table' : 'cards';
+    } catch {
+      return 'cards';
+    }
+  });
+  const [editing, setEditing] = useState<OrderListItem | null | 'new'>(null);
+  const [deleting, setDeleting] = useState<OrderListItem | null>(null);
+
+  const { data: orders = [], isLoading } = useQuery({
+    queryKey: ['projects', { customer_id: customerId ?? undefined }],
+    queryFn: () => api.getOrders(customerId != null ? { customer_id: customerId } : {}),
+  });
+  const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
+
+  const counts = useMemo(
+    () => ({
+      active: orders.filter((o) => o.status === 'active').length,
+      completed: orders.filter((o) => o.status === 'completed').length,
+      cancelled: orders.filter((o) => o.status === 'cancelled').length,
+      all: orders.length,
+    }),
+    [orders],
+  );
+
+  const visible = tab === 'all' ? orders : orders.filter((o) => o.status === tab);
+  const groups = groupByCustomer ? groupBy(visible, (o) => o.customer_name ?? t('orders.list.noCustomer')) : null;
+
+  // Only ACTIVE orders are forecast: «closed = nothing is planned» is the
+  // product rule everywhere else, and the endpoint answers a closed order with
+  // an empty forecast — asking for one buys a row of nulls (spec Decision 9).
+  const forecastIds = visible.filter((o) => o.status === 'active').map((o) => o.id);
+  // The forecast is only meaningful in table view — cards don't show it, and
+  // the farm-wide simulation isn't cheap enough to run on every tab.
+  const forecastQuery = useQuery({
+    queryKey: ['orders-forecast', forecastIds],
+    queryFn: () => api.getOrdersForecast(forecastIds),
+    enabled: view === 'table' && forecastIds.length > 0,
+    staleTime: 30_000,
+  });
+  // The farm-wide filament strip over the list — every active order, not just the visible tab/filter.
+  const filamentQuery = useQuery({ queryKey: ['orders-filament'], queryFn: api.getOrdersFilament, staleTime: 30_000 });
+  // `undefined` while loading — every cell reads «…». A FAILED fetch is its
+  // own state, passed down as `forecastError`: mapping it to `{}` here made
+  // every row read «No estimate», which means «the farm could not place this
+  // order», and sent the operator looking for a scheduling problem that was
+  // really a dead request.
+  const forecasts = useMemo(() => {
+    if (!forecastQuery.data) return undefined;
+    return Object.fromEntries(forecastQuery.data.orders.map((f) => [f.project_id, f]));
+  }, [forecastQuery.data]);
+
+  // `CustomerListFigures` and `CustomerFigures` are computed from these very
+  // orders, so every status change moves a customer tile — and this page
+  // does not know whose order it just touched, which is why every key in the
+  // set is a prefix. See `utils/queryInvalidation.ts`.
+  const invalidate = () => invalidateOrderViews(queryClient);
+
+  const setStatus = useMutation({
+    mutationFn: ({ id, status }: { id: number; status: ProjectStatus }) => api.updateOrder(id, { status }),
+    onSuccess: invalidate,
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
+  const remove = useMutation({
+    mutationFn: (id: number) => api.deleteOrder(id),
+    // ⚠️ The id is passed because this is a LIST: the deleted order's own
+    // `['project', id]` entry has no observer here, so nothing would ever
+    // clear it and the next visit to a reused id — or a Back into the route
+    // that just went — would render it out of cache inside the 60 s
+    // `staleTime`. The order PAGE passes no id; it uses `useForgetOnUnmount`
+    // instead, for the reason spelled out in `utils/queryInvalidation`.
+    onSuccess: (_res, id) => {
+      invalidateAfterDelete(queryClient, 'order', id);
+      showToast(t('orders.toast.deleted'));
+      setDeleting(null);
+    },
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
+  const duplicate = useMutation({
+    mutationFn: (id: number) => api.duplicateOrder(id),
+    onSuccess: (saved) => {
+      invalidate();
+      showToast(t('orders.toast.duplicated'));
+      navigate(`/projects/${saved.id}`);
+    },
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
+
+  const toggleGroupByCustomer = (value: boolean) => {
+    setGroupByCustomer(value);
+    try {
+      localStorage.setItem(GROUP_STORAGE_KEY, value ? '1' : '0');
+    } catch {
+      // Private browsing / storage disabled — the toggle still works this session.
+    }
+  };
+
+  const setViewPersisted = (value: 'cards' | 'table') => {
+    setView(value);
+    try {
+      localStorage.setItem(VIEW_STORAGE_KEY, value);
+    } catch {
+      // Private browsing / storage disabled — the toggle still works this session.
+    }
+  };
+
+  const tabs: { key: ProjectStatus | 'all'; label: string; count: number }[] = [
+    { key: 'active', label: t('orders.status.active'), count: counts.active },
+    { key: 'completed', label: t('orders.status.completed'), count: counts.completed },
+    { key: 'cancelled', label: t('orders.status.cancelled'), count: counts.cancelled },
+    { key: 'all', label: t('orders.list.tabAll'), count: counts.all },
+  ];
+
+  const renderCard = (order: OrderListItem) => (
+    <OrderCard
+      key={order.id}
+      order={order}
+      onEdit={setEditing}
+      onDuplicate={(o) => duplicate.mutate(o.id)}
+      onSetStatus={(o, status) => setStatus.mutate({ id: o.id, status })}
+      onDelete={setDeleting}
+    />
+  );
+
+  return (
+    <div className="p-4">
+      <ProjectsTabs />
+
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+        <h1 className="text-2xl font-semibold text-white">{t('orders.list.title')}</h1>
+        {hasPermission('projects:create') && (
+          <Button onClick={() => setEditing('new')}>
+            <Plus className="w-4 h-4" />
+            {t('orders.list.newOrder')}
+          </Button>
+        )}
+      </div>
+
+      <div className="flex items-center gap-4 mb-4 flex-wrap">
+        <div role="tablist" className="flex gap-1 border-b border-bambu-dark-tertiary">
+          {tabs.map(({ key, label, count }) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={tab === key}
+              onClick={() => setTab(key)}
+              className={`px-4 py-2 text-sm border-b-2 -mb-px transition-colors ${
+                tab === key ? 'border-bambu-green text-white' : 'border-transparent text-bambu-gray hover:text-white'
+              }`}
+            >
+              {label} ({count})
+            </button>
+          ))}
+        </div>
+
+        <Select
+          value={customerId ?? ''}
+          onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}
+        >
+          <option value="">{t('orders.list.customerFilterAll')}</option>
+          {customers.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </Select>
+
+        <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
+          <input
+            type="checkbox"
+            checked={groupByCustomer}
+            onChange={(e) => toggleGroupByCustomer(e.target.checked)}
+            className="accent-bambu-green"
+            aria-label={t('orders.list.groupByCustomer')}
+          />
+          {t('orders.list.groupByCustomer')}
+        </label>
+
+        <div role="group" aria-label={t('orders.list.viewCards')} className="flex rounded-lg border border-bambu-dark-tertiary overflow-hidden text-sm">
+          {(['cards', 'table'] as const).map((v) => (
+            <button key={v} type="button" aria-pressed={view === v} onClick={() => setViewPersisted(v)} className={`px-3 py-1.5 ${view === v ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'}`}>
+              {t(v === 'cards' ? 'orders.list.viewCards' : 'orders.list.viewTable')}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {filamentQuery.data && <FilamentStrip farm={filamentQuery.data} />}
+
+      {!isLoading && visible.length === 0 && <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>}
+
+      {isLoading ? (
+        <OrdersSkeleton />
+      ) : groups ? (
+        <div className="space-y-4">
+          {[...groups.entries()].map(([customerName, group]) => (
+            <section key={customerName}>
+              <h2 className="text-lg font-medium text-white mb-2">{customerName}</h2>
+              {view === 'table' ? (
+                <OrdersTable orders={group} forecasts={forecasts} forecastError={forecastQuery.isError} />
+              ) : (
+                <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{group.map(renderCard)}</div>
+              )}
+            </section>
+          ))}
+        </div>
+      ) : view === 'table' ? (
+        <OrdersTable orders={visible} forecasts={forecasts} forecastError={forecastQuery.isError} />
+      ) : (
+        <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{visible.map(renderCard)}</div>
+      )}
+
+      {editing && (
+        <OrderModal order={editing === 'new' ? null : editing} defaultCustomerId={customerId} onClose={() => setEditing(null)} />
+      )}
+
+      {deleting && (
+        <ConfirmModal
+          title={t('orders.confirm.deleteTitle')}
+          message={t('orders.confirm.deleteBody')}
+          variant="danger"
+          isLoading={remove.isPending}
+          onConfirm={() => remove.mutate(deleting.id)}
+          onCancel={() => setDeleting(null)}
+        />
+      )}
+    </div>
+  );
+}

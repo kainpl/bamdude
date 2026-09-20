@@ -1,0 +1,99 @@
+name: Пропозиція
+description: Запропонувати функцію або зміну в поведінці BamDude.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Дякуємо за ідею. Якщо йдеться про зміну того, як працюють черга, диспетчеризація, архів чи автентифікація, спершу краще [Discussion](https://github.com/kainpl/bamdude/discussions) — тут у BamDude є своя думка, і дизайн простіше узгодити до того, як зʼявиться PR. Невеликі самодостатні пропозиції — одразу сюди.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Проблема
+      description: Що ви намагаєтесь зробити на своїй фермі і де BamDude заважає. Ситуація — ще не рішення.
+      placeholder: "Щоранку я …"
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Чого б хотілося
+      description: Як це має працювати. Екрани, кнопки, повідомлення — настільки конкретно, наскільки можете.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Як ви обходитесь зараз
+      description: Обхідні шляхи, інші інструменти, або чому нічого не працює.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Яка частина BamDude
+      options:
+        - Принтери — стан, камера, керування
+        - Черга друку, авточерга та планування
+        - Архів друку та статистика
+        - Бібліотека — файли, теки, нарізка
+        - Проєкти — замовлення, продукти, клієнти
+        - Інвентар котушок і облік філаменту
+        - Інтеграція зі Spoolman
+        - Калібрування філаменту та K-профілі
+        - Облік обслуговування
+        - Telegram-бот
+        - Сповіщення — email, ntfy, Discord, вебхуки, Home Assistant …
+        - Розумні розетки, Zigbee та енергія
+        - Етикетки
+        - Віртуальний принтер і віддалений друк
+        - Автентифікація, користувачі та API-ключі
+        - Інсталятори, Docker та оновлення
+        - BamDude Cloud
+        - Інтерфейс, переклад і доступність
+        - REST API та інтеграції
+        - Інше / не знаю
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scale
+    attributes:
+      label: Розмір ферми
+      description: Допомагає оцінити, з чим функції доведеться справлятися.
+      options:
+        - 1 принтер
+        - 2–5 принтерів
+        - 6–20 принтерів
+        - Понад 20
+
+  - type: input
+    id: upstream
+    attributes:
+      label: Чи є це в апстрімі Bambuddy?
+      description: Якщо так — посилання на issue, PR або реліз-ноут Bambuddy. Порти йдуть через відстежуваний аудит, і посилання економить цикл.
+      placeholder: "https://github.com/maziggy/bambuddy/…"
+
+  - type: textarea
+    id: mockups
+    attributes:
+      label: Макети або приклади
+      description: Ескізи, скріншоти з іншого ПЗ, приклад файлу. Перетягніть їх у це поле.
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Участь
+      options:
+        - label: Хочу реалізувати це сам(а) (див. CONTRIBUTING.md — з дизайном допоможемо)
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Перед надсиланням
+      options:
+        - label: Я пошукав(ла) серед наявних issues і Discussions
+          required: true

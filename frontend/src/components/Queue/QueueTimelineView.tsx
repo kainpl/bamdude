@@ -9,6 +9,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { useQueueTimeline, type TimelineSlot } from '../../hooks/useQueueTimeline';
 import { TimelineAxis } from './TimelineAxis';
 import { TimelineItem } from './TimelineItem';
+import { invalidateQueueViews } from '../../utils/queryInvalidation';
 
 const LANE_LABEL_WIDTH = 180;
 const LANE_HEIGHT = 48;
@@ -93,8 +94,7 @@ export function QueueTimelineView({ queues, items, onEditItem }: Props) {
   const cancelItem = useMutation({
     mutationFn: (id: number) => api.cancelQueueItem(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['queue'] });
-      queryClient.invalidateQueries({ queryKey: ['queues'] });
+      invalidateQueueViews(queryClient);
       showToast(t('queue.timeline.cancelItemSuccess'));
     },
     onError: (err: Error) => showToast(err.message || t('queue.timeline.cancelItemFailed'), 'error'),
@@ -107,8 +107,7 @@ export function QueueTimelineView({ queues, items, onEditItem }: Props) {
       return batchItems.length;
     },
     onSuccess: (count) => {
-      queryClient.invalidateQueries({ queryKey: ['queue'] });
-      queryClient.invalidateQueries({ queryKey: ['queues'] });
+      invalidateQueueViews(queryClient);
       showToast(t('queue.timeline.cancelBatchSuccess', { count }));
     },
     onError: (err: Error) => showToast(err.message || t('queue.timeline.cancelBatchFailed'), 'error'),

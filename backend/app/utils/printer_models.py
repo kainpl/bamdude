@@ -538,4 +538,12 @@ def normalize_model_name(raw: str | None) -> str | None:
     """
     if not raw:
         return None
-    return normalize_printer_model(normalize_printer_model_id(raw) or raw) or raw
+    raw = raw.strip()
+    key = raw.upper().replace(" ", "").replace("-", "")
+    for spelling, canonical in {**PRINTER_MODEL_MAP, **PRINTER_MODEL_ID_MAP}.items():
+        if key in {
+            spelling.upper().replace(" ", "").replace("-", ""),
+            canonical.upper().replace(" ", "").replace("-", ""),
+        }:
+            return canonical
+    return normalize_printer_model(raw) or raw

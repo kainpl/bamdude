@@ -1,10 +1,10 @@
-# Claude
-.claude/
-CLAUDE.md
+# Claude — everything in .claude/ is this machine's (permission allowlist,
+# hooks with absolute paths, worktrees) except the shared settings.json,
+# which names the plugins the project is worked on with.
+.claude/*
+!.claude/settings.json
+CLAUDE.local.md
 .mcp.json
-
-# IDEA
-.idea/
 
 # Temp (patches, experiments)
 temp/
@@ -28,7 +28,7 @@ dist/
 build/
 
 # Node
-frontend/node_modules/
+node_modules/
 frontend/coverage/
 npm-debug.log*
 
@@ -58,15 +58,9 @@ plate_calibration/
 # Screenshots (development - root folder only)
 /screenshots/
 
-# Logs
-*.log
-logs/
+# Logs — `*.log*` also covers rotated files (bambutrack.log.1, …)
 *.log*
-bambutrack.log.*
-firmware/
-
-# Node modules
-node_modules/
+logs/
 
 /data/
 
@@ -88,7 +82,17 @@ site/
 # some dev setups drop into a repo-local bin/ — never part of the source tree.
 bin/
 
-# Internal planning docs (specs, plans, design exploration). Local workflow
-# artifacts; not part of the public repo.
-docs/
 graphify-out/
+
+# Subagent-driven-development scratch (ledger, briefs, review packages).
+.superpowers/
+.playwright-mcp/
+
+# git worktrees for parallel passes (superpowers:using-git-worktrees)
+.worktrees/
+
+# design-sync (Claude Design) — staged converter, build output, machine state
+.ds-sync/
+ds-bundle/
+.design-sync/
+.codex/

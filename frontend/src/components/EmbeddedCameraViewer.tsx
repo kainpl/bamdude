@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, RefreshCw, AlertTriangle, Maximize2, Minimize2, GripVertical, WifiOff, ZoomIn, ZoomOut, Fullscreen, Minimize, Stethoscope } from 'lucide-react';
@@ -8,11 +8,18 @@ import { useAuth } from '../contexts/AuthContext';
 import { ChamberLight } from './icons/ChamberLight';
 import { SkipObjectsModal, SkipObjectsIcon } from './SkipObjectsModal';
 import { CameraDiagnoseModal } from './CameraDiagnoseModal';
+import { CameraSnapshotImage } from './CameraSnapshotImage';
+import { sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
+import { useCameraLiveBudget } from '../hooks/useCameraLiveBudget';
+import { useCameraImageRef } from '../hooks/useCameraImageRef';
 
 interface EmbeddedCameraViewerProps {
-  printerId: number;
-  printerName: string;
-  viewerIndex?: number;  // Used to offset multiple viewers
+  /** A printer's camera, or a camera that belongs to a place. Everything the
+   *  window DOES — drag, resize, reconnect, stall detection, snapshot mode —
+   *  is the same for both; only a printer also has a status, a chamber light,
+   *  skip-objects and diagnostics beside the picture. */
+  source: CameraSource;
+  name: string;
   onClose: () => void;
 }
 
@@ -36,16 +43,28 @@ const DEFAULT_STATE: CameraState = {
   height: 300,
 };
 
-export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, onClose }: EmbeddedCameraViewerProps) {
+export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: EmbeddedCameraViewerProps) {
+  // Pinned to its two values: the caller builds the descriptor inline, so the
+  // prop is a new object on every render and an effect that depends on it
+  // would restart the stream each time the page re-renders.
+  const source = useMemo(
+    () => ({ kind: sourceProp.kind, id: sourceProp.id }),
+    [sourceProp.kind, sourceProp.id],
+  );
+  // A standalone camera has no printer behind it, so every printer-only query,
+  // control and modal below is gated on this rather than on a magic id.
+  const isPrinter = source.kind === 'printer';
+  const printerId = isPrinter ? source.id : 0;
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
 
-  // Printer-specific storage key
-  const storageKey = `${STORAGE_KEY_PREFIX}${printerId}`;
+  // Per-source storage key: a camera's window position is its own, not the
+  // position of whatever printer happens to share its id.
+  const storageKey = `${STORAGE_KEY_PREFIX}${sourceKey(source)}`;
 
-  // Load saved state or use defaults (offset for new viewers without saved state)
+  // Load saved state or use defaults
   const loadState = (): CameraState => {
     try {
       const saved = localStorage.getItem(storageKey);
@@ -62,13 +81,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
     } catch {
       // Ignore parse errors
     }
-    // Offset new viewers so they don't stack exactly on top of each other
-    const offset = viewerIndex * 30;
-    return {
-      ...DEFAULT_STATE,
-      x: Math.max(0, DEFAULT_STATE.x - offset),
-      y: Math.max(0, DEFAULT_STATE.y + offset),
-    };
+    return { ...DEFAULT_STATE };
   };
 
   const [state, setState] = useState<CameraState>(loadState);
@@ -93,7 +106,10 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
   const [reconnectCountdown, setReconnectCountdown] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const imgRef = useRef<HTMLImageElement>(null);
+  const { granted, ready, protocol, limit } = useCameraLiveBudget(isMinimized ? 0 : 1);
+  const isLive = granted > 0;
+  const streamUrl = withStreamToken(streamPath(source, 15, imageKey));
+  const { imageRef: imgRef, attachImage } = useCameraImageRef(streamUrl);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const stallCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -110,7 +126,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
   const { data: printer } = useQuery({
     queryKey: ['printer', printerId],
     queryFn: () => api.getPrinter(printerId),
-    enabled: printerId > 0,
+    enabled: isPrinter && printerId > 0,
   });
 
   // Fetch printer status for light toggle and skip objects
@@ -118,7 +134,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
     queryKey: ['printerStatus', printerId],
     queryFn: () => api.getPrinterStatus(printerId),
     refetchInterval: 30000,
-    enabled: printerId > 0,
+    enabled: isPrinter && printerId > 0,
   });
 
   // Chamber light mutation with optimistic update
@@ -161,7 +177,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
   const stopSentRef = useRef(false);
   useEffect(() => {
     stopSentRef.current = false;
-    const stopUrl = `/api/v1/printers/${printerId}/camera/stop`;
+    const stopUrl = stopPath(source);
 
     const sendStopOnce = () => {
       if (printerId > 0 && !stopSentRef.current) {
@@ -173,18 +189,21 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
       }
     };
 
-    const imgElement = imgRef.current;
-
     return () => {
-      if (imgElement) {
-        imgElement.src = '';
-      }
       sendStopOnce();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
       if (stallCheckIntervalRef.current) clearInterval(stallCheckIntervalRef.current);
     };
-  }, [printerId]);
+  }, [printerId, source]);
+
+  useEffect(() => {
+    if (isLive) return;
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    setIsReconnecting(false);
+    setStreamError(false);
+  }, [isLive]);
 
   // Auto-hide loading after timeout
   useEffect(() => {
@@ -225,14 +244,13 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
       setIsReconnecting(false);
       setStreamLoading(true);
       setStreamError(false);
-      if (imgRef.current) imgRef.current.src = '';
       setImageKey(Date.now());
     }, delay);
   }, [reconnectAttempts]);
 
   // Stall detection
   useEffect(() => {
-    if (streamLoading || isReconnecting || isMinimized) {
+    if (streamLoading || isReconnecting || !isLive) {
       if (stallCheckIntervalRef.current) {
         clearInterval(stallCheckIntervalRef.current);
         stallCheckIntervalRef.current = null;
@@ -240,9 +258,11 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
       return;
     }
 
+    let cancelled = false;
     stallCheckIntervalRef.current = setInterval(async () => {
       try {
         const status = await api.getCameraStatus(printerId);
+        if (cancelled) return;
         if (status.stalled || (!status.active && !streamError)) {
           if (stallCheckIntervalRef.current) {
             clearInterval(stallCheckIntervalRef.current);
@@ -257,12 +277,13 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
     }, STALL_CHECK_INTERVAL);
 
     return () => {
+      cancelled = true;
       if (stallCheckIntervalRef.current) {
         clearInterval(stallCheckIntervalRef.current);
         stallCheckIntervalRef.current = null;
       }
     };
-  }, [streamLoading, streamError, isReconnecting, isMinimized, printerId, attemptReconnect]);
+  }, [streamLoading, streamError, isReconnecting, isLive, printerId, attemptReconnect]);
 
   // Fullscreen change listener
   useEffect(() => {
@@ -327,7 +348,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
     const maxX = (container.width * (zoomLevel - 1)) / 2;
     const maxY = (container.height * (zoomLevel - 1)) / 2;
     return { x: Math.max(50, maxX), y: Math.max(50, maxY) };
-  }, [zoomLevel]);
+  }, [zoomLevel, imgRef]);
 
   const handleImageMouseMove = (e: React.MouseEvent) => {
     if (isPanning && zoomLevel > 1) {
@@ -464,10 +485,9 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
     const stopHeaders: Record<string, string> = {};
     const stopToken = getAuthToken();
     if (stopToken) stopHeaders['Authorization'] = `Bearer ${stopToken}`;
-    fetch(`/api/v1/printers/${printerId}/camera/stop`, { method: 'POST', headers: stopHeaders }).catch(() => {});
+    fetch(stopPath(source), { method: 'POST', headers: stopHeaders }).catch(() => {});
 
-    if (imgRef.current) imgRef.current.src = '';
-    setTimeout(() => setImageKey(Date.now()), 100);
+    setImageKey((previous) => previous + 1);
   };
 
   // Drag handlers
@@ -560,12 +580,17 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
     }
   }, [isDragging, isResizing, dragOffset]);
 
-  const streamUrl = withStreamToken(`/api/v1/printers/${printerId}/camera/stream?fps=15&t=${imageKey}`);
+
 
   return (
+    // Fullscreen paints one step below the modal layer (Modal.tsx: z = 50 +
+    // stack position), never above it: a dialog raised from the viewer's own
+    // header must be visible, and while it is open the viewer — inside #root —
+    // is inert anyway. z-[100] used to bury that dialog under the video.
+    // not-a-modal: viewer
     <div
       ref={containerRef}
-      className={`${isFullscreen ? 'fixed inset-0 z-[100]' : 'fixed z-40 rounded-lg shadow-2xl border border-bambu-dark-tertiary'} bg-bambu-dark-secondary overflow-hidden`}
+      className={`${isFullscreen ? 'fixed inset-0 z-[49]' : 'fixed z-40 rounded-lg shadow-2xl border border-bambu-dark-tertiary'} bg-bambu-dark-secondary overflow-hidden`}
       style={isFullscreen ? undefined : {
         left: state.x,
         top: state.y,
@@ -582,7 +607,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
       >
         <div className="flex items-center gap-2 text-sm text-white truncate">
           <GripVertical className="w-4 h-4 text-bambu-gray flex-shrink-0" />
-          <span className="truncate">{printer?.name || printerName}</span>
+          <span className="truncate">{printer?.name || name}</span>
         </div>
         <div className="flex items-center gap-1 no-drag">
           <button
@@ -667,12 +692,12 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
           onTouchEnd={handleTouchEnd}
           style={{ touchAction: 'none' }}
         >
-          {streamLoading && !isReconnecting && (
+          {isLive && streamLoading && !isReconnecting && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
               <RefreshCw className="w-6 h-6 text-bambu-gray animate-spin" />
             </div>
           )}
-          {isReconnecting && (
+          {isLive && isReconnecting && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-10">
               <div className="text-center p-2">
                 <WifiOff className="w-6 h-6 text-orange-600 dark:text-orange-400 mx-auto mb-2" />
@@ -682,7 +707,7 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
               </div>
             </div>
           )}
-          {streamError && !isReconnecting && (
+          {isLive && streamError && !isReconnecting && (
             <div className="absolute inset-0 flex items-center justify-center bg-black z-10">
               <div className="text-center p-2">
                 <AlertTriangle className="w-6 h-6 text-orange-600 dark:text-orange-400 mx-auto mb-2" />
@@ -704,8 +729,8 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
               </div>
             </div>
           )}
-          <img
-            ref={imgRef}
+          {isLive ? <img
+            ref={attachImage}
             key={imageKey}
             src={streamUrl}
             alt="Camera stream"
@@ -719,7 +744,13 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
             onLoad={handleStreamLoad}
             onMouseDown={handleImageMouseDown}
             draggable={false}
-          />
+          /> : ready ? <>
+            <CameraSnapshotImage source={source} name={name} intervalMs={5000}
+              transform={`scale(${zoomLevel}) rotate(${printer?.camera_rotation || 0}deg)`} />
+            <span className="absolute top-1 left-1 right-1 bg-black/70 px-2 py-1 text-xs text-white">
+              {t('printers.camWall.transportLimit', { protocol: protocol === 'unknown' ? t('printers.camWall.transportUnknown') : protocol, limit })}
+            </span>
+          </> : null}
 
           {/* Zoom controls */}
           <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-black/60 rounded px-1.5 py-1 no-drag">
@@ -767,16 +798,18 @@ export function EmbeddedCameraViewer({ printerId, printerName, viewerIndex = 0, 
           )}
         </div>
       )}
-      {/* Skip Objects Modal */}
-      <SkipObjectsModal
-        printerId={printerId}
-        isOpen={showSkipObjectsModal}
-        onClose={() => setShowSkipObjectsModal(false)}
-      />
+      {/* Skip Objects Modal — a printer's parts, so a camera has none. */}
+      {isPrinter && (
+        <SkipObjectsModal
+          printerId={printerId}
+          isOpen={showSkipObjectsModal}
+          onClose={() => setShowSkipObjectsModal(false)}
+        />
+      )}
       {/* Camera diagnostic modal — opens from the always-visible
           stethoscope icon AND the error-state Diagnose button (#1395
           follow-up). */}
-      {showDiagnoseModal && (
+      {showDiagnoseModal && isPrinter && (
         <CameraDiagnoseModal
           printerId={printerId}
           printerName={printer?.name || null}

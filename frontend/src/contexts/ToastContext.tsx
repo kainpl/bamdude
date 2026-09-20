@@ -1,8 +1,10 @@
 import { AlertCircle, CheckCircle, ChevronDown, ChevronUp, Info, Loader2, X, XCircle } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import { formatFileSize } from '../utils/file';
+import { setToastHandler } from '../utils/toastBridge';
 
 type ToastType = 'success' | 'error' | 'warning' | 'info' | 'loading';
 
@@ -491,183 +493,200 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('background-dispatch', onDispatchEvent);
   }, [t]);
 
+  // Lend `showToast` to the one caller that cannot use the hook: the app's
+  // `QueryClient` is built at module scope, so its `QueryCache.onError` has no
+  // React tree to read a context out of. Unregistered on unmount, so a toast
+  // raised after teardown is dropped rather than aimed at a dead provider.
+  useEffect(() => {
+    setToastHandler(showToast);
+    return () => setToastHandler(null);
+  }, [showToast]);
 
   return (
     <ToastContext.Provider value={{ showToast, showPersistentToast, dismissToast }}>
       {children}
 
-      {/* Toast Container.
+      {/* Toast Container — portalled into `document.body`, NOT rendered inside
+          `#root`: while a modal is open the modal stack marks `#root` `inert`
+          (components/modalStack.ts), and a viewport inside it would be
+          unclickable exactly when the dispatch toast's buttons matter. Modals
+          are portalled into body for the same reason; `#root` creates no
+          stacking context, so z-[60] compares against the modals' z-index the
+          same from either parent.
           Positioned with safe-area-aware calc() rather than bottom-4/right-20 so an
           installed PWA on a notched phone clears the home indicator and the landscape
           notch (#2612). The 5rem right offset is the clearance for the bug-report
           bubble. */}
-      <div
-        data-testid="toast-viewport"
-        className="fixed z-[60] flex flex-col items-end gap-2"
-        style={{
-          bottom: 'calc(1rem + env(safe-area-inset-bottom))',
-          right: 'calc(5rem + env(safe-area-inset-right))',
-        }}
-      >
-        {toasts.map((toast) => (
-          <div
-            key={toast.id}
-            className={`rounded-lg border shadow-lg backdrop-blur-sm animate-slide-in ${bgColors[toast.type]} ${
-              toast.dispatchData ? 'w-[420px] p-3' : 'flex items-center gap-3 px-4 py-3'
-            }`}
-            // Cap to the viewport so the fixed 420px dispatch toast cannot run off
-            // the left edge of a phone (#2612): 420 + the 80px right offset exceeds
-            // a 390px-wide iPhone. 6rem = the 5rem right offset plus a 1rem left
-            // gutter. On desktop the 420px still wins.
-            style={{
-              maxWidth: 'calc(100vw - 6rem - env(safe-area-inset-left) - env(safe-area-inset-right))',
-            }}
-          >
-            {toast.dispatchData ? (
-              <>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-start gap-2">
-                    {icons[toast.type]}
-                    <div>
-                      <p className="text-white text-sm font-medium">{t('backgroundDispatch.startingPrints')}</p>
-                      <p className="text-xs text-bambu-gray mt-0.5">
-                        {t('backgroundDispatch.progressSummary', {
-                          complete: toast.dispatchData.completed + toast.dispatchData.failed,
-                          total: toast.dispatchData.total,
-                          dispatched: toast.dispatchData.dispatched,
-                          processing: toast.dispatchData.processing,
-                        })}
-                      </p>
+      {createPortal(
+        <div
+          data-testid="toast-viewport"
+          className="fixed z-[60] flex flex-col items-end gap-2"
+          style={{
+            bottom: 'calc(1rem + env(safe-area-inset-bottom))',
+            right: 'calc(5rem + env(safe-area-inset-right))',
+          }}
+        >
+          {toasts.map((toast) => (
+            <div
+              key={toast.id}
+              className={`rounded-lg border shadow-lg backdrop-blur-sm animate-slide-in ${bgColors[toast.type]} ${
+                toast.dispatchData ? 'w-[420px] p-3' : 'flex items-center gap-3 px-4 py-3'
+              }`}
+              // Cap to the viewport so the fixed 420px dispatch toast cannot run off
+              // the left edge of a phone (#2612): 420 + the 80px right offset exceeds
+              // a 390px-wide iPhone. 6rem = the 5rem right offset plus a 1rem left
+              // gutter. On desktop the 420px still wins.
+              style={{
+                maxWidth: 'calc(100vw - 6rem - env(safe-area-inset-left) - env(safe-area-inset-right))',
+              }}
+            >
+              {toast.dispatchData ? (
+                <>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-2">
+                      {icons[toast.type]}
+                      <div>
+                        <p className="text-white text-sm font-medium">{t('backgroundDispatch.startingPrints')}</p>
+                        <p className="text-xs text-bambu-gray mt-0.5">
+                          {t('backgroundDispatch.progressSummary', {
+                            complete: toast.dispatchData.completed + toast.dispatchData.failed,
+                            total: toast.dispatchData.total,
+                            dispatched: toast.dispatchData.dispatched,
+                            processing: toast.dispatchData.processing,
+                          })}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setIsDispatchCollapsed((prev) => !prev)}
+                        className="text-bambu-gray hover:text-white transition-colors"
+                        aria-label={
+                          isDispatchCollapsed
+                            ? t('backgroundDispatch.expandDetails')
+                            : t('backgroundDispatch.collapseDetails')
+                        }
+                      >
+                        {isDispatchCollapsed ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                      </button>
+                      <button
+                        onClick={() => dismissToast(toast.id)}
+                        className="text-bambu-gray hover:text-white transition-colors"
+                        aria-label={t('backgroundDispatch.dismissToast')}
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => setIsDispatchCollapsed((prev) => !prev)}
-                      className="text-bambu-gray hover:text-white transition-colors"
-                      aria-label={
-                        isDispatchCollapsed
-                          ? t('backgroundDispatch.expandDetails')
-                          : t('backgroundDispatch.collapseDetails')
-                      }
-                    >
-                      {isDispatchCollapsed ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                    </button>
-                    <button
-                      onClick={() => dismissToast(toast.id)}
-                      className="text-bambu-gray hover:text-white transition-colors"
-                      aria-label={t('backgroundDispatch.dismissToast')}
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
 
-                {!isDispatchCollapsed && (
-                  <div className="mt-3 space-y-2 max-h-64 overflow-y-auto pr-1">
-                    {toast.dispatchData.jobs.map((job) => {
-                      const progressByStatus: Record<DispatchJobStatus, number> = {
-                        dispatched: 15,
-                        processing: 60,
-                        completed: 100,
-                        failed: 100,
-                        cancelled: 100,
-                      };
-                      const barColorByStatus: Record<DispatchJobStatus, string> = {
-                        dispatched: 'bg-bambu-gray/60',
-                        processing: 'bg-bambu-green',
-                        completed: 'bg-green-500',
-                        failed: 'bg-red-500',
-                        cancelled: 'bg-yellow-500',
-                      };
-                      // Upload byte count reached the total — printer hasn't
-                      // yet confirmed receipt (state still 'processing').
-                      // Without distinguishing this we'd show a frozen 100%
-                      // bar that reads as "stuck" on small files where the
-                      // upload completed in <500ms (audit B.13).
-                      const uploadDoneAwaitingPrinter =
-                        job.status === 'processing' &&
-                        typeof job.uploadProgressPct === 'number' &&
-                        job.uploadProgressPct >= 99.9;
-                      return (
-                        <div key={job.jobId} className="rounded border border-white/10 bg-black/15 p-2">
-                          <div className="flex items-center justify-between gap-2">
-                            {/* min-w-0 + flex-1 is what actually lets truncate fire
-                                once the toast is capped to a phone's width (#2612);
-                                the status chip stays put with shrink-0. */}
-                            <span className="text-xs text-white truncate min-w-0 flex-1" title={job.sourceName}>
-                              {job.sourceName}
-                            </span>
-                            <div className="flex items-center gap-2">
-                              {(job.status === 'dispatched' || job.status === 'processing') && (
-                                <button
-                                  onClick={() => void cancelDispatchJob(job.jobId)}
-                                  disabled={cancellingDispatchJobIds.has(job.jobId)}
-                                  className="text-[11px] text-red-700 dark:text-red-300 hover:text-red-800 dark:hover:text-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                                  title={t('backgroundDispatch.cancelDispatchJob')}
-                                >
-                                  {cancellingDispatchJobIds.has(job.jobId)
-                                    ? t('backgroundDispatch.cancelling')
-                                    : t('backgroundDispatch.cancel')}
-                                </button>
-                              )}
-                              <span className="text-[11px] uppercase tracking-wide text-bambu-gray shrink-0">
-                                {t(`backgroundDispatch.status.${job.status}`)}
+                  {!isDispatchCollapsed && (
+                    <div className="mt-3 space-y-2 max-h-64 overflow-y-auto pr-1">
+                      {toast.dispatchData.jobs.map((job) => {
+                        const progressByStatus: Record<DispatchJobStatus, number> = {
+                          dispatched: 15,
+                          processing: 60,
+                          completed: 100,
+                          failed: 100,
+                          cancelled: 100,
+                        };
+                        const barColorByStatus: Record<DispatchJobStatus, string> = {
+                          dispatched: 'bg-bambu-gray/60',
+                          processing: 'bg-bambu-green',
+                          completed: 'bg-green-500',
+                          failed: 'bg-red-500',
+                          cancelled: 'bg-yellow-500',
+                        };
+                        // Upload byte count reached the total — printer hasn't
+                        // yet confirmed receipt (state still 'processing').
+                        // Without distinguishing this we'd show a frozen 100%
+                        // bar that reads as "stuck" on small files where the
+                        // upload completed in <500ms (audit B.13).
+                        const uploadDoneAwaitingPrinter =
+                          job.status === 'processing' &&
+                          typeof job.uploadProgressPct === 'number' &&
+                          job.uploadProgressPct >= 99.9;
+                        return (
+                          <div key={job.jobId} className="rounded border border-white/10 bg-black/15 p-2">
+                            <div className="flex items-center justify-between gap-2">
+                              {/* min-w-0 + flex-1 is what actually lets truncate fire
+                                  once the toast is capped to a phone's width (#2612);
+                                  the status chip stays put with shrink-0. */}
+                              <span className="text-xs text-white truncate min-w-0 flex-1" title={job.sourceName}>
+                                {job.sourceName}
                               </span>
+                              <div className="flex items-center gap-2">
+                                {(job.status === 'dispatched' || job.status === 'processing') && (
+                                  <button
+                                    onClick={() => void cancelDispatchJob(job.jobId)}
+                                    disabled={cancellingDispatchJobIds.has(job.jobId)}
+                                    className="text-[11px] text-red-700 dark:text-red-300 hover:text-red-800 dark:hover:text-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    title={t('backgroundDispatch.cancelDispatchJob')}
+                                  >
+                                    {cancellingDispatchJobIds.has(job.jobId)
+                                      ? t('backgroundDispatch.cancelling')
+                                      : t('backgroundDispatch.cancel')}
+                                  </button>
+                                )}
+                                <span className="text-[11px] uppercase tracking-wide text-bambu-gray shrink-0">
+                                  {t(`backgroundDispatch.status.${job.status}`)}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="text-[11px] text-bambu-gray truncate" title={job.printerName}>
+                              {job.printerName}
+                            </div>
+                            {job.message && (
+                              <div className="text-[11px] text-bambu-gray truncate" title={job.message}>
+                                {job.message}
+                              </div>
+                            )}
+                            {job.status === 'processing' && (
+                              uploadDoneAwaitingPrinter ? (
+                                <div className="text-[11px] text-bambu-gray truncate">
+                                  {t('backgroundDispatch.awaitingPrinter')}
+                                </div>
+                              ) : typeof job.uploadBytes === 'number' && typeof job.uploadTotalBytes === 'number' && job.uploadTotalBytes > 0 ? (
+                                <div className="text-[11px] text-bambu-gray truncate">
+                                  {formatFileSize(job.uploadBytes)} / {formatFileSize(job.uploadTotalBytes)}
+                                  {typeof job.uploadProgressPct === 'number' ? ` (${job.uploadProgressPct.toFixed(1)}%)` : ''}
+                                </div>
+                              ) : null
+                            )}
+                            <div className="mt-1 h-1.5 w-full rounded bg-white/10 overflow-hidden">
+                              <div
+                                className={`h-full ${barColorByStatus[job.status]} transition-all duration-300 ${uploadDoneAwaitingPrinter ? 'animate-pulse' : ''}`}
+                                style={{
+                                  width: `${
+                                    job.status === 'processing' && typeof job.uploadProgressPct === 'number'
+                                      ? Math.max(0, Math.min(100, job.uploadProgressPct))
+                                      : progressByStatus[job.status]
+                                  }%`,
+                                }}
+                              />
                             </div>
                           </div>
-                          <div className="text-[11px] text-bambu-gray truncate" title={job.printerName}>
-                            {job.printerName}
-                          </div>
-                          {job.message && (
-                            <div className="text-[11px] text-bambu-gray truncate" title={job.message}>
-                              {job.message}
-                            </div>
-                          )}
-                          {job.status === 'processing' && (
-                            uploadDoneAwaitingPrinter ? (
-                              <div className="text-[11px] text-bambu-gray truncate">
-                                {t('backgroundDispatch.awaitingPrinter')}
-                              </div>
-                            ) : typeof job.uploadBytes === 'number' && typeof job.uploadTotalBytes === 'number' && job.uploadTotalBytes > 0 ? (
-                              <div className="text-[11px] text-bambu-gray truncate">
-                                {formatFileSize(job.uploadBytes)} / {formatFileSize(job.uploadTotalBytes)}
-                                {typeof job.uploadProgressPct === 'number' ? ` (${job.uploadProgressPct.toFixed(1)}%)` : ''}
-                              </div>
-                            ) : null
-                          )}
-                          <div className="mt-1 h-1.5 w-full rounded bg-white/10 overflow-hidden">
-                            <div
-                              className={`h-full ${barColorByStatus[job.status]} transition-all duration-300 ${uploadDoneAwaitingPrinter ? 'animate-pulse' : ''}`}
-                              style={{
-                                width: `${
-                                  job.status === 'processing' && typeof job.uploadProgressPct === 'number'
-                                    ? Math.max(0, Math.min(100, job.uploadProgressPct))
-                                    : progressByStatus[job.status]
-                                }%`,
-                              }}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </>
-            ) : (
-              <>
-                {icons[toast.type]}
-                <span className="text-white text-sm">{toast.message}</span>
-                <button
-                  onClick={() => dismissToast(toast.id)}
-                  className="ml-2 text-bambu-gray hover:text-white transition-colors"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </>
-            )}
-          </div>
-        ))}
-      </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  {icons[toast.type]}
+                  <span className="text-white text-sm">{toast.message}</span>
+                  <button
+                    onClick={() => dismissToast(toast.id)}
+                    className="ml-2 text-bambu-gray hover:text-white transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>,
+        document.body,
+      )}
     </ToastContext.Provider>
   );
 }

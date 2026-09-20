@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <style>.ink{fill:#12150F}.acc{fill:#3F8035}@media (prefers-color-scheme:dark){.ink{fill:#F4F6F0}.acc{fill:#58AA4D}}</style>
+  <rect class="ink" x="9" y="11" width="8" height="42" rx="4"></rect>
+  <rect class="ink" x="21" y="11" width="30" height="8" rx="4"></rect>
+  <rect class="acc" x="21" y="26" width="34" height="8" rx="4"></rect>
+  <rect class="ink" x="21" y="41" width="24" height="8" rx="4"></rect>
+</svg>

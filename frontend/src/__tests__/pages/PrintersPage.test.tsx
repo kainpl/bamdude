@@ -2,8 +2,11 @@
  * Tests for the PrintersPage component.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { act, screen, waitFor, within } from '@testing-library/react';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
+import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { PrintersPage } from '../../pages/PrintersPage';
 import { http, HttpResponse } from 'msw';
@@ -21,6 +24,10 @@ const mockPrinters = [
     nozzle_diameter: 0.4,
     nozzle_type: 'hardened_steel',
     location: 'Workshop',
+    tags: [
+      { id: 1, name: 'Phase 1', color: '#f59e0b' },
+      { id: 2, name: 'Phase 2', color: null },
+    ],
     auto_archive: true,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
@@ -36,9 +43,29 @@ const mockPrinters = [
     nozzle_diameter: 0.4,
     nozzle_type: 'stainless_steel',
     location: null,
+    tags: [],
     auto_archive: true,
     created_at: '2024-01-02T00:00:00Z',
     updated_at: '2024-01-02T00:00:00Z',
+  },
+  {
+    // Wears ONE of the two tags. That is what makes "all of the selected tags"
+    // testable at all: with a single tag in the fixture, `every` and `some`
+    // narrow to exactly the same set and a regression between them passes.
+    id: 3,
+    name: 'A1 Spare',
+    ip_address: '192.168.1.102',
+    serial_number: '00X00A987654321',
+    access_code: '11112222',
+    model: 'A1',
+    enabled: true,
+    nozzle_diameter: 0.4,
+    nozzle_type: 'stainless_steel',
+    location: null,
+    tags: [{ id: 1, name: 'Phase 1', color: '#f59e0b' }],
+    auto_archive: true,
+    created_at: '2024-01-03T00:00:00Z',
+    updated_at: '2024-01-03T00:00:00Z',
   },
 ];
 
@@ -70,11 +97,110 @@ describe('PrintersPage', () => {
       }),
       http.get('/api/v1/queue/', () => {
         return HttpResponse.json([]);
+      }),
+      http.get('/api/v1/printer-tags', () => {
+        return HttpResponse.json({
+          tags: [
+            { id: 1, name: 'Phase 1', color: '#f59e0b', printer_count: 2, is_stagger_group: false },
+            { id: 2, name: 'Phase 2', color: null, printer_count: 1, is_stagger_group: false },
+          ],
+        });
       })
     );
+    // The page persists all three, so a test that ticks a box or picks a sort
+    // must not hand it to the next test. (Not `clear()` — the synthetic auth
+    // token from the render helper lives here too.)
+    localStorage.removeItem('printerTagFilter');
+    localStorage.removeItem('printerSortBy');
+    localStorage.removeItem('printerSortAsc');
+    localStorage.removeItem('printerCardSize');
+  });
+
+  it('restores only the last saved camera and switches the single popup to another card', async () => {
+    // Seeded WITHOUT `kind`: that is what an install saved before a camera could
+    // stand on its own, and such a row must still read as a printer's camera.
+    localStorage.setItem('openEmbeddedCameras', JSON.stringify([
+      { id: 1, name: 'X1 Carbon' }, { id: 2, name: 'P1S Backup' },
+    ]));
+    server.use(http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({ camera_view_mode: 'embedded' })));
+    const view = render(<PrintersPage />);
+    try {
+      const initial = await screen.findByAltText('Camera stream') as HTMLImageElement;
+      expect(initial.src).toContain('/printers/2/');
+      await waitFor(() => expect(screen.getAllByTitle('Open camera overlay')).toHaveLength(3));
+      await userEvent.click(within(document.getElementById('printer-1')!).getByTitle('Open camera overlay'));
+      await waitFor(() => expect(screen.getByAltText('Camera stream').getAttribute('src')).toContain('/printers/1/'));
+      expect(initial.src).toMatch(/^data:image\/gif;/);
+      expect(screen.getAllByAltText('Camera stream')).toHaveLength(1);
+      expect(JSON.parse(localStorage.getItem('openEmbeddedCameras')!)).toEqual([
+        { kind: 'printer', id: 1, name: 'X1 Carbon' },
+      ]);
+    } finally {
+      view.unmount();
+      localStorage.removeItem('openEmbeddedCameras');
+    }
   });
 
   describe('rendering', () => {
+    it('keeps a large fleet virtualized while the REST status snapshot is held back', async () => {
+      const fleet = Array.from({ length: 50 }, (_, i) => ({ ...mockPrinters[0], id: i + 1, name: `Farm printer ${i + 1}` }));
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      let requests = 0;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json(fleet)),
+        http.get('/api/v1/printers/status/batch', async ({ request }) => {
+          requests++;
+          await held;
+          return HttpResponse.json(Object.fromEntries(new URL(request.url).searchParams.getAll('ids').map(id => [id, mockPrinterStatus])));
+        }),
+      );
+      let cache!: QueryClient;
+      function CaptureCache() {
+        const client = useQueryClient();
+        useEffect(() => { cache = client; }, [client]);
+        return null;
+      }
+      const view = render(<><CaptureCache /><PrintersPage /></>);
+      try {
+        // The first viewport-sized slice mounts immediately. Once all 50 are
+        // eligible, only the rows nearest the viewport remain in the DOM —
+        // their statuses still arrive through the one farm-wide batch.
+        await screen.findByText('Farm printer 1', {}, { timeout: 20_000 });
+        await waitFor(() => expect(requests).toBe(1));
+        await waitFor(() => {
+          expect(screen.queryByText('Farm printer 50')).not.toBeInTheDocument();
+        });
+        act(() => {
+          for (let id = 1; id <= 50; id++) {
+            // Same key and shape written by useWebSocket; the hook's 50-printer
+            // test exercises the transport-to-cache half of this contract.
+            cache.setQueryData(['printerStatus', id], {
+              ...mockPrinterStatus, state: 'RUNNING', progress: 42,
+              current_print: `LiveJob-${id}`, subtask_name: `LiveJob-${id}`,
+            });
+          }
+        });
+        await screen.findByText('LiveJob-1');
+        expect(cache.getQueryState(['printerStatus', 50])?.fetchStatus).toBe('fetching');
+      } finally {
+        release();
+        view.unmount();
+      }
+    }, 20_000);
+
+    it('virtualizes the dense S grid too', async () => {
+      const fleet = Array.from({ length: 50 }, (_, i) => ({ ...mockPrinters[0], id: i + 1, name: `Small farm printer ${i + 1}` }));
+      server.use(http.get('/api/v1/printers/', () => HttpResponse.json(fleet)));
+      localStorage.setItem('printerCardSize', '1');
+
+      render(<PrintersPage />);
+
+      await screen.findByText('Small farm printer 1');
+      await waitFor(() => expect(document.querySelectorAll('[data-testid="printer-card-grid-row"]')).not.toHaveLength(0));
+      expect(document.querySelectorAll('[id^="printer-"]').length).toBeLessThan(fleet.length);
+    });
+
     it('renders the page title', async () => {
       render(<PrintersPage />);
 
@@ -90,6 +216,14 @@ describe('PrintersPage', () => {
         expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
         expect(screen.getByText('P1S Backup')).toBeInTheDocument();
       });
+    });
+
+    it('defers offscreen card layout while reserving each card size footprint', async () => {
+      render(<PrintersPage />);
+
+      const card = await screen.findByText('X1 Carbon').then((name) => name.closest('#printer-1'));
+      expect(card).not.toBeNull();
+      expect(card).toHaveStyle({ contentVisibility: 'auto', containIntrinsicSize: 'auto 700px' });
     });
 
     it('shows printer models', async () => {
@@ -108,6 +242,135 @@ describe('PrintersPage', () => {
         // Status should be shown - may vary based on state
         expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('sorting', () => {
+    /** The card headings, in the order the page rendered them. */
+    const renderedOrder = () =>
+      screen
+        .getAllByText(/^(X1 Carbon|P1S Backup|A1 Spare)$/)
+        .filter(el => el.tagName === 'H3')
+        .map(el => el.textContent);
+
+    it('re-sorts by current job when the statuses arrive, with no second pick of the order', async () => {
+      // The saved order is «ETA (job)», which reads the live status. Those
+      // statuses land AFTER the first paint — that is the whole bug this pins:
+      // the order used to be computed once against an empty status cache, where
+      // every printer tied and the name tiebreaker decided, and it stayed that
+      // way until the operator re-picked the order by hand (2026-09-13).
+      localStorage.setItem('printerSortBy', 'eta');
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const byId: Record<string, unknown> = {
+        // Finishing soonest → first; then the other running one; the idle
+        // printer sinks below both. Alphabetically this is the exact reverse.
+        '1': { ...mockPrinterStatus, state: 'RUNNING', remaining_time: 5 },
+        '2': { ...mockPrinterStatus, state: 'RUNNING', remaining_time: 90 },
+        '3': { ...mockPrinterStatus, state: 'IDLE', remaining_time: 0 },
+      };
+      server.use(
+        http.get('/api/v1/printers/status/batch', async ({ request }) => {
+          await held;
+          const ids = new URL(request.url).searchParams.getAll('ids');
+          return HttpResponse.json(Object.fromEntries(ids.map(id => [id, byId[id] ?? mockPrinterStatus])));
+        }),
+        http.get('/api/v1/printers/:id/status', async ({ params }) => {
+          await held;
+          return HttpResponse.json(byId[String(params.id)] ?? mockPrinterStatus);
+        }),
+      );
+
+      const view = render(<PrintersPage />);
+      try {
+        await screen.findByText('A1 Spare');
+        // Cold cache: nothing to compare, so the name tiebreaker orders them.
+        expect(renderedOrder()).toEqual(['A1 Spare', 'P1S Backup', 'X1 Carbon']);
+
+        release();
+
+        await waitFor(() => {
+          expect(renderedOrder()).toEqual(['X1 Carbon', 'P1S Backup', 'A1 Spare']);
+        });
+      } finally {
+        release();
+        view.unmount();
+      }
+    }, 20_000);
+  });
+
+  describe('tags', () => {
+    // jsdom measures every element as zero-wide, so the page's responsive
+    // toolbar concludes its inline controls have overflowed and folds them
+    // into the compact overflow menus (inert, and therefore unreachable).
+    // Report a desktop width so the filter row renders where a user on a
+    // normal screen actually finds it.
+    //
+    // ⚠️ `clientWidth` is defined on `Element.prototype`, NOT on
+    // `HTMLElement.prototype` — stub the wrong one and the restore below finds
+    // no descriptor to put back, leaving a 1600 px prototype behind for every
+    // later test in the file.
+    const realClientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth')!;
+    beforeEach(() => {
+      Object.defineProperty(Element.prototype, 'clientWidth', { configurable: true, get: () => 1600 });
+    });
+    afterEach(() => {
+      Object.defineProperty(Element.prototype, 'clientWidth', realClientWidth);
+    });
+
+    it('narrows to printers wearing every selected tag', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      await userEvent.click(await screen.findByRole('button', { name: /Tags/ }));
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Phase 1' }));
+      // Both tags now: only the printer wearing BOTH survives. "A1 Spare"
+      // wears Phase 1 alone, so it is what tells `every` apart from `some`.
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Phase 2' }));
+      await waitFor(() => expect(screen.queryByText('A1 Spare')).not.toBeInTheDocument());
+      expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument();
+      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+    });
+
+    it('closes the tag filter on Escape and hands focus back to its button', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      const button = await screen.findByRole('button', { name: /Tags/ });
+      await userEvent.click(button);
+      expect(await screen.findByRole('checkbox', { name: 'Phase 1' })).toBeInTheDocument();
+
+      await userEvent.keyboard('{Escape}');
+
+      await waitFor(() => expect(screen.queryByRole('checkbox', { name: 'Phase 1' })).not.toBeInTheDocument());
+      // Closing onto `document.body` would send a keyboard user back to the top
+      // of the page; the button that opened the list is where focus belongs.
+      expect(button).toHaveFocus();
+    });
+
+    it('finds a printer by its tag name in the search box', async () => {
+      render(<PrintersPage />);
+      await screen.findByText('X1 Carbon');
+      expect(screen.getByPlaceholderText(/search/i)).toHaveAttribute('type', 'text');
+      await userEvent.type(screen.getByPlaceholderText(/search/i), 'Phase 2');
+      await waitFor(() => expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument());
+      expect(screen.queryByText('A1 Spare')).not.toBeInTheDocument();
+      expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+    });
+
+    it('reverses the tag group headers when the sort direction is descending', async () => {
+      // The location branch gets this for free — its groups follow the item
+      // order, which is already reversed. `groupByTag` orders its groups by
+      // name unconditionally, so descending has to reverse them at the page,
+      // or the headers read A→Z over printers listed Z→A.
+      localStorage.setItem('printerSortBy', 'tag');
+      localStorage.setItem('printerSortAsc', 'false');
+      render(<PrintersPage />);
+      // Twice, once per tag it wears — the duplication a per-tag view exists for.
+      expect(await screen.findAllByText('X1 Carbon')).toHaveLength(2);
+      await waitFor(() =>
+        expect(
+          screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent?.replace(/\(\d+\)$/, '')),
+        ).toEqual(['No tag', 'Phase 2', 'Phase 1']),
+      );
     });
   });
 
@@ -424,4 +687,27 @@ describe('PrintersPage', () => {
       expect(screen.queryByText('01.01.03.00')).not.toBeInTheDocument();
     });
   });
+
+  it('opens the card menu outside the card, where nothing can clip it', async () => {
+    // The kebab used to draw its panel inside the card: fourteen entries ran
+    // past the card's bottom edge and were cut off, and the next card down
+    // could cover the rest. It now goes through CardActionMenu — a portal on
+    // document.body, position: fixed — like every other card menu here.
+    const view = render(<PrintersPage />);
+    try {
+      const card = await waitFor(() => {
+        const el = document.getElementById('printer-1');
+        expect(el).not.toBeNull();
+        return el!;
+      });
+      await userEvent.click(within(card).getByRole('button', { name: 'Actions' }));
+      const panel = await screen.findByTestId('printer-menu-1-panel');
+      expect(card.contains(panel)).toBe(false);
+      expect(panel.style.position).toBe('fixed');
+      expect(within(panel).getAllByRole('menuitem').length).toBeGreaterThanOrEqual(10);
+    } finally {
+      view.unmount();
+    }
+  });
+
 });

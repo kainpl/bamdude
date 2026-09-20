@@ -1,0 +1,27 @@
+{
+  "v": 1,
+  "type": "status_batch",
+  "id": "f-status-batch-seq-zero",
+  "ts": "2026-08-24T12:00:00Z",
+  "data": {
+    "seq": 0,
+    "printers": [
+      {
+        "id": "p-001",
+        "name": "X2D Front-Left",
+        "model": "X2D",
+        "state": "printing",
+        "progress": 42,
+        "job_name": "bracket_v3.gcode.3mf",
+        "temps": {
+          "bed": 60,
+          "bed_target": 60,
+          "nozzle": 219.5,
+          "nozzle_target": 220,
+          "chamber": 38
+        },
+        "error": null
+      }
+    ]
+  }
+}

@@ -581,5 +581,444 @@ class TestMultiEpisodeBoundaries:
         ]
         assert journal_boundaries_for_tray(replaced, 254) == [(0, 273, None), (12, 278, None)]
 
+    def test_a_runout_onto_the_same_spool_is_not_a_boundary(self):
+        # Printer 5, archive 822 (2026-08-31): reel swapped at layer 227, then a
+        # JAM at 405 that the firmware escalated from `ambiguous` to a definite
+        # `external` runout — so the ambiguous guard above no longer applied and
+        # the "resumed without a replacement" branch opened a segment feeding
+        # the SAME spool 267. One continuous stretch became two history rows,
+        # which reads as a double charge. A boundary that does not change the
+        # spool is not a boundary.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "runout", "manual", 254, 227, 279),
+            ev(2, "spool_loaded", None, 254, 227, 267),
+            ev(3, "runout", "external", 254, 405, 267),  # the jam; nothing reloaded
+        ]
+        assert journal_boundaries_for_tray(events, 254) == [(0, 279, None), (227, 267, None)]
+
+    def test_two_reels_of_the_same_spool_id_still_need_different_spools_to_split(self):
+        # Guard the merge against over-reach: consecutive segments whose spools
+        # DIFFER must survive untouched (this is the back-to-back reel shape).
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "runout", "external", 254, 80, 7),
+            ev(2, "spool_loaded", None, 254, 80, 9),
+            ev(3, "runout", "external", 254, 250, 9),
+            ev(4, "spool_loaded", None, 254, 250, 11),
+        ]
+        assert journal_boundaries_for_tray(events, 254) == [(0, 7, None), (80, 9, None), (250, 11, None)]
+
+    def test_the_backup_that_took_over_before_the_first_layer_is_named_by_the_start(self):
+        # Printer 1, archives 810-837 (2026-08-30/31): the plates are sliced for
+        # AMS slot 2, that slot is empty, and the AMS backs up from slot 3
+        # BEFORE layer 1 — so ``tray_now`` is already 3 when the print starts and
+        # no ``tray_change`` is ever emitted. The autoswitch branch could only
+        # name a backup through that event, so six prints in a row charged
+        # nobody (939 g). The journal already holds the answer in its own start
+        # event: the print began feeding from tray 3, spool 291.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "start", None, 3, 0, 291),
+            ev(2, "runout", "autoswitch", 2, 1, None),
+        ]
+        # One segment, the whole print on the spool that actually fed it.
+        assert journal_boundaries_for_tray(events, 2) == [(0, 291, None)]
+
+    def test_a_printer_that_unloads_between_prints_keeps_using_its_tray_change(self):
+        # Printer 10 (X2D), archives 813-838: the SAME empty-mapped-slot backup
+        # as printer 1, but this machine unloads after a print — so ``tray_now``
+        # is nothing at start (the journal's start carries no tray at all) and
+        # the AMS picking slot 2 genuinely CHANGES it, emitting the tray_change
+        # that names the backup. That evidence is stronger than the start event
+        # and must keep winning; these prints were charging correctly all along
+        # (156.4 g to spool 292 each) and must not move.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "start", None, None, 0, None),
+            ev(2, "runout", "autoswitch", 3, 0, None),
+            ev(3, "tray_change", None, 2, 0, 292),
+        ]
+        assert journal_boundaries_for_tray(events, 3) == [(0, None, None), (0, 292, None)]
+
+    def test_a_start_on_the_very_tray_that_ran_out_teaches_nothing(self):
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        # Same tray: the start says nothing the runout didn't. Unchanged —
+        # charged to nothing rather than guessed.
+        events = [
+            ev(1, "start", None, 2, 0, 290),
+            ev(2, "runout", "autoswitch", 2, 40, 290),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 290, None), (40, None, None)]
+
+    def test_a_tray_that_had_its_own_spool_is_not_overridden_by_the_start(self):
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        # The ran-out tray DID hold a spool — it really fed part of the print,
+        # so the start event must not swallow its share.
+        events = [
+            ev(1, "start", None, 3, 0, 291),
+            ev(2, "runout", "autoswitch", 2, 40, 290),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 290, None), (40, None, None)]
+
+    def test_a_mid_print_backup_still_prefers_its_tray_change(self):
+        # Archive 804 (2026-08-29): slot 2 ran out at layer 33 and the AMS
+        # switched — the tray_change names the backup, and that evidence must
+        # keep winning over the start event.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "start", None, 2, 0, 290),
+            ev(2, "runout", "autoswitch", 2, 33, 290),
+            ev(3, "tray_change", None, 3, 33, 291),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 290, None), (33, 291, None)]
+
+    def test_a_late_tray_change_does_not_disarm_the_start_rescue(self):
+        # The guard that turns the start-rescue off must ask the same question
+        # the backup lookup asks: "did this tray's share move elsewhere AT the
+        # runout?" It used to scan the whole print for any tray change at all —
+        # so an ordinary switch 60 layers later disarmed the rescue and put
+        # nothing in its place (the backup lookup only reaches layer+1), and the
+        # print was charged to nobody. The start still names the feeder.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "start", None, 3, 0, 291),
+            ev(2, "runout", "autoswitch", 2, 1, None),
+            ev(3, "tray_change", None, 1, 60, 257),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 291, None)]
+
+    def test_a_reel_loaded_into_the_empty_slot_never_takes_the_backups_share(self):
+        # Printer 1, archive 837 (2026-09-01): the mapped slot 2 was empty, the
+        # AMS backed up from slot 3 before layer 1, and mid-print the operator
+        # put a fresh reel into slot 2 — which closes slot 2's open episode and
+        # journals spool_loaded, correctly (if the AMS ever switches back, that
+        # row names the reel). It must not thereby inherit what slot 3 fed:
+        # with the guard too broad, a late tray change handed the whole share
+        # to a reel that had never printed a gram.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "start", None, 3, 0, 291),
+            ev(2, "runout", "autoswitch", 2, 1, None),
+            ev(3, "spool_loaded", None, 2, 25, 294),
+            ev(4, "tray_change", None, 1, 60, 257),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 291, None)]
+
+    def test_the_backup_at_the_runout_layer_outranks_a_reel_loaded_later(self):
+        # Printer 10, archive 838, caught live (2026-09-01). The mapped slot 3
+        # was empty at layer 0, the AMS backed up to slot 2 (spool 292) in the
+        # same breath, and 28 layers later the operator put a fresh reel into
+        # slot 3 — which closes slot 3's open episode with a spool_loaded row.
+        # That row used to win over the backup unconditionally, so the segment
+        # starting at layer 0 was charged to a reel that had not existed in the
+        # machine for the first 28 layers, while the five sibling prints of the
+        # same plate had each charged 156.4 g to spool 292.
+        #
+        # A tray_change is bounded to the runout's own layer; a spool_loaded can
+        # be anywhere later. The tighter evidence names the feeder.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "start", None, None, 0, None),
+            ev(2, "runout", "autoswitch", 3, 0, None),
+            ev(3, "tray_change", None, 2, 0, 292),
+            ev(4, "spool_loaded", None, 3, 28, 293),
+        ]
+        assert journal_boundaries_for_tray(events, 3) == [(0, None, None), (0, 292, None)]
+
+    def test_without_a_backup_the_loaded_reel_still_names_the_feeder(self):
+        # The other real autoswitch shape: nothing backed the tray up (no
+        # tray_change at all), the human refilled the very tray that ran out and
+        # resumed. There is no tighter evidence to prefer, so the loaded reel
+        # must keep winning — the fallback this reordering must not eat.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "runout", "autoswitch", 2, 40, 290),
+            ev(2, "spool_loaded", None, 2, 45, 294),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 290, None), (40, 294, None)]
+
+    def test_a_refilled_tray_that_runs_out_again_is_still_a_boundary(self):
+        # The cover must be reset by a refill: once the human puts a reel into
+        # the tray and it feeds again, the tray is no longer being covered by
+        # anyone — so its NEXT runout is a real boundary, and an unnameable
+        # feeder there is still charged to nobody rather than quietly folded
+        # into the previous segment.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [
+            ev(1, "runout", "autoswitch", 2, 40, 290),
+            ev(2, "spool_loaded", None, 2, 45, 294),
+            ev(3, "runout", "autoswitch", 2, 80, 294),
+        ]
+        assert journal_boundaries_for_tray(events, 2) == [(0, 290, None), (40, 294, None), (80, None, None)]
+
+    def test_without_a_start_event_nothing_is_invented(self):
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        events = [ev(1, "runout", "autoswitch", 2, 1, None)]
+        assert journal_boundaries_for_tray(events, 2) == [(0, None, None), (1, None, None)]
+
+    def test_a_lone_same_spool_runout_keeps_its_pair(self):
+        # ⚠️ The merge must never collapse below two segments. With no swap at
+        # all, this pair is the ONLY thing naming the spool — a single-segment
+        # result reads as "no split" and the print is charged to nobody (the
+        # shape TestRunoutZeroPoint::test_an_open_episode_never_closes_the_books
+        # pins end to end). On a cancelled print the tail comes out at 0 g and
+        # the caller skips the row anyway.
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import journal_boundaries_for_tray
+
+        def ev(eid, event, kind, tray, layer, spool):
+            return SimpleNamespace(
+                id=eid,
+                event=event,
+                kind=kind,
+                global_tray_id=tray,
+                layer_num=layer,
+                spool_id=spool,
+                spoolman_spool_id=None,
+            )
+
+        assert journal_boundaries_for_tray([ev(1, "runout", "external", 254, 405, 267)], 254) == [
+            (0, 267, None),
+            (405, 267, None),
+        ]
+
         untangled = [ev(1, "runout", "ambiguous", 254, 12, 273)]
         assert journal_boundaries_for_tray(untangled, 254) == []
+
+
+class TestTheSlicerSlotOrderCountsOCCUPIEDTrays:
+    """Which trays the slicer's slot N counts, when nothing else named the tray.
+
+    BambuStudio compacts the slot list — slot N is the Nth tray the machine
+    offers, not the Nth physical position (#1607). What counts as "offered" is
+    the question: BS filters on ``is_exists`` (``DevMapping.cpp`` rejects a
+    mapping into a slot that is not there; ``AmsMappingPopupUpdate.cpp`` builds
+    the pick list the same way), i.e. on the PRESENCE SENSOR.
+
+    We filtered on ``tray_type`` instead, which is a different question: a slot
+    holding an unlabelled reel — no RFID, never configured — reports no type
+    while being fully occupied. BS counts it, we skipped it, and every slot
+    after it shifted down one, charging the print to the wrong spool. This is
+    the last-resort branch of the mapping (priorities 1-4 all failed), which is
+    exactly where a silent shift is never noticed.
+    """
+
+    def test_an_unlabelled_but_occupied_slot_still_takes_its_place(self):
+        from backend.app.services.usage_tracker import loaded_trays_in_slicer_order
+
+        lookup = {
+            0: {"tray_type": "PETG"},
+            1: {"tray_type": "PETG"},
+            2: {"tray_type": ""},  # a reel is in there; the printer cannot name it
+            254: {"tray_type": "PETG"},
+        }
+        presence = {0: True, 1: True, 2: True, 3: False}
+        # Slot 3 (1-based) is the unlabelled AMS tray, NOT the external spool.
+        assert loaded_trays_in_slicer_order(lookup, presence) == [0, 1, 2, 254]
+
+    def test_an_empty_slot_is_still_skipped(self):
+        # The #1607 case itself must not regress: 3 loaded + 1 empty + external,
+        # and the slicer's 4th filament is the external.
+        from backend.app.services.usage_tracker import loaded_trays_in_slicer_order
+
+        lookup = {
+            0: {"tray_type": "PETG"},
+            1: {"tray_type": "PETG"},
+            2: {"tray_type": "PETG"},
+            3: {"tray_type": ""},
+            254: {"tray_type": "PETG"},
+        }
+        presence = {0: True, 1: True, 2: True, 3: False}
+        assert loaded_trays_in_slicer_order(lookup, presence) == [0, 1, 2, 254]
+
+    def test_without_a_presence_reading_it_falls_back_to_the_type(self):
+        # External holders carry no presence bit, and an old push may carry none
+        # at all — then the previous behaviour is the best answer available.
+        from backend.app.services.usage_tracker import loaded_trays_in_slicer_order
+
+        lookup = {0: {"tray_type": "PETG"}, 1: {"tray_type": ""}, 254: {"tray_type": "PETG"}}
+        assert loaded_trays_in_slicer_order(lookup, {}) == [0, 254]

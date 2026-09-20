@@ -1,9 +1,9 @@
-import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { X, Check, AlertTriangle, Loader2 } from 'lucide-react';
+import { Check, AlertTriangle, Loader2 } from 'lucide-react';
 import { api } from '../api/client';
 import type { ArchiveComparison } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
 
 interface CompareArchivesModalProps {
   archiveIds: number[];
@@ -11,69 +11,45 @@ interface CompareArchivesModalProps {
 }
 
 export function CompareArchivesModal({ archiveIds, onClose }: CompareArchivesModalProps) {
-  // Close on Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
-
   const { data: comparison, isLoading, error } = useQuery({
     queryKey: ['archive-comparison', archiveIds],
     queryFn: () => api.compareArchives(archiveIds),
   });
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-bambu-dark-secondary rounded-lg max-w-4xl w-full max-h-[90vh] flex flex-col border border-bambu-dark-tertiary" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-          <h3 className="text-lg font-semibold text-white">
-            Compare Archives ({archiveIds.length})
-          </h3>
-          <button
-            onClick={onClose}
-            className="text-bambu-gray hover:text-white p-1"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-auto p-4 bg-bambu-dark-secondary">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-            </div>
-          ) : error ? (
-            <div className="text-center py-12 text-red-700 dark:text-red-400">
-              <AlertTriangle className="w-12 h-12 mx-auto mb-4 opacity-50" />
-              <p>Failed to load comparison</p>
-              <p className="text-sm text-bambu-gray mt-2">
-                {error instanceof Error ? error.message : 'Unknown error'}
-              </p>
-            </div>
-          ) : comparison ? (
-            <ComparisonContent comparison={comparison} />
-          ) : null}
-        </div>
-
-        {/* Footer */}
-        <div className="p-4 border-t border-bambu-dark-tertiary">
-          <Button variant="secondary" onClick={onClose} className="w-full">
-            Close
-          </Button>
-        </div>
+    <Modal onClose={onClose} title={`Compare Archives (${archiveIds.length})`} size="4xl" bodyClassName="flex flex-col">
+      {/* Content */}
+      <div className="flex-1 overflow-auto p-4 bg-bambu-dark-secondary">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
+          </div>
+        ) : error ? (
+          <div className="text-center py-12 text-red-700 dark:text-red-400">
+            <AlertTriangle className="w-12 h-12 mx-auto mb-4 opacity-50" />
+            <p>Failed to load comparison</p>
+            <p className="text-sm text-bambu-gray mt-2">
+              {error instanceof Error ? error.message : 'Unknown error'}
+            </p>
+          </div>
+        ) : comparison ? (
+          <ComparisonContent comparison={comparison} />
+        ) : null}
       </div>
-    </div>
+
+      {/* Footer */}
+      <div className="p-4 border-t border-bambu-dark-tertiary">
+        <Button variant="secondary" onClick={onClose} className="w-full">
+          Close
+        </Button>
+      </div>
+    </Modal>
   );
 }
 
 function ComparisonContent({ comparison }: { comparison: ArchiveComparison }) {
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Archive Headers */}
       <div className="overflow-x-auto">
         <table className="w-full">

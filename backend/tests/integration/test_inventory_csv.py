@@ -82,6 +82,40 @@ class TestInventoryCsvExport:
         assert "Active" in response.text
         assert "Archived" not in response.text
 
+    async def test_export_applies_list_filters_without_paginating(
+        self, async_client: AsyncClient, db_session: AsyncSession
+    ):
+        """CSV follows the current table filters, but never exports one page."""
+        from datetime import datetime, timezone
+
+        db_session.add_all(
+            [
+                Spool(material="PETG", brand="Match one", color_name="Black", rgba="000000ff"),
+                Spool(material="PETG", brand="Match two", color_name="White", rgba="ffffffff"),
+                Spool(material="PLA", brand="Wrong material", color_name="Black", rgba="000000ff"),
+                Spool(
+                    material="PETG",
+                    brand="Archived match",
+                    color_name="Blue",
+                    rgba="0000ffff",
+                    archived_at=datetime.now(timezone.utc),
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        # page/per_page are not export parameters. Even if a hand-built URL
+        # contains them, this remains the complete filtered set.
+        response = await async_client.get(
+            "/api/v1/inventory/spools/export?archived=active&material=PETG&page=1&per_page=1"
+        )
+
+        assert response.status_code == 200, response.text
+        assert "Match one" in response.text
+        assert "Match two" in response.text
+        assert "Wrong material" not in response.text
+        assert "Archived match" not in response.text
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration

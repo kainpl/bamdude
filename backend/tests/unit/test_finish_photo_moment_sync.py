@@ -27,6 +27,12 @@ import pytest
 
 from backend.app import main as main_module
 from backend.app.main import on_finish_photo_moment
+from backend.app.services.camera_metrics import CameraCaptureResult
+
+
+def _captured(frame: bytes | None) -> CameraCaptureResult:
+    """What `camera_runtime.capture` hands back — the door main.py uses."""
+    return CameraCaptureResult(frame=frame, source="fresh" if frame else None)
 
 
 @asynccontextmanager
@@ -86,12 +92,12 @@ async def test_event_registered_before_first_await(patched_env, monkeypatch):
     must complete BEFORE any await yields control back to the loop."""
     seen_during_capture = {}
 
-    async def _slow_capture(**_kwargs):
+    async def _slow_capture(_request):
         seen_during_capture["registered"] = patched_env.id in main_module._stage22_finish_in_flight
         await asyncio.sleep(0)
-        return b"\xff\xd8frame"
+        return _captured(b"\xff\xd8frame")
 
-    monkeypatch.setattr("backend.app.services.camera.capture_camera_frame_bytes", _slow_capture)
+    monkeypatch.setattr("backend.app.services.camera_runtime.capture", _slow_capture)
 
     await on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"})
 
@@ -99,10 +105,10 @@ async def test_event_registered_before_first_await(patched_env, monkeypatch):
 
 
 async def test_event_set_after_successful_capture(patched_env, monkeypatch):
-    async def _capture(**_kwargs):
-        return b"\xff\xd8frame"
+    async def _capture(_request):
+        return _captured(b"\xff\xd8frame")
 
-    monkeypatch.setattr("backend.app.services.camera.capture_camera_frame_bytes", _capture)
+    monkeypatch.setattr("backend.app.services.camera_runtime.capture", _capture)
 
     await on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"})
 
@@ -115,10 +121,10 @@ async def test_event_set_when_capture_returns_no_frame(patched_env, monkeypatch)
     """Producer gives up (RTSP timeout, no buffered frame) — consumer must NOT
     wait the full 20s for nothing."""
 
-    async def _capture(**_kwargs):
-        return None
+    async def _capture(_request):
+        return _captured(None)
 
-    monkeypatch.setattr("backend.app.services.camera.capture_camera_frame_bytes", _capture)
+    monkeypatch.setattr("backend.app.services.camera_runtime.capture", _capture)
 
     await on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"})
 
@@ -130,10 +136,10 @@ async def test_event_set_when_capture_returns_no_frame(patched_env, monkeypatch)
 async def test_event_set_even_when_capture_raises(patched_env, monkeypatch):
     """Producer hit a bug or network error — `finally` still releases the consumer."""
 
-    async def _capture(**_kwargs):
+    async def _capture(_request):
         raise RuntimeError("camera went away")
 
-    monkeypatch.setattr("backend.app.services.camera.capture_camera_frame_bytes", _capture)
+    monkeypatch.setattr("backend.app.services.camera_runtime.capture", _capture)
 
     await on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"})
 
@@ -171,11 +177,11 @@ async def test_consumer_wait_unblocked_when_producer_completes(patched_env, monk
     """End-to-end sync check: a consumer-style waiter awaiting the event
     finishes promptly once the producer's finally fires."""
 
-    async def _capture(**_kwargs):
+    async def _capture(_request):
         await asyncio.sleep(0.05)
-        return b"\xff\xd8frame"
+        return _captured(b"\xff\xd8frame")
 
-    monkeypatch.setattr("backend.app.services.camera.capture_camera_frame_bytes", _capture)
+    monkeypatch.setattr("backend.app.services.camera_runtime.capture", _capture)
 
     producer = asyncio.create_task(on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"}))
 
@@ -200,21 +206,21 @@ async def test_finish_state_prefers_banked_frame(patched_env, monkeypatch):
     main_module._inprint_frame_bank[patched_env.id] = b"\xff\xd8banked"
     live_called = {"n": 0}
 
-    async def _live(**_kwargs):
+    async def _live(_request):
         live_called["n"] += 1
-        return b"\xff\xd8live-post-swap"
+        return _captured(b"\xff\xd8live-post-swap")
 
-    monkeypatch.setattr("backend.app.services.camera.capture_camera_frame_bytes", _live)
+    monkeypatch.setattr("backend.app.services.camera_runtime.capture", _live)
     await on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"})
     assert main_module._stage22_finish_frames[patched_env.id] == b"\xff\xd8banked"
     assert live_called["n"] == 0
 
 
 async def test_finish_state_falls_back_to_live_when_no_bank(patched_env, monkeypatch):
-    async def _live(**_kwargs):
-        return b"\xff\xd8live"
+    async def _live(_request):
+        return _captured(b"\xff\xd8live")
 
-    monkeypatch.setattr("backend.app.services.camera.capture_camera_frame_bytes", _live)
+    monkeypatch.setattr("backend.app.services.camera_runtime.capture", _live)
     await on_finish_photo_moment(patched_env.id, {"trigger": "finish_state"})
     assert main_module._stage22_finish_frames[patched_env.id] == b"\xff\xd8live"
 
@@ -224,10 +230,10 @@ async def test_last_layer_trigger_ignores_bank(patched_env, monkeypatch):
     better framed than anything banked mid-print."""
     main_module._inprint_frame_bank[patched_env.id] = b"\xff\xd8banked"
 
-    async def _live(**_kwargs):
-        return b"\xff\xd8live"
+    async def _live(_request):
+        return _captured(b"\xff\xd8live")
 
-    monkeypatch.setattr("backend.app.services.camera.capture_camera_frame_bytes", _live)
+    monkeypatch.setattr("backend.app.services.camera_runtime.capture", _live)
     await on_finish_photo_moment(patched_env.id, {"trigger": "last_layer"})
     assert main_module._stage22_finish_frames[patched_env.id] == b"\xff\xd8live"
 

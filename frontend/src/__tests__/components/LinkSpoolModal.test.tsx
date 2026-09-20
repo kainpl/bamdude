@@ -54,6 +54,7 @@ describe('LinkSpoolModal', () => {
       id: 1,
       filament_name: 'Generic PLA Red',
       filament_material: 'PLA',
+      filament_vendor: null,
       filament_color_hex: 'FF0000',
       remaining_weight: 800,
       location: null,
@@ -62,6 +63,7 @@ describe('LinkSpoolModal', () => {
       id: 2,
       filament_name: 'Bambu PETG Blue',
       filament_material: 'PETG',
+      filament_vendor: null,
       filament_color_hex: '0000FF',
       remaining_weight: 500,
       location: null,
@@ -193,18 +195,16 @@ describe('LinkSpoolModal', () => {
   });
 
   describe('modal actions', () => {
-    it('calls onClose when backdrop is clicked', async () => {
+    it('does NOT close when the backdrop is clicked', async () => {
       render(<LinkSpoolModal {...defaultProps} />);
 
       await waitFor(() => {
         expect(screen.getByRole('heading', { name: /select spool/i })).toBeInTheDocument();
       });
 
-      const backdrop = document.querySelector('.bg-black\\/60');
-      if (backdrop) {
-        fireEvent.click(backdrop);
-        expect(defaultProps.onClose).toHaveBeenCalled();
-      }
+      const backdrop = screen.getByRole('dialog').parentElement as HTMLElement;
+      fireEvent.click(backdrop);
+      expect(defaultProps.onClose).not.toHaveBeenCalled();
     });
 
     it('calls onClose when X button is clicked', async () => {

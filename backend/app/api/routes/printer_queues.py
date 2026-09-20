@@ -16,6 +16,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.user import User
 from backend.app.schemas.printer_location import PrinterLocationOut
 from backend.app.schemas.printer_queue import PrinterQueueResponse, PrinterQueueUpdate
+from backend.app.schemas.printer_tag import PrinterTagOut
 from backend.app.services.queue_counters import get_queue_terminal_counts
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ def _to_response(queue: PrinterQueue, terminal_counts: dict[str, int]) -> Printe
         printer_name=queue.printer.name if queue.printer else None,
         printer_model=queue.printer.model if queue.printer else None,
         printer_location=(PrinterLocationOut.from_location(queue.printer.location) if queue.printer else None),
+        printer_tags=[PrinterTagOut.model_validate(tag) for tag in queue.printer.tags] if queue.printer else [],
         status=queue.status,
         is_paused=queue.is_paused,
         auto_distribute_eligible=queue.auto_distribute_eligible,

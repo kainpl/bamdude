@@ -103,7 +103,7 @@ class TestStatisticsCostAggregation:
             filament_used_grams=150.0,
         )
 
-        response = await async_client.get("/api/v1/archives/stats")
+        response = await async_client.get("/api/v1/statistics/overview")
 
         assert response.status_code == 200
         result = response.json()
@@ -129,7 +129,7 @@ class TestStatisticsCostAggregation:
                 filament_used_grams=50.0,
             )
 
-        response = await async_client.get("/api/v1/archives/stats")
+        response = await async_client.get("/api/v1/statistics/overview")
 
         assert response.status_code == 200
         result = response.json()
@@ -151,7 +151,7 @@ class TestStatisticsCostAggregation:
         await archive_factory(printer.id, status="completed", cost=1.75)
         await archive_factory(printer.id, status="completed")  # No cost field
 
-        response = await async_client.get("/api/v1/archives/stats")
+        response = await async_client.get("/api/v1/statistics/overview")
 
         assert response.status_code == 200
         result = response.json()
@@ -171,7 +171,7 @@ class TestStatisticsCostAggregation:
         await archive_factory(printer.id, status="failed", cost=2.50)  # Failed but has cost
         await archive_factory(printer.id, status="cancelled", cost=1.00)
 
-        response = await async_client.get("/api/v1/archives/stats")
+        response = await async_client.get("/api/v1/statistics/overview")
 
         assert response.status_code == 200
         result = response.json()
@@ -183,7 +183,7 @@ class TestStatisticsCostAggregation:
     @pytest.mark.integration
     async def test_statistics_zero_cost_when_no_archives(self, async_client: AsyncClient):
         """Verify total_cost is 0 when no archives exist."""
-        response = await async_client.get("/api/v1/archives/stats")
+        response = await async_client.get("/api/v1/statistics/overview")
 
         assert response.status_code == 200
         result = response.json()
@@ -399,7 +399,7 @@ class TestCostCalculationScenarios:
         await db_session.commit()
 
         # Recalculate costs for all archives
-        recalc_response = await async_client.post("/api/v1/archives/recalculate-costs")
+        recalc_response = await async_client.post("/api/v1/statistics/recalculate-costs")
         assert recalc_response.status_code == 200
         assert recalc_response.json()["updated"] >= 1
 

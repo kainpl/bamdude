@@ -11,6 +11,7 @@ import { Trash2 } from 'lucide-react';
 import { api, type LabelPlaceholder, type LabelSwatchShape, type LabelTemplateElement } from '../../api/client';
 import { Button } from '../Button';
 import { MIN_SIDE_MM, roundMm } from './labelGeometry';
+import { Select } from '../Select';
 
 interface ElementInspectorProps {
   element: LabelTemplateElement;
@@ -129,44 +130,47 @@ export function ElementInspector({
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('labelEditor.fit')}</span>
-              <select
+              <Select
+                size="sm"
+                className="w-full mt-1"
                 value={element.fit}
                 onChange={(e) => patch({ fit: e.target.value as 'shrink' | 'clip' })}
-                className="w-full mt-1 px-1.5 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
               >
                 {/* ⚠️ Shrinking inverts the type hierarchy on real data — a long
                     brand ends up smaller than the short material line under it.
                     Both are offered because both are sometimes right. */}
                 <option value="shrink">{t('labelEditor.fitShrink')}</option>
                 <option value="clip">{t('labelEditor.fitClip')}</option>
-              </select>
+              </Select>
             </label>
           </div>
 
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('labelEditor.align')}</span>
-              <select
+              <Select
+                size="sm"
+                className="w-full mt-1"
                 value={element.align}
                 onChange={(e) => patch({ align: e.target.value as 'left' | 'center' | 'right' })}
-                className="w-full mt-1 px-1.5 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
               >
                 <option value="left">{t('labelEditor.alignLeft')}</option>
                 <option value="center">{t('labelEditor.alignCenter')}</option>
                 <option value="right">{t('labelEditor.alignRight')}</option>
-              </select>
+              </Select>
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('labelEditor.valign')}</span>
-              <select
+              <Select
+                size="sm"
+                className="w-full mt-1"
                 value={element.valign}
                 onChange={(e) => patch({ valign: e.target.value as 'top' | 'middle' | 'bottom' })}
-                className="w-full mt-1 px-1.5 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
               >
                 <option value="top">{t('labelEditor.valignTop')}</option>
                 <option value="middle">{t('labelEditor.valignMiddle')}</option>
                 <option value="bottom">{t('labelEditor.valignBottom')}</option>
-              </select>
+              </Select>
             </label>
           </div>
 
@@ -179,7 +183,7 @@ export function ElementInspector({
               />
               {t('labelEditor.bold')}
             </label>
-            <label className="flex items-center gap-1.5 text-xs text-bambu-gray">
+            <label className="accent-bambu-green flex items-center gap-1.5 text-xs text-bambu-gray">
               <input
                 type="checkbox"
                 checked={element.italic}
@@ -192,19 +196,20 @@ export function ElementInspector({
       )}
 
       {element.type === 'barcode' && (
-        <label className="block">
+        <label className="accent-bambu-green block">
           <span className="text-xs text-bambu-gray">{t('labelEditor.symbology')}</span>
-          <select
+          <Select
+            size="sm"
+            className="w-full mt-1"
             value={element.symbology}
             onChange={(e) => patch({ symbology: e.target.value as (typeof SYMBOLOGIES)[number] })}
-            className="w-full mt-1 px-1.5 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
           >
             {SYMBOLOGIES.map((symbology) => (
               <option key={symbology} value={symbology}>
                 {symbology}
               </option>
             ))}
-          </select>
+          </Select>
           {/* EAN-13 wants exactly the digits it wants; the server refuses the
               rest with a warning rather than printing an unscannable code. */}
           <span className="block mt-1 text-xs text-bambu-gray">{t('labelEditor.symbologyHint')}</span>
@@ -215,15 +220,16 @@ export function ElementInspector({
         <>
           <label className="block text-xs text-bambu-gray">
             {t('labelEditor.swatchShape')}
-            <select
+            <Select
+              size="sm"
+              className="mt-1 w-full"
               value={element.shape ?? 'rect'}
               onChange={(e) => onChange({ ...element, shape: e.target.value as LabelSwatchShape })}
-              className="mt-1 w-full px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             >
               <option value="rect">{t('labelEditor.swatchShapeRect')}</option>
               <option value="circle">{t('labelEditor.swatchShapeCircle')}</option>
               <option value="rounded">{t('labelEditor.swatchShapeRounded')}</option>
-            </select>
+            </Select>
           </label>
           <p className="text-xs text-bambu-gray">{t('labelEditor.swatchHint')}</p>
         </>

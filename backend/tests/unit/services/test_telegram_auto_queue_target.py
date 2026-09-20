@@ -35,16 +35,32 @@ def _callback():
     return SimpleNamespace(answer=AsyncMock(), message=SimpleNamespace())
 
 
-async def _library_file(db, *, path: str | None = "library/cube.3mf") -> LibraryFile:
-    lib = LibraryFile(filename="cube.3mf", file_path=path, file_type="3mf", file_size=1)
+async def _library_file(db, tmp_path, *, path: str | None = "library/cube.3mf") -> LibraryFile:
+    from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+
+    if path is not None:
+        path = str(
+            write_routing_3mf(
+                tmp_path / "cube.3mf",
+                {
+                    1: [
+                        {"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"},
+                        {"id": 2, "type": "PETG", "color": "#FFFFFF", "used_g": "1"},
+                    ]
+                },
+            )
+        )
+    lib = LibraryFile(
+        filename="cube.3mf", file_path=path or str(tmp_path / "missing.3mf"), file_type="3mf", file_size=1
+    )
     db.add(lib)
     await db.commit()
     return lib
 
 
 @pytest.mark.asyncio
-async def test_a_model_target_creates_an_auto_queue_item(db_session, session_factory):
-    lib = await _library_file(db_session)
+async def test_a_model_target_creates_an_auto_queue_item(db_session, session_factory, tmp_path):
+    lib = await _library_file(db_session, tmp_path)
 
     with patch("backend.app.services.telegram_handlers.queue.render_queue", new=AsyncMock()):
         await _add_to_auto_queue(_callback(), "en", lib.id, "X2D", None)
@@ -57,11 +73,11 @@ async def test_a_model_target_creates_an_auto_queue_item(db_session, session_fac
 
 
 @pytest.mark.asyncio
-async def test_the_routing_requirements_come_out_of_the_3mf(db_session, session_factory):
+async def test_the_routing_requirements_come_out_of_the_3mf(db_session, session_factory, tmp_path):
     """Same inputs the web route fills in. An item queued from the bot that
     matched on model alone would behave differently from the same file queued
     from the browser — two behaviours for one action."""
-    lib = await _library_file(db_session)
+    lib = await _library_file(db_session, tmp_path)
     reqs = SimpleNamespace(required_filament_types=["PLA", "PETG"], target_model=None, print_time_seconds=None)
 
     with (
@@ -75,31 +91,20 @@ async def test_the_routing_requirements_come_out_of_the_3mf(db_session, session_
 
 
 @pytest.mark.asyncio
-async def test_a_file_we_cannot_read_still_queues_on_its_model(db_session, session_factory):
-    """⚠️ Refusing here would be worse than routing loosely: the operator
-    picked a target that is perfectly valid, and the extractor is documented
-    never to raise."""
-    lib = await _library_file(db_session)
-
-    with (
-        patch(
-            "backend.app.services.auto_queue_threemf.extract_auto_queue_requirements",
-            side_effect=OSError("truncated"),
-        ),
-        patch("backend.app.services.telegram_handlers.queue.render_queue", new=AsyncMock()),
-    ):
-        await _add_to_auto_queue(_callback(), "en", lib.id, "X2D", None)
-
-    item = (await db_session.execute(select(AutoQueueItem))).scalar_one()
-    assert item.target_model == "X2D"
-    assert item.required_filament_types is None
+async def test_an_unreadable_slice_is_refused_without_a_queue_row(db_session, session_factory, tmp_path):
+    lib = await _library_file(db_session, tmp_path, path=None)
+    callback = _callback()
+    with patch("backend.app.services.telegram_handlers.queue.render_queue", new=AsyncMock()):
+        await _add_to_auto_queue(callback, "en", lib.id, "X2D", None)
+    assert (await db_session.execute(select(AutoQueueItem))).scalars().all() == []
+    assert callback.answer.await_args.kwargs.get("show_alert") is True
 
 
 @pytest.mark.asyncio
-async def test_the_auto_queue_keeps_one_global_ordering(db_session, session_factory):
+async def test_the_auto_queue_keeps_one_global_ordering(db_session, session_factory, tmp_path):
     """Unlike the per-printer queues, this tier is a single list the
     distributor walks — so position counts across the whole table."""
-    lib = await _library_file(db_session)
+    lib = await _library_file(db_session, tmp_path)
     db_session.add(AutoQueueItem(library_file_id=lib.id, target_model="P1S", status="pending", position=7))
     await db_session.commit()
 
@@ -111,7 +116,7 @@ async def test_the_auto_queue_keeps_one_global_ordering(db_session, session_fact
 
 
 @pytest.mark.asyncio
-async def test_a_missing_file_is_refused_rather_than_queued_empty(db_session, session_factory):
+async def test_a_missing_file_is_refused_rather_than_queued_empty(db_session, session_factory, tmp_path):
     callback = _callback()
 
     with patch("backend.app.services.telegram_handlers.queue.render_queue", new=AsyncMock()):

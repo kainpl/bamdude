@@ -246,3 +246,45 @@ async def test_orca_sync_folds_pushed_profiles_instead_of_duplicating(db_session
     assert gone.orca_push_dirty is False
     assert gone.orca_pushed_updated_time is None
     assert by_name["Filtered @P1S"].orca_pushed_profile_id == "uuid-filtered"
+
+
+# --- updated_time is a String column; both clouds send it as a number (2026-09-07) ---
+
+
+def _with_numeric_update_time(payload):
+    """The Bambu fixture with every preset's update_time as the integer the cloud really sends."""
+    import copy
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "setting_id" in node:
+                node["update_time"] = 1782055611
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    clone = copy.deepcopy(payload)
+    walk(clone)
+    return clone
+
+
+def test_verbatim_keeps_none_and_turns_numbers_into_text():
+    assert sync._verbatim(None) is None
+    assert sync._verbatim(1782055611) == "1782055611"
+    assert sync._verbatim("2026-09-07T10:00:00Z") == "2026-09-07T10:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_bambu_numeric_update_time_is_stored_as_text(db_session):
+    """asyncpg refuses an int for a VARCHAR column ("expected str, got int") and
+    the whole sync tick failed; SQLite had been storing the int without a word."""
+    cloud = _bambu_cloud_mock()
+    cloud.get_slicer_settings = AsyncMock(return_value=_with_numeric_update_time(BAMBU))
+    with patch.object(sync, "_build_bambu_cloud", AsyncMock(return_value=cloud)):
+        outcome = await sync.sync_bambu_presets_for_user(db_session, None)
+    assert outcome.ok and outcome.upserted == 3
+    rows = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
+    assert rows and all(isinstance(r.updated_time, str) for r in rows)
+    assert {r.updated_time for r in rows} == {"1782055611"}

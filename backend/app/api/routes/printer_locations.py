@@ -18,6 +18,7 @@ from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.auto_queue import AutoQueueItem
+from backend.app.models.camera import Camera
 from backend.app.models.printer import Printer
 from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.smart_sensor import SmartSensor
@@ -37,13 +38,14 @@ from backend.app.services.printer_location_service import (
     path_of,
     would_cycle,
 )
+from backend.app.services.stagger_groups import StaggerSplit
 
 router = APIRouter(prefix="/printer-locations", tags=["printer-locations"])
 
 _NAME_TAKEN = "A location with this name already exists."
 
 
-async def _holders(db, location_id: int, *, count_archived_printers: bool = True) -> tuple[int, int, int]:
+async def _holders(db, location_id: int, *, count_archived_printers: bool = True) -> tuple[int, int, int, int]:
     """How many printers, sensors and queued items point at this place.
 
     ⚠️ **Two callers, two different questions, and the difference is archived
@@ -67,11 +69,15 @@ async def _holders(db, location_id: int, *, count_archived_printers: bool = True
     for model, column in (
         (SmartSensor, SmartSensor.location_id),
         (AutoQueueItem, AutoQueueItem.target_location_id),
+        # A standalone camera is filed under a place the same way an adopted
+        # sensor is, and its FK is RESTRICT for the same reason — but SQLite
+        # never enforces that, so this count is what actually refuses.
+        (Camera, Camera.location_id),
     ):
         counts.append(
             (await db.execute(select(func.count()).select_from(model).where(column == location_id))).scalar_one()
         )
-    return counts[0], counts[1], counts[2]
+    return counts[0], counts[1], counts[2], counts[3]
 
 
 async def _name_is_taken(db, name: str, parent_id: int | None, exclude_id: int | None = None) -> bool:
@@ -116,7 +122,7 @@ async def list_locations(
     tree = await load_tree(db)
     locations = []
     for row in rows:
-        printers, sensors, queued = await _holders(db, row.id, count_archived_printers=False)
+        printers, sensors, queued, cameras = await _holders(db, row.id, count_archived_printers=False)
         locations.append(
             PrinterLocationListItem(
                 id=row.id,
@@ -201,6 +207,14 @@ async def delete_location(
     row = await db.get(PrinterLocation, location_id)
     if row is None:
         raise HTTPException(status_code=404, detail="No such location.")
+    if location_id in (await StaggerSplit.from_settings(db)).location_ids:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This location is a staggered-start group. Un-choose it under "
+                "Settings → Printing → Queue & Scheduling → Staggered start first."
+            ),
+        )
     children = (
         await db.execute(
             select(func.count()).select_from(PrinterLocation).where(PrinterLocation.parent_id == location_id)
@@ -211,13 +225,13 @@ async def delete_location(
             status_code=409,
             detail=f"This location holds {children} other location(s). Remove or move them first.",
         )
-    printers, sensors, queued = await _holders(db, location_id)
-    if printers or sensors or queued:
+    printers, sensors, queued, cameras = await _holders(db, location_id)
+    if printers or sensors or queued or cameras:
         raise HTTPException(
             status_code=409,
             detail=(
                 f"This location is still in use: {printers} printer(s), {sensors} sensor(s), "
-                f"{queued} queued item(s). Move them first."
+                f"{queued} queued item(s), {cameras} camera(s). Move them first."
             ),
         )
     await db.delete(row)

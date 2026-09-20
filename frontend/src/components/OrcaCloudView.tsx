@@ -161,7 +161,7 @@ export function OrcaCloudView() {
   return (
     <div>
       {connected && (
-        <div className="flex items-center justify-between p-3 mb-6 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+        <div className="flex items-center justify-between p-3 mb-4 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
           <div className="flex items-center gap-3">
             <div className="w-2 h-2 rounded-full bg-bambu-green animate-pulse" />
             <span className="text-sm text-bambu-gray">
@@ -254,12 +254,12 @@ function ConnectCard({ pairing, connectError, onConnect, onCancel, isStarting, c
         <CardContent className="p-8 text-center max-w-md mx-auto">
           <Cloud className="w-12 h-12 text-bambu-green mx-auto mb-4" />
           <h2 className="text-xl font-bold text-white mb-2">{t('profiles.orcaCloud.device.title')}</h2>
-          <p className="text-bambu-gray mb-6">{t('profiles.orcaCloud.device.instruction')}</p>
+          <p className="text-bambu-gray mb-4">{t('profiles.orcaCloud.device.instruction')}</p>
 
           <p className="text-xs uppercase tracking-wide text-bambu-gray mb-2">
             {t('profiles.orcaCloud.device.codeLabel')}
           </p>
-          <div className="mb-6 py-3 px-4 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg">
+          <div className="mb-4 py-3 px-4 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg">
             <span className="text-2xl font-mono font-bold tracking-[0.3em] text-white select-all">
               {pairing.user_code}
             </span>
@@ -271,7 +271,7 @@ function ConnectCard({ pairing, connectError, onConnect, onCancel, isStarting, c
               {t('profiles.orcaCloud.device.openButton')}
             </Button>
           </a>
-          <p className="text-xs text-bambu-gray break-all mb-6">
+          <p className="text-xs text-bambu-gray break-all mb-4">
             {t('profiles.orcaCloud.device.manualHint', { url: pairing.verification_uri })}
           </p>
 
@@ -292,7 +292,7 @@ function ConnectCard({ pairing, connectError, onConnect, onCancel, isStarting, c
       <CardContent className="p-8 text-center">
         <Cloud className="w-12 h-12 text-bambu-green mx-auto mb-4" />
         <h2 className="text-xl font-bold text-white mb-2">{t('profiles.orcaCloud.connect.title')}</h2>
-        <p className="text-bambu-gray mb-6 max-w-xl mx-auto">{t('profiles.orcaCloud.connect.description')}</p>
+        <p className="text-bambu-gray mb-4 max-w-xl mx-auto">{t('profiles.orcaCloud.connect.description')}</p>
         <div className="max-w-sm mx-auto">
           <Button
             onClick={onConnect}

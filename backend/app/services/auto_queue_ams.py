@@ -30,20 +30,13 @@ from __future__ import annotations
 
 import json
 import logging
-import xml.etree.ElementTree as ET
-import zipfile
-from pathlib import Path
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.config import settings as app_settings
-from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
-from backend.app.models.library import LibraryFile
+from backend.app.services import ams_advertised_overlay as overlay
 from backend.app.services.print_scheduler import _canonical_filament_type
 from backend.app.services.printer_manager import printer_manager
-from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 
 logger = logging.getLogger(__name__)
 
@@ -77,104 +70,31 @@ def _colors_are_similar(color1: str | None, color2: str | None, threshold: int =
         return False
 
 
-async def _resolve_source_path(db: AsyncSession, item: AutoQueueItem) -> Path | None:
-    """Return the on-disk path of the 3MF for an auto-queue item."""
-    if item.archive_id:
-        result = await db.execute(select(PrintArchive).where(PrintArchive.id == item.archive_id))
-        archive = result.scalar_one_or_none()
-        if archive and archive.file_path:
-            return app_settings.base_dir / archive.file_path
-    elif item.library_file_id:
-        result = await db.execute(select(LibraryFile).where(LibraryFile.id == item.library_file_id))
-        lib = result.scalar_one_or_none()
-        if lib and lib.file_path:
-            p = Path(lib.file_path)
-            return p if p.is_absolute() else app_settings.base_dir / lib.file_path
-    return None
-
-
 async def get_filament_requirements(db: AsyncSession, item: AutoQueueItem) -> list[dict] | None:
-    """Extract per-slot filament requirements from the source 3MF.
+    """Read exact plate-scoped requirements; never merge all file channels."""
+    from backend.app.services.filament_intake import read_item_requirements
 
-    Each entry: ``{slot_id, type, color, tray_info_idx, used_grams,
-    nozzle_id?}``. Filters by ``item.plate_id`` if set; otherwise returns
-    all filaments with ``used_g > 0``. Returns ``None`` on missing /
-    unparseable file.
-
-    Mirrors upstream ``PrintScheduler._get_filament_requirements`` but
-    targets AutoQueueItem.
-    """
-    file_path = await _resolve_source_path(db, item)
-    if not file_path or not file_path.exists():
+    requirements = await read_item_requirements(db, item)
+    if requirements.status != "ok":
         return None
-
-    filaments: list[dict] = []
-    try:
-        with zipfile.ZipFile(file_path, "r") as zf:
-            if "Metadata/slice_info.config" not in zf.namelist():
-                return None
-
-            content = zf.read("Metadata/slice_info.config").decode()
-            root = ET.fromstring(content)
-
-            plate_id = item.plate_id
-
-            def _collect(filament_elems):
-                for fel in filament_elems:
-                    fid = fel.get("id")
-                    used_g_str = fel.get("used_g", "0")
-                    try:
-                        used_g = float(used_g_str)
-                    except (ValueError, TypeError):
-                        continue
-                    if used_g > 0 and fid:
-                        filaments.append(
-                            {
-                                "slot_id": int(fid),
-                                "type": fel.get("type", ""),
-                                "color": fel.get("color", ""),
-                                "tray_info_idx": fel.get("tray_info_idx", ""),
-                                "used_grams": round(used_g, 1),
-                            }
-                        )
-
-            if plate_id:
-                for plate_elem in root.findall("./plate"):
-                    idx = None
-                    for meta in plate_elem.findall("metadata"):
-                        if meta.get("key") == "index":
-                            try:
-                                idx = int(meta.get("value", "0"))
-                            except (ValueError, TypeError):
-                                idx = None
-                            break
-                    if idx == plate_id:
-                        _collect(plate_elem.findall("./filament"))
-                        break
-            else:
-                _collect(root.findall("./filament"))
-
-            filaments.sort(key=lambda x: x["slot_id"])
-
-            # Dual-nozzle (H2D, H2D Pro) extruder mapping
-            nozzle_mapping = extract_nozzle_mapping_from_3mf(zf)
-            if nozzle_mapping:
-                for f in filaments:
-                    f["nozzle_id"] = nozzle_mapping.get(f["slot_id"])
-    except Exception as e:
-        logger.warning("Failed to parse filament requirements for auto item %s: %s", item.id, e)
-        return None
-
-    return filaments or None
+    item.plate_id = requirements.resolved_plate_id
+    return [dict(f) for f in requirements.used_filaments]
 
 
-def build_loaded_filaments(status) -> list[dict]:
+def build_loaded_filaments(status, printer_id: int | None = None) -> list[dict]:
     """Build the loaded-filaments list from a printer status object.
 
     Each entry: ``{type, color, tray_info_idx, ams_id, tray_id, is_ht,
-    is_external, global_tray_id, extruder_id, remain}``.
+    is_external, global_tray_id, extruder_id, remain, tray_uuid, tag_uid}``.
 
     Mirrors upstream ``PrintScheduler._build_loaded_filaments``.
+
+    ``printer_id``: when given, an AMS slot we advertised under a different
+    profile (``ams_advertised_overlay``) reports the spool it REALLY holds —
+    the same treatment ``PrintScheduler._build_loaded_filaments`` gets, and for
+    the same reason: every reader that reasons about the SPOOL must see through
+    the mask, or the mapping lands on the wrong tray and the low-filament
+    announcement names a colour nobody loaded.
     """
     filaments: list[dict] = []
     raw = status.raw_data
@@ -189,12 +109,21 @@ def build_loaded_filaments(status) -> list[dict]:
             if not tray_type:
                 continue
             tray_id = int(tray.get("id", 0))
+            tray_color = tray.get("tray_color", "")
+            tray_info_idx = tray.get("tray_info_idx", "")
+            entry = overlay.effective(printer_id, ams_id, tray_id, tray) if printer_id is not None else None
+            if entry is not None:
+                tray_type, tray_color, tray_info_idx = (
+                    entry.actual_material,
+                    entry.actual_color,
+                    entry.actual_variant,
+                )
             global_tray_id = ams_id if ams_id >= 128 else ams_id * 4 + tray_id
             filaments.append(
                 {
                     "type": tray_type,
-                    "color": _normalize_color(tray.get("tray_color", "")),
-                    "tray_info_idx": tray.get("tray_info_idx", ""),
+                    "color": _normalize_color(tray_color),
+                    "tray_info_idx": tray_info_idx,
                     "ams_id": ams_id,
                     "tray_id": tray_id,
                     "is_ht": is_ht,
@@ -202,6 +131,10 @@ def build_loaded_filaments(status) -> list[dict]:
                     "global_tray_id": global_tray_id,
                     "extruder_id": ams_extruder_map.get(str(ams_id)),
                     "remain": tray.get("remain", -1),
+                    # The spool's identity, for anything that must say "still the
+                    # same spool" across syncs (the low-filament announcement).
+                    "tray_uuid": tray.get("tray_uuid", ""),
+                    "tag_uid": tray.get("tag_uid", ""),
                 }
             )
 
@@ -221,6 +154,8 @@ def build_loaded_filaments(status) -> list[dict]:
                 "global_tray_id": tray_id,
                 "extruder_id": (255 - tray_id) if ams_extruder_map else None,
                 "remain": vt.get("remain", -1),
+                "tray_uuid": vt.get("tray_uuid", ""),
+                "tag_uid": vt.get("tag_uid", ""),
             }
         )
 
@@ -394,7 +329,7 @@ async def compute_ams_mapping_for_printer(
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning("Failed to apply filament_overrides for auto item %s: %s", item.id, e)
 
-    loaded = build_loaded_filaments(status)
+    loaded = build_loaded_filaments(status, printer_id)
     if not loaded:
         return None
 

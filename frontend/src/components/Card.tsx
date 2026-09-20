@@ -29,12 +29,12 @@ export function Card({ children, className = '', onClick, onContextMenu, pointer
 
 export function CardHeader({ children, className = '' }: CardProps) {
   return (
-    <div className={`px-6 py-4 border-b border-bambu-dark-tertiary ${className}`}>
+    <div className={`px-4 py-4 border-b border-bambu-dark-tertiary ${className}`}>
       {children}
     </div>
   );
 }
 
 export function CardContent({ children, className = '' }: CardProps) {
-  return <div className={`p-6 ${className}`}>{children}</div>;
+  return <div className={`p-4 ${className}`}>{children}</div>;
 }

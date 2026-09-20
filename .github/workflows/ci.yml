@@ -148,18 +148,38 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
-      # ⚠️ 20, not 10. On 2026-08-18 the whole suite passed — 8702 tests — and
-      # the job still failed, because it finished in 601.71s against a 10-minute
-      # step timeout. Two seconds. The ceiling was set when the suite was
-      # smaller and had quietly become a coin toss on a green run, which is the
-      # worst kind of gate: it fails without naming anything. Per-test
-      # `--timeout=60` is what actually catches a hung test; this number only
-      # needs to be comfortably above however long the suite honestly takes.
+      # ⚠️ 35, not 20, and for the second time the same reason. On 2026-08-18 the
+      # whole suite passed — 8702 tests — and the job failed anyway, finishing in
+      # 601.71s against a 10-minute ceiling. Two seconds. Raising it to 20 bought
+      # room for a while; by 2026-09-18 the suite was 14112 tests and took 17:41,
+      # i.e. 2 minutes 19 seconds of margin, and the next run timed out at 57%
+      # having simply been ~33% slower end to end — no hung test, no regression,
+      # just a slower runner (the same commits take 609-627s locally, flat).
+      # A ceiling with minutes of headroom on a job that grows every week is a
+      # coin toss, and it is the worst kind of gate: it fails without naming
+      # anything. Per-test `--timeout=60` is what actually catches a hung test;
+      # this number only needs to sit comfortably above an honest slow run.
+      # ⚠️ From the REPO ROOT, not `cd backend`. Some tests resolve paths
+      # against the repository and one spawns `python -m
+      # backend.app.camera_worker`, which needs the root importable; run from
+      # `backend/` they fail on the directory, not on the code. The runner has
+      # no `.env`, so CAMERA_RUNTIME already defaults to inline — it is set
+      # explicitly so this line and the one contributors run are the same
+      # command, and so the default cannot drift out from under CI silently.
+      # See CONTRIBUTING.md#testing.
       - name: Run tests
-        timeout-minutes: 20
-        run: |
-          cd backend
-          python -m pytest tests/ -v --tb=short --timeout=60 --timeout-method=thread -n auto
+        timeout-minutes: 35
+        env:
+          CAMERA_RUNTIME: inline
+        # ⚠️ `-n 4`, deliberately not `auto`. `auto` gave TWO workers here
+        # (measured: only gw0 and gw1 in the log), while the same suite runs on
+        # twelve locally. The interesting part is the ratio: six times fewer
+        # workers cost only ~1.7x the wall time (17:41 against roughly 10:00),
+        # which says this suite waits on I/O and fixture setup far more than it
+        # computes. In that regime more processes than cores still win, because
+        # the extra ones run while the others block. Baseline to compare against:
+        # 1061s at `-n auto` on 2026-09-17.
+        run: python -m pytest backend/tests/ -v --tb=short --timeout=60 --timeout-method=thread -n 4
 
   postgres-scenarios:
     name: PostgreSQL Scenarios
@@ -300,7 +320,12 @@ jobs:
 
       - name: Run TypeScript check
         working-directory: frontend
-        run: npx tsc --noEmit
+        # ⚠️ `npm run typecheck` (`tsc -b --noEmit`), never a bare `tsc --noEmit`:
+        # the root tsconfig is `{"files": [], "references": [...]}`, so without
+        # `-b` the compiler enters no file and exits 0 on anything at all. This
+        # step was that no-op. The script walks all three projects, tests
+        # included.
+        run: npm run typecheck
 
   frontend-tests:
     name: Frontend Tests

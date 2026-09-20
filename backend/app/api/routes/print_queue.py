@@ -1,17 +1,16 @@
 """API routes for print queue management."""
 
+import asyncio
 import json
 import logging
 import uuid
 import zipfile
-from collections import OrderedDict
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
 
-import defusedxml.ElementTree as ET
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy import func, inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -23,8 +22,10 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
+from backend.app.models.queue_source import FORMAT_GCODE, STATE_READY, QueueSource
 from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import derive_mode, normalize_mode
+from backend.app.schemas.farm_forecast import FarmForecastOut
 from backend.app.schemas.print_queue import (
     PrintQueueBatchCreate,
     PrintQueueBulkUpdate,
@@ -32,108 +33,35 @@ from backend.app.schemas.print_queue import (
     PrintQueueItemCreate,
     PrintQueueItemResponse,
     PrintQueueItemUpdate,
+    PrintQueueNextBatchCreate,
     PrintQueueReorder,
+    QueueCopySourceProfile,
 )
+from backend.app.services import farm_forecast, queue_sources
+from backend.app.services.filament_intake import (
+    item_descriptor,
+    loaded_descriptor,
+    require_source_requirements,
+    routing_detail,
+    source_display_filename,
+)
+from backend.app.services.filament_policy import decode
+from backend.app.services.filament_policy_write import routing_update
+from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.notification_service import notification_service
-from backend.app.services.queue_add import add_items_to_printer_queue
+from backend.app.services.queue_add import add_items_to_printer_queue, add_next_block_to_printer_queue
+from backend.app.services.queue_ops import queue_scope_lock
+from backend.app.services.queue_source_capture import refusal, reusing_sources
+from backend.app.services.queue_source_descriptor import source_storage_state
+from backend.app.services.queue_sources import QueueSourceError
+from backend.app.services.queue_times import plate_metadata_cached, plate_metadata_for_row, plate_picture_for_row
+from backend.app.services.source_io import SourceUnavailable
 from backend.app.utils.printer_models import is_gcode_compatible
-from backend.app.utils.threemf_tools import extract_bed_type_from_3mf, extract_filament_usage_from_3mf
+from backend.app.utils.threemf_tools import plate_picture_entry
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/queue", tags=["queue"])
-
-
-def _extract_print_time_from_3mf(file_path: Path, plate_id: int | None = None) -> int | None:
-    """Extract print time (prediction) from a 3MF file.
-
-    Args:
-        file_path: Path to the 3MF file
-        plate_id: Optional plate index to filter for (for multi-plate files)
-
-    Returns:
-        Print time in seconds, or None if not found
-    """
-    try:
-        with zipfile.ZipFile(file_path, "r") as zf:
-            if "Metadata/slice_info.config" not in zf.namelist():
-                return None
-
-            content = zf.read("Metadata/slice_info.config").decode()
-            root = ET.fromstring(content)
-
-            if plate_id is not None:
-                for plate_elem in root.findall(".//plate"):
-                    plate_index = None
-                    for meta in plate_elem.findall("metadata"):
-                        if meta.get("key") == "index":
-                            try:
-                                plate_index = int(meta.get("value", "0"))
-                            except ValueError:
-                                pass  # Skip plate with unparseable index
-                            break
-
-                    if plate_index == plate_id:
-                        for meta in plate_elem.findall("metadata"):
-                            if meta.get("key") == "prediction":
-                                try:
-                                    return int(meta.get("value", "0"))
-                                except ValueError:
-                                    return None
-                        break
-            else:
-                plate_elem = root.find(".//plate")
-                if plate_elem is not None:
-                    for meta in plate_elem.findall("metadata"):
-                        if meta.get("key") == "prediction":
-                            try:
-                                return int(meta.get("value", "0"))
-                            except ValueError:
-                                return None
-    except Exception as e:
-        logger.warning("Failed to extract print time from %s: %s", file_path, e)
-
-    return None
-
-
-# Per-plate 3MF metadata cache for queue listing (#2573). A queue poll enriches
-# every row, and each row previously opened + parsed its 3MF THREE times (print
-# time, filament usage, bed type). On a farm with a busy queue, several browsers
-# polling every few seconds re-parsed the same unchanged files constantly. Cache
-# the combined (print_time, filament_grams, bed_type) tuple keyed by file
-# revision — an unchanged file is parsed at most once; a replaced/edited file
-# (different mtime/size) re-parses automatically. LRU-bounded so it can't grow
-# without limit. Locked because FastAPI runs handlers across a thread pool.
-_PLATE_META_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
-_PLATE_META_LOCK = Lock()
-_PLATE_META_MAX = 512
-
-
-def _plate_metadata_cached(file_path: Path, plate_id: int | None) -> tuple[int | None, float, str | None]:
-    """Return (print_time_seconds, filament_grams, bed_type) for a plate, cached
-    by file revision so queue polling parses each 3MF once instead of 3x (#2573)."""
-    try:
-        st = file_path.stat()
-    except OSError:
-        return None, 0.0, None
-    key = (str(file_path), plate_id, st.st_mtime_ns, st.st_size)
-    with _PLATE_META_LOCK:
-        hit = _PLATE_META_CACHE.get(key)
-        if hit is not None:
-            _PLATE_META_CACHE.move_to_end(key)
-            return hit
-
-    print_time = _extract_print_time_from_3mf(file_path, plate_id)
-    filament_grams = sum(f["used_g"] for f in extract_filament_usage_from_3mf(file_path, plate_id))
-    bed_type = extract_bed_type_from_3mf(file_path, plate_id)
-    result: tuple[int | None, float, str | None] = (print_time, filament_grams, bed_type)
-
-    with _PLATE_META_LOCK:
-        _PLATE_META_CACHE[key] = result
-        _PLATE_META_CACHE.move_to_end(key)
-        while len(_PLATE_META_CACHE) > _PLATE_META_MAX:
-            _PLATE_META_CACHE.popitem(last=False)
-    return result
 
 
 # The three tri-state calibration fields. Each has a legacy bool column
@@ -153,7 +81,20 @@ def _set_calibration_mode(item: PrintQueueItem, field: str, value) -> None:
 
 
 def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
-    """Add nested archive/printer/library_file info to response."""
+    """Add nested archive/printer/library_file info to response.
+
+    ⚠️ **The job's own captured bytes describe it, not its original rows** (m173,
+    spec §4, A09). Those rows may be gone — trashed, purged, retention-swept —
+    while the job still prints perfectly, and before this read such a row came
+    back untimed, unplated and named ``File #undefined``. ``descriptor`` is the
+    snapshot when the query eager-loaded ``queue_source``; the archive / library
+    branches below still fill everything they always did, so a legacy row is
+    answered byte-identically and a snapshotted row whose rows survive simply has
+    its three per-plate numbers and its name come out of the frozen copy instead.
+    """
+    descriptor = loaded_descriptor(item)
+    source = item.queue_source if descriptor is not None else None
+    snapshot_time, snapshot_grams, snapshot_bed = plate_metadata_for_row(plate_id=item.plate_id, descriptor=descriptor)
     # Parse ams_mapping from JSON string BEFORE model_validate
     ams_mapping_parsed = None
     if item.ams_mapping:
@@ -178,6 +119,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "queue_id": item.queue_id,
         "printer_id": item.printer_id,  # convenience property from queue
         "project_id": item.project_id,
+        "project_line_id": item.project_line_id,
         "waiting_reason": item.waiting_reason,
         "archive_id": item.archive_id,
         "library_file_id": item.library_file_id,
@@ -187,6 +129,8 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "manual_start": item.manual_start,
         "require_previous_success": item.require_previous_success,
         "ams_mapping": ams_mapping_parsed,
+        "filament_routing": (value if isinstance(value := decode(item.filament_routing), dict) else None),
+        "origin": item.origin,
         "plate_id": item.plate_id,
         "bed_levelling": derive_mode(item.bed_levelling_mode, item.bed_levelling),
         "flow_cali": derive_mode(item.flow_cali_mode, item.flow_cali),
@@ -213,8 +157,35 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         # User tracking (Issue #206)
         "created_by_id": item.created_by_id,
         "created_by_username": item.created_by.username if item.created_by else None,
+        # m173. ``blob_state`` comes from the row the query eager-loads for
+        # ``descriptor`` below; a caller that did not load it answers ``legacy``,
+        # because ``ready`` is a promise that the bytes are there and this builder
+        # may not make one it has not checked.
+        "source_storage": source_storage_state(
+            queue_source_id=item.queue_source_id,
+            blob_state=source.state if source is not None else None,
+            origin=item.origin,
+            is_calibration=item.is_calibration,
+        ),
+        "source_size_bytes": source.size_bytes if source is not None else None,
+        # Whether this row's own bytes render its plate (spec §4 / A09). A job
+        # whose original rows are gone has no id from which the frontend could
+        # build a thumbnail URL, so it has to be TOLD that it has a picture —
+        # inferring one from the format would put a broken image on every 3MF that
+        # carries no render, and on every raw G-code source. Costs a namelist read
+        # per (object, plate) per process, cached beside the per-plate metadata;
+        # the picture itself is served by ``get_source_thumbnail`` below, which
+        # this list deliberately never calls.
+        "source_thumbnail": plate_picture_for_row(plate_id=item.plate_id, descriptor=descriptor) is not None,
     }
     response = PrintQueueItemResponse(**item_dict)
+    # ⚠️ Only when the relationship is already loaded. This runs in async
+    # request handlers, where touching an unloaded relationship is not a lazy
+    # query but a MissingGreenlet — and not every caller eager-loads the order.
+    # An endpoint that did not load it answers ``project_name=None``; the ones
+    # the copy-queue dialog reads from do load it.
+    if item.project_id is not None and "project" not in sa_inspect(item).unloaded:
+        response.project_name = item.project.name if item.project else None
     if item.archive:
         # Soft-deleted (trashed) archive: the row survives but its files are
         # gone from disk. Suppress the archive-derived surface so we never
@@ -234,10 +205,23 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
             response.nozzle_diameter = item.archive.nozzle_diameter
             response.sliced_for_model = item.archive.sliced_for_model
             response.bed_type = item.archive.bed_type
-            if item.plate_id:
+            # ⚠️ ``descriptor is None``: a job that owns its bytes is never
+            # described from the ORIGINAL's file. The columns above are fair — they
+            # were read out of the bytes this job accepted — but the file on disk
+            # may have been re-sliced since (A03), and a card showing a number out
+            # of bytes the job will not print is the thing this feature exists to
+            # stop. The snapshot's own three values are applied below.
+            if item.plate_id and descriptor is None:
                 archive_path = settings.base_dir / item.archive.file_path
-                if archive_path.exists():
-                    plate_time, plate_weight, plate_bed = _plate_metadata_cached(archive_path, item.plate_id)
+                # ⚠️ ``is_file()``, never ``exists()``. An archive created at
+                # print start carries ``file_path=""`` until its 3MF is fetched,
+                # and an empty path resolves to ``base_dir`` — a directory,
+                # which ``exists()`` happily confirms. The three parsers below
+                # then each opened the data directory as a ZIP and logged
+                # "Failed to extract print time from /app/data: Is a directory"
+                # every time a browser polled the queue during that window.
+                if archive_path.is_file():
+                    plate_time, plate_weight, plate_bed = plate_metadata_cached(archive_path, item.plate_id)
                     if plate_time is not None:
                         response.print_time_seconds = plate_time
                     if plate_weight > 0:
@@ -261,17 +245,44 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
             response.nozzle_diameter = item.library_file.file_metadata.get("nozzle_diameter")
             response.sliced_for_model = item.library_file.file_metadata.get("sliced_for_model")
             response.bed_type = item.library_file.file_metadata.get("bed_type")
-        if item.plate_id:
+        # Same rule as the archive branch above: not for a job with a snapshot.
+        if item.plate_id and descriptor is None:
             lib_path = Path(item.library_file.file_path)
             library_file_path = lib_path if lib_path.is_absolute() else settings.base_dir / item.library_file.file_path
-            if library_file_path.exists():
-                plate_time, plate_weight, plate_bed = _plate_metadata_cached(library_file_path, item.plate_id)
+            # Same guard as the archive branch above — a blank ``file_path``
+            # resolves to a directory, not to nothing.
+            if library_file_path.is_file():
+                plate_time, plate_weight, plate_bed = plate_metadata_cached(library_file_path, item.plate_id)
                 if plate_time is not None:
                     response.print_time_seconds = plate_time
                 if plate_weight > 0:
                     response.filament_used_grams = plate_weight
                 if plate_bed:
                     response.bed_type = plate_bed
+    if descriptor is not None:
+        # LAST, so the frozen copy outranks both rows. Each value is applied only
+        # when the snapshot actually has it: a plate with no ``prediction`` leaves
+        # the row's own recorded COLUMN standing, which came out of these same
+        # bytes — the original's *file* was already excluded above.
+        if snapshot_time is not None:
+            response.print_time_seconds = snapshot_time
+        if snapshot_grams > 0:
+            response.filament_used_grams = snapshot_grams
+        if snapshot_bed:
+            response.bed_type = snapshot_bed
+        if not response.archive_name and not response.library_file_name:
+            # ``QueueCard`` renders ``archive_name || library_file_name ||
+            # 'File #' + (archive_id || library_file_id)`` — with both ids NULL the
+            # third answer is "File #undefined", so the job's own display name is
+            # the only thing that can name it. It goes in the field its provenance
+            # would have filled, and never as the object's hash, which
+            # ``source_display_filename`` refuses (§4, A04).
+            with suppress(SourceUnavailable):
+                name = source_display_filename(descriptor)
+                if descriptor.provenance.get("kind") == "archive":
+                    response.archive_name = name
+                else:
+                    response.library_file_name = name
     if item.queue and item.queue.printer:
         response.printer_name = item.queue.printer.name
     return response
@@ -286,6 +297,17 @@ async def get_stagger_state(
     from backend.app.services.print_scheduler import scheduler as print_scheduler
 
     return await print_scheduler.get_stagger_state_snapshot(db)
+
+
+@router.get("/forecast", response_model=FarmForecastOut)
+async def get_queue_forecast(
+    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.QUEUE_READ)
+):
+    """When the last printer is free, given what the queues already hold — the
+    number the queue page's stats bar shows (spec 2026-09-06, Decision 5)."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    farm = farm_forecast.simulate_farm(await farm_forecast.load_snapshot(db, now))
+    return FarmForecastOut.of(now, farm)
 
 
 @router.get("/", response_model=list[PrintQueueItemResponse])
@@ -306,9 +328,11 @@ async def list_queue(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .order_by(PrintQueueItem.queue_id, PrintQueueItem.position)
     )
@@ -358,10 +382,22 @@ async def add_to_queue(
     current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
 ):
     """Add an item to the print queue."""
+    # Queue creation alone may append work, but moving it in front of someone
+    # else's pending jobs is a reorder operation. API keys map both permissions
+    # to their existing ``can_queue`` scope; a signed-in user is checked here.
+    if (
+        data.enqueue_position == "next"
+        and current_user is not None
+        and not current_user.has_permission(Permission.QUEUE_REORDER.value)
+    ):
+        raise HTTPException(403, "Missing permission: queue:reorder")
     # Every gate, the advisory lock, the position and the build live in
     # ``services/queue_add`` so the file manager's bulk add cannot become a
     # second definition of what a queue item is.
     items, queue = await add_items_to_printer_queue(db, data, current_user)
+    # Captured before the re-query below, which fetches one row by id: the
+    # service's own list is the only place every created row is named.
+    created_item_ids = [i.id for i in items]
     item = items[0]
 
     # Re-query with full eager loading (queue→printer chain)
@@ -369,15 +405,23 @@ async def add_to_queue(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == item.id)
     )
     item = result.scalar_one()
 
-    source_name = f"archive {data.archive_id}" if data.archive_id else f"library file {data.library_file_id}"
+    source_name = (
+        f"queue source {data.source_queue_item_id}"
+        if data.source_queue_item_id
+        else f"archive {data.archive_id}"
+        if data.archive_id
+        else f"library file {data.library_file_id}"
+    )
     target_desc = queue.printer.name if queue.printer else f"queue {data.queue_id}"
     logger.info("Added %s to queue for %s", source_name, target_desc)
 
@@ -415,7 +459,35 @@ async def add_to_queue(
     except Exception:
         pass  # Don't fail queue add if notification fails
 
-    return _enrich_response(item)
+    response = _enrich_response(item)
+    response.created_item_ids = created_item_ids
+    return response
+
+
+@router.post("/next-block", response_model=list[PrintQueueItemResponse])
+async def add_next_block_to_queue(
+    data: PrintQueueNextBatchCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
+):
+    """Insert several plates as one contiguous urgent block for one printer."""
+    if current_user is not None and not current_user.has_permission(Permission.QUEUE_REORDER.value):
+        raise HTTPException(403, "Missing permission: queue:reorder")
+    items, _queue = await add_next_block_to_printer_queue(db, data.items, current_user)
+    result = await db.execute(
+        select(PrintQueueItem)
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.library_file),
+            selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
+        )
+        .where(PrintQueueItem.id.in_([item.id for item in items]))
+        .order_by(PrintQueueItem.position, PrintQueueItem.id)
+    )
+    return [_enrich_response(item) for item in result.scalars().all()]
 
 
 @router.patch("/bulk", response_model=PrintQueueBulkUpdateResponse)
@@ -467,7 +539,10 @@ async def bulk_update_queue_items(
             skipped_count += 1
             continue
 
-        for field, value in update_data.items():
+        item_update = await routing_update(db, item, update_data)
+        if isinstance(item_update.get("ams_mapping"), list):
+            item_update["ams_mapping"] = json.dumps(item_update["ams_mapping"])
+        for field, value in item_update.items():
             if field in _CALI_MODE_FIELDS:
                 _set_calibration_mode(item, field, value)
             else:
@@ -482,6 +557,90 @@ async def bulk_update_queue_items(
         skipped_count=skipped_count,
         message=f"Updated {updated_count} items"
         + (f", skipped {skipped_count} non-pending/not-owned" if skipped_count else ""),
+    )
+
+
+def _read_copy_source_plates(path: Path) -> list[dict]:
+    """Parse one managed 3MF off the event loop for the Copy Queue dialog."""
+    from backend.app.services.archive import parse_plates_from_3mf
+
+    with zipfile.ZipFile(path, "r") as zf:
+        plates = parse_plates_from_3mf(zf)
+    # The existing archive/library thumbnail URLs name their mutable originals.
+    # A profile must never produce one; the selected source row's own thumbnail
+    # endpoint remains the only snapshot picture surface.
+    return [{**plate, "thumbnail_url": None} for plate in plates]
+
+
+@router.get("/{item_id}/copy-source", response_model=QueueCopySourceProfile)
+async def get_queue_copy_source(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.QUEUE_READ_ALL,
+            Permission.QUEUE_READ_OWN,
+        )
+    ),
+):
+    """Return the saved source profile needed to copy one queue row.
+
+    This endpoint is deliberately queue-read scoped and refuses a legacy or
+    broken source.  It never loads the item's archive or library relationship:
+    those rows may have been deleted, and their current bytes are irrelevant.
+    """
+    current_user, can_read_all = auth_result
+    item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(404, "Queue item not found")
+    if (
+        current_user is not None
+        and not can_read_all
+        and (item.created_by_id is None or item.created_by_id != current_user.id)
+    ):
+        raise HTTPException(404, "Queue item not found")
+
+    descriptor = await item_descriptor(db, item)
+    if descriptor is None or descriptor.queue_source_id is None:
+        raise HTTPException(422, routing_detail("source_unreadable"))
+    source = await db.get(QueueSource, descriptor.queue_source_id)
+    if source is None or source.state != STATE_READY:
+        raise HTTPException(422, routing_detail("source_unreadable"))
+    try:
+        filename = source_display_filename(descriptor)
+    except SourceUnavailable:
+        raise HTTPException(422, routing_detail("source_unreadable")) from None
+
+    try:
+        async with queue_sources.pin(descriptor.queue_source_id):
+            requirements = await require_source_requirements(
+                PrintRequirementsCache(),
+                plate_id=item.plate_id,
+                allow_raw_gcode=True,
+                descriptor=descriptor,
+            )
+            plates = (
+                []
+                if descriptor.format == FORMAT_GCODE
+                else await asyncio.to_thread(_read_copy_source_plates, descriptor.path)
+            )
+    except HTTPException:
+        raise
+    except (OSError, SourceUnavailable, zipfile.BadZipFile):
+        raise HTTPException(422, routing_detail("source_unreadable")) from None
+
+    filename_lower = filename.lower()
+    return QueueCopySourceProfile(
+        item_id=item.id,
+        filename=filename,
+        sliced_for_model=requirements.model if requirements is not None else None,
+        swap_compatible=(
+            filename_lower.endswith((".swap.3mf", ".swaps.3mf"))
+            or ".swap." in filename_lower
+            or ".swaps." in filename_lower
+        ),
+        plates=plates,
+        is_multi_plate=len(plates) > 1,
     )
 
 
@@ -502,9 +661,11 @@ async def get_queue_item(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == item_id)
     )
@@ -518,6 +679,95 @@ async def get_queue_item(
     ):
         raise HTTPException(404, "Queue item not found")
     return _enrich_response(item)
+
+
+def _read_plate_picture(path: Path, plate_id: int | None) -> bytes | None:
+    """The PNG bytes of one plate's render, read off the loop (S10).
+
+    ``None`` — never an exception — for a container that is gone, is not a ZIP, or
+    simply does not render this plate: a missing picture is not an error (spec §4).
+    The entry is named by :func:`~backend.app.utils.threemf_tools.plate_picture_entry`,
+    the same resolver the list's flag asks, so the two cannot disagree about which
+    plate was meant.
+    """
+    try:
+        with zipfile.ZipFile(path, "r") as zf:
+            entry = plate_picture_entry(zf, plate_id)
+            return None if entry is None else zf.read(entry)
+    except (OSError, zipfile.BadZipFile, KeyError):
+        return None
+
+
+@router.get("/{item_id}/source-thumbnail")
+async def get_source_thumbnail(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.QUEUE_READ_ALL,
+            Permission.QUEUE_READ_OWN,
+        )
+    ),
+):
+    """The picture of a queued job's own captured bytes (m173, spec §4 / A09).
+
+    A job that owns a snapshot prints after its library file or archive is gone —
+    and must be able to SHOW itself after that too, which no ``archive_id`` /
+    ``library_file_id`` URL can do. So the plate's render is served straight out
+    of the job's object here, and the list's ``source_thumbnail`` flag says in
+    advance whether there is one.
+
+    ⚠️ **Not a public route**, unlike the legacy ``/archives/{id}/thumbnail`` and
+    ``/library/files/{id}/thumbnail`` beside it. A picture is content: it is
+    behind the same ``queue:read_all`` / ``queue:read_own`` split ``GET /queue/``
+    uses and answers 404 — never 403 — on a row the caller may not see, so a
+    refusal does not confirm that an id exists. That is also why the frontend
+    fetches it with the bearer token and hands an object URL to ``<img>`` instead
+    of threading a camera stream token through the URL: the stream token carries
+    no identity at all, so it could not express "their row, not yours".
+
+    ⚠️ **The bytes are read under a GC pin** (§9), so the collector cannot unlink
+    the object between the decision and the read, and off the event loop, because
+    it is a ZIP read (S10).
+
+    404 covers every kind of "no picture", and each is an ordinary state rather
+    than a failure: a legacy row, a raw G-code source, a plate the slicer never
+    rendered, a ``broken`` blob whose bytes are gone. The caller draws its empty
+    state; nothing here retries and nothing 500s.
+    """
+    current_user, can_read_all = auth_result
+    item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    if (
+        current_user is not None
+        and not can_read_all
+        and (item.created_by_id is None or item.created_by_id != current_user.id)
+    ):
+        raise HTTPException(404, "Queue item not found")
+
+    # The ONE way a job's source is resolved (§7): never a path rebuilt from an
+    # original row, which is exactly the trap this feature closed.
+    descriptor = await item_descriptor(db, item)
+    if descriptor is None or descriptor.queue_source_id is None:
+        raise HTTPException(404, "No plate picture for this job")
+
+    plate_id = item.plate_id or descriptor.plate_fallback
+    async with queue_sources.pin(descriptor.queue_source_id):
+        data = await asyncio.to_thread(_read_plate_picture, descriptor.path, plate_id)
+    if data is None:
+        raise HTTPException(404, "No plate picture for this job")
+
+    # A content-addressed object never changes, so (hash, plate) is an exact
+    # validator and the browser may keep the picture for as long as it likes.
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, max-age=86400",
+            "ETag": f'"{descriptor.sha256}-{plate_id}"',
+        },
+    )
 
 
 @router.patch("/{item_id}", response_model=PrintQueueItemResponse)
@@ -583,6 +833,8 @@ async def update_queue_item(
                     f"File was sliced for {sliced_for} and cannot be dispatched to a {printer_model} printer",
                 )
 
+    update_data = await routing_update(db, item, update_data)
+
     # Serialize ams_mapping to JSON for TEXT column storage
     if "ams_mapping" in update_data:
         update_data["ams_mapping"] = json.dumps(update_data["ams_mapping"]) if update_data["ams_mapping"] else None
@@ -615,9 +867,11 @@ async def update_queue_item(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == item_id)
     )
@@ -879,6 +1133,7 @@ async def start_queue_item(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
         )
         .where(PrintQueueItem.id == item_id)
@@ -913,9 +1168,11 @@ async def start_queue_item(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == item_id)
     )
@@ -1011,6 +1268,10 @@ async def clone_item_endpoint(
     source has one (so the new copy becomes a sibling in the same
     batch).  ``scope='batch'`` — clone the entire batch into a new
     batch.  Returns the first cloned item.
+
+    ⚠️ m173: a clone becomes a second owner of the original's captured bytes, so it
+    is refused when those bytes are not printable — with the capture taxonomy's own
+    status, mapped here and nowhere else (spec §6).
     """
     from backend.app.services.queue_counters import update_queue_counters
     from backend.app.services.queue_ops import clone_batch, clone_item
@@ -1019,30 +1280,35 @@ async def clone_item_endpoint(
     if not src:
         raise HTTPException(404, "Queue item not found")
 
-    if scope == "batch":
-        if not src.batch_id:
-            raise HTTPException(400, "Item is not part of a batch")
-        clones = await clone_batch(db, src.batch_id)
-        if not clones:
-            raise HTTPException(400, "No pending items in batch to clone")
-        await update_queue_counters(db, clones[0].queue_id)
-        await db.commit()
-        first = clones[0]
-    else:
-        first = await clone_item(db, item_id, keep_batch=True)
-        if first is None:
-            raise HTTPException(500, "Clone failed")
-        await update_queue_counters(db, first.queue_id)
-        await db.commit()
+    try:
+        if scope == "batch":
+            if not src.batch_id:
+                raise HTTPException(400, "Item is not part of a batch")
+            clones = await clone_batch(db, src.batch_id)
+            if not clones:
+                raise HTTPException(400, "No pending items in batch to clone")
+            await update_queue_counters(db, clones[0].queue_id)
+            await db.commit()
+            first = clones[0]
+        else:
+            first = await clone_item(db, item_id, keep_batch=True)
+            if first is None:
+                raise HTTPException(500, "Clone failed")
+            await update_queue_counters(db, first.queue_id)
+            await db.commit()
+    except QueueSourceError as exc:
+        raise refusal(exc) from exc
 
     # Re-fetch with full eager loading for response.
     result = await db.execute(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == first.id)
     )
@@ -1107,6 +1373,11 @@ async def unskip_item(
     putting it back in the queue has to mean "I have dealt with that failure".
     The blocking row is marked ``gate_acknowledged``, which drops it out of the
     lookback for every item behind it too, not just this one.
+
+    ⚠️ m173: putting a row back into the queue re-arms it on the bytes it already
+    owns — never a new read of its original (spec §7, A08). The blob is therefore
+    asked for under the storage guard and the re-arm is written under it, and a blob
+    that is not ``ready`` leaves the row skipped rather than pending-and-doomed.
     """
     from backend.app.services.queue_counters import update_queue_counters
 
@@ -1116,20 +1387,27 @@ async def unskip_item(
     if item.status != "skipped":
         raise HTTPException(400, f"Only skipped items can be unskipped, current status: '{item.status}'")
 
-    if item.require_previous_success:
-        await _acknowledge_blocking_failure(db, item.queue_id)
+    from backend.app.services.filament_policy import restore_routing_source
 
-    max_pos = (
-        await db.execute(
-            select(func.max(PrintQueueItem.position))
-            .where(PrintQueueItem.queue_id == item.queue_id)
-            .where(PrintQueueItem.status == "pending")
-        )
-    ).scalar() or 0
-    item.status = "pending"
-    item.position = max_pos + 1
-    await update_queue_counters(db, item.queue_id)
-    await db.commit()
+    try:
+        async with reusing_sources(db, [item.queue_source_id]), queue_scope_lock(db, item.queue_id):
+            if item.require_previous_success:
+                await _acknowledge_blocking_failure(db, item.queue_id)
+
+            max_pos = (
+                await db.execute(
+                    select(func.max(PrintQueueItem.position))
+                    .where(PrintQueueItem.queue_id == item.queue_id)
+                    .where(PrintQueueItem.status == "pending")
+                )
+            ).scalar() or 0
+            restore_routing_source(item)
+            item.status = "pending"
+            item.position = max_pos + 1
+            await update_queue_counters(db, item.queue_id)
+            await db.commit()
+    except QueueSourceError as exc:
+        raise refusal(exc) from exc
     return {"status": "pending", "item_id": item_id}
 
 
@@ -1174,6 +1452,12 @@ async def retry_failed_item(
     (user-initiated cancel during dispatch) items. The "retry"/"restart"
     distinction is presentation-level only — backend state machine is the
     same: terminal → pending, error_message cleared, position appended.
+
+    ⚠️ m173: a retry re-runs the bytes this row already owns — the failure it is
+    retrying may well have been the original going away, so nothing here reads it
+    (spec §7, A08). The blob is asked for under the storage guard and the re-arm is
+    written under it; bytes that are not ``ready`` leave the row terminal, where the
+    operator can see it, rather than pending and certain to fail again.
     """
     from backend.app.services.queue_counters import update_queue_counters
 
@@ -1183,27 +1467,36 @@ async def retry_failed_item(
     if item.status not in ("failed", "cancelled"):
         raise HTTPException(400, f"Only failed or cancelled items can be retried, current status: '{item.status}'")
 
-    max_pos = (
-        await db.execute(
-            select(func.max(PrintQueueItem.position))
-            .where(PrintQueueItem.queue_id == item.queue_id)
-            .where(PrintQueueItem.status == "pending")
-        )
-    ).scalar() or 0
-    item.status = "pending"
-    item.position = max_pos + 1
-    item.error_message = None
-    item.completed_at = None
-    await update_queue_counters(db, item.queue_id)
-    await db.commit()
+    from backend.app.services.filament_policy import restore_routing_source
+
+    try:
+        async with reusing_sources(db, [item.queue_source_id]), queue_scope_lock(db, item.queue_id):
+            max_pos = (
+                await db.execute(
+                    select(func.max(PrintQueueItem.position))
+                    .where(PrintQueueItem.queue_id == item.queue_id)
+                    .where(PrintQueueItem.status == "pending")
+                )
+            ).scalar() or 0
+            restore_routing_source(item)
+            item.status = "pending"
+            item.position = max_pos + 1
+            item.error_message = None
+            item.completed_at = None
+            await update_queue_counters(db, item.queue_id)
+            await db.commit()
+    except QueueSourceError as exc:
+        raise refusal(exc) from exc
 
     result = await db.execute(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
             selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
         )
         .where(PrintQueueItem.id == item_id)
     )
@@ -1415,7 +1708,10 @@ async def update_batch(
         update_data["selected_macro_ids"] = json.dumps(ids) if ids is not None else None
 
     for item in pending:
-        for field, value in update_data.items():
+        item_update = await routing_update(db, item, update_data)
+        if isinstance(item_update.get("ams_mapping"), list):
+            item_update["ams_mapping"] = json.dumps(item_update["ams_mapping"])
+        for field, value in item_update.items():
             if field in _CALI_MODE_FIELDS:
                 _set_calibration_mode(item, field, value)
             else:
@@ -1436,6 +1732,12 @@ async def clone_batch_endpoint(
     ``scope='one'`` — add one more copy to the same batch (appended).
     ``scope='batch'`` — create a whole new batch with the same
     configuration as the source.
+
+    ⚠️ m173: the SECOND door onto ``clone_item`` / ``clone_batch``, and therefore
+    the second that has to answer the capture taxonomy. Both services refuse a
+    blob that is not ``ready``, and an unmapped refusal here leaves as a bare 500
+    — on the operator's screen the difference between "the file is unreadable" and
+    "BamDude is broken", and the frontend branches on ``detail.code``.
     """
     from backend.app.services.queue_counters import update_queue_counters
     from backend.app.services.queue_ops import clone_batch, clone_item, get_batch_pending_items
@@ -1445,19 +1747,22 @@ async def clone_batch_endpoint(
         raise HTTPException(404, "No pending items in batch")
     queue_id = pending[0].queue_id
 
-    if scope == "one":
-        new_item = await clone_item(db, pending[0].id, keep_batch=True)
-        if new_item is None:
+    try:
+        if scope == "one":
+            new_item = await clone_item(db, pending[0].id, keep_batch=True)
+            if new_item is None:
+                raise HTTPException(500, "Clone failed")
+            await update_queue_counters(db, queue_id)
+            await db.commit()
+            return {"cloned": 1, "scope": "one", "batch_id": batch_id, "new_item_id": new_item.id}
+
+        clones = await clone_batch(db, batch_id)
+        if not clones:
             raise HTTPException(500, "Clone failed")
         await update_queue_counters(db, queue_id)
         await db.commit()
-        return {"cloned": 1, "scope": "one", "batch_id": batch_id, "new_item_id": new_item.id}
-
-    clones = await clone_batch(db, batch_id)
-    if not clones:
-        raise HTTPException(500, "Clone failed")
-    await update_queue_counters(db, queue_id)
-    await db.commit()
+    except QueueSourceError as exc:
+        raise refusal(exc) from exc
     return {
         "cloned": len(clones),
         "scope": "batch",

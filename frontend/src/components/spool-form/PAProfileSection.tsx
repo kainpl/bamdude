@@ -104,7 +104,7 @@ export function PAProfileSection({
 
   if (!formData.material) {
     return (
-      <div className="p-6 bg-bambu-dark rounded-lg text-center">
+      <div className="p-4 bg-bambu-dark rounded-lg text-center">
         <p className="text-bambu-gray">
           {t('inventory.selectMaterialFirst')}
         </p>
@@ -114,7 +114,7 @@ export function PAProfileSection({
 
   if (loading) {
     return (
-      <div className="p-6 bg-bambu-dark rounded-lg flex items-center justify-center gap-3">
+      <div className="p-4 bg-bambu-dark rounded-lg flex items-center justify-center gap-3">
         <Loader2 className="w-5 h-5 text-bambu-green animate-spin" />
         <p className="text-bambu-gray">
           {t('inventory.loadingPrinterProfiles')}
@@ -125,7 +125,7 @@ export function PAProfileSection({
 
   if (printersWithCalibrations.length === 0) {
     return (
-      <div className="p-6 bg-bambu-dark rounded-lg text-center">
+      <div className="p-4 bg-bambu-dark rounded-lg text-center">
         <p className="text-bambu-gray">
           {t('inventory.noPrintersConfigured')}
         </p>
@@ -155,7 +155,7 @@ export function PAProfileSection({
           type="checkbox"
           checked={isSelected}
           onChange={() => toggleProfileSelected(String(printer.id), cal.cali_idx, cal.extruder_id)}
-          className="w-4 h-4 rounded border-bambu-dark-tertiary text-bambu-green focus:ring-bambu-green"
+          className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary text-bambu-green focus:ring-bambu-green"
         />
         <div className="flex-1 min-w-0">
           <span className={`text-sm font-medium ${isSelected ? 'text-bambu-green' : 'text-white'}`}>

@@ -705,6 +705,26 @@ def journal_touched_trays(events: list) -> set[int]:
     return {e.global_tray_id for e in (events or []) if e.global_tray_id is not None}
 
 
+def loaded_trays_in_slicer_order(lookup: dict, presence: dict[int, bool]) -> list[int]:
+    """Global tray ids in the order the slicer numbers its filament slots.
+
+    BambuStudio compacts the list — its slot N is the Nth tray the machine
+    OFFERS, not the Nth physical position, so an empty AMS slot must not take a
+    number (#1607: a "3 loaded + 1 empty + external" layout sent the slicer's
+    4th filament into the empty slot and the external's usage went unrecorded).
+
+    ⚠️ **"Offered" means the presence sensor, not a known filament type.** BS
+    filters on ``is_exists`` — ``DevMapping.cpp`` refuses a mapping into a slot
+    that is not there, and the mapping pick list is built the same way — so a
+    slot holding an unlabelled reel (no RFID, never configured) IS counted by
+    the slicer while carrying no ``tray_type``. Filtering on the type instead
+    dropped it and shifted every later slot down one, charging the print to the
+    wrong spool. A slot with no presence reading (external holders have no bit;
+    an old push may carry none) falls back to the type, which is all there is.
+    """
+    return sorted(gid for gid, info in lookup.items() if presence.get(gid, bool(info.get("tray_type"))))
+
+
 def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple[int, int | None, int | None]]:
     """Spool-change boundaries for ONE tray: ``[(start_layer, spool_id, spoolman_id)]``.
 
@@ -721,6 +741,7 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
     from backend.app.models.print_usage_event import (
         EVENT_RUNOUT,
         EVENT_SPOOL_LOADED,
+        EVENT_START,
         EVENT_TRAY_CHANGE,
         KIND_AMBIGUOUS,
         KIND_AUTOSWITCH,
@@ -730,6 +751,43 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
     runouts = [e for e in (events or []) if e.event == EVENT_RUNOUT and e.global_tray_id == global_tray_id]
     if not runouts:
         return []
+
+    # ── The backup that took over BEFORE the first layer ──────────────────
+    # When the AMS backs up away from an empty mapped slot at print start,
+    # ``tray_now`` is ALREADY the backup by the time the journal's ``start``
+    # lands, so no ``tray_change`` ever fires and the autoswitch branch below
+    # has nothing to name the feeder with. Measured live (printer 1,
+    # 2026-08-30/31): six prints in a row charged nobody — 939 g — while the
+    # journal's own start event said "this print began feeding from tray 3,
+    # spool 291" the whole time. A mapped tray that never held a spool owns no
+    # share of the print, so the feeder owns all of it.
+    # Deliberately narrow: a tray with its own spool really did feed part of
+    # the print, and a ``tray_change`` to another tray is stronger evidence
+    # than the start — both keep the per-episode loop below.
+    if all(r.spool_id is None for r in runouts) and any(r.kind == KIND_AUTOSWITCH for r in runouts):
+        # ⚠️ Scoped to the runout's own window — the SAME window the per-episode
+        # backup lookup below searches (after the runout, at its layer or the
+        # next). Asked of the whole print instead, an ordinary tray change 60
+        # layers later disarmed this rescue while offering no backup in its
+        # place, and the print was charged to nobody — or, once the operator
+        # filled the empty slot, to a reel that had never fed a gram. The guard
+        # must not be wider than the evidence it defers to.
+        moved_elsewhere = any(
+            e.event == EVENT_TRAY_CHANGE
+            and e.global_tray_id is not None
+            and e.global_tray_id != global_tray_id
+            and any(e.id > r.id and e.layer_num <= r.layer_num + 1 for r in runouts)
+            for e in events
+        )
+        start = next((e for e in events if e.event == EVENT_START), None)
+        if (
+            not moved_elsewhere
+            and start is not None
+            and start.spool_id is not None
+            and start.global_tray_id is not None
+            and start.global_tray_id != global_tray_id
+        ):
+            return [(0, start.spool_id, start.spoolman_spool_id)]
 
     loads = [e for e in events if e.event == EVENT_SPOOL_LOADED and e.global_tray_id == global_tray_id]
 
@@ -747,10 +805,17 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
             if loaded is not None:
                 segments.append((runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id))
             continue
-        if loaded is not None:
-            segments.append((runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id))
-        elif runout.kind == KIND_AUTOSWITCH:
-            backup = next(
+        # ⚠️ The backup is asked FIRST, and only an autoswitch has one. A
+        # tray_change is bounded to the runout's own layer — it says who fed the
+        # print from that layer; a spool_loaded can be any distance later and
+        # says only that a reel now sits in the slot that emptied. Preferring
+        # the looser evidence charged the segment starting at the runout layer
+        # to a reel that had not been in the machine yet: printer 10, archive
+        # 838, slot 3 empty at layer 0, backed up to slot 2 at layer 0, refilled
+        # by hand at layer 28 — and the whole stretch booked to the layer-28
+        # reel while its five sibling prints had each charged the backup.
+        backup = (
+            next(
                 (
                     e
                     for e in events
@@ -762,19 +827,45 @@ def journal_boundaries_for_tray(events: list, global_tray_id: int) -> list[tuple
                 ),
                 None,
             )
-            if backup is not None:
-                segments.append((runout.layer_num, backup.spool_id, backup.spoolman_spool_id))
-            else:
-                # The backup feeder can't be named — better an under-count on
-                # the backup spool than grams on a guess; the origin zeroes out.
-                segments.append((runout.layer_num, None, None))
+            if runout.kind == KIND_AUTOSWITCH
+            else None
+        )
+        if backup is not None:
+            segments.append((runout.layer_num, backup.spool_id, backup.spoolman_spool_id))
+        elif loaded is not None:
+            # Nothing backed the tray up — the refilled reel is the only feeder
+            # there is (the human topped up the very tray that ran out).
+            segments.append((runout.layer_num, loaded.spool_id, loaded.spoolman_spool_id))
+        elif runout.kind == KIND_AUTOSWITCH:
+            # The backup feeder can't be named — better an under-count on
+            # the backup spool than grams on a guess; the origin zeroes out.
+            segments.append((runout.layer_num, None, None))
         else:
             # Resumed without a detectable replacement — the same spool (or a
             # splice) kept feeding; the zero correction self-consistently
             # closes it at label_weight after the print rows.
             segments.append((runout.layer_num, runout.spool_id, runout.spoolman_spool_id))
 
-    return segments if len(segments) > 1 else []
+    # A boundary that does not change the spool is not a boundary. Printer 5,
+    # archive 822 (2026-08-31): a jam at layer 405 that the firmware escalated
+    # from `ambiguous` to a definite `external` runout skipped the guard above
+    # and opened a segment feeding the SAME spool, so one continuous stretch was
+    # written as two history rows and read as a double charge. Merging keeps the
+    # layers with the spool that laid them; only the redundant row disappears.
+    # ⚠️ Never below two segments: when the journal is the ONLY thing naming
+    # the spool (no live assignment), a single-segment result reads as "no
+    # split" and the print is charged to nobody — a lone same-spool runout must
+    # keep its pair. On a cancelled print the tail is then 0 g and the caller
+    # skips it anyway.
+    merged: list[tuple[int, int | None, int | None]] = []
+    for seg in segments:
+        if merged and seg[1] is not None and merged[-1][1] == seg[1] and merged[-1][2] == seg[2]:
+            continue
+        merged.append(seg)
+    if len(merged) < 2:
+        merged = segments
+
+    return merged if len(merged) > 1 else []
 
 
 def _add_autoswitch_purge(
@@ -1237,6 +1328,7 @@ async def on_print_complete(
     db: AsyncSession,
     archive_id: int | None = None,
     ams_mapping: list[int] | None = None,
+    expected_print_name: str | None = None,
 ) -> list[dict]:
     """Compute consumption deltas and update spool weight_used/last_used.
 
@@ -1262,6 +1354,14 @@ async def on_print_complete(
         except Exception:
             logger.exception("[UsageTracker] Failed to restore print session for printer %d", printer_id)
         session = _active_sessions.pop(printer_id, None)
+
+    # Reconcile-driven completions name the print they are closing. A session
+    # that belongs to a DIFFERENT print (the printer moved on during an
+    # unsupervised gap) must not lend its mapping — put it back untouched and
+    # book from the 3MF estimate alone.
+    if session is not None and expected_print_name and session.print_name and session.print_name != expected_print_name:
+        _active_sessions[printer_id] = session
+        session = None
 
     # The caller's mapping comes from the MQTT request-topic capture and the
     # in-memory ``_print_ams_mappings`` dict, both of which a restart destroys.
@@ -1991,19 +2091,20 @@ async def _track_from_3mf(
                 _state = printer_manager.get_status(printer_id)
                 _raw = getattr(_state, "raw_data", None) if _state else None
                 if _raw:
+                    from backend.app.services.print_usage_journal import slot_presence_by_tray
                     from backend.app.services.spoolman_tracking import build_ams_tray_lookup
 
-                    # Filter out AMS slots with no spool loaded (empty tray_type):
-                    # BambuStudio/OrcaSlicer compact the slot list when assigning
-                    # filaments and don't expose empty AMS slots, so the slicer's
-                    # 3MF slot N maps to the Nth *loaded* tray, not the Nth physical
-                    # position. Without this, a "3 AMS loaded + 1 empty + external"
-                    # layout routed the slicer's 4th filament to the empty AMS slot
-                    # instead of the external, and the external's usage was never
-                    # recorded (#1607). vt_tray entries are already filtered this
-                    # way inside build_ams_tray_lookup — mirror it for AMS here.
+                    # Skip AMS slots the machine does not offer: BambuStudio and
+                    # OrcaSlicer compact the slot list, so the 3MF's slot N is the
+                    # Nth OCCUPIED tray, not the Nth physical position. Without
+                    # this, a "3 AMS loaded + 1 empty + external" layout routed the
+                    # slicer's 4th filament into the empty AMS slot and the
+                    # external's usage was never recorded (#1607). vt_tray entries
+                    # are already filtered inside build_ams_tray_lookup.
+                    # ⚠️ Occupancy is the presence sensor, never the filament type
+                    # — see ``loaded_trays_in_slicer_order``.
                     _lookup = build_ams_tray_lookup(_raw)
-                    available_trays = sorted(gid for gid, info in _lookup.items() if info.get("tray_type"))
+                    available_trays = loaded_trays_in_slicer_order(_lookup, slot_presence_by_tray(_raw))
                     if slot_id <= len(available_trays):
                         global_tray_id = available_trays[slot_id - 1]
             # Final fallback: slot_id - 1 (legacy, works for pure AMS without external spools)
@@ -2045,7 +2146,11 @@ async def _track_from_3mf(
             if journal_events and len(tray_changes) <= 1
             else []
         )
-        if len(journal_segs) > 1:
+        # One segment is a real answer, not "no split": it is the whole print on
+        # the spool that fed it when the mapped slot was empty from the start
+        # (see ``journal_boundaries_for_tray``). ``compute_layer_segment_grams``
+        # gives that single boundary the whole weight as its remainder.
+        if journal_segs:
             if layer_grams and slot_id in layer_grams:
                 total_weight = layer_grams[slot_id]
             else:

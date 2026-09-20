@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import smtplib
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
@@ -21,6 +22,8 @@ from backend.app.api.routes._url_safety import assert_safe_lan_service_url
 from backend.app.core.config import APP_VERSION
 from backend.app.models.notification import NotificationDigestQueue, NotificationLog, NotificationProvider
 from backend.app.models.notification_template import NotificationTemplate
+from backend.app.services import notification_inbox
+from backend.app.services.notification_events import SENSOR_ALERT_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +242,8 @@ class NotificationService:
                 return await self._send_webhook(config, title, message, event_type="test")
             elif provider_type == "homeassistant":
                 return await self._send_homeassistant(config, title, message, db=db)
+            elif provider_type == "signal":
+                return await self._send_signal(config, title, message)
             else:
                 return False, f"Unknown provider type: {provider_type}"
         except Exception as e:
@@ -475,6 +480,16 @@ class NotificationService:
             )
         return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
+    @staticmethod
+    def _passes_progress_floor(effective_floor: int, estimated_minutes: float | None) -> bool:
+        """#28: does a progress milestone clear a duration floor?
+
+        A floor of 0 (or less) means "always send"; an unknown duration
+        estimate fails open — a notification sent to somebody who set a floor
+        is a smaller wrong than one guessed away.
+        """
+        return effective_floor <= 0 or estimated_minutes is None or estimated_minutes >= effective_floor
+
     async def _send_telegram_to_chats(
         self,
         config: dict,
@@ -484,8 +499,14 @@ class NotificationService:
         event_type: str = "unknown",
         printer_id: int | None = None,
         extra_data: dict | None = None,
+        chat_filter: Callable[[Any], bool] | None = None,
     ) -> tuple[bool, str]:
-        """Send Telegram notification to all active chats subscribed to this event."""
+        """Send Telegram notification to all active chats subscribed to this event.
+
+        ``chat_filter`` lets an event apply per-chat criteria beyond
+        ``notify_events`` — today the progress-milestone duration floor (#28),
+        which is per chat because that is telegram's whole authority model.
+        """
         bot_token = config.get("bot_token", "").strip()
         if not bot_token:
             return False, "Bot token is required"
@@ -509,8 +530,14 @@ class NotificationService:
         if not chats:
             return False, "No active Telegram chats configured"
 
-        # Filter chats subscribed to this event
-        target_chats = [c for c in chats if c.should_notify(event_type)]
+        # Filter chats subscribed to this event, inside their printer scope
+        # (m157 — NULL scope = every printer, unattributed events pass for
+        # all), plus the event's own per-chat criteria, when it brought any.
+        target_chats = [
+            c
+            for c in chats
+            if c.should_notify(event_type) and c.allows_printer(printer_id) and (chat_filter is None or chat_filter(c))
+        ]
         if not target_chats:
             return True, f"No chats subscribed to {event_type}"
 
@@ -962,6 +989,83 @@ class NotificationService:
         except Exception as e:
             return False, f"Webhook error: {str(e)}"
 
+    async def _send_signal(
+        self,
+        config: dict,
+        title: str,
+        message: str,
+        image_data: bytes | None = None,
+    ) -> tuple[bool, str]:
+        """Send notification via a self-hosted signal-cli-rest-api instance.
+
+        signal-cli-rest-api's /v2/send cannot mix individual recipient numbers
+        and a group ID in the same request, so recipient_type picks one shape
+        or the other rather than accepting one generic recipients list.
+        """
+        server = config.get("server", "").strip().rstrip("/")
+        # signal-cli-rest-api's own docs/Postman collections show the full
+        # /v2/send (or legacy /v1/send) endpoint, so pasting that whole URL
+        # here is the natural mistake - normalise it back to the base URL
+        # rather than doubling the path onto a 404.
+        for suffix in ("/v2/send", "/v1/send"):
+            if server.lower().endswith(suffix):
+                server = server[: -len(suffix)]
+                break
+        sender_number = config.get("sender_number", "").strip()
+        recipient_type = config.get("recipient_type", "numbers").strip()
+        auth_header = config.get("auth_header", "").strip()
+
+        if not server or not sender_number:
+            return False, "Signal API URL and sender number are required"
+
+        # Same reasoning as ntfy/webhook: signal-cli-rest-api is routinely
+        # self-hosted on the same box or LAN, so the LAN-service policy
+        # applies rather than a blanket private-address block.
+        try:
+            assert_safe_lan_service_url(server, label="Signal API URL")
+        except ValueError as exc:
+            return False, str(exc)
+
+        if recipient_type == "group":
+            group_id = config.get("group_id", "").strip()
+            if not group_id:
+                return False, "Group ID is required"
+            recipients = [group_id if group_id.startswith("group.") else f"group.{group_id}"]
+        else:
+            recipients = [n.strip() for n in config.get("numbers", "").split(",") if n.strip()]
+            if not recipients:
+                return False, "At least one recipient number is required"
+
+        payload: dict[str, Any] = {
+            "message": f"{title}\n{message}",
+            "number": sender_number,
+            "recipients": recipients,
+        }
+
+        if image_data:
+            import base64
+
+            payload["base64_attachments"] = [base64.b64encode(image_data).decode("ascii")]
+
+        headers = {"Content-Type": "application/json"}
+        if auth_header:
+            # Support "Bearer token" or just "token" format
+            if " " in auth_header:
+                headers["Authorization"] = auth_header
+            else:
+                headers["Authorization"] = f"Bearer {auth_header}"
+
+        client = await self._get_client()
+        try:
+            response = await client.post(f"{server}/v2/send", json=payload, headers=headers)
+
+            if response.status_code in (200, 201, 202, 204):
+                return True, "Message sent successfully"
+            else:
+                return False, f"HTTP {response.status_code}: {response.text[:200]}"
+        except Exception as e:
+            return False, f"Signal error: {str(e)}"
+
     async def _send_homeassistant(
         self, config: dict, title: str, message: str, db: AsyncSession | None = None
     ) -> tuple[bool, str]:
@@ -1075,6 +1179,7 @@ class NotificationService:
         printer_id: int | None = None,
         extra_data: dict | None = None,
         variables: dict[str, Any] | None = None,
+        chat_filter: Callable[[Any], bool] | None = None,
     ) -> tuple[bool, str]:
         """Send notification to a specific provider."""
         # Check quiet hours (skip for Telegram - handled per-chat)
@@ -1102,6 +1207,7 @@ class NotificationService:
                     event_type=event_type,
                     printer_id=printer_id,
                     extra_data=extra_data,
+                    chat_filter=chat_filter,
                 )
             elif provider.provider_type == "email":
                 # finish_photo_url is pulled from the rendered template variables
@@ -1119,6 +1225,8 @@ class NotificationService:
                 )
             elif provider.provider_type == "homeassistant":
                 return await self._send_homeassistant(config, title, message, db=db)
+            elif provider.provider_type == "signal":
+                return await self._send_signal(config, title, message, image_data=image_data)
             else:
                 return False, f"Unknown provider type: {provider.provider_type}"
         except Exception as e:
@@ -1172,17 +1280,46 @@ class NotificationService:
                             # ``pending > 0``, so the message announcing the LAST
                             # print in a queue carried no control at all \u2014 which
                             # is exactly when repeating is wanted. Repeat re-arms
-                            # the row that just finished; see services/plate_hold.
-                            buttons.append(
-                                [
+                            # the row that just finished; see services/plate_hold \u2014
+                            # and is offered only when that row exists, because
+                            # the gate can be armed over nothing (2026-09-04).
+                            from backend.app.services.plate_hold import repeat_available
+
+                            answers = []
+                            if await repeat_available(printer_id):
+                                answers.append(
                                     InlineKeyboardButton(
                                         text=f"\U0001f501 {t(lang, NS, 'printers.btn_repeat_print')}",
                                         callback_data=f"action:repeat_print:{printer_id}",
-                                    ),
+                                    )
+                                )
+                            answers.append(
+                                InlineKeyboardButton(
+                                    text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
+                                    callback_data=f"action:clear_plate:{printer_id}",
+                                )
+                            )
+                            buttons.append(answers)
+
+                        # «Брак…» on the completion message, gate or no gate — for
+                        # the print this message ANNOUNCES and no other (spec
+                        # 2026-09-11 §5). The id travels in ``extra_data`` from
+                        # ``on_print_complete``; when it is absent there is no
+                        # button at all. ⚠️ Never guess it from "the printer's
+                        # newest completed archive": ``main.py`` sends this very
+                        # notification on a path that could not identify the
+                        # archive, and the guess then offered the PREVIOUS plate's
+                        # parts — every tap writing defects, and a free-stock
+                        # ledger correction, against the wrong print. Nothing for
+                        # a failed print: there is nothing good on the plate to grade.
+                        graded_archive_id = (extra_data or {}).get("archive_id")
+                        if event_type == "print_complete" and graded_archive_id:
+                            buttons.append(
+                                [
                                     InlineKeyboardButton(
-                                        text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
-                                        callback_data=f"action:clear_plate:{printer_id}",
-                                    ),
+                                        text=f"\U0001f9ee {t(lang, NS, 'defects.btn_defects')}",
+                                        callback_data=f"action:defects:{int(graded_archive_id)}",
+                                    )
                                 ]
                             )
 
@@ -1275,34 +1412,33 @@ class NotificationService:
         want.
         """
         enabled_filter = NotificationProvider.enabled.is_(True)
-        printer_filter = None
-        if printer_id is not None:
-            printer_filter = (NotificationProvider.printer_id.is_(None)) | (
-                NotificationProvider.printer_id == printer_id
-            )
 
         # Telegram: ignore on_* — always include if enabled.
         telegram_q = select(NotificationProvider).where(
             enabled_filter,
             NotificationProvider.provider_type == "telegram",
         )
-        # Non-telegram: keep the legacy provider-level event gate.
+        # Non-telegram: the provider-level event gate — a JSON subscription
+        # list since m157, so membership is decided in Python on the fetched
+        # rows (a handful per install) rather than in SQL.
         other_q = select(NotificationProvider).where(
             enabled_filter,
             NotificationProvider.provider_type != "telegram",
-            getattr(NotificationProvider, event_field).is_(True),
         )
-        if printer_filter is not None:
-            telegram_q = telegram_q.where(printer_filter)
-            other_q = other_q.where(printer_filter)
-
-        if unscoped_only:
-            telegram_q = telegram_q.where(NotificationProvider.printer_id.is_(None))
-            other_q = other_q.where(NotificationProvider.printer_id.is_(None))
-
         with db.no_autoflush:
             rows = list((await db.execute(telegram_q)).scalars().all())
-            rows.extend((await db.execute(other_q)).scalars().all())
+            rows.extend(p for p in (await db.execute(other_q)).scalars().all() if p.wants_event(event_field))
+        # Printer scope (m157 3b — JSON list, decided in Python like the event
+        # gate): a scoped provider receives only its printers' events, and
+        # ``unscoped_only`` farm-wide news reaches unscoped providers only —
+        # the same semantics the single-printer binding had.
+        if unscoped_only:
+            rows = [p for p in rows if p.printer_ids is None]
+        else:
+            rows = [p for p in rows if p.allows_printer(printer_id)]
+        # The in-app inbox is a channel, not a row (spec §5.1): it rides every
+        # lookup so the callers' ``if not providers: return`` guards stay true.
+        rows.append(notification_inbox.INBOX_CHANNEL)
         return rows
 
     async def _log_notification(
@@ -1347,6 +1483,7 @@ class NotificationService:
         image_data: bytes | None = None,
         extra_data: dict | None = None,
         variables: dict[str, Any] | None = None,
+        chat_filter: Callable[[Any], bool] | None = None,
     ):
         """Send notification to multiple providers and log the results.
 
@@ -1359,7 +1496,33 @@ class NotificationService:
         the low-filament warning — believed they bypassed the digest and did
         not. Do not reintroduce it.
         """
+        # The inbox goes out BEFORE any network provider, whatever position it
+        # holds in the list. ``_get_providers_for_event`` appends the channel at
+        # the END (so the callers' ``if not providers: return`` guards see a
+        # non-empty list and no existing order moves), and delivering it in loop
+        # order would put a dead SMTP host's whole connect timeout between the
+        # event and the page — the exact delay this channel exists to avoid.
+        # Never logged to notification_logs: that is the journal of external
+        # deliveries and its provider_id is NOT NULL.
+        for channel in providers:
+            if channel.provider_type != "inbox":
+                continue
+            try:
+                await notification_inbox.deliver(
+                    db,
+                    event_type=event_type,
+                    title=title,
+                    message=message,
+                    printer_id=printer_id,
+                    printer_name=printer_name,
+                    extra_data=extra_data,
+                )
+            except Exception:
+                logger.exception("Inbox delivery failed for %s", event_type)
+
         for provider in providers:
+            if provider.provider_type == "inbox":
+                continue  # already delivered, above the loop
             try:
                 # Always send notification immediately
                 success, error = await self._send_to_provider(
@@ -1372,6 +1535,7 @@ class NotificationService:
                     printer_id=printer_id,
                     extra_data=extra_data,
                     variables=variables,
+                    chat_filter=chat_filter,
                 )
 
                 # Also queue for digest if enabled (digest is a summary, not a queue).
@@ -1422,6 +1586,33 @@ class NotificationService:
                     printer_id=printer_id,
                     printer_name=printer_name,
                 )
+
+    async def notify_in_app(
+        self,
+        db: AsyncSession,
+        event_type: str,
+        variables: dict[str, Any],
+        printer_id: int | None = None,
+        printer_name: str | None = None,
+        extra_data: dict | None = None,
+    ) -> list[int]:
+        """Raise an event for the in-app inbox only (spec §3.3, ``IN_APP_ONLY_EVENTS``).
+
+        Renders through the same templates as every other event and never looks
+        at providers. No caller today; the first in-app-only event brings one.
+        """
+        if printer_name and "printer" not in variables:
+            variables = {**variables, "printer": printer_name}
+        title, message = await self._build_message_from_template(db, event_type, variables)
+        return await notification_inbox.deliver(
+            db,
+            event_type=event_type,
+            title=title,
+            message=message,
+            printer_id=printer_id,
+            printer_name=printer_name,
+            extra_data=extra_data,
+        )
 
     async def on_print_start(
         self,
@@ -1605,6 +1796,11 @@ class NotificationService:
 
         logger.info("Found %s providers for %s: %s", len(providers), event_field, [p.name for p in providers])
         title, message = await self._build_message_from_template(db, event_type, variables)
+        # The archive this message is about, for the keyboard builder. Absent on
+        # the no-archive path (``main.py``: "Could not find archive for print
+        # complete"), and the button is then not offered at all — see
+        # ``_build_telegram_actions``.
+        archive_id = (archive_data or {}).get("archive_id")
         await self._send_to_providers(
             providers,
             title,
@@ -1614,6 +1810,7 @@ class NotificationService:
             printer_id,
             printer_name,
             image_data=image_data,
+            extra_data={"archive_id": archive_id} if archive_id else None,
             variables=variables,
         )
 
@@ -1734,12 +1931,85 @@ class NotificationService:
         db: AsyncSession,
         remaining_time: int | None = None,
         image_data: bytes | None = None,
+        estimated_minutes: float | None = None,
+        image_supplier: Callable[[], Awaitable[bytes | None]] | None = None,
     ):
-        """Handle print progress milestone (25%, 50%, 75%)."""
+        """Handle print progress milestone (25%, 50%, 75%).
+
+        The duration floor (#28) is applied HERE, per recipient, not before
+        the fan-out: every telegram chat carries its own floor and every other
+        provider its own (m157) — an admin's 60-minute floor must not
+        decide for an operator's chat that wants 10, and a phone push and an
+        email digest legitimately want different floors. There is NO global
+        value: unset (or 0) simply means "always send". ``image_supplier``
+        keeps the ~15 s camera grab lazy — it runs only once somebody is
+        actually going to receive the message.
+        """
         providers = await self._get_providers_for_event(db, "on_print_progress", printer_id)
         if not providers:
             return
 
+        def _own_floor(row) -> int:
+            floor = getattr(row, "progress_min_duration_minutes", None)
+            # Anything that isn't an honest integer — NULL, or a test double —
+            # means "no floor was set", never "guess one".
+            return floor if isinstance(floor, int) else 0
+
+        def _chat_passes(chat) -> bool:
+            return self._passes_progress_floor(_own_floor(chat), estimated_minutes)
+
+        kept = []
+        any_recipients = False
+        has_telegram = False
+        for p in providers:
+            if p.provider_type == "telegram":
+                kept.append(p)
+                has_telegram = True
+            elif p.provider_type == "inbox":
+                # The inbox has no duration floor of its own, and counting it
+                # here unconditionally would defeat everyone else's: the "muted
+                # by duration floors" exit would never fire again and
+                # image_supplier() — a live camera fetch — would be paid on
+                # every milestone. Whether anybody actually wants it is asked
+                # below, and only once nothing else has cleared.
+                kept.append(p)
+            elif self._passes_progress_floor(_own_floor(p), estimated_minutes):
+                kept.append(p)
+                any_recipients = True
+
+        if has_telegram and not any_recipients:
+            # Decide whether ANY subscribed chat clears its floor before
+            # paying for the snapshot; _send_telegram_to_chats re-applies the
+            # same filter per chat at send time.
+            from sqlalchemy import select as _select
+
+            from backend.app.models.telegram_chat import TelegramChat
+
+            result = await db.execute(_select(TelegramChat).where(TelegramChat.is_active == True))  # noqa: E712
+            any_recipients = any(c.should_notify("print_progress") and _chat_passes(c) for c in result.scalars())
+
+        if not any_recipients and any(p.provider_type == "inbox" for p in kept):
+            # The same question the telegram block above asks, for the in-app
+            # channel: somebody who deliberately subscribed to print_progress
+            # should still get the milestone when every provider's floor mutes
+            # it — otherwise that checkbox is inert on exactly the provider-less
+            # farm this inbox exists for. Asked only once nothing else has
+            # cleared, so a farm where nobody subscribed still skips the grab.
+            any_recipients = await notification_inbox.has_subscriber(db, "print_progress")
+
+        if not any_recipients:
+            logger.info(
+                "Progress milestone %s%% on %s muted by duration floors (estimated %s min)",
+                progress,
+                printer_name,
+                f"{estimated_minutes:.0f}" if estimated_minutes is not None else "unknown",
+            )
+            return
+
+        if image_data is None and image_supplier is not None:
+            image_data = await image_supplier()
+
+        providers = kept
         eta_str = await self._format_eta(remaining_time, db)
 
         variables = {
@@ -1761,6 +2031,7 @@ class NotificationService:
             printer_name,
             image_data=image_data,
             variables=variables,
+            chat_filter=_chat_passes,
         )
 
     async def on_print_missing_spool_assignment(
@@ -2017,8 +2288,13 @@ class NotificationService:
         }
         template_key = "filament_runout_backup" if kind == "autoswitch" else "filament_runout"
         title, message = await self._build_message_from_template(db, template_key, variables)
+        # ``template_key`` picks the message; the chat-facing event_type is
+        # ALWAYS "filament_runout" — "filament_runout_backup" is not in the
+        # chat vocabulary, and sending it as the event type made telegram
+        # chats silently unreachable for runouts (should_notify never
+        # matched). One per-chat toggle covers both flavours.
         await self._send_to_providers(
-            providers, title, message, db, template_key, printer_id, printer_name, variables=variables
+            providers, title, message, db, "filament_runout", printer_id, printer_name, variables=variables
         )
 
     async def on_maintenance_due(
@@ -2250,14 +2526,11 @@ class NotificationService:
     # templates on purpose: the raise and its all-clear are never divided —
     # switching off the all-clear while keeping the alarm is the AMS fault this
     # avoids — while "tell me about the room" versus "tell me about the device"
-    # is a division people do make.
-    _SENSOR_ALERT_FIELDS = {
-        "sensor_above_max": "on_sensor_threshold",
-        "sensor_below_min": "on_sensor_threshold",
-        "sensor_back_in_range": "on_sensor_threshold",
-        "sensor_silent": "on_sensor_silent",
-        "sensor_speaking_again": "on_sensor_silent",
-    }
+    # is a division people do make. The map itself lives in
+    # ``notification_events`` since 2026-09-18, because ``GET /notifications/events``
+    # needs the same answer and a second copy is exactly the drift that endpoint
+    # exists to end.
+    _SENSOR_ALERT_FIELDS = SENSOR_ALERT_FIELDS
 
     async def on_sensor_alert(self, event, db: AsyncSession):
         """One sensor alert, raised or cleared.

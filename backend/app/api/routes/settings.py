@@ -1,8 +1,5 @@
-import io
 import logging
 import os
-import shutil
-import sqlite3
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -13,11 +10,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core import query_timing
 from backend.app.core.auth import RequirePermission, get_current_user_optional, require_energy_cost_update
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
+from backend.app.i18n.api_errors import json_error
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
@@ -84,6 +83,8 @@ async def get_settings(
             if setting.key in [
                 "save_thumbnails",
                 "capture_finish_photo",
+                "camera_light_auto",
+                "camera_light_auto_obico",
                 "archive_3mf_retention_enabled",
                 "spoolman_enabled",
                 "spoolman_disable_weight_sync",
@@ -104,6 +105,8 @@ async def get_settings(
                 "user_notifications_enabled",
                 "prefer_lowest_filament",
                 "queue_shortest_first",
+                "auto_queue_rebalance_models",
+                "auto_order_for_batches",
                 "queue_drying_enabled",
                 "queue_drying_block",
                 "ambient_drying_enabled",
@@ -111,6 +114,8 @@ async def get_settings(
                 "stagger_enabled",
                 "stagger_wait_for_bed",
                 "stagger_strict_for_direct_dispatch",
+                "stagger_split_by_tags",
+                "stagger_split_by_location",
                 "ldap_enabled",
                 "ldap_auto_provision",
                 "library_all_files_recursive",
@@ -130,9 +135,12 @@ async def get_settings(
                 "ams_humidity_good",
                 "ams_humidity_fair",
                 "ams_history_retention_days",
+                "inbox_retention_days",
                 "printer_sensor_history_retention_days",
                 "archive_3mf_retention_days",
                 "log_retention_days",
+                "slow_query_ms",
+                "slow_request_ms",
                 "ftp_retry_count",
                 "ftp_retry_delay",
                 "ftp_timeout",
@@ -140,6 +148,8 @@ async def get_settings(
                 "stagger_concurrent",
                 "stagger_interval_minutes",
                 "forecast_global_lead_time_days",
+                "forecast_upload_seconds",
+                "forecast_plate_clear_minutes",
                 "firmware_batch_concurrency",
                 "session_max_hours",
             ]:
@@ -244,6 +254,16 @@ async def update_settings(
         from backend.app.core.logging_state import update_log_retention
 
         update_log_retention(int(update_data["log_retention_days"]))
+
+    # Same idea for the timing thresholds: the listeners are attached to the
+    # engine long before a database exists, so they read module state that this
+    # applies at once — no restart to start (or stop) measuring.
+    for _key, _apply in (
+        ("slow_query_ms", query_timing.set_query_threshold_ms),
+        ("slow_request_ms", query_timing.set_request_threshold_ms),
+    ):
+        if update_data.get(_key) is not None:
+            _apply(int(update_data[_key]))
 
     # Update DB templates when system language changes
     locale_lang = update_data.get("language")
@@ -448,8 +468,17 @@ async def update_spoolman_settings(
         # Switching to Spoolman: clear built-in inventory slot assignments
         if old_val.lower() != "true" and new_val.lower() == "true":
             from backend.app.models.spool_assignment import SpoolAssignment
+            from backend.app.services import ams_advertised_overlay as overlay
 
             result = await db.execute(delete(SpoolAssignment))
+            # Every overlay entry was born of an assignment row; with the whole
+            # registry gone, so is every spool the masks stood for. Cleared
+            # BEFORE this handler's commit, like every ``remember`` on the
+            # assignment routes: an in-memory store that forgot too early is
+            # inert (the rebuild refills it from the registries), while one that
+            # still claims a spool whose row is gone would answer routing with
+            # an inventory item nobody can see.
+            overlay.forget_all()
             logger.info("Cleared %d spool assignments on switch to Spoolman mode", result.rowcount)
         # Switching back to internal mode: clear Spoolman slot assignments — the
         # symmetric counterpart of the clear above. Without this, stale
@@ -458,8 +487,10 @@ async def update_spoolman_settings(
         # assignment notification, which unions both tables — #1473).
         elif old_val.lower() == "true" and new_val.lower() != "true":
             from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+            from backend.app.services import ams_advertised_overlay as overlay
 
             result = await db.execute(delete(SpoolmanSlotAssignment))
+            overlay.forget_all()  # same reasoning as the switch above
             logger.info("Cleared %d Spoolman slot assignments on switch to internal mode", result.rowcount)
     if "spoolman_url" in settings:
         await set_setting(db, "spoolman_url", settings["spoolman_url"])
@@ -527,197 +558,54 @@ async def get_homeassistant_settings(db: AsyncSession) -> dict:
     }
 
 
-def _snapshot_sqlite(src: Path, dest: Path) -> None:
-    """Consistent copy of a live SQLite database, WAL included.
-
-    A plain file copy is wrong here and silently so. zigpy runs its database in
-    WAL mode, so a freshly-formed network lives in ``zigbee.db-wal`` while
-    ``zigbee.db`` itself is still an empty 4 KB header — measured on the first
-    real dongle run: copying the main file alone produced a database with **zero
-    tables**, while the live one had 13 and held the network key.
-
-    That is the worst shape a backup bug can take: the ZIP looks right, the
-    restore reports success, and the operator discovers at the worst possible
-    moment that every device has to be paired again.
-
-    ``Connection.backup`` is the supported way to snapshot a database that
-    another process has open. Copying the -wal and -shm sidecars instead would
-    also work but has to catch them mid-write; this does not.
-    """
-    source = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
-    try:
-        target = sqlite3.connect(dest)
-        try:
-            source.backup(target)
-        finally:
-            target.close()
-    finally:
-        source.close()
-
-
-def _stage_zigbee_db(data_dir: Path, staging: Path) -> None:
-    """Copy zigpy's device database into the backup staging tree.
-
-    That file holds the Zigbee **network key**. Without it a restore comes up
-    with no network and every paired plug has to be re-paired by hand, at the
-    device — the same class of unrecoverable artifact as the MFA encryption key
-    staged just above.
-
-    Unlike the MFA key, a failure here only warns. A missing MFA key corrupts
-    data the operator already has (encrypted secrets become unreadable), so that
-    one raises. A missing Zigbee database costs re-pairing, which is recoverable
-    by walking to each plug — failing an entire backup, prints and archives
-    included, over an optional radio would be the worse trade.
-    """
-    src = data_dir / "zigbee" / "zigbee.db"
-    if not src.is_file():
-        return  # no dongle on this install: the normal case
-    try:
-        dest_dir = staging / "zigbee"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        _snapshot_sqlite(src, dest_dir / "zigbee.db")
-    except (OSError, sqlite3.Error) as exc:
-        logger.warning(
-            "Could not include the Zigbee network database in backup (%s). "
-            "Restoring from this ZIP will require re-pairing every device.",
-            exc,
-        )
-
-
-def _restore_zigbee_db(staging: Path, data_dir: Path) -> None:
-    """Put zigpy's device database back, so the restored host adopts the network.
-
-    Absent from the ZIP means "this backup predates the feature, or the install
-    had no dongle" — never "delete what is there". Wiping a live network on
-    restore would be the exact failure this whole path exists to prevent.
-    """
-    src = staging / "zigbee" / "zigbee.db"
-    if not src.is_file():
-        return
-    try:
-        dest_dir = data_dir / "zigbee"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        # Drop the previous network's WAL sidecars BEFORE writing the restored
-        # file. They belong to the database being replaced, and leaving them to
-        # sit beside a different one means trusting SQLite's salt check to
-        # discard them. It does — but "the network key probably survives" is not
-        # a standard worth holding, and the staged file is a complete snapshot
-        # that needs no sidecar of its own.
-        # Written out rather than looped so the two names stay literal at the
-        # join site: the path-safety scanner reads `<dir> / <variable>` as
-        # arithmetic on untrusted input, and it is right to. A SEC-PATH-OK
-        # suppression would work here and be a small permanent debt; two lines
-        # are self-evidently safe to the scanner and to a reader.
-        (dest_dir / "zigbee.db-wal").unlink(missing_ok=True)
-        (dest_dir / "zigbee.db-shm").unlink(missing_ok=True)
-        shutil.copy2(src, dest_dir / "zigbee.db")
-        logger.info("Restored the Zigbee network database from backup")
-    except OSError as exc:
-        logger.error(
-            "Could not restore the Zigbee network database (%s). Zigbee devices will need to be paired again.",
-            exc,
-        )
-
-
 async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]:
-    """Create a complete backup ZIP (database + all data directories).
+    """Portable DB plus verified files; manual and scheduled backups share a lock."""
+    from backend.app.services.backup_files import exclusive_operation
 
-    If output_path is given, the ZIP is written there.
-    Otherwise a temporary file is created (caller must clean up).
-    Backup is always in portable SQLite format regardless of database backend.
-    Returns (zip_path, filename).
-    """
-    import shutil
+    async with exclusive_operation():
+        return await _create_backup_zip(output_path)
+
+
+async def _create_backup_zip(output_path: Path | None) -> tuple[Path, str]:
     import tempfile
 
     from backend.app.core.database import Base, engine
-    from backend.app.core.db_portable import dump_to_sqlite
+    from backend.app.core.db_portable import _file_work, dump_to_sqlite
+    from backend.app.core.paths import resolve_data_dir
+    from backend.app.services import queue_sources
+    from backend.app.services.backup_files import (
+        stage_files,
+        stage_queue_spool,
+        stage_zigbee_db,
+        write_manifest,
+        write_zip,
+    )
 
-    base_dir = app_settings.base_dir
     filename = f"bamdude-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
-
     with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-
-        # 1. Export database to portable SQLite format
-        await dump_to_sqlite(engine, Base.metadata, temp_path / "bamdude.db")
-
-        # 2. Copy data directories (if they exist)
-        # `certs/` holds the per-VP Tailscale TLS material plus the shared CA
-        # — on a fresh box without it the operator has to re-provision every
-        # virtual printer's cert from scratch, so we ship it inside the
-        # backup. (Skipped runtime caches: `firmware/` re-downloads on demand,
-        # `timelapse_frames/` is session scratch, `uploads/` is VP staging.)
-        dirs_to_backup = [
-            ("archive", base_dir / "archive"),
-            ("virtual_printer", base_dir / "virtual_printer"),
-            ("plate_calibration", app_settings.plate_calibration_dir),
-            ("icons", base_dir / "icons"),
-            ("projects", base_dir / "projects"),
-            ("certs", base_dir / "certs"),
-        ]
-
-        for name, src_dir in dirs_to_backup:
-            if src_dir.exists() and any(src_dir.iterdir()):
-                try:
-                    shutil.copytree(
-                        src_dir, temp_path / name
-                    )  # SEC-PATH-OK: name is an enumerated literal from the dirs_to_backup list, not request input
-                except shutil.Error as e:
-                    # Some files may have restricted permissions (e.g., SSL keys)
-                    logger.warning("Some files in %s could not be copied: %s", name, e)
-                except PermissionError as e:
-                    logger.warning("Permission denied copying %s: %s", name, e)
-
-        # Include the MFA encryption key as a ZIP top-level entry alongside
-        # bamdude.db. Without it, encrypted client_secret / TOTP secret rows
-        # would be unrecoverable after restore on a host without
-        # MFA_ENCRYPTION_KEY set.
-        from backend.app.core.paths import resolve_data_dir
-
-        mfa_key_src = resolve_data_dir() / ".mfa_encryption_key"
-        if mfa_key_src.exists() and mfa_key_src.is_file():
-            try:
-                shutil.copy2(mfa_key_src, temp_path / ".mfa_encryption_key")
-            except OSError as exc:
-                logger.error(
-                    "Could not include MFA encryption key in backup (%s). "
-                    "The backup ZIP will not contain the key — restore on a "
-                    "keyless host will fail for encrypted secrets.",
-                    exc,
-                )
-                raise
-
-        _stage_zigbee_db(resolve_data_dir(), temp_path)
-
-        # Include the anonymous telemetry install id so a restore keeps the same
-        # identity. Some users do a clean install then restore the old DB; without
-        # this the restored instance would mint a fresh install_id and look like a
-        # brand-new install. Best-effort — not critical to a successful restore.
-        install_id_src = resolve_data_dir() / ".install_id"
-        if install_id_src.exists() and install_id_src.is_file():
-            try:
-                shutil.copy2(install_id_src, temp_path / ".install_id")
-            except OSError as exc:
-                logger.warning("Could not include install id in backup: %s", exc)
-
-        # 3. Create ZIP
+        staging = Path(temp_dir)
+        # The pin starts before the DB export and remains until every referenced
+        # object was copied. GC therefore cannot unlink a row the portable
+        # snapshot still names while this backup is being assembled.
+        async with queue_sources.pin_backup():
+            await dump_to_sqlite(engine, Base.metadata, staging / "bamdude.db")
+            data_dir = resolve_data_dir()
+            await _file_work(stage_files, app_settings, data_dir, staging)
+            await _file_work(stage_zigbee_db, data_dir, staging)
+            await _file_work(stage_queue_spool, data_dir, staging, staging / "bamdude.db")
+            await _file_work(write_manifest, staging)
         if output_path is not None:
-            zip_file = (
-                output_path / filename
-            )  # SEC-PATH-OK: filename is the server-generated bamdude-backup-<timestamp>.zip; output_path is a trusted caller-supplied dir
+            zip_file = output_path / filename  # SEC-PATH-OK: trusted output directory and server-generated filename.
         else:
-            # mkstemp gives us a unique path that survives the TemporaryDirectory cleanup
-            fd, tmp_path_str = tempfile.mkstemp(suffix=".zip")
+            fd, temporary = tempfile.mkstemp(suffix=".zip")
             os.close(fd)
-            zip_file = Path(tmp_path_str)
-
-        with zipfile.ZipFile(zip_file, "w", zipfile.ZIP_DEFLATED) as zf:
-            for file_path in temp_path.rglob("*"):
-                if file_path.is_file():
-                    arcname = file_path.relative_to(temp_path)
-                    zf.write(file_path, arcname)
-
+            zip_file = Path(temporary)
+        try:
+            await _file_work(write_zip, staging, zip_file)
+        except BaseException:
+            if output_path is None:
+                zip_file.unlink(missing_ok=True)
+            raise
     return zip_file, filename
 
 
@@ -735,6 +623,8 @@ async def create_backup(
 
     from fastapi import BackgroundTasks
 
+    from backend.app.services.backup_files import BackupBusyError
+
     try:
         zip_file, filename = await create_backup_zip()
 
@@ -748,6 +638,8 @@ async def create_backup(
             filename=filename,
             background=bg,
         )
+    except BackupBusyError as exc:
+        raise HTTPException(409, "A backup or restore is already running") from exc
     except Exception as e:
         logger.error("Backup failed: %s", e, exc_info=True)
         return JSONResponse(
@@ -762,293 +654,141 @@ async def restore_backup(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_RESTORE),
 ):
-    """Restore from a complete backup ZIP.
+    """Validate and stage all files, then replace files and the portable database."""
+    from backend.app.services.backup_files import BackupBusyError, exclusive_operation
 
-    Replaces the database and all data directories from the backup ZIP.
-    Backup format is always portable SQLite - works for both SQLite and PostgreSQL.
-    """
-    import shutil
+    try:
+        async with exclusive_operation():
+            return await _restore_backup(file, db)
+    except BackupBusyError as exc:
+        raise HTTPException(409, "A backup or restore is already running") from exc
+
+
+async def _restore_backup(file: UploadFile, db: AsyncSession):
+    import asyncio
     import tempfile
 
     from backend.app.core.database import Base, close_all_connections, init_db, reinitialize_database
     from backend.app.core.db_dialect import is_sqlite
-    from backend.app.services.virtual_printer import virtual_printer_manager
+    from backend.app.core.db_portable import (
+        _file_work,
+        _snapshot_sqlite,
+        import_sqlite_to_postgres,
+        validate_sqlite_backup,
+    )
+    from backend.app.core.paths import resolve_data_dir
+    from backend.app.services import queue_sources
+    from backend.app.services.backup_files import FileRestore, extract_zip, validate_staged_queue_spool
 
-    base_dir = app_settings.base_dir
+    if not file.filename or not file.filename.endswith(".zip"):
+        raise HTTPException(400, "Invalid backup file: must be a .zip file")
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-
-        # 1. Read and extract ZIP
-        content = await file.read()
-
-        # Check if it's a valid ZIP
-        if not file.filename or not file.filename.endswith(".zip"):
-            raise HTTPException(400, "Invalid backup file: must be a .zip file")
-
+        staging = Path(temp_dir)
+        # UploadFile is already spooled: don't duplicate a multi-GB ZIP in RAM.
+        await file.seek(0)
         try:
-            with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
-                # Reject path-traversal payloads: any entry whose resolved
-                # path escapes temp_path would allow writing arbitrary files
-                # on the host (ZipSlip / CVE-2006-5456). is_relative_to
-                # (Python 3.9+) covers both `../etc/passwd` and absolute
-                # `/etc/passwd` — str.startswith is vulnerable to
-                # prefix-collision attacks.
-                for name in zf.namelist():
-                    dest = (
-                        temp_path / name
-                    ).resolve()  # SEC-PATH-OK: this line IS the ZipSlip guard — resolve() + is_relative_to(temp_path) just below rejects the namelist entry before extractall
-                    if not dest.is_relative_to(temp_path.resolve()):
-                        raise HTTPException(400, f"Invalid backup: unsafe path in ZIP: {name!r}")
-                zf.extractall(temp_path)
-        except zipfile.BadZipFile:
-            raise HTTPException(400, "Invalid backup file: not a valid ZIP")
+            await _file_work(extract_zip, file.file, staging)
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(400, "Invalid backup file: not a valid ZIP") from exc
+        except ValueError as exc:
+            logger.warning("Restore preflight rejected ZIP: %s", exc)
+            raise HTTPException(
+                400, "Invalid backup files: unsafe paths or failed integrity check. Check server logs."
+            ) from exc
 
-        # 2. Validate backup (must have database) - accept both new and legacy names
-        backup_db = temp_path / "bamdude.db"
+        backup_db = staging / "bamdude.db"
         if not backup_db.exists():
-            backup_db = temp_path / "bambuddy.db"
+            backup_db = staging / "bambuddy.db"
         if not backup_db.exists():
             raise HTTPException(400, "Invalid backup: missing database file (bamdude.db or bambuddy.db)")
+        try:
+            await _file_work(validate_sqlite_backup, backup_db, require_app_schema=True)
+            zigbee_db = staging / "zigbee/zigbee.db"
+            if zigbee_db.exists():
+                await _file_work(validate_sqlite_backup, zigbee_db)
+            await _file_work(validate_staged_queue_spool, staging, backup_db)
+        except ValueError as exc:
+            logger.warning("Restore preflight rejected database: %s", exc)
+            raise HTTPException(400, "Invalid backup database: damaged or incompatible. Check server logs.") from exc
 
         try:
-            import asyncio
-
-            # 3. Stop virtual printer if running (releases file locks)
+            files = FileRestore(staging, app_settings, resolve_data_dir())
             try:
-                if virtual_printer_manager.is_enabled:
-                    logger.info("Stopping virtual printer for restore...")
-                    await virtual_printer_manager.configure(enabled=False)
-                    # Give it time to fully release file handles
-                    await asyncio.sleep(1)
-            except Exception as e:
-                logger.warning("Failed to stop virtual printer: %s", e)
-
-            # 3b. Pause timer-based background services BEFORE the DB swap.
-            # close_all_connections() below only disposes the engine's pool,
-            # not the asyncio tasks that opened sessions from it. The print
-            # scheduler (30 s cadence), smart-plug snapshot loop (30 s),
-            # notification digest loop, and background dispatch worker all wake
-            # up and call async_session(), which lazily re-creates a pool
-            # connection holding RowExclusiveLock on print_queue /
-            # smart_plug_energy_snapshots / etc. The DROP TABLE CASCADE pass in
-            # the PostgreSQL restore path (db_portable.import_sqlite_to_postgres)
-            # needs AccessExclusiveLock on every public table, producing an
-            # AB/BA deadlock and a full restore rollback. Successful restore
-            # already requires a container restart, so we don't restart the
-            # services here.
-            try:
+                # Quiesce file owners before staging Zigbee and moving old files.
+                # Shutdown failure is fatal; a delay cannot prove a writer stopped.
                 from backend.app.services.background_dispatch import background_dispatch
                 from backend.app.services.notification_service import notification_service
                 from backend.app.services.print_scheduler import scheduler as print_scheduler
                 from backend.app.services.smart_plug_manager import smart_plug_manager
+                from backend.app.services.virtual_printer import virtual_printer_manager
+                from backend.app.services.zigbee.coordinator import zigbee_coordinator
+                from backend.app.services.zigbee.poller import zigbee_poller
+                from backend.app.services.zigbee.supervisor import zigbee_supervisor
 
-                logger.info("Pausing background services for restore...")
+                if virtual_printer_manager.is_enabled:
+                    await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()
                 smart_plug_manager.stop_scheduler()
                 notification_service.stop_digest_scheduler()
                 await background_dispatch.stop()
-                # In-flight loop iterations need a moment to commit + release
-                # their DB sessions before we dispose() the engine pool.
-                await asyncio.sleep(1.0)
-            except Exception as e:
-                logger.warning("Could not cleanly pause background services: %s", e)
+                await zigbee_supervisor.stop()
+                await zigbee_poller.stop()
+                await zigbee_coordinator.stop(strict=True)
+                # Let the cancelled timer iterations release their DB sessions.
+                await asyncio.sleep(1)
 
-            # 4. Close current database connections
-            logger.info("Closing database connections...")
-            await close_all_connections()
+                # Own the transaction BEFORE entering a worker: cancellation waits
+                # for the worker, then finally can undo every completed move.
+                # A restore changes both the database references and the spool
+                # tree. The same guard used by capture/publication prevents a
+                # dispatcher from observing half of that change; receipts that
+                # started before the swap are invalidated only after all file
+                # staging has succeeded.
+                async with queue_sources.storage_mutation():
+                    await _file_work(files.prepare)
+                    queue_sources.invalidate_receipts()
+                    await db.close()
+                    await close_all_connections()
+                    await _file_work(files.apply)
 
-            # 4b. Restore the MFA encryption key file BEFORE the database swap.
-            # If the key write fails (OSError, RO disk, full disk, EACCES) we
-            # can still abort while the live DB is intact. Doing this AFTER
-            # the DB swap would leave the database with rows encrypted under
-            # the backup's key but the running install holding only the old
-            # key — every encrypted secret becomes unrecoverable.
-            from backend.app.core.paths import resolve_data_dir
+                    logger.info("Restoring database from backup...")
+                    if is_sqlite():
+                        db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
 
-            mfa_key_src = temp_path / ".mfa_encryption_key"
-            if mfa_key_src.exists() and mfa_key_src.is_file():
-                dst_key = resolve_data_dir() / ".mfa_encryption_key"
-                tmp_key = dst_key.parent / ".mfa_encryption_key.restore-tmp"
-                try:
-                    dst_key.parent.mkdir(parents=True, exist_ok=True)
-                    # Atomic write with restrictive mode from creation. O_TRUNC
-                    # because a stale tmp may exist from a prior failed
-                    # restore attempt — we want to overwrite it.
-                    fd = os.open(str(tmp_key), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                    try:
-                        os.write(fd, mfa_key_src.read_bytes())
-                    finally:
-                        os.close(fd)
-                    # POSIX rename(2) — atomic when source/dest are on the
-                    # same filesystem (we're staying inside dst_key.parent).
-                    os.replace(str(tmp_key), str(dst_key))
-                    actual_mode = dst_key.stat().st_mode & 0o777
-                    if actual_mode != 0o600:
-                        logger.warning(
-                            "Restored MFA key file %s: filesystem did not enforce 0o600 "
-                            "(actual: 0o%o). Key may be world-readable on Windows / SMB / FUSE.",
-                            dst_key,
-                            actual_mode,
-                        )
-                    logger.info("Restored .mfa_encryption_key from backup")
-                except OSError as e:
-                    logger.error(
-                        "Could not write restored MFA key file to %s: %s — "
-                        "aborting BEFORE database swap (DB unchanged).",
-                        dst_key,
-                        e,
-                        exc_info=True,
-                    )
-                    raise HTTPException(
-                        status_code=500,
-                        detail="Restore aborted: MFA key write failed. Database is unchanged. Check server logs.",
-                    ) from e
+                        def replace_sqlite():
+                            # Online backup writes through the live DB's WAL. Mark
+                            # commit inside the worker even if its await is cancelled.
+                            _snapshot_sqlite(backup_db, db_path)
+                            files.committed = True
 
-            # zigpy's device database carries the Zigbee network key. Restored
-            # here, beside the other DATA_DIR artifacts and BEFORE the database
-            # swap, so a failure still leaves the live install untouched.
-            _restore_zigbee_db(temp_path, resolve_data_dir())
+                        await _file_work(replace_sqlite)
+                    else:
+                        from backend.app.core.database import engine
 
-            # Restore the anonymous telemetry install id (best-effort). Keeps the
-            # same identity when a user does a clean install then restores the old
-            # DB — without it the restored instance would look brand-new. A failure
-            # here must NOT abort the restore (the id is non-critical).
-            install_id_src = temp_path / ".install_id"
-            if install_id_src.exists() and install_id_src.is_file():
-                dst_id = resolve_data_dir() / ".install_id"
-                try:
-                    dst_id.parent.mkdir(parents=True, exist_ok=True)
-                    fd = os.open(str(dst_id), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                    try:
-                        os.write(fd, install_id_src.read_bytes())
-                    finally:
-                        os.close(fd)
-                    logger.info("Restored .install_id from backup")
-                except OSError as e:
-                    logger.warning("Could not restore install id from backup: %s - continuing", e)
+                        await import_sqlite_to_postgres(engine, Base.metadata, backup_db)
+                        files.committed = True  # No await between DB success and this flag.
+            finally:
+                await _file_work(files.finish)
 
-            # 5. Replace database
-            logger.info("Restoring database from backup...")
-            if is_sqlite():
-                db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
-                # Use SQLite's online backup API instead of shutil.copy2.
-                # The pragma at database.py:14 runs the live DB in WAL mode,
-                # which means a naive file copy is unsafe: anything written
-                # to the live DB before this call that hasn't been
-                # checkpointed yet (seed_default_groups + init_db on first
-                # start, plus whatever background heartbeats wrote during
-                # the request window) sits in bamdude.db-wal with valid
-                # checksums. The route handler's own `db: Depends(get_db)`
-                # session also keeps a connection checked out across
-                # close_all_connections() / engine.dispose(), holding fds
-                # to the WAL inode. With `shutil.copy2` SQLite finds the
-                # stale WAL on the next open and silently re-applies those
-                # page-level writes on top of the restored DB, partially
-                # clobbering it with fresh-install state — the user sees
-                # a "successful" restore where most rows and settings have
-                # reverted to defaults (#1211 / #668). The page-by-page
-                # backup API opens both DBs as real SQLite connections,
-                # takes the right locks, and routes new pages through the
-                # live DB's own WAL — so concurrent open sessions see
-                # their own snapshot until they close (transaction
-                # isolation) but can't corrupt the restored state.
-                import sqlite3
-
-                src_conn = sqlite3.connect(str(backup_db))
-                try:
-                    dst_conn = sqlite3.connect(str(db_path))
-                    try:
-                        src_conn.backup(dst_conn)
-                    finally:
-                        dst_conn.close()
-                finally:
-                    src_conn.close()
-            else:
-                # Import SQLite backup into PostgreSQL
-                from backend.app.core.database import engine as current_engine
-                from backend.app.core.db_portable import import_sqlite_to_postgres
-
-                await import_sqlite_to_postgres(current_engine, Base.metadata, backup_db)
-
-            # 6. Replace data directories
-            # For Docker compatibility: clear contents then copy (don't delete mount points)
-            # Mirrors the `dirs_to_backup` set in `create_backup_zip` — keep
-            # them in sync so a backup ZIP that contains a directory always
-            # has a restore path that consumes it.
-            dirs_to_restore = [
-                ("archive", base_dir / "archive"),
-                ("virtual_printer", base_dir / "virtual_printer"),
-                ("plate_calibration", app_settings.plate_calibration_dir),
-                ("icons", base_dir / "icons"),
-                ("projects", base_dir / "projects"),
-                ("certs", base_dir / "certs"),
-            ]
-
-            skipped_dirs = []
-            for name, dest_dir in dirs_to_restore:
-                src_dir = (
-                    temp_path / name
-                )  # SEC-PATH-OK: name is an enumerated literal from the dirs_to_restore list; zip contents were ZipSlip-checked at extract time
-                if src_dir.exists():
-                    logger.info("Restoring %s directory...", name)
-                    try:
-                        # Clear destination contents (not the dir itself - may be Docker mount)
-                        if dest_dir.exists():
-                            for item in dest_dir.iterdir():
-                                try:
-                                    if item.is_dir():
-                                        shutil.rmtree(item)
-                                    else:
-                                        item.unlink()
-                                except OSError as e:
-                                    logger.warning("Could not delete %s: %s", item, e)
-                        else:
-                            dest_dir.mkdir(parents=True, exist_ok=True)
-                        # Copy contents from backup
-                        for item in src_dir.iterdir():
-                            dest_item = dest_dir / item.name
-                            if item.is_dir():
-                                shutil.copytree(item, dest_item)
-                            else:
-                                shutil.copy2(item, dest_item)
-                    except OSError as e:
-                        logger.warning("Could not restore %s directory: %s", name, e)
-                        skipped_dirs.append(name)
-
-            # 7. Reset the encryption singleton so the migration that runs
-            # inside init_db() picks up the restored key file (if a new one
-            # was written above). Without this reset, _get_fernet would
-            # return the cached Fernet instance built from the previous key.
             import backend.app.core.encryption as _enc_mod
 
             _enc_mod._fernet_instance = None
             _enc_mod._key_source = None
             _enc_mod._warn_shown = False
-
-            # 8. Reinitialize the database engine and apply schema migrations so that
-            # tables added after the backup was created (e.g. ams_labels) exist
-            # immediately, without requiring a manual restart.
+            # Later migrations operate on matching new files + DB. A migration
+            # failure must not put old files beside the already replaced database.
             await reinitialize_database()
             await init_db()
-
             logger.info("Restore complete - restart required")
-            message = "Backup restored successfully. Please restart BamDude for changes to take effect."
-            if skipped_dirs:
-                message += f" Note: Some directories could not be restored ({', '.join(skipped_dirs)})."
             return {
                 "success": True,
-                "message": message,
+                "message": "Backup restored successfully. Please restart BamDude for changes to take effect.",
             }
-
         except HTTPException:
-            # Preserve specific HTTP error responses raised inside the restore
-            # body (e.g. the key-write OSError → 500). The blanket
-            # `except Exception` below would otherwise swallow them and
-            # replace the operator-facing detail with a generic message.
             raise
-        except Exception as e:
-            logger.error("Restore failed: %s", e, exc_info=True)
+        except Exception:
+            logger.exception("Restore failed; restart BamDude before resuming work")
             return JSONResponse(
                 status_code=500,
                 content={"success": False, "message": "Restore failed. Check server logs for details."},
@@ -1059,30 +799,55 @@ async def restore_backup(
 async def optimize_database(
     _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
 ):
-    """Optimize the SQLite database: ANALYZE + WAL checkpoint + VACUUM."""
+    """Run the maintenance the active backend actually supports.
+
+    ⚠️ This used to run ANALYZE, then ``PRAGMA wal_checkpoint(TRUNCATE)``, then
+    VACUUM with no dialect branch — so on **PostgreSQL the PRAGMA is a syntax
+    error** and the button had never done anything but return a failure there.
+    It also derived a file path by stripping the SQLite URL prefix, which on any
+    other URL produces nonsense.
+
+    On PostgreSQL only ANALYZE is run: VACUUM cannot execute inside a
+    transaction block, and reclaiming space is autovacuum's job. On SQLite all
+    three still run — measured 2026-09-08, they do work through the async
+    engine.
+    """
     from sqlalchemy import text
 
     from backend.app.core.database import engine
+    from backend.app.core.db_dialect import is_postgres
+    from backend.app.services import db_health
 
+    postgres = is_postgres()
     try:
         async with engine.connect() as conn:
-            # Update query planner statistics
+            # Update query planner statistics — valid on both backends.
             await conn.execute(text("ANALYZE"))
-            # Flush WAL journal to main database file
-            await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
-            # Rebuild and compact database (defragmentation)
-            await conn.execute(text("VACUUM"))
+            if not postgres:
+                # Flush WAL journal to main database file
+                await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+                # Rebuild and compact database (defragmentation)
+                await conn.execute(text("VACUUM"))
             await conn.commit()
 
-        # Get database file size after optimization
-        db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
-        db_size = db_path.stat().st_size if db_path.exists() else 0
-        wal_path = Path(str(db_path) + "-wal")
-        wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+            # Sizes off the SAME connection: opening a second session here
+            # would be one more thing that can fail after the work succeeded.
+            if postgres:
+                db_size = int((await conn.execute(text("SELECT pg_database_size(current_database())"))).scalar() or 0)
+                wal_size = 0
+            else:
+                main, wal, shm = db_health._sqlite_files()
+                db_size = sum(db_health._size_of(p) for p in (main, wal, shm))
+                wal_size = db_health._size_of(wal)
 
         return {
             "success": True,
-            "message": "Database optimized successfully",
+            "mode": "postgresql" if postgres else "sqlite",
+            "message": (
+                "Statistics updated (ANALYZE). PostgreSQL reclaims space with autovacuum."
+                if postgres
+                else "Database optimized successfully"
+            ),
             "db_size": db_size,
             "wal_size": wal_size,
         }
@@ -1202,26 +967,17 @@ async def update_virtual_printer_settings(
     #   "proxy"        — transparent TCP proxy to a real printer
     # m002 already migrated legacy ``immediate``/``review``/``queue`` rows.
     if new_mode not in ("print_queue", "file_manager", "proxy"):
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Mode must be 'print_queue', 'file_manager', or 'proxy'"},
-        )
+        return json_error(400, "Mode must be 'print_queue', 'file_manager', or 'proxy'")
 
     # Validate model
     if model is not None and model not in VIRTUAL_PRINTER_MODELS:
-        return JSONResponse(
-            status_code=400,
-            content={"detail": f"Invalid model. Must be one of: {', '.join(VIRTUAL_PRINTER_MODELS.keys())}"},
-        )
+        return json_error(400, f"Invalid model. Must be one of: {', '.join(VIRTUAL_PRINTER_MODELS.keys())}")
 
     # Validate archive_name_source (B.14 / #1152): only two values are
     # meaningful — anything else would silently fall back to 'metadata' on
     # the read side and confuse the user about whether their toggle stuck.
     if archive_name_source is not None and archive_name_source not in ("metadata", "filename"):
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "archive_name_source must be 'metadata' or 'filename'"},
-        )
+        return json_error(400, "archive_name_source must be 'metadata' or 'filename'")
 
     # Mode-specific validation and printer lookup
     target_printer_ip = ""
@@ -1233,20 +989,14 @@ async def update_virtual_printer_settings(
             if enabled is None:
                 new_enabled = False
             else:
-                return JSONResponse(
-                    status_code=400,
-                    content={"detail": "Target printer is required for proxy mode"},
-                )
+                return json_error(400, "Target printer is required for proxy mode")
 
         # Look up printer IP and serial if we have a target
         if new_target_id:
             result = await db.execute(select(Printer).where(Printer.id == new_target_id))
             printer = result.scalar_one_or_none()
             if not printer:
-                return JSONResponse(
-                    status_code=400,
-                    content={"detail": f"Printer with ID {new_target_id} not found"},
-                )
+                return json_error(400, f"Printer with ID {new_target_id} not found")
             target_printer_ip = printer.ip_address
             target_printer_serial = printer.serial_number
         # Access code not required for proxy mode
@@ -1257,17 +1007,11 @@ async def update_virtual_printer_settings(
             if enabled is None:
                 new_enabled = False
             else:
-                return JSONResponse(
-                    status_code=400,
-                    content={"detail": "Access code is required when enabling virtual printer"},
-                )
+                return json_error(400, "Access code is required when enabling virtual printer")
 
         # Validate access code length (Bambu Studio requires exactly 8 characters)
         if access_code is not None and access_code and len(access_code) != 8:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Access code must be exactly 8 characters"},
-            )
+            return json_error(400, "Access code must be exactly 8 characters")
 
     # Save settings
     await set_setting(db, "virtual_printer_enabled", "true" if new_enabled else "false")
@@ -1298,16 +1042,10 @@ async def update_virtual_printer_settings(
         )
     except ValueError as e:
         logger.warning("Virtual printer configuration validation error: %s", e)
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Invalid virtual printer configuration. Check the provided values."},
-        )
+        return json_error(400, "Invalid virtual printer configuration. Check the provided values.")
     except Exception as e:
         logger.error("Failed to configure virtual printer: %s", e, exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Failed to configure virtual printer. Check server logs for details."},
-        )
+        return json_error(500, "Failed to configure virtual printer. Check server logs for details.")
 
     return await get_virtual_printer_settings(db)
 

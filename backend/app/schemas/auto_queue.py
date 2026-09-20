@@ -16,25 +16,13 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, PlainSerializer, field_validator, model_validator
 
 from backend.app.schemas.calibration_mode import CalibrationMode
+from backend.app.schemas.filament_routing import FilamentOverride
 from backend.app.schemas.print_queue import serialize_utc_datetime
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 from backend.app.schemas.timelapse import TimelapseStorage
+from backend.app.services.queue_source_descriptor import SourceStorageState
 
 UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)]
-
-
-class FilamentOverride(BaseModel):
-    """Override for a single filament slot. Mirrors upstream's filament_overrides format."""
-
-    slot_id: int = Field(ge=1)  # 1-indexed slot
-    type: str | None = None  # e.g. "PLA", "PETG"
-    color: str | None = None  # hex like "#FF0000"
-    # Slicer spool identity ("GFA00" PLA Basic, "GFA01" PLA Matte, "GFA06" Silk,
-    # "P4d64437" a custom preset). Only meaningful alongside force_color_match,
-    # where it keeps the variants apart — everything reports tray_type "PLA"
-    # (#2650). Blank means "no variant constraint".
-    tray_info_idx: str | None = None
-    force_color_match: bool = False  # exact-color requirement
 
 
 class AutoQueueItemCreate(BaseModel):
@@ -42,6 +30,8 @@ class AutoQueueItemCreate(BaseModel):
     archive_id: int | None = None
     library_file_id: int | None = None
     project_id: int | None = None
+    # The order line this print is for; travels queue → dispatcher → archive.
+    project_line_id: int | None = None
 
     # Routing target
     target_model: str | None = None  # auto-detected from 3MF if omitted
@@ -49,11 +39,12 @@ class AutoQueueItemCreate(BaseModel):
     required_filament_types: list[str] | None = None  # auto-extracted from 3MF if omitted
     filament_overrides: list[FilamentOverride] | None = None
     force_color_match: bool = False
+    allow_base_material_match: bool = True
 
     # Multi-plate: pass a list of plate IDs to fan out N rows (one per plate).
     # Single plate_id also accepted for parity with print_queue API.
-    plate_id: int | None = None
-    plate_ids: list[int] | None = None
+    plate_id: int | None = Field(default=None, ge=0)
+    plate_ids: list[Annotated[int, Field(ge=0)]] | None = Field(default=None, max_length=64)
     # How many runs of a GIVEN plate, keyed by plate id. One shared Quantity
     # cannot say "plate 1 once, plate 2 twice" (upstream #342), and a
     # multi-plate file is exactly where that comes up. Absent — or absent for a
@@ -61,16 +52,16 @@ class AutoQueueItemCreate(BaseModel):
     # keeps its meaning.
     plate_quantities: dict[int, int] | None = None
 
-    # Print options (copied to print_queue on assignment). Tri-state accepted
-    # (off/auto/on, or legacy bool), but auto-queue has no *_mode column, so
-    # 'auto' degrades to its bool mirror on assignment — auto only survives the
-    # primary PrintModal queue path (SAFE spec §2.1/§3.5).
+    # Legacy print-option inputs. The router is model-agnostic, so promotion
+    # resolves the owner's saved profile (or model fallback) for the selected
+    # printer instead. Kept accepted for non-modal API clients.
     bed_levelling: CalibrationMode = "on"
     flow_cali: CalibrationMode = "on"
     layer_inspect: bool = False
     timelapse: bool = False
     # Which medium records it — copied onto the per-printer item at promotion.
     timelapse_storage: TimelapseStorage | None = None
+    feed_policy: Literal["auto", "ams_only", "external_only"] | None = None
     use_ams: bool = True
     mesh_mode_fast_check: bool = True
     execute_swap_macros: bool = True
@@ -120,6 +111,7 @@ class AutoQueueItemUpdate(BaseModel):
     required_filament_types: list[str] | None = None
     filament_overrides: list[FilamentOverride] | None = None
     force_color_match: bool | None = None
+    allow_base_material_match: bool | None = None
     scheduled_time: datetime | None = None
     manual_start: bool | None = None
     auto_off_after: bool | None = None
@@ -129,6 +121,7 @@ class AutoQueueItemUpdate(BaseModel):
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     timelapse_storage: TimelapseStorage | None = None
+    feed_policy: Literal["auto", "ams_only", "external_only"] | None = None
     use_ams: bool | None = None
     mesh_mode_fast_check: bool | None = None
     execute_swap_macros: bool | None = None
@@ -146,6 +139,7 @@ class AutoQueueItemResponse(BaseModel):
     archive_id: int | None
     library_file_id: int | None
     project_id: int | None
+    project_line_id: int | None = None
 
     target_model: str | None
     target_location_id: int | None = None
@@ -153,6 +147,7 @@ class AutoQueueItemResponse(BaseModel):
     required_filament_types: list[str] | None = None
     filament_overrides: list[FilamentOverride] | None = None
     force_color_match: bool
+    allow_base_material_match: bool
 
     plate_id: int | None
     position: int
@@ -166,13 +161,14 @@ class AutoQueueItemResponse(BaseModel):
     layer_inspect: bool
     timelapse: bool
     timelapse_storage: TimelapseStorage | None = None
+    feed_policy: Literal["auto", "ams_only", "external_only"] = "auto"
     use_ams: bool
     mesh_mode_fast_check: bool
     execute_swap_macros: bool
     swap_macro_events: list[str] | None = None
     selected_macro_ids: list[int] | None = None
 
-    status: Literal["pending", "assigned", "cancelled"]
+    status: Literal["pending", "assigned", "cancelled", "failed"]
     waiting_reason: str | None
     assigned_to_item_id: int | None
     assigned_at: UTCDatetime
@@ -182,6 +178,15 @@ class AutoQueueItemResponse(BaseModel):
     been_jumped: bool
 
     batch_id: str | None
+    # Whether this row owns a local copy of the bytes its work prints (m173,
+    # spec §8). Add-only and read-only; no auto row is ``exempt`` — the external
+    # and calibration exceptions only ever reach a per-printer row. The raw spool
+    # path is deliberately not exposed (§10).
+    source_storage: SourceStorageState = "legacy"
+    source_size_bytes: int | None = None
+    # m171: set when the rebalancer moved this row's work here from another model.
+    rebalanced_at: UTCDatetime = None
+    rebalanced_from_model: str | None = None
     created_at: UTCDatetime
     created_by_id: int | None
 
@@ -206,6 +211,12 @@ class AutoQueueReorderItem(BaseModel):
 
 class AutoQueueReorder(BaseModel):
     items: list[AutoQueueReorderItem]
+
+
+class AutoQueueRebalanceRequest(BaseModel):
+    """The rows the operator pointed at on the panel — one item, or a collapsed ``×N`` block."""
+
+    item_ids: list[int] = Field(min_length=1, max_length=64)
 
 
 class AutoQueueBatchActionResponse(BaseModel):

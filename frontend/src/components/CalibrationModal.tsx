@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Play, CheckCircle2, Circle } from 'lucide-react';
+import { Loader2, Play, CheckCircle2, Circle } from 'lucide-react';
 import { api } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { Toggle } from './Toggle';
 
 interface CalibrationModalProps {
@@ -29,6 +30,7 @@ type CalibrationOptions = {
 
 export function CalibrationModal({ printerId, printerName, printerModel, onClose }: CalibrationModalProps) {
   const { t } = useTranslation();
+  const headingId = useId();
   const [phase, setPhase] = useState<'select' | 'running'>('select');
 
   const { data: available, isLoading: optionsLoading } = useQuery<CalibrationOptions>({
@@ -96,109 +98,103 @@ export function CalibrationModal({ printerId, printerName, printerModel, onClose
   const availableCalibrations = calibrations.filter(c => c.available);
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary w-full max-w-md"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-bambu-dark-tertiary">
-          <div>
-            <h2 className="text-lg font-semibold text-white">
-              {phase === 'running' ? t('printers.calibration.runningTitle') : t('printers.calibration.title')}
-            </h2>
-            <p className="text-sm text-bambu-gray">{printerName} ({printerModel || '?'})</p>
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      header={
+        <div>
+          <h2 id={headingId} className="text-lg font-semibold text-white">
+            {phase === 'running' ? t('printers.calibration.runningTitle') : t('printers.calibration.title')}
+          </h2>
+          <p className="text-sm text-bambu-gray">{printerName} ({printerModel || '?'})</p>
+        </div>
+      }
+      size="md"
+    >
+      {/* Content */}
+      <div className="px-4 py-4 space-y-3">
+        {error && (
+          <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-red-700 dark:text-red-400 text-sm">
+            {error}
           </div>
-          <button onClick={onClose} className="text-bambu-gray hover:text-white transition-colors">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+        )}
 
-        {/* Content */}
-        <div className="px-5 py-4 space-y-3">
-          {error && (
-            <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-red-700 dark:text-red-400 text-sm">
-              {error}
+        {phase === 'running' ? (
+          stg.length === 0 && !done ? (
+            <div className="flex items-center gap-2 py-4 text-sm text-bambu-gray">
+              <Loader2 className="w-4 h-4 animate-spin" /> {t('printers.calibration.starting')}
             </div>
-          )}
-
-          {phase === 'running' ? (
-            stg.length === 0 && !done ? (
-              <div className="flex items-center gap-2 py-4 text-sm text-bambu-gray">
-                <Loader2 className="w-4 h-4 animate-spin" /> {t('printers.calibration.starting')}
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {stg.map((s, i) => {
-                  const state = done || i < curIndex ? 'done' : i === curIndex ? 'active' : 'pending';
-                  return (
-                    <div key={`${s}-${i}`} className="flex items-center gap-2">
-                      {state === 'done' ? (
-                        <CheckCircle2 className="w-4 h-4 text-bambu-green flex-shrink-0" />
-                      ) : state === 'active' ? (
-                        <Loader2 className="w-4 h-4 animate-spin text-bambu-green flex-shrink-0" />
-                      ) : (
-                        <Circle className="w-4 h-4 text-bambu-dark-tertiary flex-shrink-0" />
-                      )}
-                      <span className={`text-sm ${state === 'pending' ? 'text-bambu-gray' : 'text-white'}`}>
-                        {stgNames[i] || `${t('printers.calibration.stage')} ${s}`}
-                      </span>
-                    </div>
-                  );
-                })}
-                {done && (
-                  <p className="text-sm text-bambu-green pt-1">{t('printers.calibration.complete')}</p>
-                )}
-              </div>
-            )
-          ) : optionsLoading ? (
-            <div className="flex justify-center py-6">
-              <Loader2 className="w-5 h-5 animate-spin text-bambu-gray" />
+          ) : (
+            <div className="space-y-2">
+              {stg.map((s, i) => {
+                const state = done || i < curIndex ? 'done' : i === curIndex ? 'active' : 'pending';
+                return (
+                  <div key={`${s}-${i}`} className="flex items-center gap-2">
+                    {state === 'done' ? (
+                      <CheckCircle2 className="w-4 h-4 text-bambu-green flex-shrink-0" />
+                    ) : state === 'active' ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-bambu-green flex-shrink-0" />
+                    ) : (
+                      <Circle className="w-4 h-4 text-bambu-dark-tertiary flex-shrink-0" />
+                    )}
+                    <span className={`text-sm ${state === 'pending' ? 'text-bambu-gray' : 'text-white'}`}>
+                      {stgNames[i] || `${t('printers.calibration.stage')} ${s}`}
+                    </span>
+                  </div>
+                );
+              })}
+              {done && (
+                <p className="text-sm text-bambu-green pt-1">{t('printers.calibration.complete')}</p>
+              )}
             </div>
-          ) : availableCalibrations.length === 0 ? (
-            <p className="text-sm text-bambu-gray text-center py-4">
-              {t('printers.calibration.noneAvailable')}
-            </p>
-          ) : (
-            availableCalibrations.map((cal) => (
-              <div key={cal.key} className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-white">{cal.label}</p>
-                  <p className="text-xs text-bambu-gray">{cal.desc}</p>
-                </div>
-                <Toggle checked={cal.checked} onChange={cal.onChange} />
+          )
+        ) : optionsLoading ? (
+          <div className="flex justify-center py-4">
+            <Loader2 className="w-5 h-5 animate-spin text-bambu-gray" />
+          </div>
+        ) : availableCalibrations.length === 0 ? (
+          <p className="text-sm text-bambu-gray text-center py-4">
+            {t('printers.calibration.noneAvailable')}
+          </p>
+        ) : (
+          availableCalibrations.map((cal) => (
+            <div key={cal.key} className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-white">{cal.label}</p>
+                <p className="text-xs text-bambu-gray">{cal.desc}</p>
               </div>
-            ))
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex gap-3 px-5 py-4 border-t border-bambu-dark-tertiary">
-          {phase === 'running' ? (
-            <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
-              {done ? t('printers.calibration.close') : t('common.cancel')}
-            </Button>
-          ) : (
-            <>
-              <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
-                {t('common.cancel')}
-              </Button>
-              <Button
-                onClick={() => mutation.mutate()}
-                disabled={!hasSelection || mutation.isPending}
-                className="flex-1"
-              >
-                {mutation.isPending ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Play className="w-4 h-4" />
-                )}
-                {t('printers.calibration.start')}
-              </Button>
-            </>
-          )}
-        </div>
+              <Toggle checked={cal.checked} onChange={cal.onChange} />
+            </div>
+          ))
+        )}
       </div>
-    </div>
+
+      {/* Footer */}
+      <div className="flex gap-3 px-4 py-4 border-t border-bambu-dark-tertiary">
+        {phase === 'running' ? (
+          <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
+            {done ? t('printers.calibration.close') : t('common.cancel')}
+          </Button>
+        ) : (
+          <>
+            <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
+              {t('common.cancel')}
+            </Button>
+            <Button
+              onClick={() => mutation.mutate()}
+              disabled={!hasSelection || mutation.isPending}
+              className="flex-1"
+            >
+              {mutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Play className="w-4 h-4" />
+              )}
+              {t('printers.calibration.start')}
+            </Button>
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }

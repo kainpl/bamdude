@@ -69,6 +69,42 @@ def _to_postgres_column_def(column_def: str) -> str:
     return out.replace("INTEGER PRIMARY KEY", "SERIAL PRIMARY KEY")
 
 
+def json_column_type() -> str:
+    """Column type for a model field declared ``Column(JSON)``.
+
+    SQLite has no JSON storage class — ``JSON`` there would take NUMERIC
+    affinity, which is not what the model means — so it is TEXT, exactly as
+    every other migration writes it. PostgreSQL gets the real type, so a column
+    added by a migration matches the one ``create_all`` makes on a fresh
+    install.
+
+    A function, not a module constant: ``is_postgres()`` reads settings, and a
+    constant would freeze whatever was true at import time.
+    """
+    return "JSON" if is_postgres() else "TEXT"
+
+
+def as_json(sql_expr: str) -> str:
+    """Wrap a SQL expression so it can be assigned to a JSON column.
+
+    ⚠️ PostgreSQL does not implicitly cast to ``json``. A bound parameter
+    arrives as ``character varying`` and a string concatenation is ``text``, and
+    either one assigned to a json column aborts with *"column X is of type json
+    but expression is of type character varying"* — which took down every
+    PostgreSQL install running m157 (reported 2026-09-09, service crash-looping
+    every 8 seconds because startup never completed).
+
+    ⚠️ On SQLite this must stay a bare expression. ``CAST(x AS JSON)`` there
+    picks NUMERIC affinity, and casting ``'["a"]'`` to numeric yields ``0`` —
+    the data would be destroyed rather than rejected.
+
+    The whole class of bug is invisible to the test suite, which runs on
+    SQLite; the guard is ``tests/integration/test_postgres_scenarios.py``
+    against a real server.
+    """
+    return f"CAST({sql_expr} AS JSON)" if is_postgres() else sql_expr
+
+
 async def add_column(conn, table: str, column_def: str) -> bool:
     """Add a column if it doesn't exist. Returns True if added."""
     col_name = column_def.strip().split()[0]
@@ -117,11 +153,42 @@ async def recreate_table(conn, table: str, new_ddl: str, columns_to_copy: str) -
         if missing:
             logger.info("recreate_table %s: skipping column(s) the table no longer has: %s", table, ", ".join(missing))
         copy_list = ", ".join(copied)
+        # ⚠️ The rebuild loses every index the DDL does not restate — a CREATE
+        # TABLE cannot carry named indexes — so m024's ix_auto_queue_status_position
+        # and three others vanished from long-lived installs the first time a
+        # later migration rebuilt their table (m172 puts those four back). Read
+        # the table's own indexes first and carry over the ones whose columns
+        # survive: an auto-index (UNIQUE / PRIMARY KEY, ``sql`` NULL) belongs to
+        # the new DDL, and an index on a dropped column stays dropped.
+        carried = await _sqlite_indexes_to_carry(conn, table, set(copied))
         await conn.execute(text(f"DROP TABLE IF EXISTS {tmp}"))
         await conn.execute(text(new_ddl.replace(f"CREATE TABLE {table}", f"CREATE TABLE {tmp}")))
         await conn.execute(text(f"INSERT INTO {tmp} ({copy_list}) SELECT {copy_list} FROM {table}"))
         await conn.execute(text(f"DROP TABLE {table}"))
         await conn.execute(text(f"ALTER TABLE {tmp} RENAME TO {table}"))
+        for index_sql in carried:
+            await conn.execute(text(index_sql))
+
+
+async def _sqlite_indexes_to_carry(conn, table: str, surviving_columns: set[str]) -> list[str]:
+    """The CREATE INDEX statements of ``table``'s explicit indexes whose columns
+    all survive a rebuild, rewritten with IF NOT EXISTS so a migration that
+    restates one of them afterwards does not collide."""
+    rows = await conn.execute(
+        text("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = :t AND sql IS NOT NULL"),
+        {"t": table},
+    )
+    carried: list[str] = []
+    for name, sql in rows.fetchall():
+        info = await conn.execute(text(f'PRAGMA index_info("{name}")'))
+        columns = {r[2] for r in info.fetchall() if r[2] is not None}
+        if not columns or not columns <= surviving_columns:
+            continue
+        head, sep, tail = sql.partition(" INDEX ")
+        if not sep:
+            continue
+        carried.append(sql if "IF NOT EXISTS" in sql.upper() else f"{head} INDEX IF NOT EXISTS {tail}")
+    return carried
 
 
 async def get_table_columns(conn, table: str) -> list[str]:

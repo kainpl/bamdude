@@ -45,8 +45,10 @@ describe('TagManagementModal', () => {
     it('shows loading state initially', () => {
       render(<TagManagementModal onClose={mockOnClose} />);
 
-      // Should show loading spinner before data loads
-      expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument();
+      // Should show loading spinner before data loads.
+      // Two buttons answer to /close/i since the shell owns the header X: its
+      // aria-label and the footer button's own label are both "Close".
+      expect(screen.getAllByRole('button', { name: /close/i }).length).toBeGreaterThan(0);
     });
 
     it('displays tags with counts', async () => {
@@ -275,8 +277,10 @@ describe('TagManagementModal', () => {
         expect(screen.getByText('Manage Tags')).toBeInTheDocument();
       });
 
-      const closeButton = screen.getByRole('button', { name: /close/i });
-      await user.click(closeButton);
+      // The shell's header X answers to /close/i too, and it is the first of
+      // the two — the footer's own Close button is the last.
+      const closeButtons = screen.getAllByRole('button', { name: /close/i });
+      await user.click(closeButtons[closeButtons.length - 1]);
 
       expect(mockOnClose).toHaveBeenCalledTimes(1);
     });

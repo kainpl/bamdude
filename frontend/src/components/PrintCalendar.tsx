@@ -3,11 +3,18 @@ import { useMemo, useRef, useState, useEffect } from 'react';
 import { localDateKey } from '../utils/date';
 
 interface PrintCalendarProps {
-  printDates: string[]; // Array of ISO date strings
+  /**
+   * Prints per local day, keyed `YYYY-MM-DD`.
+   *
+   * ⚠️ Counted by the server now. This used to receive every print's timestamp
+   * and count them here — which meant the calendar could only ever draw the
+   * prints that fitted in one truncated download.
+   */
+  dayCounts: Record<string, number>;
   months?: number; // How many months to show (default 3)
 }
 
-export function PrintCalendar({ printDates, months = 3 }: PrintCalendarProps) {
+export function PrintCalendar({ dayCounts, months = 3 }: PrintCalendarProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
 
@@ -26,15 +33,10 @@ export function PrintCalendar({ printDates, months = 3 }: PrintCalendarProps) {
   }, []);
 
   const { weeks, monthLabels, printCounts } = useMemo(() => {
-    // Count prints per day. Bucket by local-tz YYYY-MM-DD so an evening
-    // print in a negative-UTC-offset region (e.g. CDT) doesn't get
-    // attributed to "tomorrow's" UTC cell while its label renders as
-    // today (#1446).
-    const counts: Record<string, number> = {};
-    printDates.forEach((date) => {
-      const day = localDateKey(date);
-      if (day) counts[day] = (counts[day] || 0) + 1;
-    });
+    // Already bucketed by local day upstream, which is what keeps an evening
+    // print in a negative-UTC-offset region (e.g. CDT) out of "tomorrow's"
+    // cell while its label renders as today (#1446).
+    const counts = dayCounts;
 
     // Generate weeks for the last N months
     const today = new Date();
@@ -75,7 +77,7 @@ export function PrintCalendar({ printDates, months = 3 }: PrintCalendarProps) {
     }
 
     return { weeks, monthLabels, printCounts: counts };
-  }, [printDates, months]);
+  }, [dayCounts, months]);
 
   const maxCount = Math.max(1, ...Object.values(printCounts));
 

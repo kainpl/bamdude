@@ -25,7 +25,16 @@ describe('the queued-count toast', () => {
   });
 
   it('counts a request as as many rows as it carries copies', () => {
-    expect(source).toMatch(/results\.queued \+= mode === 'edit-queue-item' \? 1 : quantityForPlate\(plateId\)/);
+    // ⚠️ `copies` is the SAME number the request carries as its `quantity` —
+    // since the «Total» quantity mode (spec 2026-09-11) deals a different one
+    // to each printer, the rows counter must add what was SENT, never the
+    // field's own figure. Both now read one helper, `dealtCopies`, which is
+    // also what decides who is skipped and whose spools are weighed — so the
+    // helper's own body is pinned here too.
+    expect(source).toMatch(/const dealtCopies = \([\s\S]{0,120}?mode === 'edit-queue-item' \? 1 : copiesFor\(plateIndex, printerId\)/);
+    expect(source).toMatch(/const copies = dealtCopies\(plateId, printerId\);/);
+    expect(source).toMatch(/quantity: dealtCopies\(plateId, printerId\),/);
+    expect(source).toMatch(/results\.queued \+= copies;/);
   });
 
   it('keeps attempts and rows as separate counters', () => {
@@ -34,5 +43,10 @@ describe('the queued-count toast', () => {
     // the two meanings into one number is how this went wrong.
     expect(source).toContain('success: number; failed: number; queued: number');
     expect(source).toContain("t('printModal.partialSuccess', { success: results.success, failed: results.failed })");
+    // ⚠️ Since m173 the add path leads with whether a job exists at all
+    // (spec §10). That sentence pairs the same two ATTEMPT counts — an add is
+    // all-or-nothing per request, so rows have no business in it.
+    expect(source).toContain('added: results.success,')
+    expect(source).toContain('total: results.success + results.failed,')
   });
 });

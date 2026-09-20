@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Layers, Clock, Timer, Printer, Flame, Square, Box } from 'lucide-react';
@@ -140,7 +140,7 @@ function getSizeClasses(size: OverlaySize) {
       };
     case 'large':
       return {
-        container: 'p-6',
+        container: 'p-4',
         text: 'text-xl',
         textLarge: 'text-3xl',
         progressHeight: 'h-4',
@@ -408,9 +408,9 @@ export function StreamOverlayPage() {
         className="absolute top-4 right-4 z-10"
       >
         <img
-          src="/img/bamdude_logo_dark_transparent.png"
+          src="/img/brand/lockup-compact-on-dark.svg"
           alt="BamDude"
-          className={`${sizes.logoHeight} object-contain drop-shadow-lg hover:scale-105 transition-transform`}
+          className={`${sizes.logoHeight} w-auto object-contain drop-shadow-lg hover:scale-105 transition-transform`}
         />
       </a>
 

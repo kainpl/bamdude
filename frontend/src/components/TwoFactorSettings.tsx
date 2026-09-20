@@ -284,7 +284,7 @@ export function TwoFactorSettings() {
   const hasEmail = !!user?.email;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* ── TOTP ─────────────────────────────────────────────────────────── */}
       <Card id="card-2fa-totp">
         <CardHeader>

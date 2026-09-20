@@ -97,14 +97,14 @@ class TestNotificationsAPI:
             "name": "Printer Ntfy",
             "provider_type": "ntfy",
             "config": {"server": "https://ntfy.sh", "topic": "test-topic"},
-            "printer_id": printer.id,
+            "printer_ids": [printer.id],
         }
 
         response = await async_client.post("/api/v1/notifications/", json=data)
 
         assert response.status_code == 200
         result = response.json()
-        assert result["printer_id"] == printer.id
+        assert result["printer_ids"] == [printer.id]
 
     # ========================================================================
     # Get single endpoint
@@ -564,3 +564,161 @@ class TestHomeAssistantNotificationProvider:
         result = response.json()
         assert result["success"] is False
         assert "not configured" in result["message"].lower() or "Home Assistant" in result["message"]
+
+
+class TestSignalNotificationProvider:
+    """Integration tests for the Signal (signal-cli-rest-api) notification provider."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_signal_provider(self, async_client: AsyncClient):
+        """Verify a signal notification provider can be created."""
+        data = {
+            "name": "Signal Notifications",
+            "provider_type": "signal",
+            "enabled": True,
+            "config": {
+                "server": "http://localhost:8080",
+                "sender_number": "+15550000000",
+                "recipient_type": "numbers",
+                "numbers": "+15551111111",
+            },
+            "on_print_complete": True,
+            "on_print_failed": True,
+        }
+
+        response = await async_client.post("/api/v1/notifications/", json=data)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["name"] == "Signal Notifications"
+        assert result["provider_type"] == "signal"
+        assert result["config"]["sender_number"] == "+15550000000"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_signal_provider(self, async_client: AsyncClient, notification_provider_factory, db_session):
+        """Verify a signal provider's recipient config can be switched to a group."""
+        provider = await notification_provider_factory(
+            name="Signal Test",
+            provider_type="signal",
+            config='{"server": "http://localhost:8080", "sender_number": "+15550000000", "recipient_type": "numbers", "numbers": "+15551111111"}',
+        )
+
+        response = await async_client.patch(
+            f"/api/v1/notifications/{provider.id}",
+            json={
+                "config": {
+                    "server": "http://localhost:8080",
+                    "sender_number": "+15550000000",
+                    "recipient_type": "group",
+                    "group_id": "group.abc123==",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["config"]["recipient_type"] == "group"
+        assert result["config"]["group_id"] == "group.abc123=="
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_test_signal_config_without_server(self, async_client: AsyncClient):
+        """Verify test-config returns a clear error when the Signal API URL is missing."""
+        response = await async_client.post(
+            "/api/v1/notifications/test-config",
+            json={"provider_type": "signal", "config": {"sender_number": "+15550000000", "numbers": "+15551111111"}},
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["success"] is False
+        assert "Signal API URL" in result["message"]
+
+
+class TestProviderEventsEndpoint:
+    """``GET /notifications/events`` — the list the provider form renders from.
+
+    It exists because three hand-kept copies on the frontend drifted: the
+    dialog offered 18 of the 34 flags, and six of the sixteen it hid default to
+    ON, so a new provider quietly sent events nobody had been shown. These
+    tests pin the contract that makes a hand-kept copy unnecessary.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_every_provider_flag_is_listed_exactly_once(self, async_client: AsyncClient):
+        from backend.app.models.notification import PROVIDER_EVENT_DEFAULTS
+
+        response = await async_client.get("/api/v1/notifications/events")
+
+        assert response.status_code == 200
+        rows = response.json()
+        flags = [row["flag"] for row in rows]
+        assert len(flags) == len(set(flags))
+        assert set(flags) == set(PROVIDER_EVENT_DEFAULTS)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_defaults_are_the_registry_defaults(self, async_client: AsyncClient):
+        """What the form pre-ticks has to be what the backend would store anyway."""
+        from backend.app.models.notification import PROVIDER_EVENT_DEFAULTS
+
+        rows = (await async_client.get("/api/v1/notifications/events")).json()
+
+        assert {row["flag"]: row["default"] for row in rows} == PROVIDER_EVENT_DEFAULTS
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_every_row_carries_catalogued_events_severity_and_group(self, async_client: AsyncClient):
+        from backend.app.services.notification_events import EVENT_CATALOG, GROUPS, SEVERITIES
+
+        rows = (await async_client.get("/api/v1/notifications/events")).json()
+
+        for row in rows:
+            assert row["event_types"], row["flag"]
+            assert set(row["event_types"]) <= set(EVENT_CATALOG), row["flag"]
+            assert row["group"] in GROUPS, row["flag"]
+            assert row["severity"] in SEVERITIES, row["flag"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_sensor_aggregates_carry_their_members_and_the_strictest_severity(
+        self, async_client: AsyncClient
+    ):
+        """One switch silences several events, so it must look as serious as the worst."""
+        rows = {row["flag"]: row for row in (await async_client.get("/api/v1/notifications/events")).json()}
+
+        assert rows["on_sensor_threshold"]["event_types"] == [
+            "sensor_above_max",
+            "sensor_below_min",
+            "sensor_back_in_range",
+        ]
+        assert rows["on_sensor_threshold"]["severity"] == "error"
+        assert rows["on_sensor_silent"]["event_types"] == ["sensor_silent", "sensor_speaking_again"]
+        assert rows["on_sensor_silent"]["severity"] == "warning"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_rows_arrive_grouped_in_catalog_order(self, async_client: AsyncClient):
+        """The UI renders the list as it arrives, so the order is part of the contract."""
+        from backend.app.services.notification_events import GROUPS
+
+        rows = (await async_client.get("/api/v1/notifications/events")).json()
+
+        seen: list[str] = []
+        for row in rows:
+            if not seen or seen[-1] != row["group"]:
+                seen.append(row["group"])
+        assert len(seen) == len(set(seen)), f"a group is split across the list: {seen}"
+        assert seen == [g for g in GROUPS if g in seen]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_path_is_not_read_as_a_provider_id(self, async_client: AsyncClient):
+        """``/events`` must be declared above ``/{provider_id}``; the other way it 422s."""
+        response = await async_client.get("/api/v1/notifications/events")
+
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)

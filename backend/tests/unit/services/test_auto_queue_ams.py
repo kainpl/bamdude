@@ -108,6 +108,28 @@ class TestBuildLoadedFilaments:
         status = _make_status(ams=[{"id": 0, "tray": [{"id": 0, "tray_type": ""}]}])
         assert build_loaded_filaments(status) == []
 
+    def test_a_masked_slot_reports_the_actual_spool(self) -> None:
+        """Mapping and the low-filament announcement reason about the SPOOL, so
+        an advertised profile must not reach either (spec §6.3)."""
+        from backend.app.services import ams_advertised_overlay as overlay
+        from backend.app.services.ams_advertised_overlay import OverlayEntry
+
+        status = _make_status(
+            ams=[
+                {"id": 0, "tray": [{"id": 1, "tray_type": "PETG", "tray_color": "000000FF", "tray_info_idx": "GFG99"}]}
+            ]
+        )
+        overlay.replace_printer(
+            9, {(0, 1): OverlayEntry("PETG", "FF0000FF", "GFG00", (), "000000FF", "GFG99", "internal")}
+        )
+        masked = build_loaded_filaments(status, 9)[0]
+        assert (masked["color"], masked["tray_info_idx"]) == ("#FF0000", "GFG00")
+        # Without the printer id there is nothing to look the slot up by, and
+        # an unknown printer has no entries — both report what the printer shows.
+        live = build_loaded_filaments(status)[0]
+        assert (live["color"], live["tray_info_idx"]) == ("#000000", "GFG99")
+        assert build_loaded_filaments(status, 10)[0]["color"] == "#000000"
+
 
 class TestMatchFilamentsToSlots:
     def test_colour_outranks_a_unique_tray_info_idx(self) -> None:

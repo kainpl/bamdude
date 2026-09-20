@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import time
 import zipfile
 from collections import deque
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NotRequired, TypedDict
 
 from sqlalchemy import select
 
@@ -37,9 +39,15 @@ from backend.app.services.bambu_ftp import (
     upload_file_async,
     with_ftp_retry,
 )
+from backend.app.services.filament_intake import item_descriptor, routing_detail, source_display_filename
+from backend.app.services.filament_preflight import final_guard, preflight_item
+from backend.app.services.filament_routing import RoutingDeferred
 from backend.app.services.gcode_patcher import GcodeInjectionSpec
 from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.product_sync import purge_file_product_links
+from backend.app.services.queue_source_descriptor import QueueSourceDescriptor
+from backend.app.services.source_io import SourceUnavailable, require_source_file, source_probe
 from backend.app.utils.filename import derive_remote_filename
 
 logger = logging.getLogger(__name__)
@@ -219,7 +227,7 @@ async def _warn_on_filament_deficit(db, job, archive) -> None:
         if not requirements:
             return
 
-        loaded = _sched._build_loaded_filaments(status)
+        loaded = _sched._build_loaded_filaments(status, job.printer_id)
         if not loaded:
             return
 
@@ -535,11 +543,24 @@ class DispatchEnqueueRejected(Exception):
     """Raised when a dispatch job should not be accepted."""
 
 
+class DispatchOutcome(TypedDict):
+    success: bool
+    archive_id: int | None
+    error: str | None
+    cancelled: bool
+    deferred: NotRequired[bool]
+    reason: NotRequired[dict]
+
+
 @dataclass(slots=True)
 class PrintDispatchJob:
     id: int
     kind: Literal["reprint_archive", "print_library_file"]
-    source_id: int
+    #: The ORIGINAL archive / library row this dispatch was started from, when
+    #: one still exists. ``None`` is an ordinary answer since m173: a job backed
+    #: by a captured source needs no original, and the runner then looks nothing
+    #: up rather than resolving an id whose row may be somebody else's by now.
+    source_id: int | None
     source_name: str
     printer_id: int
     printer_name: str
@@ -547,6 +568,9 @@ class PrintDispatchJob:
     requested_by_user_id: int | None = None
     requested_by_username: str | None = None
     project_id: int | None = None
+    # The order line this print is for, carried from the request that started it
+    # all the way to the archive row the runner writes.
+    project_line_id: int | None = None
     cleanup_library_after_dispatch: bool = False
     # Link back to a ``print_queue.id`` when the dispatch was requested by
     # the scheduler for a queue item.  The runner updates the queue item's
@@ -564,7 +588,27 @@ class PrintDispatchJob:
     completion_event: asyncio.Event = field(default_factory=asyncio.Event)
     # Populated by the runner before it sets ``completion_event``.  Shape:
     # ``{"success": bool, "archive_id": int | None, "error": str | None, "cancelled": bool}``.
-    outcome: dict[str, Any] = field(default_factory=dict)
+    outcome: DispatchOutcome = field(
+        default_factory=lambda: {
+            "success": False,
+            "archive_id": None,
+            "error": None,
+            "cancelled": False,
+            "deferred": False,
+        }
+    )
+    # The bytes this dispatch prints, read off the queue row by
+    # ``_prepare_filament_routing`` before anything opens a file (spec §7, S2).
+    # ``None`` means a legacy row (or one of §2's exemptions — an external print,
+    # a calibration asset), which still reads its original.
+    source: QueueSourceDescriptor | None = None
+    routing_guard: Any = None
+    claim_started_at: Any = None
+    original_archive_id: int | None = None
+    original_library_file_id: int | None = None
+    execution_archive_id: int | None = None
+    routing_intent: str | None = None
+    foreign_claim: bool = False
 
 
 async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
@@ -596,7 +640,7 @@ async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
     if job.awaited_by_scheduler:
         return
     outcome = job.outcome or {}
-    if outcome.get("success") or outcome.get("cancelled"):
+    if outcome.get("success") or outcome.get("cancelled") or outcome.get("deferred"):
         return
 
     try:
@@ -619,6 +663,7 @@ async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
 class ActiveDispatchState:
     job: PrintDispatchJob
     message: str
+    phase: str = "preparing"
     upload_bytes: int | None = None
     upload_total_bytes: int | None = None
 
@@ -654,7 +699,6 @@ def _rack_slot_extruders(printer, file_path, plate_id, nozzle_mapping) -> str | 
 
     if not is_nozzle_rack_model(getattr(printer, "model", None)):
         return None
-    import json
 
     from backend.app.utils.threemf_tools import extract_slot_extruders_from_3mf
 
@@ -693,13 +737,19 @@ class BackgroundDispatchService:
             return False
         return state.state in ("RUNNING", "PAUSE", "PAUSED") and bool(state.gcode_file)
 
-    async def _release_direct_claim(self, job: PrintDispatchJob, *, status: str) -> None:
+    async def _release_direct_claim(self, job: PrintDispatchJob, *, status: str, queue_error: bool = True) -> None:
         """Give the printer back after a direct dispatch that will not print.
 
         ⚠️ Gated on ``awaited_by_scheduler``: the scheduler owns the outcome of
         its own items — including the #2598 busy-refusal that returns one to
         ``pending`` instead of failing it — and a second writer here would
         overwrite that silently.
+
+        ⚠️ ``queue_error=False`` fails the item but leaves the QUEUE idle, for a
+        refusal rather than a breakage: a strict-mode "not now" is not a hardware
+        fault, and parking the queue in ``error`` — where ``check_queue`` skips
+        every item in it — would freeze the very queue strict mode exists to
+        protect, inverting the feature.
 
         Never raises. This runs on the way out of a dispatch that has already
         gone wrong, and losing the real error to a secondary one from the
@@ -722,7 +772,10 @@ class BackgroundDispatchService:
                 item.completed_at = datetime.now(timezone.utc)
                 if status == "failed":
                     item.error_message = str((job.outcome or {}).get("error") or "Dispatch failed")
-                    await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+                    if queue_error:
+                        await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+                    else:
+                        await set_queue_idle(db, item.queue_id)
                 else:
                     await set_queue_idle(db, item.queue_id)
                 await update_queue_counters(db, item.queue_id)
@@ -776,6 +829,7 @@ class BackgroundDispatchService:
         options: dict[str, Any],
         requested_by_user_id: int | None,
         requested_by_username: str | None,
+        project_line_id: int | None = None,
     ) -> dict[str, Any]:
         return await self._dispatch(
             kind="reprint_archive",
@@ -786,6 +840,7 @@ class BackgroundDispatchService:
             options=options,
             requested_by_user_id=requested_by_user_id,
             requested_by_username=requested_by_username,
+            project_line_id=project_line_id,
         )
 
     async def get_state(self) -> dict[str, Any]:
@@ -797,7 +852,9 @@ class BackgroundDispatchService:
         self,
         *,
         kind: Literal["reprint_archive", "print_library_file"],
-        source_id: int,
+        # ``None`` when the queue row's only source is its captured copy — the
+        # runner then reads the descriptor and looks no original up (spec §7).
+        source_id: int | None,
         source_name: str,
         printer_id: int,
         printer_name: str,
@@ -805,6 +862,7 @@ class BackgroundDispatchService:
         requested_by_user_id: int | None,
         requested_by_username: str | None,
         project_id: int | None = None,
+        project_line_id: int | None = None,
         queue_item_id: int,
     ) -> dict[str, Any]:
         """Run a dispatch inline (bypass queue) on behalf of the scheduler.
@@ -827,6 +885,7 @@ class BackgroundDispatchService:
                 requested_by_user_id=requested_by_user_id,
                 requested_by_username=requested_by_username,
                 project_id=project_id,
+                project_line_id=project_line_id,
                 queue_item_id=queue_item_id,
                 awaited_by_scheduler=True,
             )
@@ -847,6 +906,8 @@ class BackgroundDispatchService:
 
         try:
             await self._process_job(job)
+        except (RoutingDeferred, SourceUnavailable) as exc:
+            await self._handle_routing_deferred(job, exc)
         except DispatchJobCancelled:
             pass  # outcome.cancelled already set by the runner
         except Exception as e:
@@ -862,7 +923,9 @@ class BackgroundDispatchService:
                 self._active_jobs.pop(job.id, None)
                 done_payload = self._build_state_payload_unlocked(
                     recent_event={
-                        "status": "completed" if job.outcome.get("success") else "failed",
+                        "status": "deferred"
+                        if job.outcome.get("deferred")
+                        else ("completed" if job.outcome.get("success") else "failed"),
                         "job_id": job.id,
                         "source_name": source_name,
                         "printer_id": printer_id,
@@ -872,6 +935,7 @@ class BackgroundDispatchService:
                 )
             await ws_manager.broadcast({"type": "background_dispatch", "data": done_payload})
 
+        job.completion_event.set()
         return dict(job.outcome)
 
     async def dispatch_print_library_file(
@@ -885,6 +949,7 @@ class BackgroundDispatchService:
         requested_by_user_id: int | None,
         requested_by_username: str | None,
         project_id: int | None = None,
+        project_line_id: int | None = None,
         cleanup_library_after_dispatch: bool = False,
     ) -> dict[str, Any]:
         return await self._dispatch(
@@ -897,6 +962,7 @@ class BackgroundDispatchService:
             requested_by_user_id=requested_by_user_id,
             requested_by_username=requested_by_username,
             project_id=project_id,
+            project_line_id=project_line_id,
             cleanup_library_after_dispatch=cleanup_library_after_dispatch,
         )
 
@@ -1013,17 +1079,93 @@ class BackgroundDispatchService:
         requested_by_user_id: int | None,
         requested_by_username: str | None,
         project_id: int | None = None,
+        project_line_id: int | None = None,
         cleanup_library_after_dispatch: bool = False,
     ) -> dict[str, Any]:
+        # ⚠️ The source is copied into queue-sources BEFORE the printer is
+        # claimed, and outside ``_lock`` (spec §5 steps 1-3). A copy can take
+        # minutes over a share: claiming first would park the machine for all of
+        # it — and, on a failure, for nothing — while holding ``_lock`` would stop
+        # every *other* printer being dispatched to as well.
+        #
+        # The price is that time passes between asking whether this printer is
+        # free and taking its claim, so the question is asked twice: here, so an
+        # already-refused dispatch costs no walk over the share, and again under
+        # the lock in ``_enqueue_claimed_job``, which is the answer that decides.
+        # A refusal after the copy discards the staged bytes and leaves no row.
         async with self._lock:
-            has_pending_for_printer = any(job.printer_id == printer_id for job in self._queued_jobs)
-            has_active_for_printer = any(active.job.printer_id == printer_id for active in self._active_jobs.values())
+            self._refuse_unless_free(printer_id, printer_name)
 
-            if has_pending_for_printer or has_active_for_printer:
-                raise DispatchEnqueueRejected(f"Printer {printer_name} already has a background dispatch in progress")
+        from backend.app.services.queue_batch import direct_print_capture_plan
+        from backend.app.services.queue_source_capture import capture_staged, discard_staged
 
-            if self._printer_is_busy_printing(printer_id):
-                raise DispatchEnqueueRejected(f"Printer {printer_name} is currently busy printing")
+        async with async_session() as prep_db:
+            capture_plan = await direct_print_capture_plan(prep_db, kind=kind, source_id=source_id)
+        staged = await capture_staged(capture_plan)
+        try:
+            return await self._enqueue_claimed_job(
+                kind=kind,
+                source_id=source_id,
+                source_name=source_name,
+                printer_id=printer_id,
+                printer_name=printer_name,
+                options=options,
+                requested_by_user_id=requested_by_user_id,
+                requested_by_username=requested_by_username,
+                project_id=project_id,
+                project_line_id=project_line_id,
+                cleanup_library_after_dispatch=cleanup_library_after_dispatch,
+                staged=staged,
+            )
+        except BaseException:
+            await discard_staged(staged)
+            raise
+
+    def _refuse_unless_free(self, printer_id: int, printer_name: str) -> None:
+        """Both availability questions, asked under ``_lock``.
+
+        Extracted because ``_dispatch`` asks them twice — before the copy and
+        again before the claim — and two copies of the same two refusals would
+        drift. Never call it without the lock: it reads the dispatcher's own
+        in-memory job lists.
+        """
+        has_pending_for_printer = any(job.printer_id == printer_id for job in self._queued_jobs)
+        has_active_for_printer = any(active.job.printer_id == printer_id for active in self._active_jobs.values())
+
+        if has_pending_for_printer or has_active_for_printer:
+            raise DispatchEnqueueRejected(f"Printer {printer_name} already has a background dispatch in progress")
+
+        if self._printer_is_busy_printing(printer_id):
+            raise DispatchEnqueueRejected(f"Printer {printer_name} is currently busy printing")
+
+    async def _enqueue_claimed_job(
+        self,
+        *,
+        kind: Literal["reprint_archive", "print_library_file"],
+        source_id: int,
+        source_name: str,
+        printer_id: int,
+        printer_name: str,
+        options: dict[str, Any],
+        requested_by_user_id: int | None,
+        requested_by_username: str | None,
+        project_id: int | None,
+        project_line_id: int | None,
+        cleanup_library_after_dispatch: bool,
+        staged,
+    ) -> dict[str, Any]:
+        """Re-check availability, take the claim, queue the job — the fast half.
+
+        ``staged`` is the ``queue_source_capture.StagedSource`` the copy above
+        produced; the claim row is written inside its publication's transaction.
+        The bytes are already on disk when this runs, so ``_lock`` is held for one
+        INSERT, one UPDATE and the dispatcher's own bookkeeping, exactly as it was
+        before the spool existed.
+        """
+        async with self._lock:
+            # The re-check. Time has passed while the source was copied, and the
+            # answer from before the copy is not evidence any more.
+            self._refuse_unless_free(printer_id, printer_name)
 
             # Claim the printer now, in the DB, so ``check_queue`` sees this
             # print for the whole of its dispatch. Until this existed the claim
@@ -1037,20 +1179,41 @@ class BackgroundDispatchService:
             # deliberate. Moving it out would leave the job queued but unclaimed
             # for however long the write takes — which is the exact window the
             # claim exists to close. The cost is bounded: one INSERT plus one
-            # UPDATE, and the enqueue path is not on any hot loop.
+            # UPDATE — plus, only when the caller named an ORDER and no line,
+            # the three small reads ``order_filing.resolve_line_id`` makes to
+            # find it (spec pass 7) — and the enqueue path is not on any hot
+            # loop.
             from backend.app.services.queue_batch import claim_printer_for_direct_print
 
             async with async_session() as claim_db:
                 claim_item = await claim_printer_for_direct_print(
                     claim_db,
                     printer_id=printer_id,
+                    origin="direct",
                     archive_id=source_id if kind == "reprint_archive" else None,
                     library_file_id=source_id if kind == "print_library_file" else None,
                     options=options,
                     created_by_id=requested_by_user_id,
                     project_id=project_id,
+                    project_line_id=project_line_id,
+                    staged=staged,
                 )
                 claim_item_id = claim_item.id if claim_item is not None else None
+                if claim_item is not None:
+                    # ⚠️ **The claim row is the resolved answer, and the job must
+                    # carry it.** ``claim_printer_for_direct_print`` files the
+                    # line when the caller named only an order (spec pass 7,
+                    # Decision 4a) — and the job below is what
+                    # ``_run_print_library_file`` stamps the ARCHIVE from
+                    # (``archive_print(project_line_id=job.project_line_id)``).
+                    # Built from the caller's original ids instead, the queue row
+                    # knew the line and the print history did not, so a "print
+                    # now" for an order landed in the archive unfiled and the
+                    # order page's own attribution had to re-derive it. Reading
+                    # them BOTH off the row also keeps the two rows about one
+                    # print from disagreeing about the order.
+                    project_id = claim_item.project_id
+                    project_line_id = claim_item.project_line_id
 
             dispatch_position = len(self._queued_jobs) + len(self._active_jobs) + 1
             job = PrintDispatchJob(
@@ -1064,6 +1227,7 @@ class BackgroundDispatchService:
                 requested_by_user_id=requested_by_user_id,
                 requested_by_username=requested_by_username,
                 project_id=project_id,
+                project_line_id=project_line_id,
                 cleanup_library_after_dispatch=cleanup_library_after_dispatch,
                 queue_item_id=claim_item_id,
                 # ⚠️ ``awaited_by_scheduler`` stays False: the dispatcher owns
@@ -1151,7 +1315,18 @@ class BackgroundDispatchService:
         # to the running print, for ``on_print_complete`` to close.
         try:
             await self._process_job(job)
-            await self._mark_job_finished(job, failed=False, message="Background dispatch complete")
+            # ⚠️ Guarded, not unconditional: a strict-mode refusal returns
+            # normally from ``_process_job`` having already walked the failure
+            # exits itself, and marking it finished a second time would count it
+            # in both batch tallies and leave "completed" as the last thing the
+            # dispatch panel heard about a print that never ran. Every other
+            # normal return comes from a runner, and a runner sets
+            # ``success: True`` as the last statement before its ``finally`` —
+            # so for them this reads exactly as the bare call did.
+            if (job.outcome or {}).get("success"):
+                await self._mark_job_finished(job, failed=False, message="Background dispatch complete")
+        except (RoutingDeferred, SourceUnavailable) as exc:
+            await self._handle_routing_deferred(job, exc)
         except DispatchJobCancelled:
             await self._release_direct_claim(job, status="cancelled")
             await self._mark_job_cancelled(job)
@@ -1166,6 +1341,7 @@ class BackgroundDispatchService:
             await self._release_direct_claim(job, status="failed")
             await self._mark_job_finished(job, failed=True, message=str(e))
         finally:
+            job.completion_event.set()
             self._job_event.set()
 
     async def _build_injection_spec(
@@ -1213,12 +1389,13 @@ class BackgroundDispatchService:
             logger.warning("Dispatch job %s: failed to resolve gcode_snippets (%s), skipping", job.id, exc)
             return None
 
-    async def _set_active_message(self, job: PrintDispatchJob, message: str):
+    async def _set_active_message(self, job: PrintDispatchJob, message: str, *, phase: str = "preparing"):
         async with self._lock:
             active = self._active_jobs.get(job.id)
             if not active:
                 return
             active.message = message
+            active.phase = phase
             # New phase → previous upload progress is no longer relevant.
             # Without this the toast keeps rendering a 100% progress bar
             # during post-upload phases (swap macros, "Starting print…")
@@ -1246,6 +1423,7 @@ class BackgroundDispatchService:
                 return
 
             active.upload_bytes = max(0, int(uploaded))
+            active.phase = "uploading"
             active.upload_total_bytes = max(0, int(total))
             payload = self._build_state_payload_unlocked(
                 recent_event={
@@ -1259,9 +1437,11 @@ class BackgroundDispatchService:
             )
         await ws_manager.broadcast({"type": "background_dispatch", "data": payload})
 
-    async def _mark_job_finished(self, job: PrintDispatchJob, *, failed: bool, message: str):
+    async def _mark_job_finished(self, job: PrintDispatchJob, *, failed: bool, message: str, deferred: bool = False):
         async with self._lock:
-            if failed:
+            if deferred:
+                pass
+            elif failed:
                 self._batch_failed += 1
             else:
                 self._batch_completed += 1
@@ -1272,7 +1452,7 @@ class BackgroundDispatchService:
 
             payload = self._build_state_payload_unlocked(
                 recent_event={
-                    "status": "failed" if failed else "completed",
+                    "status": "deferred" if deferred else ("failed" if failed else "completed"),
                     "job_id": job.id,
                     "source_name": job.source_name,
                     "printer_id": job.printer_id,
@@ -1356,6 +1536,7 @@ class BackgroundDispatchService:
                     "printer_name": active.job.printer_name,
                     "message": active.message,
                     "upload_bytes": active.upload_bytes,
+                    "phase": active.phase,
                     "upload_total_bytes": active.upload_total_bytes,
                     "upload_progress_pct": upload_progress_pct,
                 }
@@ -1377,12 +1558,26 @@ class BackgroundDispatchService:
         }
 
     async def _process_job(self, job: PrintDispatchJob):
+        # Lazy import — print_scheduler imports us back.
+        from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+        # Strict mode (opt-in): a DIRECT print whose printer's stagger group has
+        # no free slot is refused here, before it would otherwise wait for one.
+        # Queue-originated jobs are never refused — the queue waits by design and
+        # pre-registered its slot in ``_start_print``. Decided before the acquire
+        # below on purpose: after it the print has already waited and holds a
+        # slot, so a check there could only fire on a race (which is what the
+        # two old in-runner blocks did).
+        if not job.awaited_by_scheduler and await self._strict_stagger_refuses(job.printer_id):
+            await self._refuse_dispatch(
+                job, "Stagger cap reached — wait for a free slot or disable stagger_strict_for_direct_dispatch"
+            )
+            return
+
         # Stagger gate: applies to both direct prints (cold acquire — polls
         # until a slot frees) and queue dispatch (slot was pre-registered
         # synchronously by ``print_scheduler._start_print``, so this returns
-        # immediately). Lazy import — print_scheduler imports us back.
-        from backend.app.services.print_scheduler import scheduler as print_scheduler
-
+        # immediately).
         await print_scheduler.acquire_stagger_slot(job.printer_id)
 
         if job.kind == "reprint_archive":
@@ -1393,16 +1588,166 @@ class BackgroundDispatchService:
             return
         raise RuntimeError(f"Unknown dispatch job kind: {job.kind}")
 
+    async def _prepare_filament_routing(self, db, job, pins: AsyncExitStack):
+        """Read the claim, the job's source and its routing — before any file is opened.
+
+        ⚠️ ``pins`` is how the blob survives the dispatch (spec §9). The GC never
+        releases a blob a job row still names, but a row can be deleted under a
+        running dispatch (a printer deleted, a user deleted), and from that moment
+        the bytes being uploaded are unowned. The pin is taken here because this is
+        the first point that knows which blob it is, and released when the runner
+        exits — so it spans preflight, patch, archive-write and upload.
+
+        **Required, with no default**, because the failure mode of forgetting it is
+        a file unlinked under a running print and no error anywhere: a caller that
+        does not hold a stack must be a type error, not a silent no-pin dispatch.
+
+        Taking it needs the storage guard for the registration only, and this
+        session has done nothing but read at that point, so a publication holding
+        the guard can always finish and hand it over.
+        """
+        from backend.app.models.print_queue import PrintQueueItem
+
+        item = await db.get(PrintQueueItem, job.queue_item_id) if job.queue_item_id else None
+        if item is None or item.status != "printing":
+            raise RoutingDeferred("dispatch_claim_changed")
+        job.claim_started_at = item.started_at
+        job.original_archive_id, job.original_library_file_id = item.archive_id, item.library_file_id
+        job.source = await item_descriptor(db, item)
+        if job.source is not None:
+            from backend.app.services import queue_sources
+
+            await pins.enter_async_context(queue_sources.pin(item.queue_source_id))
+        job.routing_intent = item.filament_routing
+        job.routing_guard = await preflight_item(db, item, job.printer_id)
+        if job.routing_guard:
+            plan = job.routing_guard.plan
+            job.options.update(ams_mapping=plan.mapping, use_ams=plan.use_ams, plate_id=plan.resolved_plate_id)
+
+    async def _verify_routing_claim(self, db, job):
+        from backend.app.models.print_queue import PrintQueueItem
+
+        item = await db.get(PrintQueueItem, job.queue_item_id, populate_existing=True)
+        if (
+            item is None
+            or item.status != "printing"
+            or item.started_at != job.claim_started_at
+            or item.filament_routing != job.routing_intent
+        ):
+            from backend.app.models.printer_queue import PrinterQueue
+
+            queue = (
+                await db.execute(
+                    select(PrinterQueue)
+                    .where(PrinterQueue.printer_id == job.printer_id)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            job.foreign_claim = bool(
+                queue
+                and queue.status == "printing"
+                and (
+                    queue.current_item_id != job.queue_item_id
+                    or (item and item.status == "printing" and item.started_at != job.claim_started_at)
+                )
+            )
+            raise RoutingDeferred("dispatch_claim_changed")
+
+    async def _handle_routing_deferred(self, job, exc):
+        from backend.app.services.filament_deferred import abort_execution_archive, defer_claim
+        from backend.app.services.print_scheduler import scheduler
+
+        reason = routing_detail(exc.reason)
+        job.outcome = {
+            "success": False,
+            "archive_id": job.execution_archive_id,
+            "error": reason["message"],
+            "cancelled": False,
+            "deferred": True,
+            "reason": reason,
+            "revision": exc.revision,
+            "claim_started_at": job.claim_started_at,
+            "source_archive_id": job.original_archive_id,
+            "source_library_file_id": job.original_library_file_id,
+        }
+        released = False
+        async with async_session() as db:
+            await abort_execution_archive(db, job.execution_archive_id, reason)
+            if not job.awaited_by_scheduler:
+                released = await defer_claim(
+                    db,
+                    item_id=job.queue_item_id,
+                    started_at=job.claim_started_at,
+                    reason=exc.reason,
+                    revision=exc.revision,
+                    direct=True,
+                    source_archive_id=job.original_archive_id,
+                    source_library_file_id=job.original_library_file_id,
+                    restore_source=True,
+                )
+            await db.commit()
+        if released:
+            await scheduler.release_prepared_dispatch(job.printer_id)
+        logger.info("Dispatch %s deferred before publish: %s", job.id, exc.reason)
+        if not job.awaited_by_scheduler:
+            await self._mark_job_finished(job, failed=False, message=reason["message"], deferred=True)
+
+    async def _strict_stagger_refuses(self, printer_id: int) -> bool:
+        """Strict mode on AND this printer's group(s) have no free slot right now.
+
+        Read every call — the toggle is a setting the operator may flip while
+        jobs are queued. Any failure here answers False: strictness is a
+        refinement, and a broken read must not refuse somebody's print.
+        """
+        try:
+            from backend.app.api.routes.settings import get_setting
+            from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+            async with async_session() as db:
+                strict_raw = await get_setting(db, "stagger_strict_for_direct_dispatch")
+            if (strict_raw or "false").lower() != "true":
+                return False
+            return await print_scheduler.stagger_blocks(printer_id)
+        except Exception as e:
+            logger.debug("Strict stagger check failed (non-fatal): %s", e)
+            return False
+
+    async def _refuse_dispatch(self, job: PrintDispatchJob, reason: str) -> None:
+        """Fail a job that never reached its runner, through the runner's own exits.
+
+        The direct claim taken at submit is released (or the printer stays
+        "busy"), the job row is marked failed with the reason, the operator is
+        told, and the completion event fires for anyone awaiting it. Same four
+        steps as the runner's ``except``/``finally``, because those are the only
+        four places a failed dispatch becomes visible.
+
+        ⚠️ ``queue_error=False``: the item failed, the queue did not. See
+        ``_release_direct_claim``.
+        """
+        logger.info("Background dispatch job %s refused: %s", job.id, reason)
+        job.outcome = {"success": False, "archive_id": None, "error": reason, "cancelled": False, "deferred": False}
+        await self._release_direct_claim(job, status="failed", queue_error=False)
+        await self._mark_job_finished(job, failed=True, message=reason)
+        await report_failure_if_unwatched(job)
+        job.completion_event.set()
+
     async def _run_reprint_archive(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print, withdraw_expected_print
 
-        job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False}
+        job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False, "deferred": False}
 
-        async with async_session() as db:
+        async with AsyncExitStack() as pins, async_session() as db:
             service = ArchiveService(db)
-            source_archive = await service.get_archive(job.source_id)
-            if not source_archive:
-                raise RuntimeError("Archive not found")
+            # Capture the dispatch claim, the job's own source and the original
+            # refs before any source probe can fail; the failure path must be able
+            # to release the claim. ``pins`` holds the blob for the whole runner.
+            await self._prepare_filament_routing(db, job, pins)
+            # ⚠️ The source archive is provenance now, not the bytes: a job with a
+            # snapshot prints the copy it took, and the row it was taken from may
+            # have been purged since (spec §7). Only a job with neither is broken.
+            source_archive = await service.get_archive(job.source_id) if job.source_id else None
+            if not source_archive and job.source is None:
+                raise SourceUnavailable()
 
             printer = await db.scalar(select(Printer).where(Printer.id == job.printer_id))
             if not printer:
@@ -1412,7 +1757,11 @@ class BackgroundDispatchService:
             printer_ip = printer.ip_address
             printer_access_code = printer.access_code
             printer_model = printer.model
-            archive_filename = source_archive.filename
+            # The human name, from the row while it exists and from the snapshot
+            # after that — never the object's own name, which is its hash (A04):
+            # a payload this version cannot read refuses here instead of naming
+            # the print after a hash. See ``source_display_filename``.
+            archive_filename = source_archive.filename if source_archive else source_display_filename(job.source)
 
             if not printer_manager.is_connected(job.printer_id):
                 raise RuntimeError("Printer is not connected")
@@ -1421,9 +1770,8 @@ class BackgroundDispatchService:
             if not await printer_manager.ensure_fresh_connection_for_printer(printer):
                 raise RuntimeError("Can`t re-connect printer MQTT")
 
-            file_path = settings.base_dir / source_archive.file_path
-            if not file_path.exists():
-                raise RuntimeError("Archive file not found")
+            file_path = job.source.path if job.source is not None else settings.base_dir / source_archive.file_path
+            await require_source_file(file_path)
 
             # Unified 3MF post-processing: M970 commenting (mesh-mode-fast-check
             # off) and per-plate G-code injection (#422) share a single
@@ -1441,7 +1789,7 @@ class BackgroundDispatchService:
             inject_spec = await self._build_injection_spec(
                 job=job,
                 printer_model=printer_model,
-                plate_id=source_archive.plate_index or 1,
+                plate_id=job.options.get("plate_id") or 1,
             )
             if not job.options.get("mesh_mode_fast_check", True) or inject_spec is not None:
                 from backend.app.services.gcode_patcher import apply_3mf_transforms
@@ -1504,19 +1852,38 @@ class BackgroundDispatchService:
                     printer_id=job.printer_id,
                     source_file=file_path,
                     dispatched_file=upload_file_path,
-                    original_filename=source_archive.filename,
-                    project_id=source_archive.project_id,
-                    source_content_hash=source_archive.source_content_hash or source_archive.content_hash,
+                    original_filename=archive_filename,
+                    project_id=source_archive.project_id if source_archive else job.project_id,
+                    project_line_id=source_archive.project_line_id if source_archive else job.project_line_id,
+                    # ⚠️ With a snapshot the chain root is the snapshot's own hash,
+                    # and that is not a fallback for a missing row — it is the
+                    # correct answer whenever one exists. ``source_content_hash``
+                    # has to describe the bytes written to ``file_path`` (that is
+                    # what ``effective_hash`` dedups on), and those bytes ARE the
+                    # snapshot. Inheriting the row's value instead would carry a
+                    # hash of whatever the original used to be, and the disk-dedup
+                    # lookup would point this archive at another row's file. The
+                    # two agree by construction for every chain BamDude wrote, so
+                    # reprints still group with their source (spec §3, S9).
+                    source_content_hash=(
+                        job.source.sha256
+                        if job.source is not None
+                        else (source_archive.source_content_hash or source_archive.content_hash)
+                    ),
                     applied_patches=applied_patches or None,
-                    library_file_id=source_archive.library_file_id,
+                    library_file_id=source_archive.library_file_id if source_archive else None,
+                    # A captured source is stored under its hash; the archive keeps
+                    # its copy under the name the folder around it already uses.
+                    stored_filename=archive_filename if job.source is not None else None,
                     created_by_id=job.requested_by_user_id,
-                    plate_index=source_archive.plate_index,
+                    plate_index=job.options.get("plate_id"),
                     print_data={"status": "printing"},
                     swap_macro_events_pending=swap_pending,
                     selected_macro_ids=selected_macros,
                 )
                 if not archive:
                     raise RuntimeError("Failed to create reprint archive")
+                job.execution_archive_id = archive.id
 
                 # Queue-item dispatches: re-point the queue item at the new
                 # archive (the actual print this run will execute) and copy
@@ -1562,7 +1929,7 @@ class BackgroundDispatchService:
             finally:
                 self._startup_lock.release()
 
-            remote_filename = derive_remote_filename(source_archive.filename)
+            remote_filename = derive_remote_filename(archive_filename)
             remote_path = f"/{remote_filename}"
 
             # Which medium this print goes to. Decided once, here, and carried
@@ -1631,7 +1998,9 @@ class BackgroundDispatchService:
             self._raise_if_cancel_requested(job)
 
             try:
-                await self._set_active_message(job, f"Uploading {archive_filename} to {printer_name}...")
+                await self._set_active_message(
+                    job, f"Uploading {archive_filename} to {printer_name}...", phase="uploading"
+                )
                 loop = asyncio.get_running_loop()
                 progress_state = {"last_emit": 0.0, "last_bytes": 0}
 
@@ -1704,7 +2073,7 @@ class BackgroundDispatchService:
                 # empty. Whatever the firmware does with it, a slicer in the
                 # field supplies it, and matching costs one hash of bytes
                 # already on disk.
-                file_md5 = _file_digest(upload_file_path)
+                file_md5 = await source_probe(("digest", str(upload_file_path)), _file_digest, upload_file_path)
 
                 # Preheat / heat-soak (#1468) — bring the bed (and chamber, on supported
                 # models) up to temperature on the now-idle printer before start_print.
@@ -1718,6 +2087,7 @@ class BackgroundDispatchService:
                     archive,
                     options=job.options,
                     cancel_check=lambda: self._raise_if_cancel_requested(job),
+                    on_heating=lambda: self._set_active_message(job, "Preheating...", phase="heating"),
                 )
 
                 register_expected_print(
@@ -1732,32 +2102,14 @@ class BackgroundDispatchService:
                 # into this archive for the next two hours.
                 _unconfirmed_expected_print = (job.printer_id, remote_filename)
 
-                plate_id = self._resolve_plate_id(file_path, job.options.get("plate_id"))
+                plate_id = await source_probe(
+                    ("plate", str(file_path), job.options.get("plate_id")),
+                    self._resolve_plate_id,
+                    file_path,
+                    job.options.get("plate_id"),
+                )
 
                 self._raise_if_cancel_requested(job)
-
-                # Strict stagger check (optional, off by default): if enabled,
-                # refuse to start if no free slot, so Print Now respects the
-                # grid-load cap just like queue-driven dispatches.
-                try:
-                    from backend.app.api.routes.settings import get_setting
-                    from backend.app.services.print_scheduler import scheduler as print_scheduler
-
-                    async with async_session() as _sdb:
-                        _strict_raw = await get_setting(_sdb, "stagger_strict_for_direct_dispatch")
-                        _stagger_enabled, _stagger_concurrent, _, _ = await print_scheduler._get_stagger_settings(_sdb)
-                    if (
-                        _stagger_enabled
-                        and (_strict_raw or "false").lower() == "true"
-                        and not print_scheduler._can_start_staggered(_stagger_concurrent)
-                    ):
-                        raise RuntimeError(
-                            "Stagger cap reached — wait for a free slot or disable stagger_strict_for_direct_dispatch"
-                        )
-                except RuntimeError:
-                    raise
-                except Exception as _e:
-                    logger.debug("Strict stagger check failed (non-fatal): %s", _e)
 
                 # Swap-mode start macro — fires before the print starts.
                 await self._run_swap_macro_if_needed(
@@ -1774,7 +2126,7 @@ class BackgroundDispatchService:
                 if archive and remove_swap_pending_event(archive, "swap_mode_start"):
                     await db.commit()
 
-                await self._set_active_message(job, f"Starting print on {printer_name}...")
+                await self._set_active_message(job, f"Starting print on {printer_name}...", phase="starting")
                 await _apply_calibrations_for_print(
                     db=db,
                     printer_id=job.printer_id,
@@ -1792,10 +2144,27 @@ class BackgroundDispatchService:
                 effective_timelapse = _timelapse_or_off(
                     job.printer_id, printer, bool(job.options.get("timelapse", False))
                 )
+                rack_extruders = await source_probe(
+                    (
+                        "rack",
+                        printer.model,
+                        str(upload_file_path),
+                        plate_id,
+                        json.dumps(job.options.get("nozzle_mapping")),
+                    ),
+                    _rack_slot_extruders,
+                    printer,
+                    upload_file_path,
+                    plate_id,
+                    job.options.get("nozzle_mapping"),
+                )
+                job.routing_guard = await final_guard(job.routing_guard, job.printer_id)
+                await self._verify_routing_claim(db, job)
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,
                     plate_id,
+                    routing_guard=job.routing_guard,
                     ams_mapping=job.options.get("ams_mapping"),
                     timelapse=effective_timelapse,
                     bed_levelling=job.options.get("bed_levelling", True),
@@ -1806,9 +2175,7 @@ class BackgroundDispatchService:
                     nozzle_mapping=job.options.get("nozzle_mapping"),
                     # H2C only: the physical rack position is resolved in the
                     # MQTT layer, where the live mounted hotend is known.
-                    nozzle_slot_extruders=_rack_slot_extruders(
-                        printer, upload_file_path, plate_id, job.options.get("nozzle_mapping")
-                    ),
+                    nozzle_slot_extruders=rack_extruders,
                     # The medium and the URL scheme are one decision, carried
                     # here from where it was made rather than re-derived.
                     storage=storage,
@@ -1852,7 +2219,9 @@ class BackgroundDispatchService:
                 pre_subtask_id = getattr(_post_status, "subtask_id", None)
                 pre_gcode_file = getattr(_post_status, "gcode_file", None)
                 if pre_state:
-                    await self._set_active_message(job, f"Waiting for {printer_name} to acknowledge print...")
+                    await self._set_active_message(
+                        job, f"Waiting for {printer_name} to acknowledge print...", phase="acknowledging"
+                    )
                     transitioned = await self._verify_print_response(
                         job.printer_id,
                         printer_name,
@@ -1904,7 +2273,22 @@ class BackgroundDispatchService:
                         job.requested_by_username,
                     )
 
-                job.outcome = {"success": True, "archive_id": archive.id, "error": None, "cancelled": False}
+                job.outcome = {
+                    "success": True,
+                    "archive_id": archive.id,
+                    "error": None,
+                    "cancelled": False,
+                    "deferred": False,
+                }
+            except (RoutingDeferred, SourceUnavailable) as exc:
+                job.outcome = {
+                    "success": False,
+                    "archive_id": None,
+                    "error": exc.reason,
+                    "cancelled": False,
+                    "deferred": True,
+                }
+                raise
             except DispatchJobCancelled:
                 await self._set_active_message(job, f"Cancelled upload on {printer_name}.")
                 # archive_print committed the row before this branch, so the
@@ -1915,10 +2299,22 @@ class BackgroundDispatchService:
                 _archive_id = getattr(archive, "id", None) if archive else None
                 if _archive_id:
                     await self._mark_dispatch_archive_terminal(_archive_id, "cancelled", "Cancelled before start")
-                job.outcome = {"success": False, "archive_id": _archive_id, "error": "Cancelled", "cancelled": True}
+                job.outcome = {
+                    "success": False,
+                    "archive_id": _archive_id,
+                    "error": "Cancelled",
+                    "cancelled": True,
+                    "deferred": False,
+                }
                 raise
             except Exception as e:
-                job.outcome = {"success": False, "archive_id": None, "error": str(e), "cancelled": False}
+                job.outcome = {
+                    "success": False,
+                    "archive_id": None,
+                    "error": str(e),
+                    "cancelled": False,
+                    "deferred": False,
+                }
                 raise
             finally:
                 # An expected print whose command never went out must not linger.
@@ -1926,13 +2322,14 @@ class BackgroundDispatchService:
                 # same single choke point: a raise, an early return, a cancel, or
                 # start_print returning False all land here.
                 if _unconfirmed_expected_print is not None:
-                    withdraw_expected_print(*_unconfirmed_expected_print)
+                    withdraw_expected_print(*_unconfirmed_expected_print, expected_archive_id=job.execution_archive_id)
                     _unconfirmed_expected_print = None
                 # Same "every exit path" argument: a dispatch that dies after
                 # preheat ran left the machine heating for a print that was
                 # never going to happen. Nothing switched it off, because
                 # nothing knew it was on. A no-op once the print has started.
-                preheat_service.rollback(job.printer_id)
+                if not job.foreign_claim:
+                    preheat_service.rollback(job.printer_id)
                 # Patched-3MF temp dir must clean up on every exit path —
                 # cancel mid-upload otherwise leaks the temp into /tmp until
                 # process restart.
@@ -1945,7 +2342,6 @@ class BackgroundDispatchService:
                 # event may act on the outcome immediately, and this is the one
                 # place every exit path of the runner passes through.
                 await report_failure_if_unwatched(job)
-                job.completion_event.set()
 
     async def _run_swap_macro_if_needed(
         self,
@@ -1980,7 +2376,7 @@ class BackgroundDispatchService:
             )
             return
 
-        await self._set_active_message(job, status_message)
+        await self._set_active_message(job, status_message, phase="swapping")
         success, msg = await printer_manager.execute_macro_and_wait(job.printer_id, macro.gcode, macro.name)
         if not success:
             raise RuntimeError(f"Swap macro '{macro.name}' failed: {msg}")
@@ -1990,19 +2386,30 @@ class BackgroundDispatchService:
 
         # Seeded in case any early branch raises — keeps the outcome shape
         # consistent for queue-item callers awaiting completion_event.
-        job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False}
+        job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False, "deferred": False}
 
-        async with async_session() as db:
-            lib_file = await db.scalar(LibraryFile.active().where(LibraryFile.id == job.source_id))
-            if not lib_file:
-                raise RuntimeError("File not found")
+        async with AsyncExitStack() as pins, async_session() as db:
+            await self._prepare_filament_routing(db, job, pins)
+            # ⚠️ The library row is provenance now, not the bytes (spec §7): the
+            # file this job prints was copied into the spool when it was queued,
+            # and the row may have been trashed since — which is exactly the case
+            # the snapshot exists for. Only a job with neither is broken.
+            lib_file = (
+                await db.scalar(LibraryFile.active().where(LibraryFile.id == job.source_id)) if job.source_id else None
+            )
+            if not lib_file and job.source is None:
+                raise SourceUnavailable()
 
-            if not self._is_sliced_file(lib_file.filename):
+            # Same rule as the reprint runner: the row's name while it exists, the
+            # snapshot's after that, and a refusal rather than a hash — which
+            # ``_is_sliced_file`` below would otherwise reject as "not a sliced
+            # file", blaming a 3MF that is perfectly good.
+            library_filename = lib_file.filename if lib_file else source_display_filename(job.source)
+            if not self._is_sliced_file(library_filename):
                 raise RuntimeError("Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
 
-            file_path = Path(settings.base_dir) / lib_file.file_path
-            if not file_path.exists():
-                raise RuntimeError("File not found on disk")
+            file_path = job.source.path if job.source is not None else Path(settings.base_dir) / lib_file.file_path
+            await require_source_file(file_path)
 
             printer = await db.scalar(select(Printer).where(Printer.id == job.printer_id))
             if not printer:
@@ -2012,7 +2419,6 @@ class BackgroundDispatchService:
             printer_ip = printer.ip_address
             printer_access_code = printer.access_code
             printer_model = printer.model
-            library_filename = lib_file.filename
 
             if not printer_manager.is_connected(job.printer_id):
                 raise RuntimeError("Printer is not connected")
@@ -2050,7 +2456,7 @@ class BackgroundDispatchService:
                     job.options["applied_patches"] = existing_patches + patches
                     logger.info("Dispatch job %s: 3MF transformed (%s)", job.id, patches)
 
-            await self._set_active_message(job, f"Creating archive for {lib_file.filename}...")
+            await self._set_active_message(job, f"Creating archive for {library_filename}...")
             # Hold the startup-lock for the DB-write critical section only:
             # ``archive_print`` (heavy INSERT into print_archives + related
             # rows) plus the queue-item linking. Commit closes the txn
@@ -2062,11 +2468,11 @@ class BackgroundDispatchService:
                 archive_service = ArchiveService(db)
                 applied_patches = job.options.get("applied_patches") if isinstance(job.options, dict) else None
                 # Two distinct files in play after the patcher:
-                # - ``file_path`` is the unpatched library original, used as
+                # - ``file_path`` is the unpatched source — the job's captured
+                #   copy when it has one, else the library original — used as
                 #   ``source_file`` so the archive's display name / suffix
                 #   come from it and ``source_content_hash`` (set explicitly
-                #   below from ``lib_file.file_hash``) chains correctly to
-                #   the library row.
+                #   below) chains correctly to the bytes on disk.
                 # - ``upload_file_path`` is the post-patch tempfile that the
                 #   FTP step is about to send to the printer. Pass it as
                 #   ``dispatched_file`` so ``content_hash`` reflects the
@@ -2087,11 +2493,23 @@ class BackgroundDispatchService:
                     printer_id=job.printer_id,
                     source_file=file_path,
                     dispatched_file=upload_file_path,
-                    original_filename=lib_file.filename,
+                    original_filename=library_filename,
                     project_id=job.project_id,
-                    source_content_hash=lib_file.file_hash,
+                    project_line_id=job.project_line_id,
+                    # ⚠️ The snapshot's hash, not the library row's, whenever
+                    # there is one: ``source_content_hash`` must describe the
+                    # bytes ``archive_print`` writes to disk — which are the
+                    # captured copy — because that is the key on-disk dedup
+                    # reuses another row's file by. ``library_files.file_hash``
+                    # is the hash of whatever is on the share NOW, and a share
+                    # that changed after this job was queued (the case the spool
+                    # exists for) would point this archive at the wrong bytes.
+                    source_content_hash=job.source.sha256 if job.source is not None else lib_file.file_hash,
                     applied_patches=applied_patches or None,
-                    library_file_id=lib_file.id,
+                    library_file_id=lib_file.id if lib_file else None,
+                    # A captured source is stored under its hash; the archive keeps
+                    # its copy under the name the folder around it already uses.
+                    stored_filename=library_filename if job.source is not None else None,
                     # Tag the resulting archive row as a calibration print
                     # when the queue item was an is_calibration job — keeps
                     # archive.kind='calibration' filter in /archives in sync
@@ -2136,6 +2554,7 @@ class BackgroundDispatchService:
                 )
                 if not archive:
                     raise RuntimeError("Failed to create archive")
+                job.execution_archive_id = archive.id
 
                 # Queue-item dispatches: keep queue_item + archive aligned in the
                 # same txn so the scheduler's follow-up logic sees a consistent
@@ -2175,7 +2594,7 @@ class BackgroundDispatchService:
             finally:
                 self._startup_lock.release()
 
-            remote_filename = derive_remote_filename(lib_file.filename)
+            remote_filename = derive_remote_filename(library_filename)
             remote_path = f"/{remote_filename}"
 
             # Which medium this print goes to. Decided once, here, and carried
@@ -2244,7 +2663,9 @@ class BackgroundDispatchService:
             self._raise_if_cancel_requested(job)
 
             try:
-                await self._set_active_message(job, f"Uploading {library_filename} to {printer_name}...")
+                await self._set_active_message(
+                    job, f"Uploading {library_filename} to {printer_name}...", phase="uploading"
+                )
                 loop = asyncio.get_running_loop()
                 progress_state = {"last_emit": 0.0, "last_bytes": 0}
 
@@ -2318,7 +2739,7 @@ class BackgroundDispatchService:
                 # empty. Whatever the firmware does with it, a slicer in the
                 # field supplies it, and matching costs one hash of bytes
                 # already on disk.
-                file_md5 = _file_digest(upload_file_path)
+                file_md5 = await source_probe(("digest", str(upload_file_path)), _file_digest, upload_file_path)
 
                 # Preheat / heat-soak (#1468) — same idle-window stage as the reprint
                 # path: bed (and chamber, on supported models) up to temperature before
@@ -2331,6 +2752,7 @@ class BackgroundDispatchService:
                     archive,
                     options=job.options,
                     cancel_check=lambda: self._raise_if_cancel_requested(job),
+                    on_heating=lambda: self._set_active_message(job, "Preheating...", phase="heating"),
                 )
 
                 register_expected_print(
@@ -2345,32 +2767,14 @@ class BackgroundDispatchService:
                 # into this archive for the next two hours.
                 _unconfirmed_expected_print = (job.printer_id, remote_filename)
 
-                plate_id = self._resolve_plate_id(file_path, job.options.get("plate_id"))
+                plate_id = await source_probe(
+                    ("plate", str(file_path), job.options.get("plate_id")),
+                    self._resolve_plate_id,
+                    file_path,
+                    job.options.get("plate_id"),
+                )
 
                 self._raise_if_cancel_requested(job)
-
-                # Strict stagger check (optional, off by default): if enabled,
-                # refuse to start if no free slot, so Print Now respects the
-                # grid-load cap just like queue-driven dispatches.
-                try:
-                    from backend.app.api.routes.settings import get_setting
-                    from backend.app.services.print_scheduler import scheduler as print_scheduler
-
-                    async with async_session() as _sdb:
-                        _strict_raw = await get_setting(_sdb, "stagger_strict_for_direct_dispatch")
-                        _stagger_enabled, _stagger_concurrent, _, _ = await print_scheduler._get_stagger_settings(_sdb)
-                    if (
-                        _stagger_enabled
-                        and (_strict_raw or "false").lower() == "true"
-                        and not print_scheduler._can_start_staggered(_stagger_concurrent)
-                    ):
-                        raise RuntimeError(
-                            "Stagger cap reached — wait for a free slot or disable stagger_strict_for_direct_dispatch"
-                        )
-                except RuntimeError:
-                    raise
-                except Exception as _e:
-                    logger.debug("Strict stagger check failed (non-fatal): %s", _e)
 
                 # Swap-mode start macro — fires before the print starts.
                 await self._run_swap_macro_if_needed(
@@ -2387,7 +2791,7 @@ class BackgroundDispatchService:
                 if archive and remove_swap_pending_event(archive, "swap_mode_start"):
                     await db.commit()
 
-                await self._set_active_message(job, f"Starting print on {printer_name}...")
+                await self._set_active_message(job, f"Starting print on {printer_name}...", phase="starting")
                 await _apply_calibrations_for_print(
                     db=db,
                     printer_id=job.printer_id,
@@ -2405,10 +2809,27 @@ class BackgroundDispatchService:
                 effective_timelapse = _timelapse_or_off(
                     job.printer_id, printer, bool(job.options.get("timelapse", False))
                 )
+                rack_extruders = await source_probe(
+                    (
+                        "rack",
+                        printer.model,
+                        str(upload_file_path),
+                        plate_id,
+                        json.dumps(job.options.get("nozzle_mapping")),
+                    ),
+                    _rack_slot_extruders,
+                    printer,
+                    upload_file_path,
+                    plate_id,
+                    job.options.get("nozzle_mapping"),
+                )
+                job.routing_guard = await final_guard(job.routing_guard, job.printer_id)
+                await self._verify_routing_claim(db, job)
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,
                     plate_id,
+                    routing_guard=job.routing_guard,
                     ams_mapping=job.options.get("ams_mapping"),
                     timelapse=effective_timelapse,
                     bed_levelling=job.options.get("bed_levelling", True),
@@ -2419,9 +2840,7 @@ class BackgroundDispatchService:
                     nozzle_mapping=job.options.get("nozzle_mapping"),
                     # H2C only: the physical rack position is resolved in the
                     # MQTT layer, where the live mounted hotend is known.
-                    nozzle_slot_extruders=_rack_slot_extruders(
-                        printer, upload_file_path, plate_id, job.options.get("nozzle_mapping")
-                    ),
+                    nozzle_slot_extruders=rack_extruders,
                     # The medium and the URL scheme are one decision, carried
                     # here from where it was made rather than re-derived.
                     storage=storage,
@@ -2490,7 +2909,9 @@ class BackgroundDispatchService:
                 pre_subtask_id = getattr(_post_status, "subtask_id", None)
                 pre_gcode_file = getattr(_post_status, "gcode_file", None)
                 if pre_state:
-                    await self._set_active_message(job, f"Waiting for {printer_name} to acknowledge print...")
+                    await self._set_active_message(
+                        job, f"Waiting for {printer_name} to acknowledge print...", phase="acknowledging"
+                    )
                     transitioned = await self._verify_print_response(
                         job.printer_id,
                         printer_name,
@@ -2527,13 +2948,48 @@ class BackgroundDispatchService:
                 # External library files (is_external=True) are never touched.
                 # Upstream #730 / #1682b695.
                 cleanup_disk_paths: list[Path] = []
-                if job.cleanup_library_after_dispatch and not lib_file.is_external:
+                # ``lib_file is None`` means the row this dispatch was started
+                # from is already gone — there is nothing left to clean up, and
+                # the print ran from its own copy regardless.
+                if job.cleanup_library_after_dispatch and lib_file is not None and not lib_file.is_external:
+                    # A transient library source is removed after success. Its
+                    # execution archive becomes the durable source for Repeat;
+                    # keep semantic rules while recording the archive revision.
+                    if job.routing_guard and job.queue_item_id:
+                        from backend.app.models.print_queue import PrintQueueItem
+                        from backend.app.services.filament_policy import serialize_policy
+                        from backend.app.services.filament_requirements import PrintRequirementsCache
+
+                        archive_path = Path(archive.file_path)
+                        if not archive_path.is_absolute():
+                            archive_path = (
+                                settings.base_dir / archive_path
+                            )  # SEC-PATH-OK: archive_print generated this persisted relative path.
+                        retained = await PrintRequirementsCache().read(archive_path, job.options["plate_id"])
+                        # FTP, preheat and MQTT acknowledgement all happened
+                        # before this cleanup branch.  The initial queue-item
+                        # read is still in this session's identity map, so
+                        # force a real read before touching the row again.
+                        queued = await db.get(PrintQueueItem, job.queue_item_id, populate_existing=True)
+                        if queued is not None and queued.started_at == job.claim_started_at:
+                            queued.filament_routing = serialize_policy(
+                                job.routing_guard.policy,
+                                archive_id=archive.id,
+                                requirements=retained,
+                                plate_id=job.options["plate_id"],
+                                printer_id=job.printer_id,
+                                exact_model=job.routing_guard.exact_model,
+                            )
                     cleanup_disk_paths.append(Path(settings.base_dir) / lib_file.file_path)
                     if lib_file.thumbnail_path:
                         thumb_path = Path(lib_file.thumbnail_path)
                         if not thumb_path.is_absolute():
                             thumb_path = Path(settings.base_dir) / lib_file.thumbnail_path
                         cleanup_disk_paths.append(thumb_path)
+                    # The ORM clears ``product_files`` for us, but nothing
+                    # clears ``product_plates`` — it has no cascade from the
+                    # library file on SQLite, where FK actions never fire.
+                    await purge_file_product_links(db, [lib_file.id])
                     await db.delete(lib_file)
 
                 await db.commit()
@@ -2549,7 +3005,22 @@ class BackgroundDispatchService:
                             cleanup_err,
                         )
 
-                job.outcome = {"success": True, "archive_id": archive.id, "error": None, "cancelled": False}
+                job.outcome = {
+                    "success": True,
+                    "archive_id": archive.id,
+                    "error": None,
+                    "cancelled": False,
+                    "deferred": False,
+                }
+            except (RoutingDeferred, SourceUnavailable) as exc:
+                job.outcome = {
+                    "success": False,
+                    "archive_id": None,
+                    "error": exc.reason,
+                    "cancelled": False,
+                    "deferred": True,
+                }
+                raise
             except DispatchJobCancelled:
                 await db.rollback()
                 await self._set_active_message(job, f"Cancelled upload on {printer_name}.")
@@ -2558,11 +3029,23 @@ class BackgroundDispatchService:
                 # "printing" → "cancelled" in a fresh session so the UI
                 # doesn't keep it spinning forever.
                 await self._mark_dispatch_archive_terminal(archive.id, "cancelled", "Cancelled before start")
-                job.outcome = {"success": False, "archive_id": archive.id, "error": "Cancelled", "cancelled": True}
+                job.outcome = {
+                    "success": False,
+                    "archive_id": archive.id,
+                    "error": "Cancelled",
+                    "cancelled": True,
+                    "deferred": False,
+                }
                 raise
             except Exception as e:
                 await self._mark_dispatch_archive_terminal(archive.id, "failed", str(e))
-                job.outcome = {"success": False, "archive_id": archive.id, "error": str(e), "cancelled": False}
+                job.outcome = {
+                    "success": False,
+                    "archive_id": archive.id,
+                    "error": str(e),
+                    "cancelled": False,
+                    "deferred": False,
+                }
                 raise
             finally:
                 # An expected print whose command never went out must not linger.
@@ -2570,13 +3053,14 @@ class BackgroundDispatchService:
                 # same single choke point: a raise, an early return, a cancel, or
                 # start_print returning False all land here.
                 if _unconfirmed_expected_print is not None:
-                    withdraw_expected_print(*_unconfirmed_expected_print)
+                    withdraw_expected_print(*_unconfirmed_expected_print, expected_archive_id=job.execution_archive_id)
                     _unconfirmed_expected_print = None
                 # Same "every exit path" argument: a dispatch that dies after
                 # preheat ran left the machine heating for a print that was
                 # never going to happen. Nothing switched it off, because
                 # nothing knew it was on. A no-op once the print has started.
-                preheat_service.rollback(job.printer_id)
+                if not job.foreign_claim:
+                    preheat_service.rollback(job.printer_id)
                 # Patched-3MF temp dir must clean up on every exit path —
                 # cancel mid-upload otherwise leaks the temp into /tmp until
                 # process restart.
@@ -2589,7 +3073,6 @@ class BackgroundDispatchService:
                 # event may act on the outcome immediately, and this is the one
                 # place every exit path of the runner passes through.
                 await report_failure_if_unwatched(job)
-                job.completion_event.set()
 
     @staticmethod
     async def _verify_print_response(

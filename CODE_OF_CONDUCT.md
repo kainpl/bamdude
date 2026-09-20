@@ -9,7 +9,7 @@ The BamDude community is dedicated to providing a welcoming and supportive envir
 - **Be Respectful**: Treat others with kindness and consideration. Disagreements are fine; personal attacks are not.
 - **Be Inclusive**: Welcome people of all backgrounds and experience levels. Avoid exclusionary language or behavior.
 - **Be Constructive**: Offer helpful feedback. Focus on ideas, not individuals.
-- **Be Patient**: Remember that contributors have varying levels of experience and availability.
+- **Be Patient**: Remember that contributors have varying levels of experience and availability, and that the maintainer runs a print farm between reviews.
 
 ## Unacceptable Behavior
 
@@ -21,13 +21,14 @@ The BamDude community is dedicated to providing a welcoming and supportive envir
 
 ## Reporting Issues
 
-If you experience or witness unacceptable behavior:
+If you experience or witness unacceptable behavior, contact the maintainer directly:
 
-1. **Contact the maintainers** via email or GitHub
-2. **Provide details** about what happened and when
-3. **All reports will be handled confidentially**
+- **Email:** pushkar.valeriy@gmail.com
+- **Private message:** [@kainpl](https://github.com/kainpl) on GitHub, or to the admins of the [BamDude Friends](https://t.me/+3KQl2uNtOwo3NTgy) Telegram group
 
-We will review and respond to all reports promptly.
+Please include what happened, where, and when. If the report concerns the maintainer, say so — it will still be read and answered. All reports are handled confidentially.
+
+Security vulnerabilities are a different channel: see [SECURITY.md](SECURITY.md).
 
 ## Enforcement
 
@@ -39,7 +40,7 @@ Maintainers may take any action they deem appropriate, including:
 
 ## Scope
 
-This code of conduct applies to all BamDude community spaces, including GitHub issues, pull requests, discussions, and any other communication channels.
+This code of conduct applies to all BamDude community spaces: GitHub issues, pull requests and Discussions, the BamDude Friends Telegram group, and any other channel where the project is represented.
 
 ---
 

@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpFromLine, Unlock, X } from 'lucide-react';
+import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpFromLine, Unlock } from 'lucide-react';
 import { api, ApiError, type PrinterStatus } from '../api/client';
 import { AxisJoystick } from './AxisJoystick';
 import { ExtruderGraphic } from './ExtruderGraphic';
+import { Modal } from './Modal';
 
 /**
  * Moving the head, the bed and the extruder by hand — BambuStudio's axis panel.
@@ -136,138 +137,126 @@ export function MotionModal({ printerId, isOpen, onClose, status, isDualNozzle, 
   const xy = (axis: 'x' | 'y', distance: number) => jog.mutate({ axis, distance });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-bambu-dark-tertiary">
-          <h3 className="text-sm font-semibold text-white">{t('printers.motion.title')}</h3>
-          <button onClick={onClose} className="text-bambu-gray hover:text-white transition-colors">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+    <Modal onClose={onClose} title={t('printers.motion.title')} size="lg">
+      <div className="p-4 space-y-4">
+        {printing && <p className="text-[11px] text-amber-400">{t('printers.motion.printingBlocked')}</p>}
+        {!printing && (xyBlocked || zBlocked) && (
+          <p className="text-[11px] text-amber-400">{t('printers.motion.notHomed')}</p>
+        )}
 
-        <div className="p-4 space-y-4">
-          {printing && <p className="text-[11px] text-amber-400">{t('printers.motion.printingBlocked')}</p>}
-          {!printing && (xyBlocked || zBlocked) && (
-            <p className="text-[11px] text-amber-400">{t('printers.motion.notHomed')}</p>
-          )}
+        <div className="flex gap-4">
+          <div className="flex-1 min-w-0">
+            <AxisJoystick
+              onMove={xy}
+              onHome={() => home.mutate()}
+              disabled={disabledBase}
+              movesDisabled={xyBlocked}
+              homeLabel={t('printers.motion.home')}
+              className="w-full max-w-[220px] mx-auto"
+            />
 
-          <div className="flex gap-5">
-            <div className="flex-1 min-w-0">
-              <AxisJoystick
-                onMove={xy}
-                onHome={() => home.mutate()}
-                disabled={disabledBase}
-                movesDisabled={xyBlocked}
-                homeLabel={t('printers.motion.home')}
-                className="w-full max-w-[220px] mx-auto"
-              />
-
-              {/* The bed row, laid out as Studio lays it: the two step sizes on
-                  each side of the label, arrows pointing the way the gap goes. */}
-              <div className="flex items-center justify-center gap-1 mt-3">
-                {[-STEP_COARSE, -STEP_FINE].map((d) => (
-                  <Btn
-                    key={d}
-                    onClick={() => jog.mutate({ axis: 'z', distance: d })}
-                    disabled={disabledBase || zBlocked}
-                    title={`Z ${d}`}
-                    className="h-9 w-12 text-[11px] gap-1"
-                  >
-                    <ArrowUpFromLine className="w-3.5 h-3.5" /> {Math.abs(d)}
-                  </Btn>
-                ))}
-                <span className="text-[10px] text-bambu-gray px-1">{t('printers.motion.bed')}</span>
-                {[STEP_FINE, STEP_COARSE].map((d) => (
-                  <Btn
-                    key={d}
-                    onClick={() => jog.mutate({ axis: 'z', distance: d })}
-                    disabled={disabledBase || zBlocked}
-                    title={`Z +${d}`}
-                    className="h-9 w-12 text-[11px] gap-1"
-                  >
-                    <ArrowDownToLine className="w-3.5 h-3.5" /> {d}
-                  </Btn>
-                ))}
-              </div>
-            </div>
-
-            {/* Extruder column */}
-            <div className="w-[168px] shrink-0 border-l border-bambu-dark-tertiary pl-4 flex flex-col items-center">
-              {isDualNozzle && (
-                <div className="flex w-full rounded overflow-hidden mb-3">
-                  {[0, 1].map((i) => (
-                    <button
-                      key={i}
-                      type="button"
-                      onClick={() => setExtruderIndex(i)}
-                      /* ⚠️ ``min-w-0`` is what makes the halves equal. ``flex-1``
-                         alone is `flex: 1 1 0%`, but a flex item defaults to
-                         `min-width: auto` and so refuses to shrink below its own
-                         text — which handed the wider half to whichever label was
-                         longer. In Ukrainian that is "Допоміжний", and it pushed
-                         its neighbour out of the column. */
-                      className={`flex-1 min-w-0 h-7 px-1.5 text-[11px] leading-none text-center transition-colors ${
-                        extruderIndex === i
-                          ? 'bg-bambu-green text-white'
-                          : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white'
-                      }`}
-                    >
-                      {i === 0 ? t('printers.motion.main') : t('printers.motion.auxiliary')}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              <Btn
-                onClick={() => jog.mutate({ axis: 'e', distance: -STEP_COARSE })}
-                disabled={disabledBase || tooCold}
-                title={t('printers.motion.retract')}
-                className="h-9 w-14"
-              >
-                <ArrowUp className="w-4 h-4" />
-              </Btn>
-
-              <ExtruderGraphic
-                isDualNozzle={isDualNozzle}
-                selected={extruderIndex}
-                hasFilament={status.ext_has_filament ?? {}}
-                className="my-2"
-              />
-
-              <Btn
-                onClick={() => jog.mutate({ axis: 'e', distance: STEP_COARSE })}
-                disabled={disabledBase || tooCold}
-                title={t('printers.motion.extrude')}
-                className="h-9 w-14"
-              >
-                <ArrowDown className="w-4 h-4" />
-              </Btn>
-
-              <span className="text-[10px] text-bambu-gray mt-2">{t('printers.motion.extruder')}</span>
-              {tooCold && (
-                <p className="text-[10px] text-bambu-gray/80 mt-1 text-center leading-snug">
-                  {t('printers.motion.tooCold', { temp: Math.round(nozzleTemp) })}
-                </p>
-              )}
+            {/* The bed row, laid out as Studio lays it: the two step sizes on
+                each side of the label, arrows pointing the way the gap goes. */}
+            <div className="flex items-center justify-center gap-1 mt-3">
+              {[-STEP_COARSE, -STEP_FINE].map((d) => (
+                <Btn
+                  key={d}
+                  onClick={() => jog.mutate({ axis: 'z', distance: d })}
+                  disabled={disabledBase || zBlocked}
+                  title={`Z ${d}`}
+                  className="h-9 w-12 text-[11px] gap-1"
+                >
+                  <ArrowUpFromLine className="w-3.5 h-3.5" /> {Math.abs(d)}
+                </Btn>
+              ))}
+              <span className="text-[10px] text-bambu-gray px-1">{t('printers.motion.bed')}</span>
+              {[STEP_FINE, STEP_COARSE].map((d) => (
+                <Btn
+                  key={d}
+                  onClick={() => jog.mutate({ axis: 'z', distance: d })}
+                  disabled={disabledBase || zBlocked}
+                  title={`Z +${d}`}
+                  className="h-9 w-12 text-[11px] gap-1"
+                >
+                  <ArrowDownToLine className="w-3.5 h-3.5" /> {d}
+                </Btn>
+              ))}
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => release.mutate()}
-            disabled={disabledBase}
-            className="w-full h-8 rounded bg-bambu-dark-tertiary text-[11px] text-bambu-gray hover:text-white disabled:opacity-30 flex items-center justify-center gap-1.5 transition-colors"
-          >
-            <Unlock className="w-3.5 h-3.5" />
-            {t('printers.motion.releaseMotors')}
-          </button>
+          {/* Extruder column */}
+          <div className="w-[168px] shrink-0 border-l border-bambu-dark-tertiary pl-4 flex flex-col items-center">
+            {isDualNozzle && (
+              <div className="flex w-full rounded overflow-hidden mb-3">
+                {[0, 1].map((i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setExtruderIndex(i)}
+                    /* ⚠️ ``min-w-0`` is what makes the halves equal. ``flex-1``
+                       alone is `flex: 1 1 0%`, but a flex item defaults to
+                       `min-width: auto` and so refuses to shrink below its own
+                       text — which handed the wider half to whichever label was
+                       longer. In Ukrainian that is "Допоміжний", and it pushed
+                       its neighbour out of the column. */
+                    className={`flex-1 min-w-0 h-7 px-1.5 text-[11px] leading-none text-center transition-colors ${
+                      extruderIndex === i
+                        ? 'bg-bambu-green text-white'
+                        : 'bg-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                    }`}
+                  >
+                    {i === 0 ? t('printers.motion.main') : t('printers.motion.auxiliary')}
+                  </button>
+                ))}
+              </div>
+            )}
 
-          {error && <p className="text-[11px] text-red-400 leading-relaxed">{error}</p>}
+            <Btn
+              onClick={() => jog.mutate({ axis: 'e', distance: -STEP_COARSE })}
+              disabled={disabledBase || tooCold}
+              title={t('printers.motion.retract')}
+              className="h-9 w-14"
+            >
+              <ArrowUp className="w-4 h-4" />
+            </Btn>
+
+            <ExtruderGraphic
+              isDualNozzle={isDualNozzle}
+              selected={extruderIndex}
+              hasFilament={status.ext_has_filament ?? {}}
+              className="my-2"
+            />
+
+            <Btn
+              onClick={() => jog.mutate({ axis: 'e', distance: STEP_COARSE })}
+              disabled={disabledBase || tooCold}
+              title={t('printers.motion.extrude')}
+              className="h-9 w-14"
+            >
+              <ArrowDown className="w-4 h-4" />
+            </Btn>
+
+            <span className="text-[10px] text-bambu-gray mt-2">{t('printers.motion.extruder')}</span>
+            {tooCold && (
+              <p className="text-[10px] text-bambu-gray/80 mt-1 text-center leading-snug">
+                {t('printers.motion.tooCold', { temp: Math.round(nozzleTemp) })}
+              </p>
+            )}
+          </div>
         </div>
+
+        <button
+          type="button"
+          onClick={() => release.mutate()}
+          disabled={disabledBase}
+          className="w-full h-8 rounded bg-bambu-dark-tertiary text-[11px] text-bambu-gray hover:text-white disabled:opacity-30 flex items-center justify-center gap-1.5 transition-colors"
+        >
+          <Unlock className="w-3.5 h-3.5" />
+          {t('printers.motion.releaseMotors')}
+        </button>
+
+        {error && <p className="text-[11px] text-red-400 leading-relaxed">{error}</p>}
       </div>
-    </div>
+    </Modal>
   );
 }

@@ -31,6 +31,21 @@ def _settings(enabled=True, mode="ethernet", path="1.2.3.4:6638"):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [OSError, asyncio.CancelledError])
+async def test_strict_shutdown_failure_retains_owner_and_refuses_restore(tmp_path, failure):
+    coord = ZigbeeCoordinator(data_dir=tmp_path)
+    app = MagicMock(shutdown=AsyncMock(side_effect=failure("database still open")))
+    coord._app = app
+    with pytest.raises(failure, match="still open"):
+        await coord.stop(strict=True)
+    assert coord._app is app
+    app.shutdown.side_effect = None
+    await coord.stop(strict=True)
+    assert coord._app is None
+    assert app.shutdown.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_disabled_does_not_touch_the_radio(tmp_path):
     """An install that never wants Zigbee pays nothing but an import."""
     coord = ZigbeeCoordinator(data_dir=tmp_path)

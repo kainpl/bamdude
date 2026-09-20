@@ -33,7 +33,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton
 
 from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.printer_manager import printer_manager
-from backend.app.services.telegram_handlers.common import NS, has_perm
+from backend.app.services.telegram_handlers.common import NS, deny_out_of_scope, has_perm
 from backend.app.services.telegram_handlers.pagination import build_page_nav
 
 if TYPE_CHECKING:
@@ -319,6 +319,8 @@ async def cb_back(callback: CallbackQuery, tg_chat: TelegramChat | None = None) 
       there is nothing above to go back to, so redraw the card in place.
     """
     printer_id = int(callback.data.split(":")[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     await callback.answer()
 
     if callback.message.photo:

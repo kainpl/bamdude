@@ -1,5 +1,5 @@
 /**
- * The Printers page remembers its status and location filters.
+ * The Printers page remembers its status, location and tag filters.
  *
  * Pick a location, navigate away, come back, and every printer was showing
  * again. Both filters were plain state, and the only preferences on that page
@@ -24,7 +24,7 @@ import { describe, it, expect } from 'vitest';
 
 import source from '../../pages/PrintersPage.tsx?raw';
 
-describe('the two filters persist', () => {
+describe('the filters persist', () => {
   it.each([
     ['status', 'printerStatusFilter'],
     ['location', 'printerLocationFilter'],
@@ -55,10 +55,29 @@ describe('a saved filter cannot strand the page', () => {
     expect(source).toContain('STATUS_FILTER_OPTIONS.map((option) => ({ value: option.value');
   });
 
+  it('validates a saved sort against the very list the dropdown offers', () => {
+    // Same trap as the status filter, and the same cure: the sort was read out
+    // of storage with a bare cast, so a value no option carries would leave the
+    // grid in whatever order the sort switch falls through to with nothing
+    // picked in the dropdown — and no way to see why.
+    expect(source).toContain('const SORT_OPTIONS');
+    expect(source).toContain('isKnownSortOption(saved)');
+    expect(source).toContain('SORT_OPTIONS.map((option) => ({ value: option.value');
+    expect(source).not.toContain("localStorage.getItem('printerSortBy') as SortOption");
+  });
+
   it('resets a location that no longer exists', () => {
     const guard = source.slice(source.indexOf('A saved location can outlive'));
     expect(guard).toContain("setLocationFilter('all')");
     expect(guard).toContain("localStorage.setItem('printerLocationFilter', 'all')");
+  });
+
+  it('persists the tag filter under its own key and validates it against the tag list', () => {
+    // Same trap as the location filter, and worse: a deleted tag leaves no
+    // checkbox to untick, so the ids that no longer exist are dropped on read.
+    expect(source).toContain("localStorage.getItem('printerTagFilter')");
+    expect(source).toContain("localStorage.setItem('printerTagFilter'");
+    expect(source).toMatch(/known\.has\(id\)/);
   });
 
   it('waits for the query before deciding a location is stale', () => {

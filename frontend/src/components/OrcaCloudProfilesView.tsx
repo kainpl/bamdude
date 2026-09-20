@@ -1,12 +1,13 @@
-import { useState, useMemo } from 'react';
+import { useId, useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { TFunction } from 'i18next';
-import { Search, Filter, RefreshCw, Droplet, Settings2, Printer as PrinterIcon, Layers, X, Loader2, Clock } from 'lucide-react';
+import { Search, Filter, RefreshCw, Droplet, Settings2, Printer as PrinterIcon, Layers, Loader2, Clock } from 'lucide-react';
 
 import { api } from '../api/client';
 import type { OrcaProfileListResponse, OrcaProfileMeta } from '../api/client';
 import { canonicalPrinterModel } from '../utils/slicerPrinterMatch';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { FilterDropdown } from './FilterDropdown';
 import { formatRelativeTime } from '../utils/date';
 
@@ -158,7 +159,7 @@ export function OrcaCloudProfilesView({
     <>
       {/* Search and Filters — mirrors the layout of profiles.cloudView in the
           Bambu Cloud tab so the two tabs feel like the same surface. */}
-      <div className="space-y-4 mb-6">
+      <div className="space-y-4 mb-4">
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
@@ -267,7 +268,7 @@ export function OrcaCloudProfilesView({
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <PresetColumn
             icon={<Droplet className="w-4 h-4 text-amber-600 dark:text-amber-400" />}
             title={t('profiles.cloudView.columns.filament')}
@@ -369,6 +370,7 @@ interface OrcaPresetDetailModalProps {
 }
 
 function OrcaPresetDetailModal({ setting, onClose, t }: OrcaPresetDetailModalProps) {
+  const headingId = useId();
   const { data: detail, isLoading, error } = useQuery({
     queryKey: ['orcaCloudProfileDetail', setting.setting_id],
     queryFn: () => api.orcaCloudGetProfile(setting.setting_id),
@@ -376,36 +378,33 @@ function OrcaPresetDetailModal({ setting, onClose, t }: OrcaPresetDetailModalPro
   });
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-          <div>
-            <h2 className="text-lg font-bold text-white">{setting.name}</h2>
-            <p className="text-xs text-bambu-gray mt-0.5">{setting.type}</p>
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      header={
+        <div>
+          <h2 id={headingId} className="text-lg font-bold text-white">{setting.name}</h2>
+          <p className="text-xs text-bambu-gray mt-0.5">{setting.type}</p>
+        </div>
+      }
+      size="4xl"
+      bodyClassName="flex flex-col"
+    >
+      <div className="flex-1 overflow-y-auto p-4">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
           </div>
-          <button onClick={onClose} className="text-bambu-gray hover:text-white p-1">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-4">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-16">
-              <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
-            </div>
-          ) : error ? (
-            <p className="text-center text-bambu-gray py-16">{(error as Error).message}</p>
-          ) : detail ? (
-            <pre className="text-xs font-mono text-bambu-gray bg-bambu-dark p-3 rounded overflow-x-auto whitespace-pre">
-              {JSON.stringify(detail.setting, null, 2)}
-            </pre>
-          ) : (
-            <p className="text-center text-bambu-gray py-16">{t('profiles.cloudView.noPresetsFound')}</p>
-          )}
-        </div>
+        ) : error ? (
+          <p className="text-center text-bambu-gray py-16">{(error as Error).message}</p>
+        ) : detail ? (
+          <pre className="text-xs font-mono text-bambu-gray bg-bambu-dark p-3 rounded overflow-x-auto whitespace-pre">
+            {JSON.stringify(detail.setting, null, 2)}
+          </pre>
+        ) : (
+          <p className="text-center text-bambu-gray py-16">{t('profiles.cloudView.noPresetsFound')}</p>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }

@@ -1,10 +1,11 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useId, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Save, Beaker, Palette, Zap, Tag, Unlink } from 'lucide-react';
+import { Loader2, Save, Beaker, Palette, Zap, Tag, Unlink, History } from 'lucide-react';
 import { type FilamentFamily, api, ApiError } from '../api/client';
 import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, SpoolmanBulkCreateResult, SpoolKProfileInput, SpoolmanFilamentEntry } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
 import type { SpoolFormData, PrinterWithCalibrations, ColorPreset, SpoolFormMode } from './spool-form/types';
 import { defaultFormData, spoolDetailsRequired, validateForm, SPOOLMAN_LINKED_FIELDS } from './spool-form/types';
@@ -23,7 +24,7 @@ import {
   invalidateSpoolAndLocationQueries,
 } from '../utils/inventoryQueries';
 
-type TabId = 'filament' | 'pa-profile';
+type TabId = 'filament' | 'pa-profile' | 'usage';
 
 const CLEAR_TAG_PAYLOAD = { tag_uid: null, tray_uuid: null, tag_type: null, data_origin: null };
 
@@ -61,6 +62,7 @@ export function SpoolFormModal({
   spoolsQueryKey = ['inventory-spools'],
 }: SpoolFormModalProps) {
   const { t } = useTranslation();
+  const headingId = useId();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
 
@@ -72,6 +74,13 @@ export function SpoolFormModal({
   const resolvedMode: SpoolFormMode = mode ?? (spool ? 'edit' : 'create');
   const isEditing = resolvedMode === 'edit';
   const isCopying = resolvedMode === 'copy';
+  // Usage history is a TAB, not a trailer under the filament form. It is a
+  // list that grows without bound, and pinned to the bottom of an already
+  // long form it stretched the dialog past its own scroll box. It exists
+  // only where there is a ledger of ours to show — an existing spool of the
+  // internal inventory; in Spoolman mode Spoolman keeps that record and we
+  // never wrote one, which is why the block used to be gated the same way.
+  const showUsageTab = isEditing && !!spool && !spoolmanMode;
 
   // Form state
   const [formData, setFormData] = useState<SpoolFormData>(defaultFormData);
@@ -496,7 +505,10 @@ export function SpoolFormModal({
       if (error instanceof ApiError && error.status === 503) {
         showToast(t('inventory.spoolmanUnreachable'), 'error');
       } else {
-        showToast(t('inventory.saveFailed'), 'error');
+        // The server names the reason (a refused family id, a bad colour
+        // value); a bare "save failed" hid `unknown filament family` for a
+        // whole release (2026-09-04).
+        showToast(error.message || t('inventory.saveFailed'), 'error');
       }
     },
   });
@@ -544,7 +556,10 @@ export function SpoolFormModal({
       if (error instanceof ApiError && error.status === 503) {
         showToast(t('inventory.spoolmanUnreachable'), 'error');
       } else {
-        showToast(t('inventory.saveFailed'), 'error');
+        // The server names the reason (a refused family id, a bad colour
+        // value); a bare "save failed" hid `unknown filament family` for a
+        // whole release (2026-09-04).
+        showToast(error.message || t('inventory.saveFailed'), 'error');
       }
     },
   });
@@ -567,7 +582,10 @@ export function SpoolFormModal({
       if (error instanceof ApiError && error.status === 503) {
         showToast(t('inventory.spoolmanUnreachable'), 'error');
       } else {
-        showToast(t('inventory.saveFailed'), 'error');
+        // The server names the reason (a refused family id, a bad colour
+        // value); a bare "save failed" hid `unknown filament family` for a
+        // whole release (2026-09-04).
+        showToast(error.message || t('inventory.saveFailed'), 'error');
       }
     },
   });
@@ -735,15 +753,12 @@ export function SpoolFormModal({
     return true;
   };
 
-  // Close on Escape key
+  // The tab can disappear under the operator (the same modal is reused for
+  // the next spool, or for a Spoolman one), and a dead `activeTab` would
+  // leave the body blank with no tab lit.
   useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+    if (!showUsageTab && activeTab === 'usage') setActiveTab('filament');
+  }, [showUsageTab, activeTab]);
 
   if (!isOpen) return null;
 
@@ -826,290 +841,288 @@ export function SpoolFormModal({
   const isPending = createMutation.isPending || bulkCreateMutation.isPending || updateMutation.isPending || deleteTagMutation.isPending || unassignMutation.isPending;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-        onClick={onClose}
-      />
-
-      <div className="relative w-full max-w-xl mx-4 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl max-h-[90vh] flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary flex-shrink-0">
-          <h2 className="text-lg font-semibold text-white flex items-baseline gap-2">
-            {isEditing ? t('inventory.editSpool') : isCopying ? t('inventory.copySpool') : t('inventory.addSpool')}
-            {/* Spool ID in the header so operators can reference it in
-                support tickets / Telegram chats without having to switch
-                back to the inventory list (upstream Bambuddy #1385). */}
-            {isEditing && spool && (
-              <span className="text-sm font-mono text-bambu-gray">#{spool.id}</span>
-            )}
-          </h2>
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      size="xl"
+      bodyClassName="flex flex-col"
+      header={
+        <h2 id={headingId} className="text-lg font-semibold text-white flex items-baseline gap-2">
+          {isEditing ? t('inventory.editSpool') : isCopying ? t('inventory.copySpool') : t('inventory.addSpool')}
+          {/* Spool ID in the header so operators can reference it in
+              support tickets / Telegram chats without having to switch
+              back to the inventory list (upstream Bambuddy #1385). */}
+          {isEditing && spool && (
+            <span className="text-sm font-mono text-bambu-gray">#{spool.id}</span>
+          )}
+        </h2>
+      }
+    >
+      {/* Quick Add toggle — in create AND copy modes (not edit). Copy can now
+          batch: it clones the spool's filament/colour into N fresh spools while
+          usage fields stay cleared (weight_used is forced to 0 for copies — see
+          the form-init above — and bulkCreate makes brand-new rows with no tag
+          or usage history). Edit stays single-spool. */}
+      {!isEditing && (
+        <div className="flex items-center justify-between px-4 py-2 border-b border-bambu-dark-tertiary flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <Zap className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+            <span className="text-sm text-white">{t('inventory.quickAdd')}</span>
+          </div>
           <button
-            onClick={onClose}
-            className="p-1 text-bambu-gray hover:text-white rounded transition-colors"
+            type="button"
+            onClick={() => {
+              setQuickAdd(!quickAdd);
+              if (!quickAdd) setActiveTab('filament');
+            }}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+              quickAdd ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+            }`}
           >
-            <X className="w-5 h-5" />
+            <span
+              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                quickAdd ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
           </button>
         </div>
+      )}
 
-        {/* Quick Add toggle — in create AND copy modes (not edit). Copy can now
-            batch: it clones the spool's filament/colour into N fresh spools while
-            usage fields stay cleared (weight_used is forced to 0 for copies — see
-            the form-init above — and bulkCreate makes brand-new rows with no tag
-            or usage history). Edit stays single-spool. */}
-        {!isEditing && (
-          <div className="flex items-center justify-between px-4 py-2 border-b border-bambu-dark-tertiary flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <Zap className="w-4 h-4 text-amber-600 dark:text-amber-400" />
-              <span className="text-sm text-white">{t('inventory.quickAdd')}</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setQuickAdd(!quickAdd);
-                if (!quickAdd) setActiveTab('filament');
-              }}
-              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                quickAdd ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
-              }`}
-            >
-              <span
-                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                  quickAdd ? 'translate-x-4' : 'translate-x-0.5'
-                }`}
-              />
-            </button>
-          </div>
-        )}
-
-        {/* Tabs */}
-        <div className="flex border-b border-bambu-dark-tertiary flex-shrink-0">
+      {/* Tabs */}
+      <div className="flex border-b border-bambu-dark-tertiary flex-shrink-0">
+        <button
+          onClick={() => setActiveTab('filament')}
+          className={`flex-1 px-4 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+            activeTab === 'filament'
+              ? 'text-bambu-green border-b-2 border-bambu-green'
+              : 'text-bambu-gray hover:text-white'
+          }`}
+        >
+          <Palette className="w-4 h-4" />
+          {t('inventory.filamentInfoTab')}
+        </button>
+        {!quickAdd && (
           <button
-            onClick={() => setActiveTab('filament')}
+            onClick={() => setActiveTab('pa-profile')}
             className={`flex-1 px-4 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
-              activeTab === 'filament'
+              activeTab === 'pa-profile'
                 ? 'text-bambu-green border-b-2 border-bambu-green'
                 : 'text-bambu-gray hover:text-white'
             }`}
           >
-            <Palette className="w-4 h-4" />
-            {t('inventory.filamentInfoTab')}
+            <Beaker className="w-4 h-4" />
+            {t('inventory.paProfileTab')}
+            {selectedProfileCount > 0 && (
+              <span className="text-xs px-1.5 py-0.5 rounded-full bg-bambu-green/20 text-bambu-green">
+                {selectedProfileCount}
+              </span>
+            )}
           </button>
-          {!quickAdd && (
-            <button
-              onClick={() => setActiveTab('pa-profile')}
-              className={`flex-1 px-4 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
-                activeTab === 'pa-profile'
-                  ? 'text-bambu-green border-b-2 border-bambu-green'
-                  : 'text-bambu-gray hover:text-white'
-              }`}
-            >
-              <Beaker className="w-4 h-4" />
-              {t('inventory.paProfileTab')}
-              {selectedProfileCount > 0 && (
-                <span className="text-xs px-1.5 py-0.5 rounded-full bg-bambu-green/20 text-bambu-green">
-                  {selectedProfileCount}
-                </span>
-              )}
-            </button>
-          )}
-        </div>
+        )}
+        {showUsageTab && (
+          <button
+            onClick={() => setActiveTab('usage')}
+            className={`flex-1 px-4 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+              activeTab === 'usage'
+                ? 'text-bambu-green border-b-2 border-bambu-green'
+                : 'text-bambu-gray hover:text-white'
+            }`}
+          >
+            <History className="w-4 h-4" />
+            {t('inventory.usageHistoryTab')}
+          </button>
+        )}
+      </div>
 
-        {/* Content */}
-        <div className="p-4 overflow-y-auto flex-1" style={{ scrollbarGutter: 'stable' }}>
-          {activeTab === 'filament' ? (
-            <div className="space-y-6">
-              {/* Spoolman Filament Catalog Picker — only when creating a spool in Spoolman mode */}
-              {spoolmanMode && !isEditing && (
-                <div>
-                  {filamentsError ? (
-                    <p className="text-sm text-red-700 dark:text-red-400 px-1">{t('inventory.spoolmanCatalogLoadFailed')}</p>
-                  ) : (
-                    <SpoolmanFilamentPicker
-                      filaments={spoolmanFilaments}
-                      isLoading={isLoadingFilaments}
-                      selectedId={formData.spoolman_filament_id}
-                      onSelect={handleFilamentSelect}
-                    />
-                  )}
-                </div>
-              )}
-
-              {/* Filament Info Section */}
+      {/* Content */}
+      <div className="p-4 overflow-y-auto flex-1" style={{ scrollbarGutter: 'stable' }}>
+        {activeTab === 'filament' ? (
+          <div className="space-y-4">
+            {/* Spoolman Filament Catalog Picker — only when creating a spool in Spoolman mode */}
+            {spoolmanMode && !isEditing && (
               <div>
-                <h3 className="text-sm font-semibold text-bambu-gray uppercase tracking-wide mb-3">
-                  {t('inventory.filamentInfo')}
-                </h3>
-                <div className="mb-3">
-                  <label className="block text-sm font-medium text-bambu-gray mb-1">
-                    {t('inventory.filamentFamily')}{detailsRequired && ' *'}
-                  </label>
-                  <FamilyPicker
-                    value={formData.filament_family_id || null}
-                    onChange={(id, family) => {
-                      updateField('filament_family_id', id || '');
-                      setPickedFamily(family);
-                      // BS-style prefill: the family carries vendor + material.
-                      if (family?.filament_type && !formData.material) {
-                        updateField('material', family.filament_type);
-                      }
-                      if (family?.vendor && family.vendor !== 'Generic' && !formData.brand) {
-                        updateField('brand', family.vendor);
-                      }
-                    }}
-                    legacyHint={spool?.slicer_filament_name || undefined}
-                    onCreateNew={() => setCreateFamilyOpen(true)}
+                {filamentsError ? (
+                  <p className="text-sm text-red-700 dark:text-red-400 px-1">{t('inventory.spoolmanCatalogLoadFailed')}</p>
+                ) : (
+                  <SpoolmanFilamentPicker
+                    filaments={spoolmanFilaments}
+                    isLoading={isLoadingFilaments}
+                    selectedId={formData.spoolman_filament_id}
+                    onSelect={handleFilamentSelect}
                   />
-                  <CreateFilamentFamilyModal
-                    open={createFamilyOpen}
-                    onClose={() => setCreateFamilyOpen(false)}
-                    onCreated={(fid, alias) => {
-                      updateField('filament_family_id', fid);
-                      // Synthetic row until the families query refetches — the
-                      // submit path reads alias from here.
-                      setPickedFamily({
-                        filament_id: fid,
-                        ecosystem: 'local',
-                        alias,
-                        vendor: null,
-                        filament_type: null,
-                        origin: 'authored',
-                      });
-                    }}
-                  />
-                  {errors.filament_family_id && (
-                    <p className="mt-1 text-xs text-red-700 dark:text-red-400">{errors.filament_family_id}</p>
-                  )}
-                </div>
-                <FilamentSection
-                  formData={formData}
-                  updateField={updateField}
-                  availableBrands={availableBrands}
-                  availableMaterials={availableMaterials}
-                  suggestedBrands={suggestedBrands}
-                  suggestedMaterials={suggestedMaterials}
-                  detailsRequired={detailsRequired}
-                  quickAdd={quickAdd}
-                  quantity={quantity}
-                  onQuantityChange={setQuantity}
-                  errors={errors}
-                />
+                )}
               </div>
+            )}
 
-              {/* Color Section */}
-              <div>
-                <h3 className="text-sm font-semibold text-bambu-gray uppercase tracking-wide mb-3">
-                  {t('inventory.color')}
-                </h3>
-                <ColorSection
-                  formData={formData}
-                  updateField={updateField}
-                  recentColors={recentColors}
-                  onColorUsed={handleColorUsed}
-                  catalogColors={colorCatalog}
-                />
-              </div>
-
-              {/* Additional Section */}
-              <div>
-                <h3 className="text-sm font-semibold text-bambu-gray uppercase tracking-wide mb-3">
-                  {t('inventory.additional')}
-                </h3>
-                <AdditionalSection
-                  formData={formData}
-                  updateField={updateField}
-                  spoolCatalog={spoolCatalog}
-                  currencySymbol={currencySymbol}
-                  quickAdd={quickAdd}
-                  categories={knownCategories}
-                  availableLocations={storageLocations}
-                  onCreateLocation={async (name) => {
-                    try {
-                      const created = await api.createLocation({ name });
-                      setStorageLocations((prev) => [...prev, { id: created.id, name: created.name }].sort((a, b) => a.name.localeCompare(b.name)));
-                      await invalidateInventoryLocations(queryClient);
-                      return { id: created.id, name: created.name };
-                    } catch (e) {
-                      // Surface the backend's actual error so the user can
-                      // distinguish 409 duplicate / 400 validation / 500 from
-                      // a generic "save failed" message.
-                      console.error(e);
-                      const message = e instanceof Error ? e.message : t('locations.saveFailed');
-                      showToast(message || t('locations.saveFailed'), 'error');
-                      return null;
+            {/* Filament Info Section */}
+            <div>
+              <h3 className="text-sm font-semibold text-bambu-gray uppercase tracking-wide mb-3">
+                {t('inventory.filamentInfo')}
+              </h3>
+              <div className="mb-3">
+                <label className="block text-sm font-medium text-bambu-gray mb-1">
+                  {t('inventory.filamentFamily')}{detailsRequired && ' *'}
+                </label>
+                <FamilyPicker
+                  value={formData.filament_family_id || null}
+                  onChange={(id, family) => {
+                    updateField('filament_family_id', id || '');
+                    setPickedFamily(family);
+                    // BS-style prefill: the family carries vendor + material.
+                    if (family?.filament_type && !formData.material) {
+                      updateField('material', family.filament_type);
+                    }
+                    if (family?.vendor && family.vendor !== 'Generic' && !formData.brand) {
+                      updateField('brand', family.vendor);
                     }
                   }}
-                  errors={errors}
-                  spoolmanMode={spoolmanMode}
+                  legacyHint={spool?.slicer_filament_name || undefined}
+                  onCreateNew={() => setCreateFamilyOpen(true)}
                 />
+                <CreateFilamentFamilyModal
+                  open={createFamilyOpen}
+                  onClose={() => setCreateFamilyOpen(false)}
+                  onCreated={(fid, alias) => {
+                    updateField('filament_family_id', fid);
+                    // Synthetic row until the families query refetches — the
+                    // submit path reads alias from here.
+                    setPickedFamily({
+                      filament_id: fid,
+                      ecosystem: 'local',
+                      alias,
+                      vendor: null,
+                      filament_type: null,
+                      origin: 'authored',
+                    });
+                  }}
+                />
+                {errors.filament_family_id && (
+                  <p className="mt-1 text-xs text-red-700 dark:text-red-400">{errors.filament_family_id}</p>
+                )}
               </div>
-
-              {/* Usage History (only when editing internal inventory; Spoolman tracks its own) */}
-              {isEditing && spool && !spoolmanMode && (
-                <div>
-                  <SpoolUsageHistory spoolId={spool.id} />
-                </div>
-              )}
+              <FilamentSection
+                formData={formData}
+                updateField={updateField}
+                availableBrands={availableBrands}
+                availableMaterials={availableMaterials}
+                suggestedBrands={suggestedBrands}
+                suggestedMaterials={suggestedMaterials}
+                detailsRequired={detailsRequired}
+                quickAdd={quickAdd}
+                quantity={quantity}
+                onQuantityChange={setQuantity}
+                errors={errors}
+              />
             </div>
-          ) : (
-            <PAProfileSection
-              formData={formData}
-              updateField={updateField}
-              printersWithCalibrations={resolvedCalibrations}
-              loading={calibrationsLoading}
-              selectedProfiles={selectedProfiles}
-              setSelectedProfiles={setSelectedProfiles}
-              expandedPrinters={expandedPrinters}
-              setExpandedPrinters={setExpandedPrinters}
-            />
-          )}
-        </div>
 
-        {/* Footer */}
-        <div className="flex gap-2 p-4 border-t border-bambu-dark-tertiary flex-shrink-0">
-          {isEditing && (
-            <div className="flex gap-2 mr-auto">
-              <Button
-                variant="secondary"
-                onClick={() => deleteTagMutation.mutate()}
-                disabled={isPending || !spool?.tag_uid}
-              >
-                <Tag className="w-4 h-4" />
-                {t('inventory.clearRfid', 'Clear RFID Tag')}
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => unassignMutation.mutate()}
-                disabled={isPending || !spoolAssignment}
-              >
-                <Unlink className="w-4 h-4" />
-                {t('inventory.unassignSpool', 'Unassign')}
-              </Button>
+            {/* Color Section */}
+            <div>
+              <h3 className="text-sm font-semibold text-bambu-gray uppercase tracking-wide mb-3">
+                {t('inventory.color')}
+              </h3>
+              <ColorSection
+                formData={formData}
+                updateField={updateField}
+                recentColors={recentColors}
+                onColorUsed={handleColorUsed}
+                catalogColors={colorCatalog}
+              />
             </div>
-          )}
-          <div className="flex gap-2 ml-auto">
-          <Button variant="secondary" onClick={onClose}>
-            {t('common.cancel')}
-          </Button>
-          <Button
-            onClick={handleSubmit}
-            disabled={isPending}
-          >
-            {isPending ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {t('common.saving')}
-              </>
-            ) : (
-              <>
-                <Save className="w-4 h-4" />
-                {isEditing ? t('common.save') : isCopying ? t('inventory.copySpool') : t('inventory.addSpool')}
-              </>
-            )}
-          </Button>
+
+            {/* Additional Section */}
+            <div>
+              <h3 className="text-sm font-semibold text-bambu-gray uppercase tracking-wide mb-3">
+                {t('inventory.additional')}
+              </h3>
+              <AdditionalSection
+                formData={formData}
+                updateField={updateField}
+                spoolCatalog={spoolCatalog}
+                currencySymbol={currencySymbol}
+                quickAdd={quickAdd}
+                categories={knownCategories}
+                availableLocations={storageLocations}
+                onCreateLocation={async (name) => {
+                  try {
+                    const created = await api.createLocation({ name });
+                    setStorageLocations((prev) => [...prev, { id: created.id, name: created.name }].sort((a, b) => a.name.localeCompare(b.name)));
+                    await invalidateInventoryLocations(queryClient);
+                    return { id: created.id, name: created.name };
+                  } catch (e) {
+                    // Surface the backend's actual error so the user can
+                    // distinguish 409 duplicate / 400 validation / 500 from
+                    // a generic "save failed" message.
+                    console.error(e);
+                    const message = e instanceof Error ? e.message : t('locations.saveFailed');
+                    showToast(message || t('locations.saveFailed'), 'error');
+                    return null;
+                  }
+                }}
+                errors={errors}
+                spoolmanMode={spoolmanMode}
+              />
+            </div>
           </div>
+        ) : activeTab === 'usage' ? (
+          spool && <SpoolUsageHistory spoolId={spool.id} />
+        ) : (
+          <PAProfileSection
+            formData={formData}
+            updateField={updateField}
+            printersWithCalibrations={resolvedCalibrations}
+            loading={calibrationsLoading}
+            selectedProfiles={selectedProfiles}
+            setSelectedProfiles={setSelectedProfiles}
+            expandedPrinters={expandedPrinters}
+            setExpandedPrinters={setExpandedPrinters}
+          />
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="flex gap-2 p-4 border-t border-bambu-dark-tertiary flex-shrink-0">
+        {isEditing && (
+          <div className="flex gap-2 mr-auto">
+            <Button
+              variant="secondary"
+              onClick={() => deleteTagMutation.mutate()}
+              disabled={isPending || !spool?.tag_uid}
+            >
+              <Tag className="w-4 h-4" />
+              {t('inventory.clearRfid', 'Clear RFID Tag')}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => unassignMutation.mutate()}
+              disabled={isPending || !spoolAssignment}
+            >
+              <Unlink className="w-4 h-4" />
+              {t('inventory.unassignSpool', 'Unassign')}
+            </Button>
+          </div>
+        )}
+        <div className="flex gap-2 ml-auto">
+        <Button variant="secondary" onClick={onClose}>
+          {t('common.cancel')}
+        </Button>
+        <Button
+          onClick={handleSubmit}
+          disabled={isPending}
+        >
+          {isPending ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              {t('common.saving')}
+            </>
+          ) : (
+            <>
+              <Save className="w-4 h-4" />
+              {isEditing ? t('common.save') : isCopying ? t('inventory.copySpool') : t('inventory.addSpool')}
+            </>
+          )}
+        </Button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

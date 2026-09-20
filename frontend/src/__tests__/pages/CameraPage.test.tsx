@@ -7,7 +7,7 @@ import { screen, waitFor, render as rtlRender } from '@testing-library/react';
 import { CameraPage } from '../../pages/CameraPage';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { ToastProvider } from '../../contexts/ToastContext';

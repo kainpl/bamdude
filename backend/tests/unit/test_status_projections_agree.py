@@ -73,6 +73,7 @@ LIVE_FIELDS = [
     "mc_print_sub_stage",
     "firmware_consistency_request",
     "firmware_force_upgrade",
+    "ams_backup_groups",
 ]
 
 # Carried to the browser, but deliberately not allowed to CAUSE a broadcast.
@@ -103,7 +104,11 @@ class TestAChangeCanTriggerABroadcast:
         # airduct_fans is represented by a signature over the parts it is built
         # from — the list itself is derived, and hashing the derived objects
         # would rebuild them on every push.
-        needle = "airduct_key" if field == "airduct_fans" else field
+        key_aliases = {
+            "airduct_fans": "airduct_key",
+            "ams_backup_groups": "ams_backup_key",
+        }
+        needle = key_aliases.get(field, field)
         assert needle in _STATUS_KEY, f"{field} does not appear in status_key — changing it alone broadcasts nothing"
 
 
@@ -118,6 +123,18 @@ class TestAnExemptionIsDeliberate:
         """⚠️ If this ever starts failing, someone added a per-push timestamp to
         the dedup key and every message now gets broadcast."""
         assert field not in _STATUS_KEY
+
+
+class TestTheTraySignatureNoticesAnAdvertisedProfile:
+    def test_it_covers_the_two_fields_the_printers_echo_moves(self) -> None:
+        """An overlay entry is dormant until the printer echoes what we
+        published, and that echo moves ``tray_color`` / ``tray_info_idx`` —
+        nothing else in this key. Without them the badge and the real spool
+        behind it waited for the next unrelated push."""
+        source = inspect.getsource(main_module.on_printer_status_change)
+        tray_key = _code_only(source.split("ams_tray_key = ", 1)[1].split("airduct_key = ", 1)[0])
+        assert '"tray_color"' in tray_key and '"tray_info_idx"' in tray_key
+        assert '"state"' in tray_key  # the load/unload transition of #784 stays
 
 
 class TestTheFanSignatureIsAboutSpeeds:

@@ -7,6 +7,7 @@ for a removable medium, and we never print from one over that channel.
 """
 
 import json
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,6 +18,7 @@ from backend.app.services.bambu_mqtt import BambuMQTTClient
 def _client_capturing() -> tuple[BambuMQTTClient, list[dict]]:
     client = BambuMQTTClient.__new__(BambuMQTTClient)
     # ``topic_publish`` is a read-only property derived from the serial.
+    client._routing_lock = threading.RLock()
     client.serial_number = "TEST123"
     client.model = "X2D"
     client._is_dual_nozzle = False
@@ -25,6 +27,7 @@ def _client_capturing() -> tuple[BambuMQTTClient, list[dict]]:
         (),
         {
             "state": "IDLE",
+            "raw_data": {},
             "connected": True,
             "gcode_state": "IDLE",
             "nozzle_diameter": 0.4,

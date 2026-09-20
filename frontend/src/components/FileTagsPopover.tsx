@@ -103,7 +103,11 @@ export function FileTagsPopover({ file, anchor, onClose }: FileTagsPopoverProps)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      // Escape stops at this popover — the modal stack must not also close the dialog behind it.
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -111,6 +115,7 @@ export function FileTagsPopover({ file, anchor, onClose }: FileTagsPopoverProps)
 
   return createPortal(
     <>
+      {/* not-a-modal: popover */}
       <div className="fixed inset-0 z-[65]" onClick={onClose} />
       <div
         role="dialog"

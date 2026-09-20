@@ -114,7 +114,7 @@ export function CalibrationAutoSavePage({ session, onSubmit, isSubmitting }: Pro
             </div>
 
             {isFlow ? (
-              <div className="grid grid-cols-2 gap-2 text-sm">
+              <div className="accent-bambu-green grid grid-cols-2 gap-2 text-sm">
                 <label>
                   <span className="text-xs text-bambu-gray">{t('filamentCali.autoSave.flowRatio')}</span>
                   <input

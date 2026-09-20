@@ -47,7 +47,7 @@ function restoreImg() {
   delete HTMLImageElement.prototype.naturalWidth;
 }
 
-const URL_ = '/api/v1/printers/1/cover';
+const URL_ = '/api/v1/printers/1/camera-cover';
 
 describe('CoverImage with an image the browser already has', () => {
   afterEach(restoreImg);

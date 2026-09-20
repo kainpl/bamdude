@@ -22,7 +22,7 @@ See ``temp/auto-queue-adaptation-variants.md`` §12 for the full design.
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -39,11 +39,31 @@ class AutoQueueItem(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
 
     # Source file (mirrors print_queue: archive_id XOR library_file_id)
-    archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="CASCADE"), nullable=True)
+    #
+    # ⚠️ SET NULL, not CASCADE (m173) — same reasoning as the per-printer row:
+    # purging an archive used to delete the router row that named it, which is
+    # exactly the "my source went away" case the queue source exists to survive
+    # (queue-source-spool spec §4, §10). SQLite enforces no FK rule; the detach
+    # there is code, beside the delete paths.
+    archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
     library_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True
     )
+
+    # The immutable local copy of the bytes this row's work prints (m173) and the
+    # versioned per-job metadata about it. An assigned row keeps its reference
+    # until the shared cleanup releases it, so the promoted per-printer item and
+    # its router half hold the blob together (spec §7, §9). See
+    # ``models/print_queue.py`` for the full note on both columns.
+    queue_source_id: Mapped[int | None] = mapped_column(
+        ForeignKey("queue_sources.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    source_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    project_line_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_lines.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # Routing target (upstream-style)
     # target_model: normalized printer model code, e.g. "X1C", "P1S", "K1C", "A1MINI"
@@ -58,20 +78,22 @@ class AutoQueueItem(Base):
     # JSON array of filament overrides, same format as upstream:
     # [{"slot_id":1,"type":"PLA","color":"#FF0000","force_color_match":true}, ...]
     filament_overrides: Mapped[str | None] = mapped_column(Text, nullable=True)
+    feed_policy: Mapped[str] = mapped_column(String(20), default="auto", server_default="auto", nullable=False)
     force_color_match: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    allow_base_material_match: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
 
     # Multi-plate: one plate = one row (plate_id is 1-indexed)
     plate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Print options — copied verbatim into print_queue on assignment
+    # Legacy submission values.  The scheduler resolves the originating
+    # operator's per-model profile when it promotes this model-agnostic row;
+    # these columns remain for API compatibility with older writers.
     bed_levelling: Mapped[bool] = mapped_column(Boolean, default=True)
     flow_cali: Mapped[bool] = mapped_column(Boolean, default=True)
     layer_inspect: Mapped[bool] = mapped_column(Boolean, default=False)
     timelapse: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Copied onto the per-printer item by the distributor — see
-    # ``PrintQueueItem.timelapse_storage``. ⚠️ The router row is model-agnostic:
-    # a choice made here may land on a machine with no internal storage at all,
-    # which is why resolving it belongs at dispatch and not here.
+    # Retained for legacy clients.  A target-model profile supplies the value
+    # used by ``PrintQueueItem.timelapse_storage`` at promotion.
     timelapse_storage: Mapped[str | None] = mapped_column(String(20), nullable=True)
     use_ams: Mapped[bool] = mapped_column(Boolean, default=True)
     mesh_mode_fast_check: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -82,8 +104,8 @@ class AutoQueueItem(Base):
     execute_swap_macros: Mapped[bool] = mapped_column(Boolean, default=True)
     swap_macro_events: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Copied onto the per-printer item by the distributor — see
-    # ``PrintQueueItem.selected_macro_ids``.
+    # Retained for legacy clients.  The profile's deselected event macros are
+    # resolved against the target model at promotion.
     selected_macro_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # The slicer's per-filament physical-nozzle array (#1780), captured by a
@@ -99,7 +121,7 @@ class AutoQueueItem(Base):
     require_previous_success: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Lifecycle
-    # status: pending | assigned | cancelled
+    # status: pending | assigned | cancelled | failed (unavailable source; manual retry)
     #
     # ``cancelled`` only ever appears on a row that was already routed, whose
     # per-printer item outlives the cancel so the operator can retry it.
@@ -121,6 +143,14 @@ class AutoQueueItem(Base):
     # Batch grouping — UUID v4 shared across N copies; mirrors print_queue.batch_id
     batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
 
+    # Stamped by ``services/queue_rebalance.py`` when the auto-queue moved this
+    # row's work to another printer model (m171): ``rebalanced_from_model`` is
+    # the model it targeted before, in the display spelling (``P1S``), and
+    # ``rebalanced_at`` the moment. The panel's badge and the scheduler's
+    # per-line cooldown read them. NULL = nobody moved it.
+    rebalanced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    rebalanced_from_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # Tracking
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -131,10 +161,14 @@ class AutoQueueItem(Base):
     project: Mapped["Project | None"] = relationship()
     created_by: Mapped["User | None"] = relationship()
     assigned_to: Mapped["PrintQueueItem | None"] = relationship(foreign_keys=[assigned_to_item_id])
+    # See ``models/print_queue.py`` — read-only navigation for the synchronous
+    # response builder, which must describe the row from the bytes it owns.
+    queue_source: Mapped["QueueSource | None"] = relationship(viewonly=True)
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.library import LibraryFile  # noqa: E402
 from backend.app.models.print_queue import PrintQueueItem  # noqa: E402
 from backend.app.models.project import Project  # noqa: E402
+from backend.app.models.queue_source import QueueSource  # noqa: E402
 from backend.app.models.user import User  # noqa: E402

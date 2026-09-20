@@ -1,8 +1,9 @@
-import { AlertTriangle, Check, Cloud, CloudOff, Cog, Loader2, RefreshCw, X, XCircle } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Check, Cloud, CloudOff, Cog, Loader2, RefreshCw, XCircle } from 'lucide-react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { Modal } from './Modal';
 import SlicerSettingsPanel from './SlicerSettingsPanel';
 import type { SettingValue } from '../types/slicerSettings';
 import {
@@ -30,6 +31,7 @@ import {
 } from '../utils/presetPickerUtils';
 import { useSlicerHealth, type SlicerKind } from '../hooks/useSlicerHealth';
 import { useIsWideLayout } from '../hooks/useIsWideLayout';
+import { Select } from './Select';
 import {
   EMPTY_COMPATIBILITY_INDEX,
   buildCompatibilityIndex,
@@ -320,11 +322,11 @@ function PresetDropdown({
         )}
         <span>{label}</span>
       </span>
-      <select
+      <Select
+        className="w-full"
         value={toRefValue(value)}
         onChange={(e) => onChange(fromRefValue(e.target.value))}
         disabled={disabled || totalEntries === 0}
-        className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
       >
         <option value="">
           {totalEntries === 0
@@ -349,7 +351,7 @@ function PresetDropdown({
             ))}
           </optgroup>
         )}
-      </select>
+      </Select>
     </label>
   );
 }
@@ -383,18 +385,18 @@ function BedTypePicker({ value, onChange, disabled }: BedTypePickerProps) {
       <span className="text-xs text-bambu-gray mb-1 block">
         {t('slice.bedType.label', 'Bed plate')}
       </span>
-      <select
+      <Select
+        className="w-full"
         value={value}
         onChange={(e) => onChange(e.target.value as BedType)}
         disabled={disabled}
-        className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
       >
         {options.map((opt) => (
           <option key={opt.value} value={opt.value}>
             {t(opt.labelKey, opt.fallback)}
           </option>
         ))}
-      </select>
+      </Select>
     </label>
   );
 }
@@ -517,6 +519,7 @@ function SlicerPickerCard({
 
 export function SliceModal({ source, onClose }: SliceModalProps) {
   const { t } = useTranslation();
+  const headingId = useId();
   const { trackJob } = useSliceJobTracker();
 
   const [printerPreset, setPrinterPreset] = useState<PresetRef | null>(null);
@@ -1140,567 +1143,554 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // picker. While the plates query is in-flight we still render the shell
   // because the presets query is gated on it; the loader covers both.
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={() => {
-        if (!isEnqueuing) onClose();
-      }}
-    >
-      <div
-        className="w-full max-w-xl lg:max-w-5xl max-h-[85vh] flex flex-col rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary/60"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex-shrink-0 flex items-start justify-between gap-3 px-4 pt-4 pb-3 border-b border-bambu-dark-tertiary/40">
-          <div className="min-w-0">
-            <h3 className="text-white font-medium flex items-center gap-2">
-              <Cog className="w-4 h-4" />
-              {t('slice.title', 'Slice model')}
-            </h3>
-            <p className="text-xs text-bambu-gray mt-1 truncate" title={source.filename}>
-              {source.filename}
-              {selectedPlate != null
-                ? ` • ${t('archives.platePicker.plateLabel', { index: selectedPlate })}`
-                : ''}
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            disabled={isEnqueuing}
-            className="flex-shrink-0 text-bambu-gray hover:text-white transition-colors disabled:opacity-50"
-            aria-label={t('common.close', 'Close')}
-          >
-            <X className="w-5 h-5" />
-          </button>
+    <Modal
+      onClose={onClose}
+      closeDisabled={isEnqueuing}
+      labelledBy={headingId}
+      size="xl"
+      panelClassName="lg:max-w-5xl"
+      bodyClassName="flex flex-col"
+      header={
+        <div className="min-w-0">
+          <h3 id={headingId} className="text-white font-medium flex items-center gap-2">
+            <Cog className="w-4 h-4" />
+            {t('slice.title', 'Slice model')}
+          </h3>
+          <p className="text-xs text-bambu-gray mt-1 truncate" title={source.filename}>
+            {source.filename}
+            {selectedPlate != null
+              ? ` • ${t('archives.platePicker.plateLabel', { index: selectedPlate })}`
+              : ''}
+          </p>
         </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {/* Inline plate picker for multi-plate sources. Visually mirrors
-              ``PrintModal/PlateSelector`` so the slice + print flows feel
-              consistent (vertical paginator strip + big details card).
-              Renders above the other sections so the user sees their
-              plate context first; switching plates re-keys the
-              filament-reqs query so the dropdowns below realign to the
-              new plate's required (type, color) automatically. */}
-          {isMultiPlate && platesQuery.data && (
-            <>
-              <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={sliceAllPlates}
-                  onChange={(e) => setSliceAllPlates(e.target.checked)}
-                  disabled={isEnqueuing}
-                  className="accent-bambu-green"
-                />
-                {t('slice.allPlates', 'Slice all plates')}
-              </label>
-              {!sliceAllPlates && (
-                <SlicePlateSelector
-                  plates={platesQuery.data.plates}
-                  selectedPlate={selectedPlate}
-                  onSelect={setSelectedPlate}
-                  disabled={isEnqueuing}
-                />
-              )}
-            </>
-          )}
-          {/* Preset listing loader — printer/process dropdowns can't render
-              without it. Plate query reuses the same spinner since it's
-              also blocking. */}
-          {(platesQuery.isLoading || presetsQuery.isLoading) && (
-            <div className="flex items-center gap-2 text-bambu-gray text-sm">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              {t('slice.loadingPresets', 'Loading presets…')}
-            </div>
-          )}
-
-          {presetsQuery.isError && (
-            <div className="text-sm text-red-700 dark:text-red-400" role="alert">
-              {t(
-                'slice.presetsLoadFailed',
-                'Failed to load presets. Open Settings → Profiles to import them, or sign in to Bambu Cloud.',
-              )}
-            </div>
-          )}
-
-          {presetsQuery.data && (
-            <>
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex-1 space-y-2">
-                  <CloudStatusBanner status={presetsQuery.data.cloud_status} cloudName="bambu" />
-                  <CloudStatusBanner status={presetsQuery.data.orca_cloud_status} cloudName="orca" />
-                </div>
-                <button
-                  type="button"
-                  onClick={handleRefreshPresets}
-                  disabled={isRefreshing || isEnqueuing}
-                  className="flex-shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  title={t('slice.refreshPresetsTitle')}
-                  aria-label={t('slice.refreshPresets')}
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-                  {t('slice.refreshPresets')}
-                </button>
-              </div>
-              {/* Two columns once there is room for them. The left keeps
-                  the "what am I slicing with" decisions together; the right
-                  gives the process-settings panel a column of its own, which
-                  is the only way 348 options are comfortable to work through.
-                  ⚠️ Below lg both collapse back into the single stack this
-                  dialog used to be, so nothing on a phone changes. */}
-              <div className="lg:grid lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:gap-5 lg:items-start">
-                <div className="space-y-4 min-w-0">
-              {/* Slicer picker — two big card-buttons matching the
-                  "Filament Tracking" pattern in Settings. Each card carries
-                  its own live health status (version / offline / checking)
-                  pulled from the same shared React Query cache. Always
-                  renders so the user sees what's available even when only
-                  one sidecar is up; offline ones are disabled and can't
-                  be picked. */}
-              <SlicerPicker
-                value={pickedSlicer}
-                onChange={setPickedSlicer}
+      }
+    >
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* Inline plate picker for multi-plate sources. Visually mirrors
+            ``PrintModal/PlateSelector`` so the slice + print flows feel
+            consistent (vertical paginator strip + big details card).
+            Renders above the other sections so the user sees their
+            plate context first; switching plates re-keys the
+            filament-reqs query so the dropdowns below realign to the
+            new plate's required (type, color) automatically. */}
+        {isMultiPlate && platesQuery.data && (
+          <>
+            <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sliceAllPlates}
+                onChange={(e) => setSliceAllPlates(e.target.checked)}
+                disabled={isEnqueuing}
+                className="accent-bambu-green"
+              />
+              {t('slice.allPlates', 'Slice all plates')}
+            </label>
+            {!sliceAllPlates && (
+              <SlicePlateSelector
+                plates={platesQuery.data.plates}
+                selectedPlate={selectedPlate}
+                onSelect={setSelectedPlate}
                 disabled={isEnqueuing}
               />
-              {/* Saved preset bundles (#1425). Same label + full-width select
-                  shape as the preset dropdowns below, so loading a bundle
-                  reads as one more picker rather than a separate widget. The
-                  select is an action list (value is always ""), which is why
-                  re-picking the same bundle re-applies it. Bundles are
-                  managed in Settings → Pipelines. */}
-              {canReadPipelines && (
-                <div>
-                  <div className="flex items-end justify-between gap-2 mb-1">
-                    <label htmlFor="slice-pipeline-picker" className="text-xs text-bambu-gray">
-                      {t('slice.pipelines.label', 'Pipeline')}
-                    </label>
-                    {canWritePipelines && !savePipelineOpen && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPipelineDraftName('');
-                          setSavePipelineOpen(true);
-                        }}
-                        disabled={
-                          isEnqueuing ||
-                          useEmbedded ||
-                          !printerPreset ||
-                          !processPreset ||
-                          filamentPresets.length === 0 ||
-                          filamentPresets.some((f) => f === null)
-                        }
-                        className="text-xs text-bambu-green hover:text-bambu-green/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        title={t(
-                          'slice.pipelines.saveTitle',
-                          'Save the current four-slot selection as a reusable pipeline',
-                        )}
-                      >
-                        {t('slice.pipelines.saveButton', 'Save as pipeline')}
-                      </button>
-                    )}
-                  </div>
-                  <select
-                    id="slice-pipeline-picker"
-                    value=""
-                    disabled={
-                      isEnqueuing || useEmbedded || (pipelinesQuery.data?.pipelines.length ?? 0) === 0
-                    }
-                    onChange={(e) => {
-                      const id = parseInt(e.target.value, 10);
-                      // Reset immediately so re-picking the same bundle fires
-                      // onChange again (a select doesn't when the DOM value
-                      // already equals the option).
-                      e.target.value = '';
-                      if (Number.isNaN(id)) return;
-                      const picked = pipelinesQuery.data?.pipelines.find((p) => p.id === id);
-                      if (picked) applyPipeline(picked);
-                    }}
-                    className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
-                  >
-                    <option value="">
-                      {(pipelinesQuery.data?.pipelines.length ?? 0) === 0
-                        ? t('slice.pipelines.empty', 'No saved pipelines')
-                        : t('slice.pipelines.applyPrompt', 'Apply pipeline…')}
-                    </option>
-                    {pipelinesQuery.data?.pipelines.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                  {savePipelineOpen && (
-                    <div className="flex items-center gap-2 mt-2">
-                      <input
-                        autoFocus
-                        value={pipelineDraftName}
-                        onChange={(e) => setPipelineDraftName(e.target.value)}
-                        placeholder={t('slice.pipelines.namePlaceholder', 'Pipeline name')}
-                        aria-label={t('slice.pipelines.nameAria', 'New pipeline name')}
-                        className="flex-1 min-w-0 px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const trimmed = pipelineDraftName.trim();
-                          if (!trimmed || !printerPreset || !processPreset) return;
-                          const nonNull = filamentPresets.filter((f): f is PresetRef => f !== null);
-                          if (nonNull.length === 0) return;
-                          createPipelineMutation.mutate({
-                            name: trimmed,
-                            printer_preset: printerPreset,
-                            process_preset: processPreset,
-                            filament_presets: nonNull,
-                            bed_type: bedType,
-                          });
-                        }}
-                        disabled={createPipelineMutation.isPending || !pipelineDraftName.trim()}
-                        className="flex-shrink-0 px-3 py-1.5 text-sm rounded-md bg-bambu-green hover:bg-bambu-green/90 text-bambu-dark font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                      >
-                        {createPipelineMutation.isPending && (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        )}
-                        {t('common.save', 'Save')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSavePipelineOpen(false);
-                          setPipelineDraftName('');
-                        }}
-                        className="flex-shrink-0 px-3 py-1.5 text-sm rounded-md border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray transition-colors"
-                      >
-                        {t('common.cancel', 'Cancel')}
-                      </button>
-                    </div>
-                  )}
-                  {/* A saved ref whose preset is gone is never applied
-                      silently — same amber banner shape the cloud-status
-                      warnings use, naming the slots left on their current
-                      pick so the user can re-choose or re-save the bundle. */}
-                  {unresolvedBundleSlots && unresolvedBundleSlots.length > 0 && (
-                    <div
-                      className="flex items-start gap-2 text-xs rounded-md border p-2 mt-2 border-amber-300 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200"
-                      role="status"
+            )}
+          </>
+        )}
+        {/* Preset listing loader — printer/process dropdowns can't render
+            without it. Plate query reuses the same spinner since it's
+            also blocking. */}
+        {(platesQuery.isLoading || presetsQuery.isLoading) && (
+          <div className="flex items-center gap-2 text-bambu-gray text-sm">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            {t('slice.loadingPresets', 'Loading presets…')}
+          </div>
+        )}
+
+        {presetsQuery.isError && (
+          <div className="text-sm text-red-700 dark:text-red-400" role="alert">
+            {t(
+              'slice.presetsLoadFailed',
+              'Failed to load presets. Open Settings → Profiles to import them, or sign in to Bambu Cloud.',
+            )}
+          </div>
+        )}
+
+        {presetsQuery.data && (
+          <>
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex-1 space-y-2">
+                <CloudStatusBanner status={presetsQuery.data.cloud_status} cloudName="bambu" />
+                <CloudStatusBanner status={presetsQuery.data.orca_cloud_status} cloudName="orca" />
+              </div>
+              <button
+                type="button"
+                onClick={handleRefreshPresets}
+                disabled={isRefreshing || isEnqueuing}
+                className="flex-shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title={t('slice.refreshPresetsTitle')}
+                aria-label={t('slice.refreshPresets')}
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                {t('slice.refreshPresets')}
+              </button>
+            </div>
+            {/* Two columns once there is room for them. The left keeps
+                the "what am I slicing with" decisions together; the right
+                gives the process-settings panel a column of its own, which
+                is the only way 348 options are comfortable to work through.
+                ⚠️ Below lg both collapse back into the single stack this
+                dialog used to be, so nothing on a phone changes. */}
+            <div className="lg:grid lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:gap-4 lg:items-start">
+              <div className="space-y-4 min-w-0">
+            {/* Slicer picker — two big card-buttons matching the
+                "Filament Tracking" pattern in Settings. Each card carries
+                its own live health status (version / offline / checking)
+                pulled from the same shared React Query cache. Always
+                renders so the user sees what's available even when only
+                one sidecar is up; offline ones are disabled and can't
+                be picked. */}
+            <SlicerPicker
+              value={pickedSlicer}
+              onChange={setPickedSlicer}
+              disabled={isEnqueuing}
+            />
+            {/* Saved preset bundles (#1425). Same label + full-width select
+                shape as the preset dropdowns below, so loading a bundle
+                reads as one more picker rather than a separate widget. The
+                select is an action list (value is always ""), which is why
+                re-picking the same bundle re-applies it. Bundles are
+                managed in Settings → Pipelines. */}
+            {canReadPipelines && (
+              <div>
+                <div className="flex items-end justify-between gap-2 mb-1">
+                  <label htmlFor="slice-pipeline-picker" className="text-xs text-bambu-gray">
+                    {t('slice.pipelines.label', 'Pipeline')}
+                  </label>
+                  {canWritePipelines && !savePipelineOpen && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPipelineDraftName('');
+                        setSavePipelineOpen(true);
+                      }}
+                      disabled={
+                        isEnqueuing ||
+                        useEmbedded ||
+                        !printerPreset ||
+                        !processPreset ||
+                        filamentPresets.length === 0 ||
+                        filamentPresets.some((f) => f === null)
+                      }
+                      className="text-xs text-bambu-green hover:text-bambu-green/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title={t(
+                        'slice.pipelines.saveTitle',
+                        'Save the current four-slot selection as a reusable pipeline',
+                      )}
                     >
-                      <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                      <span>
-                        {t(
-                          'slice.pipelines.staleWarning',
-                          'Some presets saved in this pipeline no longer exist. These stayed on their current selection: {{slots}}',
-                          { slots: unresolvedBundleSlots.join(', ') },
-                        )}
-                      </span>
-                    </div>
+                      {t('slice.pipelines.saveButton', 'Save as pipeline')}
+                    </button>
                   )}
                 </div>
-              )}
-              {/* Bed plate picker — five values from BambuStudio's
-                  ``curr_bed_type`` enum. Always sent on slice (the slicer
-                  CLI's silent fallback to "Cool Plate" is the bug we're
-                  fixing for STL / pure-3MF inputs). Default Textured PEI
-                  matches the factory plate on X1C / P1S / H2D; A1 owners
-                  flip to SuperTack once and localStorage persists. */}
-              {/* Bed-type patches curr_bed_type onto the resolved process JSON,
-                  which the embedded-settings path never sends — so it has no
-                  effect there and is disabled rather than implying it does. */}
-              <BedTypePicker value={bedType} onChange={setBedType} disabled={isEnqueuing || useEmbedded} />
-              {/* "Slice as designed" (upstream #2611): honour the file's embedded
-                  settings instead of the picked process/filament. Offered only
-                  when the picked printer matches the design's target. */}
-              {/* Layout passes the slicer runs on the geometry before slicing.
-                  Off by default: both move the user's objects, and arrange in
-                  particular is applied automatically on a cross-nozzle-class
-                  re-slice, so the box unions with that rather than governing
-                  it. */}
-              <label className="flex items-start gap-2 text-sm text-bambu-gray cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={autoArrange}
-                  onChange={(e) => setAutoArrange(e.target.checked)}
-                  disabled={isEnqueuing}
-                  className="mt-0.5 cursor-pointer"
-                />
-                <span>
-                  {t('slice.autoArrange')}
-                  <span className="block text-xs text-bambu-gray/70">{t('slice.autoArrangeHint')}</span>
-                </span>
-              </label>
-              <label className="flex items-start gap-2 text-sm text-bambu-gray cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={autoOrient}
-                  onChange={(e) => setAutoOrient(e.target.checked)}
-                  disabled={isEnqueuing}
-                  className="mt-0.5 cursor-pointer"
-                />
-                <span>
-                  {t('slice.autoOrient')}
-                  <span className="block text-xs text-bambu-gray/70">{t('slice.autoOrientHint')}</span>
-                </span>
-              </label>
-              {canUseEmbedded && (
-                <label className="flex items-start gap-2 text-sm text-bambu-gray cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={useEmbedded}
-                    onChange={(e) => setUseEmbedded(e.target.checked)}
-                    disabled={isEnqueuing}
-                    className="mt-0.5 cursor-pointer"
-                  />
-                  <span>
-                    {t('slice.useEmbedded')}
-                    <span className="block text-xs text-bambu-gray/70">
-                      {t('slice.useEmbeddedHint')}
-                    </span>
-                  </span>
-                </label>
-              )}
-              {/* The designer's own process tweaks (#2622). BambuStudio records
-                  which keys deviate from the stock preset in the 3MF itself, so
-                  a re-slice for another printer can carry them instead of
-                  flattening them under --load-settings. Hidden entirely when
-                  the source lists none, and disabled in embedded mode, where
-                  the process JSON these patch is never sent at all. */}
-              {designOverrides.length > 0 && (
-                <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/40 p-3">
-                  <button
-                    type="button"
-                    onClick={() => setDesignExpanded((v) => !v)}
-                    className="flex w-full items-center justify-between gap-2 text-left"
-                  >
-                    <span className="text-sm text-white">
-                      {t('slice.designSettings')}
-                      <span className="block text-xs text-bambu-gray/70">
-                        {t('slice.designSettingsHint', { count: designOverrides.length })}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-xs text-bambu-gray">
-                      {t('slice.designSettingsSelected', { selected: designKeys.size, total: designOverrides.length })}
-                    </span>
-                  </button>
-                  {designExpanded && (
-                    <div className="mt-3 space-y-1.5 border-t border-bambu-dark-tertiary pt-3">
-                      {designOverrides.map((o) => (
-                        <label
-                          key={o.key}
-                          className={`flex items-start gap-2 text-xs ${useEmbedded ? 'opacity-50' : 'cursor-pointer'}`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={designKeys.has(o.key)}
-                            disabled={isEnqueuing || useEmbedded}
-                            onChange={(e) => {
-                              setDesignKeys((prev) => {
-                                const next = new Set(prev);
-                                if (e.target.checked) next.add(o.key);
-                                else next.delete(o.key);
-                                return next;
-                              });
-                            }}
-                            className="mt-0.5 shrink-0 cursor-pointer"
-                          />
-                          <span className="min-w-0 flex-1">
-                            <span className="font-mono text-bambu-gray">{o.key}</span>
-                            <span className="ml-1.5 break-all text-white">{formatDesignValue(o.value)}</span>
-                            {o.printer_coupled && (
-                              <span
-                                className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"
-                                title={t('slice.designSettingsPrinterCoupledHint')}
-                              >
-                                {t('slice.designSettingsPrinterCoupled')}
-                              </span>
-                            )}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-              {/* Any manual re-pick retires the "bundle had missing presets"
-                  banner — it describes the state right after a load, and the
-                  user is now driving the slots by hand. */}
-              <PresetDropdown
-                label={t('slice.printer', 'Printer profile')}
-                slot="printer"
-                data={presetsQuery.data}
-                value={printerPreset}
-                onChange={(ref) => {
-                  setUnresolvedBundleSlots(null);
-                  setPrinterPreset(ref);
-                }}
-                // Locked in embedded mode too: the picked printer is unused on
-                // the embedded-settings path, and changing it away from the
-                // design's target would drop canUseEmbedded and yank the toggle
-                // out from under the user.
-                disabled={isEnqueuing || useEmbedded}
-              />
-              <PresetDropdown
-                label={t('slice.process', 'Process profile')}
-                slot="process"
-                data={presetsQuery.data}
-                value={processPreset}
-                onChange={(ref) => {
-                  setUnresolvedBundleSlots(null);
-                  setProcessPreset(ref);
-                }}
-                disabled={isEnqueuing || useEmbedded}
-                selectedPrinterName={selectedPrinterName}
-                compatIndex={compatIndex}
-              />
-              {/* Filament reqs may need a server-side preview-slice for
-                  unsliced project files (single-pass, then cached). Show a
-                  scoped spinner so the user sees the printer/process
-                  dropdowns instead of an opaque "Loading presets…" wait. */}
-              {filamentReqsQuery.isLoading ? (
-                <FilamentAnalysisSpinner
-                  requestId={previewRequestId}
-                  sourceName={source.filename}
-                />
-              ) : (
-                filamentSlots.map((slot, idx) => {
-                  // Slots flagged by the backend as not used by the
-                  // picked plate are auto-picked from project metadata
-                  // and disabled — the slicer CLI still needs a
-                  // profile per project slot, but the user shouldn't
-                  // have to think about slots their plate doesn't
-                  // paint with. used_in_plate defaults to true when
-                  // missing (sliced 3MFs and the no-flag legacy path).
-                  const isUsed = slot.used_in_plate !== false;
-                  const baseLabel =
-                    filamentSlots.length > 1
-                      ? t('slice.filamentSlot', {
-                          index: idx + 1,
-                          type: slot.type,
-                          defaultValue: `Filament ${idx + 1} (${slot.type || ''})`,
-                        })
-                      : t('slice.filament', 'Filament profile');
-                  const label = isUsed
-                    ? baseLabel
-                    : `${baseLabel} ${t('slice.notUsedByPlate', '— not used by this plate')}`;
-                  return (
-                    <PresetDropdown
-                      key={`filament-${idx}`}
-                      label={label}
-                      slot="filament"
-                      data={presetsQuery.data}
-                      value={filamentPresets[idx] ?? null}
-                      onChange={(ref) => {
-                        setUnresolvedBundleSlots(null);
-                        setFilamentPresets((current) => {
-                          const next = current.length === filamentSlots.length
-                            ? [...current]
-                            : filamentSlots.map((_, i) => current[i] ?? null);
-                          next[idx] = ref;
-                          return next;
+                <Select
+                  className="w-full"
+                  id="slice-pipeline-picker"
+                  value=""
+                  disabled={
+                    isEnqueuing || useEmbedded || (pipelinesQuery.data?.pipelines.length ?? 0) === 0
+                  }
+                  onChange={(e) => {
+                    const id = parseInt(e.target.value, 10);
+                    // Reset immediately so re-picking the same bundle fires
+                    // onChange again (a select doesn't when the DOM value
+                    // already equals the option).
+                    e.target.value = '';
+                    if (Number.isNaN(id)) return;
+                    const picked = pipelinesQuery.data?.pipelines.find((p) => p.id === id);
+                    if (picked) applyPipeline(picked);
+                  }}
+                >
+                  <option value="">
+                    {(pipelinesQuery.data?.pipelines.length ?? 0) === 0
+                      ? t('slice.pipelines.empty', 'No saved pipelines')
+                      : t('slice.pipelines.applyPrompt', 'Apply pipeline…')}
+                  </option>
+                  {pipelinesQuery.data?.pipelines.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </Select>
+                {savePipelineOpen && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <input
+                      autoFocus
+                      value={pipelineDraftName}
+                      onChange={(e) => setPipelineDraftName(e.target.value)}
+                      placeholder={t('slice.pipelines.namePlaceholder', 'Pipeline name')}
+                      aria-label={t('slice.pipelines.nameAria', 'New pipeline name')}
+                      className="flex-1 min-w-0 px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const trimmed = pipelineDraftName.trim();
+                        if (!trimmed || !printerPreset || !processPreset) return;
+                        const nonNull = filamentPresets.filter((f): f is PresetRef => f !== null);
+                        if (nonNull.length === 0) return;
+                        createPipelineMutation.mutate({
+                          name: trimmed,
+                          printer_preset: printerPreset,
+                          process_preset: processPreset,
+                          filament_presets: nonNull,
+                          bed_type: bedType,
                         });
                       }}
-                      disabled={isEnqueuing || !isUsed || useEmbedded}
-                      swatchColor={filamentSlots.length > 1 ? slot.color : undefined}
-                      selectedPrinterName={selectedPrinterName}
-                      compatIndex={compatIndex}
-                    />
-                  );
-                })
-              )}
-                </div>
-
-                {/* Right column: the settings panel. ⚠️ Kept on screen in
-                    embedded mode but DISABLED rather than removed — nothing
-                    here is sent on that path (the file's own settings drive
-                    the slice), and dropping the column outright made the
-                    dialog look like it had lost a feature whenever the
-                    toggle was flipped. */}
-                <div className="mt-4 lg:mt-0 min-w-0">
-              {/* Process settings, mirroring OrcaSlicer's own Print Settings
-                  tabs. Collapsed by default: the common case is slicing with a
-                  preset as-is, and the full option set unfolded would bury the
-                  preset pickers above. Hidden entirely in embedded mode, where
-                  no process JSON is sent for these to patch. */}
-              {(
-                <div
-                  className={`rounded border border-bambu-dark-tertiary p-3 ${useEmbedded ? 'opacity-60' : ''}`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => setSettingsExpanded((v) => !v)}
-                    aria-expanded={panelOpen}
-                    disabled={isWideLayout}
-                    className="flex w-full items-center justify-between gap-2 text-left lg:cursor-default"
+                      disabled={createPipelineMutation.isPending || !pipelineDraftName.trim()}
+                      className="flex-shrink-0 px-3 py-1.5 text-sm rounded-md bg-bambu-green hover:bg-bambu-green/90 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      {createPipelineMutation.isPending && (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      )}
+                      {t('common.save', 'Save')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSavePipelineOpen(false);
+                        setPipelineDraftName('');
+                      }}
+                      className="flex-shrink-0 px-3 py-1.5 text-sm rounded-md border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray transition-colors"
+                    >
+                      {t('common.cancel', 'Cancel')}
+                    </button>
+                  </div>
+                )}
+                {/* A saved ref whose preset is gone is never applied
+                    silently — same amber banner shape the cloud-status
+                    warnings use, naming the slots left on their current
+                    pick so the user can re-choose or re-save the bundle. */}
+                {unresolvedBundleSlots && unresolvedBundleSlots.length > 0 && (
+                  <div
+                    className="flex items-start gap-2 text-xs rounded-md border p-2 mt-2 border-amber-300 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200"
+                    role="status"
                   >
-                    <span className="text-sm text-white">
-                      {t('slice.processSettings')}
-                      <span className="block text-xs text-bambu-gray/70">{t('slice.processSettingsHint')}</span>
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <span>
+                      {t(
+                        'slice.pipelines.staleWarning',
+                        'Some presets saved in this pipeline no longer exist. These stayed on their current selection: {{slots}}',
+                        { slots: unresolvedBundleSlots.join(', ') },
+                      )}
                     </span>
-                    <span className="shrink-0 text-xs text-bambu-gray">
-                      {Object.keys(serializedProcessOverrides).length > 0
-                        ? t('slice.processSettingsChanged', {
-                            count: Object.keys(serializedProcessOverrides).length,
-                          })
-                        : t('slice.processSettingsUnchanged')}
-                    </span>
-                  </button>
-                  {panelOpen && !useEmbedded && (
-                    <div className="mt-3 border-t border-bambu-dark-tertiary pt-3">
-                      <SlicerSettingsPanel
-                        values={processOverrides}
-                        onChange={(values, serialized) => {
-                          setProcessOverrides(values);
-                          setSerializedProcessOverrides(serialized);
-                        }}
-                        presetValues={presetValues}
-                        presetValuesResolved={presetValuesResolved}
-                        presetValuesReason={presetValuesReason}
-                        disabled={isEnqueuing}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
-                </div>
+                  </div>
+                )}
               </div>
-            </>
-          )}
-
-          {errorMessage && (
-            <div className="text-sm text-red-700 dark:text-red-400 bg-red-900/20 border border-red-900/40 rounded p-2" role="alert">
-              {errorMessage}
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex-shrink-0 flex justify-end gap-2 px-4 py-3 border-t border-bambu-dark-tertiary/40">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={isEnqueuing}
-            className="px-3 py-1.5 text-sm rounded-md border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray transition-colors disabled:opacity-50"
-          >
-            {t('common.cancel', 'Cancel')}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setErrorMessage(null);
-              enqueueMutation.mutate();
-            }}
-            disabled={!isReady || isEnqueuing}
-            className="px-3 py-1.5 text-sm rounded-md bg-bambu-green hover:bg-bambu-green/90 text-bambu-dark font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-          >
-            {isEnqueuing ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {t('slice.enqueuing', 'Submitting slice job…')}
-              </>
-            ) : (
-              t('slice.action', 'Slice')
             )}
-          </button>
-        </div>
+            {/* Bed plate picker — five values from BambuStudio's
+                ``curr_bed_type`` enum. Always sent on slice (the slicer
+                CLI's silent fallback to "Cool Plate" is the bug we're
+                fixing for STL / pure-3MF inputs). Default Textured PEI
+                matches the factory plate on X1C / P1S / H2D; A1 owners
+                flip to SuperTack once and localStorage persists. */}
+            {/* Bed-type patches curr_bed_type onto the resolved process JSON,
+                which the embedded-settings path never sends — so it has no
+                effect there and is disabled rather than implying it does. */}
+            <BedTypePicker value={bedType} onChange={setBedType} disabled={isEnqueuing || useEmbedded} />
+            {/* "Slice as designed" (upstream #2611): honour the file's embedded
+                settings instead of the picked process/filament. Offered only
+                when the picked printer matches the design's target. */}
+            {/* Layout passes the slicer runs on the geometry before slicing.
+                Off by default: both move the user's objects, and arrange in
+                particular is applied automatically on a cross-nozzle-class
+                re-slice, so the box unions with that rather than governing
+                it. */}
+            <label className="flex items-start gap-2 text-sm text-bambu-gray cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={autoArrange}
+                onChange={(e) => setAutoArrange(e.target.checked)}
+                disabled={isEnqueuing}
+                className="accent-bambu-green mt-0.5 cursor-pointer"
+              />
+              <span>
+                {t('slice.autoArrange')}
+                <span className="block text-xs text-bambu-gray/70">{t('slice.autoArrangeHint')}</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-sm text-bambu-gray cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={autoOrient}
+                onChange={(e) => setAutoOrient(e.target.checked)}
+                disabled={isEnqueuing}
+                className="accent-bambu-green mt-0.5 cursor-pointer"
+              />
+              <span>
+                {t('slice.autoOrient')}
+                <span className="block text-xs text-bambu-gray/70">{t('slice.autoOrientHint')}</span>
+              </span>
+            </label>
+            {canUseEmbedded && (
+              <label className="flex items-start gap-2 text-sm text-bambu-gray cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={useEmbedded}
+                  onChange={(e) => setUseEmbedded(e.target.checked)}
+                  disabled={isEnqueuing}
+                  className="accent-bambu-green mt-0.5 cursor-pointer"
+                />
+                <span>
+                  {t('slice.useEmbedded')}
+                  <span className="block text-xs text-bambu-gray/70">
+                    {t('slice.useEmbeddedHint')}
+                  </span>
+                </span>
+              </label>
+            )}
+            {/* The designer's own process tweaks (#2622). BambuStudio records
+                which keys deviate from the stock preset in the 3MF itself, so
+                a re-slice for another printer can carry them instead of
+                flattening them under --load-settings. Hidden entirely when
+                the source lists none, and disabled in embedded mode, where
+                the process JSON these patch is never sent at all. */}
+            {designOverrides.length > 0 && (
+              <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark/40 p-3">
+                <button
+                  type="button"
+                  onClick={() => setDesignExpanded((v) => !v)}
+                  className="flex w-full items-center justify-between gap-2 text-left"
+                >
+                  <span className="text-sm text-white">
+                    {t('slice.designSettings')}
+                    <span className="block text-xs text-bambu-gray/70">
+                      {t('slice.designSettingsHint', { count: designOverrides.length })}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-xs text-bambu-gray">
+                    {t('slice.designSettingsSelected', { selected: designKeys.size, total: designOverrides.length })}
+                  </span>
+                </button>
+                {designExpanded && (
+                  <div className="mt-3 space-y-1.5 border-t border-bambu-dark-tertiary pt-3">
+                    {designOverrides.map((o) => (
+                      <label
+                        key={o.key}
+                        className={`flex items-start gap-2 text-xs ${useEmbedded ? 'opacity-50' : 'cursor-pointer'}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={designKeys.has(o.key)}
+                          disabled={isEnqueuing || useEmbedded}
+                          onChange={(e) => {
+                            setDesignKeys((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(o.key);
+                              else next.delete(o.key);
+                              return next;
+                            });
+                          }}
+                          className="accent-bambu-green mt-0.5 shrink-0 cursor-pointer"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="font-mono text-bambu-gray">{o.key}</span>
+                          <span className="ml-1.5 break-all text-white">{formatDesignValue(o.value)}</span>
+                          {o.printer_coupled && (
+                            <span
+                              className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"
+                              title={t('slice.designSettingsPrinterCoupledHint')}
+                            >
+                              {t('slice.designSettingsPrinterCoupled')}
+                            </span>
+                          )}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {/* Any manual re-pick retires the "bundle had missing presets"
+                banner — it describes the state right after a load, and the
+                user is now driving the slots by hand. */}
+            <PresetDropdown
+              label={t('slice.printer', 'Printer profile')}
+              slot="printer"
+              data={presetsQuery.data}
+              value={printerPreset}
+              onChange={(ref) => {
+                setUnresolvedBundleSlots(null);
+                setPrinterPreset(ref);
+              }}
+              // Locked in embedded mode too: the picked printer is unused on
+              // the embedded-settings path, and changing it away from the
+              // design's target would drop canUseEmbedded and yank the toggle
+              // out from under the user.
+              disabled={isEnqueuing || useEmbedded}
+            />
+            <PresetDropdown
+              label={t('slice.process', 'Process profile')}
+              slot="process"
+              data={presetsQuery.data}
+              value={processPreset}
+              onChange={(ref) => {
+                setUnresolvedBundleSlots(null);
+                setProcessPreset(ref);
+              }}
+              disabled={isEnqueuing || useEmbedded}
+              selectedPrinterName={selectedPrinterName}
+              compatIndex={compatIndex}
+            />
+            {/* Filament reqs may need a server-side preview-slice for
+                unsliced project files (single-pass, then cached). Show a
+                scoped spinner so the user sees the printer/process
+                dropdowns instead of an opaque "Loading presets…" wait. */}
+            {filamentReqsQuery.isLoading ? (
+              <FilamentAnalysisSpinner
+                requestId={previewRequestId}
+                sourceName={source.filename}
+              />
+            ) : (
+              filamentSlots.map((slot, idx) => {
+                // Slots flagged by the backend as not used by the
+                // picked plate are auto-picked from project metadata
+                // and disabled — the slicer CLI still needs a
+                // profile per project slot, but the user shouldn't
+                // have to think about slots their plate doesn't
+                // paint with. used_in_plate defaults to true when
+                // missing (sliced 3MFs and the no-flag legacy path).
+                const isUsed = slot.used_in_plate !== false;
+                const baseLabel =
+                  filamentSlots.length > 1
+                    ? t('slice.filamentSlot', {
+                        index: idx + 1,
+                        type: slot.type,
+                        defaultValue: `Filament ${idx + 1} (${slot.type || ''})`,
+                      })
+                    : t('slice.filament', 'Filament profile');
+                const label = isUsed
+                  ? baseLabel
+                  : `${baseLabel} ${t('slice.notUsedByPlate', '— not used by this plate')}`;
+                return (
+                  <PresetDropdown
+                    key={`filament-${idx}`}
+                    label={label}
+                    slot="filament"
+                    data={presetsQuery.data}
+                    value={filamentPresets[idx] ?? null}
+                    onChange={(ref) => {
+                      setUnresolvedBundleSlots(null);
+                      setFilamentPresets((current) => {
+                        const next = current.length === filamentSlots.length
+                          ? [...current]
+                          : filamentSlots.map((_, i) => current[i] ?? null);
+                        next[idx] = ref;
+                        return next;
+                      });
+                    }}
+                    disabled={isEnqueuing || !isUsed || useEmbedded}
+                    swatchColor={filamentSlots.length > 1 ? slot.color : undefined}
+                    selectedPrinterName={selectedPrinterName}
+                    compatIndex={compatIndex}
+                  />
+                );
+              })
+            )}
+              </div>
+
+              {/* Right column: the settings panel. ⚠️ Kept on screen in
+                  embedded mode but DISABLED rather than removed — nothing
+                  here is sent on that path (the file's own settings drive
+                  the slice), and dropping the column outright made the
+                  dialog look like it had lost a feature whenever the
+                  toggle was flipped. */}
+              <div className="mt-4 lg:mt-0 min-w-0">
+            {/* Process settings, mirroring OrcaSlicer's own Print Settings
+                tabs. Collapsed by default: the common case is slicing with a
+                preset as-is, and the full option set unfolded would bury the
+                preset pickers above. Hidden entirely in embedded mode, where
+                no process JSON is sent for these to patch. */}
+            {(
+              <div
+                className={`rounded border border-bambu-dark-tertiary p-3 ${useEmbedded ? 'opacity-60' : ''}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setSettingsExpanded((v) => !v)}
+                  aria-expanded={panelOpen}
+                  disabled={isWideLayout}
+                  className="flex w-full items-center justify-between gap-2 text-left lg:cursor-default"
+                >
+                  <span className="text-sm text-white">
+                    {t('slice.processSettings')}
+                    <span className="block text-xs text-bambu-gray/70">{t('slice.processSettingsHint')}</span>
+                  </span>
+                  <span className="shrink-0 text-xs text-bambu-gray">
+                    {Object.keys(serializedProcessOverrides).length > 0
+                      ? t('slice.processSettingsChanged', {
+                          count: Object.keys(serializedProcessOverrides).length,
+                        })
+                      : t('slice.processSettingsUnchanged')}
+                  </span>
+                </button>
+                {panelOpen && !useEmbedded && (
+                  <div className="mt-3 border-t border-bambu-dark-tertiary pt-3">
+                    <SlicerSettingsPanel
+                      values={processOverrides}
+                      onChange={(values, serialized) => {
+                        setProcessOverrides(values);
+                        setSerializedProcessOverrides(serialized);
+                      }}
+                      presetValues={presetValues}
+                      presetValuesResolved={presetValuesResolved}
+                      presetValuesReason={presetValuesReason}
+                      disabled={isEnqueuing}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+              </div>
+            </div>
+          </>
+        )}
+
+        {errorMessage && (
+          <div className="text-sm text-red-700 dark:text-red-400 bg-red-900/20 border border-red-900/40 rounded p-2" role="alert">
+            {errorMessage}
+          </div>
+        )}
       </div>
-    </div>
+
+      {/* Footer */}
+      <div className="flex-shrink-0 flex justify-end gap-2 px-4 py-3 border-t border-bambu-dark-tertiary/40">
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={isEnqueuing}
+          className="px-3 py-1.5 text-sm rounded-md border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray transition-colors disabled:opacity-50"
+        >
+          {t('common.cancel', 'Cancel')}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setErrorMessage(null);
+            enqueueMutation.mutate();
+          }}
+          disabled={!isReady || isEnqueuing}
+          className="px-3 py-1.5 text-sm rounded-md bg-bambu-green hover:bg-bambu-green/90 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+        >
+          {isEnqueuing ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              {t('slice.enqueuing', 'Submitting slice job…')}
+            </>
+          ) : (
+            t('slice.action', 'Slice')
+          )}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

@@ -213,6 +213,23 @@ DEFAULT_TEMPLATES = [
         "title_template": "{app_name} - Password Reset",
         "body_template": "Hello {username},\n\nYour password has been reset.\nNew Password: {password}\n\nLogin at: {login_url}",
     },
+    # Self-service recovery. Carries a one-time LINK, never a password: the
+    # account is not touched until somebody proves they read the message.
+    # ``password_reset`` above stays for the admin-initiated reset, which does
+    # still set a password and mail it.
+    {
+        "event_type": "password_reset_link",
+        "name": "Password Reset Link",
+        "title_template": "{app_name} - Reset your password",
+        "body_template": (
+            "Hello {username},\n\n"
+            "Somebody asked to reset the password for your {app_name} account. "
+            "Open the link below to choose a new one:\n\n"
+            "{reset_url}\n\n"
+            "The link works once and stops working after {ttl_hours} hour(s).\n\n"
+            "If this was not you, ignore this message - your password has not been changed."
+        ),
+    },
     # Inventory stock-forecasting alerts (upstream #1184). Scaffold only —
     # no backend trigger fires these today; ForecastPanel renders alerts
     # client-side. Templates exist so a future scheduled aggregator (or a

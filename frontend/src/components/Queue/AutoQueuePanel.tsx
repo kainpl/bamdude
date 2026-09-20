@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   ListPlus, Loader2, Sparkles, Trash2, Upload, Zap, ChevronRight,
-  ChevronDown, ChevronUp, GripVertical, Pencil,
+  ChevronDown, ChevronUp, GripVertical, Pencil, Shuffle,
 } from 'lucide-react';
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
@@ -16,8 +16,11 @@ import { isPrintable } from '../../lib/fileTags';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { LibraryPickerModal } from '../LibraryPickerModal';
+import { QueueSourceIndicator } from '../QueueSourceIndicator';
 import { QueueSequencer } from '../QueueSequencer';
 import type { SequencedFile } from '../QueueSequencer';
+import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
+import { formatDateTime } from '../../utils/date';
 
 /**
  * Top-of-page panel that surfaces pending auto-queue items — the router
@@ -54,8 +57,8 @@ export function AutoQueuePanel() {
   const dragCounterRef = useRef(0);
 
   const { data: items } = useQuery({
-    queryKey: ['auto-queue', 'pending'],
-    queryFn: () => api.getAutoQueue('pending'),
+    queryKey: ['auto-queue', 'pending,failed'],
+    queryFn: () => api.getAutoQueue('pending,failed'),
     refetchInterval: 15000,
   });
 
@@ -85,14 +88,52 @@ export function AutoQueuePanel() {
   });
 
   const assignNowMutation = useMutation({
-    mutationFn: (id: number) => api.assignAutoQueueNow(id),
-    onSuccess: () => {
+    mutationFn: (id: number) => items?.find((item) => item.id === id)?.status === 'failed'
+      ? api.retryAutoQueue(id) : api.assignAutoQueueNow(id),
+    onSuccess: (item) => {
       queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
-      queryClient.invalidateQueries({ queryKey: ['queue'] });
-      queryClient.invalidateQueries({ queryKey: ['queues'] });
-      showToast(t('autoQueue.assigned'));
+      invalidateQueueViews(queryClient);
+      showToast(t(item.status === 'pending' ? 'autoQueue.retryQueued' : 'autoQueue.assigned'));
     },
-    onError: (err: Error) => showToast(err.message, 'error'),
+    onError: (err: Error) => {
+      queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
+      showToast(err.message, 'error');
+    },
+  });
+
+  // Rebalance across printer models (spec 2026-09-10): a row or a whole block,
+  // by id. Router rows move and extra prints appear, so the auto-queue, the
+  // queue tile and the order views are all re-read; a refused row says why.
+  const rebalanceMutation = useMutation({
+    mutationFn: (ids: number[]) => api.rebalanceAutoQueueItems(ids),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
+      invalidateQueueViews(queryClient);
+      invalidateOrderViews(queryClient);
+      if (result.converted > 0) {
+        showToast(
+          t('autoQueue.rebalance.moved', {
+            parts: result.moved_parts,
+            converted: result.converted,
+            created: result.created,
+          }),
+          'success',
+        );
+      } else if (result.skipped.length > 0) {
+        showToast(t(`autoQueue.rebalance.skipped.${result.skipped[0].reason}`), 'info');
+      } else {
+        showToast(t('autoQueue.rebalance.nothing'), 'info');
+      }
+    },
+    // The client sends a long run in chunks of 64, so a failure on a later
+    // chunk leaves the earlier chunks' moves durable: the views are re-read on
+    // error too, or the moved rows would sit stale until some other refetch.
+    onError: (err: Error) => {
+      queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
+      invalidateQueueViews(queryClient);
+      invalidateOrderViews(queryClient);
+      showToast(err.message, 'error');
+    },
   });
 
   // Order-faithful grouping: the list follows the actual queue order, and
@@ -108,7 +149,8 @@ export function AutoQueuePanel() {
     const out: Array<{ key: string; batchId: string | null; items: AutoQueueItem[] }> = [];
     for (const it of sortedItems) {
       const last = out[out.length - 1];
-      if (last && last.batchId !== null && last.batchId === it.batch_id) last.items.push(it);
+      if (last && last.batchId !== null && last.batchId === it.batch_id
+        && last.items[0].status === it.status && last.items[0].waiting_reason === it.waiting_reason) last.items.push(it);
       else out.push({ key: `run-${it.id}`, batchId: it.batch_id, items: [it] });
     }
     return out;
@@ -118,7 +160,7 @@ export function AutoQueuePanel() {
   const batchTotals = useMemo(() => {
     const m = new Map<string, number>();
     for (const it of sortedItems) {
-      if (it.batch_id) m.set(it.batch_id, (m.get(it.batch_id) ?? 0) + 1);
+      if (it.batch_id && it.status === 'pending') m.set(it.batch_id, (m.get(it.batch_id) ?? 0) + 1);
     }
     return m;
   }, [sortedItems]);
@@ -316,7 +358,12 @@ export function AutoQueuePanel() {
                     }
                     onAssignNow={canAssign ? () => assignNowMutation.mutate(head.id) : undefined}
                     onDelete={canDelete ? () => deleteRun(entry.run.items) : undefined}
-                    busy={cancelMutation.isPending || assignNowMutation.isPending}
+                    onRebalance={
+                      canEdit && entry.run.items[0].project_line_id != null
+                        ? () => rebalanceMutation.mutate(entry.run.items.map((it) => it.id))
+                        : undefined
+                    }
+                    busy={cancelMutation.isPending || assignNowMutation.isPending || rebalanceMutation.isPending}
                     t={t}
                   />
                 );
@@ -341,7 +388,12 @@ export function AutoQueuePanel() {
                   onEdit={canEdit ? () => setEditTarget({ item: entry.item, batchCount: 1 }) : undefined}
                   onAssignNow={canAssign ? () => assignNowMutation.mutate(entry.item.id) : undefined}
                   onDelete={canDelete ? () => cancelMutation.mutate(entry.item.id) : undefined}
-                  busy={cancelMutation.isPending || assignNowMutation.isPending}
+                  onRebalance={
+                    canEdit && entry.item.project_line_id != null
+                      ? () => rebalanceMutation.mutate([entry.item.id])
+                      : undefined
+                  }
+                  busy={cancelMutation.isPending || assignNowMutation.isPending || rebalanceMutation.isPending}
                   t={t}
                 />
               );
@@ -421,7 +473,7 @@ export function AutoQueuePanel() {
           onDone={() => {
             setDroppedForQueue(null);
             queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
-            queryClient.invalidateQueries({ queryKey: ['queue'] });
+            invalidateQueueViews(queryClient);
           }}
         />
       )}
@@ -434,7 +486,7 @@ export function AutoQueuePanel() {
 
 function AutoQueueRow({
   sortableId, item, countBadge, copyLabel, draggable, busy,
-  onExpand, onCollapse, onEdit, onAssignNow, onDelete, t,
+  onExpand, onCollapse, onEdit, onAssignNow, onRebalance, onDelete, t,
 }: {
   sortableId: string;
   item: AutoQueueItem;
@@ -448,6 +500,7 @@ function AutoQueueRow({
   onCollapse?: () => void;
   onEdit?: () => void;
   onAssignNow?: () => void;
+  onRebalance?: () => void;
   onDelete?: () => void;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
@@ -460,9 +513,10 @@ function AutoQueueRow({
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : undefined }}
-      className="flex items-center gap-2 p-2.5 bg-bambu-dark rounded border border-bambu-dark-tertiary hover:border-bambu-green/50 transition-colors"
+      className={`flex items-center gap-2 p-2.5 rounded border transition-colors ${item.status === 'failed'
+        ? 'bg-red-500/10 border-red-500/50' : 'bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-green/50'}`}
     >
-      {draggable && (
+      {draggable && item.status !== 'failed' && (
         <button
           type="button"
           {...attributes}
@@ -477,6 +531,7 @@ function AutoQueueRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-sm text-white truncate">
           <span className="truncate">{label}</span>
+          {item.status === 'failed' && <span className="text-red-700 dark:text-red-400">{t('autoQueue.sourceFailed')}</span>}
           {countBadge != null && countBadge > 1 && (
             <button
               type="button"
@@ -504,19 +559,39 @@ function AutoQueueRow({
           )}
         </div>
         <div className="flex items-center gap-2 text-xs text-bambu-gray flex-wrap mt-0.5">
+          {/* Does the router's row own the bytes it will hand a printer (m173)?
+              In the meta line it already has, at the size the icons there
+              already are — the row keeps its shape. */}
+          <QueueSourceIndicator
+            state={item.source_storage}
+            held={item.status === 'failed' || item.status === 'cancelled'}
+            className="w-3 h-3"
+          />
           <span>
             <ChevronRight className="inline w-3 h-3" />
             {targetModel}
           </span>
+          {item.rebalanced_from_model && (
+            <span
+              className="text-bambu-green/80"
+              data-testid={`auto-queue-rebalanced-${item.id}`}
+              title={t('autoQueue.rebalance.movedFrom', {
+                model: item.rebalanced_from_model,
+                when: formatDateTime(item.rebalanced_at),
+              })}
+            >
+              ← {item.rebalanced_from_model}
+            </span>
+          )}
           {targetLocation && <span>· {targetLocation}</span>}
           {item.force_color_match && <span>· {t('autoQueue.exactColor')}</span>}
           {item.waiting_reason && (
-            <span className="text-yellow-700 dark:text-yellow-400">· {item.waiting_reason}</span>
+            <span className={item.status === 'failed' ? 'text-red-700 dark:text-red-400' : 'text-yellow-700 dark:text-yellow-400'}>· {item.waiting_reason}</span>
           )}
         </div>
       </div>
 
-      {onEdit && (
+      {onEdit && item.status !== 'failed' && (
         <button
           type="button"
           onClick={onEdit}
@@ -532,10 +607,21 @@ function AutoQueueRow({
           onClick={onAssignNow}
           disabled={busy}
           className="px-2 py-1 text-xs text-bambu-green hover:bg-bambu-green/10 rounded inline-flex items-center gap-1 disabled:opacity-40 shrink-0"
-          title={t('autoQueue.assignNow')}
+          title={t(item.status === 'failed' ? 'autoQueue.retry' : 'autoQueue.assignNow')}
         >
           <Zap className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">{t('autoQueue.assignNow')}</span>
+          <span className="hidden sm:inline">{t(item.status === 'failed' ? 'autoQueue.retry' : 'autoQueue.assignNow')}</span>
+        </button>
+      )}
+      {onRebalance && item.status !== 'failed' && (
+        <button
+          type="button"
+          onClick={onRebalance}
+          disabled={busy}
+          className="px-2 py-1 text-xs text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded inline-flex items-center gap-1 disabled:opacity-40 shrink-0"
+          title={t('autoQueue.rebalance.action')}
+        >
+          <Shuffle className="w-3.5 h-3.5" />
         </button>
       )}
       {onDelete && (

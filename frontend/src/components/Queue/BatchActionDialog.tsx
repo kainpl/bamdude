@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
-import { X } from 'lucide-react';
+
+import { Modal } from '../Modal';
 
 /**
  * Modal that lets the user pick "apply to all N copies" vs "apply only
@@ -36,48 +37,34 @@ export function BatchActionDialog({
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-md"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-          <h3 className="text-white font-medium">{title}</h3>
-          <button onClick={onClose} className="text-bambu-gray hover:text-white">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        <div className="p-4 space-y-3">
-          <p className="text-sm text-bambu-gray">
-            {t('queueCard.batch.sizeHint', { count: batchSize })}
-          </p>
-          <button
-            onClick={onApplyAll}
-            className={
-              applyAllDanger
-                ? 'w-full py-2 px-3 rounded bg-red-100 dark:bg-red-500/20 hover:bg-red-500/30 text-red-700 dark:text-red-400 text-sm font-medium transition-colors'
-                : 'w-full py-2 px-3 rounded bg-bambu-green/20 hover:bg-bambu-green/30 text-bambu-green text-sm font-medium transition-colors'
-            }
-          >
-            {applyAllLabel}
-          </button>
-          <button
-            onClick={onApplyOne}
-            className="w-full py-2 px-3 rounded bg-bambu-dark-tertiary hover:bg-bambu-dark text-white text-sm font-medium transition-colors"
-          >
-            {applyOneLabel}
-          </button>
-          <button
-            onClick={onClose}
-            className="w-full py-1.5 px-3 rounded text-bambu-gray hover:text-white text-sm transition-colors"
-          >
-            {t('common.cancel')}
-          </button>
-        </div>
+    <Modal onClose={onClose} title={title} size="md">
+      <div className="p-4 space-y-3">
+        <p className="text-sm text-bambu-gray">
+          {t('queueCard.batch.sizeHint', { count: batchSize })}
+        </p>
+        <button
+          onClick={onApplyAll}
+          className={
+            applyAllDanger
+              ? 'w-full py-2 px-3 rounded bg-red-100 dark:bg-red-500/20 hover:bg-red-500/30 text-red-700 dark:text-red-400 text-sm font-medium transition-colors'
+              : 'w-full py-2 px-3 rounded bg-bambu-green/20 hover:bg-bambu-green/30 text-bambu-green text-sm font-medium transition-colors'
+          }
+        >
+          {applyAllLabel}
+        </button>
+        <button
+          onClick={onApplyOne}
+          className="w-full py-2 px-3 rounded bg-bambu-dark-tertiary hover:bg-bambu-dark text-white text-sm font-medium transition-colors"
+        >
+          {applyOneLabel}
+        </button>
+        <button
+          onClick={onClose}
+          className="w-full py-1.5 px-3 rounded text-bambu-gray hover:text-white text-sm transition-colors"
+        >
+          {t('common.cancel')}
+        </button>
       </div>
-    </div>
+    </Modal>
   );
 }

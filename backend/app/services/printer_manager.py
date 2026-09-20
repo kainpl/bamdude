@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.printer import Printer
 from backend.app.schemas.printer import AirductFan
+from backend.app.services import ams_advertised_overlay as _overlay
 from backend.app.services.bambu_mqtt import (
     FAN_CTRL,
     BambuMQTTClient,
@@ -592,8 +593,29 @@ async def _record_skipped_as_defective(printer_id: int, skipped: list) -> None:
                 logger.debug("No running archive for printer %s — skipped objects not recorded", printer_id)
                 return
 
-            new_count = max(archive.defective_count or 0, len(skipped))
-            if new_count == archive.defective_count:
+            from backend.app.models.archive_part import PrintArchivePart
+
+            rows = (
+                (await db.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id == archive.id)))
+                .scalars()
+                .all()
+            )
+            id_rows = [r for r in rows if r.identify_ids]
+            if id_rows:
+                # Per-part: intersect the (total, not delta) skipped list with
+                # each row's instance ids. max() keeps a hand-raised number.
+                skipped_set = set(skipped)
+                for row in id_rows:
+                    hit = len(skipped_set & set(row.identify_ids))
+                    if hit > (row.defective or 0):
+                        row.defective = hit
+                total = sum(r.defective or 0 for r in rows)
+                new_count = max(archive.defective_count or 0, total)
+            else:
+                # Legacy archives without part rows: count-only, as before.
+                new_count = max(archive.defective_count or 0, len(skipped))
+
+            if new_count == archive.defective_count and not id_rows:
                 return
 
             archive.defective_count = new_count
@@ -657,6 +679,12 @@ class PrinterManager:
         """Get printer info by ID."""
         return self._printer_info.get(printer_id)
 
+    def update_printer_name(self, printer_id: int, name: str) -> None:
+        """Refresh the display name held for callbacks without reconnecting."""
+        info = self._printer_info.get(printer_id)
+        if info is not None:
+            info.name = name
+
     def set_current_print_user(self, printer_id: int, user_id: int, username: str):
         """Track who started the current print (Issue #206)."""
         self._current_print_user[printer_id] = {"user_id": user_id, "username": username}
@@ -717,6 +745,7 @@ class PrinterManager:
             return
         try:
             from backend.app.core.websocket import ws_manager
+            from backend.app.services.plate_hold import repeat_available
 
             await ws_manager.send_printer_status(
                 printer_id,
@@ -725,6 +754,7 @@ class PrinterManager:
                     printer_id,
                     self.get_model(printer_id),
                     self.get_drying_targets(printer_id),
+                    repeat_available=await repeat_available(printer_id),
                 ),
             )
         except Exception as e:
@@ -748,6 +778,38 @@ class PrinterManager:
                     await db.commit()
         except Exception as e:  # pragma: no cover — persistence is best-effort
             logger.warning("Failed to persist awaiting_plate_clear for printer %s: %s", printer_id, e)
+
+    # ── Hidden HMS entries (services/hms_mute) ───────────────────────────────
+
+    def apply_hms_mute(self, printer_id: int, full_code: str) -> bool:
+        """Hide a stack entry on the live client now; the route has already
+        persisted it. True when a connected client took it (a disconnected
+        printer picks the mute up from the DB on its next connect)."""
+        client = self._clients.get(printer_id)
+        taken = bool(client and client.mute_hms(full_code))
+        if self._loop and self._loop.is_running():
+            self._schedule_async(self._broadcast_status_change(printer_id))
+        return taken
+
+    def apply_hms_unmute(self, printer_id: int, full_code: str) -> bool:
+        client = self._clients.get(printer_id)
+        taken = bool(client and client.unmute_hms(full_code))
+        if self._loop and self._loop.is_running():
+            self._schedule_async(self._broadcast_status_change(printer_id))
+        return taken
+
+    async def _forget_hms_mutes(self, printer_id: int, gone: set[str]) -> None:
+        """The printer dropped the entries: drop their rows, and tell the UI."""
+        try:
+            from backend.app.core.database import async_session
+            from backend.app.services.hms_mute import forget
+
+            async with async_session() as db:
+                await forget(db, printer_id, set(gone))
+                await db.commit()
+        except Exception as e:  # noqa: BLE001 — best-effort bookkeeping
+            logger.warning("Failed to forget hidden HMS entries for printer %s: %s", printer_id, e)
+        await self._broadcast_status_change(printer_id)
 
     async def load_awaiting_plate_clear_from_db(self) -> None:
         """Rehydrate the in-memory set from Printer.awaiting_plate_clear at startup (#961)."""
@@ -937,6 +999,13 @@ class PrinterManager:
         def on_skipped_objects_changed(skipped: list):
             self._schedule_async(_record_skipped_as_defective(printer_id, skipped))
 
+        def on_lights_report(on: bool):
+            # A switch of the chamber light, from anywhere. The camera-light
+            # lease decides whether it was ours (services/camera_light).
+            from backend.app.services import camera_light
+
+            self._schedule_async(camera_light.note_light_report(printer_id, on))
+
         def on_first_status(live_state: str, live_file: str, live_subtask_id: str = "", live_subtask_name: str = ""):
             # First full status after each fresh connect — run the reconcile
             # sweep so a print that finished while BamDude was stopped or
@@ -966,6 +1035,7 @@ class PrinterManager:
             on_finish_photo_moment=on_finish_photo_moment,
             on_assignment_verified=on_assignment_verified,
             on_skipped_objects_changed=on_skipped_objects_changed,
+            on_lights_report=on_lights_report,
             on_tray_change=on_tray_change,
             on_usage_event=on_usage_event,
         )
@@ -974,6 +1044,21 @@ class PrinterManager:
         # mid-print stale reconnect doesn't lose completion detection.
         if prior_client is not None:
             client.carry_print_lifecycle_from(prior_client)
+
+        # Stack entries the operator chose to hide (services/hms_mute), loaded
+        # before the first push so a hidden entry never flashes on the card.
+        # Best-effort: a DB hiccup here costs a flash, never the connection.
+        try:
+            from backend.app.core.database import async_session as _hms_session
+            from backend.app.services.hms_mute import load_muted_codes
+
+            async with _hms_session() as _db:
+                client.set_muted_hms_codes(await load_muted_codes(_db, printer_id))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not load hidden HMS entries for printer %s: %s", printer_id, e)
+        client.on_hms_mute_expired = lambda gone, pid=printer_id: self._schedule_async(
+            self._forget_hms_mutes(pid, gone)
+        )
 
         client.connect()
         self._clients[printer_id] = client
@@ -1034,6 +1119,13 @@ class PrinterManager:
             client.check_staleness()
             return client.state
         return None
+
+    def peek_status(self, printer_id: int) -> tuple[PrinterState | None, float | None, bool]:
+        """Read-only telemetry for monitoring: never run reconnect side effects."""
+        client = self._clients.get(printer_id)
+        if client is None:
+            return None, None, False
+        return client.state, client.status_received_at, client.is_stale()
 
     # Gcode states in which a job is loaded / in progress and cutting power
     # would ruin the print. PAUSE is included on purpose — a paused print is
@@ -1164,6 +1256,14 @@ class PrinterManager:
                 if self._on_status_change:
                     self._schedule_async(self._on_status_change(printer_id, client.state))
 
+    def get_feed_snapshot(self, printer_id: int):
+        from backend.app.services.printer_feed_snapshot import PrinterFeedSnapshot
+
+        client = self._clients.get(printer_id)
+        if client:
+            return client.get_feed_snapshot(printer_id)
+        return PrinterFeedSnapshot(printer_id, self._models.get(printer_id), False, 0, "", False, False, False, ())
+
     def start_print(
         self,
         printer_id: int,
@@ -1181,6 +1281,7 @@ class PrinterManager:
         storage: str = "external",
         file_md5: str = "",
         timelapse_storage: str | None = None,
+        routing_guard=None,
     ) -> bool:
         """Start a print on a connected printer.
 
@@ -1220,6 +1321,7 @@ class PrinterManager:
                 storage=storage,
                 file_md5=file_md5,
                 timelapse_storage=timelapse_storage,
+                **({"routing_guard": routing_guard} if routing_guard is not None else {}),
             )
         return False
 
@@ -1715,6 +1817,7 @@ def printer_state_to_dict(
     printer_id: int | None = None,
     model: str | None = None,
     drying_targets: dict[int, dict] | None = None,
+    repeat_available: bool = False,
 ) -> dict:
     """Convert PrinterState to a JSON-serializable dict.
 
@@ -1742,6 +1845,9 @@ def printer_state_to_dict(
 
     if "ams" in raw_data and isinstance(raw_data["ams"], list):
         for ams_data in raw_data["ams"]:
+            # Read once per unit: the overlay lookup below and the drying badge
+            # further down both key off it.
+            ams_id_int = int(ams_data.get("id", 0))
             trays = []
             for tray in ams_data.get("tray", []):
                 tag_uid = tray.get("tag_uid")
@@ -1775,9 +1881,30 @@ def printer_state_to_dict(
                 if state_val is None and len(tray) == 1 and "id" in tray:
                     state_val = 9
 
+                # The spool behind an advertised profile. The live fields stay
+                # exactly as the printer reports them — the browser draws what
+                # the machine shows and labels it with what is really loaded;
+                # ``None`` whenever nothing was masked on this slot.
+                entry = (
+                    _overlay.effective(printer_id, ams_id_int, int(tray.get("id", 0)), tray)
+                    if printer_id is not None
+                    else None
+                )
+                actual = (
+                    {
+                        "tray_color": entry.actual_color,
+                        "tray_type": entry.actual_material,
+                        "tray_info_idx": entry.actual_variant,
+                        "cols": list(entry.actual_cols),
+                    }
+                    if entry
+                    else None
+                )
+
                 trays.append(
                     {
                         "id": int(tray.get("id", 0)),
+                        "actual": actual,
                         "tray_color": tray.get("tray_color"),
                         "tray_type": tray.get("tray_type"),
                         "tray_sub_brands": tray.get("tray_sub_brands"),
@@ -1827,7 +1954,6 @@ def printer_state_to_dict(
             # push, so prefer the cached target from the last send_drying_command;
             # fall back to the loaded trays, but only when they agree on a
             # filament type — see uniform_tray_drying_hint.
-            ams_id_int = int(ams_data.get("id", 0))
             target = (drying_targets or {}).get(ams_id_int)
             dry_target_temp: int | None = None
             dry_filament: str | None = None
@@ -1901,6 +2027,10 @@ def printer_state_to_dict(
             vt_tray.append(
                 {
                     "id": tray_id,
+                    # External slots are excluded from projection (spec §6.2),
+                    # so this is always None — the key is here so both tray
+                    # shapes stay one shape for the frontend.
+                    "actual": None,
                     "tray_color": vt_data.get("tray_color"),
                     "tray_type": vt_data.get("tray_type"),
                     "tray_sub_brands": vt_data.get("tray_sub_brands"),
@@ -1954,6 +2084,20 @@ def printer_state_to_dict(
             }
             for e in (state.hms_errors or [])
         ],
+        # Stack entries the operator hid on this printer (services/hms_mute) —
+        # same shape, kept apart so the modal can list and un-hide them.
+        "hms_muted": [
+            {
+                "code": e.code,
+                "attr": e.attr,
+                "module": e.module,
+                "severity": e.severity,
+                "actions": e.actions,
+                "full_code": e.full_code,
+                "job_id": e.job_id,
+            }
+            for e in (getattr(state, "hms_muted", None) or [])
+        ],
         # Pause classification — populated by main._handle_pause_edge, cleared
         # by _handle_resume_edge. ``pause_reason`` is the normalised key
         # (user / filament_runout / door_open / presence_check /
@@ -1998,6 +2142,9 @@ def printer_state_to_dict(
         ),
         # AMS Filament Backup (auto_switch_filament): True/False/None (#1766)
         "ams_auto_switch_filament": state.ams_auto_switch_filament,
+        # Firmware-reported backup groups (``filam_bak``); None is distinct
+        # from an explicit empty group list.
+        "ams_backup_groups": state.ams_backup_groups,
         # Per-AMS extruder map: {ams_id: extruder_id} where 0=right, 1=left
         "ams_extruder_map": ams_extruder_map,
         # WiFi signal strength
@@ -2016,6 +2163,9 @@ def printer_state_to_dict(
         "heatbreak_fan_speed": state.heatbreak_fan_speed,
         # Chamber light state
         "chamber_light": state.chamber_light,
+        # Whether the printer has a light we can switch (a chamber_light node
+        # in its lights_report). Gates the per-printer camera-light selector.
+        "has_chamber_light": state.has_chamber_light,
         # The air duct, so a mode change lands on the card as soon as the
         # printer confirms it rather than at the next poll. ⚠️ A field the REST
         # status serves but this dict omits updates only by refetch — see L14 in
@@ -2100,11 +2250,17 @@ def printer_state_to_dict(
         "awaiting_plate_clear": (
             printer_manager.is_awaiting_plate_clear(printer_id) if printer_id is not None else False
         ),
+        # Whether Repeat has a finished row to re-arm — the card draws the
+        # button only when this is True. A DB question, so the async callers
+        # answer it (``plate_hold.repeat_available``) and hand it in here; the
+        # same field the REST /status route returns, for the same reason
+        # ``awaiting_plate_clear`` is here.
+        "repeat_available": bool(repeat_available),
     }
     # Add cover URL if there's an active print and printer_id is provided
     # Include PAUSE state so skip objects modal can show cover
     if printer_id and state.state in ("RUNNING", "PAUSE") and state.gcode_file:
-        result["cover_url"] = f"/api/v1/printers/{printer_id}/cover"
+        result["cover_url"] = f"/api/v1/printers/{printer_id}/camera-cover"
     else:
         result["cover_url"] = None
     return result

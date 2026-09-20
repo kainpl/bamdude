@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from backend.app.core.database import Base
 
@@ -19,9 +19,32 @@ class PrintQueueItem(Base):
     # Waiting reason - why this pending item hasn't started yet
     # e.g. "Plate not cleared", "Printer offline", "Drying in progress", "Previous print failed"
     waiting_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    waiting_reason_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    waiting_reason_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    @validates("waiting_reason", "status", "scheduled_time", "manual_start", "queue_id", "position")
+    def _invalidate_wait_reason(self, key, value):
+        # A recorded decision must not survive retry/reorder/edit or a legacy
+        # producer replacing its prose. The scheduler sets the typed decision
+        # AFTER setting waiting_reason. Loading from the DB skips validators.
+        if getattr(self, key, None) != value:
+            if key != "waiting_reason" and key in self.__dict__:
+                self.waiting_reason = None
+            self.waiting_reason_code = None
+            self.waiting_reason_checked_at = None
+        return value
 
     # Source file (either archive_id OR library_file_id; archive created at print start from library file)
-    archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="CASCADE"), nullable=True)
+    #
+    # ⚠️ SET NULL, not CASCADE (m173). This was the one cascade that destroyed a
+    # job because its *source* went away: purging an archive took every queue row
+    # naming it, on PostgreSQL, silently. A job with a queue source of its own no
+    # longer depends on the archive, so the navigational link nulls and the work
+    # survives (queue-source-spool spec §4, §10). SQLite enforces no FK rule at
+    # all, so the detach there is code, beside the delete paths. ``archive_id``
+    # also doubles as the *execution* archive of a running print, which is a
+    # second reason nothing may cascade off it.
+    archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
     # SET NULL on library file delete so queue items survive as "orphan" rows
     # with their archive_id (if any) still pointing at a valid archive. The
     # delete_file endpoint explicitly nulls this too for SQLite installs where
@@ -29,7 +52,27 @@ class PrintQueueItem(Base):
     library_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True
     )
+
+    # The immutable local copy of the bytes this job prints (m173). NULL is a
+    # legacy row — one queued before the spool existed, or an exempt one
+    # (external / calibration). RESTRICT: a blob a job still names may not be
+    # deleted out from under it, and nulling the reference instead would turn a
+    # runnable job into one with no source at all. See ``models/queue_source.py``
+    # and spec §4.
+    queue_source_id: Mapped[int | None] = mapped_column(
+        ForeignKey("queue_sources.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    # Versioned per-job metadata about that source: ``provenance`` (the original
+    # kind/id, for navigation and audit only), the display filename, the format
+    # and the archive plate fallback. Deliberately NOT a second home for the
+    # job's own ``project_id`` / ``project_line_id`` / ``created_by_id`` — those
+    # stay canonical as columns (spec §4). The blob is shared; this is not.
+    source_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    project_line_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_lines.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # Scheduling
     position: Mapped[int] = mapped_column(Integer, default=0)
@@ -48,8 +91,22 @@ class PrintQueueItem(Base):
     # operator has dealt with it. Reached through ``unskip``.
     gate_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
+    # Who put this row here (m160). Since 0.5.4 EVERY print holds a queue row
+    # while it runs — a direct print claims one at dispatch, an external one
+    # gets one made at print start — so "there is a queue row" stopped meaning
+    # "somebody queued this", and the queue-completed notifications began
+    # firing after prints nobody scheduled.
+    #
+    # ⚠️ It is a property of the ROW, not of the run. ``answer_by_repeating``
+    # re-arms the same row rather than copying it, so a repeat keeps the origin
+    # it was born with — a repeated external print stays external and still
+    # raises no queue event, while a repeated queue item still counts. That is
+    # the intended reading of "repeat": do again exactly what was done.
+    origin: Mapped[str] = mapped_column(String(16), default="queue", server_default="queue", nullable=False)
+
     # AMS mapping: JSON array of global tray IDs per filament slot
     # Format: "[5, -1, 2, -1]" - position=slot_id-1, value=global tray ID, -1=unused
+    filament_routing: Mapped[str | None] = mapped_column(Text, nullable=True)
     ams_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Plate ID for multi-plate 3MF files (1-indexed, None = plate 1)
@@ -172,6 +229,12 @@ class PrintQueueItem(Base):
     library_file: Mapped["LibraryFile | None"] = relationship()
     project: Mapped["Project | None"] = relationship(back_populates="queue_items")
     created_by: Mapped["User | None"] = relationship()
+    # Read-only navigation to the blob, for the SYNCHRONOUS response builders: they
+    # have to describe the job from the bytes it owns, and they cannot await
+    # (``filament_intake.loaded_descriptor``). No ``back_populates`` on purpose —
+    # the blob is shared by every job that names it and must never be able to
+    # cascade anything onto them; who owns it is a query the GC runs (§9).
+    queue_source: Mapped["QueueSource | None"] = relationship(viewonly=True)
 
     # Convenience property to get printer_id via queue
     @property
@@ -184,4 +247,5 @@ from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.library import LibraryFile  # noqa: E402
 from backend.app.models.printer_queue import PrinterQueue  # noqa: E402
 from backend.app.models.project import Project  # noqa: E402
+from backend.app.models.queue_source import QueueSource  # noqa: E402
 from backend.app.models.user import User  # noqa: E402

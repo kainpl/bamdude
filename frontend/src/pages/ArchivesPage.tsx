@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -60,6 +60,7 @@ import {
   Cog,
   Archive as ArchiveIcon,
 } from 'lucide-react';
+import { SelectionBox } from '../components/SelectionBox';
 import { MakerWorldIcon } from '../components/BrandIcons';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { api } from '../api/client';
@@ -70,12 +71,16 @@ import { formatDateTime, formatDateOnly, type TimeFormat, type DateFormat, forma
 import { getCurrencySymbol } from '../utils/currency';
 import { getBedTypeInfo } from '../utils/bedType';
 import { useIsMobile } from '../hooks/useIsMobile';
-import type { Archive, ProjectListItem, ArchiveListParams } from '../api/client';
+import type { Archive, OrderListItem, ArchiveListParams } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
+import { Select } from '../components/Select';
+import { Modal } from '../components/Modal';
+import { isAnyModalOpen } from '../components/modalStack';
 import { PaginationBar } from '../components/PaginationBar';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { PrintModal } from '../components/PrintModal';
+import { QueueSpoolDeleteNote } from '../components/QueueSpoolDeleteNote';
 import { SliceModal } from '../components/SliceModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PurgeArchivesModal } from '../components/PurgeArchivesModal';
@@ -84,13 +89,14 @@ import { EditArchiveModal } from '../components/EditArchiveModal';
 import { SaveArchiveToLibraryModal } from '../components/SaveArchiveToLibraryModal';
 import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu';
 import { BatchTagModal } from '../components/BatchTagModal';
-import { BatchProjectModal } from '../components/BatchProjectModal';
+import { BatchAssignOrderModal } from '../components/projects/BatchAssignOrderModal';
+import { AddToOrderMenu } from '../components/projects/AddToOrderMenu';
 import { CalendarView } from '../components/CalendarView';
 import { QRCodeModal } from '../components/QRCodeModal';
 import { PlateObjectsPreviewModal } from '../components/PlateObjectsPreviewModal';
 import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { PhotoGalleryModal } from '../components/PhotoGalleryModal';
-import { ProjectPageModal } from '../components/ProjectPageModal';
+import { ModelCardModal } from '../components/ModelCardModal';
 import { TimelapseViewer } from '../components/TimelapseViewer';
 import { CompareArchivesModal } from '../components/CompareArchivesModal';
 import { TagManagementModal } from '../components/TagManagementModal';
@@ -196,7 +202,7 @@ function ArchiveCard({
   isSelected: boolean;
   onSelect: (id: number) => void;
   selectionMode: boolean;
-  projects: ProjectListItem[] | undefined;
+  projects: OrderListItem[] | undefined;
   isHighlighted?: boolean;
   timeFormat?: TimeFormat;
   dateFormat?: DateFormat;
@@ -211,6 +217,7 @@ function ArchiveCard({
   }
 
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { showToast } = useToast();
   const { hasPermission, canModify } = useAuth();
   const isMobile = useIsMobile();
@@ -228,7 +235,8 @@ function ArchiveCard({
   const [availableTimelapses, setAvailableTimelapses] = useState<Array<{ name: string; path: string; size: number; mtime: string | null }>>([]);
   const [showQRCode, setShowQRCode] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
-  const [showProjectPage, setShowProjectPage] = useState(false);
+  const [showModelCard, setShowModelCard] = useState(false);
+  const [showAddToOrder, setShowAddToOrder] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showDeleteSource3mfConfirm, setShowDeleteSource3mfConfirm] = useState(false);
   const [showDeleteF3dConfirm, setShowDeleteF3dConfirm] = useState(false);
@@ -236,6 +244,7 @@ function ArchiveCard({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [currentPlateIndex, setCurrentPlateIndex] = useState<number | null>(null);
   const [showPlateNav, setShowPlateNav] = useState(false);
+  const timelapseSelectHeadingId = useId();
   const source3mfInputRef = useRef<HTMLInputElement>(null);
   const f3dInputRef = useRef<HTMLInputElement>(null);
   const timelapseInputRef = useRef<HTMLInputElement>(null);
@@ -411,24 +420,6 @@ function ArchiveCard({
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
       showToast(data.is_favorite ? t('archives.toast.addedToFavorites') : t('archives.toast.removedFromFavorites'));
-    },
-  });
-
-  // Query for linked folders
-  const { data: linkedFolders } = useQuery({
-    queryKey: ['archive-folders', archive.id],
-    queryFn: () => api.getLibraryFoldersByArchive(archive.id),
-  });
-
-  const assignProjectMutation = useMutation({
-    mutationFn: (projectId: number | null) => api.updateArchive(archive.id, { project_id: projectId }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['archives'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      showToast(t('archives.toast.projectUpdated'));
-    },
-    onError: () => {
-      showToast(t('archives.toast.failedUpdateProject'), 'error');
     },
   });
 
@@ -648,9 +639,9 @@ function ArchiveCard({
       disabled: !archive.photos?.length,
     },
     {
-      label: t('archives.menu.projectPage'),
+      label: t('archives.menu.modelCard'),
       icon: <FileText className="w-4 h-4" />,
-      onClick: () => setShowProjectPage(true),
+      onClick: () => setShowModelCard(true),
     },
     { label: '', divider: true, onClick: () => {} },
     {
@@ -667,64 +658,22 @@ function ArchiveCard({
       disabled: !canModify('archives', 'update', archive.created_by_id),
       title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
     },
+    // The order's own page, not the list. It opened the list only because
+    // there was no detail page worth landing on.
     ...(archive.project_id && archive.project_name ? [{
-      label: t('archives.menu.goToProject', { name: archive.project_name }),
+      label: t('archives.menu.goToOrder', { name: archive.project_name }),
       icon: <FolderKanban className="w-4 h-4 text-bambu-green" />,
-      onClick: () => window.location.href = '/projects',
+      onClick: () => navigate(`/projects/${archive.project_id}`),
     }] : []),
     {
-      label: t('archives.menu.addToProject'),
+      // Order, then line, is one level more than `ContextMenu` can nest, so
+      // the choice opens as its own panel — and one component now serves card
+      // and row, where this page carried two copies of the same submenu.
+      label: t('archives.menu.addToOrder'),
       icon: <FolderKanban className="w-4 h-4" />,
-      onClick: () => {},
+      onClick: () => setShowAddToOrder(true),
       disabled: !canModify('archives', 'update', archive.created_by_id),
       title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
-      submenuSearchPlaceholder: t('archives.menu.searchProjects'),
-      submenu: (() => {
-        const items: ContextMenuItem[] = [];
-
-        // Add "Remove from Project" if archive is in a project
-        if (archive.project_id) {
-          items.push({
-            label: t('archives.menu.removeFromProject'),
-            icon: <X className="w-4 h-4" />,
-            onClick: () => assignProjectMutation.mutate(null),
-            disabled: !canModify('archives', 'update', archive.created_by_id),
-          });
-        }
-
-        // Add project options
-        if (!projects) {
-          items.push({
-            label: t('archives.menu.loading'),
-            icon: <Loader2 className="w-4 h-4 animate-spin" />,
-            onClick: () => {},
-            disabled: true,
-          });
-        } else {
-          const activeProjects = projects
-            .filter(p => p.status === 'active')
-            .sort((a, b) => a.name.localeCompare(b.name));
-          if (activeProjects.length === 0) {
-            items.push({
-              label: t('archives.menu.noProjectsAvailable'),
-              icon: <FolderKanban className="w-4 h-4 opacity-50" />,
-              onClick: () => {},
-              disabled: true,
-            });
-          } else {
-            activeProjects.forEach(p => {
-              items.push({
-                label: p.name,
-                icon: <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: p.color || '#888' }} />,
-                onClick: () => assignProjectMutation.mutate(p.id),
-                disabled: archive.project_id === p.id || !canModify('archives', 'update', archive.created_by_id),
-              });
-            });
-          }
-        }
-
-        return items;
-      })(),
     },
     {
       label: isSelected ? t('archives.menu.deselect') : t('archives.menu.select'),
@@ -757,9 +706,9 @@ function ArchiveCard({
           onClick={(e) => { e.stopPropagation(); onSelect(archive.id); }}
         >
           {isSelected ? (
-            <CheckSquare className="w-5 h-5 text-bambu-green" />
+            <SelectionBox checked={true} className="w-5 h-5" />
           ) : (
-            <Square className="w-5 h-5 text-white" />
+            <SelectionBox checked={false} className="w-5 h-5" />
           )}
         </button>
       )}
@@ -1000,18 +949,6 @@ function ArchiveCard({
             )}
           </button>
         )}
-        {/* Linked folder badge */}
-        {linkedFolders && linkedFolders.length > 0 && (
-          <Link
-            to={`/files?folder=${linkedFolders[0].id}`}
-            className="absolute bottom-2 p-1.5 rounded bg-black/60 hover:bg-black/80 transition-colors"
-            onClick={(e) => e.stopPropagation()}
-            title={t('archives.card.openFolder', { name: linkedFolders[0].name })}
-            style={{ left: archive.source_3mf_path ? (archive.f3d_path ? '5.5rem' : '3rem') : (archive.f3d_path ? '3rem' : '0.5rem') }}
-          >
-            <FolderOpen className="w-4 h-4 text-yellow-600 dark:text-yellow-400" />
-          </Link>
-        )}
       </div>
 
       <CardContent className="p-4 flex-1 flex flex-col">
@@ -1078,7 +1015,7 @@ function ArchiveCard({
                 backgroundColor: `${projects?.find(p => p.id === archive.project_id)?.color || '#6b7280'}20`,
                 color: projects?.find(p => p.id === archive.project_id)?.color || '#6b7280'
               }}
-              title={t('archives.card.project', { name: archive.project_name })}
+              title={t('archives.card.order', { name: archive.project_name })}
             >
               {archive.project_name}
             </Link>
@@ -1413,7 +1350,15 @@ function ArchiveCard({
             setShowDeleteConfirm(false);
           }}
           onCancel={() => setShowDeleteConfirm(false)}
-        />
+        >
+          {/* Which of those queued prints survive this delete, counted from the
+              rows themselves - the impact endpoint answers with one number, and
+              the two halves behave differently since m173. */}
+          <QueueSpoolDeleteNote
+            archiveIds={[archive.id]}
+            enabled={(deleteImpact?.related_queue_items ?? 0) > 0}
+          />
+        </ConfirmModal>
       )}
 
       {/* Delete Source 3MF Confirmation */}
@@ -1488,58 +1433,54 @@ function ArchiveCard({
 
       {/* Timelapse Selection Modal */}
       {showTimelapseSelect && availableTimelapses.length > 0 && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-card-dark rounded-lg max-w-lg w-full max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-gray-700">
-              <div>
-                <h3 className="text-lg font-semibold text-white">{t('archives.modal.selectTimelapse')}</h3>
-                <p className="text-sm text-gray-400 mt-1">
-                  {t('archives.modal.selectTimelapseDesc')}
-                </p>
-              </div>
+        <Modal
+          onClose={() => {
+            setShowTimelapseSelect(false);
+            setAvailableTimelapses([]);
+          }}
+          labelledBy={timelapseSelectHeadingId}
+          header={
+            <div className="min-w-0">
+              <h3 id={timelapseSelectHeadingId} className="text-lg font-semibold text-white">{t('archives.modal.selectTimelapse')}</h3>
+              <p className="text-sm text-gray-400 mt-1">
+                {t('archives.modal.selectTimelapseDesc')}
+              </p>
+            </div>
+          }
+          size="lg"
+        >
+          <div className="overflow-y-auto flex-1 p-2">
+            {availableTimelapses.map((file) => (
               <button
-                onClick={() => {
-                  setShowTimelapseSelect(false);
-                  setAvailableTimelapses([]);
-                }}
-                className="text-gray-400 hover:text-white p-1"
+                key={file.name}
+                onClick={() => timelapseSelectMutation.mutate(file.name)}
+                disabled={timelapseSelectMutation.isPending}
+                className="w-full text-left p-3 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-3 disabled:opacity-50"
               >
-                <X className="w-5 h-5" />
+                <Film className="w-8 h-8 text-bambu-green flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-white font-medium truncate">{file.name}</p>
+                  <p className="text-sm text-gray-400">
+                    {formatFileSize(file.size)}
+                    {file.mtime && ` • ${formatDateTime(file.mtime, timeFormat, dateFormat)}`}
+                  </p>
+                </div>
               </button>
-            </div>
-            <div className="overflow-y-auto flex-1 p-2">
-              {availableTimelapses.map((file) => (
-                <button
-                  key={file.name}
-                  onClick={() => timelapseSelectMutation.mutate(file.name)}
-                  disabled={timelapseSelectMutation.isPending}
-                  className="w-full text-left p-3 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-3 disabled:opacity-50"
-                >
-                  <Film className="w-8 h-8 text-bambu-green flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-white font-medium truncate">{file.name}</p>
-                    <p className="text-sm text-gray-400">
-                      {formatFileSize(file.size)}
-                      {file.mtime && ` • ${formatDateTime(file.mtime, timeFormat, dateFormat)}`}
-                    </p>
-                  </div>
-                </button>
-              ))}
-            </div>
-            <div className="p-4 border-t border-gray-700">
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setShowTimelapseSelect(false);
-                  setAvailableTimelapses([]);
-                }}
-                className="w-full"
-              >
-                {t('common.cancel')}
-              </Button>
-            </div>
+            ))}
           </div>
-        </div>
+          <div className="p-4 border-t border-gray-700">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setShowTimelapseSelect(false);
+                setAvailableTimelapses([]);
+              }}
+              className="w-full"
+            >
+              {t('common.cancel')}
+            </Button>
+          </div>
+        </Modal>
       )}
 
       {/* Read-only plate object preview, opened from the object count. */}
@@ -1580,13 +1521,16 @@ function ArchiveCard({
         />
       )}
 
-      {/* Project Page Modal */}
-      {showProjectPage && (
-        <ProjectPageModal
-          archiveId={archive.id}
-          archiveName={archive.print_name || archive.filename}
-          onClose={() => setShowProjectPage(false)}
+      {/* Model card — the archive half: its own copy of the metadata, editable. */}
+      {showModelCard && (
+        <ModelCardModal
+          source={{ kind: 'archive', id: archive.id, name: archive.print_name || archive.filename }}
+          onClose={() => setShowModelCard(false)}
         />
+      )}
+
+      {showAddToOrder && (
+        <AddToOrderMenu archive={archive} onDone={() => setShowAddToOrder(false)} />
       )}
 
       {showSchedule && (
@@ -1694,7 +1638,6 @@ function ArchiveListRow({
   isSelected,
   onSelect,
   selectionMode,
-  projects,
   isHighlighted,
   preferredSlicer = 'bambu_studio',
   t,
@@ -1705,13 +1648,13 @@ function ArchiveListRow({
   isSelected: boolean;
   onSelect: (id: number) => void;
   selectionMode: boolean;
-  projects: ProjectListItem[] | undefined;
   isHighlighted?: boolean;
   preferredSlicer?: SlicerType;
   t: TFunction;
   onNavigateToArchive?: (archiveId: number) => void;
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { showToast } = useToast();
   const { hasPermission, canModify } = useAuth();
   const { data: rowSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
@@ -1732,11 +1675,13 @@ function ArchiveListRow({
   const [availableTimelapses, setAvailableTimelapses] = useState<Array<{ name: string; path: string; size: number; mtime: string | null }>>([]);
   const [showQRCode, setShowQRCode] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
-  const [showProjectPage, setShowProjectPage] = useState(false);
+  const [showModelCard, setShowModelCard] = useState(false);
+  const [showAddToOrder, setShowAddToOrder] = useState(false);
   const [showDeleteSource3mfConfirm, setShowDeleteSource3mfConfirm] = useState(false);
   const [showDeleteF3dConfirm, setShowDeleteF3dConfirm] = useState(false);
   const [showDeleteTimelapseConfirm, setShowDeleteTimelapseConfirm] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const timelapseSelectHeadingId = useId();
   const source3mfInputRef = useRef<HTMLInputElement>(null);
   const f3dInputRef = useRef<HTMLInputElement>(null);
   const timelapseInputRef = useRef<HTMLInputElement>(null);
@@ -1881,24 +1826,6 @@ function ArchiveListRow({
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
       showToast(data.is_favorite ? t('archives.toast.addedToFavorites') : t('archives.toast.removedFromFavorites'));
-    },
-  });
-
-  // Query for linked folders
-  const { data: linkedFolders } = useQuery({
-    queryKey: ['archive-folders', archive.id],
-    queryFn: () => api.getLibraryFoldersByArchive(archive.id),
-  });
-
-  const assignProjectMutation = useMutation({
-    mutationFn: (projectId: number | null) => api.updateArchive(archive.id, { project_id: projectId }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['archives'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      showToast(t('archives.toast.projectUpdated'));
-    },
-    onError: () => {
-      showToast(t('archives.toast.failedUpdateProject'), 'error');
     },
   });
 
@@ -2106,9 +2033,9 @@ function ArchiveListRow({
       disabled: !archive.photos?.length,
     },
     {
-      label: t('archives.menu.projectPage'),
+      label: t('archives.menu.modelCard'),
       icon: <FileText className="w-4 h-4" />,
-      onClick: () => setShowProjectPage(true),
+      onClick: () => setShowModelCard(true),
     },
     { label: '', divider: true, onClick: () => {} },
     {
@@ -2126,55 +2053,16 @@ function ArchiveListRow({
       title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
     },
     ...(archive.project_id && archive.project_name ? [{
-      label: t('archives.menu.goToProject', { name: archive.project_name }),
+      label: t('archives.menu.goToOrder', { name: archive.project_name }),
       icon: <FolderKanban className="w-4 h-4 text-bambu-green" />,
-      onClick: () => window.location.href = '/projects',
+      onClick: () => navigate(`/projects/${archive.project_id}`),
     }] : []),
     {
-      label: t('archives.menu.addToProject'),
+      label: t('archives.menu.addToOrder'),
       icon: <FolderKanban className="w-4 h-4" />,
-      onClick: () => {},
-      submenuSearchPlaceholder: t('archives.menu.searchProjects'),
-      submenu: (() => {
-        const items: ContextMenuItem[] = [];
-        if (archive.project_id) {
-          items.push({
-            label: t('archives.menu.removeFromProject'),
-            icon: <X className="w-4 h-4" />,
-            onClick: () => assignProjectMutation.mutate(null),
-          });
-        }
-        if (!projects) {
-          items.push({
-            label: t('archives.menu.loading'),
-            icon: <Loader2 className="w-4 h-4 animate-spin" />,
-            onClick: () => {},
-            disabled: true,
-          });
-        } else {
-          const activeProjects = projects
-            .filter(p => p.status === 'active')
-            .sort((a, b) => a.name.localeCompare(b.name));
-          if (activeProjects.length === 0) {
-            items.push({
-              label: t('archives.menu.noProjectsAvailable'),
-              icon: <FolderKanban className="w-4 h-4 opacity-50" />,
-              onClick: () => {},
-              disabled: true,
-            });
-          } else {
-            activeProjects.forEach(p => {
-              items.push({
-                label: p.name,
-                icon: <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: p.color || '#888' }} />,
-                onClick: () => assignProjectMutation.mutate(p.id),
-                disabled: archive.project_id === p.id,
-              });
-            });
-          }
-        }
-        return items;
-      })(),
+      onClick: () => setShowAddToOrder(true),
+      disabled: !canModify('archives', 'update', archive.created_by_id),
+      title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
     },
     {
       label: isSelected ? t('archives.menu.deselect') : t('archives.menu.select'),
@@ -2206,9 +2094,9 @@ function ArchiveListRow({
           {selectionMode && (
             <button onClick={() => onSelect(archive.id)}>
               {isSelected ? (
-                <CheckSquare className="w-4 h-4 text-bambu-green" />
+                <SelectionBox checked={true} className="w-4 h-4" />
               ) : (
-                <Square className="w-4 h-4 text-bambu-gray" />
+                <SelectionBox checked={false} className="w-4 h-4" />
               )}
             </button>
           )}
@@ -2297,16 +2185,6 @@ function ArchiveListRow({
               <span title={t('archives.list.hasTimelapse')}>
                 <Film className="w-3.5 h-3.5 text-bambu-green flex-shrink-0" />
               </span>
-            )}
-            {linkedFolders && linkedFolders.length > 0 && (
-              <Link
-                to={`/files?folder=${linkedFolders[0].id}`}
-                className="flex-shrink-0"
-                title={t('archives.card.openFolder', { name: linkedFolders[0].name })}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <FolderOpen className="w-3.5 h-3.5 text-yellow-600 dark:text-yellow-400" />
-              </Link>
             )}
           </div>
           {/* Facts about the file itself, dot-separated under its name. This is
@@ -2612,7 +2490,15 @@ function ArchiveListRow({
             setShowDeleteConfirm(false);
           }}
           onCancel={() => setShowDeleteConfirm(false)}
-        />
+        >
+          {/* Which of those queued prints survive this delete, counted from the
+              rows themselves - the impact endpoint answers with one number, and
+              the two halves behave differently since m173. */}
+          <QueueSpoolDeleteNote
+            archiveIds={[archive.id]}
+            enabled={(deleteImpact?.related_queue_items ?? 0) > 0}
+          />
+        </ConfirmModal>
       )}
 
       {/* Delete Source 3MF Confirmation */}
@@ -2687,45 +2573,41 @@ function ArchiveListRow({
 
       {/* Timelapse Selection Modal */}
       {showTimelapseSelect && availableTimelapses.length > 0 && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-card-dark rounded-lg max-w-lg w-full max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-gray-700">
-              <div>
-                <h3 className="text-lg font-semibold text-white">{t('archives.modal.selectTimelapse')}</h3>
-                <p className="text-sm text-gray-400 mt-1">
-                  {t('archives.modal.selectTimelapseDesc')}
-                </p>
-              </div>
+        <Modal
+          onClose={() => {
+            setShowTimelapseSelect(false);
+            setAvailableTimelapses([]);
+          }}
+          labelledBy={timelapseSelectHeadingId}
+          header={
+            <div className="min-w-0">
+              <h3 id={timelapseSelectHeadingId} className="text-lg font-semibold text-white">{t('archives.modal.selectTimelapse')}</h3>
+              <p className="text-sm text-gray-400 mt-1">
+                {t('archives.modal.selectTimelapseDesc')}
+              </p>
+            </div>
+          }
+          size="lg"
+        >
+          <div className="overflow-y-auto flex-1 p-2">
+            {availableTimelapses.map((file) => (
               <button
-                onClick={() => {
-                  setShowTimelapseSelect(false);
-                  setAvailableTimelapses([]);
-                }}
-                className="text-gray-400 hover:text-white p-1"
+                key={file.name}
+                onClick={() => timelapseSelectMutation.mutate(file.name)}
+                disabled={timelapseSelectMutation.isPending}
+                className="w-full text-left p-3 rounded-lg hover:bg-gray-700 transition-colors mb-1"
               >
-                <X className="w-5 h-5" />
+                <div className="font-medium text-white">{file.name}</div>
+                <div className="text-sm text-gray-400 flex gap-3">
+                  <span>{formatFileSize(file.size)}</span>
+                  {file.mtime && (
+                    <span>{formatDateOnly(file.mtime)}</span>
+                  )}
+                </div>
               </button>
-            </div>
-            <div className="overflow-y-auto flex-1 p-2">
-              {availableTimelapses.map((file) => (
-                <button
-                  key={file.name}
-                  onClick={() => timelapseSelectMutation.mutate(file.name)}
-                  disabled={timelapseSelectMutation.isPending}
-                  className="w-full text-left p-3 rounded-lg hover:bg-gray-700 transition-colors mb-1"
-                >
-                  <div className="font-medium text-white">{file.name}</div>
-                  <div className="text-sm text-gray-400 flex gap-3">
-                    <span>{formatFileSize(file.size)}</span>
-                    {file.mtime && (
-                      <span>{formatDateOnly(file.mtime)}</span>
-                    )}
-                  </div>
-                </button>
-              ))}
-            </div>
+            ))}
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Read-only plate object preview, opened from the object count. */}
@@ -2766,13 +2648,16 @@ function ArchiveListRow({
         />
       )}
 
-      {/* Project Page Modal */}
-      {showProjectPage && (
-        <ProjectPageModal
-          archiveId={archive.id}
-          archiveName={archive.print_name || archive.filename}
-          onClose={() => setShowProjectPage(false)}
+      {/* Model card — the archive half: its own copy of the metadata, editable. */}
+      {showModelCard && (
+        <ModelCardModal
+          source={{ kind: 'archive', id: archive.id, name: archive.print_name || archive.filename }}
+          onClose={() => setShowModelCard(false)}
         />
+      )}
+
+      {showAddToOrder && (
+        <AddToOrderMenu archive={archive} onDone={() => setShowAddToOrder(false)} />
       )}
 
       {/* Schedule Modal */}
@@ -3131,15 +3016,15 @@ export function ArchivesPage() {
   }, []);
   const calendarDateTo = useMemo(() => new Date().toISOString().split('T')[0], []);
 
-  const { data: calendarArchives } = useQuery({
+  const { data: calendarAggregate } = useQuery({
     queryKey: ['archives-calendar', calendarDateFrom, calendarDateTo],
-    queryFn: () => api.getArchivesSlim(calendarDateFrom, calendarDateTo),
+    queryFn: () => api.getArchiveAggregate(calendarDateFrom, calendarDateTo),
     enabled: viewMode === 'calendar',
   });
 
   const { data: projects } = useQuery({
-    queryKey: ['projects'],
-    queryFn: () => api.getProjects(),
+    queryKey: ['projects', {}],
+    queryFn: () => api.getOrders({}),
   });
 
   // Archive trash count for the header badge (#1008 follow-up). Empty/error
@@ -3363,6 +3248,10 @@ export function ArchivesPage() {
       }
       return;
     }
+    // Page shortcuts stay quiet under a modal — the stack owns Esc there.
+    if (isAnyModalOpen()) {
+      return;
+    }
 
     switch (e.key) {
       case '/':
@@ -3383,11 +3272,11 @@ export function ArchivesPage() {
   }, [handleKeyDown]);
 
   return (
-    <div className="p-4 md:p-6 relative">
+    <div className="p-4">
       {/* Install-step-4 nudge (#1687): no-3MF fallback detected — slicer-side
           "Store sent files on external storage" is likely off. */}
       {no3MFWarning?.has_fallback && !no3MFWarningDismissed && (
-        <div className="mb-6 rounded-lg border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 flex items-start gap-3">
+        <div className="mb-4 rounded-lg border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-amber-900 dark:text-amber-200">
@@ -3451,7 +3340,7 @@ export function ArchivesPage() {
             title={!hasAnyPermission('archives:update_own', 'archives:update_all') ? t('archives.permission.noUpdateArchives') : undefined}
           >
             <FolderKanban className="w-4 h-4" />
-            {t('archives.page.project')}
+            {t('archives.page.order')}
           </Button>
           <Button
             variant="secondary"
@@ -3666,20 +3555,20 @@ export function ArchivesPage() {
           <div className="flex gap-2 md:gap-3 overflow-x-auto pb-1 md:pb-0 -mx-3 px-3 md:mx-0 md:px-0 md:flex-wrap scrollbar-hide w-full">
             {/* Collection filter */}
             <div className="flex items-center gap-2 flex-shrink-0 md:flex-shrink md:flex-1 md:min-w-0">
-              <select
-                className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none w-full"
+              <Select
+                className="w-full"
                 value={collection}
                 onChange={(e) => { setCollection(e.target.value as Collection); setPage(1); }}
               >
                 {collections.map((c) => (
                   <option key={c.id} value={c.id}>{t(c.labelKey)}</option>
                 ))}
-              </select>
+              </Select>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0 md:flex-shrink md:flex-1 md:min-w-0">
               <Filter className="w-4 h-4 text-bambu-gray hidden md:block flex-shrink-0" />
-              <select
-                className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none w-full"
+              <Select
+                className="w-full"
                 value={filterPrinter || ''}
                 onChange={(e) => {
                   setFilterPrinter(e.target.value ? Number(e.target.value) : null);
@@ -3694,12 +3583,12 @@ export function ArchivesPage() {
                     {printerLabel(p, p.id, t)}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0 md:flex-shrink md:flex-1 md:min-w-0">
               <Package className="w-4 h-4 text-bambu-gray hidden md:block flex-shrink-0" />
-              <select
-                className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none w-full"
+              <Select
+                className="w-full"
                 value={filterMaterial || ''}
                 onChange={(e) => {
                   setFilterMaterial(e.target.value || null);
@@ -3712,19 +3601,19 @@ export function ArchivesPage() {
                     {m}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0 md:flex-shrink md:flex-1 md:min-w-0">
               <FileCode className="w-4 h-4 text-bambu-gray hidden md:block flex-shrink-0" />
-              <select
-                className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none w-full"
+              <Select
+                className="w-full"
                 value={filterKind}
                 onChange={(e) => { setFilterKind(e.target.value as 'all' | 'calibration' | 'regular'); setPage(1); }}
               >
                 <option value="all">{t('archives.page.allPrints')}</option>
                 <option value="calibration">{t('archives.page.calibrationPrints')}</option>
                 <option value="regular">{t('archives.page.regularPrints')}</option>
-              </select>
+              </Select>
             </div>
             {collection !== 'favorites' && (
               <button
@@ -3771,8 +3660,7 @@ export function ArchivesPage() {
             {uniqueTags.length > 0 && (
               <div className="flex items-center gap-2 flex-shrink-0">
                 <Tag className="w-4 h-4 text-bambu-gray hidden md:block" />
-                <select
-                  className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                <Select
                   value={filterTag || ''}
                   onChange={(e) => { setFilterTag(e.target.value || null); setPage(1); }}
                 >
@@ -3782,7 +3670,7 @@ export function ArchivesPage() {
                       {t}
                     </option>
                   ))}
-                </select>
+                </Select>
                 <button
                   onClick={() => setShowTagManagement(true)}
                   className="p-2 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-green transition-colors"
@@ -3868,8 +3756,8 @@ export function ArchivesPage() {
               )}
               {viewMode === 'grid' && (
                 <div className="flex items-center gap-1 ml-auto">
-                  <select
-                    className="h-9 min-w-[7rem] px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  <Select
+                    className="min-w-[7rem]"
                     value={sortField}
                     aria-label={t('archives.list.sortBy')}
                     onChange={(e) => setSortField(e.target.value as SortField)}
@@ -3882,7 +3770,7 @@ export function ArchivesPage() {
                     <option value="energy">{t('archives.list.energy')}</option>
                     <option value="filament">{t('archives.list.filament')}</option>
                     <option value="duration">{t('archives.list.printTime')}</option>
-                  </select>
+                  </Select>
                   <button
                     onClick={toggleSortDir}
                     className="h-9 w-9 flex items-center justify-center bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-green transition-colors"
@@ -3916,15 +3804,15 @@ export function ArchivesPage() {
           </CardContent>
         </Card>
       ) : viewMode === 'calendar' ? (
-        <Card className="p-6">
+        <Card className="p-4">
           <CalendarView
-            archives={calendarArchives || []}
+            buckets={calendarAggregate?.buckets || []}
             printerMap={printerMap}
           />
         </Card>
       ) : viewMode === 'grid' ? (
         <>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {archives?.map((archive) => (
             <ArchiveCard
               key={archive.id}
@@ -3984,7 +3872,6 @@ export function ArchivesPage() {
                 isSelected={selectedIds.has(archive.id)}
                 onSelect={toggleSelect}
                 selectionMode={selectionMode}
-                projects={projects}
                 isHighlighted={archive.id === highlightedArchiveId}
                 preferredSlicer={preferredSlicer}
                 t={t}
@@ -4024,10 +3911,10 @@ export function ArchivesPage() {
         />
       )}
 
-      {/* Batch Project Modal */}
+      {/* Bulk "assign to order" */}
       {showBatchProject && (
-        <BatchProjectModal
-          selectedIds={Array.from(selectedIds)}
+        <BatchAssignOrderModal
+          archiveIds={Array.from(selectedIds)}
           onClose={() => setShowBatchProject(false)}
         />
       )}

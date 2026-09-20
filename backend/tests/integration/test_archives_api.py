@@ -3,8 +3,12 @@
 Tests the full request/response cycle for /api/v1/archives/ endpoints.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from httpx import AsyncClient
+
+from backend.app.services import part_stock
 
 
 class TestArchivesAPI:
@@ -106,6 +110,80 @@ class TestArchivesAPI:
         response = await async_client.get("/api/v1/archives/9999")
 
         assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_archive_response_carries_library_file_id(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        """An archive dispatched from a library file exposes that file's id.
+
+        The archive UI links a print card back to the file's print history
+        with ``?file=<library_file_id>``; without the field on the response
+        the link cannot be built. An archive with no source file keeps null.
+        """
+        from backend.app.models.library import LibraryFile
+
+        lib = LibraryFile(
+            filename="linked.3mf",
+            file_path="/library/linked.3mf",
+            file_type="3mf",
+            file_size=42,
+            file_hash="a" * 64,
+        )
+        db_session.add(lib)
+        await db_session.commit()
+        await db_session.refresh(lib)
+
+        printer = await printer_factory()
+        linked = await archive_factory(printer.id, print_name="From library", library_file_id=lib.id)
+        unlinked = await archive_factory(printer.id, print_name="External print")
+
+        detail = await async_client.get(f"/api/v1/archives/{linked.id}")
+        assert detail.status_code == 200
+        assert detail.json()["library_file_id"] == lib.id
+
+        listing = await async_client.get("/api/v1/archives/")
+        assert listing.status_code == 200
+        by_id = {a["id"]: a for a in listing.json()["data"]}
+        assert by_id[linked.id]["library_file_id"] == lib.id
+        assert by_id[unlinked.id]["library_file_id"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_response_carries_the_skip_support_and_the_object_count(
+        self, async_client: AsyncClient, archive_factory, printer_factory
+    ):
+        """Both were dead on the wire, and one hid the other.
+
+        ``archive_to_response`` answers with a DICT, so a field it does not set
+        is the schema's default on every response — ``skip_objects_supported``
+        was False for every archive however the column read, and
+        ``object_count`` was always null. The list draws the skip badge only
+        inside the object-count line, so the badge could never appear at all.
+        """
+        printer = await printer_factory()
+        skippable = await archive_factory(
+            printer.id,
+            print_name="Skippable",
+            skip_objects_supported=True,
+            extra_data={"printable_objects": {"11": "shade", "12": "arm"}},
+        )
+        plain = await archive_factory(printer.id, print_name="Plain")
+
+        detail = await async_client.get(f"/api/v1/archives/{skippable.id}")
+        assert detail.status_code == 200
+        assert detail.json()["skip_objects_supported"] is True
+        assert detail.json()["object_count"] == 2
+
+        listing = await async_client.get("/api/v1/archives/")
+        by_id = {a["id"]: a for a in listing.json()["data"]}
+        assert by_id[skippable.id]["skip_objects_supported"] is True
+        assert by_id[skippable.id]["object_count"] == 2
+        # No metadata is "unknown", not "zero objects": the list still renders
+        # the line for a hand-typed defective count on such a row.
+        assert by_id[plain.id]["skip_objects_supported"] is False
+        assert by_id[plain.id]["object_count"] is None
 
     # ========================================================================
     # Update endpoints
@@ -221,7 +299,7 @@ class TestArchivesAPI:
             filament_used_grams=100.0,
         )
 
-        response = await async_client.get("/api/v1/archives/stats")
+        response = await async_client.get("/api/v1/statistics/overview")
 
         assert response.status_code == 200
         result = response.json()
@@ -229,215 +307,67 @@ class TestArchivesAPI:
         assert "total_prints" in result
         assert "successful_prints" in result
 
-
-class TestArchivesSlimAPI:
-    """Integration tests for /api/v1/archives/slim endpoint."""
-
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_slim_empty(self, async_client: AsyncClient):
-        """Verify empty list when no archives exist."""
-        response = await async_client.get("/api/v1/archives/slim")
-
-        assert response.status_code == 200
-        assert response.json() == []
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_slim_returns_only_expected_fields(
-        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    async def test_accuracy_ignores_synthetic_closures(
+        self, async_client: AsyncClient, archive_factory, printer_factory
     ):
-        """Verify response contains only slim fields, not full archive data."""
-        printer = await printer_factory()
-        await archive_factory(
-            printer.id,
-            print_name="Slim Test",
-            status="completed",
-            filament_type="PLA",
-            filament_color="#FF0000",
-            filament_used_grams=50.0,
-            print_time_seconds=3600,
-            cost=1.50,
-            quantity=2,
-        )
+        """A print closed by the startup sweep or the stale-cleanup has a
+        completed_at derived FROM the slicer estimate, so its accuracy is 100%
+        by construction (#2592). Counting it would drag the fleet average
+        toward a number nobody measured.
 
-        response = await async_client.get("/api/v1/archives/slim")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert len(data) == 1
-        item = data[0]
-
-        # Expected fields present
-        assert item["printer_id"] == printer.id
-        assert item["print_name"] == "Slim Test"
-        assert item["status"] == "completed"
-        assert item["filament_type"] == "PLA"
-        assert item["filament_color"] == "#FF0000"
-        assert item["filament_used_grams"] == 50.0
-        assert item["print_time_seconds"] == 3600
-        assert item["cost"] == 1.50
-        assert item["quantity"] == 2
-        assert "created_at" in item
-
-        # Full archive fields must NOT be present
-        assert "file_path" not in item
-        assert "file_size" not in item
-        assert "extra_data" not in item
-        assert "notes" not in item
-        assert "tags" not in item
-        assert "photos" not in item
-        assert "content_hash" not in item
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_slim_carries_measured_energy(
-        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
-    ):
-        """The "Most Expensive" record is computed client-side from this payload.
-
-        ``cost`` is filament ONLY — usage_tracker fills it from grams x the price
-        of each spool, plus the untracked remainder at the default rate. Ranking
-        on it alone answered a narrower question than the label promises, and it
-        could not be widened from the frontend because the electricity simply was
-        not in this response.
+        Pinned because the stats query stopped hydrating whole archives and now
+        reads three columns — the skip is exactly the logic a columnar rewrite
+        can drop silently, and nothing else covered it.
         """
         printer = await printer_factory()
-        await archive_factory(
-            printer.id,
-            print_name="Metered",
-            status="completed",
-            cost=1.50,
-            energy_kwh=0.9,
-            energy_cost=0.42,
-        )
+        started = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+        # accuracy = estimate / actual * 100, recomputed on flush — so the
+        # numbers are built from the timestamps rather than asserted onto them.
+        measured = {
+            "status": "completed",
+            "print_time_seconds": 1800,  # estimate half of the two-hour actual
+            "started_at": started,
+            "completed_at": started + timedelta(hours=1),
+        }  # -> 50.0
+        synthetic = {
+            "status": "completed",
+            "print_time_seconds": 3600,  # estimate == actual, the 100% artefact
+            "started_at": started,
+            "completed_at": started + timedelta(hours=1),
+        }
+        await archive_factory(printer.id, **measured)
+        await archive_factory(printer.id, **synthetic, extra_data={"recovered_by_startup_sweep": True})
+        await archive_factory(printer.id, **synthetic, extra_data={"recovered_by_cleanup": True})
 
-        item = (await async_client.get("/api/v1/archives/slim")).json()[0]
-        assert item["cost"] == 1.50
-        assert item["energy_kwh"] == 0.9
-        assert item["energy_cost"] == 0.42
+        result = (await async_client.get("/api/v1/statistics/overview")).json()
+
+        # Only the measured print counts — not (50 + 100 + 100) / 3.
+        assert result["average_time_accuracy"] == 50.0
+        assert result["time_accuracy_by_printer"] == {str(printer.id): 50.0}
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_slim_reports_no_energy_as_null_not_zero(
+    async def test_stats_report_defects_by_printer_over_completed_prints(
         self, async_client: AsyncClient, archive_factory, printer_factory, db_session
     ):
-        """A printer with no smart plug drew *something*; we just did not measure it.
-
-        NULL says that. A zero would claim the print ran on no electricity, and
-        would be indistinguishable from a measured zero — which is exactly the
-        distinction the plug drivers already refuse to blur.
+        """defects_by_printer sums printed vs. defective over COMPLETED prints
+        only, keyed by printer id like the other per-printer maps (spec
+        2026-09-11 §6). A failed print's defects don't count, and a printer
+        with nothing printed in the period is omitted entirely.
         """
-        printer = await printer_factory()
-        await archive_factory(printer.id, print_name="Unmetered", status="completed", cost=1.50)
+        printer_a = await printer_factory(name="A")
+        printer_b = await printer_factory(name="B")
+        await archive_factory(printer_a.id, status="completed", quantity=6, defective_count=2)
+        await archive_factory(printer_a.id, status="completed", quantity=4, defective_count=0)
+        await archive_factory(printer_a.id, status="failed", quantity=5, defective_count=5)
+        await archive_factory(printer_b.id, status="completed", quantity=0, defective_count=0)
 
-        item = (await async_client.get("/api/v1/archives/slim")).json()[0]
-        assert item["energy_kwh"] is None
-        assert item["energy_cost"] is None
-        assert "duplicates" not in item
-        assert "duplicate_count" not in item
+        response = await async_client.get("/api/v1/statistics/overview")
 
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_slim_computes_actual_time(
-        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
-    ):
-        """Verify actual_time_seconds is computed from started_at/completed_at."""
-        from datetime import datetime, timezone
-
-        printer = await printer_factory()
-        started = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
-        completed = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)  # 2 hours = 7200s
-        await archive_factory(
-            printer.id,
-            status="completed",
-            started_at=started,
-            completed_at=completed,
-        )
-
-        response = await async_client.get("/api/v1/archives/slim")
-
-        assert response.status_code == 200
-        item = response.json()[0]
-        assert item["actual_time_seconds"] == 7200
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_slim_actual_time_null_for_failed(
-        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
-    ):
-        """Verify actual_time_seconds is null for non-completed prints."""
-        from datetime import datetime, timezone
-
-        printer = await printer_factory()
-        await archive_factory(
-            printer.id,
-            status="failed",
-            started_at=datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
-            completed_at=datetime(2024, 1, 1, 11, 0, 0, tzinfo=timezone.utc),
-        )
-
-        response = await async_client.get("/api/v1/archives/slim")
-
-        assert response.status_code == 200
-        item = response.json()[0]
-        assert item["actual_time_seconds"] is None
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_slim_date_filtering(self, async_client: AsyncClient, archive_factory, printer_factory, db_session):
-        """Verify date_from and date_to filters work."""
-        from datetime import datetime, timezone
-
-        printer = await printer_factory()
-        await archive_factory(
-            printer.id,
-            print_name="Old Print",
-            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        )
-        await archive_factory(
-            printer.id,
-            print_name="New Print",
-            created_at=datetime(2024, 6, 15, tzinfo=timezone.utc),
-        )
-
-        # Filter to only June 2024
-        response = await async_client.get("/api/v1/archives/slim?date_from=2024-06-01&date_to=2024-06-30")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert len(data) == 1
-        assert data[0]["print_name"] == "New Print"
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_slim_pagination(self, async_client: AsyncClient, archive_factory, printer_factory, db_session):
-        """Verify limit and offset work."""
-        printer = await printer_factory()
-        for i in range(5):
-            await archive_factory(printer.id, print_name=f"Print {i}")
-
-        response = await async_client.get("/api/v1/archives/slim?limit=2&offset=0")
-
-        assert response.status_code == 200
-        assert len(response.json()) == 2
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_slim_excludes_trashed(self, async_client: AsyncClient, archive_factory, printer_factory, db_session):
-        """Trashed (soft-deleted) archives are excluded from /slim so the
-        dashboard/stats widgets it feeds agree with Quick Stats (E.9)."""
-        from datetime import datetime, timezone
-
-        printer = await printer_factory()
-        await archive_factory(printer.id, print_name="Live Print")
-        await archive_factory(printer.id, print_name="Trashed Print", deleted_at=datetime.now(timezone.utc))
-
-        response = await async_client.get("/api/v1/archives/slim")
-        assert response.status_code == 200
-        names = [a["print_name"] for a in response.json()]
-        assert "Live Print" in names
-        assert "Trashed Print" not in names
+        assert response.status_code == 200, response.text
+        assert response.json()["defects_by_printer"] == {str(printer_a.id): {"printed": 10, "defective": 2}}
 
 
 class TestArchiveDataIntegrity:
@@ -1009,3 +939,385 @@ class TestArchiveSortByPrinter:
             "on-mike",
             "sliced-for-x1",
         ]
+
+
+# ============================================================================
+# Free stock (pass 8, Decision 3): an order-less print's parts
+# ============================================================================
+#
+# ⚠️ Ids are carried as plain ints, never as ORM instances. The ``get_db``
+# override hands the handler THIS test's session, so the handler's commit
+# expires every object the test is holding — and reading an expired attribute
+# back on an async session is a lazy load with no greenlet under it.
+
+
+async def _stocked_product(db_session, *, file_id: int = 900) -> tuple[int, int]:
+    """A product whose whole-file plate yields lids. Returns ``(product_id, lid_id)``."""
+    from backend.app.models.product import Product, ProductPart, ProductPlate
+
+    product = Product(name="Lamp")
+    db_session.add(product)
+    await db_session.flush()
+    lid = ProductPart(product_id=product.id, kind="printed", name="lid", name_key="lid", qty_per_unit=1)
+    db_session.add_all([lid, ProductPlate(product_id=product.id, library_file_id=file_id, plate_index=0)])
+    await db_session.flush()
+    ids = (product.id, lid.id)
+    await db_session.commit()
+    return ids
+
+
+async def _print_of(
+    db_session, printer_id, archive_factory, *, file_id: int = 900, project_id=None, lids: int = 4
+) -> int:
+    """One completed print of that plate. Returns the archive id."""
+    from backend.app.models.archive_part import PrintArchivePart
+
+    archive = await archive_factory(
+        printer_id,
+        print_name="Lids",
+        library_file_id=file_id,
+        plate_index=1,
+        project_id=project_id,
+        status="completed",
+    )
+    archive_id = archive.id
+    db_session.add(PrintArchivePart(archive_id=archive_id, name="lid", name_key="lid", quantity=lids, defective=0))
+    await db_session.commit()
+    return archive_id
+
+
+async def _stock_rows(db_session) -> list[tuple]:
+    """``(part_id, reason, delta, archive_id, note)`` per movement, oldest first."""
+    from sqlalchemy import select
+
+    from backend.app.models.part_stock import ProductPartStockMovement
+
+    db_session.expire_all()
+    rows = (
+        (await db_session.execute(select(ProductPartStockMovement).order_by(ProductPartStockMovement.id)))
+        .scalars()
+        .all()
+    )
+    return [(r.product_part_id, r.reason, r.delta, r.archive_id, r.note) for r in rows]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_counting_an_old_order_less_print_into_stock(
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """History is deliberately NOT backfilled — nobody knows which of last
+    year's order-less prints were shipped. This is the operator vouching for
+    one of them, and the only way such a print reaches the shelf."""
+    _product_id, lid_id = await _stocked_product(db_session)
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+
+    r = await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+
+    assert r.status_code == 200, r.text
+    assert r.json() == [{"part_id": lid_id, "name": "lid", "delta": 4}]
+    assert await _stock_rows(db_session) == [
+        (lid_id, "unfiled_print", 4, archive_id, part_stock.NOTE_COUNTED_BY_OPERATOR)
+    ], "the note is a token the product page translates, never an English sentence (Ruling 17)"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_counting_the_same_print_into_stock_twice_is_refused(
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """409, not a silent no-op: the operator pressed a button and is entitled to
+    be told the parts are already counted rather than left to wonder."""
+    await _stocked_product(db_session)
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    assert (await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")).status_code == 200
+
+    r = await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+
+    assert r.status_code == 409
+    assert len(await _stock_rows(db_session)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_print_filed_under_an_order_cannot_be_counted_into_stock(
+    async_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """Its parts are counted by the order's own figures; counting them here too
+    is the double count Decision 3 exists to prevent."""
+    from backend.app.models.project import Project
+
+    await _stocked_product(db_session)
+    project = Project(name="O")
+    db_session.add(project)
+    await db_session.flush()
+    project_id = project.id
+    await db_session.commit()
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory, project_id=project_id)
+
+    r = await async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+
+    assert r.status_code == 409
+    assert await _stock_rows(db_session) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_filing_a_counted_print_under_an_order_takes_its_stock_back(
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """The archive editor's project change. Without the reversal the same parts
+    would sit on the shelf AND count towards the order they were just filed
+    under."""
+    from backend.app.models.project import Project
+
+    _product_id, lid_id = await _stocked_product(db_session)
+    project = Project(name="Lamps")
+    db_session.add(project)
+    await db_session.flush()
+    project_id = project.id
+    await db_session.commit()
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+
+    r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+
+    assert r.status_code == 200, r.text
+    assert await _stock_rows(db_session) == [
+        (lid_id, "unfiled_print", 4, archive_id, part_stock.NOTE_COUNTED_BY_OPERATOR),
+        (lid_id, "manual", -4, archive_id, part_stock.NOTE_FILED_UNDER_ORDER),
+    ], "the parts are counted by the order now, not by the shelf"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_filing_a_print_a_second_time_reverses_nothing_more(
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """Moving the print on to another order must not take the parts back twice —
+    the first filing already zeroed what this archive put on the shelf."""
+    from backend.app.models.project import Project
+
+    _product_id, lid_id = await _stocked_product(db_session)
+    db_session.add_all([Project(name="Lamps"), Project(name="Sconces")])
+    await db_session.commit()
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": 1})
+
+    r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": 2})
+
+    assert r.status_code == 200, r.text
+    assert [row[1] for row in await _stock_rows(db_session)] == ["unfiled_print", "manual"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_filing_a_print_whose_stock_is_already_spent_still_files_it(
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """The stock went out to another order between the print and the filing, so
+    the credit cannot be taken back. Re-filing a print corrects the print
+    HISTORY and must not be refused over bookkeeping — the ledger keeps the
+    truth of what is on the shelf and the operator corrects it by hand."""
+    from backend.app.models.project import Project
+    from backend.app.services.part_stock import move
+
+    _product_id, lid_id = await _stocked_product(db_session)
+    project = Project(name="Lamps")
+    db_session.add(project)
+    await db_session.flush()
+    project_id = project.id
+    await db_session.commit()
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await move(db_session, part_id=lid_id, delta=-4, reason="reserved_for_order")
+    await db_session.commit()
+
+    r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["project_id"] == project_id
+    # 4 in, 4 reserved out, nothing reversed — and the balance never went below zero.
+    assert [row[1:3] for row in await _stock_rows(db_session)] == [("unfiled_print", 4), ("reserved_for_order", -4)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_hard_deleting_an_archive_leaves_the_parts_on_the_shelf(
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """``archive_id`` is ON DELETE SET NULL and SQLite honours no such clause.
+    The print history goes; the parts it made are still in a drawer."""
+    from backend.app.services.archive import ArchiveService
+
+    _product_id, lid_id = await _stocked_product(db_session)
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+
+    assert await ArchiveService(db_session).delete_archive(archive_id) is True
+
+    assert await _stock_rows(db_session) == [(lid_id, "unfiled_print", 4, None, part_stock.NOTE_COUNTED_BY_OPERATOR)]
+
+
+async def _admin_id(db_session) -> int:
+    """The user the test client is authenticated as (seeded in ``_build_client``)."""
+    from sqlalchemy import select
+
+    from backend.app.models.user import User
+
+    return await db_session.scalar(select(User.id).where(User.username == "test_admin"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_counting_a_print_into_stock_records_who_asked(
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """The button has an operator behind it, unlike the completion handler,
+    which writes with no user (Decision 7). The product page's movements table
+    shows who."""
+    from sqlalchemy import select
+
+    from backend.app.models.part_stock import ProductPartStockMovement
+
+    await _stocked_product(db_session)
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    admin_id = await _admin_id(db_session)
+
+    assert (await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")).status_code == 200
+
+    db_session.expire_all()
+    rows = (await db_session.execute(select(ProductPartStockMovement))).scalars().all()
+    assert [r.created_by for r in rows] == [admin_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_taking_a_print_back_out_of_an_order_puts_its_parts_back(
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """Ruling 11. Filing reversed the credit because the order counted the
+    parts; un-filing has to undo that, or a plate quietly disappears every time
+    somebody corrects a filing."""
+    from backend.app.models.project import Project
+
+    _product_id, lid_id = await _stocked_product(db_session)
+    project = Project(name="Lamps")
+    db_session.add(project)
+    await db_session.flush()
+    project_id = project.id
+    await db_session.commit()
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+
+    r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": None})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["project_id"] is None
+    rows = await _stock_rows(db_session)
+    assert [row[1:3] for row in rows] == [("unfiled_print", 4), ("manual", -4), ("unfiled_print", 4)]
+    assert sum(row[2] for row in rows) == 4, "the parts are back on the shelf"
+    # A TOKEN, not a sentence (Ruling 17): the product page renders the reason
+    # in the operator's language, and a note is written once and read forever.
+    assert rows[-1][4] == part_stock.NOTE_UNFILED_FROM_ORDER
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_re_credited_print_cannot_be_counted_into_stock_again(
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """The 409 reads the archive's NET, the same function the writer's
+    idempotency check reads — so it says "already counted" exactly while the
+    parts are actually standing on the shelf, whatever the row history is."""
+    from backend.app.models.project import Project
+
+    await _stocked_product(db_session)
+    project = Project(name="Lamps")
+    db_session.add(project)
+    await db_session.flush()
+    project_id = project.id
+    await db_session.commit()
+    printer = await printer_factory()
+    archive_id = await _print_of(db_session, printer.id, archive_factory)
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+    await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": None})
+
+    r = await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+
+    assert r.status_code == 409
+    assert "already been counted" in r.json()["detail"]
+    assert len(await _stock_rows(db_session)) == 3, "the refused call wrote nothing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_filing_reverses_every_part_it_can_even_when_one_is_spent(
+    committing_client: AsyncClient, db_session, archive_factory, printer_factory
+):
+    """Ruling 12a end to end: the lid's stock has gone out to another order and
+    the base's has not. The base comes back off the shelf, the archive is
+    filed, and only the lid is left for the operator to correct."""
+    from backend.app.models.archive_part import PrintArchivePart
+    from backend.app.models.product import Product, ProductPart, ProductPlate
+    from backend.app.models.project import Project
+    from backend.app.services.part_stock import move
+
+    product = Product(name="Lamp")
+    project = Project(name="Lamps")
+    db_session.add_all([product, project])
+    await db_session.flush()
+    lid = ProductPart(product_id=product.id, kind="printed", name="lid", name_key="lid", qty_per_unit=1)
+    base = ProductPart(product_id=product.id, kind="printed", name="base", name_key="base", qty_per_unit=1)
+    db_session.add_all([lid, base, ProductPlate(product_id=product.id, library_file_id=901, plate_index=0)])
+    await db_session.flush()
+    lid_id, base_id, project_id = lid.id, base.id, project.id
+    archive = await archive_factory(
+        (await printer_factory()).id, library_file_id=901, plate_index=1, status="completed"
+    )
+    archive_id = archive.id
+    db_session.add_all(
+        [
+            PrintArchivePart(archive_id=archive_id, name="lid", name_key="lid", quantity=4),
+            PrintArchivePart(archive_id=archive_id, name="base", name_key="base", quantity=2),
+        ]
+    )
+    await db_session.commit()
+    await committing_client.post(f"/api/v1/archives/{archive_id}/count-into-stock")
+    await move(db_session, part_id=lid_id, delta=-4, reason="reserved_for_order")
+    await db_session.commit()
+
+    r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json={"project_id": project_id})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["project_id"] == project_id, "a refused reversal must never block the filing"
+    per_part = {}
+    for part_id, _reason, delta, _archive_id, _note in await _stock_rows(db_session):
+        per_part[part_id] = per_part.get(part_id, 0) + delta
+    assert per_part == {lid_id: 0, base_id: 0}, "the base was reversed; the lid's stock was already spent"
+
+
+@pytest.mark.asyncio
+async def test_the_slim_endpoint_is_gone(async_client):
+    """It had two callers, both now on /statistics/aggregate, and it silently
+    truncated at the newest 10 000 rows — a trap with no users left is worse
+    than no endpoint.
+
+    ⚠️ The answer is 422, not 404: with the route gone the path falls through to
+    ``/archives/{archive_id}``, which refuses to read "slim" as an id. That is
+    what a script still calling it will actually see, so it is what this pins.
+    """
+    response = await async_client.get("/api/v1/archives/slim")
+    assert response.status_code in (404, 422)

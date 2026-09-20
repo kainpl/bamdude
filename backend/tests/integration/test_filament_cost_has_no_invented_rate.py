@@ -62,7 +62,7 @@ async def test_a_real_rate_still_produces_a_cost(db_session, tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_recalculating_costs_invents_nothing(async_client: AsyncClient, db_session, no_rate):
-    """POST /archives/recalculate-costs walked every archive and stamped
+    """POST /statistics/recalculate-costs walked every archive and stamped
     grams × 25 on any that had no spool history."""
     from sqlalchemy import select
 
@@ -80,18 +80,14 @@ async def test_recalculating_costs_invents_nothing(async_client: AsyncClient, db
     await db_session.commit()
     await db_session.refresh(archive)
 
-    response = await async_client.post("/api/v1/archives/recalculate-costs")
+    response = await async_client.post("/api/v1/statistics/recalculate-costs")
     assert response.status_code == 200, response.text
 
     cost = (await db_session.execute(select(PrintArchive.cost).where(PrintArchive.id == archive.id))).scalar_one()
     assert cost is None
 
 
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_the_project_plan_invents_nothing(async_client: AsyncClient, db_session, no_rate):
-    """The plan estimates from file metadata alone — there is no spool to fall
-    back to, so an invented rate was the only number it ever showed."""
-    from backend.app.api.routes.projects import _get_default_filament_cost
-
-    assert await _get_default_filament_cost(db_session) == 0.0
+# The sixth site was the project print plan's ``_get_default_filament_cost``.
+# The plan is gone with the 2026-09-02 orders redesign — an order's cost is now
+# summed from the archives it actually produced, and estimates nothing — so
+# there is no longer a rate for it to invent.

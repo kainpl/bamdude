@@ -22,7 +22,6 @@ fields, ``register_expected_print`` called with the new archive's id.
 from __future__ import annotations
 
 import hashlib
-import zipfile
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -38,8 +37,9 @@ from backend.app.services.background_dispatch import BackgroundDispatchService, 
 
 def _write_minimal_3mf(path: Path) -> str:
     """Create a tiny valid ZIP at ``path`` and return its sha256."""
-    with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("Metadata/model_settings.config", "<config/>")
+    from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+
+    write_routing_3mf(path, {2: [{"id": 1, "type": "PLA", "used_g": "1", "color": "#FFFFFF"}]}, model="P1S")
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(8192), b""):
@@ -83,7 +83,7 @@ async def test_reprint_creates_new_archive_and_leaves_source_failed_row_intact(
     await db_session.commit()
     await db_session.refresh(lib)
 
-    printer = await printer_factory()
+    printer = await printer_factory(model="P1S")
 
     source = PrintArchive(
         printer_id=printer.id,
@@ -127,9 +127,40 @@ async def test_reprint_creates_new_archive_and_leaves_source_failed_row_intact(
         captured_register_args["filename"] = filename
         captured_register_args["archive_id"] = archive_id
 
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.bambu_mqtt import BambuMQTTClient
+    from backend.app.services.filament_policy_write import prepare_routing
+    from backend.app.services.printer_manager import printer_manager
+
+    mqtt = BambuMQTTClient("127.0.0.1", "SYNTHETIC", "00000000", model="P1S")
+    mqtt.state.connected = True
+    mqtt._process_message(
+        {"print": {"ams": {"ams": []}, "vt_tray": {"id": 254, "tray_type": "PLA", "tray_color": "FFFFFF"}}}
+    )
+    monkeypatch.setitem(printer_manager._clients, printer_id, mqtt)
+    monkeypatch.setitem(printer_manager._models, printer_id, "P1S")
+    queue = PrinterQueue(printer_id=printer_id)
+    db_session.add(queue)
+    await db_session.flush()
+    routing, plate = await prepare_routing(db_session, printer_id=printer_id, archive_id=source_id)
+    claim = PrintQueueItem(
+        queue_id=queue.id,
+        archive_id=source_id,
+        status="printing",
+        started_at=datetime.now(),
+        filament_routing=routing,
+        plate_id=plate,
+        origin="direct",
+    )
+    db_session.add(claim)
+    await db_session.flush()
+    queue.current_item_id, queue.status = claim.id, "printing"
+    await db_session.commit()
     printer_name = printer.name
     job = PrintDispatchJob(
         id=1,
+        queue_item_id=claim.id,
         kind="reprint_archive",
         source_id=source_id,
         source_name="source.3mf",

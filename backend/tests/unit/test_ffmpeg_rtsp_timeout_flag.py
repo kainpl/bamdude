@@ -126,7 +126,13 @@ class TestRtspArgvUsesProbe:
     def test_no_hard_coded_timeout_literal(self, rel):
         """Neither RTSP ffmpeg argv may pass a hard-coded ``-timeout``
         or ``-stimeout`` literal — both must come from the probe."""
-        src = (self._REPO_ROOT / rel).read_text()
+        # ⚠️ ``encoding="utf-8"`` is load-bearing on Windows: `read_text()` with
+        # no encoding uses the ANSI code page (cp1252 here), and this repo's
+        # source is UTF-8 — comments carry ⚠️ and em dashes throughout. The test
+        # went red the day a ⚠️ was added to `camera.py`, on a decode error that
+        # says nothing about ffmpeg flags. Any test that reads OUR source must
+        # name the encoding.
+        src = (self._REPO_ROOT / rel).read_text(encoding="utf-8")
         assert '"-timeout"' not in src, (
             f"{rel} hard-codes `-timeout` — this is the listen-mode option on "
             f"transitional ffmpeg (EADDRINUSE, #1504). Use rtsp_socket_timeout_flag()."

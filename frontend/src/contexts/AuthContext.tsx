@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { ApiError, api, getAuthToken, setAuthToken } from '../api/client';
 import type { Permission, UserResponse } from '../api/client';
 
-interface AuthContextType {
+export interface AuthContextType {
   user: UserResponse | null;
   /**
    * Kept for backward compatibility with consumers that used to check whether
@@ -24,7 +24,11 @@ interface AuthContextType {
   canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+// Exported for hosts that render app components without the real provider —
+// the Claude Design kit (`.design-sync/kit`) supplies a stub value so
+// `hasPermission()` answers without a backend. The app itself only ever mounts
+// `AuthProvider`.
+export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserResponse | null>(null);

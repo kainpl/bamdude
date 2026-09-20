@@ -1,6 +1,20 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, Select, String, Text, func, select
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    Select,
+    String,
+    Text,
+    func,
+    select,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -9,9 +23,31 @@ from backend.app.core.database import Base
 class PrintArchive(Base):
     __tablename__ = "print_archives"
 
+    # Fresh installs get what m168 adds to existing ones. Each was picked from a
+    # measured plan: the list sorted the whole filtered set in a temp B-tree, the
+    # per-printer view never used printer_id at all, and hide-duplicates grouped
+    # over the table on every page. See m168 for the before/after.
+    __table_args__ = (
+        Index("ix_print_archives_active_created", "deleted_at", "created_at"),
+        Index("ix_print_archives_printer_created", "printer_id", "created_at"),
+        # ⚠️ text(), not the mapped attributes: __table_args__ runs inside the
+        # class body, where the columns are not attributes yet. The doubled
+        # parentheses in m168's DDL are PostgreSQL's requirement for an
+        # expression index; SQLAlchemy emits its own here.
+        Index(
+            "ix_print_archives_effective_hash",
+            text("COALESCE(source_content_hash, content_hash)"),
+        ),
+    )
+
     id: Mapped[int] = mapped_column(primary_key=True)
     printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id"), nullable=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    # The order line this print was made for. Set by the dispatcher when the job
+    # carried one; NULL prints are attributed on read (services/order_metrics).
+    project_line_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_lines.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     # Link back to the library_files row this archive was dispatched from.
     # Populated at dispatch time (see background_dispatch.py) so library
     # usage stats (print_count, last_printed_at) can be driven off the

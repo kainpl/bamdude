@@ -127,3 +127,17 @@ class TestTheAdoptionItPrevents:
         withdraw_expected_print(PRINTER, FILENAME)
 
         assert _expected_prints.get((PRINTER, FILENAME)) is None
+
+
+def test_withdrawal_cannot_remove_a_later_registration_of_the_same_filename():
+    from backend.app import main
+
+    main.register_expected_print(9999, "same.3mf", 91001, ams_mapping=[0])
+    main.register_expected_print(9999, "same.3mf", 91002, ams_mapping=[1])
+    main.withdraw_expected_print(9999, "same.3mf", expected_archive_id=91001)
+    try:
+        assert main._expected_prints[(9999, "same.3mf")] == 91002
+        assert main._print_ams_mappings[91002] == [1]
+        assert 91001 not in main._print_ams_mappings
+    finally:
+        main.withdraw_expected_print(9999, "same.3mf", expected_archive_id=91002)

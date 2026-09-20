@@ -53,20 +53,21 @@ Output: `installers\windows\build\output\bamdude-windows-setup.exe`
 
 ## Signing
 
-**Every build is unsigned, release builds included.** Windows SmartScreen
-shows "Windows protected your PC" on first run; **More info** → **Run
-anyway** proceeds. There is no signing step in CI and no certificate to
-add one with.
+**Every build is unsigned, release builds included.** Windows
+SmartScreen shows "Windows protected your PC" on first run; **More
+info** → **Run anyway** proceeds. There is no signing step in CI and no
+certificate to add one with. (An earlier version of this file repeated
+upstream Bambuddy's "SignPath application in flight", which came along
+with the port of their installer pipeline and covered *their* project;
+BamDude's own application was withdrawn in 2026-09 — the programme asks
+for a publication footprint the project does not have yet, and nothing
+here depends on it.)
 
-An earlier version of this file promised SignPath OSS signing "in
-flight as of 2026-06-10". That sentence arrived with the port of
-upstream Bambuddy's installer pipeline and described *their*
-application, submitted before this repo had an installer at all. An OSS
-approval covers the project it was granted to, so wiring signing up
-here means applying on our own behalf first. The entry requirements —
-a public repository under an OSI licence — are already met (this repo
-is public and AGPL-3.0), so what is missing is the application itself,
-not eligibility.
+If a certificate ever arrives, the signing step goes between ISCC and
+the release upload, and two things in this folder have to change first:
+the installer must show the privacy policy and offer to disable
+telemetry at install time, and the `.exe` needs explicit `VersionInfo*`
+metadata (Inno defaults the binary version to `0.0.0.0`).
 
 ## CI build
 

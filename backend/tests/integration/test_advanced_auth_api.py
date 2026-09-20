@@ -379,19 +379,31 @@ class TestForgotPasswordAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_forgot_password_requires_advanced_auth(self, async_client: AsyncClient, admin_token: str):
-        """Forgot password returns 400 when advanced auth is disabled."""
+    async def test_forgot_password_needs_a_way_to_send_mail(self, async_client: AsyncClient, admin_token: str):
+        """Refused with no SMTP — and NOT because of ``advanced_auth_enabled``.
+
+        This test used to assert the opposite: that recovery required the
+        advanced-auth toggle. It no longer does. That setting bundles generated
+        passwords, login-by-email and notification mail, and tying recovery to
+        it meant an operator who had configured SMTP and tested it still got a
+        400 while the login page went on offering the link. What recovery
+        actually needs is a mail server.
+        """
         response = await async_client.post(
             "/api/v1/auth/forgot-password",
             json={"email": "test@test.com"},
         )
-        assert response.status_code == 400
-        assert "not enabled" in response.json()["detail"].lower()
+        assert response.status_code != 200
+        assert "email service is not configured" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_forgot_password_changes_password(self, async_client: AsyncClient, admin_token: str):
-        """After forgot-password, old password stops working."""
+    async def test_forgot_password_leaves_the_account_alone(self, async_client: AsyncClient, admin_token: str):
+        """⚠️ Inverted on purpose. This asserted that the old password stopped
+        working the moment somebody asked for a reset — which is precisely the
+        flaw: knowing an address was enough to lock its owner out of an account
+        they were happily using, and they never saw the message that did it.
+        The password now changes only when the emailed token is spent."""
         headers = {"Authorization": f"Bearer {admin_token}"}
 
         with patch("backend.app.api.routes.users.send_email"):
@@ -423,12 +435,12 @@ class TestForgotPasswordAPI:
                 json={"email": "resetme@test.com"},
             )
 
-        # Old password should no longer work
+        # The account is untouched until the link in the mail is used.
         login_resp = await async_client.post(
             "/api/v1/auth/login",
             json={"username": "resetme", "password": "OriginalPass123!"},
         )
-        assert login_resp.status_code == 401
+        assert login_resp.status_code == 200
 
 
 class TestAdminResetPasswordAPI:

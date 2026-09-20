@@ -295,7 +295,7 @@ class TestQueueDryingBlockFinallyMeansSomething:
         source = inspect.getsource(PrintScheduler.check_queue)
         idle_gate = source.index("if not printer_idle:")
         hold = source.index('"queue_drying_block"')
-        dispatch = source.index("await self._start_print(db, item)")
+        dispatch = source.index("await self._start_print(db, item,")
 
         assert idle_gate < hold < dispatch, (
             "the drying hold belongs with the availability checks, after the idle "

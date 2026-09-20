@@ -1,10 +1,11 @@
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
-APP_VERSION = "0.5.5"
+APP_VERSION = "0.6.0"
 GITHUB_REPO = "kainpl/bamdude"
 
 # Bug-report relay endpoint. The relay holds the GitHub PAT and creates issues
@@ -41,17 +42,126 @@ _plate_cal_dir = Path(_data_dir_env) / "plate_calibration" if _data_dir_env else
 _log_dir_env = os.environ.get("LOG_DIR")
 _log_dir = Path(_log_dir_env) if _log_dir_env else _app_dir / "logs"
 
+# Scratch directory for everything that stages a file before putting it in its
+# place: the backup (which copies the WHOLE data tree before zipping it), the
+# 3MF patcher, the timelapse encoder, the camera. It defaults under DATA_DIR
+# because the system temp is the one filesystem nobody sized for this — in
+# Docker that is the container's own layer, and on some NAS hosts a tmpfs,
+# i.e. RAM. Neither is where an operator expects a copy of their whole library
+# to land, and neither was chosen for it.
+#
+# ⚠️ Unlike the subsystem roots below this one IS an env override
+# (inv-data-dir-one-root-per-subsystem does not cover it): nothing renames
+# across it, and an operator whose DATA_DIR is a slow network volume needs to
+# be able to put scratch on a local disk.
+_temp_dir_env = os.environ.get("TEMP_DIR")
+_temp_dir = Path(_temp_dir_env) if _temp_dir_env else _data_dir / "tmp"
+
 
 def _get_database_path() -> Path:
     """Return the path to bamdude.db (may not exist yet)."""
     return _data_dir / "bamdude.db"
 
 
-# External DATABASE_URL takes priority (PostgreSQL support)
-_external_db_url = os.environ.get("DATABASE_URL")
+# DATABASE_URL selects the storage backend — one variable, three states:
+#   empty / unset            → SQLite at DATA_DIR/bamdude.db (the default)
+#   "embedded"               → the bundled PostgreSQL from the embedded-postgres
+#                              wheel, data under DATA_DIR/postgres/<major>
+#   postgresql+asyncpg://…   → an external PostgreSQL server
+# Anything else is refused here, at import, with a readable message — a bad
+# value used to surface only as a connection error at first use.
+
+
+def classify_database_url(raw: str | None) -> tuple[bool, str | None]:
+    """Read DATABASE_URL into (embedded, external_url).
+
+    ``(False, None)`` = SQLite, ``(True, None)`` = the bundled PostgreSQL,
+    ``(False, url)`` = an external server. Anything else raises here so a typo
+    is a startup error with a readable message, not a connection error later.
+    """
+    value = (raw or "").strip()
+    if value.lower() in ("embedded", "embedded://"):
+        return True, None
+    if not value:
+        return False, None
+    if not value.startswith(("postgresql", "sqlite")):
+        raise RuntimeError(
+            "DATABASE_URL must be empty (SQLite), 'embedded' (bundled PostgreSQL) or a "
+            f"postgresql+asyncpg:// URL; got a value starting with {value.split(':', 1)[0]!r}"
+        )
+    return False, value
+
+
+_embedded_db, _external_db_url = classify_database_url(os.environ.get("DATABASE_URL"))
 
 # Determine database path - only used for SQLite
-_db_path = _get_database_path() if not _external_db_url else None
+_db_path = _get_database_path() if not (_external_db_url or _embedded_db) else None
+
+
+def _embedded_pg_major() -> str:
+    """Major of the bundled PostgreSQL — the data directory is versioned by it."""
+    try:
+        from importlib.metadata import version
+
+        return version("embedded-postgres").split(".")[0]
+    except Exception:  # noqa: BLE001 — the wheel is missing; start() reports it properly
+        return "18"
+
+
+def _embedded_pg_paths(data_dir: Path) -> tuple[Path, Path]:
+    """(data directory of the cluster, password file) for the bundled server."""
+    root = data_dir / "postgres"
+    return root / _embedded_pg_major(), root / "password"
+
+
+def _ensure_embedded_password(password_file: Path) -> str:
+    """Create the server password once (URL-safe token, owner-only file)."""
+    if password_file.exists():
+        return password_file.read_text(encoding="utf-8").strip()
+    import secrets
+
+    password_file.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(24)
+    fd = os.open(password_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(token + "\n")
+    return token
+
+
+def _embedded_pg_port_for(data_dir: Path, pinned: int | None = None) -> int:
+    """The bundled server's port: pinned by EMBEDDED_PG_PORT, else chosen once.
+
+    Without the variable, the first start takes a free port and remembers it in
+    ``DATA_DIR/postgres/port`` so it stays put across restarts — an advanced
+    user finds it there next to the password file and connects with any client.
+    Setting EMBEDDED_PG_PORT pins a known port (6432, say) for the same purpose;
+    ``pinned`` is that value when it came through .env rather than the process.
+    """
+    if pinned:
+        return int(pinned)
+    from_env = (os.environ.get("EMBEDDED_PG_PORT") or "").strip()
+    if from_env:
+        return int(from_env)
+    port_file = data_dir / "postgres" / "port"
+    if port_file.exists():
+        return int(port_file.read_text(encoding="utf-8").strip())
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    port_file.parent.mkdir(parents=True, exist_ok=True)
+    port_file.write_text(str(port) + chr(10), encoding="utf-8")
+    return port
+
+
+def _embedded_pg_url(data_dir: Path, port: int) -> str:
+    _, password_file = _embedded_pg_paths(data_dir)
+    password = _ensure_embedded_password(password_file)
+    return f"postgresql+asyncpg://bamdude:{password}@127.0.0.1:{port}/bamdude"
+
+
+_embedded_pg_port = _embedded_pg_port_for(_data_dir) if _embedded_db else 0
 
 
 class Settings(BaseSettings):
@@ -61,6 +171,7 @@ class Settings(BaseSettings):
     # Paths - these accept env vars DATA_DIR, LOG_DIR etc.
     data_dir: Path = _data_dir
     log_dir: Path = _log_dir
+    temp_dir: Path = _temp_dir
     base_dir: Path = _data_dir  # For backwards compatibility (alias for data_dir)
     # Application install directory — where requirements.txt, the .git
     # tree, and frontend/ live. Distinct from data_dir on Docker (data is
@@ -70,9 +181,40 @@ class Settings(BaseSettings):
     # code tree rather than the data tree (#1240, etc.).
     app_dir: Path = _app_dir
     archive_dir: Path = _data_dir / "archive"
+    # Each subsystem owns a root under DATA_DIR (vault
+    # 40-invariants/inv-data-dir-one-root-per-subsystem): archive/ is the
+    # print history and nothing else. Derived, like archive_dir - never an
+    # env override, so every root is on one filesystem and m177's renames
+    # are atomic.
+    library_dir: Path = _data_dir / "library"
+    projects_dir: Path = _data_dir / "projects"
+    products_dir: Path = _data_dir / "products"
     plate_calibration_dir: Path = _plate_cal_dir  # Plate detection references
     static_dir: Path = _app_dir / "static"  # Static files are part of app, not data
-    database_url: str = _external_db_url or f"sqlite+aiosqlite:///{_db_path}"
+    database_url: str = (
+        _embedded_pg_url(_data_dir, _embedded_pg_port)
+        if _embedded_db
+        else (_external_db_url or f"sqlite+aiosqlite:///{_db_path}")
+    )
+
+    # Bundled PostgreSQL (DATABASE_URL=embedded) — see services/embedded_postgres.py.
+    embedded_postgres: bool = _embedded_db
+    embedded_pg_port: int = _embedded_pg_port
+    embedded_pg_data_dir: Path | None = _embedded_pg_paths(_data_dir)[0] if _embedded_db else None
+    embedded_pg_password_file: Path | None = _embedded_pg_paths(_data_dir)[1] if _embedded_db else None
+    # max_connections of the bundled server; the pool (20 + 80) plus a margin.
+    embedded_pg_max_connections: int = int(os.environ.get("EMBEDDED_PG_MAX_CONNECTIONS") or "120")
+    # The bundled server is registered as its own OS service (the Windows
+    # installer's BamDudePostgres, run by the SCM) rather than started as a child
+    # of this process. BamDude then only connects — it never runs initdb, writes
+    # the conf, starts or stops the server. Set by the installer in the service
+    # environment; unset everywhere else (child-process lifecycle, the default).
+    embedded_pg_external_service: bool = (os.environ.get("EMBEDDED_PG_EXTERNAL_SERVICE") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
     # Database connection-pool sizing. ``None`` = use the built-in, dialect-aware
     # default (PostgreSQL: pool_size 20 + max_overflow 80 + pre-ping + recycle
@@ -93,6 +235,11 @@ class Settings(BaseSettings):
     # the service's PATH — e.g. a fresh Windows winget install whose PATH change
     # hasn't reached an already-running shell/service yet.
     ffmpeg_path: str | None = None
+
+    # Camera ownership stays in-process unless a validated worker rollout is
+    # explicitly requested. Worker startup is fail-closed; it never falls back
+    # to a second inline owner after a containment or IPC failure.
+    camera_runtime: Literal["inline", "worker"] = "inline"
 
     # Logging
     log_level: str = "INFO"  # Override with LOG_LEVEL env var (DEBUG, INFO, WARNING, ERROR)
@@ -136,13 +283,42 @@ class Settings(BaseSettings):
         # Recalculate paths derived from data_dir
         object.__setattr__(self, "base_dir", self.data_dir)
         object.__setattr__(self, "archive_dir", self.data_dir / "archive")
-        # Recalculate database_url only for SQLite (don't overwrite external DATABASE_URL)
-        if not _external_db_url:
+        object.__setattr__(self, "library_dir", self.data_dir / "library")
+        object.__setattr__(self, "projects_dir", self.data_dir / "projects")
+        object.__setattr__(self, "products_dir", self.data_dir / "products")
+        # DATABASE_URL reaches us two ways: from the process environment, classified
+        # at import above, or from .env, which pydantic pours into the field only
+        # now — as the raw word "embedded" or a URL. Resolve from the field's final
+        # value so both routes end in the same place.
+        raw = (self.database_url or "").strip()
+        embedded = self.embedded_postgres or classify_database_url(raw)[0]
+        if embedded:
+            pgdata, password_file = _embedded_pg_paths(self.data_dir)
+            port = _embedded_pg_port_for(self.data_dir, pinned=self.embedded_pg_port or None)
+            object.__setattr__(self, "embedded_postgres", True)
+            object.__setattr__(self, "embedded_pg_data_dir", pgdata)
+            object.__setattr__(self, "embedded_pg_password_file", password_file)
+            object.__setattr__(self, "embedded_pg_port", port)
+            object.__setattr__(self, "database_url", _embedded_pg_url(self.data_dir, port))
+        elif not _external_db_url and (raw == "" or raw.startswith("sqlite")):
+            # Our own SQLite default: follow data_dir now that it is absolute.
+            # ``raw == ""`` covers an explicitly empty DATABASE_URL from the
+            # environment (a bare ``DATABASE_URL=`` in .env / a systemd or Docker
+            # env line) — pydantic pours that empty string into the field, and
+            # without this it stayed empty and the engine failed to parse it.
             db_path = self.data_dir / "bamdude.db"
             object.__setattr__(self, "database_url", f"sqlite+aiosqlite:///{db_path}")
 
 
-settings = Settings()
+# ⚠️ ``BAMDUDE_IGNORE_DOTENV`` makes this process ignore the ``.env`` beside it.
+# It exists for the test suite, and it is not a convenience: ``settings`` is a
+# singleton built at import, and pydantic-settings reads ``.env`` from the
+# WORKING DIRECTORY, so without this a developer's own file silently decides
+# what the tests measure. It cost a day on 2026-09-17 - a suite that hung for
+# an hour because ``CAMERA_RUNTIME=worker`` was set for the developer's farm,
+# and a test process that opened a connection to the live application database
+# because ``DATABASE_URL=embedded`` was too. Nothing in production sets it.
+settings = Settings(_env_file=None if os.getenv("BAMDUDE_IGNORE_DOTENV") else ".env")
 
 # Ensure directories exist
 settings.archive_dir.mkdir(parents=True, exist_ok=True)

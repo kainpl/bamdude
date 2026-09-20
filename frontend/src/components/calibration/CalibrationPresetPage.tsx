@@ -38,6 +38,7 @@ import {
 import { CalibrationBedTypePicker } from './preset-picker/CalibrationBedTypePicker';
 import { CalibrationSlicerPicker, type SlicerKind } from './preset-picker/CalibrationSlicerPicker';
 import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
+import { Select } from '../Select';
 import {
   buildCompatibilityIndex,
   presetCompatibility,
@@ -932,7 +933,7 @@ export function CalibrationPresetPage({
                     step="0.001"
                     value={paLineStep}
                     onChange={(e) => setPaLineStep(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                    className="accent-bambu-green w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
               </div>
@@ -1081,31 +1082,33 @@ export function CalibrationPresetPage({
         <div className="grid grid-cols-2 gap-2">
           <label className="block">
             <span className="text-xs text-bambu-gray">{t('filamentCali.preset.nozzleDia')}</span>
-            <select
+            <Select
+              size="sm"
+              className="w-full"
               value={nozzleDia}
               onChange={(e) => setNozzleDia(parseFloat(e.target.value))}
-              className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
             >
               {(capabilities?.nozzles ?? [{ diameter: 0.4 }]).map((n, i) => (
                 <option key={i} value={n.diameter ?? 0.4}>
                   {n.diameter ?? 0.4} mm
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label className="block">
             <span className="text-xs text-bambu-gray">{t('filamentCali.preset.nozzleType')}</span>
-            <select
+            <Select
+              size="sm"
+              className="w-full"
               value={nozzleVolType}
               onChange={(e) => setNozzleVolType(e.target.value as NozzleVolumeType)}
-              className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
             >
               <option value="standard">Standard</option>
               <option value="high_flow">High Flow</option>
               <option value="tpu_high_flow">TPU High Flow</option>
               <option value="e3d_high_flow">E3D High Flow</option>
               <option value="hybrid">Hybrid</option>
-            </select>
+            </Select>
           </label>
         </div>
       </section>

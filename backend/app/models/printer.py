@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -12,6 +12,9 @@ from backend.app.core.database import Base
 # imports every model) but a landmine in any isolated test that touched the
 # mapper registry. printer_location imports no models back, so no cycle.
 from backend.app.models.printer_location import PrinterLocation  # noqa: F401
+
+# Same reason: ``Printer.tags`` names "PrinterTag" as a string.
+from backend.app.models.printer_tag import PrinterTag  # noqa: F401
 
 
 class Printer(Base):
@@ -31,6 +34,52 @@ class Printer(Base):
     # selectin, not lazy: the printer list is read on every dashboard poll, and
     # a lazy load would be one extra query per printer on every one of them.
     location: Mapped["PrinterLocation | None"] = relationship(lazy="selectin")
+
+    # Labels, resolved. selectin like ``location``: PrinterResponse.model_validate
+    # reads this synchronously and a lazy hop there raises MissingGreenlet.
+    # viewonly: the link rows are written by ``printer_tag_service.replace_links``,
+    # never through this collection, so the ORM has no cascade to reason about.
+    tags: Mapped[list["PrinterTag"]] = relationship(
+        "PrinterTag", secondary="printer_tag_links", lazy="selectin", viewonly=True, order_by="PrinterTag.name_key"
+    )
+
+    @property
+    def tag_ids(self) -> list[int]:
+        """What a form posts back. A property so ``model_validate(printer)`` finds it —
+        the list route validates straight off the ORM row."""
+        return [tag.id for tag in self.tags]
+
+    @property
+    def plate_detection_roi(self) -> dict[str, float] | None:
+        """The camera ROI as one object, or None when no component was ever set.
+
+        A property for the same reason as ``tag_ids``: every printer response is
+        validated straight off the row (``PrinterResponse.model_validate``), and
+        the row carries only the four flat columns — so without this the nested
+        field on the response was ``null`` for every printer that had one saved.
+        Kept as a plain dict so Pydantic builds ``PlateDetectionROI`` from it.
+
+        The per-component defaults are the ones the (now deleted)
+        ``PrinterResponse.from_orm_with_roi`` applied, so a partially saved ROI
+        keeps working. ``is not None`` rather than ``or``: a saved 0.0 is a
+        legitimate edge of the frame, not a missing component.
+        """
+        parts = (
+            self.plate_detection_roi_x,
+            self.plate_detection_roi_y,
+            self.plate_detection_roi_w,
+            self.plate_detection_roi_h,
+        )
+        if all(p is None for p in parts):
+            return None
+        x, y, w, h = parts
+        return {
+            "x": x if x is not None else 0.15,
+            "y": y if y is not None else 0.35,
+            "w": w if w is not None else 0.70,
+            "h": h if h is not None else 0.55,
+        }
+
     nozzle_count: Mapped[int] = mapped_column(default=1)  # 1 or 2, auto-detected from MQTT
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     # Soft-retire: archived printers disappear from the whole app + MQTT while
@@ -82,6 +131,11 @@ class Printer(Base):
     # Bambuddy #1177.
     external_camera_snapshot_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     camera_rotation: Mapped[int] = mapped_column(default=0)  # 0, 90, 180, 270 degrees
+    # Chamber light for the camera (services/camera_light): "off" excludes this
+    # printer; "inherit" defers to the farm's camera_light_auto, which is the
+    # master switch ("on" is still accepted and reads as "inherit"). Not per
+    # model — the model only says whether there IS a light. m178.
+    camera_light_auto: Mapped[str] = mapped_column(String(8), default="inherit", server_default="inherit")
     # Plate detection - check if build plate is empty before starting print
     plate_detection_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # ROI for plate detection (percentages: 0.0-1.0)
@@ -100,6 +154,12 @@ class Printer(Base):
     swap_profile: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # Require user to confirm plate is cleared before next queued print starts
     require_plate_clear: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Persisted per-printer AMS policies, ONE namespaced JSON object (m175):
+    # {"backup_compatibility": {...}}. Read through
+    # services/ams_backup_compatibility.BackupCompatibilityPolicy.from_printer;
+    # written only by update_printer, which merges a namespace and assigns a NEW
+    # dict — SQLAlchemy JSON does not track in-place mutation.
+    ams_policies: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     # Persisted plate-clear gate: set True at print-end when require_plate_clear
     # is on; cleared when the user confirms or dispatch runs. Persisting it in
     # DB (vs the previous in-memory set) means Auto Off power cycles can't
@@ -115,7 +175,6 @@ class Printer(Base):
     # hardware that outlive the printer they were wired to, so deleting the
     # printer unbinds them rather than deleting them.
     smart_sensors: Mapped[list["SmartSensor"]] = relationship(back_populates="printer")
-    notification_providers: Mapped[list["NotificationProvider"]] = relationship(back_populates="printer")
     maintenance_items: Mapped[list["PrinterMaintenance"]] = relationship(
         back_populates="printer", cascade="all, delete-orphan"
     )
@@ -131,7 +190,6 @@ class Printer(Base):
 from backend.app.models.ams_history import AMSSensorHistory  # noqa: E402
 from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.maintenance import PrinterMaintenance  # noqa: E402
-from backend.app.models.notification import NotificationProvider  # noqa: E402
 from backend.app.models.printer_sensor_history import PrinterSensorHistory  # noqa: E402, F401
 from backend.app.models.smart_plug import SmartPlug  # noqa: E402
 from backend.app.models.smart_sensor import SmartSensor  # noqa: E402

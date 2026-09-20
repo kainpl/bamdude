@@ -23,6 +23,7 @@ export function FilamentMapping({
   defaultExpanded = false,
   forceColorMatch,
   onForceColorMatchChange,
+  requireExactColor = false,
   plateLabel,
 }: FilamentMappingProps & { defaultExpanded?: boolean }) {
   const { t } = useTranslation();
@@ -43,8 +44,19 @@ export function FilamentMapping({
     enabled: !!printerId,
   });
 
-  const { loadedFilaments, filamentComparison, hasTypeMismatch, hasColorMismatch } =
+  const { loadedFilaments, filamentComparison: rawFilamentComparison, hasTypeMismatch: rawTypeMismatch, hasColorMismatch: rawColorMismatch } =
     useFilamentMapping(filamentReqs, printerStatus, manualMappings);
+  // The global exact-colour rule is a routing rule, not merely a warning.  The
+  // old panel still painted it yellow, which made the checkbox look inert even
+  // though dispatch would subsequently reject that selection.
+  const filamentComparison = useMemo(
+    () => requireExactColor
+      ? rawFilamentComparison.map(item => item.status === 'type_only' ? { ...item, status: 'mismatch' as const } : item)
+      : rawFilamentComparison,
+    [requireExactColor, rawFilamentComparison],
+  );
+  const hasTypeMismatch = rawTypeMismatch || (requireExactColor && rawColorMismatch);
+  const hasColorMismatch = !requireExactColor && rawColorMismatch;
 
   // Per-slot sub-brand + material-disambiguated colour labels (#1718). Shared
   // hook, extracted back when a second (model-mode) panel consumed it, so the
@@ -169,7 +181,7 @@ export function FilamentMapping({
         <Circle className="w-4 h-4" fill={statusColor} stroke="none" />
         <span>{plateLabel ? `${t('printModal.filamentMapping')} — ${plateLabel}` : t('printModal.filamentMapping')}</span>
         {hasTypeMismatch ? (
-          <span className="text-xs text-orange-700 dark:text-orange-400">({t('printModal.filamentTypeNotFound')})</span>
+          <span className="text-xs text-orange-700 dark:text-orange-400">({t(requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeNotFound')})</span>
         ) : hasColorMismatch ? (
           <span className="text-xs text-yellow-700 dark:text-yellow-400">({t('printModal.filamentColorMismatch')})</span>
         ) : (
@@ -299,7 +311,7 @@ export function FilamentMapping({
                     <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
                   </span>
                 ) : (
-                  <span title={t('printModal.filamentTypeNotLoaded')}>
+                  <span title={t(requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeNotLoaded')}>
                     <AlertTriangle className="w-3 h-3 text-orange-600 dark:text-orange-400" />
                   </span>
                 )}
@@ -327,7 +339,9 @@ export function FilamentMapping({
             </span>
           </div>
           {hasTypeMismatch && (
-            <p className="text-xs text-orange-700 dark:text-orange-400 mt-2">{t('printModal.filamentTypeMismatch')}</p>
+            <p className="text-xs text-orange-700 dark:text-orange-400 mt-2">
+              {t(requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeMismatch')}
+            </p>
           )}
         </div>
       )}

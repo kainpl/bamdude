@@ -24,7 +24,6 @@ vi.mock('../../api/client', () => ({
     getKProfiles: vi.fn(),
     configureAmsSlot: vi.fn(),
     getCloudSettingDetail: vi.fn(),
-    saveSlotPreset: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({}),
     updateSettings: vi.fn().mockResolvedValue({}),
     getLocalPresets: vi.fn(),
@@ -99,7 +98,6 @@ describe('ConfigureAmsSlotModal', () => {
     (api.getCloudSettings as ReturnType<typeof vi.fn>).mockResolvedValue(mockCloudSettings);
     (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue(mockKProfiles);
     (api.configureAmsSlot as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true });
-    (api.saveSlotPreset as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true });
     (api.getLocalPresets as ReturnType<typeof vi.fn>).mockResolvedValue({ filament: [] });
     (api.getBuiltinFilaments as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (api.searchColors as ReturnType<typeof vi.fn>).mockResolvedValue([]);

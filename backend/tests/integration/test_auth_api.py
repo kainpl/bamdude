@@ -763,5 +763,7 @@ class TestAuthMiddlewarePublicRoutes:
             json={"email": "test@example.com"},
         )
         assert response.status_code != 401
-        # Likely 400 because advanced auth isn't configured - still not 401.
-        assert response.status_code in [200, 400]
+        # Refused here because no SMTP is configured in this fixture — the point
+        # is only that the refusal is about the mail server, never about a
+        # missing bearer token.
+        assert response.status_code != 503

@@ -13,9 +13,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Copy, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import { api, type LongLivedToken } from '../../api/client';
+import { Modal } from '../Modal';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { parseUTCDate } from '../../utils/date';
+import { monitorUrl } from '../../features/monitor/location';
+import { Select } from '../Select';
 
 const DEFAULT_LIFETIME_DAYS = 90;
 const MAX_LIFETIME_DAYS = 365;
@@ -41,13 +44,16 @@ interface CreateTokenFormProps {
 
 function CreateTokenForm({ onCreated }: CreateTokenFormProps) {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
+  const canCreateMonitor = hasPermission('api_keys:create') && hasPermission('printers:read') && hasPermission('queue:read');
+  const canCreateCamera = hasPermission('camera:view');
   const { showToast } = useToast();
   const [name, setName] = useState('');
   const [days, setDays] = useState<number>(DEFAULT_LIFETIME_DAYS);
   // Each scope is a separate grant, never implied by another (upstream #2613).
   // 'overlay' additionally reveals the file being printed, which is exactly why
   // it can't just be folded into 'camera_stream'.
-  const [scope, setScope] = useState<'camera_stream' | 'camwall' | 'overlay'>('camera_stream');
+  const [scope, setScope] = useState(canCreateCamera ? 'camera_stream' : 'monitor');
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -63,11 +69,11 @@ function CreateTokenForm({ onCreated }: CreateTokenFormProps) {
       onCreated(created);
       setName('');
       setDays(DEFAULT_LIFETIME_DAYS);
-      setScope('camera_stream');
+      setScope(canCreateCamera ? 'camera_stream' : 'monitor');
       showToast(t('cameraTokens.toast.created'));
     } catch (err) {
       showToast(
-        err instanceof Error ? err.message : t('cameraTokens.toast.createFailed'),
+        err instanceof Error && err.message === 'monitor_token_permission_denied' ? t('monitor.tokenPermissionDenied') : err instanceof Error ? err.message : t('cameraTokens.toast.createFailed'),
         'error',
       );
     } finally {
@@ -78,7 +84,7 @@ function CreateTokenForm({ onCreated }: CreateTokenFormProps) {
   return (
     <form
       onSubmit={handleSubmit}
-      className="bg-bambu-dark-secondary rounded-lg p-4 mb-6 border border-bambu-dark-tertiary"
+      className="bg-bambu-dark-secondary rounded-lg p-4 mb-4 border border-bambu-dark-tertiary"
     >
       <h3 className="text-base font-semibold text-white mb-3">
         {t('cameraTokens.create.title')}
@@ -94,16 +100,17 @@ function CreateTokenForm({ onCreated }: CreateTokenFormProps) {
           className="px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
           aria-label={t('cameraTokens.create.nameLabel')}
         />
-        <select
+        <Select
           value={scope}
-          onChange={(e) => setScope(e.target.value as 'camera_stream' | 'camwall' | 'overlay')}
-          className="px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
+          onChange={(e) => setScope(e.target.value)}
           aria-label={t('cameraTokens.create.scopeLabel')}
         >
-          <option value="camera_stream">{t('cameraTokens.scope.cameraStream')}</option>
-          <option value="camwall">{t('cameraTokens.scope.camwall')}</option>
-          <option value="overlay">{t('cameraTokens.scope.overlay')}</option>
-        </select>
+          {canCreateCamera && <option value="camera_stream">{t('cameraTokens.scope.cameraStream')}</option>}
+          {canCreateCamera && <option value="camwall">{t('cameraTokens.scope.camwall')}</option>}
+          {canCreateCamera && <option value="overlay">{t('cameraTokens.scope.overlay')}</option>}
+          {canCreateMonitor && <option value="monitor">{t('monitor.tokenScope')}</option>}
+        </Select>
+        {scope === 'monitor' && <p className="text-sm text-bambu-gray md:col-span-4 md:order-last">{t('monitor.tokenDescription')}</p>}
         <input
           type="number"
           min={1}
@@ -145,12 +152,14 @@ interface ConfirmRevokeModalProps {
 function ConfirmRevokeModal({ token, onConfirm, onCancel }: ConfirmRevokeModalProps) {
   const { t } = useTranslation();
   return (
-    <div
-      className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
-      role="dialog"
-      aria-modal="true"
+    <Modal
+      onClose={onCancel}
+      hideClose
+      ariaLabel={t('cameraTokens.confirmRevoke.title')}
+      size="md"
+      panelStyle={{ borderColor: 'color-mix(in oklab, var(--color-red-500) 40%, transparent)' }}
     >
-      <div className="bg-bambu-dark-secondary rounded-lg p-6 max-w-md w-full border border-red-500/40">
+      <div className="p-4">
         <div className="flex items-start gap-3 mb-4">
           <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
           <div>
@@ -179,7 +188,7 @@ function ConfirmRevokeModal({ token, onConfirm, onCancel }: ConfirmRevokeModalPr
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -193,17 +202,17 @@ function JustCreatedModal({ token, onClose }: JustCreatedModalProps) {
   const { showToast } = useToast();
   const plaintext = token.token ?? '';
 
-  const handleCopy = async () => {
+  const handleCopy = async (value = plaintext) => {
     if (!plaintext) return;
     try {
       // Modern clipboard API requires a secure context (HTTPS or localhost).
       // Fall back to a hidden textarea + execCommand so users on plain HTTP
       // (LAN deployments) can still copy the token.
       if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(plaintext);
+        await navigator.clipboard.writeText(value);
       } else {
         const ta = document.createElement('textarea');
-        ta.value = plaintext;
+        ta.value = value;
         ta.style.position = 'fixed';
         ta.style.opacity = '0';
         document.body.appendChild(ta);
@@ -221,8 +230,14 @@ function JustCreatedModal({ token, onClose }: JustCreatedModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary rounded-lg p-6 max-w-2xl w-full border border-bambu-green/40">
+    <Modal
+      onClose={onClose}
+      hideClose
+      ariaLabel={t('cameraTokens.created.title')}
+      size="2xl"
+      panelStyle={{ borderColor: 'color-mix(in oklab, var(--color-bambu-green) 40%, transparent)' }}
+    >
+      <div className="p-4">
         <div className="flex items-start gap-3 mb-4">
           <AlertTriangle className="w-6 h-6 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
           <div>
@@ -240,13 +255,17 @@ function JustCreatedModal({ token, onClose }: JustCreatedModalProps) {
           </code>
           <button
             type="button"
-            onClick={handleCopy}
+            onClick={() => void handleCopy()}
             className="flex items-center gap-2 px-3 py-2 bg-bambu-green text-white rounded-md hover:bg-bambu-green/90"
           >
             <Copy className="w-4 h-4" />
             {t('cameraTokens.created.copy')}
           </button>
         </div>
+        {token.scope === 'monitor' && <div className="mb-4 space-y-2">
+          <p className="text-sm text-bambu-gray">{t('monitor.tokenDescription')}</p>
+          <button type="button" className="text-bambu-green underline text-sm" onClick={() => void handleCopy(new URL(monitorUrl('printers', undefined, plaintext), window.location.origin).href)}>{t('monitor.copyTvLink')}</button>
+        </div>}
         <div className="flex justify-end">
           <button
             type="button"
@@ -257,7 +276,7 @@ function JustCreatedModal({ token, onClose }: JustCreatedModalProps) {
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -270,10 +289,11 @@ interface TokenRowProps {
 
 function TokenRow({ token, showOwner, ownerLabel, onRevoke }: TokenRowProps) {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
   const expired = isExpired(token.expires_at);
   return (
     <tr className="border-b border-bambu-dark-tertiary last:border-b-0">
-      <td className="py-3 px-3 text-white">{token.name}</td>
+      <td className="py-3 px-3 text-white">{token.name}{token.scope === 'monitor' && <span className="block text-xs text-bambu-gray">{t('monitor.tokenScope')}</span>}</td>
       {showOwner && <td className="py-3 px-3 text-bambu-gray">{ownerLabel}</td>}
       <td className="py-3 px-3 text-bambu-gray font-mono text-xs">{token.lookup_prefix}…</td>
       <td className="py-3 px-3 text-bambu-gray">{formatDate(token.created_at)}</td>
@@ -290,6 +310,7 @@ function TokenRow({ token, showOwner, ownerLabel, onRevoke }: TokenRowProps) {
         <button
           type="button"
           onClick={() => onRevoke(token.id)}
+          disabled={!hasPermission(token.scope === 'monitor' ? 'api_keys:delete' : 'camera:view')}
           className="inline-flex items-center gap-1 px-2 py-1 text-sm text-red-700 dark:text-red-400 hover:text-red-900 dark:hover:text-red-300"
           title={t('cameraTokens.list.revoke')}
         >
@@ -351,7 +372,7 @@ function TokenTable({ tokens, showOwner, userIdToName, onRevoke, emptyMessage }:
  */
 export default function CameraTokensPanel() {
   const { t } = useTranslation();
-  const { user, isAdmin } = useAuth();
+  const { user, isAdmin, hasPermission } = useAuth();
   const { showToast } = useToast();
 
   const [myTokens, setMyTokens] = useState<LongLivedToken[]>([]);
@@ -429,14 +450,14 @@ export default function CameraTokensPanel() {
         {t('cameraTokens.description')}
       </p>
 
-      <CreateTokenForm
+      {(hasPermission('camera:view') || (hasPermission('api_keys:create') && hasPermission('printers:read') && hasPermission('queue:read'))) && <CreateTokenForm
         onCreated={(token) => {
           setJustCreated(token);
           void refresh();
         }}
-      />
+      />}
 
-      <div className="mb-6">
+      <div className="mb-4">
         <h3 className="text-base font-semibold text-white mb-3">
           {t('cameraTokens.list.myTitle')}
         </h3>

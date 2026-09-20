@@ -5,7 +5,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import { setAuthToken, getAuthToken, api } from '../../api/client';
+import { setAuthToken, getAuthToken, api, supportApi } from '../../api/client';
 
 // Mock localStorage
 const localStorageMock = {
@@ -36,6 +36,38 @@ afterEach(() => {
   setAuthToken(null);
 });
 afterAll(() => server.close());
+
+describe('Log file downloads', () => {
+  it.each([
+    ['bamdude.log', '/api/v1/support/logs/download'],
+    ['bamdude-2026-09-12.log', '/api/v1/support/log-archives/bamdude-2026-09-12.log/download'],
+  ])('downloads %s through its authenticated endpoint', async (filename, path) => {
+    let authorization: string | null = null;
+    let savedFilename = '';
+    const originalCreate = window.URL.createObjectURL;
+    const originalRevoke = window.URL.revokeObjectURL;
+    window.URL.createObjectURL = vi.fn(() => 'blob:log');
+    window.URL.revokeObjectURL = vi.fn();
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      savedFilename = this.download;
+    });
+    server.use(http.get(path, ({ request }) => {
+      authorization = request.headers.get('Authorization');
+      return HttpResponse.text('current log contents');
+    }));
+    try {
+      setAuthToken('log-reader-token');
+      await supportApi.downloadLogArchive(filename);
+      expect(authorization).toBe('Bearer log-reader-token');
+      expect(savedFilename).toBe(filename);
+      expect(window.URL.revokeObjectURL).toHaveBeenCalledWith('blob:log');
+    } finally {
+      window.URL.createObjectURL = originalCreate;
+      window.URL.revokeObjectURL = originalRevoke;
+      click.mockRestore();
+    }
+  });
+});
 
 describe('Auth Token Management', () => {
   it('setAuthToken stores token in localStorage', () => {
@@ -143,37 +175,29 @@ describe('API Client Auth Header', () => {
 });
 
 describe('FormData requests include auth header', () => {
-  it('importProjectFile includes Authorization header', async () => {
-    // Mock fetch directly for FormData requests (MSW can be flaky with multipart in some environments)
+  it('uploadProjectAttachment includes Authorization header', async () => {
+    // Mock fetch directly for FormData requests (MSW can be flaky with
+    // multipart in some environments).
     const originalFetch = global.fetch;
     let capturedHeaders: Headers | null = null;
 
     global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-      if (url.includes('/projects/import/file')) {
+      if (url.includes('/projects/1/attachments')) {
         capturedHeaders = new Headers(init?.headers);
-        return Promise.resolve(new Response(JSON.stringify({
-          id: 1,
-          name: 'Test Project',
-          description: '',
-          total_cost: 0,
-          total_print_time_seconds: 0,
-          total_prints: 0,
-          total_quantity: 0,
-          status: 'active',
-          due_date: null,
-          created_at: '2026-01-01T00:00:00Z',
-          updated_at: '2026-01-01T00:00:00Z',
-          archives: [],
-          bom_items: [],
-        }), { status: 200 }));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ status: 'ok', filename: 'a.pdf', original_name: 'a.pdf', attachments: [] }),
+            { status: 200 },
+          ),
+        );
       }
       return originalFetch(url, init);
     });
 
     try {
       setAuthToken('test-token');
-      const file = new File(['test content'], 'test.zip', { type: 'application/zip' });
-      await api.importProjectFile(file);
+      const file = new File(['test content'], 'a.pdf', { type: 'application/pdf' });
+      await api.uploadProjectAttachment(1, file);
 
       expect(capturedHeaders).not.toBeNull();
       expect(capturedHeaders!.get('Authorization')).toBe('Bearer test-token');
@@ -182,27 +206,443 @@ describe('FormData requests include auth header', () => {
     }
   });
 
-  it('exportProjectZip includes Authorization header', async () => {
+  it('sendForm sends the client timezone, exactly as request() does', async () => {
+    // "Every request carries it" is the only version of this rule that cannot
+    // be forgotten on the next new endpoint — and a multipart call is a call
+    // like any other: an import answers with dated notes, an upload's response
+    // carries `uploaded_at`. `request()` has sent the header from the start;
+    // `sendForm` was the one door it was missing.
+    const originalFetch = global.fetch;
     let capturedHeaders: Headers | null = null;
 
+    global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes('/products/7/attachments')) {
+        capturedHeaders = new Headers(init?.headers);
+        return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+      }
+      return originalFetch(url, init);
+    });
+
+    try {
+      const file = new File(['x'], 'bom.csv', { type: 'text/csv' });
+      await api.uploadProductAttachment(7, file, 'bom_docs');
+
+      expect(capturedHeaders).not.toBeNull();
+      // The zone is whatever the runtime reports; the point is that it is sent
+      // and that it matches what `request()` would have sent.
+      expect(capturedHeaders!.get('X-Client-Timezone')).toBe(
+        Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+      );
+      // The browser owns `Content-Type` for multipart — it carries the boundary.
+      expect(capturedHeaders!.get('Content-Type')).toBeNull();
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('a blob download includes the Authorization header', async () => {
+    // The blob paths build their own `fetch` rather than going through
+    // `request()`, so the header is attached by hand in each one — which is
+    // exactly the thing that can be forgotten. jsdom has no object-URL
+    // implementation, so the download's anchor plumbing is stubbed.
+    let capturedHeaders: Headers | null = null;
+    const createObjectURL = vi.fn(() => 'blob:stub');
+    const revokeObjectURL = vi.fn();
+    const originalCreate = window.URL.createObjectURL;
+    const originalRevoke = window.URL.revokeObjectURL;
+    window.URL.createObjectURL = createObjectURL;
+    window.URL.revokeObjectURL = revokeObjectURL;
+    // jsdom answers a real anchor click with "Not implemented: navigation".
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
     server.use(
-      http.get('/api/v1/projects/:projectId/export', ({ request }) => {
+      http.get('/api/v1/library/files/:fileId/download', ({ request }) => {
         capturedHeaders = request.headers;
-        const zipContent = new Uint8Array([0x50, 0x4b, 0x03, 0x04]); // ZIP magic bytes
-        return new HttpResponse(zipContent, {
+        return new HttpResponse(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), {
           status: 200,
           headers: {
             'Content-Type': 'application/zip',
-            'Content-Disposition': 'attachment; filename="project.zip"',
+            'Content-Disposition': 'attachment; filename="file.3mf"',
           },
         });
-      })
+      }),
     );
 
-    setAuthToken('test-token');
-    await api.exportProjectZip(1);
+    try {
+      setAuthToken('test-token');
+      await api.downloadLibraryFile(1);
 
-    expect(capturedHeaders).not.toBeNull();
-    expect(capturedHeaders!.get('Authorization')).toBe('Bearer test-token');
+      expect(capturedHeaders).not.toBeNull();
+      expect(capturedHeaders!.get('Authorization')).toBe('Bearer test-token');
+    } finally {
+      window.URL.createObjectURL = originalCreate;
+      window.URL.revokeObjectURL = originalRevoke;
+      click.mockRestore();
+    }
+  });
+});
+
+/**
+ * ⚠️ A multipart upload recovers from an expired access token exactly like a
+ * JSON call does.
+ *
+ * `sendForm()` cannot go through `request()` — `request()` sets
+ * `Content-Type: application/json` on every call, which would replace the
+ * boundary header the browser writes for a `FormData` body and turn a perfectly
+ * good file into a 422. What it CAN share is everything else, and for one
+ * release it shared none of it: an upload started on a tab idle past the access
+ * token's hour died with a bare "Not authenticated" and lost the file the
+ * operator had picked, while every JSON call beside it refreshed and retried.
+ *
+ * The `FormData` survives the retry because `fetch` serialises it per call — it
+ * is not a consumed stream.
+ */
+/**
+ * ⚠️ **The export's filename is the operator's, and operators do not type
+ * ASCII.** A product called «Лампа» exports as `Лампа_<date>.zip`; the server
+ * sends that in `filename*=UTF-8''…` and a transliterated `filename=` beside
+ * it for clients that cannot read the first. Reading the ASCII half first would
+ * silently save every non-Latin product under the fallback name, which looks
+ * like nothing went wrong.
+ *
+ * Both halves of the blob pair are spied on: a `createObjectURL` without its
+ * `revokeObjectURL` leaks the whole archive for as long as the tab lives.
+ */
+describe('downloadProductExport', () => {
+  /** jsdom has no object-URL implementation and answers a real anchor click
+   *  with "Not implemented: navigation", so the saving plumbing is stubbed and
+   *  the anchor is read at the moment it is clicked. */
+  function stubSaving() {
+    const created: Blob[] = [];
+    const revoked: string[] = [];
+    const downloads: string[] = [];
+    const originalCreate = window.URL.createObjectURL;
+    const originalRevoke = window.URL.revokeObjectURL;
+    window.URL.createObjectURL = vi.fn((blob: Blob) => {
+      created.push(blob);
+      return 'blob:export-stub';
+    }) as unknown as typeof window.URL.createObjectURL;
+    window.URL.revokeObjectURL = vi.fn((url: string) => {
+      revoked.push(url);
+    }) as unknown as typeof window.URL.revokeObjectURL;
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        downloads.push(this.download);
+      });
+    return {
+      created,
+      revoked,
+      downloads,
+      restore: () => {
+        window.URL.createObjectURL = originalCreate;
+        window.URL.revokeObjectURL = originalRevoke;
+        click.mockRestore();
+      },
+    };
+  }
+
+  const answerWith = (disposition: string) =>
+    server.use(
+      http.get('/api/v1/products/:productId/export', () =>
+        new HttpResponse(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/zip', 'Content-Disposition': disposition },
+        }),
+      ),
+    );
+
+  it('saves under the UTF-8 name, not the ASCII fallback beside it', async () => {
+    const saving = stubSaving();
+    answerWith(
+      'attachment; filename="fallback.zip"; ' +
+        "filename*=UTF-8''%D0%9B%D0%B0%D0%BC%D0%BF%D0%B0_2026-09-04.zip",
+    );
+
+    try {
+      setAuthToken('test-token');
+      await api.downloadProductExport(9);
+
+      expect(saving.downloads).toEqual(['Лампа_2026-09-04.zip']);
+      expect(saving.created).toHaveLength(1);
+      expect(saving.revoked).toEqual(['blob:export-stub']);
+    } finally {
+      saving.restore();
+    }
+  });
+
+  it('falls back to the plain filename when that is all the server sent', async () => {
+    const saving = stubSaving();
+    answerWith('attachment; filename="plain.zip"');
+
+    try {
+      setAuthToken('test-token');
+      await api.downloadProductExport(9);
+
+      expect(saving.downloads).toEqual(['plain.zip']);
+    } finally {
+      saving.restore();
+    }
+  });
+
+  it('throws an ApiError on a refusal instead of saving the error body', async () => {
+    const saving = stubSaving();
+    server.use(
+      http.get('/api/v1/products/:productId/export', () =>
+        HttpResponse.json({ detail: 'Not permitted' }, { status: 403 }),
+      ),
+    );
+
+    try {
+      setAuthToken('test-token');
+      await expect(api.downloadProductExport(9)).rejects.toMatchObject({
+        name: 'ApiError',
+        status: 403,
+        message: 'Not permitted',
+      });
+      expect(saving.created).toHaveLength(0);
+      expect(saving.downloads).toEqual([]);
+    } finally {
+      saving.restore();
+    }
+  });
+});
+
+describe('sendForm recovers from an expired access token', () => {
+  it('refreshes once and re-sends the multipart body', async () => {
+    const originalFetch = global.fetch;
+    const seen: string[] = [];
+    let refreshes = 0;
+
+    global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes('/auth/refresh')) {
+        refreshes += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: 'fresh-token' }), { status: 200 }),
+        );
+      }
+      if (href.includes('/products/import')) {
+        seen.push(new Headers(init?.headers).get('Authorization') ?? '');
+        if (seen.length === 1) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ detail: 'Could not validate credentials' }), { status: 401 }),
+          );
+        }
+        // The retry must still carry the body, not an empty request.
+        expect(init?.body).toBeInstanceOf(FormData);
+        return Promise.resolve(
+          new Response(JSON.stringify({ product: { id: 3 }, warnings: [] }), { status: 200 }),
+        );
+      }
+      return originalFetch(url, init);
+    });
+
+    try {
+      setAuthToken('stale-token');
+      const result = await api.importProduct(new File(['PK'], 'p.zip'), null);
+
+      expect(refreshes).toBe(1);
+      expect(seen).toEqual(['Bearer stale-token', 'Bearer fresh-token']);
+      expect(result.product.id).toBe(3);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('throws an ApiError a caller can branch on, not a bare Error', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/products/import')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ detail: 'An import may be at most 1 bytes' }), { status: 413 }),
+        );
+      }
+      return originalFetch(url, init);
+    });
+
+    try {
+      setAuthToken('test-token');
+      await expect(api.importProduct(new File(['PK'], 'p.zip'), null)).rejects.toMatchObject({
+        name: 'ApiError',
+        status: 413,
+        message: 'An import may be at most 1 bytes',
+      });
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
+describe('getLibraryFilesPaged (task 2, 2026-08-29 server-driven-lists)', () => {
+  const emptyPage = { items: [], meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 } };
+
+  it('always sends `page` even with no params — the compat switch for the envelope', async () => {
+    let query: URLSearchParams | null = null;
+    server.use(
+      http.get('/api/v1/library/files', ({ request }) => {
+        query = new URL(request.url).searchParams;
+        return HttpResponse.json(emptyPage);
+      }),
+    );
+
+    await api.getLibraryFilesPaged();
+
+    expect(query!.get('page')).toBe('1');
+    // None of the optional filters are sent when omitted.
+    expect(query!.has('folder_id')).toBe(false);
+    expect(query!.has('q')).toBe(false);
+    expect(query!.has('file_type')).toBe(false);
+    expect(query!.has('unprinted_only')).toBe(false);
+    expect(query!.has('username')).toBe(false);
+    expect(query!.has('sort_by')).toBe(false);
+    expect(query!.has('recursive')).toBe(false);
+    expect(query!.getAll('tag_ids')).toEqual([]);
+  });
+
+  it('sends every filter, the sort and the page', async () => {
+    let query: URLSearchParams | null = null;
+    server.use(
+      http.get('/api/v1/library/files', ({ request }) => {
+        query = new URL(request.url).searchParams;
+        return HttpResponse.json(emptyPage);
+      }),
+    );
+
+    await api.getLibraryFilesPaged({
+      folder_id: 7,
+      product_id: 3,
+      include_root: false,
+      scope: 'external',
+      tag_ids: [1, 2],
+      recursive: true,
+      folder_scope: true,
+      q: 'benchy',
+      file_type: 'gcode',
+      unprinted_only: true,
+      username: 'alice',
+      sort_by: 'date_desc',
+      page: 2,
+      per_page: 25,
+    });
+
+    expect(query!.get('folder_id')).toBe('7');
+    // `product_id`, the filter the route actually reads — `project_id` was
+    // sent for months and dropped on the floor server-side.
+    expect(query!.get('product_id')).toBe('3');
+    expect(query!.has('project_id')).toBe(false);
+    expect(query!.get('include_root')).toBe('false');
+    expect(query!.get('external_only')).toBe('true');
+    expect(query!.has('internal_only')).toBe(false);
+    expect(query!.getAll('tag_ids')).toEqual(['1', '2']);
+    expect(query!.get('recursive')).toBe('true');
+    expect(query!.get('folder_scope')).toBe('true');
+    expect(query!.get('q')).toBe('benchy');
+    expect(query!.get('file_type')).toBe('gcode');
+    expect(query!.get('unprinted_only')).toBe('true');
+    expect(query!.get('username')).toBe('alice');
+    expect(query!.get('sort_by')).toBe('date_desc');
+    expect(query!.get('page')).toBe('2');
+    expect(query!.get('per_page')).toBe('25');
+  });
+
+  it('maps scope=internal to internal_only, not external_only', async () => {
+    let query: URLSearchParams | null = null;
+    server.use(
+      http.get('/api/v1/library/files', ({ request }) => {
+        query = new URL(request.url).searchParams;
+        return HttpResponse.json(emptyPage);
+      }),
+    );
+
+    await api.getLibraryFilesPaged({ scope: 'internal' });
+
+    expect(query!.get('internal_only')).toBe('true');
+    expect(query!.has('external_only')).toBe(false);
+  });
+
+  it('sends `all=true` and omits `per_page`, but still sends `page`', async () => {
+    let query: URLSearchParams | null = null;
+    server.use(
+      http.get('/api/v1/library/files', ({ request }) => {
+        query = new URL(request.url).searchParams;
+        return HttpResponse.json(emptyPage);
+      }),
+    );
+
+    await api.getLibraryFilesPaged({ all: true, per_page: 25, page: 3 });
+
+    expect(query!.get('all')).toBe('true');
+    expect(query!.has('per_page')).toBe(false);
+    // ⚠️ Backend reads `page is not None` as the paginate switch even under
+    // `all` (offset/limit come from the `all` branch instead) — dropping this
+    // would silently fall back to the legacy flat-array response.
+    expect(query!.get('page')).toBe('3');
+  });
+
+  it('returns the {items, meta} envelope untouched', async () => {
+    const page = {
+      items: [{ id: 1, filename: 'benchy.3mf' }],
+      meta: { total: 1, current_page: 1, per_page: 50, last_page: 1 },
+    };
+    server.use(http.get('/api/v1/library/files', () => HttpResponse.json(page)));
+
+    const result = await api.getLibraryFilesPaged({ page: 1 });
+
+    expect(result).toEqual(page);
+  });
+});
+
+describe('rebalanceAutoQueueItems (spec 2026-09-10)', () => {
+  /**
+   * The `×N` action sends every copy of a collapsed run, and the origin
+   * scenario of the feature is «150 штук кидаємо в чергу» — well past the
+   * endpoint's 64-id cap. One request would 422 and the operator would see a
+   * raw validation error instead of a move.
+   */
+  it('chunks the ids by the server cap and merges the answers into one result', async () => {
+    const sizes: number[] = [];
+    server.use(
+      http.post('/api/v1/auto-queue/rebalance', async ({ request }) => {
+        const body = (await request.json()) as { item_ids: number[] };
+        sizes.push(body.item_ids.length);
+        return HttpResponse.json({
+          converted: 1,
+          created: 2,
+          cancelled: 0,
+          moved_parts: 6,
+          skipped: [{ item_id: body.item_ids[0], reason: 'pinned' }],
+        });
+      }),
+    );
+
+    const result = await api.rebalanceAutoQueueItems(Array.from({ length: 130 }, (_, i) => i + 1));
+
+    expect(sizes).toEqual([64, 64, 2]);
+    expect(result.converted).toBe(3);
+    expect(result.created).toBe(6);
+    expect(result.cancelled).toBe(0);
+    expect(result.moved_parts).toBe(18);
+    // Every chunk's refusals are kept, in the order they were asked.
+    expect(result.skipped).toEqual([
+      { item_id: 1, reason: 'pinned' },
+      { item_id: 65, reason: 'pinned' },
+      { item_id: 129, reason: 'pinned' },
+    ]);
+  });
+
+  it('sends one request for a list that fits', async () => {
+    let calls = 0;
+    server.use(
+      http.post('/api/v1/auto-queue/rebalance', () => {
+        calls += 1;
+        return HttpResponse.json({ converted: 1, created: 0, cancelled: 0, moved_parts: 2, skipped: [] });
+      }),
+    );
+
+    const result = await api.rebalanceAutoQueueItems([1, 2, 3]);
+
+    expect(calls).toBe(1);
+    expect(result).toEqual({ converted: 1, created: 0, cancelled: 0, moved_parts: 2, skipped: [] });
   });
 });

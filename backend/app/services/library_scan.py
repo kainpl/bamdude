@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.library_scan import LibraryScanJob
+from backend.app.services.product_sync import purge_file_product_links, resync_file_products
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +293,9 @@ async def write_batch(
     from backend.app.services.library_ingest import find_reusable_row
 
     created: list[tuple[int, str]] = []
+    #: Ids of the rows this batch actually rewrote — the ones whose bytes moved
+    #: on disk, so a product that owns plates off them has to be reconciled.
+    refreshed: list[int] = []
 
     async with async_session() as db:
         for item in batch:
@@ -309,6 +313,8 @@ async def write_batch(
                 if values:
                     await db.execute(update(LibraryFile).where(LibraryFile.id == item.known_id).values(**values))
                     counters["files_updated"] += 1
+                    if item.known_id is not None:
+                        refreshed.append(item.known_id)
                 continue
 
             reusable = await find_reusable_row(db, content_hash=item.content_hash or "")
@@ -337,6 +343,31 @@ async def write_batch(
             await sync_system_tags(db, db_file)
             counters["files_added"] += 1
             created.append((db_file.id, db_file.filename))
+
+        # A file somebody re-sliced under a linked product must not leave the
+        # product owning plate 2 of a slice that now has one plate. The resync
+        # is a handful of small statements per file and rides inside this
+        # batch's own short transaction — the m148 rule holds: the walk is
+        # already over by the time this session was opened.
+        #
+        # ⚠️ Only rows this batch rewrote, and only those already in
+        # ``product_files`` — ``resync_file_products`` returns on the first
+        # SELECT for the overwhelming majority that belong to no product.
+        #
+        # ⚠️ It reconciles against whatever ``file_metadata`` the ROW holds. A
+        # refresh re-hashes but does not re-parse the 3MF (``_prepare_sync``
+        # returns before the parser for a known file), so today this catches a
+        # link that changed, not a plate list that did. The day the refresh
+        # branch starts rewriting metadata, this hook is already in place.
+        #
+        # ⚠️ Best-effort, per file, like ``seed_archive_parts``: a scan must not
+        # die because one product's composition could not be reconciled. The
+        # batch's own writes are already made and still commit below.
+        for library_file_id in refreshed:
+            try:
+                await resync_file_products(db, library_file_id)
+            except Exception:
+                logger.warning("product resync failed for library file %s", library_file_id, exc_info=True)
 
         await db.commit()
 
@@ -441,6 +472,21 @@ async def remove_vanished(
             rows = (
                 (await db.execute(select(LibraryFile).where(LibraryFile.id.in_([i for i, _ in chunk])))).scalars().all()
             )
+            # A vanished external source must not take a job that has already
+            # captured its own bytes with it.  The hard-delete helper also
+            # nulls both tiers explicitly, which SQLite otherwise leaves as
+            # dangling foreign-key values.
+            from backend.app.services import queue_source_release
+
+            await queue_source_release.source_purged(
+                db,
+                library_file_ids=[row.id for row in rows],
+                reason=queue_source_release.REASON_FILE_VANISHED,
+            )
+            # Before the deletes, once for the chunk: the ORM clears the
+            # ``product_files`` pivot but not ``product_plates``, whose cascade
+            # only fires on PostgreSQL.
+            await purge_file_product_links(db, [row.id for row in rows])
             for row in rows:
                 if row.thumbnail_path:
                     with contextlib.suppress(OSError):

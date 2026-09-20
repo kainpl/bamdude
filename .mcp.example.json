@@ -1,0 +1,33 @@
+{
+  "_comment": "Copy to .mcp.json (git-ignored) and keep the servers you use. Placeholders in <angle brackets> are yours to fill; never commit a filled-in copy. On Windows the npx servers are launched through cmd /c; on Linux/macOS use \"command\": \"npx\" with \"args\": [\"-y\", ...].",
+  "mcpServers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-filesystem", "<absolute path to the directory holding your bamdude checkout>"]
+    },
+    "github": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "<fine-grained token, repo scope only>" }
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@playwright/mcp@latest"]
+    },
+    "sqlite": {
+      "_comment": "Read-only exploration of a SQLite data directory; irrelevant on PostgreSQL. Point it at a COPY of data/bamdude.db, never at the database a running BamDude is using.",
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-sqlite", "--db-path", "./data/bamdude.db"]
+    },
+    "vault": {
+      "_comment": "The bamdude.obsidian knowledge base, served from inside Obsidian by the 'Semantic Notes Vault MCP' community plugin (semantic-vault-mcp). Enable the plugin, copy its port and API key here.",
+      "type": "http",
+      "url": "http://127.0.0.1:<port from the plugin settings>/mcp",
+      "headers": { "Authorization": "Bearer <API key from the plugin settings>" }
+    }
+  }
+}

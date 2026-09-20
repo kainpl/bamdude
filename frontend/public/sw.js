@@ -1,18 +1,18 @@
 // BamDude Service Worker
-const CACHE_NAME = 'bamdude-v3';
-const STATIC_CACHE = 'bamdude-static-v3';
+const CACHE_NAME = 'bamdude-v4';
+const STATIC_CACHE = 'bamdude-static-v4';
 
 // Static assets to cache on install
 const STATIC_ASSETS = [
   '/',
   '/manifest.json',
-  '/img/favicon.png',
-  '/img/favicon-16x16.png',
-  '/img/favicon-32x32.png',
-  '/img/android-chrome-192x192.png',
-  '/img/android-chrome-512x512.png',
-  '/img/apple-touch-icon.png',
-  '/img/bamdude_logo_dark.png',
+  '/img/brand/favicon.ico',
+  '/img/brand/mark-adaptive.svg',
+  '/img/brand/icon-tile-192.png',
+  '/img/brand/icon-tile-512.png',
+  '/img/brand/apple-touch-icon.png',
+  '/img/brand/lockup-compact-on-dark.svg',
+  '/img/brand/lockup-compact-on-light.svg',
   // Self-hosted Inter font (#1460) - cached so the UI renders offline.
   '/fonts/inter-latin.woff2',
   '/fonts/inter-latin-ext.woff2',
@@ -182,8 +182,8 @@ self.addEventListener('push', (event) => {
   const data = event.data.json();
   const options = {
     body: data.body || 'New notification from BamDude',
-    icon: '/img/android-chrome-192x192.png',
-    badge: '/img/favicon-32x32.png',
+    icon: '/img/brand/icon-tile-192.png',
+    badge: '/img/brand/mark-on-dark-128.png',
     vibrate: [100, 50, 100],
     data: {
       url: data.url || '/',

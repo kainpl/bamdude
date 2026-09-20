@@ -6,7 +6,9 @@ import { api } from '../api/client';
 import { parseUTCDate, formatTimeOnly, formatDateTime, formatDateOnly, type TimeFormat, type DateFormat } from '../utils/date';
 import type { NotificationLogEntry } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
+import { Select } from './Select';
 
 const EVENT_COLORS: Record<string, string> = {
   print_start: 'text-blue-700 dark:text-blue-400',
@@ -81,128 +83,118 @@ export function NotificationLogViewer({ onClose }: NotificationLogViewerProps) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg w-full max-w-3xl max-h-[85vh] flex flex-col">
-        {/* Header */}
-        <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <History className="w-5 h-5 text-bambu-green" />
-            <h2 className="text-lg font-semibold text-white">{t('notifications.notificationLog')}</h2>
+    <Modal
+      onClose={onClose}
+      title={t('notifications.notificationLog')}
+      icon={<History className="w-5 h-5 text-bambu-green" />}
+      size="3xl"
+      bodyClassName="flex flex-col"
+    >
+      {/* Stats Bar */}
+      {stats && (
+        <div className="px-4 py-3 border-b border-bambu-dark-tertiary bg-bambu-dark/50">
+          <div className="flex items-center gap-4 text-sm">
+            <span className="text-bambu-gray">
+              {t('notifications.statsSummary', { days })} <span className="text-white font-medium">{stats.total}</span> {t('notifications.statsNotifications')}
+            </span>
+            <span className="flex items-center gap-1 text-bambu-green">
+              <CheckCircle className="w-4 h-4" />
+              {t('notifications.statsSent', { count: stats.success_count })}
+            </span>
+            {stats.failure_count > 0 && (
+              <span className="flex items-center gap-1 text-red-700 dark:text-red-400">
+                <XCircle className="w-4 h-4" />
+                {t('notifications.statsFailed', { count: stats.failure_count })}
+              </span>
+            )}
           </div>
-          <button
-            onClick={onClose}
-            className="text-bambu-gray hover:text-white transition-colors"
-          >
-            &times;
-          </button>
         </div>
+      )}
 
-        {/* Stats Bar */}
-        {stats && (
-          <div className="px-4 py-3 border-b border-bambu-dark-tertiary bg-bambu-dark/50">
-            <div className="flex items-center gap-6 text-sm">
-              <span className="text-bambu-gray">
-                {t('notifications.statsSummary', { days })} <span className="text-white font-medium">{stats.total}</span> {t('notifications.statsNotifications')}
-              </span>
-              <span className="flex items-center gap-1 text-bambu-green">
-                <CheckCircle className="w-4 h-4" />
-                {t('notifications.statsSent', { count: stats.success_count })}
-              </span>
-              {stats.failure_count > 0 && (
-                <span className="flex items-center gap-1 text-red-700 dark:text-red-400">
-                  <XCircle className="w-4 h-4" />
-                  {t('notifications.statsFailed', { count: stats.failure_count })}
-                </span>
-              )}
-            </div>
+      {/* Filters */}
+      <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex items-center gap-4">
+        <Select
+          size="sm"
+          value={days}
+          onChange={(e) => setDays(Number(e.target.value))}
+        >
+          <option value={1}>{t('notifications.last24Hours')}</option>
+          <option value={7}>{t('notifications.last7Days')}</option>
+          <option value={30}>{t('notifications.last30Days')}</option>
+          <option value={90}>{t('notifications.last90Days')}</option>
+        </Select>
+
+        <label className="flex items-center gap-2 text-sm text-bambu-gray cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showFailedOnly}
+            onChange={(e) => setShowFailedOnly(e.target.checked)}
+            className="accent-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+          />
+          {t('notifications.showFailedOnly')}
+        </label>
+
+        <div className="flex-1" />
+
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => refetch()}
+          disabled={isRefetching}
+        >
+          {isRefetching ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <RefreshCw className="w-4 h-4" />
+          )}
+          {t('notifications.refresh')}
+        </Button>
+
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => clearMutation.mutate()}
+          disabled={clearMutation.isPending}
+          className="text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300"
+        >
+          {clearMutation.isPending ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Trash2 className="w-4 h-4" />
+          )}
+          {t('notifications.clearOld')}
+        </Button>
+      </div>
+
+      {/* Log List */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {isLoading ? (
+          <div className="flex justify-center py-12">
+            <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
+          </div>
+        ) : logs && logs.length > 0 ? (
+          <div className="space-y-2">
+            {logs.map((log) => (
+              <LogEntry
+                key={log.id}
+                log={log}
+                isExpanded={expandedId === log.id}
+                onToggle={() => setExpandedId(expandedId === log.id ? null : log.id)}
+                formatDate={formatDate}
+                formatFullDate={(dateStr) => formatDateTime(dateStr, timeFormat, dateFormat)}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-12 text-bambu-gray">
+            <History className="w-12 h-12 mx-auto mb-3 opacity-30" />
+            <p className="text-sm">
+              {showFailedOnly ? t('notifications.noFailedNotifications') : t('notifications.noNotificationsLogged')}
+            </p>
           </div>
         )}
-
-        {/* Filters */}
-        <div className="px-4 py-3 border-b border-bambu-dark-tertiary flex items-center gap-4">
-          <select
-            value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
-            className="px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-bambu-green"
-          >
-            <option value={1}>{t('notifications.last24Hours')}</option>
-            <option value={7}>{t('notifications.last7Days')}</option>
-            <option value={30}>{t('notifications.last30Days')}</option>
-            <option value={90}>{t('notifications.last90Days')}</option>
-          </select>
-
-          <label className="flex items-center gap-2 text-sm text-bambu-gray cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showFailedOnly}
-              onChange={(e) => setShowFailedOnly(e.target.checked)}
-              className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-            />
-            {t('notifications.showFailedOnly')}
-          </label>
-
-          <div className="flex-1" />
-
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => refetch()}
-            disabled={isRefetching}
-          >
-            {isRefetching ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <RefreshCw className="w-4 h-4" />
-            )}
-            {t('notifications.refresh')}
-          </Button>
-
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => clearMutation.mutate()}
-            disabled={clearMutation.isPending}
-            className="text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300"
-          >
-            {clearMutation.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Trash2 className="w-4 h-4" />
-            )}
-            {t('notifications.clearOld')}
-          </Button>
-        </div>
-
-        {/* Log List */}
-        <div className="flex-1 overflow-y-auto p-4">
-          {isLoading ? (
-            <div className="flex justify-center py-12">
-              <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
-            </div>
-          ) : logs && logs.length > 0 ? (
-            <div className="space-y-2">
-              {logs.map((log) => (
-                <LogEntry
-                  key={log.id}
-                  log={log}
-                  isExpanded={expandedId === log.id}
-                  onToggle={() => setExpandedId(expandedId === log.id ? null : log.id)}
-                  formatDate={formatDate}
-                  formatFullDate={(dateStr) => formatDateTime(dateStr, timeFormat, dateFormat)}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-12 text-bambu-gray">
-              <History className="w-12 h-12 mx-auto mb-3 opacity-30" />
-              <p className="text-sm">
-                {showFailedOnly ? t('notifications.noFailedNotifications') : t('notifications.noNotificationsLogged')}
-              </p>
-            </div>
-          )}
-        </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 

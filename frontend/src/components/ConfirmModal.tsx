@@ -1,8 +1,7 @@
-import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Loader2 } from 'lucide-react';
-import { Card, CardContent } from './Card';
 import { Button } from './Button';
+import { Modal } from './Modal';
 
 interface ConfirmModalProps {
   title: string;
@@ -11,14 +10,6 @@ interface ConfirmModalProps {
   cancelText?: string;
   cancelVariant?: 'primary' | 'secondary' | 'danger' | 'ghost';
   cardClassName?: string;
-  /**
-   * Tailwind z-index utility applied to the fixed overlay. Defaults to
-   * ``z-50``. Use a higher value (e.g. ``z-[110]``) when this confirm
-   * dialog is rendered from inside another modal that uses ``z-[100]`` —
-   * without it the confirm dialog sits behind its parent (upstream
-   * Bambuddy #1336 follow-up).
-   */
-  overlayZIndex?: string;
   variant?: 'danger' | 'warning' | 'default';
   isLoading?: boolean;
   loadingText?: string;
@@ -27,6 +18,12 @@ interface ConfirmModalProps {
   onCancel: () => void;
 }
 
+/**
+ * Confirm / cancel. Closes ONLY through its two buttons or Esc — the shell's
+ * backdrop does nothing, and Esc is swallowed while `isLoading` so a purge
+ * cannot be cancelled mid-flight. No header X: the Cancel button is the exit.
+ * Stacking over another modal needs nothing — the shell orders by mount.
+ */
 export function ConfirmModal({
   title,
   message,
@@ -34,7 +31,6 @@ export function ConfirmModal({
   cancelText,
   cancelVariant,
   cardClassName,
-  overlayZIndex,
   variant = 'default',
   isLoading = false,
   loadingText,
@@ -46,14 +42,6 @@ export function ConfirmModal({
   const resolvedConfirmText = confirmText ?? t('common.confirm');
   const resolvedCancelText = cancelText ?? t('common.cancel');
   const resolvedLoadingText = loadingText ?? t('common.loading');
-  // Close on Escape key (but not while loading)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !isLoading) onCancel();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onCancel, isLoading]);
 
   const variantStyles = {
     danger: {
@@ -73,51 +61,43 @@ export function ConfirmModal({
   const styles = variantStyles[variant];
 
   return (
-    <div
-      className={`fixed inset-0 bg-black/50 flex items-center justify-center p-4 ${overlayZIndex ?? 'z-50'}`}
-      onClick={isLoading ? undefined : onCancel}
-    >
-      <Card
-        className={`w-full max-w-md ${cardClassName ?? ''}`}
-        onClick={(e: React.MouseEvent) => e.stopPropagation()}
-      >
-        <CardContent className="p-6">
-          <div className="flex items-start gap-4">
-            <div className={`p-2 rounded-full bg-bambu-dark ${styles.icon}`}>
-              <AlertTriangle className="w-6 h-6" />
-            </div>
-            <div className="flex-1">
-              <h3 className="text-lg font-semibold text-white mb-2">{title}</h3>
-              <p className="text-bambu-gray text-sm whitespace-pre-line">{message}</p>
-              {children && <div className="mt-3">{children}</div>}
-            </div>
+    <Modal onClose={onCancel} hideClose ariaLabel={title} closeDisabled={isLoading} size="md" panelClassName={cardClassName}>
+      <div className="p-4">
+        <div className="flex items-start gap-4">
+          <div className={`p-2 rounded-full bg-bambu-dark ${styles.icon}`}>
+            <AlertTriangle className="w-6 h-6" />
           </div>
-          <div className="flex gap-3 mt-6">
-            <Button
-              variant={cancelVariant ?? 'secondary'}
-              onClick={onCancel}
-              className="flex-1"
-              disabled={isLoading}
-            >
-              {resolvedCancelText}
-            </Button>
-            <Button
-              onClick={onConfirm}
-              className={`flex-1 ${styles.button}`}
-              disabled={isLoading}
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  {resolvedLoadingText}
-                </>
-              ) : (
-                resolvedConfirmText
-              )}
-            </Button>
+          <div className="flex-1">
+            <h3 className="text-lg font-semibold text-white mb-2">{title}</h3>
+            <p className="text-bambu-gray text-sm whitespace-pre-line">{message}</p>
+            {children && <div className="mt-3">{children}</div>}
           </div>
-        </CardContent>
-      </Card>
-    </div>
+        </div>
+        <div className="flex gap-3 mt-4">
+          <Button
+            variant={cancelVariant ?? 'secondary'}
+            onClick={onCancel}
+            className="flex-1"
+            disabled={isLoading}
+          >
+            {resolvedCancelText}
+          </Button>
+          <Button
+            onClick={onConfirm}
+            className={`flex-1 ${styles.button}`}
+            disabled={isLoading}
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                {resolvedLoadingText}
+              </>
+            ) : (
+              resolvedConfirmText
+            )}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }

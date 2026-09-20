@@ -12,6 +12,13 @@ function makeSpool(overrides: Partial<InventorySpool> = {}): InventorySpool {
   return {
     id: 1,
     material: 'PETG',
+    purchase_date: null,
+    filament_diameter: '1.75',
+    lot: null,
+    extra_colors: null,
+    effect_type: null,
+    category: null,
+    low_stock_threshold_pct: null,
     subtype: null,
     color_name: 'Black',
     rgba: '000000FF',

@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X } from 'lucide-react';
 
 import { api } from '../../api/client';
 import type { SensorThreshold, SensorThresholdInput, ZigbeeSensor } from '../../api/client';
+import { Modal } from '../Modal';
 
 interface Props {
   isOpen: boolean;
@@ -60,6 +60,7 @@ function toPayload(rows: Row[]): SensorThresholdInput[] {
 /** What counts as wrong for this sensor, one row per quantity. */
 export function SensorThresholdsModal({ isOpen, onClose, sensor }: Props) {
   const { t } = useTranslation();
+  const headingId = useId();
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -91,69 +92,66 @@ export function SensorThresholdsModal({ isOpen, onClose, sensor }: Props) {
     setRows((current) => current.map((row) => (row.kind === kind ? { ...row, [field]: value } : row)));
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div
-        className="bg-bambu-dark-secondary rounded-xl w-full max-w-2xl max-h-[90vh] overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-bambu-dark-tertiary">
-          <div>
-            <h2 className="text-lg font-semibold text-white">{t('settings.zigbee.thresholds.title')}</h2>
-            <p className="text-sm text-bambu-gray">{sensor.name}</p>
-          </div>
-          <button type="button" onClick={onClose} aria-label={t('common.close')} className="p-2 text-bambu-gray">
-            <X className="w-5 h-5" />
-          </button>
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      header={
+        <div className="min-w-0">
+          <h2 id={headingId} className="text-lg font-semibold text-white">
+            {t('settings.zigbee.thresholds.title')}
+          </h2>
+          <p className="text-sm text-bambu-gray">{sensor.name}</p>
         </div>
+      }
+      size="2xl"
+    >
+      <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(90vh-140px)]">
+        <p className="text-sm text-bambu-gray">{t('settings.zigbee.thresholds.hint')}</p>
 
-        <div className="p-6 space-y-4 overflow-y-auto max-h-[calc(90vh-140px)]">
-          <p className="text-sm text-bambu-gray">{t('settings.zigbee.thresholds.hint')}</p>
+        {rows.map((row) => {
+          const name = t(`settings.zigbee.measurement.${row.kind}`, { defaultValue: row.kind });
+          return (
+            <div key={row.kind} className="flex items-center gap-3 flex-wrap">
+              <span className="text-white w-32">{name}</span>
+              <Field
+                label={`${name} ${t('settings.zigbee.thresholds.min')}`}
+                value={row.min}
+                unit={row.unit}
+                onChange={(v) => set(row.kind, 'min', v)}
+              />
+              <Field
+                label={`${name} ${t('settings.zigbee.thresholds.max')}`}
+                value={row.max}
+                unit={row.unit}
+                onChange={(v) => set(row.kind, 'max', v)}
+              />
+              <Field
+                label={`${name} ${t('settings.zigbee.thresholds.deadband')}`}
+                value={row.deadband}
+                unit={row.unit}
+                onChange={(v) => set(row.kind, 'deadband', v)}
+              />
+            </div>
+          );
+        })}
 
-          {rows.map((row) => {
-            const name = t(`settings.zigbee.measurement.${row.kind}`, { defaultValue: row.kind });
-            return (
-              <div key={row.kind} className="flex items-center gap-3 flex-wrap">
-                <span className="text-white w-32">{name}</span>
-                <Field
-                  label={`${name} ${t('settings.zigbee.thresholds.min')}`}
-                  value={row.min}
-                  unit={row.unit}
-                  onChange={(v) => set(row.kind, 'min', v)}
-                />
-                <Field
-                  label={`${name} ${t('settings.zigbee.thresholds.max')}`}
-                  value={row.max}
-                  unit={row.unit}
-                  onChange={(v) => set(row.kind, 'max', v)}
-                />
-                <Field
-                  label={`${name} ${t('settings.zigbee.thresholds.deadband')}`}
-                  value={row.deadband}
-                  unit={row.unit}
-                  onChange={(v) => set(row.kind, 'deadband', v)}
-                />
-              </div>
-            );
-          })}
-
-          {error && <p className="text-sm text-status-error">{error}</p>}
-        </div>
-
-        <div className="flex justify-end gap-2 px-6 py-4 border-t border-bambu-dark-tertiary">
-          <button type="button" onClick={onClose} className="px-3 py-1.5 text-bambu-gray">
-            {t('common.cancel')}
-          </button>
-          <button
-            type="button"
-            onClick={() => save.mutate()}
-            disabled={save.isPending}
-            className="px-3 py-1.5 bg-bambu-green rounded-lg text-white disabled:opacity-50"
-          >
-            {t('common.save')}
-          </button>
-        </div>
+        {error && <p className="text-sm text-status-error">{error}</p>}
       </div>
-    </div>
+
+      <div className="flex justify-end gap-2 px-4 py-4 border-t border-bambu-dark-tertiary">
+        <button type="button" onClick={onClose} className="px-3 py-1.5 text-bambu-gray">
+          {t('common.cancel')}
+        </button>
+        <button
+          type="button"
+          onClick={() => save.mutate()}
+          disabled={save.isPending}
+          className="px-3 py-1.5 bg-bambu-green rounded-lg text-white disabled:opacity-50"
+        >
+          {t('common.save')}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

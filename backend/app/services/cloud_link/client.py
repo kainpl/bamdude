@@ -81,6 +81,7 @@ from backend.app.services.cloud_link.commands import (
     PostAction,
     dispatch,
 )
+from backend.app.services.cloud_link.remote_ops import REMOTE_OPS
 from backend.app.services.cloud_link.schemas import (
     AnyFrame,
     Cmd,
@@ -118,14 +119,15 @@ ENVELOPE_VERSION = 1
 #: of inferring it from a version number.
 #:
 #: ⚠️ **A claim, not a grant.** Every name here must also be in
-#: ``commands.ALLOWED_COMMANDS`` — a test pins that — because a capability the
-#: portal can see but the agent will not run is a button that fails on click.
-#: The reverse is fine and deliberate: the allowlist is what the agent *does*,
-#: and it stays the security artifact whatever this tuple says.
+#: ``commands.ALLOWED_COMMANDS`` or ``remote_ops.REMOTE_OPS`` — a test pins
+#: that — because a capability the portal can see but the agent will not run
+#: is a button that fails on click. The reverse is fine and deliberate: those
+#: two sets are what the agent *does*, and they stay the security artifact
+#: whatever this tuple says.
 #:
 #: A tuple because the set is a fact about the release and not a collection
 #: anything mutates — the same reason ``commands.ALLOWED_COMMANDS`` is frozen.
-AGENT_CAPABILITIES = ("camera_snapshot",)
+AGENT_CAPABILITIES = ("camera_snapshot", "inventory.list_spools", "inventory.edit_spool")
 
 #: Bounds establishing the TCP/TLS connection, and nothing else — the socket
 #: itself is long-lived, so a total timeout would kill a healthy link.
@@ -151,11 +153,12 @@ DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 #: progress bar can see.
 MIN_THROTTLE_S = 0.5
 
-#: How long the pump waits after emptying the uplink before looking again. The
-#: uplink has no "something arrived" signal — it is fed from a synchronous
-#: broadcast callback — so this is a poll, and 0.2 s is imperceptible next to
-#: the per-printer status throttle the portal sets.
-IDLE_SLEEP_S = 0.2
+#: The pump's tick interval — how often it asks the uplink what has changed.
+#: The uplink has no "something arrived" signal — it is fed from a synchronous
+#: broadcast callback — so this is a poll, and 1 s is imperceptible next to the
+#: per-printer status throttle the portal sets, while staying well clear of a
+#: busy-loop on a farm this pump does no other work for.
+TICK_S = 1.0
 
 #: Reconnection backoff: 1 s, doubling, capped at five minutes, ±20 % jitter so
 #: a farm of agents does not return as one synchronised wave after a portal
@@ -226,9 +229,9 @@ class CloudLinkClient:
     """The connection to one portal, from hello to reconnect.
 
     One instance per link, driven by exactly one :meth:`run`. Everything with a
-    duration — the heartbeat, the backoff, the pump's idle wait, the two
-    timeouts — is injectable, so the tests exercise the real loop at
-    millisecond scale instead of mocking it away.
+    duration — the heartbeat, the backoff, the pump's tick, the two timeouts —
+    is injectable, so the tests exercise the real loop at millisecond scale
+    instead of mocking it away.
     """
 
     def __init__(
@@ -238,7 +241,7 @@ class CloudLinkClient:
         uplink: Uplink,
         backoff_base_s: float = BACKOFF_BASE_S,
         backoff_cap_s: float = BACKOFF_CAP_S,
-        idle_sleep_s: float = IDLE_SLEEP_S,
+        tick_s: float = TICK_S,
         connect_timeout_s: float = CONNECT_TIMEOUT_S,
         handshake_timeout_s: float = HANDSHAKE_TIMEOUT_S,
         unknown_command_limit: int = UNKNOWN_COMMAND_AUDIT_LIMIT,
@@ -261,7 +264,7 @@ class CloudLinkClient:
         self._heartbeat_interval_s = DEFAULT_HEARTBEAT_INTERVAL_S
         self._backoff_base_s = backoff_base_s
         self._backoff_cap_s = backoff_cap_s
-        self._idle_sleep_s = idle_sleep_s
+        self._tick_s = tick_s
         self._connect_timeout_s = connect_timeout_s
         self._handshake_timeout_s = handshake_timeout_s
         self._unknown_command_limit = unknown_command_limit
@@ -293,6 +296,11 @@ class CloudLinkClient:
         the pump exists only while a connection does, and a reconnect sends a
         snapshot of its own, which is why :meth:`_after_hello` clears the flag
         instead of letting it fire a redundant second one.
+
+        Also the READER's own path for a ``resync`` command's post-action —
+        see :meth:`_handle_cmd`. It asks rather than sends directly for the
+        same reason an outside caller does: only the pump may build and send
+        an act mid-connection, see the ⚠️ note on :meth:`_send_snapshot`.
         """
         self._snapshot_requested.set()
 
@@ -449,8 +457,8 @@ class CloudLinkClient:
 
         The reset comes before the snapshot is *built*, not merely before it is
         sent — building it also reseeds the uplink's identity and connection
-        caches, and a stale outbox frame drained between the two would be
-        describing the world the snapshot is in the middle of replacing.
+        caches, and a stale frame flushed between the two would be describing
+        the world the snapshot is in the middle of replacing.
         """
         interval = hello_ok.data.heartbeat_interval_s
         if interval <= 0:
@@ -540,27 +548,42 @@ class CloudLinkClient:
         """Inbound frames, until the socket ends or a revoke tears it down.
 
         ⚠️ **The audit caps are write bounds, not rate limits.** Every audit row
-        a portal can drive is bounded per connection, and there are two ways it
-        can drive one. An unknown command is refused by :func:`dispatch`, which
-        audits it — right for the handful an operator will ever see, wrong for a
-        portal that has been taken over and is spraying names — so after
-        :data:`UNKNOWN_COMMAND_AUDIT_LIMIT` refusals the reader answers them
-        itself. A ``camera_snapshot`` *is* in the allowlist, so it reaches a
-        handler however hostile the portal is, and the row it produces (bad
-        arguments here, a refused printer or destination in :mod:`snapshot`, a
-        failed upload in either) is bounded by the shared
+        a portal can drive is bounded per connection, and there are three ways it
+        can drive one. An unknown command — one in neither :data:`ALLOWED_COMMANDS`
+        nor :data:`~backend.app.services.cloud_link.remote_ops.REMOTE_OPS` — is
+        refused by :func:`dispatch`, which audits it — right for the handful an
+        operator will ever see, wrong for a portal that has been taken over and
+        is spraying names — so after :data:`UNKNOWN_COMMAND_AUDIT_LIMIT` refusals
+        the reader answers them itself. A ``camera_snapshot`` *is* in the
+        allowlist, so it reaches a handler however hostile the portal is, and the
+        row it produces (bad arguments here, a refused printer or destination in
+        :mod:`snapshot`, a failed upload in either) is bounded by the shared
         :class:`~backend.app.services.cloud_link.commands.CameraAuditBudget`
-        instead.
+        instead. A name in :data:`~backend.app.services.cloud_link.remote_ops.
+        REMOTE_OPS` is neither of those — it must clear this pre-filter (below)
+        to reach :func:`~backend.app.services.cloud_link.remote_ops.
+        dispatch_remote_op` at all, and once there its own refusals are bounded
+        by the connection's :class:`~backend.app.services.cloud_link.remote_ops.
+        RemoteOpAuditBudget`, lazily created on first dispatch and reset here
+        exactly like ``camera_audit`` — see :attr:`CommandContext.remote_op_audit`.
 
-        Both are per connection, because a reconnect is the natural place for an
-        operator's mistyped command to be forgiven, and an attacker gains only
-        one further row per socket. Neither changes what the portal is told:
-        every request still gets its ``cmd_result``, and a capped snapshot is
-        guarded, attempted and uploaded exactly as an uncapped one.
+        All three are per connection, because a reconnect is the natural place for
+        an operator's mistyped command to be forgiven, and an attacker gains only
+        one further row per socket. None changes what the portal is told: every
+        request still gets its ``cmd_result``, and a capped op is still guarded,
+        attempted and answered exactly as an uncapped one.
         """
         unknown = 0
         camera_audit = self._ctx.camera_audit
         camera_audit.reset()
+        # The remote-op budget is lazily created by ``dispatch_remote_op`` on
+        # this connection's first remote op — ``None`` here means none has run
+        # yet, not "no bound". Reset it too when it exists, so a budget filled
+        # by a PREVIOUS connection on this reused ``self._ctx`` does not carry
+        # its count into this one (see the module docstring: ``_ctx`` outlives
+        # any one socket).
+        if (remote_op_audit := self._ctx.remote_op_audit) is not None:
+            remote_op_audit.reset()
         try:
             async for msg in ws:
                 if msg.type is WSMsgType.ERROR:
@@ -580,7 +603,7 @@ class CloudLinkClient:
                     logger.debug("Cloud Link: ignoring an inbound %s frame", frame.type)
                     continue
 
-                if frame.data.cmd not in ALLOWED_COMMANDS:
+                if frame.data.cmd not in ALLOWED_COMMANDS and frame.data.cmd not in REMOTE_OPS:
                     unknown += 1
                     if unknown > self._unknown_command_limit:
                         await self._send(ws, refuse_unknown(frame))
@@ -604,6 +627,16 @@ class CloudLinkClient:
                     "Cloud Link: %d camera snapshot outcome(s) went unaudited on this connection (cap %d)",
                     camera_audit.suppressed,
                     camera_audit.limit,
+                )
+            # Read fresh rather than reusing the entry-time local: a budget
+            # that was ``None`` when this connection started (no remote op had
+            # ever run) may have been lazily created and filled during it.
+            remote_op_audit = self._ctx.remote_op_audit
+            if remote_op_audit is not None and remote_op_audit.suppressed:
+                logger.info(
+                    "Cloud Link: %d remote op outcome(s) went unaudited on this connection (cap %d)",
+                    remote_op_audit.suppressed,
+                    remote_op_audit.limit,
                 )
         return _CLOSED
 
@@ -636,7 +669,11 @@ class CloudLinkClient:
         if post_action is None:
             return None
         if post_action.kind == "send_snapshot":
-            await self._send_snapshot(ws)
+            # NOT ``await self._send_snapshot(ws)`` here — see the ⚠️ atomicity
+            # note on ``_send_snapshot``. Mid-connection, only the pump task
+            # may build and send an act; the reader only asks for one, exactly
+            # like :meth:`request_snapshot` already does for an external caller.
+            self.request_snapshot()
         elif post_action.kind == "teardown_revoked":
             return _REVOKED
         elif post_action.kind == "upload_snapshot":
@@ -728,46 +765,132 @@ class CloudLinkClient:
             await self._send(ws, Heartbeat(v=1, id=new_frame_id(), ts=frame_timestamp(), type="heartbeat"))
 
     async def _pump_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
-        """Empty the uplink, then wait, then empty it again.
+        """One tick: send whatever the uplink has, send a requested snapshot,
+        then wait for the next tick.
 
-        ⚠️ **Drain until it says ``None``.** One ``drain`` is not one cycle's
-        work: a connection edge produces an event *and* the status behind it,
-        and the uplink hands those over in two calls. Draining once per cycle
-        would deliver the second one a full idle-sleep late, every time.
+        ⚠️ **``flush()`` is the whole tick's work in one call.** It replaced a
+        per-message ``drain`` that had to be polled until it returned ``None``
+        — a connection edge's event and the status behind it now come back
+        from the SAME call, in order, so one pass over what it returns is
+        every frame this tick owes the wire. Calling it more than once per
+        tick would only ever see an empty list the second time; the uplink has
+        nothing left to say until the next broadcast lands in its dirty map.
 
-        ⚠️ **A requested snapshot goes out AFTER the drain, never before.** The
-        queued frames were built from broadcasts the snapshot has already
+        ⚠️ **A requested snapshot goes out AFTER the flush, never before.** The
+        frames just sent were built from broadcasts the snapshot has already
         absorbed — it reads the live state, so it is newer than all of them.
-        Sending it first would let the backlog land on top and replay readings
-        the snapshot had just superseded: the same trap ``reset_transient``
-        exists to close on reconnect.
+        Sending it first would let this tick's frames land on top and replay
+        readings the snapshot had just superseded: the same trap
+        ``reset_transient`` exists to close on reconnect, preserved here by
+        construction — flush happens first in the same iteration.
         """
         while True:
-            frame = await self._uplink.drain()
-            while frame is not None:
+            for frame in self._uplink.flush():
                 await self._send(ws, frame)
-                frame = await self._uplink.drain()
             if self._snapshot_requested.is_set():
                 self._snapshot_requested.clear()
                 await self._send_snapshot(ws)
-            await asyncio.sleep(self._idle_sleep_s)
+            await asyncio.sleep(self._tick_s)
 
     async def _send_snapshot(self, ws: aiohttp.ClientWebSocketResponse) -> None:
-        """Build the farm's full picture and send it. Its own session, held
-        only for the read — the socket write is not the database's business.
+        """Build the farm's full picture, as one or more chunks sharing a
+        ``sync_id``, and send every chunk in order. Its own session, held only
+        for the read — the socket write is not the database's business.
 
-        The local is ``frame`` and not ``snapshot`` on purpose: :mod:`snapshot`
-        is a module this file imports, and shadowing it inside the one method
-        whose name matches is how a later edit here reaches for the camera
-        module and gets a frame instead.
+        The local is ``frames``/``frame`` and not ``snapshot`` on purpose:
+        :mod:`snapshot` is a module this file imports, and shadowing it inside
+        the one method whose name matches is how a later edit here reaches for
+        the camera module and gets a frame instead.
+
+        ⚠️ **Chunks must go out back-to-back — this is load-bearing for the
+        portal, not just tidy.** A ``status_batch`` wedged between two chunks
+        of this same act is not dropped — it APPLIES, seq consecutive with
+        whatever the portal already has. The damage lands when the act's LAST
+        chunk arrives moments later: completion overwrites the printer set
+        with that (now-stale) snapshot and rolls ``lastSeq`` back to
+        ``base_seq``, so the farm's very next batch reads to the portal as a
+        gap — a self-inflicted resync loop, not a lost message.
+
+        ⚠️ **The atomicity this needs comes from single ownership, not from a
+        lock.** A ``snapshot_chunk`` act is built and sent from exactly ONE
+        place mid-connection — the pump's own tick (:meth:`_pump_loop`), which
+        calls this only after that same tick's ``flush()`` has already fully
+        returned. Nothing else may call this mid-connection: :meth:`_handle_cmd`
+        answers a ``resync`` command's ``send_snapshot`` post-action with
+        :meth:`request_snapshot`, never a direct call here — see that method's
+        comment. (The one other caller, :meth:`_after_hello`, is fine calling
+        this directly: it runs before ``_live`` starts the pump task, so there
+        is no second sender to race yet.)
+
+        That is not a style preference — this method used to be called
+        straight from the READER task on ``resync``, concurrently with the
+        pump's own ``flush()``, and a real per-frame ``_send_lock`` did NOT
+        make that safe:
+
+        1. Under WebSocket backpressure ``ws.send_str`` genuinely suspends
+           (``_drain_helper``) — a chunk can be ~100 KB, past aiohttp's 64 KB
+           write-buffer high-water mark — and the lock is FIFO, so a queued
+           pump send got scheduled BETWEEN two chunks of the reader's act. The
+           lock only ever serialised one SEND; it never serialised one ACT.
+        2. Independent of backpressure: ``base_seq`` is read at the START of
+           :meth:`Uplink.build_snapshot_chunks`, but this method's ``async
+           with self._session_factory()`` block still has to EXIT — a real
+           await — before the for-loop below sends a single chunk. A
+           ``flush()`` landing in that window bumped ``self._seq`` and put a
+           batch at ``base_seq + 1`` on the wire before the act's own chunks
+           arrived — the identical rollback-to-``base_seq`` damage described
+           above, arriving from the other direction.
+
+        Making the pump the sole owner of both ``flush()`` and this method
+        closes both: the next ``flush()`` cannot run until the ``await`` that
+        calls this method returns, because they now live in the SAME task's
+        sequential tick loop, not two tasks racing one lock. This is not a
+        claim that one ``await self._send(ws, frame)`` below is itself atomic
+        — it is not — only that nothing else is left standing that could
+        start a SECOND act or a status batch while this one is mid-flight.
+        ``test_no_status_batch_interleaves_the_chunks_of_one_snapshot_act``
+        pins this end-to-end with a genuinely multi-chunk act sent alongside a
+        continuously-dirty printer.
+
+        ⚠️ **A resync's chunks can still carry one bounded-stale reading.** A
+        printer that is dirty but still inside its throttle window survives
+        ``flush()`` un-sent (coalescing, not dropping) — see
+        :meth:`Uplink.flush`. If that printer is ALSO in the set this method
+        reads from the database, the chunk it lands in can be up to
+        ``min_interval_s`` older than what ``flush`` will send moments later
+        on its own. This is deliberately NOT fixed by clearing the uplink's
+        dirty map here: unlike the reconnect path, a resync is mid-connection,
+        and zeroing ``_seq``/``_dirty`` there would restart the connection's
+        sequence numbering under a live socket. The staleness is bounded (at
+        most one throttle window), self-corrects on the very next flush, and a
+        printer that goes offline mid-window still broadcasts that edge
+        immediately — no throttle applies to it — so there is no phantom
+        "still online" reading left standing. Leave this as is; do not clear
+        ``_dirty`` on this path.
         """
         async with self._session_factory() as session:
-            frame = await self._uplink.build_snapshot(session)
-        await self._send(ws, frame)
+            frames = await self._uplink.build_snapshot_chunks(session)
+        for frame in frames:
+            await self._send(ws, frame)
 
     async def _send(self, ws: aiohttp.ClientWebSocketResponse, frame: AnyFrame) -> None:
         async with self._send_lock:
-            await ws.send_str(json.dumps(make_frame(frame)))
+            payload = json.dumps(make_frame(frame))
+            # The portal's ws server hard-kills the whole link at 512 KiB
+            # ("Max payload size exceeded", close 1009) and its gateway refuses
+            # past 256 KiB — a fate this warning exists to make diagnosable: it
+            # was exactly how a ~700 KB inventory cmd_result silently churned
+            # the link for a day (2026-08-29) before one log line named it.
+            # Every producer is expected to stay far below this (remote ops are
+            # budget-checked in remote_ops.py; batches/chunks are count-capped),
+            # so a line here means a NEW producer has outgrown the frame budget.
+            if len(payload) > 245_760:  # remote_ops.MAX_RESULT_PAYLOAD_BYTES
+                logger.warning(
+                    "Cloud Link: outbound %s frame is %d bytes — over the portal frame budget, the link is at risk",
+                    getattr(frame, "type", "?"),
+                    len(payload),
+                )
+            await ws.send_str(payload)
 
     # -------------------------------------------------------------- the record
 

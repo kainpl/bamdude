@@ -1,22 +1,47 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 
+import { api } from '../api/client';
+import type { FilamentRoutingSnapshot, LibraryGroupingMetadata } from '../api/client';
+import { useToast } from '../contexts/ToastContext';
+import { groupSelection, groupDecidedUnits } from '../utils/queueGrouping';
+import type { DecidedUnit } from '../utils/queueGrouping';
 import { PrintModal } from './PrintModal';
-import type { PrintModalMode } from './PrintModal';
+import type { PrintModalAnswer, PrintModalMode } from './PrintModal';
 
 /** The least a file must say about itself to be scheduled. */
 export interface SequencedFile {
+  routing?: FilamentRoutingSnapshot;
   id: number;
   /** What the dialog calls it — a print name where there is one, else the filename. */
   name: string;
   /** Which side of PrintModal's either/or the id belongs to. Defaults to the
    *  library file, which is what every caller had until a queue could be copied
    *  — a queue item can be backed by an archive instead. */
-  source?: 'library' | 'archive';
+  source?: 'library' | 'archive' | 'queue_snapshot';
   /** Pre-select this plate instead of letting the dialog default to the first.
    *  Only a caller that KNOWS the file's plates may set it — copying a queue
    *  does, because it is literally the same file. A general bulk selection must
    *  not: plate 3 of one file need not exist in the next. */
   plateId?: number | null;
+  /** The queue item this came from, when the run is a copy.
+   *
+   *  ⚠️ Its presence is what tells the run the plate was ALREADY decided, so
+   *  the file must not be expanded into its other plates. And it — not the file
+   *  id — is what distinguishes two copies of the same file and plate, which a
+   *  queue legitimately holds. */
+  itemId?: number;
+  /** The batch this item belonged to in the SOURCE queue, so the block the
+   *  operator built there can be re-formed on the target. */
+  batchId?: string | null;
+  /** The order the SOURCE row was filed under — present only for a copy, where
+   *  the question was already answered. ⚠️ Present-with-nulls is an answer too
+   *  ("no order"), and must not be asked again: a copy that re-asked got the
+   *  dialog's proposal — the first order still short of this plate — and landed
+   *  under a different order than its original. Absent means nobody answered
+   *  (a bulk selection), and the dialog asks as usual. */
+  orderFiling?: { projectId: number | null; projectLineId: number | null };
 }
 
 interface QueueSequencerProps {
@@ -39,23 +64,175 @@ interface QueueSequencerProps {
   lockAutoTarget?: boolean;
 }
 
+/** One PrintModal mount: a file, and which of its plates this group holds. */
+interface RunMember {
+  file: SequencedFile;
+  /** In-group plate indexes, or null to leave the plate question to the file's
+   *  own answer (a copy run's ``plateId``, or the dialog's default). */
+  plateIds: number[] | null;
+}
+
+/** One answer: the dialog that is shown, plus the members it stands for. */
+interface RunGroup {
+  members: RunMember[];
+  /** Plates this group queues in total — what the badge counts. */
+  units: number;
+}
+
+/** A run over one file at a time: what every caller had before grouping. */
+function perFileRun(files: SequencedFile[]): RunGroup[] {
+  return files.map((file) => ({ members: [{ file, plateIds: null }], units: 1 }));
+}
+
 /**
- * Queue a set of files by opening the Schedule dialog once per file, carrying a
- * `2/5` counter.
+ * Turn the selection into the groups the run walks.
  *
- * There is no bulk dialog because there is nothing a bulk dialog could ask that
- * this one doesn't: printer or auto-queue, plates, AMS mapping, print options,
- * schedule, quantity. Those are exactly the answers that differ between two
- * files in one selection, so the file is the unit — not the batch.
+ * Without metadata this is the old per-file run, which is the honest fallback:
+ * grouping is a saving, and losing the saving must never cost the ability to
+ * queue.
+ */
+/**
+ * A copy run: the plates are already chosen, so group without expanding.
  *
- * Each file gets a FRESH modal (keyed on its id). Plate selection, filament
- * mapping and per-printer config belong to one file; carrying them over would
- * be wrong rather than convenient — plate 3 of one file need not exist in the
- * next.
+ * ⚠️ One member per ITEM. `groupSelection`'s members are per file — right when
+ * a file contributes several plates to one dialog — and wrong here: a queue
+ * legitimately holds the same file twice, and two copies must stay two.
+ */
+function buildDecidedRun(
+  files: SequencedFile[],
+  metadata: LibraryGroupingMetadata[],
+): { grouped: boolean; groups: RunGroup[] } {
+  // Whole-file legacy rows need their own source/plate validation before grouping.
+  if (files.some(file => !file.plateId || file.plateId < 1)) {
+    return { grouped: false, groups: perFileRun(files) };
+  }
+  // ⚠️ Unit identity, not necessarily a queue item id. `copyableCurrentPrint`
+  // has no `itemId` at all — a print started from the printer's screen often
+  // has no queue row — so a synthetic negative stands in. Real ids are
+  // positive, so the two spaces cannot collide.
+  const identity = (file: SequencedFile, i: number) => file.itemId ?? -(i + 1);
+  const byItem = new Map(files.map((file, i) => [identity(file, i), file]));
+  const units: DecidedUnit[] = files.map((file, i) => ({
+    itemId: identity(file, i),
+    fileId: file.id,
+    fileName: file.name,
+    source: file.source ?? 'library',
+    plateIndex: file.plateId!,
+  }));
+
+  const groups: RunGroup[] = groupDecidedUnits(units, metadata).map((group) => ({
+    units: group.units.length,
+    members: group.units.flatMap((unit) => {
+      const file = byItem.get(Number(unit.memberKey.slice('item:'.length)));
+      // `plateIds` stays null: the plate rides on the file's own `plateId`,
+      // which is what the dialog already reads for a copy.
+      return file ? [{ file, plateIds: null }] : [];
+    }),
+  }));
+
+  return { grouped: true, groups: groups.filter((group) => group.members.length > 0) };
+}
+
+function buildRun(
+  files: SequencedFile[],
+  metadata: LibraryGroupingMetadata[] | undefined,
+): { grouped: boolean; groups: RunGroup[] } {
+  if (!metadata) return { grouped: false, groups: perFileRun(files) };
+  // ⚠️ `source` is the discriminator, not `itemId`. Both copy shapes set it —
+  // `copyableItems` always, and `copyableCurrentPrint` for the running print,
+  // which carries a plate but no queue row and therefore no item id. Keying on
+  // `itemId` would send that one down the expanding path and queue every plate
+  // of its file.
+  if (files.length > 0 && files.every((file) => file.source !== undefined)) {
+    return buildDecidedRun(files, metadata);
+  }
+
+  const byId = new Map(files.map((file) => [file.id, file]));
+  const known = new Set(metadata.map((row) => row.file_id));
+  // A file the server could not parse has no plates to preselect: its single
+  // unit is a placeholder for "ask about it anyway", not knowledge about it.
+  const plateless = new Set(metadata.filter((row) => row.plates.length === 0).map((row) => row.file_id));
+
+  const groups: RunGroup[] = groupSelection(metadata, files.map((file) => file.id)).map((group) => {
+    // Units of ONE file are handled by ONE mount — the dialog ticks all of that
+    // file's in-group plates, so showing one while the rest queue silently
+    // would make it lie about what it is about to do.
+    const platesByFile = new Map<number, number[]>();
+    for (const unit of group.units) {
+      const seen = platesByFile.get(unit.fileId);
+      if (seen) seen.push(unit.plateIndex);
+      else platesByFile.set(unit.fileId, [unit.plateIndex]);
+    }
+    return {
+      units: group.units.length,
+      members: [...platesByFile.entries()].flatMap(([fileId, plateIds]) => {
+        const file = byId.get(fileId);
+        return file ? [{ file, plateIds: plateless.has(fileId) ? null : plateIds }] : [];
+      }),
+    };
+  });
+
+  // ⚠️ The server skips ids it does not know, and `groupSelection` skips what
+  // the server skipped — so a file the library has since lost would drop out of
+  // the run without a word. It gets asked about instead, ungrouped.
+  for (const file of files) {
+    if (!known.has(file.id)) groups.push({ members: [{ file, plateIds: null }], units: 1 });
+  }
+
+  return { grouped: true, groups: groups.filter((group) => group.members.length > 0) };
+}
+
+/**
+ * Queue a set of files by opening the Schedule dialog once per GROUP — files
+ * whose dialog would be answered identically are answered once, and the rest of
+ * the group queues itself without rendering.
  *
- * Used by the library's bulk Schedule and by dropping files onto a printer or a
- * printer's queue. The drop targets pass a pinned printer; the library passes
- * none and lets the dialog ask.
+ * There is still no bulk dialog, but the reason has narrowed to one: PrintModal
+ * is the only code that builds a queue payload, and a second builder is the bug
+ * the removed bulk endpoint already was. The old reason — that printer or
+ * auto-queue, plates, AMS mapping, print options, schedule and quantity are
+ * answered differently for every file — turned out to be false on a real farm:
+ * of 60 plate-units in the reporting farm's library, 57 shared one answer and
+ * the whole selection came down to 3 dialogs. So the unit is the GROUP, not the
+ * file: the group is exactly the set for which those answers coincide, which is
+ * why one dialog can stand for it, and a selection that genuinely disagrees is
+ * still asked about a group at a time — of one file each, in the worst case.
+ *
+ * **A group can decline to speak for the rest** (`applyToRest`). It is the
+ * group's own answer, on by default and reset for the next one, and it gates
+ * ONLY the silence: the members still open seeded, because the operator did not
+ * change their mind about the settings — they want to look at each file.
+ *
+ * **A copy run groups too, on units whose plate is already decided.** The
+ * discriminator is `source`, which both copy shapes set; `itemId` is not, since
+ * the running print often has no queue row at all. Those units are never
+ * expanded — the plate rides on the item — and each is its own member, because
+ * a queue legitimately holds the same file twice. Their source `batchId` is
+ * collected across the run and re-formed on the target, so a block survives the
+ * copy.
+ *
+ * **The answer is carried explicitly** (`onAnswered` → `seededAnswer`): printer
+ * selection, dispatch mode and auto target, schedule, copies, print options,
+ * swap macros and macro selection. Filament mapping and per-plate counts are
+ * NOT — a global tray id names a different spool on a different machine, and
+ * plate 3 of one file is not plate 3 of the next, so both are recomputed per
+ * file by the same code the visible dialog uses.
+ *
+ * Each member gets a FRESH modal (keyed on its position in the run as well as
+ * its id). Plate selection, filament mapping and per-printer config belong to
+ * one file, and PrintModal's self-submit uses once-only refs that would leak
+ * across members if React reused the mount — the same file can legitimately
+ * appear in two groups, so the id alone is not a unique key.
+ *
+ * ⚠️ **This component never builds a queue payload.** It composes modals;
+ * PrintModal owns the payload, and the removed bulk endpoint is why.
+ *
+ * Used by the library's Schedule (one file or a selection — both go through
+ * here, which is why a lone multi-plate file now opens with all its plates
+ * ticked), by dropping files onto a printer or a printer's queue, by dropping
+ * them onto the auto-queue panel, and by copying a queue. The drop targets pass
+ * a pinned printer or a pinned auto-queue; the library passes none and lets the
+ * dialog ask.
  */
 export function QueueSequencer({
   files,
@@ -67,7 +244,11 @@ export function QueueSequencer({
   lockPrinterSelection,
   lockAutoTarget,
 }: QueueSequencerProps) {
-  const [index, setIndex] = useState(0);
+  const { t } = useTranslation();
+  const { showToast } = useToast();
+
+  const [groupIndex, setGroupIndex] = useState(0);
+  const [memberIndex, setMemberIndex] = useState(0);
 
   // PrintModal calls onSuccess and THEN onClose on a successful submit, and
   // only onClose when the operator gives up. So onClose is the single place
@@ -76,41 +257,252 @@ export function QueueSequencer({
   // setState would win.
   const queuedRef = useRef(false);
 
-  const file = files[index];
-  if (!file) return null;
+  // ⚠️ **What makes a group a group.** The dialog is shown once and answered
+  // once; every other member of that group is queued with THAT answer. Without
+  // this the silent members mounted on the component's own defaults — no
+  // printer and an ASAP schedule — so a two-printer farm queued the leader and
+  // then hung for ever on a member that could neither submit nor show itself,
+  // and a leader who chose "Queue Only" produced 56 members that dispatched
+  // immediately. Seven per-task reviews missed it because the spec asserted
+  // this carry existed.
+  //
+  // A ref, like the tally below: it is written from inside PrintModal's submit
+  // and read while rendering the very next member, in the same tick.
+  const answerRef = useRef<PrintModalAnswer | undefined>(undefined);
+
+  // The run's tally, all by ref for the same reason: it is written from inside
+  // onClose and read in the same tick when the run ends.
+  const queuedUnitsRef = useRef(0);
+  const queuedByFileRef = useRef(new Map<number, number>());
+  const answeredGroupsRef = useRef(new Set<number>());
+  const askedRef = useRef(0);
+
+  // Rows created on the TARGET, grouped by the batch their source item belonged
+  // to. A block the operator built in the source queue is re-formed from these
+  // when the run ends — the source's own ids mean nothing here, so the target
+  // batch can only be made after its rows exist.
+  const cohortsRef = useRef(new Map<string, number[]>());
+
+  const ids = useMemo(() => files.map((file) => file.id), [files]);
+
+  // Two kinds of run, and the difference is whether the plate has been decided.
+  //
+  //   · A SELECTION says only id and name. Nobody has chosen a plate, so a file
+  //     expands into all of them and its units share one dialog.
+  //   · A COPY names an `itemId`, and its plate rides along — expanding it would
+  //     queue plates the operator never asked for.
+  //
+  // ⚠️ An earlier guard refused a copy run outright, on the reasoning that
+  // `plateId: null` meant "this item had no plate". It does not: the column's
+  // own comment is "None = plate 1". What was true is that a queue holds the
+  // same file twice and that an archive id is not a library file id — neither
+  // of which is a reason not to group, only a reason to build the units
+  // differently and to look nothing up for an archive.
+  const groupable = ids.length > 0;
+
+  // Only library rows have an answer to look up; an archive-backed copy item
+  // takes `groupDecidedUnits`'s own "no metadata" branch and stands alone.
+  const lookupIds = useMemo(
+    () => [...new Set(files.filter((f) => (f.source ?? 'library') === 'library').map((f) => f.id))],
+    [files],
+  );
+
+  const grouping = useQuery({
+    queryKey: ['queue-grouping', lookupIds],
+    queryFn: () => api.getLibraryGroupingMetadata(lookupIds),
+    enabled: groupable,
+    // No retry: the fallback is a working run, and a retried failure would be
+    // seconds of blank screen where the operator expects a dialog.
+    retry: false,
+    staleTime: 60_000,
+  });
+
+  const { grouped, groups } = useMemo(
+    () => buildRun(files, grouping.data),
+    [files, grouping.data],
+  );
+
+  /** Plates each file owes across the whole run. */
+  const owedByFile = useMemo(() => {
+    const owed = new Map<number, number>();
+    for (const group of groups) {
+      for (const member of group.members) {
+        owed.set(member.file.id, (owed.get(member.file.id) ?? 0) + (member.plateIds?.length ?? 1));
+      }
+    }
+    return owed;
+  }, [groups]);
+
+  const totalUnits = useMemo(() => groups.reduce((sum, group) => sum + group.units, 0), [groups]);
+
+  // ⚠️ The toggle belongs to the GROUP, not the run: each leader offers it,
+  // and the next group opens with it on again. Reset lives in the group
+  // advance below, beside the answer reset, for the same reason.
+  const [applyToRest, setApplyToRest] = useState(true);
+
+  // `isLoading` and not `isPending`: a disabled query is pending forever, and
+  // gating on that would render nothing at all for an ungroupable run.
+  if (grouping.isLoading) return null;
+
+  const group = groups[groupIndex];
+  const member = group?.members[memberIndex];
+  if (!group || !member) return null;
+
+  /** Files with at least one plate still undistributed, in the operator's order.
+   *
+   *  ⚠️ Deliberately over-inclusive: a file whose plates landed in two groups
+   *  is handed back when either group is abandoned. The caller re-ticks what
+   *  comes back, so an extra tick costs a second look; a missing one silently
+   *  drops work the operator still means to distribute. */
+  const stillOwed = () =>
+    files.filter((file) => (queuedByFileRef.current.get(file.id) ?? 0) < (owedByFile.get(file.id) ?? 1));
+
+  /** Re-form the source queue's blocks on the target.
+   *
+   *  ⚠️ `POST /queue/batch` requires every item to be **pending**, and the
+   *  scheduler can dispatch the run's first row before the run ends — so a
+   *  cohort that 400s is skipped rather than allowed to throw. Losing one block
+   *  boundary is a small loss; a run that fails at the finish line after fifty
+   *  queued rows is not.
+   *
+   *  ⚠️ It also OVERWRITES `batch_id`, which is why a member whose own quantity
+   *  already made a batch needs no special handling: its rows are simply
+   *  re-batched with the rest of the cohort. */
+  const reformBlocks = async () => {
+    for (const ids of cohortsRef.current.values()) {
+      if (ids.length < 2) continue;
+      try {
+        await api.groupItemsIntoBatch(ids);
+      } catch {
+        // Already dispatched, or gone. The rows are queued either way.
+      }
+    }
+    cohortsRef.current.clear();
+  };
+
+  const finish = (remaining: SequencedFile[]) => {
+    void reformBlocks();
+    // One report for the whole run, and only when the run actually queued
+    // something the operator did not see a dialog for. A run whose every group
+    // held a single unit asked about every plate, so it has nothing to explain.
+    const queued = queuedUnitsRef.current;
+    if (grouped && queued > 0 && totalUnits > groups.length) {
+      const answered = answeredGroupsRef.current.size;
+      showToast(
+        askedRef.current > 0
+          ? t('queue.groupedQueuedWithAsks', { queued, count: answered, asked: askedRef.current })
+          : t('queue.groupedQueued', { queued, count: answered }),
+      );
+    }
+    onDone(remaining);
+  };
+
+  const showBadge = grouped && (groups.length > 1 || group.units > 1);
 
   return (
     <PrintModal
-      key={`${file.source ?? 'library'}-${file.id}`}
+      key={`${groupIndex}:${memberIndex}:${member.file.source ?? 'library'}:${member.file.id}`}
       mode={mode}
-      libraryFileId={file.source === 'archive' ? undefined : file.id}
-      archiveId={file.source === 'archive' ? file.id : undefined}
-      preselectedPlateId={file.plateId}
-      archiveName={file.name}
+      libraryFileId={member.file.source === 'library' || member.file.source === undefined ? member.file.id : undefined}
+      archiveId={member.file.source === 'archive' ? member.file.id : undefined}
+      sourceQueueItemId={member.file.source === 'queue_snapshot' ? member.file.id : undefined}
+      preselectedPlateId={member.plateIds ? undefined : member.file.plateId}
+      preselectedPlateIds={member.plateIds ?? undefined}
+      archiveName={member.file.name}
+      // A copy files where its source row was filed — including "nowhere".
+      // Per MEMBER, not per group: the order is not part of the carried
+      // answer, so two copies from two orders in one group each keep their own.
+      projectId={member.file.orderFiling?.projectId ?? undefined}
+      projectLineId={member.file.orderFiling?.projectLineId ?? undefined}
+      orderAnswered={member.file.orderFiling !== undefined}
+      initialRouting={member.file.routing}
       initialSelectedPrinterIds={initialSelectedPrinterIds}
       initialDispatchMode={initialDispatchMode}
       lockDispatchMode={lockDispatchMode}
       lockPrinterSelection={lockPrinterSelection}
       lockAutoTarget={lockAutoTarget}
-      sequence={files.length > 1 ? { current: index + 1, total: files.length } : undefined}
+      groupBadge={
+        showBadge
+          ? { current: groupIndex + 1, total: groups.length, units: group.units }
+          : undefined
+      }
+      // The ungrouped run keeps its own "2/5" counter — the group badge would
+      // be answering a question that run never asked.
+      sequence={!grouped && files.length > 1 ? { current: groupIndex + 1, total: files.length } : undefined}
+      // Every member after the group's first one submits itself. It can still
+      // decide it has to ask (no filament match, a dead status query, a
+      // low-spool warning, a failed dispatch) and render — which is why the
+      // branch below treats a refusal exactly like today's abandon.
+      // ⚠️ `applyToRest` gates ONLY this. `seededAnswer` below is deliberately
+      // not gated by it: a declined group still opens pre-filled, because the
+      // operator did not change their mind about the settings — they want to
+      // look at each file.
+      autoSubmitWhenUnambiguous={memberIndex > 0 && applyToRest && !answerRef.current?.requiresFileReview && !member.file.routing}
+      applyToRest={applyToRest}
+      onApplyToRestChange={setApplyToRest}
+      // Only the members after the group's first one are answered in advance —
+      // the first one IS the question. ⚠️ A separate prop and never
+      // `initialSelectedPrinterIds`: that one hides the printer selector unless
+      // the run is pinned, so a member that ends up asking would render with no
+      // way to change printer — the one dialog that most needs the question.
+      seededAnswer={memberIndex > 0 ? answerRef.current : undefined}
+      onAnswered={(answer) => {
+        // Every submit, not only the leader's: a member that had to ask is a
+        // dialog the operator answered afresh, and the rest of the group should
+        // follow that answer rather than the one it just overrode. A silent
+        // member simply re-reports its own seed, which is a no-op.
+        answerRef.current = answer;
+      }}
+      onAutoSubmitRefused={() => {
+        askedRef.current += 1;
+      }}
+      onQueued={(createdItemIds) => {
+        // Only a copy carries a source batch; a selection has none to reproduce.
+        const batchId = member.file.batchId;
+        if (!batchId) return;
+        const seen = cohortsRef.current.get(batchId);
+        if (seen) seen.push(...createdItemIds);
+        else cohortsRef.current.set(batchId, [...createdItemIds]);
+      }}
       onSuccess={() => {
         queuedRef.current = true;
       }}
       onClose={() => {
         const queued = queuedRef.current;
         queuedRef.current = false;
-        // Abandoned here: this file and everything after it are still
-        // undistributed, and the caller puts them back into the selection.
+
+        // Abandoned here: whatever this group and the ones after it still owe
+        // is undistributed, and the caller puts it back into the selection.
         if (!queued) {
-          onDone(files.slice(index));
+          finish(stillOwed());
           return;
         }
-        const next = index + 1;
-        if (next >= files.length) {
-          onDone([]);
+
+        const units = member.plateIds?.length ?? 1;
+        queuedUnitsRef.current += units;
+        queuedByFileRef.current.set(
+          member.file.id,
+          (queuedByFileRef.current.get(member.file.id) ?? 0) + units,
+        );
+        answeredGroupsRef.current.add(groupIndex);
+
+        const nextMember = memberIndex + 1;
+        if (nextMember < group.members.length) {
+          setMemberIndex(nextMember);
           return;
         }
-        setIndex(next);
+        const nextGroup = groupIndex + 1;
+        if (nextGroup < groups.length) {
+          // A new group is a new question — it exists precisely because its
+          // answers are expected to differ. Carrying the previous group's
+          // answer into it would pre-fill a dialog nobody has been asked yet.
+          answerRef.current = undefined;
+          setApplyToRest(true);
+          setGroupIndex(nextGroup);
+          setMemberIndex(0);
+          return;
+        }
+        finish([]);
       }}
     />
   );

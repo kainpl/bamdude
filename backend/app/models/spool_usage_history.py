@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -10,6 +10,12 @@ class SpoolUsageHistory(Base):
     """Record of filament consumption for a spool during a print."""
 
     __tablename__ = "spool_usage_history"
+    __table_args__ = (
+        # The forecast engine's window scans — day-bucketed grams and the
+        # newest event per spool — all enter through (spool_id, created_at).
+        # Existing installs get it via m159; fresh installs via create_all.
+        Index("ix_spool_usage_history_spool_created", "spool_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     spool_id: Mapped[int] = mapped_column(ForeignKey("spool.id", ondelete="CASCADE"))

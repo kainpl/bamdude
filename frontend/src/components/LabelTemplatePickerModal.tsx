@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Printer, CheckSquare, Square, Search, FileText } from 'lucide-react';
+import { Loader2, Printer, Search, FileText } from 'lucide-react';
+import { SelectionBox } from './SelectionBox';
 import { api, type InventorySpool, type LabelTemplate } from '../api/client';
 import { getSwatchStyle } from '../utils/colors';
 import { Button } from './Button';
+import { Modal } from './Modal';
 import { CardSelect, type CardOption } from './labels/CardSelect';
 import { useToast } from '../contexts/ToastContext';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -158,6 +160,7 @@ export function LabelTemplatePickerModal({
   spoolDisplayTemplate,
 }: LabelTemplatePickerModalProps) {
   const { t } = useTranslation();
+  const headingId = useId();
   const { showToast } = useToast();
   // The design being printed, by id — the dialog used to hold one of six
   // hard-coded names here, which is what kept the catalogue invisible.
@@ -486,373 +489,362 @@ export function LabelTemplatePickerModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center p-4 overflow-y-auto">
-      <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-        onClick={onClose}
-      />
-
-      <div className="relative w-full max-w-3xl bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col my-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
-          <div className="flex items-center gap-2">
-            <Printer className="w-5 h-5 text-bambu-green" />
-            <h2 className="text-lg font-semibold text-white">
-              {t('inventory.labels.title')}
-            </h2>
-            {selectedCount > 0 && (
-              <span className="text-sm text-bambu-gray">
-                ({t('inventory.labels.selectedCount', { count: selectedCount })})
-              </span>
-            )}
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1 text-bambu-gray hover:text-white rounded transition-colors"
-            aria-label={t('common.close')}
-          >
-            <X className="w-5 h-5" />
-          </button>
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      header={
+        <>
+          <Printer className="w-5 h-5 text-bambu-green" />
+          <h2 id={headingId} className="text-lg font-semibold text-white">
+            {t('inventory.labels.title')}
+          </h2>
+          {selectedCount > 0 && (
+            <span className="text-sm text-bambu-gray">
+              ({t('inventory.labels.selectedCount', { count: selectedCount })})
+            </span>
+          )}
+        </>
+      }
+      size="3xl"
+      bodyClassName="flex flex-col"
+    >
+      {/* Search + material chips */}
+      <div className="p-4 space-y-2 border-b border-bambu-dark-tertiary">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t('inventory.labels.searchPlaceholder')}
+            className="w-full pl-9 pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray focus:outline-none focus:border-bambu-green"
+          />
         </div>
-
-        {/* Search + material chips */}
-        <div className="p-4 space-y-2 border-b border-bambu-dark-tertiary">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t('inventory.labels.searchPlaceholder')}
-              className="w-full pl-9 pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray focus:outline-none focus:border-bambu-green"
-            />
-          </div>
-          {materials.length > 1 && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-xs text-bambu-gray mr-1">
-                {t('inventory.labels.filterByMaterial')}
-              </span>
+        {materials.length > 1 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-bambu-gray mr-1">
+              {t('inventory.labels.filterByMaterial')}
+            </span>
+            <button
+              type="button"
+              onClick={() => setMaterialFilter('')}
+              className={`px-2 py-0.5 text-xs rounded-full border transition ${
+                materialFilter === ''
+                  ? 'bg-bambu-green text-white border-bambu-green'
+                  : 'bg-bambu-dark text-bambu-gray border-bambu-dark-tertiary hover:border-bambu-gray'
+              }`}
+            >
+              {t('inventory.labels.allMaterials')}
+            </button>
+            {materials.map((m) => (
               <button
+                key={m}
                 type="button"
-                onClick={() => setMaterialFilter('')}
+                onClick={() => setMaterialFilter(m)}
                 className={`px-2 py-0.5 text-xs rounded-full border transition ${
-                  materialFilter === ''
-                    ? 'bg-bambu-green text-bambu-dark border-bambu-green'
+                  materialFilter === m
+                    ? 'bg-bambu-green text-white border-bambu-green'
                     : 'bg-bambu-dark text-bambu-gray border-bambu-dark-tertiary hover:border-bambu-gray'
                 }`}
               >
-                {t('inventory.labels.allMaterials')}
+                {m}
               </button>
-              {materials.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setMaterialFilter(m)}
-                  className={`px-2 py-0.5 text-xs rounded-full border transition ${
-                    materialFilter === m
-                      ? 'bg-bambu-green text-bambu-dark border-bambu-green'
-                      : 'bg-bambu-dark text-bambu-gray border-bambu-dark-tertiary hover:border-bambu-gray'
-                  }`}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
-          )}
-          {/* #1410: sort toggle. 'id' default keeps the historical
-              ascending-ID order; 'color' clusters by hue (rainbow +
-              neutrals trailing). Sort order flows through to the PDF
-              via ``handlePick`` so multi-colour rolls group physically
-              on the printed sheet. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs text-bambu-gray mr-1">
-              {t('inventory.labels.sortBy.label')}
-            </span>
-            <button
-              type="button"
-              onClick={() => setSortMode('id')}
-              className={`px-2 py-0.5 text-xs rounded-full border transition ${
-                sortMode === 'id'
-                  ? 'bg-bambu-green text-bambu-dark border-bambu-green'
-                  : 'bg-bambu-dark text-bambu-gray border-bambu-dark-tertiary hover:border-bambu-gray'
-              }`}
-            >
-              {t('inventory.labels.sortBy.id')}
-            </button>
-            <button
-              type="button"
-              onClick={() => setSortMode('color')}
-              className={`px-2 py-0.5 text-xs rounded-full border transition ${
-                sortMode === 'color'
-                  ? 'bg-bambu-green text-bambu-dark border-bambu-green'
-                  : 'bg-bambu-dark text-bambu-gray border-bambu-dark-tertiary hover:border-bambu-gray'
-              }`}
-            >
-              {t('inventory.labels.sortBy.color')}
-            </button>
+            ))}
           </div>
-        </div>
-
-        {/* Action bar */}
-        <div className="px-4 pt-3 pb-2 flex items-center justify-between gap-3 flex-wrap">
-          <span className="text-sm text-bambu-gray">
-            {t('inventory.labels.pickSpools')}
+        )}
+        {/* #1410: sort toggle. 'id' default keeps the historical
+            ascending-ID order; 'color' clusters by hue (rainbow +
+            neutrals trailing). Sort order flows through to the PDF
+            via ``handlePick`` so multi-colour rolls group physically
+            on the printed sheet. */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-bambu-gray mr-1">
+            {t('inventory.labels.sortBy.label')}
           </span>
-          <div className="flex items-center gap-3 text-xs">
-            <button
-              type="button"
-              onClick={allVisibleChecked ? deselectVisible : selectAllVisible}
-              disabled={visibleSpools.length === 0}
-              className="text-bambu-green hover:underline disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
-            >
-              {allVisibleChecked
-                ? t('inventory.labels.deselectVisible')
-                : t('inventory.labels.selectVisible', { count: visibleSpools.length })}
-            </button>
-            <button
-              type="button"
-              onClick={clearAll}
-              disabled={selectedCount === 0}
-              className="text-bambu-gray hover:text-white hover:underline disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
-            >
-              {t('inventory.labels.clearAll')}
-            </button>
-          </div>
-        </div>
-
-        {/* Spool list — ``min-h-0`` overrides the implicit min-height: auto on
-            flex items so the list can yield height, which is what keeps the
-            controls below it visible on a tight viewport (upstream #1230 /
-            61314cf2).
-
-            ⚠️ Capped as well as flexible. Left to take everything going it ran
-            about half the dialog, pushing the paper, the design and Print far
-            enough down that the choice you came to make was off-screen. The
-            list is the part you scroll; those are the part you act on. */}
-        <div className="flex-1 overflow-y-auto px-2 pb-2 min-h-0 max-h-[38vh]">
-          {visibleSpools.length === 0 ? (
-            <div className="text-center text-sm text-bambu-gray py-6">
-              {sortedSpools.length === 0
-                ? t('inventory.labels.noSpoolsToShow')
-                : t('inventory.labels.noMatches')}
-            </div>
-          ) : (
-            <ul className="space-y-0.5">
-              {visibleSpools.map((s) => {
-                const checked = selectedIds.has(s.id);
-                const displayName = displayNameById.get(s.id) || '';
-                return (
-                  <li key={s.id}>
-                    <label className="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-bambu-dark-tertiary/50 cursor-pointer">
-                      {checked ? (
-                        <CheckSquare className="w-4 h-4 text-bambu-green shrink-0" />
-                      ) : (
-                        <Square className="w-4 h-4 text-bambu-gray shrink-0" />
-                      )}
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleOne(s.id)}
-                        className="sr-only"
-                      />
-                      <span
-                        className="w-4 h-4 rounded border border-black/20 shrink-0"
-                        style={swatchStyle(s.rgba)}
-                      />
-                      <span className="flex-1 min-w-0 truncate text-sm text-white">
-                        {displayName || s.material}
-                      </span>
-                      <span className="text-xs font-mono text-bambu-gray shrink-0">
-                        #{s.id}
-                      </span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-
-        {/* Print options (#1870) */}
-        <div className="px-4 pt-2 pb-1 border-t border-bambu-dark-tertiary">
-          <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-            {monochrome ? (
-              <CheckSquare className="w-4 h-4 text-bambu-green shrink-0" />
-            ) : (
-              <Square className="w-4 h-4 text-bambu-gray shrink-0" />
-            )}
-            <input
-              type="checkbox"
-              checked={monochrome}
-              onChange={(e) => setMonochrome(e.target.checked)}
-              className="sr-only"
-            />
-            <span className="text-sm text-white">
-              {t('inventory.labels.monochrome', 'Monochrome (black & white printer)')}
-            </span>
-            <span className="text-xs text-bambu-gray">
-              {t('inventory.labels.monochromeHint', 'Drops the colour swatch; the hex line still carries the colour')}
-            </span>
-          </label>
-        </div>
-
-        {/* ── How this batch goes out ──────────────────────────────────
-            Asked only when there is something to answer: a desk printer that
-            has been adopted and switched on. Otherwise the driver is not a
-            choice, it is simply what happens, and a step with one button is a
-            click that teaches nothing. */}
-        {routeIsAChoice && route === null && (
-          <div className="px-3 pt-1 pb-2 space-y-2">
-            <div className="text-xs font-medium text-white">{t('inventory.labels.route.title')}</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <button
-                disabled={noSelection}
-                onClick={() => setRoute('driver')}
-                className="text-left p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green disabled:opacity-50 flex items-center gap-2"
-              >
-                <FileText className="w-4 h-4 text-bambu-gray shrink-0" />
-                <span className="min-w-0">
-                  <span className="block font-medium text-white text-sm">{t('inventory.labels.route.driver')}</span>
-                  <span className="block text-xs text-bambu-gray">{t('inventory.labels.route.driverHint')}</span>
-                </span>
-              </button>
-              <button
-                disabled={noSelection}
-                onClick={() => setRoute('device')}
-                className="text-left p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green disabled:opacity-50 flex items-center gap-2"
-              >
-                <Printer className="w-4 h-4 text-bambu-gray shrink-0" />
-                <span className="min-w-0">
-                  <span className="block font-medium text-white text-sm">{t('inventory.labels.route.device')}</span>
-                  <span className="block text-xs text-bambu-gray">{t('inventory.labels.route.deviceHint')}</span>
-                </span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {effectiveRoute !== null && (
-          <div className="px-3 pt-1 pb-2 space-y-2">
-            {routeIsAChoice && (
-              <button
-                onClick={() => setRoute(null)}
-                disabled={pending !== null || sending !== null}
-                className="text-xs text-bambu-gray hover:text-white disabled:opacity-50"
-              >
-                ← {t('inventory.labels.route.back')}
-              </button>
-            )}
-
-            {/* ⚠️ **Paper first, design second, print last — and print is its
-                own button.** The design used to be a grid where clicking a card
-                printed immediately, which read well with six of them and stops
-                reading at all once somebody has drawn a dozen: the list grows
-                downward forever and the choice is destroyed by the same click
-                that acts on it. Two dropdowns and a button say what will happen
-                before it happens, and stay the same size. */}
-            {effectiveRoute === 'driver' && (sheets ?? []).length > 0 && (
-              <CardSelect
-                label={t('inventory.labels.sheet.label')}
-                options={paperOptions}
-                value={sheetId}
-                onChange={setSheetId}
-                disabled={pending !== null}
-              />
-            )}
-
-            {designs.length === 0 ? (
-              <p className="text-sm text-bambu-gray p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark">
-                {t('inventory.labels.noDesigns')}
-              </p>
-            ) : (
-              effectiveRoute === 'driver' && (
-                <>
-                  <CardSelect
-                    label={t('inventory.labels.design')}
-                    options={driverOptions}
-                    value={driverTemplateId}
-                    onChange={setDriverTemplateId}
-                    disabled={pending !== null}
-                  />
-                  <Button
-                    className="w-full"
-                    disabled={noSelection || pending !== null || !driverReady}
-                    onClick={() => driverTemplateId !== null && handlePick(driverTemplateId)}
-                  >
-                    {pending !== null && <Loader2 className="w-4 h-4 animate-spin" />}
-                    {t('common.print')}
-                  </Button>
-                </>
-              )
-            )}
-
-            {/* Choose the design, then press a printer — the printer button is
-                what prints, because there is nothing to open and decide about.
-                ⚠️ No design GRID here at all: every card in one renders a PDF,
-                which is a download nobody wants for a printer on the desk. */}
-            {effectiveRoute === 'device' && designs.length > 0 && (
-              <div className="p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark space-y-2">
-                <div className="text-xs font-medium text-white">{t('inventory.labels.sendToDevice')}</div>
-
-                <CardSelect
-                  label={t('inventory.labels.design')}
-                  options={deviceOptions}
-                  value={deviceTemplateId}
-                  onChange={setDeviceTemplateId}
-                  disabled={sending !== null}
-                />
-
-                {devices.map((device) => {
-                  const complaint = cassetteComplaint(device);
-                  return (
-                    <button
-                      key={device.id}
-                      disabled={noSelection || sending !== null || complaint !== null}
-                      onClick={() => sendToDevice(device)}
-                      title={complaint ?? undefined}
-                      className="w-full text-left p-2 rounded-lg border border-bambu-dark-tertiary hover:border-bambu-green disabled:opacity-50 disabled:hover:border-bambu-dark-tertiary flex items-center gap-2"
-                    >
-                      <Printer className="w-4 h-4 text-bambu-gray shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm text-white truncate">
-                          {device.name || device.model || device.installation_id}
-                        </div>
-                        {/* ⚠️ The complaint REPLACES the cassette line rather
-                            than joining it: what is loaded is exactly what the
-                            complaint is about, and saying it twice in different
-                            words reads as two problems. */}
-                        <div
-                          className={`text-xs truncate ${
-                            complaint ? 'text-amber-600 dark:text-amber-400' : 'text-bambu-gray'
-                          }`}
-                        >
-                          {complaint ??
-                            (device.cassette_width_mm && device.cassette_height_mm
-                              ? t('inventory.labels.deviceCassette', {
-                                  width: device.cassette_width_mm,
-                                  height: device.cassette_height_mm,
-                                })
-                              : t('inventory.labels.deviceCassetteUnknown'))}
-                          {!complaint && !device.printer_reachable && ` — ${t('inventory.labels.deviceOffline')}`}
-                        </div>
-                      </div>
-                      {sending === device.id && (
-                        <Loader2 className="w-4 h-4 animate-spin text-bambu-green shrink-0" />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="flex justify-end gap-2 px-5 py-2 border-t border-bambu-dark-tertiary">
-          <Button variant="secondary" onClick={onClose} disabled={pending !== null}>
-            {t('common.cancel')}
-          </Button>
+          <button
+            type="button"
+            onClick={() => setSortMode('id')}
+            className={`px-2 py-0.5 text-xs rounded-full border transition ${
+              sortMode === 'id'
+                ? 'bg-bambu-green text-white border-bambu-green'
+                : 'bg-bambu-dark text-bambu-gray border-bambu-dark-tertiary hover:border-bambu-gray'
+            }`}
+          >
+            {t('inventory.labels.sortBy.id')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSortMode('color')}
+            className={`px-2 py-0.5 text-xs rounded-full border transition ${
+              sortMode === 'color'
+                ? 'bg-bambu-green text-white border-bambu-green'
+                : 'bg-bambu-dark text-bambu-gray border-bambu-dark-tertiary hover:border-bambu-gray'
+            }`}
+          >
+            {t('inventory.labels.sortBy.color')}
+          </button>
         </div>
       </div>
-    </div>
+
+      {/* Action bar */}
+      <div className="px-4 pt-3 pb-2 flex items-center justify-between gap-3 flex-wrap">
+        <span className="text-sm text-bambu-gray">
+          {t('inventory.labels.pickSpools')}
+        </span>
+        <div className="flex items-center gap-3 text-xs">
+          <button
+            type="button"
+            onClick={allVisibleChecked ? deselectVisible : selectAllVisible}
+            disabled={visibleSpools.length === 0}
+            className="text-bambu-green hover:underline disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
+          >
+            {allVisibleChecked
+              ? t('inventory.labels.deselectVisible')
+              : t('inventory.labels.selectVisible', { count: visibleSpools.length })}
+          </button>
+          <button
+            type="button"
+            onClick={clearAll}
+            disabled={selectedCount === 0}
+            className="text-bambu-gray hover:text-white hover:underline disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
+          >
+            {t('inventory.labels.clearAll')}
+          </button>
+        </div>
+      </div>
+
+      {/* Spool list — ``min-h-0`` overrides the implicit min-height: auto on
+          flex items so the list can yield height, which is what keeps the
+          controls below it visible on a tight viewport (upstream #1230 /
+          61314cf2).
+
+          ⚠️ Capped as well as flexible. Left to take everything going it ran
+          about half the dialog, pushing the paper, the design and Print far
+          enough down that the choice you came to make was off-screen. The
+          list is the part you scroll; those are the part you act on. */}
+      <div className="flex-1 overflow-y-auto px-2 pb-2 min-h-0 max-h-[38vh]">
+        {visibleSpools.length === 0 ? (
+          <div className="text-center text-sm text-bambu-gray py-4">
+            {sortedSpools.length === 0
+              ? t('inventory.labels.noSpoolsToShow')
+              : t('inventory.labels.noMatches')}
+          </div>
+        ) : (
+          <ul className="space-y-0.5">
+            {visibleSpools.map((s) => {
+              const checked = selectedIds.has(s.id);
+              const displayName = displayNameById.get(s.id) || '';
+              return (
+                <li key={s.id}>
+                  <label className="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-bambu-dark-tertiary/50 cursor-pointer">
+                    {checked ? (
+                      <SelectionBox checked={true} className="w-4 h-4 shrink-0" />
+                    ) : (
+                      <SelectionBox checked={false} className="w-4 h-4 shrink-0" />
+                    )}
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleOne(s.id)}
+                      className="sr-only"
+                    />
+                    <span
+                      className="w-4 h-4 rounded border border-black/20 shrink-0"
+                      style={swatchStyle(s.rgba)}
+                    />
+                    <span className="flex-1 min-w-0 truncate text-sm text-white">
+                      {displayName || s.material}
+                    </span>
+                    <span className="text-xs font-mono text-bambu-gray shrink-0">
+                      #{s.id}
+                    </span>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      {/* Print options (#1870) */}
+      <div className="px-4 pt-2 pb-1 border-t border-bambu-dark-tertiary">
+        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+          {monochrome ? (
+            <SelectionBox checked={true} className="w-4 h-4 shrink-0" />
+          ) : (
+            <SelectionBox checked={false} className="w-4 h-4 shrink-0" />
+          )}
+          <input
+            type="checkbox"
+            checked={monochrome}
+            onChange={(e) => setMonochrome(e.target.checked)}
+            className="sr-only"
+          />
+          <span className="text-sm text-white">
+            {t('inventory.labels.monochrome', 'Monochrome (black & white printer)')}
+          </span>
+          <span className="text-xs text-bambu-gray">
+            {t('inventory.labels.monochromeHint', 'Drops the colour swatch; the hex line still carries the colour')}
+          </span>
+        </label>
+      </div>
+
+      {/* ── How this batch goes out ──────────────────────────────────
+          Asked only when there is something to answer: a desk printer that
+          has been adopted and switched on. Otherwise the driver is not a
+          choice, it is simply what happens, and a step with one button is a
+          click that teaches nothing. */}
+      {routeIsAChoice && route === null && (
+        <div className="px-3 pt-1 pb-2 space-y-2">
+          <div className="text-xs font-medium text-white">{t('inventory.labels.route.title')}</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              disabled={noSelection}
+              onClick={() => setRoute('driver')}
+              className="text-left p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green disabled:opacity-50 flex items-center gap-2"
+            >
+              <FileText className="w-4 h-4 text-bambu-gray shrink-0" />
+              <span className="min-w-0">
+                <span className="block font-medium text-white text-sm">{t('inventory.labels.route.driver')}</span>
+                <span className="block text-xs text-bambu-gray">{t('inventory.labels.route.driverHint')}</span>
+              </span>
+            </button>
+            <button
+              disabled={noSelection}
+              onClick={() => setRoute('device')}
+              className="text-left p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green disabled:opacity-50 flex items-center gap-2"
+            >
+              <Printer className="w-4 h-4 text-bambu-gray shrink-0" />
+              <span className="min-w-0">
+                <span className="block font-medium text-white text-sm">{t('inventory.labels.route.device')}</span>
+                <span className="block text-xs text-bambu-gray">{t('inventory.labels.route.deviceHint')}</span>
+              </span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {effectiveRoute !== null && (
+        <div className="px-3 pt-1 pb-2 space-y-2">
+          {routeIsAChoice && (
+            <button
+              onClick={() => setRoute(null)}
+              disabled={pending !== null || sending !== null}
+              className="text-xs text-bambu-gray hover:text-white disabled:opacity-50"
+            >
+              ← {t('inventory.labels.route.back')}
+            </button>
+          )}
+
+          {/* ⚠️ **Paper first, design second, print last — and print is its
+              own button.** The design used to be a grid where clicking a card
+              printed immediately, which read well with six of them and stops
+              reading at all once somebody has drawn a dozen: the list grows
+              downward forever and the choice is destroyed by the same click
+              that acts on it. Two dropdowns and a button say what will happen
+              before it happens, and stay the same size. */}
+          {effectiveRoute === 'driver' && (sheets ?? []).length > 0 && (
+            <CardSelect
+              label={t('inventory.labels.sheet.label')}
+              options={paperOptions}
+              value={sheetId}
+              onChange={setSheetId}
+              disabled={pending !== null}
+            />
+          )}
+
+          {designs.length === 0 ? (
+            <p className="text-sm text-bambu-gray p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark">
+              {t('inventory.labels.noDesigns')}
+            </p>
+          ) : (
+            effectiveRoute === 'driver' && (
+              <>
+                <CardSelect
+                  label={t('inventory.labels.design')}
+                  options={driverOptions}
+                  value={driverTemplateId}
+                  onChange={setDriverTemplateId}
+                  disabled={pending !== null}
+                />
+                <Button
+                  className="w-full"
+                  disabled={noSelection || pending !== null || !driverReady}
+                  onClick={() => driverTemplateId !== null && handlePick(driverTemplateId)}
+                >
+                  {pending !== null && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {t('common.print')}
+                </Button>
+              </>
+            )
+          )}
+
+          {/* Choose the design, then press a printer — the printer button is
+              what prints, because there is nothing to open and decide about.
+              ⚠️ No design GRID here at all: every card in one renders a PDF,
+              which is a download nobody wants for a printer on the desk. */}
+          {effectiveRoute === 'device' && designs.length > 0 && (
+            <div className="p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark space-y-2">
+              <div className="text-xs font-medium text-white">{t('inventory.labels.sendToDevice')}</div>
+
+              <CardSelect
+                label={t('inventory.labels.design')}
+                options={deviceOptions}
+                value={deviceTemplateId}
+                onChange={setDeviceTemplateId}
+                disabled={sending !== null}
+              />
+
+              {devices.map((device) => {
+                const complaint = cassetteComplaint(device);
+                return (
+                  <button
+                    key={device.id}
+                    disabled={noSelection || sending !== null || complaint !== null}
+                    onClick={() => sendToDevice(device)}
+                    title={complaint ?? undefined}
+                    className="w-full text-left p-2 rounded-lg border border-bambu-dark-tertiary hover:border-bambu-green disabled:opacity-50 disabled:hover:border-bambu-dark-tertiary flex items-center gap-2"
+                  >
+                    <Printer className="w-4 h-4 text-bambu-gray shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-white truncate">
+                        {device.name || device.model || device.installation_id}
+                      </div>
+                      {/* ⚠️ The complaint REPLACES the cassette line rather
+                          than joining it: what is loaded is exactly what the
+                          complaint is about, and saying it twice in different
+                          words reads as two problems. */}
+                      <div
+                        className={`text-xs truncate ${
+                          complaint ? 'text-amber-600 dark:text-amber-400' : 'text-bambu-gray'
+                        }`}
+                      >
+                        {complaint ??
+                          (device.cassette_width_mm && device.cassette_height_mm
+                            ? t('inventory.labels.deviceCassette', {
+                                width: device.cassette_width_mm,
+                                height: device.cassette_height_mm,
+                              })
+                            : t('inventory.labels.deviceCassetteUnknown'))}
+                        {!complaint && !device.printer_reachable && ` — ${t('inventory.labels.deviceOffline')}`}
+                      </div>
+                    </div>
+                    {sending === device.id && (
+                      <Loader2 className="w-4 h-4 animate-spin text-bambu-green shrink-0" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="flex justify-end gap-2 px-4 py-2 border-t border-bambu-dark-tertiary">
+        <Button variant="secondary" onClick={onClose} disabled={pending !== null}>
+          {t('common.cancel')}
+        </Button>
+      </div>
+    </Modal>
   );
 }

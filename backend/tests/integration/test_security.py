@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.config import settings
 from backend.app.models.auth_ephemeral import AuthEphemeralToken
 from backend.app.models.user import User
 
@@ -872,7 +873,26 @@ class TestCspNonceAndPwaRoutes:
         assert len(set(nonces)) == len(nonces), f"nonces should be unique per request: {nonces}"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("path", ["/manifest.json", "/sw.js", "/sw-register.js"])
+    @pytest.mark.parametrize("path", ["/manifest.json", "/sw.js", "/sw-register.js", "/favicon.ico"])
     async def test_pwa_routes_accept_head(self, async_client: AsyncClient, path: str):
         resp = await async_client.head(path)
         assert resp.status_code != 405, f"HEAD {path} should not be 405"
+
+    @pytest.mark.asyncio
+    async def test_root_favicon_is_served_as_an_image(self, async_client: AsyncClient):
+        # Clients that ignore <link rel="icon"> (bookmark bars, feed readers)
+        # ask the root; the pack's .ico ships in the tracked bundle, so this is
+        # a 200 or a regression — the SPA catch-all used to answer with HTML.
+        #
+        # ⚠️ Skipped where there is no bundle at all, and ONLY there. The
+        # integration suite also runs inside the backend-only test image
+        # (Dockerfile.test, which copies backend/ and not static/), and asking
+        # that image for a frontend asset tests the image, not the code. The
+        # guard is the bundle's entry point rather than the icon itself: if
+        # static/ is present and the icon is not, that is the regression this
+        # test exists for and it must fail.
+        if not (settings.static_dir / "index.html").exists():
+            pytest.skip("no frontend bundle in this image — nothing to serve it from")
+        resp = await async_client.get("/favicon.ico")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("image/")

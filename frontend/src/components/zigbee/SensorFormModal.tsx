@@ -4,8 +4,10 @@ import { useTranslation } from 'react-i18next';
 
 import { api } from '../../api/client';
 import type { ZigbeeDevice, ZigbeeSensor } from '../../api/client';
+import { Modal } from '../Modal';
 import { PrinterLocationSelect } from '../PrinterLocationSelect';
 import { Button } from '../Button';
+import { Select } from '../Select';
 
 interface Props {
   /** Set when editing, null when adopting. */
@@ -77,20 +79,21 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="bg-bambu-dark-secondary rounded-xl p-5 w-full max-w-md space-y-4">
-        <h3 className="text-white">
-          {sensor ? t('settings.zigbee.sensors.editTitle') : t('settings.zigbee.sensors.adoptTitle')}
-        </h3>
-
+    <Modal
+      onClose={onClose}
+      title={sensor ? t('settings.zigbee.sensors.editTitle') : t('settings.zigbee.sensors.adoptTitle')}
+      size="md"
+    >
+      <div className="p-4 space-y-4">
         {sensor === null && (
           <div>
             <label className="block text-sm text-bambu-gray mb-1" htmlFor="sensor-device">
               {t('settings.zigbee.sensors.device')}
             </label>
-            <select
+            <Select
+              size="sm"
+              className="w-full"
               id="sensor-device"
-              className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
               value={ieee}
               onChange={(e) => {
                 setIeee(e.target.value);
@@ -104,7 +107,7 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
                   {d.name || d.model || d.ieee}
                 </option>
               ))}
-            </select>
+            </Select>
             {free.length === 0 && (
               <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
                 {t('settings.zigbee.sensors.noFreeDevices')}
@@ -153,10 +156,11 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
           {boundTo === 'location' ? (
             <PrinterLocationSelect value={locationId} onChange={setLocationId} allowCreate />
           ) : (
-            <select
+            <Select
+              size="sm"
+              className="w-full"
               id="sensor-printer"
               aria-label={t('settings.zigbee.sensors.boundToPrinter')}
-              className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
               value={printerId ?? ''}
               onChange={(e) => setPrinterId(e.target.value === '' ? null : Number(e.target.value))}
             >
@@ -166,7 +170,7 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
                   {p.name}
                 </option>
               ))}
-            </select>
+            </Select>
           )}
           <p className="text-xs text-bambu-gray mt-1">
             {t(
@@ -189,6 +193,6 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
           </Button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

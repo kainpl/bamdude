@@ -28,6 +28,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.local_preset import LocalPreset
 from backend.app.models.settings import Settings as SettingsModel
 from backend.app.services import slicer_api as slicer_api_module
+from backend.app.services.slice_dispatch import slice_dispatch
 
 
 def _make_3mf_with_settings(settings_payload: dict | None = None) -> bytes:
@@ -58,17 +59,33 @@ def _install_mock_sidecar(handler: Callable[[httpx.Request], httpx.Response]) ->
 
 
 async def _wait_for_job(client: AsyncClient, job_id: int, timeout: float = 5.0) -> dict:
-    """Poll ``GET /slice-jobs/{id}`` until the job hits a terminal state."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        r = await client.get(f"/api/v1/slice-jobs/{job_id}")
-        if r.status_code != 200:
-            raise AssertionError(f"slice-jobs poll failed: {r.status_code} {r.text}")
-        body = r.json()
-        if body["status"] in ("completed", "failed"):
-            return body
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"slice job {job_id} did not finish in {timeout}s")
+    """Wait for the job's own task, THEN read its terminal state once.
+
+    Deliberately not a polling loop. The test engine is one in-memory SQLite
+    behind ``StaticPool`` (see ``conftest.test_engine``), so every session —
+    the job's own ``async_session()`` and the ``get_db`` one every request
+    opens — sits on the SAME DBAPI connection. Closing a request's session is
+    a ROLLBACK on that connection, and a poll that lands between the job's
+    ``flush()`` and its next autoflush rolls the job's INSERT out from under
+    it: ``StaleDataError: UPDATE library_files … 0 rows matched``. Seen on CI
+    2026-08-18 and 2026-09-18, reproduced deterministically with one request
+    placed between a flush and an autoflush. Awaiting the task keeps the
+    connection to one writer until the job has committed; the single GET
+    afterwards still exercises the status route.
+    """
+    task = slice_dispatch._tasks.get(job_id)
+    if task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout)
+        except TimeoutError:
+            raise AssertionError(f"slice job {job_id} did not finish in {timeout}s") from None
+    r = await client.get(f"/api/v1/slice-jobs/{job_id}")
+    if r.status_code != 200:
+        raise AssertionError(f"slice-jobs read failed: {r.status_code} {r.text}")
+    body = r.json()
+    if body["status"] not in ("completed", "failed"):
+        raise AssertionError(f"slice job {job_id} is not terminal after its task ended: {body}")
+    return body
 
 
 @pytest.fixture

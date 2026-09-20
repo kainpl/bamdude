@@ -13,8 +13,11 @@ class APIKey(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100))  # User-friendly name
-    key_hash: Mapped[str] = mapped_column(String(64))  # SHA256 hash of the key
-    key_prefix: Mapped[str] = mapped_column(String(8))  # First 8 chars for identification
+    # passlib pbkdf2-sha256 hash ("$pbkdf2-sha256$29000$…", ~87 chars) — not the
+    # 64-char SHA-256 hex the column was first sized for. PostgreSQL enforces the
+    # length, SQLite does not; m167 widens existing PostgreSQL databases.
+    key_hash: Mapped[str] = mapped_column(String(255))
+    key_prefix: Mapped[str] = mapped_column(String(16))  # "bb_" + 8 chars for identification
 
     # Owner — keys created via UI are stamped with the creating user's id so
     # cloud-aware routes can resolve "the key's user" and reuse that user's

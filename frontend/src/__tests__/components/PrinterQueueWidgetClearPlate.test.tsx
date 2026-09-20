@@ -610,4 +610,183 @@ describe('PrinterQueueWidget - Clear Plate', () => {
       });
     });
   });
+
+  describe('defects beside the answer', () => {
+    it('sends the touched defect counters with Clear plate, and nothing when untouched', async () => {
+      let clearBody: unknown = 'unset';
+      server.use(
+        http.get('/api/v1/printers/:id/waiting-print', () =>
+          HttpResponse.json({
+            archive_id: 9, print_name: 'Done', status: 'completed', quantity: 6, defective_count: 0,
+            parts: [
+              { id: 21, name: 'lid', name_key: 'lid', quantity: 2, defective: 0 },
+              { id: 22, name: 'base', name_key: 'base', quantity: 4, defective: 0 },
+            ],
+          }),
+        ),
+        http.post('/api/v1/printers/:id/clear-plate', async ({ request }) => {
+          const text = await request.text();
+          clearBody = text === '' ? null : JSON.parse(text);
+          return HttpResponse.json({ success: true, message: 'Plate cleared' });
+        }),
+      );
+      const user = userEvent.setup();
+      render(<PrinterQueueWidget printerId={1} printerState="FINISH" awaitingPlateClear={true} />);
+
+      await user.click(await screen.findByTestId('plate-defects-toggle'));
+      const lid = (await screen.findByTestId('part-defective-21')) as HTMLInputElement;
+      await user.clear(lid);
+      await user.type(lid, '1');
+      await user.click(screen.getByText('Clear plate'));
+
+      await waitFor(() =>
+        expect(clearBody).toEqual({ defects: { parts: [{ id: 21, defective: 1 }, { id: 22, defective: 0 }] } }),
+      );
+    });
+
+    it('reports a refused shelf correction after the success toast', async () => {
+      // Reported where a refusal can happen: the print on the plate is usually
+      // filed under no order, so its defects correct a free-stock credit and
+      // parts already spent cannot come back off the shelf.
+      server.use(
+        http.get('/api/v1/printers/:id/waiting-print', () =>
+          HttpResponse.json({
+            archive_id: 9, print_name: 'Done', status: 'completed', quantity: 2, defective_count: 0,
+            parts: [{ id: 21, name: 'lid', name_key: 'lid', quantity: 2, defective: 0 }],
+          }),
+        ),
+        http.post('/api/v1/printers/:id/clear-plate', () =>
+          HttpResponse.json({ success: true, message: 'Plate cleared', ledger_refused_parts: 2 }),
+        ),
+      );
+      const user = userEvent.setup();
+      render(<PrinterQueueWidget printerId={1} printerState="FINISH" awaitingPlateClear={true} />);
+
+      await user.click(await screen.findByTestId('plate-defects-toggle'));
+      const lid = (await screen.findByTestId('part-defective-21')) as HTMLInputElement;
+      await user.clear(lid);
+      await user.type(lid, '1');
+      await user.click(screen.getByText('Clear plate'));
+
+      await waitFor(() =>
+        expect(
+          screen.getByText(
+            'The shelf could not be corrected for 2 parts — they were already spent; fix them by hand on the product page',
+          ),
+        ).toBeInTheDocument(),
+      );
+    });
+
+    it('says nothing about the shelf when nothing was refused', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/waiting-print', () =>
+          HttpResponse.json({
+            archive_id: 9, print_name: 'Done', status: 'completed', quantity: 2, defective_count: 0,
+            parts: [{ id: 21, name: 'lid', name_key: 'lid', quantity: 2, defective: 0 }],
+          }),
+        ),
+        http.post('/api/v1/printers/:id/clear-plate', () =>
+          HttpResponse.json({ success: true, message: 'Plate cleared', ledger_refused_parts: 0 }),
+        ),
+      );
+      const user = userEvent.setup();
+      render(<PrinterQueueWidget printerId={1} printerState="FINISH" awaitingPlateClear={true} />);
+
+      await user.click(await screen.findByText('Clear plate'));
+      await waitFor(() =>
+        expect(screen.getAllByText('Plate cleared - ready for next print').length).toBeGreaterThanOrEqual(1),
+      );
+      expect(screen.queryByText(/could not be corrected/)).not.toBeInTheDocument();
+    });
+
+    it('the toggle label follows the typed counters, never a stale flat total', async () => {
+      // `sum || defectFlat` fell through to the server-seeded flat count the
+      // moment every counter read 0, so the toggle kept advertising the old total.
+      server.use(
+        http.get('/api/v1/printers/:id/waiting-print', () =>
+          HttpResponse.json({
+            archive_id: 9, print_name: 'Done', status: 'completed', quantity: 2, defective_count: 1,
+            parts: [{ id: 21, name: 'lid', name_key: 'lid', quantity: 2, defective: 1 }],
+          }),
+        ),
+      );
+      const user = userEvent.setup();
+      render(<PrinterQueueWidget printerId={1} printerState="FINISH" awaitingPlateClear={true} />);
+
+      const toggle = await screen.findByTestId('plate-defects-toggle');
+      await waitFor(() => expect(toggle).toHaveTextContent('Defects in this print: 1'));
+
+      await user.click(toggle);
+      const lid = (await screen.findByTestId('part-defective-21')) as HTMLInputElement;
+      await user.clear(lid);
+
+      await waitFor(() => expect(toggle).toHaveTextContent('Defects in this print'));
+      expect(toggle).not.toHaveTextContent('Defects in this print: 1');
+    });
+
+    it('does not ask for the waiting print where its counters cannot be shown', async () => {
+      // The counters live inside the `needsClearPlate` block, which also needs a
+      // non-empty auto queue; a gate armed over a staged-only queue used to issue
+      // one GET per card that nobody ever read.
+      let asked = 0;
+      server.use(
+        http.get('/api/v1/queue/', () =>
+          HttpResponse.json([
+            { id: 30, printer_id: 1, archive_id: 1, position: 1, status: 'pending', archive_name: 'Staged', manual_start: true, scheduled_time: null },
+          ]),
+        ),
+        http.get('/api/v1/printers/:id/waiting-print', () => {
+          asked += 1;
+          return HttpResponse.json({ archive_id: 9, print_name: 'Done', status: 'completed', quantity: 1, defective_count: 0, parts: [] });
+        }),
+      );
+      render(<PrinterQueueWidget printerId={1} printerState="FINISH" awaitingPlateClear={true} />);
+
+      await waitFor(() => expect(screen.getByText('Staged')).toBeInTheDocument());
+      expect(asked).toBe(0);
+    });
+
+    it('re-reads the waiting print when the answer was refused', async () => {
+      // A refused answer rolls its defects back on the server (the write and the
+      // answer share one transaction), so the card must stop showing what it typed.
+      let asked = 0;
+      server.use(
+        http.get('/api/v1/printers/:id/waiting-print', () => {
+          asked += 1;
+          return HttpResponse.json({
+            archive_id: 9, print_name: 'Done', status: 'completed', quantity: 2, defective_count: 0,
+            parts: [{ id: 21, name: 'lid', name_key: 'lid', quantity: 2, defective: 0 }],
+          });
+        }),
+        http.post('/api/v1/printers/:id/repeat-print', () =>
+          HttpResponse.json({ detail: 'This print has no file to send again' }, { status: 409 }),
+        ),
+      );
+      const user = userEvent.setup();
+      render(<PrinterQueueWidget printerId={1} printerState="FINISH" awaitingPlateClear={true} />);
+
+      await waitFor(() => expect(asked).toBe(1));
+      await user.click(await screen.findByText('Repeat print'));
+
+      await waitFor(() => expect(asked).toBeGreaterThan(1));
+    });
+
+    it('clears without a body when no counter was touched', async () => {
+      let clearBody: unknown = 'unset';
+      server.use(
+        http.get('/api/v1/printers/:id/waiting-print', () =>
+          HttpResponse.json({ archive_id: 9, print_name: 'Done', status: 'completed', quantity: 6, defective_count: 0, parts: [] }),
+        ),
+        http.post('/api/v1/printers/:id/clear-plate', async ({ request }) => {
+          const text = await request.text();
+          clearBody = text === '' ? null : JSON.parse(text);
+          return HttpResponse.json({ success: true, message: 'Plate cleared' });
+        }),
+      );
+      const user = userEvent.setup();
+      render(<PrinterQueueWidget printerId={1} printerState="FINISH" awaitingPlateClear={true} />);
+      await user.click(await screen.findByText('Clear plate'));
+      await waitFor(() => expect(clearBody).toBeNull());
+    });
+  });
 });

@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Loader2, RotateCcw, Plus, Eye, Bold, Italic, Underline, Strikethrough, Code, Link, EyeOff } from 'lucide-react';
+import { Save, Loader2, RotateCcw, Plus, Eye, Bold, Italic, Underline, Strikethrough, Code, Link, EyeOff } from 'lucide-react';
 import { api } from '../api/client';
 import type { NotificationTemplate, NotificationTemplateUpdate } from '../api/client';
 import { Button } from './Button';
+import { Modal } from './Modal';
 
 interface NotificationTemplateEditorProps {
   template: NotificationTemplate;
@@ -47,15 +48,6 @@ export function NotificationTemplateEditor({ template, onClose }: NotificationTe
     }),
     enabled: showPreview && titleTemplate.length > 0 && bodyTemplate.length > 0,
   });
-
-  // Close on Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
 
   // Update mutation
   const updateMutation = useMutation({
@@ -184,179 +176,169 @@ export function NotificationTemplateEditor({ template, onClose }: NotificationTe
   const hasChanges = titleTemplate !== template.title_template || bodyTemplate !== template.body_template;
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
-      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-2xl max-h-[90vh] flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary shrink-0">
-          <h2 className="text-lg font-semibold text-white">
-            {t('notifications.editTemplate', { name: template.name })}
-          </h2>
-          <button
-            onClick={onClose}
-            className="p-1 hover:bg-bambu-dark-tertiary rounded transition-colors"
-          >
-            <X className="w-5 h-5 text-bambu-gray" />
-          </button>
+    <Modal
+      onClose={onClose}
+      title={t('notifications.editTemplate', { name: template.name })}
+      size="2xl"
+      bodyClassName="flex flex-col"
+    >
+      {/* Content */}
+      <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-4">
+        {error && (
+          <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-red-700 dark:text-red-400 text-sm">
+            {error}
+          </div>
+        )}
+
+        {/* Title */}
+        <div>
+          <label className="block text-sm font-medium text-bambu-gray mb-1">
+            {t('notifications.titleLabel')}
+          </label>
+          <input
+            type="text"
+            value={titleTemplate}
+            onChange={(e) => setTitleTemplate(e.target.value)}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:outline-none focus:ring-1 focus:ring-bambu-green"
+            placeholder={t('notifications.titlePlaceholder')}
+          />
         </div>
 
-        {/* Content */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-4">
-          {error && (
-            <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-red-700 dark:text-red-400 text-sm">
-              {error}
-            </div>
-          )}
+        {/* Body */}
+        <div>
+          <label className="block text-sm font-medium text-bambu-gray mb-1">
+            {t('notifications.bodyLabel')}
+          </label>
 
-          {/* Title */}
-          <div>
-            <label className="block text-sm font-medium text-bambu-gray mb-1">
-              {t('notifications.titleLabel')}
-            </label>
-            <input
-              type="text"
-              value={titleTemplate}
-              onChange={(e) => setTitleTemplate(e.target.value)}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:outline-none focus:ring-1 focus:ring-bambu-green"
-              placeholder={t('notifications.titlePlaceholder')}
-            />
+          {/* Formatting toolbar */}
+          <div className="flex items-center gap-0.5 p-1 bg-bambu-dark border border-bambu-dark-tertiary border-b-0 rounded-t">
+            {formatActions.map((action, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => wrapSelection(action.prefix, action.suffix)}
+                title={action.label}
+                className="p-1.5 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded transition-colors"
+              >
+                {action.icon}
+              </button>
+            ))}
+            <div className="flex-1" />
+            <span className="text-[10px] text-bambu-gray/40 pr-1">MarkdownV2</span>
           </div>
 
-          {/* Body */}
-          <div>
-            <label className="block text-sm font-medium text-bambu-gray mb-1">
-              {t('notifications.bodyLabel')}
-            </label>
+          <textarea
+            ref={bodyRef}
+            value={bodyTemplate}
+            onChange={(e) => setBodyTemplate(e.target.value)}
+            rows={6}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-b text-white focus:outline-none focus:ring-1 focus:ring-bambu-green font-mono text-sm resize-none"
+            placeholder={t('notifications.bodyPlaceholder')}
+          />
+        </div>
 
-            {/* Formatting toolbar */}
-            <div className="flex items-center gap-0.5 p-1 bg-bambu-dark border border-bambu-dark-tertiary border-b-0 rounded-t">
-              {formatActions.map((action, i) => (
+        {/* Available Variables */}
+        {eventVariables && (
+          <div>
+            <label className="block text-sm font-medium text-bambu-gray mb-2">
+              {t('notifications.availableVariables')}
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {eventVariables.variables.map((variable) => (
                 <button
-                  key={i}
+                  key={variable}
                   type="button"
-                  onClick={() => wrapSelection(action.prefix, action.suffix)}
-                  title={action.label}
-                  className="p-1.5 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded transition-colors"
+                  onClick={() => insertVariable(variable)}
+                  className="inline-flex items-center gap-1 px-2 py-1 bg-bambu-dark hover:bg-bambu-dark-tertiary border border-bambu-dark-tertiary rounded text-xs text-bambu-gray hover:text-white transition-colors"
                 >
-                  {action.icon}
+                  <Plus className="w-3 h-3" />
+                  {variable}
                 </button>
               ))}
-              <div className="flex-1" />
-              <span className="text-[10px] text-bambu-gray/40 pr-1">MarkdownV2</span>
             </div>
-
-            <textarea
-              ref={bodyRef}
-              value={bodyTemplate}
-              onChange={(e) => setBodyTemplate(e.target.value)}
-              rows={6}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-b text-white focus:outline-none focus:ring-1 focus:ring-bambu-green font-mono text-sm resize-none"
-              placeholder={t('notifications.bodyPlaceholder')}
-            />
+            <p className="text-xs text-bambu-gray/60 mt-1">
+              {t('notifications.clickToInsert')}
+            </p>
           </div>
+        )}
 
-          {/* Available Variables */}
-          {eventVariables && (
-            <div>
-              <label className="block text-sm font-medium text-bambu-gray mb-2">
-                {t('notifications.availableVariables')}
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {eventVariables.variables.map((variable) => (
-                  <button
-                    key={variable}
-                    type="button"
-                    onClick={() => insertVariable(variable)}
-                    className="inline-flex items-center gap-1 px-2 py-1 bg-bambu-dark hover:bg-bambu-dark-tertiary border border-bambu-dark-tertiary rounded text-xs text-bambu-gray hover:text-white transition-colors"
-                  >
-                    <Plus className="w-3 h-3" />
-                    {variable}
-                  </button>
-                ))}
-              </div>
-              <p className="text-xs text-bambu-gray/60 mt-1">
-                {t('notifications.clickToInsert')}
-              </p>
+        {/* Preview */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-sm font-medium text-bambu-gray flex items-center gap-2">
+              <Eye className="w-4 h-4" />
+              {t('notifications.livePreview')}
+            </label>
+            <button
+              type="button"
+              onClick={() => setShowPreview(!showPreview)}
+              className="text-xs text-bambu-green hover:text-bambu-green-light"
+            >
+              {showPreview ? t('notifications.hide') : t('notifications.show')}
+            </button>
+          </div>
+          {showPreview && (
+            <div className="bg-bambu-dark border border-bambu-dark-tertiary rounded p-3 space-y-2">
+              {previewLoading ? (
+                <div className="flex items-center gap-2 text-bambu-gray text-sm">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {t('notifications.loadingPreview')}
+                </div>
+              ) : preview ? (
+                <>
+                  <div>
+                    <span className="text-xs text-bambu-gray">{t('notifications.titlePreview')}</span>
+                    <div className="text-white font-medium">{preview.title}</div>
+                  </div>
+                  <div>
+                    <span className="text-xs text-bambu-gray">{t('notifications.bodyPreview')}</span>
+                    <div className="text-white whitespace-pre-wrap text-sm">{preview.body}</div>
+                  </div>
+                </>
+              ) : (
+                <div className="text-bambu-gray text-sm">
+                  {t('notifications.enterTemplateContent')}
+                </div>
+              )}
             </div>
           )}
+        </div>
+      </form>
 
-          {/* Preview */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-sm font-medium text-bambu-gray flex items-center gap-2">
-                <Eye className="w-4 h-4" />
-                {t('notifications.livePreview')}
-              </label>
-              <button
-                type="button"
-                onClick={() => setShowPreview(!showPreview)}
-                className="text-xs text-bambu-green hover:text-bambu-green-light"
-              >
-                {showPreview ? t('notifications.hide') : t('notifications.show')}
-              </button>
-            </div>
-            {showPreview && (
-              <div className="bg-bambu-dark border border-bambu-dark-tertiary rounded p-3 space-y-2">
-                {previewLoading ? (
-                  <div className="flex items-center gap-2 text-bambu-gray text-sm">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    {t('notifications.loadingPreview')}
-                  </div>
-                ) : preview ? (
-                  <>
-                    <div>
-                      <span className="text-xs text-bambu-gray">{t('notifications.titlePreview')}</span>
-                      <div className="text-white font-medium">{preview.title}</div>
-                    </div>
-                    <div>
-                      <span className="text-xs text-bambu-gray">{t('notifications.bodyPreview')}</span>
-                      <div className="text-white whitespace-pre-wrap text-sm">{preview.body}</div>
-                    </div>
-                  </>
-                ) : (
-                  <div className="text-bambu-gray text-sm">
-                    {t('notifications.enterTemplateContent')}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </form>
+      {/* Footer */}
+      <div className="flex items-center justify-between p-4 border-t border-bambu-dark-tertiary shrink-0">
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={() => resetMutation.mutate()}
+          disabled={resetMutation.isPending}
+          className="text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300"
+        >
+          {resetMutation.isPending ? (
+            <Loader2 className="w-4 h-4 animate-spin mr-2" />
+          ) : (
+            <RotateCcw className="w-4 h-4 mr-2" />
+          )}
+          {t('notifications.resetToDefault')}
+        </Button>
 
-        {/* Footer */}
-        <div className="flex items-center justify-between p-4 border-t border-bambu-dark-tertiary shrink-0">
+        <div className="flex gap-2">
+          <Button type="button" variant="secondary" onClick={onClose}>
+            {t('notifications.cancel')}
+          </Button>
           <Button
-            type="button"
-            variant="ghost"
-            onClick={() => resetMutation.mutate()}
-            disabled={resetMutation.isPending}
-            className="text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300"
+            onClick={handleSubmit}
+            disabled={updateMutation.isPending || !hasChanges}
           >
-            {resetMutation.isPending ? (
+            {updateMutation.isPending ? (
               <Loader2 className="w-4 h-4 animate-spin mr-2" />
             ) : (
-              <RotateCcw className="w-4 h-4 mr-2" />
+              <Save className="w-4 h-4 mr-2" />
             )}
-            {t('notifications.resetToDefault')}
+            {t('notifications.save')}
           </Button>
-
-          <div className="flex gap-2">
-            <Button type="button" variant="secondary" onClick={onClose}>
-              {t('notifications.cancel')}
-            </Button>
-            <Button
-              onClick={handleSubmit}
-              disabled={updateMutation.isPending || !hasChanges}
-            >
-              {updateMutation.isPending ? (
-                <Loader2 className="w-4 h-4 animate-spin mr-2" />
-              ) : (
-                <Save className="w-4 h-4 mr-2" />
-              )}
-              {t('notifications.save')}
-            </Button>
-          </div>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

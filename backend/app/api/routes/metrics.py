@@ -12,6 +12,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
+from backend.app.services import db_health
 from backend.app.services.printer_manager import printer_manager, supports_chamber_temp
 
 router = APIRouter(tags=["metrics"])
@@ -423,6 +424,79 @@ async def get_metrics(
     lines.append("# HELP bamdude_printers_total Total number of configured printers")
     lines.append("# TYPE bamdude_printers_total gauge")
     lines.append(f"bamdude_printers_total {len(printers)}")
+
+    # --- database ------------------------------------------------------------
+    # ⚠️ Only the cheap probes. A scrape can run every 15 seconds, so
+    # pg_stat_database (one row) is in and per-table sizes (a walk of
+    # pg_total_relation_size over every relation) are deliberately not.
+    #
+    # A probe that failed emits NO line rather than a zero: a gap in a time
+    # series is honest, a fabricated 0 is not.
+    try:
+        health = await db_health.collect(db)
+    except Exception:  # noqa: BLE001 — metrics never take the endpoint down
+        health = None
+
+    if health:
+        lines.append("")
+        lines.append("# HELP bamdude_db_info Database backend information")
+        lines.append("# TYPE bamdude_db_info gauge")
+        lines.append(
+            "bamdude_db_info"
+            + format_labels(
+                engine=health["engine"],
+                version=health.get("version") or "unknown",
+                mode=health["mode"],
+            )
+            + " 1"
+        )
+
+        if health.get("size_bytes") is not None:
+            lines.append("")
+            lines.append("# HELP bamdude_db_size_bytes Size of the database on disk")
+            lines.append("# TYPE bamdude_db_size_bytes gauge")
+            lines.append(f"bamdude_db_size_bytes {health['size_bytes']}")
+
+        pool = health.get("pool") or {}
+        for metric, key, helptext in (
+            ("bamdude_db_pool_size", "current_size", "Connections currently held by the pool"),
+            ("bamdude_db_pool_checked_out", "checked_out", "Connections checked out of the pool"),
+            ("bamdude_db_pool_overflow", "overflow", "Connections opened beyond pool_size"),
+        ):
+            if pool.get(key) is not None:
+                lines.append("")
+                lines.append(f"# HELP {metric} {helptext}")
+                lines.append(f"# TYPE {metric} gauge")
+                lines.append(f"{metric} {pool[key]}")
+
+        pg = health.get("postgres")
+        if pg:
+            if pg.get("cache_hit_ratio") is not None:
+                lines.append("")
+                lines.append("# HELP bamdude_db_cache_hit_ratio Shared-buffer hit ratio (0-1)")
+                lines.append("# TYPE bamdude_db_cache_hit_ratio gauge")
+                lines.append(f"bamdude_db_cache_hit_ratio {pg['cache_hit_ratio']}")
+            lines.append("")
+            lines.append("# HELP bamdude_db_connections Backends currently connected")
+            lines.append("# TYPE bamdude_db_connections gauge")
+            lines.append(f"bamdude_db_connections {pg['connections']['used']}")
+            lines.append("")
+            lines.append("# HELP bamdude_db_deadlocks_total Deadlocks detected in this database")
+            lines.append("# TYPE bamdude_db_deadlocks_total counter")
+            lines.append(f"bamdude_db_deadlocks_total {pg['deadlocks']}")
+
+        sqlite = health.get("sqlite")
+        if sqlite:
+            if sqlite.get("wal_bytes") is not None:
+                lines.append("")
+                lines.append("# HELP bamdude_db_wal_bytes Size of the SQLite write-ahead log")
+                lines.append("# TYPE bamdude_db_wal_bytes gauge")
+                lines.append(f"bamdude_db_wal_bytes {sqlite['wal_bytes']}")
+            if sqlite.get("freelist_count") is not None:
+                lines.append("")
+                lines.append("# HELP bamdude_db_freelist_pages Free pages inside the SQLite file")
+                lines.append("# TYPE bamdude_db_freelist_pages gauge")
+                lines.append(f"bamdude_db_freelist_pages {sqlite['freelist_count']}")
 
     # Add trailing newline
     lines.append("")

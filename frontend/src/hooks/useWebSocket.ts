@@ -1,10 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, ApiError } from '../api/client';
+import { api, ApiError, recordLivePrinterStatus } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useConnection } from '../contexts/ConnectionContext';
 import { useTranslation } from 'react-i18next';
-import { inventoryLocationsQueryKey } from '../utils/inventoryQueries';
+import { forecastQueryKeys, inventoryLocationsQueryKey } from '../utils/inventoryQueries';
+import { ORDER_VIEW_KEYS } from '../utils/queryInvalidation';
+import { prioritizeLiveStatusEntries } from '../utils/liveStatusPriority';
 
 // The only auth-failure close code /api/v1/ws emits (backend websocket.py
 // _WS_CLOSE_UNAUTHORIZED). A 4401 means the ws-token was missing / invalid /
@@ -12,6 +14,23 @@ import { inventoryLocationsQueryKey } from '../utils/inventoryQueries';
 // can fix without a fresh login (which remounts this provider anyway). Treat it
 // as terminal so we don't respawn the /auth/ws-token loop.
 const WS_CLOSE_UNAUTHORIZED = 4401;
+const STATUS_CACHE_APPLY_CHUNK_SIZE = 10;
+type DebouncedQueryKey = readonly unknown[];
+
+/**
+ * How long invalidations are coalesced before any of them fires, and how far
+ * apart they then go out — the anti-freeze pair described at
+ * `debouncedInvalidate` below.
+ *
+ * ⚠️ **Named and exported so a test can DERIVE its window rather than guess
+ * one.** The whole burst lasts `debounce + keys × stagger`, and the key count
+ * is `ORDER_VIEW_KEYS` (a list that grows) plus `project-timeline`. A test
+ * that hard-codes the total silently stops covering the last keys the day one
+ * is added — which is exactly what happened when `order-filament` /
+ * `orders-filament` joined the list (spec 2026-09-07).
+ */
+export const INVALIDATION_DEBOUNCE_MS = 3000;
+export const INVALIDATION_STAGGER_MS = 500;
 
 interface WebSocketMessage {
   type: string;
@@ -32,6 +51,7 @@ interface WebSocketMessage {
   device?: Record<string, unknown>;
   state?: string;
   reason?: string | null;
+  bootstrap_id?: string;
 }
 
 export function useWebSocket() {
@@ -42,6 +62,8 @@ export function useWebSocket() {
   // the socket, whose ws.onclose then set a *fresh* reconnect timeout — a
   // leaked reconnect that kept minting ws-tokens post-logout).
   const disposedRef = useRef(false);
+  const connectingRef = useRef(false);
+  const generationRef = useRef(0);
   const queryClient = useQueryClient();
   const [isConnected, setIsConnectedLocal] = useState(false);
   const { setIsConnected: setIsConnectedShared } = useConnection();
@@ -62,12 +84,13 @@ export function useWebSocket() {
   const { t } = useTranslation();
 
   // Debounce invalidations to prevent rapid re-render cascades
-  const pendingInvalidations = useRef<Set<string>>(new Set());
+  const pendingInvalidations = useRef<Map<string, DebouncedQueryKey>>(new Map());
   const invalidationTimeoutRef = useRef<number | null>(null);
 
   // Throttle printer status updates to prevent freeze during rapid messages
   const pendingPrinterStatus = useRef<Map<number, Record<string, unknown>>>(new Map());
   const printerStatusTimeoutRef = useRef<number | null>(null);
+  const statusApplyInProgressRef = useRef(false);
 
   // Throttle message processing to prevent browser freeze
   const messageQueueRef = useRef<WebSocketMessage[]>([]);
@@ -105,10 +128,54 @@ export function useWebSocket() {
     processNext();
   }, []);
 
+  const applyPendingPrinterStatus = useCallback(async () => {
+    if (statusApplyInProgressRef.current) return;
+    if (printerStatusTimeoutRef.current) clearTimeout(printerStatusTimeoutRef.current);
+    printerStatusTimeoutRef.current = null;
+    const updates = new Map(pendingPrinterStatus.current);
+    pendingPrinterStatus.current.clear();
+    if (updates.size === 0) return;
+
+    statusApplyInProgressRef.current = true;
+    try {
+    let entries = Array.from(updates.entries());
+      while (entries.length > 0) {
+        // Re-evaluate between chunks: an operator may have scrolled while the
+        // previous ten writes yielded, so the new viewport goes next.
+        const next = prioritizeLiveStatusEntries(entries);
+        const chunk = next.slice(0, STATUS_CACHE_APPLY_CHUNK_SIZE);
+        entries = next.slice(STATUS_CACHE_APPLY_CHUNK_SIZE);
+        for (const [id, statusData] of chunk) {
+          queryClient.setQueryData(['printerStatus', id], (old: Record<string, unknown> | undefined) => {
+            const merged = { ...old, ...statusData };
+            if (merged.wifi_signal == null && old?.wifi_signal != null) merged.wifi_signal = old.wifi_signal;
+            return merged;
+          });
+        }
+        if (entries.length > 0) {
+          await new Promise<void>(resolve => window.setTimeout(resolve, 0));
+        }
+      }
+    } finally {
+      statusApplyInProgressRef.current = false;
+      // Messages received while applying this snapshot stay newer: they were
+      // collected in the fresh map and are committed only after this one.
+      if (pendingPrinterStatus.current.size > 0 && !printerStatusTimeoutRef.current) {
+        printerStatusTimeoutRef.current = window.setTimeout(() => {
+          printerStatusTimeoutRef.current = null;
+          void applyPendingPrinterStatus();
+        }, 0);
+      }
+    }
+  }, [queryClient]);
+
   const connect = useCallback(async () => {
-    if (disposedRef.current || wsRef.current?.readyState === WebSocket.OPEN) {
+    if (disposedRef.current || connectingRef.current || wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) {
       return;
     }
+    connectingRef.current = true;
+    const generation = generationRef.current;
+    const connectStarted = performance.now();
 
     // GHSA-r2qv follow-up: /api/v1/ws now requires a short-lived token (the
     // HTTP auth middleware can't gate the WebSocket upgrade). Mint one per
@@ -118,6 +185,7 @@ export function useWebSocket() {
     try {
       ({ token } = await api.getWebSocketToken());
     } catch (err) {
+      if (disposedRef.current || generation !== generationRef.current) return;
       // A 401/403 from the token mint is an AUTH decision, not a transient
       // blip — retrying just hammers /auth/ws-token every 3s forever:
       //   401 — the JWT expired. ``request()`` already cleared it and
@@ -140,9 +208,11 @@ export function useWebSocket() {
         connect();
       }, 3000);
       return;
+    } finally {
+      if (generation === generationRef.current) connectingRef.current = false;
     }
 
-    if (disposedRef.current) {
+    if (disposedRef.current || generation !== generationRef.current) {
       return;
     }
 
@@ -188,6 +258,7 @@ export function useWebSocket() {
     };
 
     ws.onopen = () => {
+      if (wsRef.current !== ws) return;
       if (import.meta.env.MODE !== 'test') console.log('[WebSocket] Connected');
       setIsConnected(true);
       // Expose the on-demand ping for the visibility handler.
@@ -197,8 +268,22 @@ export function useWebSocket() {
     };
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws) return;
       try {
         const message: WebSocketMessage = JSON.parse(event.data);
+        if (message.type === 'initial_status_complete' && message.bootstrap_id) {
+          // Flush into the SAME cache the cards observe, even with REST still
+          // in flight. The ack makes this visible in backend-only farm logs.
+          void applyPendingPrinterStatus().then(() => {
+            if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({
+              type: 'initial_status_applied',
+              bootstrap_id: message.bootstrap_id,
+              connect_ms: Math.round(performance.now() - connectStarted),
+            }));
+          });
+          return;
+        }
         // Pong from the server clears the watchdog. Don't queue or render —
         // it's keepalive plumbing, not user-visible state.
         if (message.type === 'pong') {
@@ -208,6 +293,7 @@ export function useWebSocket() {
         // Handle printer_status directly (already throttled) to avoid queue delays
         // This prevents the "timelapse" effect where status updates are applied slowly
         if (message.type === 'printer_status' && message.printer_id !== undefined && message.data) {
+          recordLivePrinterStatus(message.printer_id, message.data);
           handleMessageRef.current(message);
         } else {
           // Queue other messages for throttled processing
@@ -226,6 +312,7 @@ export function useWebSocket() {
         pingInterval = null;
       }
       clearPongTimeout();
+      if (wsRef.current !== ws) return;
       sendPingRef.current = null;
       setIsConnected(false);
       wsRef.current = null;
@@ -250,7 +337,7 @@ export function useWebSocket() {
     };
 
     wsRef.current = ws;
-  }, [processMessageQueue, setIsConnected]);
+  }, [processMessageQueue, setIsConnected, applyPendingPrinterStatus]);
 
   // Throttled printer status update - coalesces rapid updates per printer.
   //
@@ -273,32 +360,20 @@ export function useWebSocket() {
     pendingPrinterStatus.current.set(printerId, { ...existing, ...data });
 
     // Schedule update if not already scheduled
-    if (!printerStatusTimeoutRef.current) {
-      printerStatusTimeoutRef.current = window.setTimeout(() => {
-        const updates = new Map(pendingPrinterStatus.current);
-        pendingPrinterStatus.current.clear();
-        printerStatusTimeoutRef.current = null;
-
-        // Apply all pending updates
-        updates.forEach((statusData, id) => {
-          queryClient.setQueryData(
-            ['printerStatus', id],
-            (old: Record<string, unknown> | undefined) => {
-              const merged = { ...old, ...statusData };
-              if (merged.wifi_signal == null && old?.wifi_signal != null) {
-                merged.wifi_signal = old.wifi_signal;
-              }
-              return merged;
-            }
-          );
-        });
-      }, 100); // Update at most every 100ms
+    if (!printerStatusTimeoutRef.current && !statusApplyInProgressRef.current) {
+      printerStatusTimeoutRef.current = window.setTimeout(applyPendingPrinterStatus, 100);
     }
-  }, [queryClient]);
+  }, [applyPendingPrinterStatus]);
 
-  // Debounced invalidation helper - coalesces multiple rapid invalidations
-  const debouncedInvalidate = useCallback((queryKey: string) => {
-    pendingInvalidations.current.add(queryKey);
+  // Debounced invalidation helper - coalesces multiple rapid invalidations.
+  // It accepts full TanStack keys: `inventory-forecast-chart` is not a child
+  // of `inventory-forecast`, so a string-only helper could never refresh all
+  // forecast feeds from one inventory event.
+  const debouncedInvalidate = useCallback((...queryKeys: Array<string | DebouncedQueryKey>) => {
+    for (const queryKey of queryKeys) {
+      const key = typeof queryKey === 'string' ? [queryKey] : queryKey;
+      pendingInvalidations.current.set(JSON.stringify(key), key);
+    }
 
     // Clear existing timeout
     if (invalidationTimeoutRef.current) {
@@ -307,7 +382,7 @@ export function useWebSocket() {
 
     // Schedule invalidation after a delay (3s to prevent browser freeze on print completion)
     invalidationTimeoutRef.current = window.setTimeout(() => {
-      const keys = Array.from(pendingInvalidations.current);
+      const keys = Array.from(pendingInvalidations.current.values());
       pendingInvalidations.current.clear();
       invalidationTimeoutRef.current = null;
 
@@ -319,12 +394,44 @@ export function useWebSocket() {
       let delay = 0;
       keys.forEach((key) => {
         setTimeout(() => {
-          queryClient.invalidateQueries({ queryKey: [key] });
+          queryClient.invalidateQueries({ queryKey: key });
         }, delay);
-        delay += 500; // 500ms between each invalidation
+        delay += INVALIDATION_STAGGER_MS;
       });
-    }, 3000);
+    }, INVALIDATION_DEBOUNCE_MS);
   }, [queryClient]);
+
+  /**
+   * Everything a project page reads that a print moves.
+   *
+   * ⚠️ A print is the one thing that changes a project's data without anybody
+   * touching the project. The archive events carry no ``project_id``, so the
+   * whole prefix is invalidated — that costs nothing off a project page,
+   * because TanStack only refetches *active* queries and these seven
+   * (`ORDER_VIEW_KEYS` plus `project-timeline`) are mounted nowhere else.
+   *
+   * ⚠️ On a project page it is NOT free: `project-plan` is refetched by a
+   * print finishing on any printer in the farm, and `PlanBlock` therefore
+   * reseeds the operator's counts on the plan's CONTENT rather than on the
+   * fact of a refetch. Adding a key here that carries unsaved edits needs the
+   * same treatment.
+   *
+   * Kept as one list rather than repeated per case: the three archive events
+   * below all answer the same question, and three copies drift. Reported as
+   * "I start prints from a project and its Prints section stays empty" — it
+   * was, until the page was left and re-entered.
+   *
+   * ⚠️ **The keys come from `ORDER_VIEW_KEYS`, the calls do not.** Every
+   * other order mutation calls `invalidateOrderViews`; this one cannot, because
+   * its invalidations are debounced and staggered through one shared timer. So
+   * it walks the same list instead — which is the point: one list, no second
+   * copy to drift. `project-timeline` is NOT an order view (nothing but this
+   * page reads it) and is asked for separately.
+   */
+  const invalidateProjectViews = useCallback(() => {
+    for (const key of ORDER_VIEW_KEYS) debouncedInvalidate(key);
+    debouncedInvalidate('project-timeline');  // a print is a timeline event
+  }, [debouncedInvalidate]);
 
   const handleMessage = useCallback((message: WebSocketMessage) => {
     // Filament Calibration wizard events (m062 / Plan 2). Routed to a
@@ -363,7 +470,28 @@ export function useWebSocket() {
           // Update queue data (status, current print)
           debouncedInvalidate('queues');
           queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
+          queryClient.invalidateQueries({ queryKey: ['queue-forecast'] });
         }
+        break;
+
+      case 'queue_changed':
+        // Auto-queue promotion creates a per-printer row in a scheduler
+        // transaction, not through this tab's mutation. Refresh only the
+        // affected card plus farm-wide aggregate views immediately; polling is
+        // the disconnected-socket fallback, not the primary update path.
+        if (message.printer_id !== undefined) {
+          queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
+        }
+        queryClient.invalidateQueries({ queryKey: ['queue', 'all'] });
+        queryClient.invalidateQueries({ queryKey: ['queues'] });
+        queryClient.invalidateQueries({ queryKey: ['queue-forecast'] });
+        queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
+        break;
+
+      case 'stagger_changed':
+        // Stagger slots are owned by the scheduler process, so no browser
+        // mutation can update the banner when one becomes available.
+        queryClient.invalidateQueries({ queryKey: ['stagger-state'] });
         break;
 
       case 'filament_deficit': {
@@ -430,10 +558,12 @@ export function useWebSocket() {
         // The printer_status websocket messages will naturally update the status
         debouncedInvalidate('archives');
         debouncedInvalidate('archiveStats');
+        invalidateProjectViews();
         // Update queue data (counters, status, pending items)
         debouncedInvalidate('queues');
         if (message.printer_id !== undefined) {
           queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
+          queryClient.invalidateQueries({ queryKey: ['queue-forecast'] });
           // Calibration wizard's active-session list + bound session query
           // need to refetch immediately after a print-complete so the
           // running-step page picks up the lazy-reconciled status flip
@@ -488,10 +618,12 @@ export function useWebSocket() {
       case 'archive_created':
         debouncedInvalidate('archives');
         debouncedInvalidate('archiveStats');
+        invalidateProjectViews();
         break;
 
       case 'archive_updated':
         debouncedInvalidate('archives');
+        invalidateProjectViews();
         break;
 
       case 'library_file_added':
@@ -548,8 +680,16 @@ export function useWebSocket() {
         break;
 
       case 'spool_assignment_changed':
-        // Spool assigned/unassigned - refresh assignment data across all tabs
+        // Spool assigned/unassigned/replaced — refresh assignment data across
+        // all tabs. ⚠️ BOTH inventory backends send this one event, so all
+        // three keys have to go: the internal assignment table AND the two
+        // Spoolman queries the printer card reads (its own assign/unassign
+        // mutations invalidate exactly these two). With only the internal key
+        // here, the Spoolman assign route's broadcast (spec 2026-09-13 §3.3)
+        // arrived in the browser and refreshed nothing.
         debouncedInvalidate('spool-assignments');
+        debouncedInvalidate('spoolman-slot-assignments');
+        debouncedInvalidate('spoolman-inventory-spools');
         break;
 
       case 'spool_assignment_verified': {
@@ -588,19 +728,25 @@ export function useWebSocket() {
         // carries the weight), so the assignments queries must refresh too —
         // without them the card showed the pre-print weight until the 30s
         // staleTime lapsed (2026-08-28).
-        debouncedInvalidate('inventory-spools');
-        debouncedInvalidate('spool-assignments');
-        debouncedInvalidate('spoolman-inventory-spools');
-        debouncedInvalidate('spoolman-slot-assignments');
+        debouncedInvalidate(
+          'inventory-spools',
+          'spool-assignments',
+          'spoolman-inventory-spools',
+          'spoolman-slot-assignments',
+          ...forecastQueryKeys,
+        );
         break;
 
       case 'inventory_changed':
         // Spool/location created/updated/deleted/archived/restored - refresh
         // inventory across all tabs plus the storage-location catalog counts.
-        debouncedInvalidate('inventory-spools');
-        debouncedInvalidate('spoolman-inventory-spools');
-        debouncedInvalidate('spool-assignments');
-        debouncedInvalidate(inventoryLocationsQueryKey[0]);
+        debouncedInvalidate(
+          'inventory-spools',
+          'spoolman-inventory-spools',
+          'spool-assignments',
+          inventoryLocationsQueryKey,
+          ...forecastQueryKeys,
+        );
         break;
 
       case 'macro_executed': {
@@ -693,8 +839,15 @@ export function useWebSocket() {
         }
         break;
 
+      case 'inbox_item':
+        // A row landed in this user's inbox (server-side fan-out targets the
+        // user, never the farm). The list and the unread counter share the
+        // prefix; no toast — the badge is the signal.
+        queryClient.invalidateQueries({ queryKey: ['inbox'] });
+        break;
+
     }
-  }, [queryClient, debouncedInvalidate, throttledPrinterStatusUpdate, showToast, t]);
+  }, [queryClient, debouncedInvalidate, invalidateProjectViews, throttledPrinterStatusUpdate, showToast, t]);
 
   // Keep the ref updated with latest handleMessage
   useEffect(() => {
@@ -711,6 +864,7 @@ export function useWebSocket() {
     // only the surviving mount's connect actually runs. In production
     // (no StrictMode) this is a harmless 0 ms delay.
     disposedRef.current = false;
+    generationRef.current += 1;
     const initTimer = window.setTimeout(connect, 0);
 
     // Visibility-sync: when the tab returns to the foreground we want
@@ -718,8 +872,9 @@ export function useWebSocket() {
     // (b) confidence that the WS socket is still alive — browsers can
     // silently kill long-idle sockets without firing onclose.
     //
-    // Strategy: invalidate queries unconditionally (cheap, runs only once
-    // per visibility flip) + send an immediate ping. The existing 10 s
+    // Refresh only mounted queries + send an immediate ping. Refetching all
+    // inactive pages here used to create an HTTP storm after every Alt+Tab.
+    // The existing 10 s
     // pong-timeout watchdog inside connect() handles the "no pong came
     // back" case — if the socket was killed in the background, the
     // watchdog detects it within ~10 s and triggers the standard
@@ -727,7 +882,7 @@ export function useWebSocket() {
     // without churning. No more reconnect flicker on every Alt+Tab.
     const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return;
-      queryClient.invalidateQueries({ refetchType: 'all' });
+      queryClient.invalidateQueries({ type: 'active' });
       sendPingRef.current?.();
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
@@ -736,6 +891,8 @@ export function useWebSocket() {
       // Mark disposed BEFORE closing so the ws.onclose triggered by close()
       // sees it and won't schedule a post-unmount reconnect.
       disposedRef.current = true;
+      generationRef.current += 1;
+      connectingRef.current = false;
       clearTimeout(initTimer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       if (reconnectTimeoutRef.current) {

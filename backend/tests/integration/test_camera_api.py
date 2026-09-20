@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
+from backend.app.services.camera_metrics import CameraCaptureResult
+
 
 @pytest.fixture(autouse=True)
 async def _inject_camera_stream_token(async_client: AsyncClient):
@@ -34,6 +36,17 @@ async def _inject_camera_stream_token(async_client: AsyncClient):
     async_client.get = get_with_token  # type: ignore[method-assign]
     yield
     async_client.get = original_get  # type: ignore[method-assign]
+
+
+@pytest.fixture(autouse=True)
+def _clear_snapshot_cache():
+    from backend.app.api.routes import camera
+
+    camera._snapshot_frames.clear()
+    camera._snapshot_frame_times.clear()
+    yield
+    camera._snapshot_frames.clear()
+    camera._snapshot_frame_times.clear()
 
 
 class TestCameraAPI:
@@ -197,18 +210,62 @@ class TestCameraAPI:
         # Create a fake JPEG (starts with FFD8)
         fake_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
 
-        with patch("backend.app.api.routes.camera.capture_camera_frame", new_callable=AsyncMock) as mock_capture:
-            mock_capture.return_value = True
-
-            # Mock the file read
-            with patch("builtins.open", create=True) as mock_open:
-                mock_open.return_value.__enter__.return_value.read.return_value = fake_jpeg
-
-                with patch("pathlib.Path.exists", return_value=True), patch("pathlib.Path.unlink"):
-                    _response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
+        with patch("backend.app.services.camera_runtime.capture", new_callable=AsyncMock) as mock_capture:
+            mock_capture.return_value = CameraCaptureResult(fake_jpeg, "fresh")
+            _response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
 
         # Note: The actual test might fail due to file operations, but this tests the endpoint structure
         # In production tests, we'd mock more comprehensively
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_camera_snapshot_reuses_recent_capture(self, async_client: AsyncClient, printer_factory):
+        """Verify rapid snapshot polls reuse the previous successful capture."""
+        printer = await printer_factory()
+        fake_jpeg = b"\xff\xd8first-cached-frame"
+
+        with (
+            patch("backend.app.services.camera_runtime.capture", new_callable=AsyncMock) as mock_capture,
+        ):
+            mock_capture.return_value = CameraCaptureResult(fake_jpeg, "fresh")
+
+            first = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
+            second = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.content == fake_jpeg
+        assert second.content == fake_jpeg
+        mock_capture.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_camera_snapshot_recaptures_after_cache_expires(self, async_client: AsyncClient, printer_factory):
+        """Verify snapshot cache expires and a later poll captures again."""
+        from backend.app.api.routes import camera
+
+        printer = await printer_factory()
+        now = 1000.0
+        fake_jpegs = [b"\xff\xd8first-frame", b"\xff\xd8second-frame"]
+
+        async def fake_capture(_request):
+            return CameraCaptureResult(fake_jpegs.pop(0), "fresh")
+
+        with (
+            patch("backend.app.api.routes.camera.time.monotonic", side_effect=lambda: now),
+            patch("backend.app.services.camera_runtime.capture", new_callable=AsyncMock) as mock_capture,
+        ):
+            mock_capture.side_effect = fake_capture
+
+            first = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
+            now += camera._SNAPSHOT_CACHE_TTL_SECONDS + 0.1
+            second = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.content == b"\xff\xd8first-frame"
+        assert second.content == b"\xff\xd8second-frame"
+        assert mock_capture.await_count == 2
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -216,11 +273,9 @@ class TestCameraAPI:
         """Verify 503 when camera capture fails."""
         printer = await printer_factory()
 
-        with patch("backend.app.api.routes.camera.capture_camera_frame", new_callable=AsyncMock) as mock_capture:
-            mock_capture.return_value = False
-
-            with patch("pathlib.Path.exists", return_value=False), patch("pathlib.Path.unlink"):
-                response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
+        with patch("backend.app.services.camera_runtime.capture", new_callable=AsyncMock) as mock_capture:
+            mock_capture.return_value = CameraCaptureResult(None, None)
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
 
         assert response.status_code == 503
         assert "Failed to capture" in response.json()["detail"]
@@ -238,7 +293,7 @@ class TestCameraAPI:
         fake_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
 
         with patch(
-            "backend.app.services.external_camera.capture_frame",
+            "backend.app.services.external_camera._capture_frame_uncoalesced",
             new_callable=AsyncMock,
             return_value=fake_jpeg,
         ):
@@ -259,7 +314,7 @@ class TestCameraAPI:
         )
 
         with patch(
-            "backend.app.services.external_camera.capture_frame",
+            "backend.app.services.external_camera._capture_frame_uncoalesced",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -553,3 +608,99 @@ class TestCameraAPI:
         assert response.status_code == 200
         result = response.json()
         assert result["cameras"] == []
+
+
+class TestCameraLightHooks:
+    """The two places outside the capture facade that take the chamber light (services/camera_light)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_snapshot_route_declares_the_pollers_hold_and_waits_for_the_light_first(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        printer = await printer_factory()
+        events: list = []
+
+        class FakeLease:
+            async def settle(self):
+                events.append("settle")
+
+        async def acquire(printer_id, purpose, *, hold=None):
+            events.append(("acquire", printer_id, purpose, hold))
+            return FakeLease()
+
+        def release(lease):
+            events.append("release")
+
+        async def capture(request):
+            events.append(("capture", request.printer_id))
+            return CameraCaptureResult(b"\xff\xd8frame", "fresh")
+
+        with (
+            patch("backend.app.services.camera_light.acquire", acquire),
+            patch("backend.app.services.camera_light.release", release),
+            patch("backend.app.services.camera_runtime.capture", capture),
+        ):
+            first = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot", params={"poll": 5000})
+            second = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot", params={"poll": 999999})
+            third = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
+
+        assert first.status_code == second.status_code == third.status_code == 200
+        # The first answer captured; the next two came from the recent-capture
+        # cache and still renewed the hold. The capture request names no printer:
+        # the route's own lease already waited for the light.
+        assert events == [
+            ("acquire", printer.id, "snapshot", 25.0),
+            "settle",
+            ("capture", None),
+            "release",
+            ("acquire", printer.id, "snapshot", 140.0),
+            "settle",
+            "release",
+            ("acquire", printer.id, "snapshot", None),
+            "settle",
+            "release",
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_stream_viewer_holds_the_light_for_exactly_as_long_as_it_reads(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        printer = await printer_factory(model="X1C")
+        events: list = []
+
+        async def acquire(printer_id, purpose, *, hold=None):
+            events.append(("acquire", printer_id, purpose))
+            return object()
+
+        def release(lease):
+            events.append("release")
+
+        class FakeBroadcaster:
+            subscriber_count = 1
+
+            async def subscribe(self):
+                import asyncio
+
+                return asyncio.Queue()
+
+        async def fake_get_or_create(key, factory):
+            return FakeBroadcaster()
+
+        async def fake_iter(broadcaster, queue, *, is_disconnected, on_unsubscribe):
+            for _ in range(2):
+                events.append("frame")
+                yield b"--frame\r\n"
+
+        with (
+            patch("backend.app.services.camera_light.acquire", acquire),
+            patch("backend.app.services.camera_light.release", release),
+            patch("backend.app.api.routes.camera.get_or_create_broadcaster", fake_get_or_create),
+            patch("backend.app.api.routes.camera.iter_subscriber", fake_iter),
+        ):
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/stream")
+
+        assert response.status_code == 200
+        assert response.content.count(b"--frame") == 2
+        assert events == [("acquire", printer.id, "stream"), "frame", "frame", "release"]

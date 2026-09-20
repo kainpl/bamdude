@@ -273,3 +273,29 @@ async def test_users_read_remains_delegable_to_non_admin(async_client: AsyncClie
     token, _ = await _make_operator(async_client, username="op_reader", permissions=["users:read"])
     resp = await async_client.get("/api/v1/users/", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200, resp.text
+
+
+# ---------------------------------------------------------------------------
+# 10. The duplicate check refuses, even where two case-variant rows exist
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_duplicate_username_is_refused_on_an_install_holding_case_variants(async_client: AsyncClient, db_session):
+    """``username`` is UNIQUE under SQLite's BINARY collation and the duplicate
+    check folded ASCII only until Unicode case folding landed — so an install can
+    hold both ``Ірина`` and ``ІРИНА``. The folded check now matches BOTH, where
+    ``scalar_one_or_none()`` raised ``MultipleResultsFound``: a 500 in place of
+    the intended "already exists". Any match means it exists."""
+    db_session.add(User(username="Ірина", email="Ірина@example.com", password_hash="x", role="user"))
+    db_session.add(User(username="ІРИНА", email="ІРИНА@example.com", password_hash="x", role="user"))
+    await db_session.commit()
+
+    resp = await async_client.post(
+        "/api/v1/users/",
+        headers=_admin_headers(),
+        json={"username": "ірина", "password": _PW, "role": "user"},
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert "already exists" in resp.text

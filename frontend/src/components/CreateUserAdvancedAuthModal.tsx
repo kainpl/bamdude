@@ -1,8 +1,9 @@
-import { useEffect } from 'react';
+import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Plus, Loader2, Users as UsersIcon } from 'lucide-react';
-import { Card, CardContent, CardHeader } from './Card';
+import { Plus, Loader2, Users as UsersIcon } from 'lucide-react';
 import { Button } from './Button';
+import { Modal } from './Modal';
+import { SubmitBlockedHint } from './SubmitBlockedHint';
 import type { Group, UserCreate } from '../api/client';
 
 interface AdvancedAuthFormData extends UserCreate {
@@ -19,6 +20,8 @@ interface CreateUserAdvancedAuthModalProps {
   onCreate: () => void;
   isCreating: boolean;
   isCreateButtonDisabled: boolean;
+  /** Translated names of the still-empty required fields, for the hint. */
+  missingFields: string[];
 }
 
 export function CreateUserAdvancedAuthModal({
@@ -29,19 +32,10 @@ export function CreateUserAdvancedAuthModal({
   onCreate,
   isCreating,
   isCreateButtonDisabled,
+  missingFields,
 }: CreateUserAdvancedAuthModalProps) {
   const { t } = useTranslation();
-
-  // Close modal on Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  const headingId = useId();
 
   const toggleGroup = (groupId: number) => {
     setFormData({
@@ -53,129 +47,117 @@ export function CreateUserAdvancedAuthModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-      onClick={onClose}
+    <Modal
+      onClose={onClose}
+      labelledBy={headingId}
+      size="md"
+      header={
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <UsersIcon className="w-5 h-5 text-bambu-green" />
+            <h2 id={headingId} className="text-lg font-semibold text-white">{t('users.modal.createUser')}</h2>
+          </div>
+          <p className="text-sm text-bambu-gray ml-7">{t('users.modal.advancedAuthSubtitle') || 'with Advanced Authentication'}</p>
+        </div>
+      }
     >
-      <Card
-        className="w-full max-w-md"
-        onClick={(e: React.MouseEvent) => e.stopPropagation()}
-      >
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <UsersIcon className="w-5 h-5 text-bambu-green" />
-                <h2 className="text-lg font-semibold text-white">{t('users.modal.createUser')}</h2>
-              </div>
-              <p className="text-sm text-bambu-gray ml-7">{t('users.modal.advancedAuthSubtitle') || 'with Advanced Authentication'}</p>
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onClose}
-            >
-              <X className="w-5 h-5" />
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            {/* Username Field */}
-            <div>
-              <label className="block text-sm font-medium text-white mb-2">
-                {t('users.form.username')} <span className="text-red-600 dark:text-red-400">*</span>
-              </label>
-              <input
-                type="text"
-                value={formData.username}
-                onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                className="w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
-                placeholder={t('users.form.usernamePlaceholder')}
-                autoComplete="username"
-                required
-              />
-            </div>
-
-            {/* Email Field */}
-            <div>
-              <label className="block text-sm font-medium text-white mb-2">
-                {t('users.form.email') || 'Email'} <span className="text-red-600 dark:text-red-400">*</span>
-              </label>
-              <input
-                type="email"
-                value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                className="w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
-                placeholder={t('users.form.emailPlaceholder') || 'user@example.com'}
-                required
-              />
-            </div>
-
-            {/* Info box about auto-generated password */}
-            <div className="bg-bambu-dark-secondary/50 border border-bambu-green/20 rounded-lg p-3">
-              <p className="text-sm text-bambu-gray">
-                {t('users.form.autoGeneratedPassword') || 'A secure password will be automatically generated and emailed to the user.'}
-              </p>
-            </div>
-
-            {/* Groups Field */}
-            <div>
-              <label className="block text-sm font-medium text-white mb-2">
-                {t('users.form.groups')}
-              </label>
-              <div className="space-y-2 max-h-40 overflow-y-auto p-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
-                {groups.map(group => (
-                  <label
-                    key={group.id}
-                    className="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-bambu-dark-tertiary cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={formData.group_ids.includes(group.id)}
-                      onChange={() => toggleGroup(group.id)}
-                      className="w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark"
-                    />
-                    <span className="text-sm text-white">{group.name}</span>
-                    {group.is_system && (
-                      <span className="text-xs text-yellow-700 dark:text-yellow-400">({t('users.system')})</span>
-                    )}
-                  </label>
-                ))}
-                {groups.length === 0 && (
-                  <p className="text-sm text-bambu-gray">{t('users.noGroupsAvailable')}</p>
-                )}
-              </div>
-            </div>
+      <div className="p-4">
+        <div className="space-y-4">
+          {/* Username Field */}
+          <div>
+            <label className="block text-sm font-medium text-white mb-2">
+              {t('users.form.username')} <span className="text-red-600 dark:text-red-400">*</span>
+            </label>
+            <input
+              type="text"
+              value={formData.username}
+              onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+              className="w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
+              placeholder={t('users.form.usernamePlaceholder')}
+              autoComplete="username"
+              required
+            />
           </div>
 
-          {/* Action Buttons */}
-          <div className="mt-6 flex justify-end gap-3">
-            <Button
-              variant="secondary"
-              onClick={onClose}
-            >
-              {t('users.modal.cancel')}
-            </Button>
-            <Button
-              onClick={onCreate}
-              disabled={isCreateButtonDisabled}
-            >
-              {isCreating ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  {t('users.modal.creating')}
-                </>
-              ) : (
-                <>
-                  <Plus className="w-4 h-4" />
-                  {t('users.modal.createUser')}
-                </>
+          {/* Email Field */}
+          <div>
+            <label className="block text-sm font-medium text-white mb-2">
+              {t('users.form.email') || 'Email'} <span className="text-red-600 dark:text-red-400">*</span>
+            </label>
+            <input
+              type="email"
+              value={formData.email}
+              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+              className="w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
+              placeholder={t('users.form.emailPlaceholder') || 'user@example.com'}
+              required
+            />
+          </div>
+
+          {/* Info box about auto-generated password */}
+          <div className="bg-bambu-dark-secondary/50 border border-bambu-green/20 rounded-lg p-3">
+            <p className="text-sm text-bambu-gray">
+              {t('users.form.autoGeneratedPassword') || 'A secure password will be automatically generated and emailed to the user.'}
+            </p>
+          </div>
+
+          {/* Groups Field */}
+          <div>
+            <label className="block text-sm font-medium text-white mb-2">
+              {t('users.form.groups')}
+            </label>
+            <div className="space-y-2 max-h-40 overflow-y-auto p-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
+              {groups.map(group => (
+                <label
+                  key={group.id}
+                  className="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-bambu-dark-tertiary cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={formData.group_ids.includes(group.id)}
+                    onChange={() => toggleGroup(group.id)}
+                    className="accent-bambu-green w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark"
+                  />
+                  <span className="text-sm text-white">{group.name}</span>
+                  {group.is_system && (
+                    <span className="text-xs text-yellow-700 dark:text-yellow-400">({t('users.system')})</span>
+                  )}
+                </label>
+              ))}
+              {groups.length === 0 && (
+                <p className="text-sm text-bambu-gray">{t('users.noGroupsAvailable')}</p>
               )}
-            </Button>
+            </div>
           </div>
-        </CardContent>
-      </Card>
-    </div>
+        </div>
+
+        {/* Action Buttons */}
+        <SubmitBlockedHint missing={missingFields} />
+        <div className="mt-2 flex justify-end gap-3">
+          <Button
+            variant="secondary"
+            onClick={onClose}
+          >
+            {t('users.modal.cancel')}
+          </Button>
+          <Button
+            onClick={onCreate}
+            disabled={isCreateButtonDisabled}
+          >
+            {isCreating ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                {t('users.modal.creating')}
+              </>
+            ) : (
+              <>
+                <Plus className="w-4 h-4" />
+                {t('users.modal.createUser')}
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }

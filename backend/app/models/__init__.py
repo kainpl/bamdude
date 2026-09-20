@@ -6,6 +6,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.calibration_audit import CalibrationAudit
 from backend.app.models.calibration_session import CalibrationSession
 from backend.app.models.color_catalog import ColorCatalogEntry
+from backend.app.models.customer import Customer
 from backend.app.models.filament_calibration import FilamentCalibration
 from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
 from backend.app.models.group import Group, user_groups
@@ -23,8 +24,9 @@ from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.printer_sensor_history import PrinterSensorHistory
 from backend.app.models.printer_setting_audit import PrinterSettingAudit
+from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
-from backend.app.models.project_print_plan import ProjectPrintPlanItem
+from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
@@ -50,8 +52,13 @@ __all__ = [
     "KProfileNote",
     "NotificationTemplate",
     "NotificationLog",
+    "Customer",
+    "Product",
+    "ProductPart",
+    "ProductPlate",
     "Project",
-    "ProjectPrintPlanItem",
+    "ProjectLine",
+    "ProjectProcurement",
     "APIKey",
     "AMSSensorHistory",
     "AmsLabel",

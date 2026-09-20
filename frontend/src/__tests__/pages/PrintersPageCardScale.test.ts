@@ -65,6 +65,8 @@ describe('the converted sizes keep their old value as a fallback', () => {
   });
 
   it('applies the variables at the card root', () => {
-    expect(source).toContain('style={buildCardScaleStyle(cardSize)}');
+    // Spread into the root's style since the compact card also sets its
+    // state shadow there (2026-09-09); the variables still land on the root.
+    expect(source).toMatch(/style=\{\{\s*\.\.\.buildCardScaleStyle\(cardSize\)/);
   });
 });

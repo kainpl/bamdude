@@ -12,7 +12,7 @@ are disambiguated by joining through ``filament_calibration.nozzle_diameter``.
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -20,6 +20,12 @@ from backend.app.core.database import Base
 
 class SpoolKProfile(Base):
     __tablename__ = "spool_k_profile"
+
+    # ⚠️ The inventory list eager-loads k_profiles for every spool on the page
+    # (`selectinload(Spool.k_profiles)`), so this table is read on every open.
+    # Without this index the planner had nothing to enter by and scanned the
+    # whole link table each time — measured, and the reason m168 exists.
+    __table_args__ = (Index("ix_spool_k_profile_spool_id", "spool_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     spool_id: Mapped[int] = mapped_column(ForeignKey("spool.id", ondelete="CASCADE"))

@@ -52,6 +52,11 @@ export default defineConfig([
       '**/components/IconPicker.tsx',
       '**/components/Layout.tsx',
       '**/components/HMSErrorModal.tsx',
+      // The modal shell's size table. It cannot move to a sibling module:
+      // Tailwind's scanner only sees literal class strings, so the table lives
+      // beside the component that spends it, and it is part of the shell's
+      // public contract (every caller picks a `ModalSize` from it).
+      '**/components/Modal.tsx',
     ],
     rules: {
       'react-refresh/only-export-components': 'off',

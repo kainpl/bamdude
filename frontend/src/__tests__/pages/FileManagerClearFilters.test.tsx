@@ -2,7 +2,7 @@
  * "Clear filters" must clear every filter, and must be reachable.
  *
  * It used to reset the search box and the type dropdown only, leaving the
- * computed-tag chip row, the username box and the cross-cutting user-tag
+ * computed-tag chip row, the uploader filter and the cross-cutting user-tag
  * filter still narrowing the list — so the button promised a reset and handed
  * back a library that was still partial, with nothing on screen saying why.
  *
@@ -20,8 +20,8 @@ import { render } from '../utils';
 import { server } from '../mocks/server';
 import { FileManagerPage } from '../../pages/FileManagerPage';
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+vi.mock('react-router', async () => {
+  const actual = await vi.importActual<typeof import('react-router')>('react-router');
   return { ...actual, useNavigate: () => vi.fn() };
 });
 
@@ -35,6 +35,7 @@ const mockFiles = [
     file_size: 1048576,
     file_type: 'gcode',
     file_tags: ['gcode', '3mf', 'sliced'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: null,
     print_name: 'Benchy',
@@ -55,6 +56,7 @@ const mockFiles = [
     file_size: 524288,
     file_type: 'stl',
     file_tags: ['stl', 'geometry'],
+    product_ids: [],
     folder_id: null,
     thumbnail_path: null,
     print_name: null,
@@ -76,13 +78,34 @@ describe('clear filters', () => {
     tagIdsSeen = [];
     server.use(
       http.get('/api/v1/library/folders', () => HttpResponse.json([])),
+      // Server-driven (task 2, 2026-08-29): `username` is now a server param
+      // too (used to be a client-side filter over the whole loaded page), so
+      // the "clears the username filter" test below needs it to actually
+      // narrow the mock's result — mirror the backend's substring match.
       http.get('/api/v1/library/files', ({ request }) => {
-        const tagIds = new URL(request.url).searchParams.getAll('tag_ids');
+        const params = new URL(request.url).searchParams;
+        const tagIds = params.getAll('tag_ids');
         tagIdsSeen.push(tagIds);
         // The user-tag filter is server-side: matching nothing empties the
         // listing itself, not just the client-side view of it.
-        return HttpResponse.json(tagIds.length > 0 ? [] : mockFiles);
+        let items = tagIds.length > 0 ? [] : mockFiles;
+        const username = params.get('username');
+        if (username) {
+          const needle = username.toLowerCase();
+          items = items.filter((f) => f.created_by_username?.toLowerCase().includes(needle));
+        }
+        return HttpResponse.json({
+          items,
+          meta: { total: items.length, current_page: 1, per_page: 50, last_page: 1 },
+        });
       }),
+      http.get('/api/v1/users/slim', () =>
+        HttpResponse.json([
+          { id: 1, username: 'alice' },
+          { id: 2, username: 'bob' },
+          { id: 3, username: 'carol' },
+        ]),
+      ),
       http.get('/api/v1/library/stats', () =>
         HttpResponse.json({
           total_files: 2,
@@ -131,7 +154,9 @@ describe('clear filters', () => {
     render(<FileManagerPage />);
     await screen.findByText('Benchy');
 
-    await userEvent.type(screen.getByPlaceholderText('Filter by user'), 'zzznobody');
+    // carol exists but owns neither file, so the listing empties — the filter
+    // is a list now, so there is no arbitrary string to type.
+    await userEvent.selectOptions(await screen.findByLabelText('Filter by user'), 'carol');
     await waitFor(() => expect(screen.queryByText('Benchy')).not.toBeInTheDocument());
 
     await userEvent.click(await screen.findByRole('button', { name: 'Clear filters' }));

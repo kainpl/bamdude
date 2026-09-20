@@ -64,4 +64,4 @@ async def test_a_model_nobody_owns_still_matches_nothing(db_session, printer_fac
     printers, normalized, _suffix = await printers_for_item(db_session, AutoQueueItem(target_model="A1MINI"))
 
     assert printers == []
-    assert normalized == "A1MINI"
+    assert normalized == "A1 Mini"

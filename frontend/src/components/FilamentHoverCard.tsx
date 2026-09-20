@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, useLayoutEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Droplets, Copy, Check, Settings2, Package, Unlink } from 'lucide-react';
+import { Droplets, Copy, Check, Settings2, Package, Repeat, Unlink } from 'lucide-react';
 import { isLightColor } from '../utils/colors';
+import { Modal } from './Modal';
 
 type CardPlacement = { top: number; left: number; side: 'top' | 'bottom'; arrowLeft: number };
 
@@ -97,6 +98,10 @@ interface FilamentData {
   trayUuid?: string | null; // Bambu Lab spool UUID for Spoolman linking
   tagUid?: string | null; // Generic NFC tag UID fallback for linking
   fillSource?: 'ams' | 'spoolman' | 'inventory'; // Source of fill level data
+  // What the printer was TOLD this slot holds (backup-compatibility emulation).
+  // Non-null only while the advertised profile differs from the real spool —
+  // everything else on this card describes the spool itself.
+  advertised?: { colorHex: string | null; profile: string | null } | null;
 }
 
 interface SpoolmanConfig {
@@ -329,6 +334,18 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                 </span>
               </div>
 
+              {/* What the printer was told instead, so the AMS groups this slot
+                  with its peers for auto-refill (backup-compatibility policy). */}
+              {data.advertised && (
+                <div className="mt-1 flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                  <span
+                    className="inline-block w-2.5 h-2.5 rounded-full border"
+                    style={{ backgroundColor: data.advertised.colorHex ? `#${data.advertised.colorHex.replace('#', '').slice(0, 6)}` : 'transparent' }}
+                  />
+                  <span>{t('printers.amsCompat.badge', { profile: data.advertised.profile || '—' })}</span>
+                </div>
+              )}
+
               {/* K Factor */}
               <div className="flex items-center justify-between">
                 <span className="text-[10px] uppercase tracking-wider text-bambu-gray font-medium">
@@ -473,6 +490,30 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                           {t('inventory.openInInventory')}
                         </button>
                       )}
+                      {/* Replace, not Unassign-then-Assign. Both assign
+                          endpoints have always replaced the spool on an
+                          occupied slot, and the accounting the operator needs
+                          (the usage journal's assignment change, the mid-print
+                          replacement prompt) lives on the assign side — the
+                          unassign endpoints do none of it. So the one-step
+                          path is also the accounted one. It reuses
+                          `onAssignSpool`, which the page passes for assigned
+                          slots too: Replace appears exactly where Assign
+                          would, including behind the internal branch's
+                          non-Bambu gate. */}
+                      {inventory.onAssignSpool && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            dismiss();
+                            inventory.onAssignSpool?.();
+                          }}
+                          className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/40 text-bambu-blue"
+                        >
+                          <Repeat className="w-3.5 h-3.5" />
+                          {t('inventory.replaceSpool')}
+                        </button>
+                      )}
                       {inventory.onUnassignSpool && (
                         <button
                           onClick={(e) => {
@@ -546,41 +587,40 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
 
       {/* Unlink Confirmation Dialog */}
       {showUnlinkConfirm && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center" onClick={() => setShowUnlinkConfirm(false)}>
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-          <div
-            className="relative bg-bambu-dark-secondary rounded-lg shadow-xl w-full max-w-sm mx-4 border border-bambu-dark-tertiary"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="p-4 space-y-4">
-              <div className="space-y-2">
-                <h3 className="text-base font-semibold text-white">
-                  {t('spoolman.unlinkConfirmTitle')}
-                </h3>
-                <p className="text-sm text-bambu-gray">
-                  {t('spoolman.unlinkConfirmMessage')}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setShowUnlinkConfirm(false)}
-                  className="flex-1 px-3 py-2 text-sm font-medium rounded transition-colors bg-bambu-dark hover:bg-bambu-dark-tertiary text-white"
-                >
-                  {t('common.cancel')}
-                </button>
-                <button
-                  onClick={() => {
-                    spoolman?.onUnlinkSpool?.();
-                    setShowUnlinkConfirm(false);
-                  }}
-                  className="flex-1 px-3 py-2 text-sm font-medium rounded transition-colors bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/40 text-red-700 dark:text-red-400"
-                >
-                  {t('inventory.unassignSpool')}
-                </button>
-              </div>
+        <Modal
+          onClose={() => setShowUnlinkConfirm(false)}
+          hideClose
+          ariaLabel={t('spoolman.unlinkConfirmTitle')}
+          size="sm"
+        >
+          <div className="p-4 space-y-4">
+            <div className="space-y-2">
+              <h3 className="text-base font-semibold text-white">
+                {t('spoolman.unlinkConfirmTitle')}
+              </h3>
+              <p className="text-sm text-bambu-gray">
+                {t('spoolman.unlinkConfirmMessage')}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowUnlinkConfirm(false)}
+                className="flex-1 px-3 py-2 text-sm font-medium rounded transition-colors bg-bambu-dark hover:bg-bambu-dark-tertiary text-white"
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                onClick={() => {
+                  spoolman?.onUnlinkSpool?.();
+                  setShowUnlinkConfirm(false);
+                }}
+                className="flex-1 px-3 py-2 text-sm font-medium rounded transition-colors bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/40 text-red-700 dark:text-red-400"
+              >
+                {t('inventory.unassignSpool')}
+              </button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

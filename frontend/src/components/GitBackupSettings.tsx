@@ -41,6 +41,7 @@ import { Toggle } from './Toggle';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { formatDateTime as fmtDateTime, formatRelativeTime, type DateFormat, type TimeFormat } from '../utils/date';
+import { Select } from './Select';
 
 type GitProvider = 'github' | 'gitlab' | 'gitea' | 'forgejo';
 
@@ -528,7 +529,7 @@ export function GitBackupSettings() {
                         value="github"
                         checked={provider === 'github'}
                         onChange={() => { setProvider('github'); setTestResult(null); setSaveError(null); }}
-                        className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
+                        className="accent-bambu-green w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitHubIcon className="w-4 h-4 text-white" />
                       <span className="text-sm text-white">{t('backup.providerGitHub')}</span>
@@ -540,7 +541,7 @@ export function GitBackupSettings() {
                         value="gitlab"
                         checked={provider === 'gitlab'}
                         onChange={() => { setProvider('gitlab'); setTestResult(null); setSaveError(null); }}
-                        className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
+                        className="accent-bambu-green w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitLabIcon className="w-4 h-4 text-white" />
                       <span className="text-sm text-white">{t('backup.providerGitLab')}</span>
@@ -552,7 +553,7 @@ export function GitBackupSettings() {
                         value="gitea"
                         checked={provider === 'gitea'}
                         onChange={() => { setProvider('gitea'); setTestResult(null); setSaveError(null); }}
-                        className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
+                        className="accent-bambu-green w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitHubIcon className="w-4 h-4 text-white" />
                       <span className="text-sm text-white">{t('backup.providerGitea')}</span>
@@ -564,7 +565,7 @@ export function GitBackupSettings() {
                         value="forgejo"
                         checked={provider === 'forgejo'}
                         onChange={() => { setProvider('forgejo'); setTestResult(null); setSaveError(null); }}
-                        className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
+                        className="accent-bambu-green w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitHubIcon className="w-4 h-4 text-white" />
                       <span className="text-sm text-white">{t('backup.providerForgejo')}</span>
@@ -650,7 +651,8 @@ export function GitBackupSettings() {
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('backup.autoBackup')}</label>
-                <select
+                <Select
+                  className="w-full"
                   value={scheduleEnabled ? scheduleType : 'disabled'}
                   onChange={(e) => {
                     if (e.target.value === 'disabled') {
@@ -660,13 +662,12 @@ export function GitBackupSettings() {
                       setScheduleType(e.target.value as ScheduleType);
                     }
                   }}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 >
                   <option value="disabled">{t('backup.manualOnly')}</option>
                   <option value="hourly">{t('backup.hourly')}</option>
                   <option value="daily">{t('backup.daily')}</option>
                   <option value="weekly">{t('backup.weekly')}</option>
-                </select>
+                </Select>
               </div>
             </div>
 
@@ -679,7 +680,7 @@ export function GitBackupSettings() {
                     type="checkbox"
                     checked={backupKProfiles}
                     onChange={(e) => setBackupKProfiles(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    className="accent-bambu-green w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     disabled={noPrintersConnected}
                   />
                   <div className="flex-1">
@@ -706,7 +707,7 @@ export function GitBackupSettings() {
                     type="checkbox"
                     checked={backupCloudProfiles}
                     onChange={(e) => setBackupCloudProfiles(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    className="accent-bambu-green w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     disabled={!cloudStatus?.is_authenticated}
                   />
                   <div>
@@ -727,7 +728,7 @@ export function GitBackupSettings() {
                     type="checkbox"
                     checked={backupSettings}
                     onChange={(e) => setBackupSettings(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    className="accent-bambu-green w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                   />
                   <div>
                     <span className="text-white text-sm">{t('backup.appSettings')}</span>
@@ -739,7 +740,7 @@ export function GitBackupSettings() {
                     type="checkbox"
                     checked={backupSpools}
                     onChange={(e) => setBackupSpools(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    className="accent-bambu-green w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                   />
                   <div>
                     <span className="text-white text-sm">{t('backup.backupSpools')}</span>
@@ -751,7 +752,7 @@ export function GitBackupSettings() {
                     type="checkbox"
                     checked={backupArchives}
                     onChange={(e) => setBackupArchives(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    className="accent-bambu-green w-4 h-4 mt-0.5 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                   />
                   <div>
                     <span className="text-white text-sm">{t('backup.backupArchives')}</span>
@@ -1095,7 +1096,8 @@ export function GitBackupSettings() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <label className="text-sm">
                     <span className="block text-bambu-gray mb-1">{t('backup.scheduledLocalBackup.schedule')}</span>
-                    <select
+                    <Select
+                      className="w-full"
                       value={localBackupStatus?.schedule ?? 'daily'}
                       onChange={async (e) => {
                         try {
@@ -1105,12 +1107,11 @@ export function GitBackupSettings() {
                           showToast(err instanceof Error ? err.message : 'Failed', 'error');
                         }
                       }}
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
                     >
                       <option value="hourly">{t('backup.scheduledLocalBackup.hourly')}</option>
                       <option value="daily">{t('backup.scheduledLocalBackup.daily')}</option>
                       <option value="weekly">{t('backup.scheduledLocalBackup.weekly')}</option>
-                    </select>
+                    </Select>
                   </label>
 
                   {(localBackupStatus?.schedule ?? 'daily') !== 'hourly' && (
@@ -1436,7 +1437,8 @@ export function GitBackupSettings() {
 
       {/* Blocking overlay during backup/restore operations */}
       {(isExporting || isRestoring) && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[100]">
+        // not-a-modal: loading
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[49]">
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl p-8 max-w-md w-full mx-4 text-center">
             <div className="flex justify-center mb-4">
               <div className="relative">

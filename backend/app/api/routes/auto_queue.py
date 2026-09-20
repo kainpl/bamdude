@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
+from contextlib import suppress
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -35,25 +35,35 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
-from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
-from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.auto_queue import (
     AutoQueueBatchActionResponse,
     AutoQueueItemCreate,
     AutoQueueItemResponse,
     AutoQueueItemUpdate,
+    AutoQueueRebalanceRequest,
     AutoQueueReorder,
     AutoQueueStatsResponse,
 )
 from backend.app.schemas.calibration_mode import derive_mode, mode_to_bool
+from backend.app.schemas.filament_routing import RoutingPreviewRequest
+from backend.app.schemas.project import RebalanceOut
+from backend.app.services import queue_rebalance
+from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.auto_queue_eligibility import find_eligible_printer
-from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
-from backend.app.services.filament_requirements import overrides_for_plate
-from backend.app.services.library_helpers import project_for_library_file
+from backend.app.services.filament_intake import (
+    fail_auto_source,
+    loaded_descriptor,
+    read_item_requirements,
+    routing_detail,
+    source_display_filename,
+)
+from backend.app.services.filament_preview import routing_preview
+from backend.app.services.queue_source_descriptor import source_storage_state
+from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
 from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
@@ -61,28 +71,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auto-queue", tags=["auto-queue"])
 
 
-def _resolve_source_paths(
-    archive: PrintArchive | None,
-    library_file: LibraryFile | None,
+@router.post("/routing-preview")
+async def preview_routing(
+    data: RoutingPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_CREATE),
+    user: User | None = RequirePermission(Permission.PRINTERS_READ),
 ):
-    """Return (path, print_time, default_target_model, default_filament_types).
-
-    Used at create-time to auto-fill routing inputs from the source 3MF.
-    """
-    from pathlib import Path
-
-    from backend.app.core.config import settings as app_settings
-
-    if archive and archive.file_path:
-        return app_settings.base_dir / archive.file_path
-    if library_file and library_file.file_path:
-        p = Path(library_file.file_path)
-        return p if p.is_absolute() else app_settings.base_dir / library_file.file_path
-    return None
+    return await routing_preview(db, data, user)
 
 
 def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
-    """Build an AutoQueueItemResponse from an ORM row, expanding JSON columns."""
+    """Build an AutoQueueItemResponse from an ORM row, expanding JSON columns.
+
+    ⚠️ A row whose original library file or archive is gone still has to be able to
+    name itself (m173, A09): its own captured bytes carry the display name it was
+    queued under. Its estimate needs no such rescue — ``print_time_seconds`` is a
+    column on this row, written from the captured bytes at add time.
+    """
+    descriptor = loaded_descriptor(item)
+    source = item.queue_source if descriptor is not None else None
     required_types = None
     if item.required_filament_types:
         try:
@@ -116,12 +124,14 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         archive_id=item.archive_id,
         library_file_id=item.library_file_id,
         project_id=item.project_id,
+        project_line_id=item.project_line_id,
         target_model=item.target_model,
         target_location_id=item.target_location_id,
         target_location=item.target_location,
         required_filament_types=required_types,
         filament_overrides=overrides,
         force_color_match=item.force_color_match,
+        allow_base_material_match=item.allow_base_material_match,
         plate_id=item.plate_id,
         position=item.position,
         scheduled_time=item.scheduled_time,
@@ -133,6 +143,7 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         layer_inspect=item.layer_inspect,
         timelapse=item.timelapse,
         timelapse_storage=item.timelapse_storage,
+        feed_policy=item.feed_policy or "auto",
         use_ams=item.use_ams,
         mesh_mode_fast_check=item.mesh_mode_fast_check,
         execute_swap_macros=item.execute_swap_macros,
@@ -146,8 +157,18 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         print_time_seconds=item.print_time_seconds,
         been_jumped=item.been_jumped,
         batch_id=item.batch_id,
+        rebalanced_at=item.rebalanced_at,
+        rebalanced_from_model=item.rebalanced_from_model,
         created_at=item.created_at,
         created_by_id=item.created_by_id,
+        # m173. As in ``print_queue._enrich_response``: the state comes from the
+        # eager-loaded ``queue_sources`` row, and a caller that did not load it may
+        # not claim ``ready``. No auto row is ever ``exempt``.
+        source_storage=source_storage_state(
+            queue_source_id=item.queue_source_id,
+            blob_state=source.state if source is not None else None,
+        ),
+        source_size_bytes=source.size_bytes if source is not None else None,
     )
 
     # UI-friendly nested data. Both ``PrintArchive`` and ``LibraryFile`` store
@@ -169,6 +190,15 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         meta = item.library_file.file_metadata if item.library_file.file_metadata else None
         response.library_file_name = (meta.get("print_name") if meta else None) or item.library_file.filename
         response.library_file_thumbnail = item.library_file.thumbnail_path
+    if descriptor is not None and not response.archive_name and not response.library_file_name:
+        # The job's own name, in the field its provenance would have filled, and
+        # never the object's hash — ``source_display_filename`` refuses that (A04).
+        with suppress(SourceUnavailable):
+            name = source_display_filename(descriptor)
+            if descriptor.provenance.get("kind") == "archive":
+                response.archive_name = name
+            else:
+                response.library_file_name = name
     if item.created_by is not None:
         response.created_by_username = item.created_by.username
     if item.assigned_to is not None:
@@ -200,149 +230,19 @@ async def add_to_auto_queue(
     - ``quantity > 1`` creates N items sharing a UUID ``batch_id``,
       sequential ``position`` starting at max+1.
     - ``plate_ids`` (multi-plate) creates one item per plate.
+
+    Every gate and the fan-out itself live in
+    ``services/auto_queue_add.py::add_items_to_auto_queue`` — the order plan's
+    enqueue endpoint is the second caller.
     """
-    if not data.archive_id and not data.library_file_id:
-        raise HTTPException(400, "Either archive_id or library_file_id must be provided")
-
-    archive = None
-    if data.archive_id:
-        result = await db.execute(select(PrintArchive).where(PrintArchive.id == data.archive_id))
-        archive = result.scalar_one_or_none()
-        if not archive:
-            raise HTTPException(400, "Archive not found")
-
-    library_file = None
-    if data.library_file_id:
-        # Trash bin (#1008): refuse to dispatch a soft-deleted source.
-        # m044: eager-load M2M projects so the inherit-fallback below
-        # doesn't lazy-fetch.
-        result = await db.execute(
-            LibraryFile.active()
-            .options(selectinload(LibraryFile.projects))
-            .where(LibraryFile.id == data.library_file_id)
-        )
-        library_file = result.scalar_one_or_none()
-        if not library_file:
-            raise HTTPException(400, "Library file not found")
-
-    if data.project_id is not None:
-        result = await db.execute(select(Project).where(Project.id == data.project_id))
-        if not result.scalar_one_or_none():
-            raise HTTPException(404, "Project not found")
-
-    # One rule, shared with the queue and direct-print routes.
-    effective_project_id = project_for_library_file(data.project_id, library_file)
-
-    # Resolve plate IDs to fan out (one row per plate)
-    plate_ids: list[int | None]
-    if data.plate_ids:
-        plate_ids = list(data.plate_ids)
-    elif data.plate_id is not None:
-        plate_ids = [data.plate_id]
-    else:
-        plate_ids = [None]
-
-    # Auto-extract target_model + required_filament_types + print_time from 3MF
-    # when not explicitly provided. Done per-plate so multi-plate items get
-    # accurate per-plate info.
-    file_path = _resolve_source_paths(archive, library_file)
-
-    # Compute next position (auto-queue is global, single ordering)
-    max_pos_q = await db.execute(
-        select(func.coalesce(func.max(AutoQueueItem.position), 0)).where(AutoQueueItem.status == "pending")
-    )
-    max_pos = int(max_pos_q.scalar() or 0)
-
-    # How many runs each plate was asked for. Absent for a plate → the shared
-    # ``quantity``, which is what every caller sent before per-plate counts
-    # existed.
-    per_plate = data.plate_quantities or {}
-
-    def _quantity_for(plate: int | None) -> int:
-        return per_plate.get(plate, data.quantity) if plate is not None else data.quantity
-
-    total_items = sum(_quantity_for(p) for p in plate_ids)
-    # A batch is "these rows were created together", so it is the TOTAL that
-    # decides — two plates at one copy each is still a batch, and one plate at
-    # three is too.
-    batch_id = str(uuid.uuid4()) if total_items > 1 else None
-
-    # Raw override dicts; narrowed per-plate inside the loop below (#2551).
-    overrides_list = [o.model_dump() for o in data.filament_overrides] if data.filament_overrides else []
-    swap_events_json = json.dumps(data.swap_macro_events) if data.swap_macro_events else None
-    selected_macros_json = json.dumps(data.selected_macro_ids) if data.selected_macro_ids is not None else None
-
-    items: list[AutoQueueItem] = []
-    pos_offset = 0
-    for plate_id in plate_ids:
-        # Per-plate 3MF auto-extraction (fall back to provided values when given)
-        # Normalised on the way in so the stored value is the short name the
-        # rest of the app compares and displays. Routing normalises again when
-        # it reads (that is what covers rows written by telegram and the VP),
-        # but a row that keeps "C12" shows "C12" everywhere it is named.
-        target_model = normalize_model_name(data.target_model)
-        required_types = data.required_filament_types
-        print_time = None
-        if file_path is not None and file_path.exists():
-            reqs = extract_auto_queue_requirements(file_path, plate_id=plate_id)
-            if not target_model and reqs.target_model:
-                target_model = reqs.target_model
-            if required_types is None and reqs.required_filament_types:
-                required_types = reqs.required_filament_types
-            print_time = reqs.print_time_seconds
-
-        required_types_json = json.dumps(required_types) if required_types is not None else None
-
-        # Narrow force-colour overrides to the slots THIS plate prints (#2551) —
-        # otherwise a single-colour plate waits on every colour in the batch.
-        plate_overrides = overrides_for_plate(overrides_list, file_path, plate_id)
-        plate_overrides_json = json.dumps(plate_overrides) if plate_overrides else None
-
-        for _ in range(_quantity_for(plate_id)):
-            pos_offset += 1
-            items.append(
-                AutoQueueItem(
-                    archive_id=data.archive_id,
-                    library_file_id=data.library_file_id,
-                    project_id=effective_project_id,
-                    target_model=target_model,
-                    target_location_id=data.target_location_id,
-                    required_filament_types=required_types_json,
-                    filament_overrides=plate_overrides_json,
-                    force_color_match=data.force_color_match,
-                    plate_id=plate_id,
-                    bed_levelling=mode_to_bool(data.bed_levelling),
-                    flow_cali=mode_to_bool(data.flow_cali),
-                    layer_inspect=data.layer_inspect,
-                    timelapse=data.timelapse,
-                    timelapse_storage=data.timelapse_storage,
-                    use_ams=data.use_ams,
-                    mesh_mode_fast_check=data.mesh_mode_fast_check,
-                    execute_swap_macros=data.execute_swap_macros,
-                    swap_macro_events=swap_events_json,
-                    selected_macro_ids=selected_macros_json,
-                    position=max_pos + pos_offset,
-                    scheduled_time=data.scheduled_time,
-                    manual_start=data.manual_start,
-                    auto_off_after=data.auto_off_after,
-                    require_previous_success=data.require_previous_success,
-                    status="pending",
-                    print_time_seconds=print_time,
-                    batch_id=batch_id,
-                    created_by_id=current_user.id if current_user else None,
-                )
-            )
-
-    db.add_all(items)
-    await db.commit()
-    for it in items:
-        await db.refresh(it)
+    items = await add_items_to_auto_queue(db, data, current_user)
 
     # Re-load first item with eager relationships for the response
     first = await db.execute(
         select(AutoQueueItem)
         .options(
             selectinload(AutoQueueItem.archive),
+            selectinload(AutoQueueItem.queue_source),
             selectinload(AutoQueueItem.library_file),
             selectinload(AutoQueueItem.created_by),
         )
@@ -361,12 +261,13 @@ async def list_auto_queue(
     """List auto-queue items, optionally filtered by status / batch_id."""
     stmt = select(AutoQueueItem).options(
         selectinload(AutoQueueItem.archive),
+        selectinload(AutoQueueItem.queue_source),
         selectinload(AutoQueueItem.library_file),
         selectinload(AutoQueueItem.created_by),
         selectinload(AutoQueueItem.assigned_to).selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
     )
     if status_filter:
-        stmt = stmt.where(AutoQueueItem.status == status_filter)
+        stmt = stmt.where(AutoQueueItem.status.in_(status_filter.split(",")))
     if batch_id:
         stmt = stmt.where(AutoQueueItem.batch_id == batch_id)
     stmt = stmt.order_by(AutoQueueItem.position)
@@ -393,6 +294,7 @@ async def auto_queue_stats(
     """
     result = await db.execute(
         select(PrintArchive.status, func.count())
+        .where(func.coalesce(PrintArchive.extra_data["dispatch_aborted"].as_boolean(), False).is_(False))
         .where(PrintArchive.from_auto_queue.is_(True))
         .group_by(PrintArchive.status)
     )
@@ -416,6 +318,7 @@ async def get_auto_queue_item(
         select(AutoQueueItem)
         .options(
             selectinload(AutoQueueItem.archive),
+            selectinload(AutoQueueItem.queue_source),
             selectinload(AutoQueueItem.library_file),
             selectinload(AutoQueueItem.created_by),
             selectinload(AutoQueueItem.assigned_to)
@@ -442,8 +345,28 @@ async def update_auto_queue_item(
     Once assigned, the per-printer print_queue item is the source of
     truth — edit there via ``PATCH /queue/{id}``.
     """
-    result = await db.execute(select(AutoQueueItem).where(AutoQueueItem.id == item_id))
-    item = result.scalar_one_or_none()
+    # ⚠️ The same eager loads as every other path that ends in ``_to_response``.
+    # Without them this route answered ``source_storage: "legacy"`` and a null size
+    # for a row whose blob is ``ready`` — the one lie m173 left standing — and the
+    # ``item.archive`` read below would be a lazy load inside an async handler.
+    # ⚠️ The same eager loads as every other path that ends in ``_to_response``.
+    # Without them this route answered ``source_storage: "legacy"`` and a null size
+    # for a row whose blob is ``ready`` — the one lie m173 left standing — and the
+    # ``item.archive`` read in the builder would be a lazy load inside an async
+    # handler. The statement is re-run after the commit rather than
+    # ``db.refresh``-ing, because a refresh expires the relationships it would then
+    # have to fetch one at a time.
+    stmt = (
+        select(AutoQueueItem)
+        .options(
+            selectinload(AutoQueueItem.archive),
+            selectinload(AutoQueueItem.queue_source),
+            selectinload(AutoQueueItem.library_file),
+            selectinload(AutoQueueItem.created_by),
+        )
+        .where(AutoQueueItem.id == item_id)
+    )
+    item = (await db.execute(stmt)).scalar_one_or_none()
     if not item:
         raise HTTPException(404, "Auto-queue item not found")
     if item.status != "pending":
@@ -452,12 +375,16 @@ async def update_auto_queue_item(
     _apply_item_update(item, data.model_dump(exclude_unset=True))
 
     await db.commit()
-    await db.refresh(item)
-    return _to_response(item)
+    return _to_response((await db.execute(stmt)).scalar_one())
 
 
 def _apply_item_update(item: AutoQueueItem, update_data: dict) -> None:
     """Field-by-field update shared by the single-item and batch PUTs."""
+    update_data = dict(update_data)
+    if update_data.get("feed_policy") is None:
+        update_data.pop("feed_policy", None)
+        if update_data.get("use_ams") is not None:
+            update_data["feed_policy"] = "auto" if update_data["use_ams"] else "external_only"
     for key, value in update_data.items():
         if key == "filament_overrides" and value is not None:
             value = json.dumps([o if isinstance(o, dict) else o.model_dump() for o in value])
@@ -535,6 +462,7 @@ async def cancel_auto_queue_item(
         select(AutoQueueItem)
         .options(
             selectinload(AutoQueueItem.archive),
+            selectinload(AutoQueueItem.queue_source),
             selectinload(AutoQueueItem.library_file),
             selectinload(AutoQueueItem.created_by),
             selectinload(AutoQueueItem.assigned_to)
@@ -551,7 +479,7 @@ async def cancel_auto_queue_item(
 
     now = datetime.now(timezone.utc)
 
-    if item.status == "pending" and item.assigned_to_item_id is None:
+    if item.status in ("pending", "failed") and item.assigned_to_item_id is None:
         # Snapshot before the row stops existing. The client asked for a
         # cancel and gets the item back in the state it asked for; the two
         # fields are the response's alone, never written.
@@ -593,6 +521,24 @@ async def reorder_auto_queue(
     return {"reordered": len(payload.items)}
 
 
+@router.post("/rebalance", response_model=RebalanceOut)
+async def rebalance_auto_queue_items(
+    payload: AutoQueueRebalanceRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Rebalance the named pending items across printer models (spec 2026-09-10).
+
+    Each id is either moved or listed under ``skipped`` with why — not filed
+    under a line, pinned, scheduled, staged, already handed to a printer, and
+    the rest of ``queue_rebalance.SKIP_REASONS``. The farm setting and the
+    cooldown do not apply to a button.
+    """
+    result = await queue_rebalance.rebalance(db, item_ids=payload.item_ids, force=True, current_user=current_user)
+    await db.commit()
+    return result.as_response()
+
+
 @router.post("/{item_id}/assign-now", response_model=AutoQueueItemResponse)
 async def assign_now(
     item_id: int,
@@ -617,17 +563,55 @@ async def assign_now(
     busy_result = await db.execute(select(PrinterQueue.printer_id).where(PrinterQueue.status == "printing"))
     busy_printers: set[int] = {pid for (pid,) in busy_result.all()}
 
-    printer, reason = await find_eligible_printer(db, item, busy_printers)
+    eligible = await find_eligible_printer(db, item, busy_printers)
+    printer, reason = eligible
     if printer is None:
+        source_reason = getattr(eligible.requirements, "reason", None)
+        if source_reason in SOURCE_FAILURES:
+            await fail_auto_source(db, item, source_reason)
         if reason:
             item.waiting_reason = reason
             await db.commit()
         raise HTTPException(409, reason or "No eligible printer available")
 
-    await auto_queue_scheduler._assign(db, item, printer)
+    try:
+        await auto_queue_scheduler._assign(db, item, printer, plan=eligible.plan, requirements=eligible.requirements)
+    except SourceUnavailable as exc:
+        await db.refresh(item)
+        if exc.reason in SOURCE_FAILURES:
+            await fail_auto_source(db, item, exc.reason)
+            await db.commit()
+        raise HTTPException(409, routing_detail(exc.reason)) from exc
     await db.commit()
-    await db.refresh(item)
-    return _to_response(item)
+    return await get_auto_queue_item(item_id, db, _)
+
+
+@router.post("/{item_id}/retry", response_model=AutoQueueItemResponse)
+async def retry_auto_queue_item(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_REORDER),
+):
+    """Revalidate a failed source before returning the same job to the router."""
+    from sqlalchemy import update
+
+    item = await db.get(AutoQueueItem, item_id)
+    if item is None:
+        raise HTTPException(404, "Auto-queue item not found")
+    if item.status != "failed":
+        raise HTTPException(409, routing_detail("source_retry_not_failed"))
+    requirements = await read_item_requirements(db, item)
+    if requirements.status != "ok":
+        raise HTTPException(409, routing_detail(requirements.reason))
+    result = await db.execute(
+        update(AutoQueueItem)
+        .where(AutoQueueItem.id == item_id, AutoQueueItem.status == "failed", AutoQueueItem.cancelled_at.is_(None))
+        .values(status="pending", waiting_reason=None)
+    )
+    if not result.rowcount:
+        raise HTTPException(409, routing_detail("source_retry_not_failed"))
+    await db.commit()
+    return await get_auto_queue_item(item_id, db, _)
 
 
 @router.delete("/batch/{batch_id}", response_model=AutoQueueBatchActionResponse)
@@ -645,7 +629,7 @@ async def cancel_auto_queue_batch(
     pending_result = await db.execute(
         select(AutoQueueItem).where(
             AutoQueueItem.batch_id == batch_id,
-            AutoQueueItem.status == "pending",
+            AutoQueueItem.status.in_(["pending", "failed"]),
         )
     )
     pending = list(pending_result.scalars().all())

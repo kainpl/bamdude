@@ -4,19 +4,18 @@ import asyncio
 import json
 import logging
 import time
-import zipfile
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-import defusedxml.ElementTree as ET
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.config import settings
 from backend.app.core.database import async_session
 from backend.app.core.tasks import spawn_background_task
+from backend.app.core.websocket import ws_manager
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
@@ -26,7 +25,16 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.schemas.calibration_mode import derive_mode
-from backend.app.services import chamber_history
+from backend.app.services import ams_advertised_overlay as overlay, chamber_history
+from backend.app.services.filament_intake import (
+    item_descriptor,
+    resolve_source_path,
+    routing_detail,
+    source_display_filename,
+)
+from backend.app.services.filament_preflight import preflight_item
+from backend.app.services.filament_requirements import PrintRequirementsCache
+from backend.app.services.filament_routing import RoutingDeferred
 from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import (
     first_drying_blocking_reason,
@@ -34,9 +42,12 @@ from backend.app.services.printer_manager import (
     supports_drying,
     supports_drying_while_printing,
 )
+from backend.app.services.queue_ops import queue_scope_lock
+from backend.app.services.queue_wait_reason import set_wait_reason
 from backend.app.services.smart_plug_manager import smart_plug_manager
+from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, require_source_file
+from backend.app.services.stagger_groups import GroupKey, StaggerGroupResolver, StaggerSplit
 from backend.app.utils.filament_types import canonical_filament_type
-from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 
 logger = logging.getLogger(__name__)
 
@@ -344,9 +355,19 @@ class PrintScheduler:
                 .order_by(PrintQueueItem.queue_id, PrintQueueItem.position)
             )
             items = list(result.scalars().all())
+            requirements_cache = PrintRequirementsCache()
             dispatched = False
 
             if not items:
+                # A stale stagger slot must not survive just because its print
+                # was the final queue item.  The normal path below performs
+                # this maintenance before inspecting pending work, but this
+                # early return used to skip it indefinitely.
+                if self._stagger_slots:
+                    stagger_enabled, _, _, stagger_wait_bed = await self._get_stagger_settings(db)
+                    if stagger_enabled:
+                        await self._refresh_stagger_slots(stagger_wait_bed)
+
                 # No pending items - still check auto-drying on idle printers.
                 # Seed busy_printers from currently-printing printers (same
                 # authoritative source as the full path below — PrinterQueue.status
@@ -434,8 +455,10 @@ class PrintScheduler:
                 db
             )
             if stagger_enabled:
-                self._update_stagger_temps()
-                self._cleanup_stagger_slots(stagger_wait_bed)
+                await self._refresh_stagger_slots(stagger_wait_bed)
+                stagger_resolver = await self._load_stagger_resolver(db)
+            else:
+                stagger_resolver = StaggerGroupResolver.global_only()
 
             # Log skip reasons once per queue check (not per item)
             skip_reasons: dict[str, int] = {}
@@ -471,6 +494,8 @@ class PrintScheduler:
                 # is choosing printers and can act on the answer — pausing for a
                 # missing card would strand work nobody can un-strand from here.
                 if getattr(item, "timelapse", False) and _timelapse_storage_full(printer_id):
+                    wait_changed = set_wait_reason(item, "storage_full", "Timelapse storage full")
+                    pause_changed = not item.queue.is_paused
                     if not item.queue.is_paused:
                         item.queue.is_paused = True
                         logger.warning(
@@ -479,6 +504,8 @@ class PrintScheduler:
                             printer_id,
                             item.id,
                         )
+                    if wait_changed or pause_changed:
+                        await db.commit()
                     skip_reasons["timelapse_storage_full"] = skip_reasons.get("timelapse_storage_full", 0) + 1
                     continue
 
@@ -488,11 +515,15 @@ class PrintScheduler:
                     if sched.tzinfo is None:
                         sched = sched.replace(tzinfo=timezone.utc)
                     if sched > datetime.now(timezone.utc):
+                        if set_wait_reason(item, "scheduled", "Scheduled start"):
+                            await db.commit()
                         skip_reasons["scheduled_future"] = skip_reasons.get("scheduled_future", 0) + 1
                         continue
 
                 # Skip items that require manual start
                 if item.manual_start:
+                    if set_wait_reason(item, "manual_start", "Manual start required"):
+                        await db.commit()
                     skip_reasons["manual_start"] = skip_reasons.get("manual_start", 0) + 1
                     continue
 
@@ -507,18 +538,21 @@ class PrintScheduler:
 
                 # Update waiting_reason based on current state
                 new_reason = None
+                reason_code = None
                 if not printer_connected:
                     new_reason = "Printer offline"
+                    reason_code = "printer_offline"
                 elif not printer_idle:
                     if self._drying_in_progress.get(printer_id):
                         new_reason = "Drying in progress"
+                        reason_code = "drying"
                     elif rpc and printer_manager.is_awaiting_plate_clear(printer_id):
                         status = printer_manager.get_status(printer_id)
                         if status and status.state in ("FINISH", "FAILED"):
                             new_reason = "Plate not cleared"
+                            reason_code = "plate_not_cleared"
 
-                if item.waiting_reason != new_reason:
-                    item.waiting_reason = new_reason
+                if set_wait_reason(item, reason_code, new_reason):
                     await db.commit()
 
                 # If printer not connected, try to power on via smart plug(s)
@@ -573,21 +607,23 @@ class PrintScheduler:
                 # so all it ever decided was whether a cycle was needlessly
                 # killed on the way. Off by default.
                 if self._drying_in_progress.get(printer_id) and await self._get_bool_setting(db, "queue_drying_block"):
+                    if set_wait_reason(item, "drying", "Drying in progress"):
+                        await db.commit()
                     busy_printers.add(printer_id)
                     continue
 
                 # Staggered start: check if we have a free slot
-                if stagger_enabled and not self._can_start_staggered(stagger_concurrent):
-                    stagger_reason = self._stagger_reason(stagger_wait_bed)
-                    if item.waiting_reason != stagger_reason:
-                        item.waiting_reason = stagger_reason
+                if stagger_enabled and not self._can_start_staggered(stagger_concurrent, printer_id, stagger_resolver):
+                    stagger_reason = self._stagger_reason(
+                        stagger_wait_bed, stagger_concurrent, printer_id, stagger_resolver
+                    )
+                    if set_wait_reason(item, "stagger", stagger_reason):
                         await db.commit()
                     skip_reasons["stagger_wait"] = skip_reasons.get("stagger_wait", 0) + 1
                     continue
 
                 # Clear waiting_reason - printer is ready
-                if item.waiting_reason:
-                    item.waiting_reason = None
+                if set_wait_reason(item, None, None):
                     await db.commit()
 
                 # The require_previous_success gate (m116). Checked here, at the
@@ -618,7 +654,19 @@ class PrintScheduler:
                 # recomputed from live trays rather than trusted (else it's
                 # silently downgraded to external-spool and prints against an
                 # empty feed).
-                await self._ensure_ams_mapping(db, printer_id, item)
+                try:
+                    guard = await preflight_item(db, item, printer_id, cache=requirements_cache)
+                except RoutingDeferred as exc:
+                    if exc.reason in SOURCE_FAILURES:
+                        await self._fail_source_item(db, item, exc.reason)
+                        continue
+                    set_wait_reason(item, "filament_unavailable", routing_detail(exc.reason)["message"])
+                    await db.commit()
+                    continue
+                if guard:
+                    item.ams_mapping = json.dumps(guard.plan.mapping)
+                    item.use_ams = guard.plan.use_ams
+                    item.plate_id = guard.plan.resolved_plate_id
 
                 # Print takes priority — stop a cycle WE armed, now that this
                 # item is definitely going out.
@@ -645,7 +693,9 @@ class PrintScheduler:
                 # to "printing" + the stagger slot is pre-registered. This lets
                 # the next loop iteration dispatch a different printer in
                 # parallel instead of serialising through one global await.
-                await self._start_print(db, item)
+                await self._start_print(db, item, requirements_cache=requirements_cache)
+                if item.status != "printing":
+                    continue
                 dispatched = True
                 busy_printers.add(printer_id)
                 # ⚠️ The one addition the narrow set DOES take: this print is
@@ -765,13 +815,13 @@ class PrintScheduler:
         # and silently never dispatched, every pass.
 
         # Build loaded filaments from printer status
-        loaded_filaments = self._build_loaded_filaments(status)
+        loaded_filaments = self._build_loaded_filaments(status, printer_id)
         if not loaded_filaments:
             logger.debug("No filaments loaded on printer %s", printer_id)
             return None
 
         # Check if user prefers lowest remaining filament when multiple spools match
-        prefer_lowest = await self._get_bool_setting(db, "prefer_lowest_filament")
+        prefer_lowest = await self._get_bool_setting(db, "prefer_lowest_filament", default=True)
 
         # AMS Filament Backup gates prefer-lowest (#1766): with backup OFF the printer won't
         # switch between same-material spools mid-print, so spreading a job across the lowest
@@ -801,115 +851,24 @@ class PrintScheduler:
         )
 
     async def _get_filament_requirements(self, db: AsyncSession, item: PrintQueueItem) -> list[dict] | None:
-        """Extract filament requirements from the source 3MF file.
+        """Read the same exact plate evidence as intake and auto assignment."""
+        from backend.app.services.filament_intake import read_item_requirements
 
-        Args:
-            db: Database session
-            item: Queue item with archive_id or library_file_id
-
-        Returns:
-            List of filament requirement dicts with slot_id, type, color, used_grams
-        """
-        file_path: Path | None = None
-
-        if item.archive_id:
-            result = await db.execute(select(PrintArchive).where(PrintArchive.id == item.archive_id))
-            archive = result.scalar_one_or_none()
-            if archive:
-                file_path = settings.base_dir / archive.file_path
-        elif item.library_file_id:
-            result = await db.execute(LibraryFile.active().where(LibraryFile.id == item.library_file_id))
-            library_file = result.scalar_one_or_none()
-            if library_file:
-                lib_path = Path(library_file.file_path)
-                file_path = lib_path if lib_path.is_absolute() else settings.base_dir / library_file.file_path
-
-        if not file_path or not file_path.exists():
+        requirements = await read_item_requirements(db, item)
+        if requirements.status != "ok":
             return None
+        item.plate_id = requirements.resolved_plate_id
+        return [dict(f) for f in requirements.used_filaments]
 
-        filaments = []
-        try:
-            with zipfile.ZipFile(file_path, "r") as zf:
-                if "Metadata/slice_info.config" not in zf.namelist():
-                    return None
-
-                content = zf.read("Metadata/slice_info.config").decode()
-                root = ET.fromstring(content)
-
-                # Check if plate_id is specified - use that plate's filaments
-                plate_id = item.plate_id
-                if plate_id:
-                    for plate_elem in root.findall("./plate"):
-                        plate_index = None
-                        for meta in plate_elem.findall("metadata"):
-                            if meta.get("key") == "index":
-                                plate_index = int(meta.get("value", "0"))
-                                break
-                        if plate_index == plate_id:
-                            for filament_elem in plate_elem.findall("./filament"):
-                                filament_id = filament_elem.get("id")
-                                filament_type = filament_elem.get("type", "")
-                                filament_color = filament_elem.get("color", "")
-                                # tray_info_idx identifies the specific spool selected when slicing
-                                tray_info_idx = filament_elem.get("tray_info_idx", "")
-                                used_g = filament_elem.get("used_g", "0")
-                                try:
-                                    used_grams = float(used_g)
-                                    if used_grams > 0 and filament_id:
-                                        filaments.append(
-                                            {
-                                                "slot_id": int(filament_id),
-                                                "type": filament_type,
-                                                "color": filament_color,
-                                                "tray_info_idx": tray_info_idx,
-                                                "used_grams": round(used_grams, 1),
-                                            }
-                                        )
-                                except (ValueError, TypeError):
-                                    pass  # Skip filament entry with unparseable usage data
-                            break
-                else:
-                    # No plate_id - extract all filaments with used_g > 0
-                    for filament_elem in root.findall("./filament"):
-                        filament_id = filament_elem.get("id")
-                        filament_type = filament_elem.get("type", "")
-                        filament_color = filament_elem.get("color", "")
-                        # tray_info_idx identifies the specific spool selected when slicing
-                        tray_info_idx = filament_elem.get("tray_info_idx", "")
-                        used_g = filament_elem.get("used_g", "0")
-                        try:
-                            used_grams = float(used_g)
-                            if used_grams > 0 and filament_id:
-                                filaments.append(
-                                    {
-                                        "slot_id": int(filament_id),
-                                        "type": filament_type,
-                                        "color": filament_color,
-                                        "tray_info_idx": tray_info_idx,
-                                        "used_grams": round(used_grams, 1),
-                                    }
-                                )
-                        except (ValueError, TypeError):
-                            pass  # Skip filament entry with unparseable usage data
-
-                filaments.sort(key=lambda x: x["slot_id"])
-
-                # Enrich with nozzle mapping for dual-nozzle printers
-                nozzle_mapping = extract_nozzle_mapping_from_3mf(zf)
-                if nozzle_mapping:
-                    for filament in filaments:
-                        filament["nozzle_id"] = nozzle_mapping.get(filament["slot_id"])
-        except Exception as e:
-            logger.warning("Failed to parse filament requirements: %s", e)
-            return None
-
-        return filaments if filaments else None
-
-    def _build_loaded_filaments(self, status) -> list[dict]:
+    def _build_loaded_filaments(self, status, printer_id: int | None = None) -> list[dict]:
         """Build list of loaded filaments from printer status.
 
         Args:
             status: PrinterState from printer_manager
+            printer_id: When given, an AMS slot we advertised under a different
+                profile (``ams_advertised_overlay``) is reported as the spool it
+                REALLY holds — without it the dispatcher would map a job onto
+                the masked colour/preset and print with the wrong spool.
 
         Returns:
             List of loaded filament dicts with type, color, ams_id, tray_id, global_tray_id
@@ -933,6 +892,16 @@ class PrintScheduler:
                     tray_color = tray.get("tray_color", "")
                     # tray_info_idx identifies the specific spool (e.g., "GFA00", "P4d64437")
                     tray_info_idx = tray.get("tray_info_idx", "")
+                    # The three fields the mapping matches on are exactly the
+                    # three an advertised profile masks, so they are swapped for
+                    # the real spool's before anything downstream compares them.
+                    entry = overlay.effective(printer_id, ams_id, tray_id, tray) if printer_id is not None else None
+                    if entry is not None:
+                        tray_type, tray_color, tray_info_idx = (
+                            entry.actual_material,
+                            entry.actual_color,
+                            entry.actual_variant,
+                        )
                     # Normalize color: remove alpha, add hash
                     color = self._normalize_color(tray_color)
                     # Calculate global tray ID
@@ -1103,6 +1072,66 @@ class PrintScheduler:
             logger.warning("prefer-lowest inventory overrides failed for printer %s: %s", printer_id, e)
             return {}
         return overrides
+
+    async def _inventory_label_weights(self, db: AsyncSession, printer_id: int, loaded: list[dict]) -> dict[int, float]:
+        """``{global_tray_id: label_weight_grams}`` for the same bound slots
+        ``_build_inventory_remain_overrides`` answers for — BamDude ``label_weight``
+        or Spoolman ``initial_weight``. The low-filament threshold
+        (``services/filament_low.py``) turns the two into a percent, so that
+        event reads the SAME remaining figure prefer-lowest does, not a fourth.
+        Best-effort: ``{}`` on any failure; a slot without a known weight is absent.
+        """
+        if not loaded:
+            return {}
+        tracked_slots = [(f["ams_id"], f["tray_id"], f["global_tray_id"]) for f in loaded if not f.get("is_external")]
+        if not tracked_slots:
+            return {}
+        weights: dict[int, float] = {}
+        try:
+            if await self._is_spoolman_mode(db):
+                result = await db.execute(
+                    select(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.printer_id == printer_id)
+                )
+                by_slot = {(a.ams_id, a.tray_id): a.spoolman_spool_id for a in result.scalars().all()}
+                if not by_slot:
+                    return {}
+                from backend.app.services.spoolman import get_spoolman_client
+
+                client = await get_spoolman_client()
+                if client is None:
+                    return {}
+                for ams_id, tray_id, gtid in tracked_slots:
+                    spoolman_id = by_slot.get((ams_id, tray_id))
+                    if spoolman_id is None:
+                        continue
+                    try:
+                        spool = await client.get_spool(spoolman_id)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    initial = (
+                        spool.get("initial_weight")
+                        if isinstance(spool, dict)
+                        else getattr(spool, "initial_weight", None)
+                    )
+                    if initial:
+                        weights[gtid] = float(initial)
+                return weights
+
+            result = await db.execute(
+                select(SpoolAssignment)
+                .options(selectinload(SpoolAssignment.spool))
+                .where(SpoolAssignment.printer_id == printer_id)
+            )
+            by_slot = {(a.ams_id, a.tray_id): a.spool for a in result.scalars().all()}
+            for ams_id, tray_id, gtid in tracked_slots:
+                spool = by_slot.get((ams_id, tray_id))
+                if spool is None or not spool.label_weight:
+                    continue
+                weights[gtid] = float(spool.label_weight)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("inventory label weights failed for printer %s: %s", printer_id, e)
+            return {}
+        return weights
 
     @staticmethod
     async def _is_spoolman_mode(db: AsyncSession) -> bool:
@@ -1319,26 +1348,36 @@ class PrintScheduler:
               "concurrent": int,
               "interval_minutes": int,
               "wait_for_bed": bool,
-              "slots": [
-                {"printer_id": int, "printer_name": str,
-                 "started_at": float, "temp_reached_at": float | None,
-                 "state": "heating" | "interval_wait",
-                 "seconds_to_free": int},
+              "split": {"by_tags": bool, "by_location": bool},
+              "groups": [
+                {"tag_id": int | None, "location_id": int | None,
+                 "label": str | None, "color": str | None, "cap": int,
+                 "occupied": int, "free_slots": int,
+                 "next_free_in_seconds": int | None,
+                 "slots": [
+                   {"printer_id": int, "printer_name": str,
+                    "started_at": float, "temp_reached_at": float | None,
+                    "state": "heating" | "interval_wait",
+                    "seconds_to_free": int, "interval_seconds": int,
+                    "wildcard": bool},
+                   ...
+                 ]},
                 ...
               ],
-              "free_slots": int,
-              "next_free_in_seconds": int | None,
             }
         """
         enabled, concurrent, interval_seconds, wait_for_bed = await self._get_stagger_settings(db)
+        if enabled:
+            # The banner is also a maintenance read: without this, an empty
+            # queue could expose a slot that the next scheduler pass would
+            # have released.
+            await self._refresh_stagger_slots(wait_for_bed)
+        resolver = await self._load_stagger_resolver(db) if enabled else StaggerGroupResolver.global_only()
         now = time.monotonic()
 
-        slots: list[dict] = []
-        times_to_free: list[int] = []
-        for slot in self._stagger_slots:
+        def _slot_info(slot: _StaggerSlot) -> dict:
             info = printer_manager.get_printer(slot.printer_id)
             name = info.name if info else f"Printer #{slot.printer_id}"
-
             if wait_for_bed:
                 if slot.temp_reached_at is None:
                     slot_state = "heating"
@@ -1349,31 +1388,47 @@ class PrintScheduler:
             else:
                 slot_state = "interval_wait"
                 seconds_to_free = max(0, int(slot.interval_seconds - (now - slot.started_at)))
+            return {
+                "printer_id": slot.printer_id,
+                "printer_name": name,
+                "started_at": slot.started_at,
+                "temp_reached_at": slot.temp_reached_at,
+                "state": slot_state,
+                "seconds_to_free": seconds_to_free,
+                "interval_seconds": slot.interval_seconds,
+                # In every group at once — its phase is unknown (spec decision 3).
+                "wildcard": resolver.is_wildcard(slot.printer_id),
+            }
 
-            slots.append(
+        groups: list[dict] = []
+        for key in sorted(resolver.universe, key=lambda k: (resolver.label(k) or "", k[0] or 0, k[1] or 0)):
+            members = [_slot_info(s) for s in self._stagger_slots if key in resolver.groups_for(s.printer_id)]
+            cap = resolver.cap_for(key, concurrent)
+            free_slots = max(0, cap - len(members))
+            times = [m["seconds_to_free"] for m in members]
+            groups.append(
                 {
-                    "printer_id": slot.printer_id,
-                    "printer_name": name,
-                    "started_at": slot.started_at,
-                    "temp_reached_at": slot.temp_reached_at,
-                    "state": slot_state,
-                    "seconds_to_free": seconds_to_free,
-                    "interval_seconds": slot.interval_seconds,
+                    "tag_id": key[0],
+                    "location_id": key[1],
+                    "label": resolver.label(key),
+                    # The tag's colour, so the banner can badge the group like the manager does.
+                    "color": resolver.color_for(key),
+                    # The cap THIS group starts under — the global number unless overridden.
+                    "cap": cap,
+                    "occupied": len(members),
+                    "free_slots": free_slots,
+                    "next_free_in_seconds": None if free_slots > 0 or not times else min(times),
+                    "slots": members,
                 }
             )
-            times_to_free.append(seconds_to_free)
-
-        free_slots = max(0, concurrent - len(self._stagger_slots))
-        next_free = None if free_slots > 0 or not times_to_free else min(times_to_free)
 
         return {
             "enabled": enabled,
             "concurrent": concurrent,
             "interval_minutes": interval_seconds // 60,
             "wait_for_bed": wait_for_bed,
-            "slots": slots,
-            "free_slots": free_slots,
-            "next_free_in_seconds": next_free,
+            "split": {"by_tags": resolver.tags_split, "by_location": resolver.location_split},
+            "groups": groups,
         }
 
     async def _get_stagger_settings(self, db: AsyncSession) -> tuple[bool, int, int, bool]:
@@ -1386,8 +1441,9 @@ class PrintScheduler:
         wait_for_bed = await self._get_bool_setting(db, "stagger_wait_for_bed")
         return True, max(concurrent, 1), interval_min * 60, wait_for_bed
 
-    def _update_stagger_temps(self) -> None:
+    def _update_stagger_temps(self) -> bool:
         """Check bed temps for printers in stagger slots, mark reached."""
+        changed = False
         for slot in self._stagger_slots:
             if slot.temp_reached_at is not None:
                 continue
@@ -1398,14 +1454,16 @@ class PrintScheduler:
             target = state.temperatures.get("bed_target", 0)
             if target > 0 and abs(bed - target) <= 1.0:
                 slot.temp_reached_at = time.monotonic()
+                changed = True
                 logger.info(
                     "Stagger: printer %d bed reached %.1f°C (target %.1f°C), slot freed",
                     slot.printer_id,
                     bed,
                     target,
                 )
+        return changed
 
-    def _cleanup_stagger_slots(self, wait_for_bed: bool) -> None:
+    def _cleanup_stagger_slots(self, wait_for_bed: bool) -> bool:
         """Remove slots that are fully expired (temp reached + interval elapsed)."""
         now = time.monotonic()
         active = []
@@ -1420,7 +1478,18 @@ class PrintScheduler:
                 # state below really does mean the slot's work is over.
                 slot.saw_active = True
 
-            if state and live not in ("RUNNING", "PREPARE", "IDLE", "PAUSE"):
+            if live == "IDLE":
+                # IDLE immediately after dispatch still describes the prior
+                # print on some firmware, so it needs the same bounded grace
+                # period as FINISH/FAILED.  Once this slot has observed its
+                # own active state, or that window expires, IDLE means it is
+                # no longer heating and must not keep the cap occupied.
+                if slot.saw_active or now - slot.started_at >= _DISPATCH_SETTLE_SECONDS:
+                    continue
+                active.append(slot)
+                continue
+
+            if state and live not in ("RUNNING", "PREPARE", "PAUSE"):
                 # ⚠️ A printer that has been dispatched to but has not started
                 # yet still reports the PREVIOUS print's terminal state —
                 # FINISH for seconds to half a minute while the file uploads and
@@ -1450,11 +1519,62 @@ class PrintScheduler:
             else:
                 if now - slot.started_at < iv:
                     active.append(slot)  # interval not elapsed
+        changed = len(active) != len(self._stagger_slots)
         self._stagger_slots = active
+        return changed
 
-    def _can_start_staggered(self, concurrent: int) -> bool:
-        """Check if there's a free stagger slot."""
-        return len(self._stagger_slots) < concurrent
+    async def _refresh_stagger_slots(self, wait_for_bed: bool) -> bool:
+        """Refresh stagger capacity and notify views if its visible state changed."""
+        changed = self._update_stagger_temps()
+        changed = self._cleanup_stagger_slots(wait_for_bed) or changed
+        if changed:
+            try:
+                await ws_manager.send_stagger_changed()
+            except Exception:
+                # A disconnected browser must not prevent the scheduler from
+                # releasing capacity for the next printer.
+                logger.exception("Could not broadcast stagger capacity change")
+        return changed
+
+    async def _load_stagger_resolver(self, db: AsyncSession) -> StaggerGroupResolver:
+        """The groups printers heat in, as Settings describe them right now."""
+        return await StaggerGroupResolver.load(db, await StaggerSplit.from_settings(db))
+
+    def _occupied(self, group: GroupKey, resolver: StaggerGroupResolver, *, excluding: int | None) -> int:
+        return sum(
+            1 for s in self._stagger_slots if s.printer_id != excluding and group in resolver.groups_for(s.printer_id)
+        )
+
+    def _full_groups(self, concurrent: int, printer_id: int | None, resolver: StaggerGroupResolver) -> list[GroupKey]:
+        """The groups of ``printer_id`` (all groups when None) that have no free slot for it.
+
+        Each group is judged by ITS OWN cap (``resolver.cap_for``): the global
+        number, lowered by a per-tag or per-location override. This is the one
+        comparison site — the queue gate, the strict refusal and the direct-print
+        acquire all come through here, so they cannot disagree.
+        """
+        groups = resolver.groups_for(printer_id) if printer_id is not None else resolver.universe
+        return [
+            g for g in groups if self._occupied(g, resolver, excluding=printer_id) >= resolver.cap_for(g, concurrent)
+        ]
+
+    def _can_start_staggered(
+        self,
+        concurrent: int,
+        printer_id: int | None = None,
+        resolver: StaggerGroupResolver | None = None,
+    ) -> bool:
+        """A free slot in EVERY group this printer heats in.
+
+        With the global resolver and no printer this is ``len(slots) < concurrent``,
+        as it always was. A wildcard printer is in every group, so one full group
+        anywhere holds it back — its phase is unknown. A printer never blocks
+        itself: its own slot is excluded, because ``_register_stagger_start``
+        replaces it anyway and the strict-mode check runs after the slot was
+        taken (without this, cap 1 refused every direct print).
+        """
+        resolver = resolver or StaggerGroupResolver.global_only()
+        return not self._full_groups(concurrent, printer_id, resolver)
 
     def _register_stagger_start(self, printer_id: int, interval_seconds: int) -> None:
         """Register a printer as occupying a stagger slot."""
@@ -1467,6 +1587,18 @@ class PrintScheduler:
             interval_seconds,
             len(self._stagger_slots),
         )
+
+    def _pre_register_stagger_slot(self, printer: Printer, interval_seconds: int) -> None:
+        """Take ``printer``'s stagger slot up front, on the queue dispatch path.
+
+        ``interval_seconds`` is the farm-wide default; the printer's own
+        override beats it when set.
+        """
+        per_printer_iv = (printer.stagger_interval_minutes * 60) if printer.stagger_interval_minutes else 0
+        # The PRINTER's id — the resolver reads slot.printer_id as the identity whose tags and location decide the
+        # group; PrinterQueue.id == printer_id is the invariant, but the printer object is in hand, so its id is
+        # the honest key.
+        self._register_stagger_start(printer.id, per_printer_iv or interval_seconds)
 
     async def acquire_stagger_slot(self, printer_id: int) -> None:
         """Block until ``printer_id`` holds a stagger slot.
@@ -1491,32 +1623,58 @@ class PrintScheduler:
                 else 0
             )
             interval_seconds = per_printer_iv or stagger_interval
+            resolver = await self._load_stagger_resolver(db)
 
         while True:
             async with self._stagger_acquire_lock:
                 # Re-check inside the lock so a parallel acquirer can't slip
                 # past us between the check and the register.
-                self._update_stagger_temps()
-                self._cleanup_stagger_slots(stagger_wait_bed)
+                await self._refresh_stagger_slots(stagger_wait_bed)
                 if any(s.printer_id == printer_id for s in self._stagger_slots):
                     return  # already registered (queue pre-register, or prior loop)
-                if self._can_start_staggered(stagger_concurrent):
+                if self._can_start_staggered(stagger_concurrent, printer_id, resolver):
                     self._register_stagger_start(printer_id, interval_seconds)
                     return
             await asyncio.sleep(2.0)
 
-    def _stagger_reason(self, wait_for_bed: bool) -> str:
-        """Get waiting reason for stagger-blocked items."""
+    def _stagger_reason(
+        self,
+        wait_for_bed: bool,
+        concurrent: int | None = None,
+        printer_id: int | None = None,
+        resolver: StaggerGroupResolver | None = None,
+    ) -> str:
+        """Waiting reason for a stagger-blocked item — naming the full group(s) when there are groups."""
+        resolver = resolver or StaggerGroupResolver.global_only()
+        full = (
+            self._full_groups(concurrent, printer_id, resolver) if concurrent is not None else list(resolver.universe)
+        )
+        labels = sorted(label for label in (resolver.label(g) for g in full) if label)
+        where = f" [{', '.join(labels)}]" if labels else ""
         if wait_for_bed:
             heating = []
             for s in self._stagger_slots:
-                if s.temp_reached_at is None:
+                if s.temp_reached_at is None and any(g in resolver.groups_for(s.printer_id) for g in full):
                     info = printer_manager.get_printer(s.printer_id)
-                    name = info.name if info else f"#{s.printer_id}"
-                    heating.append(name)
+                    heating.append(info.name if info else f"#{s.printer_id}")
             if heating:
-                return f"Staggered start: waiting for {', '.join(heating)} to heat up"
-        return "Staggered start: waiting for interval"
+                return f"Staggered start{where}: waiting for {', '.join(heating)} to heat up"
+        return f"Staggered start{where}: waiting for interval"
+
+    async def stagger_blocks(self, printer_id: int) -> bool:
+        """Whether a direct dispatch to ``printer_id`` would exceed the cap right now.
+
+        For the strict-mode check in ``background_dispatch``: settings, resolver,
+        cleanup and count in one call, so the two duplicated blocks there need
+        no knowledge of groups.
+        """
+        async with async_session() as db:
+            enabled, concurrent, _, wait_for_bed = await self._get_stagger_settings(db)
+            if not enabled:
+                return False
+            resolver = await self._load_stagger_resolver(db)
+        await self._refresh_stagger_slots(wait_for_bed)
+        return not self._can_start_staggered(concurrent, printer_id, resolver)
 
     def _mark_printer_dispatched(
         self,
@@ -1535,6 +1693,17 @@ class PrintScheduler:
             # match any real printer state.
             pre_state = ""
         self._dispatch_holds[printer_id] = (time.monotonic(), pre_state, pre_subtask_id)
+
+    async def release_prepared_dispatch(self, printer_id: int) -> None:
+        """The owner of a refused pre-publish attempt releases its reservations."""
+        had_slot = any(slot.printer_id == printer_id for slot in self._stagger_slots)
+        self._stagger_slots = [slot for slot in self._stagger_slots if slot.printer_id != printer_id]
+        self._release_dispatch_hold(printer_id)
+        if had_slot:
+            try:
+                await ws_manager.send_stagger_changed()
+            except Exception:
+                logger.exception("Could not broadcast released stagger slot for printer %d", printer_id)
 
     def _release_dispatch_hold(self, printer_id: int) -> None:
         """Drop the dispatch hold for ``printer_id`` (called by the watchdog)."""
@@ -2199,6 +2368,24 @@ class PrintScheduler:
             state.pop("running", None)
             state["ended_at"] = time.monotonic()
 
+    def drying_remaining_seconds(self, printer_id: int) -> int:
+        """Seconds left in the drying cycle THIS scheduler runs on ``printer_id`` — 0 when it runs none.
+
+        The forecast's read of the queue gate (``_drying_in_progress`` and
+        ``queue_drying_block`` in ``check_queue``): the same claim, timed by the
+        AMS countdown the printer reports (``dry_time``, minutes; the longest
+        unit wins). A cycle somebody started by hand is not ours and holds
+        nothing here, exactly as it holds nothing at the gate. Vault
+        60-specs/farm-forecast-v2-spec §6.
+        """
+        if not self._drying_in_progress.get(printer_id):
+            return 0
+        state = printer_manager.get_status(printer_id)
+        if not state:
+            return 0
+        minutes = max((int(unit.get("dry_time") or 0) for unit in state.raw_data.get("ams", [])), default=0)
+        return max(0, minutes) * 60
+
     def _sync_drying_state(self):
         """Drop what is no longer true: printers that have stopped drying, and
         claims on cycles that have ended.
@@ -2387,12 +2574,37 @@ class PrintScheduler:
             library_file = result.scalar_one_or_none()
             if library_file:
                 return library_file.filename.replace(".gcode.3mf", "").replace(".3mf", "")
+        # A job whose original rows are gone still knows what it is called: the
+        # snapshot carries the human filename precisely so the hash never has to
+        # stand in for it (§4, A04) — and when the payload cannot answer, the job
+        # number is the honest label. Never the object's name: this one goes into
+        # a notification, where a 64-hex string tells the operator nothing.
+        descriptor = await item_descriptor(db, item)
+        if descriptor is not None:
+            with suppress(SourceUnavailable):
+                return source_display_filename(descriptor).replace(".gcode.3mf", "").replace(".3mf", "")
         return f"Job #{item.id}"
 
     async def _get_printer(self, db: AsyncSession, printer_id: int) -> Printer | None:
         """Get printer by ID."""
         result = await db.execute(select(Printer).where(Printer.id == printer_id))
         return result.scalar_one_or_none()
+
+    async def _fail_source_item(self, db: AsyncSession, item: PrintQueueItem, reason: str) -> None:
+        """Fail before dispatch without parking the printer's remaining queue."""
+        from backend.app.services.queue_counters import update_queue_counters
+
+        item.status = "failed"
+        item.error_message = routing_detail(reason)["message"]
+        # No physical print failed; this must not trip require_previous_success.
+        item.gate_acknowledged = True
+        item.completed_at = datetime.now(timezone.utc)
+        item.waiting_reason = None
+        item.waiting_reason_code = None
+        item.waiting_reason_checked_at = None
+        await update_queue_counters(db, item.queue_id)
+        await db.commit()
+        logger.warning("Queue item %s failed before dispatch: %s", item.id, reason)
 
     async def _fail_item(self, db: AsyncSession, item: PrintQueueItem, error_message: str) -> None:
         """Mark item as failed and set queue to error state."""
@@ -2453,7 +2665,7 @@ class PrintScheduler:
         await db.commit()
         return True
 
-    async def _start_print(self, db: AsyncSession, item: PrintQueueItem):
+    async def _start_print(self, db: AsyncSession, item: PrintQueueItem, *, requirements_cache=None):
         """Upload file and start print for a queue item.
 
         Supports two sources:
@@ -2485,47 +2697,80 @@ class PrintScheduler:
             await self._power_off_if_needed(db, item)
             return
 
-        # Determine source: archive or library file. file_path is kept so we
-        # can still do the "file exists on disk" guard before delegating.
+        # Determine source: the captured copy when this job has one (m173), else
+        # its archive or library original. ``file_path`` is kept so we can still
+        # do the "file exists on disk" guard before delegating.
+        #
+        # ⚠️ A job with a ``queue_source_id`` and no original reference at all is
+        # a first-class job (spec §7): the rows below are read for what only THEY
+        # know (the slice's nozzle diameter, the display name, which runner), and
+        # their absence is not a refusal any more — the bytes come from the
+        # descriptor either way, and this is the fourth of the four places that
+        # used to build a source path of its own.
         archive = None
         library_file = None
-        file_path: Path | None = None
+        descriptor = await item_descriptor(db, item)
 
         if item.archive_id:
             result = await db.execute(select(PrintArchive).where(PrintArchive.id == item.archive_id))
             archive = result.scalar_one_or_none()
-            if not archive:
-                await self._fail_item(db, item, "Archive not found")
+            if not archive and descriptor is None:
+                await self._fail_source_item(db, item, "source_unreadable")
                 logger.error("Queue item %s: Archive %s not found", item.id, item.archive_id)
-                await self._power_off_if_needed(db, item)
                 return
-
-            file_path = settings.base_dir / archive.file_path
 
         elif item.library_file_id:
             result = await db.execute(LibraryFile.active().where(LibraryFile.id == item.library_file_id))
             library_file = result.scalar_one_or_none()
-            if not library_file:
-                await self._fail_item(db, item, "Library file not found")
+            if not library_file and descriptor is None:
+                await self._fail_source_item(db, item, "source_unreadable")
                 logger.error("Queue item %s: Library file %s not found", item.id, item.library_file_id)
-                await self._power_off_if_needed(db, item)
                 return
-            lib_path = Path(library_file.file_path)
-            file_path = lib_path if lib_path.is_absolute() else settings.base_dir / library_file.file_path
 
-        else:
-            # Neither archive nor library file specified
-            await self._fail_item(db, item, "No source file specified")
+        elif descriptor is None:
+            # Neither a snapshot nor an archive nor a library file
+            await self._fail_source_item(db, item, "source_unreadable")
             logger.error("Queue item %s: No archive_id or library_file_id specified", item.id)
-            await self._power_off_if_needed(db, item)
             return
 
-        # Check file exists on disk (fast fail before any dispatch work).
-        if not file_path.exists():
-            await self._fail_item(db, item, "Source file not found on disk")
-            logger.error("Queue item %s: File not found: %s", item.id, file_path)
-            await self._power_off_if_needed(db, item)
+        file_path: Path | None = resolve_source_path(archive, library_file, descriptor=descriptor)
+        if file_path is None:
+            # A source row with an empty ``file_path`` (a pending archive) — the
+            # same refusal the missing-row branches above give.
+            await self._fail_source_item(db, item, "source_unreadable")
+            logger.error("Queue item %s: source row carries no file", item.id)
             return
+
+        # Check file exists on disk (fast fail before any dispatch work) — and,
+        # for a job the snapshot has to name, that the snapshot can name it. Both
+        # answer with the same refusal and both must happen before the
+        # pending→printing flip below, so they share this one try.
+        snapshot_name: str | None = None
+        try:
+            if descriptor is not None:
+                snapshot_name = source_display_filename(descriptor)
+            await require_source_file(file_path)
+        except SourceUnavailable as exc:
+            if exc.reason in SOURCE_FAILURES:
+                await self._fail_source_item(db, item, exc.reason)
+            else:
+                set_wait_reason(item, "filament_unavailable", routing_detail(exc.reason)["message"])
+                await db.commit()
+            return
+
+        try:
+            guard = await preflight_item(db, item, printer.id, cache=requirements_cache)
+        except RoutingDeferred as exc:
+            if exc.reason in SOURCE_FAILURES:
+                await self._fail_source_item(db, item, exc.reason)
+                return
+            set_wait_reason(item, "filament_unavailable", routing_detail(exc.reason)["message"])
+            await db.commit()
+            return
+        if guard:
+            item.ams_mapping = json.dumps(guard.plan.mapping)
+            item.use_ams = guard.plan.use_ams
+            item.plate_id = guard.plan.resolved_plate_id
 
         # Nozzle-diameter mismatch guard (upstream #1899). A file sliced for one
         # nozzle size dispatched to a printer with a different nozzle installed is
@@ -2540,8 +2785,22 @@ class PrintScheduler:
         # nozzles yet, we fall through and dispatch exactly as before. On
         # dual-nozzle printers (H2D) a match against EITHER installed nozzle
         # passes, so a 0.6 slice is fine as long as one hotend is a 0.6.
+        #
+        # ⚠️ Since m173 ``archive`` can be None for a job that still dispatches
+        # (its snapshot holds the bytes, its archive row was purged), so the
+        # question would be asked of unknown data — except that it is not asked at
+        # all in that case, and the reason is worth having written down rather than
+        # re-derived: the block is gated on ``guard is None``, and a preflight
+        # guard is None for exactly two kinds of job — a calibration job (§2's
+        # exemption: never captured, so ``archive`` is None only if its own library
+        # asset vanished, and it carries no ``nozzle_diameter`` either) and a raw
+        # ``.gcode`` job (whose nozzle diameter cannot exist: the value is 3MF
+        # metadata). Every job that HAS a snapshot and an archive-shaped source
+        # gets a guard, so it never reaches this line. If a future change makes a
+        # 3MF job guard-less, read the diameter off the snapshot rather than
+        # letting "unknown" mean "dispatch".
         sliced_nozzle = archive.nozzle_diameter if archive else None
-        if sliced_nozzle:
+        if sliced_nozzle and guard is None:
             installed = _installed_nozzle_diameters(printer_manager.get_status(item.queue_id))
             mismatch_msg = _nozzle_mismatch_message(sliced_nozzle, installed)
             if mismatch_msg:
@@ -2568,22 +2827,50 @@ class PrintScheduler:
         # cancelled print would dispatch anyway (#1853). Gate the flip on the row still
         # being 'pending'; if it moved on (cancelled / deleted / already picked up), bail
         # before enqueuing any dispatch work.
+        #
+        # The same queue-scope lock is used by ``enqueue_position=next``. Its
+        # final check sees the current first runnable row, so an older scheduler
+        # snapshot cannot steal a start ahead of a next job that committed while
+        # its source/AMS work was in progress. Scheduled/manual rows remain
+        # deliberately ignorable here: the regular scheduler can progress past
+        # them, and this barrier must preserve that existing behavior.
         now = datetime.now(timezone.utc)
-        cas_result = await db.execute(
-            update(PrintQueueItem)
-            .where(PrintQueueItem.id == item.id)
-            .where(PrintQueueItem.status == "pending")
-            .values(status="printing", started_at=now)
-        )
-        if cas_result.rowcount == 0:
-            await db.rollback()
-            logger.info("Queue item %s: no longer pending at dispatch (cancelled or removed) — skipping", item.id)
-            return
-        item.status = "printing"
-        item.started_at = now
-        await set_queue_printing(db, item.queue_id, item.id)
-        await update_queue_counters(db, item.queue_id)
-        await db.commit()
+        async with queue_scope_lock(db, item.queue_id):
+            first_runnable_id = await db.scalar(
+                select(PrintQueueItem.id)
+                .where(PrintQueueItem.queue_id == item.queue_id)
+                .where(PrintQueueItem.status == "pending")
+                .where(PrintQueueItem.manual_start.is_(False))
+                .where(or_(PrintQueueItem.scheduled_time.is_(None), PrintQueueItem.scheduled_time <= now))
+                .order_by(PrintQueueItem.position, PrintQueueItem.id)
+                .limit(1)
+            )
+            if first_runnable_id != item.id:
+                await db.rollback()
+                logger.info("Queue item %s: no longer first runnable pending item — skipping", item.id)
+                return
+            cas_result = await db.execute(
+                update(PrintQueueItem)
+                .where(PrintQueueItem.id == item.id)
+                .where(PrintQueueItem.status == "pending")
+                .values(
+                    status="printing",
+                    started_at=now,
+                    waiting_reason=None,
+                    waiting_reason_code=None,
+                    waiting_reason_checked_at=None,
+                )
+            )
+            if cas_result.rowcount == 0:
+                await db.rollback()
+                logger.info("Queue item %s: no longer pending at dispatch (cancelled or removed) — skipping", item.id)
+                return
+            item.status = "printing"
+            item.gate_acknowledged = False
+            item.started_at = now
+            await set_queue_printing(db, item.queue_id, item.id)
+            await update_queue_counters(db, item.queue_id)
+            await db.commit()
 
         # Parse per-item options into the shape background_dispatch expects.
         ams_mapping: list[int] | None = None
@@ -2603,7 +2890,7 @@ class PrintScheduler:
         options: dict[str, Any] = {
             "mesh_mode_fast_check": item.mesh_mode_fast_check,
             "ams_mapping": ams_mapping,
-            "plate_id": item.plate_id or 1,
+            "plate_id": item.plate_id,
             # Tri-state calibration → mode string (off/auto/on) so an 'auto'
             # override reaches start_print. NULL *_mode derives from the legacy
             # bool, so existing items emit 'on'/'off' — byte-identical downstream
@@ -2650,6 +2937,7 @@ class PrintScheduler:
             "calibration_session_id": item.calibration_session_id,
         }
 
+        dispatch_source_id: int | None
         if archive:
             dispatch_kind: Literal["reprint_archive", "print_library_file"] = "reprint_archive"
             dispatch_source_id = archive.id
@@ -2658,6 +2946,20 @@ class PrintScheduler:
             dispatch_kind = "print_library_file"
             dispatch_source_id = library_file.id
             dispatch_source_name = library_file.filename
+        elif descriptor is not None and snapshot_name is not None:
+            # No original row left — the snapshot carries everything the runner
+            # needs, so ``source_id`` is None and the runner looks nothing up.
+            # The provenance decides which runner only so that the archive row,
+            # the log lines and the panel keep saying "reprint" for a reprint;
+            # the bytes are the same either way (§4: provenance is navigation).
+            # ⚠️ A payload whose provenance is unreadable never gets here: it has
+            # no usable name either, and ``source_display_filename`` above already
+            # refused it — so this mapping is never applied to a guessed ``{}``.
+            dispatch_kind = (
+                "reprint_archive" if descriptor.provenance.get("kind") == "archive" else "print_library_file"
+            )
+            dispatch_source_id = None
+            dispatch_source_name = snapshot_name
         else:
             # Should have been caught above, but belt-and-braces.
             await self._fail_item(db, item, "No source file specified")
@@ -2674,8 +2976,7 @@ class PrintScheduler:
         # they wait until a slot frees before doing any FTP work.
         stagger_enabled, _stagger_concurrent, stagger_interval, _stagger_wait_bed = await self._get_stagger_settings(db)
         if stagger_enabled:
-            per_printer_iv = (printer.stagger_interval_minutes * 60) if printer.stagger_interval_minutes else 0
-            self._register_stagger_start(item.queue_id, per_printer_iv or stagger_interval)
+            self._pre_register_stagger_slot(printer, stagger_interval)
 
         # Spawn the dispatch + post-dispatch bookkeeping in its own task so
         # multiple queue items targeting different printers run in parallel
@@ -2694,6 +2995,7 @@ class PrintScheduler:
                 options=options,
                 requested_by_user_id=item.created_by_id,
                 project_id=item.project_id,
+                project_line_id=item.project_line_id,
                 job_name_short=job_name_short,
                 swap_events=swap_events,
             ),
@@ -2708,11 +3010,12 @@ class PrintScheduler:
         printer_name: str,
         printer_serial: str | None,
         dispatch_kind: Literal["reprint_archive", "print_library_file"],
-        dispatch_source_id: int,
+        dispatch_source_id: int | None,
         dispatch_source_name: str,
         options: dict[str, Any],
         requested_by_user_id: int | None,
         project_id: int | None,
+        project_line_id: int | None,
         job_name_short: str,
         swap_events: list[str],
     ) -> None:
@@ -2751,6 +3054,7 @@ class PrintScheduler:
                     requested_by_user_id=requested_by_user_id,
                     requested_by_username=requested_by_username,
                     project_id=project_id,
+                    project_line_id=project_line_id,
                     queue_item_id=queue_item_id,
                 )
             except Exception as e:  # pragma: no cover — belt-and-braces
@@ -2763,6 +3067,24 @@ class PrintScheduler:
                         return
                     await self._fail_item(db, item, f"Dispatch error: {e}")
                     await self._power_off_if_needed(db, item)
+                return
+
+            if outcome.get("deferred"):
+                from backend.app.services.filament_deferred import defer_claim
+
+                restored = await defer_claim(
+                    db,
+                    item_id=queue_item_id,
+                    started_at=outcome.get("claim_started_at"),
+                    reason=outcome["reason"]["code"],
+                    revision=outcome.get("revision"),
+                    source_archive_id=outcome.get("source_archive_id"),
+                    source_library_file_id=outcome.get("source_library_file_id"),
+                    restore_source=True,
+                )
+                await db.commit()
+                if restored:
+                    await self.release_prepared_dispatch(printer_id)
                 return
 
             if not outcome.get("success"):

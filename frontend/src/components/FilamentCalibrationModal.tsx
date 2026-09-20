@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X } from 'lucide-react';
 
 import { useToast } from '../contexts/ToastContext';
 import { useFilamentCalibration } from '../hooks/useFilamentCalibration';
@@ -15,6 +14,7 @@ import { CalibrationAutoSavePage } from './calibration/CalibrationAutoSavePage';
 import { CalibrationTowerFinishPage } from './calibration/CalibrationTowerFinishPage';
 import { CalibrationFinishPage } from './calibration/CalibrationFinishPage';
 import { ResumeBanner } from './calibration/ResumeBanner';
+import { Modal } from './Modal';
 
 interface Props {
   isOpen: boolean;
@@ -48,159 +48,146 @@ export function FilamentCalibrationModal({ isOpen, onClose, printerId }: Props) 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center p-4 border-b border-bambu-dark-tertiary">
-          <h2 className="text-lg font-semibold text-white">{t('filamentCali.title')}</h2>
-          <button
-            onClick={handleClose}
-            aria-label="Close"
-            className="p-1 text-bambu-gray hover:text-white rounded transition-colors"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
+    <Modal onClose={handleClose} title={t('filamentCali.title')} size="3xl">
+      <div className="p-4 space-y-4">
+        {cali.awaitingSession && cali.step === 'start' && (
+          <ResumeBanner
+            session={cali.awaitingSession}
+            onResume={() => {
+              cali.setSessionId(cali.awaitingSession!.id);
+              cali.setStep('running');
+            }}
+            onDiscard={async () => {
+              cali.setSessionId(cali.awaitingSession!.id);
+              await cali.cancelSession();
+            }}
+          />
+        )}
 
-        <div className="p-4 space-y-4">
-          {cali.awaitingSession && cali.step === 'start' && (
-            <ResumeBanner
-              session={cali.awaitingSession}
-              onResume={() => {
-                cali.setSessionId(cali.awaitingSession!.id);
-                cali.setStep('running');
-              }}
-              onDiscard={async () => {
-                cali.setSessionId(cali.awaitingSession!.id);
-                await cali.cancelSession();
-              }}
-            />
-          )}
+        {cali.step === 'start' && (
+          <CalibrationStartPage
+            capabilities={cali.capabilities}
+            onPick={(mode, method) => {
+              cali.setInput({ cali_mode: mode, method });
+              // VERIFICATION-state modes (W2 sign-off pipeline) skip the
+              // AMS slot / temps preset step — nothing dispatches, the
+              // operator only picks a bundle + presets and downloads
+              // the sliced 3MF to compare against BS reference output.
+              const state = cali.capabilities?.mode_state?.[mode] ?? 'disabled';
+              cali.setStep(state === 'verification' ? 'verifyDownload' : 'preset');
+            }}
+          />
+        )}
 
-          {cali.step === 'start' && (
-            <CalibrationStartPage
-              capabilities={cali.capabilities}
-              onPick={(mode, method) => {
-                cali.setInput({ cali_mode: mode, method });
-                // VERIFICATION-state modes (W2 sign-off pipeline) skip the
-                // AMS slot / temps preset step — nothing dispatches, the
-                // operator only picks a bundle + presets and downloads
-                // the sliced 3MF to compare against BS reference output.
-                const state = cali.capabilities?.mode_state?.[mode] ?? 'disabled';
-                cali.setStep(state === 'verification' ? 'verifyDownload' : 'preset');
-              }}
-            />
-          )}
+        {cali.step === 'verifyDownload' && cali.input.cali_mode && (
+          <CalibrationVerifyDownloadPage
+            printerId={printerId}
+            caliMode={cali.input.cali_mode}
+            onBack={() => cali.setStep('start')}
+            onDone={() => {
+              cali.setSessionId(null);
+              cali.setStep('start');
+            }}
+          />
+        )}
 
-          {cali.step === 'verifyDownload' && cali.input.cali_mode && (
-            <CalibrationVerifyDownloadPage
-              printerId={printerId}
-              caliMode={cali.input.cali_mode}
-              onBack={() => cali.setStep('start')}
-              onDone={() => {
-                cali.setSessionId(null);
-                cali.setStep('start');
-              }}
-            />
-          )}
+        {cali.step === 'preset' && cali.input.cali_mode && (
+          <CalibrationPresetPage
+            printerId={printerId}
+            caliMode={cali.input.cali_mode}
+            method={cali.input.method ?? 'manual'}
+            capabilities={cali.capabilities}
+            onBack={() => cali.setStep('start')}
+            onStart={async (preset) => {
+              cali.setInput({
+                nozzle_diameter: preset.nozzle_diameter,
+                nozzle_volume_type: preset.nozzle_volume_type,
+                extruder_id: preset.extruder_id,
+                filaments: preset.filaments,
+                // Kept so the tower finish-page calculator has the
+                // operator's start/step — CalibrationSessionOut omits it.
+                spec: preset.spec,
+              });
+              await cali.startSession({
+                cali_mode: cali.input.cali_mode!,
+                method: cali.input.method ?? 'manual',
+                nozzle_diameter: preset.nozzle_diameter,
+                nozzle_volume_type: preset.nozzle_volume_type,
+                extruder_id: preset.extruder_id,
+                filaments: preset.filaments,
+                spec: preset.spec,
+                printer_preset: preset.printer_preset,
+                process_preset: preset.process_preset,
+                filament_presets: preset.filament_presets,
+                slicer: preset.slicer,
+                bed_type: preset.bed_type,
+                print_options: preset.print_options,
+                swap_macros: preset.swap_macros,
+              });
+            }}
+          />
+        )}
 
-          {cali.step === 'preset' && cali.input.cali_mode && (
-            <CalibrationPresetPage
-              printerId={printerId}
-              caliMode={cali.input.cali_mode}
-              method={cali.input.method ?? 'manual'}
-              capabilities={cali.capabilities}
-              onBack={() => cali.setStep('start')}
-              onStart={async (preset) => {
-                cali.setInput({
-                  nozzle_diameter: preset.nozzle_diameter,
-                  nozzle_volume_type: preset.nozzle_volume_type,
-                  extruder_id: preset.extruder_id,
-                  filaments: preset.filaments,
-                  // Kept so the tower finish-page calculator has the
-                  // operator's start/step — CalibrationSessionOut omits it.
-                  spec: preset.spec,
-                });
-                await cali.startSession({
-                  cali_mode: cali.input.cali_mode!,
-                  method: cali.input.method ?? 'manual',
-                  nozzle_diameter: preset.nozzle_diameter,
-                  nozzle_volume_type: preset.nozzle_volume_type,
-                  extruder_id: preset.extruder_id,
-                  filaments: preset.filaments,
-                  spec: preset.spec,
-                  printer_preset: preset.printer_preset,
-                  process_preset: preset.process_preset,
-                  filament_presets: preset.filament_presets,
-                  slicer: preset.slicer,
-                  bed_type: preset.bed_type,
-                  print_options: preset.print_options,
-                  swap_macros: preset.swap_macros,
-                });
-              }}
-            />
-          )}
+        {cali.step === 'running' && cali.session && (
+          <CalibrationRunningPage session={cali.session} onCancel={() => cali.cancelSession()} />
+        )}
 
-          {cali.step === 'running' && cali.session && (
-            <CalibrationRunningPage session={cali.session} onCancel={() => cali.cancelSession()} />
-          )}
+        {cali.step === 'manualSave' && cali.session && (
+          <CalibrationManualSavePage
+            session={cali.session}
+            onSave={(body) => cali.submitManualResult(body)}
+            onBack={() => cali.setStep('running')}
+            isSubmitting={cali.isSubmitting}
+          />
+        )}
 
-          {cali.step === 'manualSave' && cali.session && (
-            <CalibrationManualSavePage
-              session={cali.session}
-              onSave={(body) => cali.submitManualResult(body)}
-              onBack={() => cali.setStep('running')}
-              isSubmitting={cali.isSubmitting}
-            />
-          )}
+        {cali.step === 'coarseSave' && cali.session && (
+          <CalibrationCoarseSavePage
+            session={cali.session}
+            onSubmit={(body) => cali.submitManualResult(body)}
+            isSubmitting={cali.isSubmitting}
+          />
+        )}
 
-          {cali.step === 'coarseSave' && cali.session && (
-            <CalibrationCoarseSavePage
-              session={cali.session}
-              onSubmit={(body) => cali.submitManualResult(body)}
-              isSubmitting={cali.isSubmitting}
-            />
-          )}
+        {cali.step === 'fineSave' && cali.session && (
+          <CalibrationFineSavePage
+            session={cali.session}
+            onSubmit={(body) => cali.submitManualResult(body)}
+            isSubmitting={cali.isSubmitting}
+          />
+        )}
 
-          {cali.step === 'fineSave' && cali.session && (
-            <CalibrationFineSavePage
-              session={cali.session}
-              onSubmit={(body) => cali.submitManualResult(body)}
-              isSubmitting={cali.isSubmitting}
-            />
-          )}
+        {cali.step === 'autoSave' && cali.session && (
+          <CalibrationAutoSavePage
+            session={cali.session}
+            onSubmit={(body) => cali.submitAutoResult(body)}
+            isSubmitting={cali.isSubmitting}
+          />
+        )}
 
-          {cali.step === 'autoSave' && cali.session && (
-            <CalibrationAutoSavePage
-              session={cali.session}
-              onSubmit={(body) => cali.submitAutoResult(body)}
-              isSubmitting={cali.isSubmitting}
-            />
-          )}
+        {cali.step === 'towerFinish' && cali.session && (
+          <CalibrationTowerFinishPage
+            session={cali.session}
+            spec={cali.input.spec}
+            onClose={handleClose}
+            onCalibrateAnother={() => {
+              cali.setSessionId(null);
+              cali.setStep('start');
+            }}
+          />
+        )}
 
-          {cali.step === 'towerFinish' && cali.session && (
-            <CalibrationTowerFinishPage
-              session={cali.session}
-              spec={cali.input.spec}
-              onClose={handleClose}
-              onCalibrateAnother={() => {
-                cali.setSessionId(null);
-                cali.setStep('start');
-              }}
-            />
-          )}
-
-          {cali.step === 'finish' && (
-            <CalibrationFinishPage
-              savedRows={cali.savedRows}
-              onCalibrateAnother={() => {
-                cali.setSessionId(null);
-                cali.setStep('start');
-              }}
-              onClose={handleClose}
-            />
-          )}
-        </div>
+        {cali.step === 'finish' && (
+          <CalibrationFinishPage
+            savedRows={cali.savedRows}
+            onCalibrateAnother={() => {
+              cali.setSessionId(null);
+              cali.setStep('start');
+            }}
+            onClose={handleClose}
+          />
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }

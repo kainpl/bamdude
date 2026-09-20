@@ -876,3 +876,67 @@ async def test_link_tag_preserves_existing_slicer_filament(db_session):
 
     assert spool.slicer_filament == "CUSTOM01"
     assert spool.slicer_filament_name == "My Custom PLA"
+
+
+# -- the family link is written at birth, not left for the startup backfill --
+#
+# A spool born from a tag between two restarts had no filament_family_id, so
+# the spool form derived one itself from the slicer code — and for the
+# support families (GFS00 Support W, GFS04 PVA …) derived it wrong, which the
+# server then refused. Nothing on such a spool could be saved (2026-09-04).
+
+
+@pytest.mark.asyncio
+async def test_create_spool_from_tray_links_the_family(db_session):
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)  # GFL99
+    await db_session.commit()
+
+    assert spool.filament_family_id == "GFL99"
+    assert spool.slicer_filament == "GFL99"
+
+
+@pytest.mark.asyncio
+async def test_create_spool_from_tray_support_family_keeps_its_s(db_session):
+    tray = {**SAMPLE_TRAY, "tray_info_idx": "GFS00", "tray_sub_brands": "Support W"}
+    spool = await create_spool_from_tray(db_session, tray)
+    await db_session.commit()
+
+    assert spool.filament_family_id == "GFS00"
+    assert spool.slicer_filament_name == "Bambu Support W"
+
+
+@pytest.mark.asyncio
+async def test_create_spool_from_tray_unknown_tray_id_leaves_the_link_null(db_session):
+    tray = {**SAMPLE_TRAY, "tray_info_idx": "GFZZ99"}
+    spool = await create_spool_from_tray(db_session, tray)
+    await db_session.commit()
+
+    assert spool.filament_family_id is None  # honest NULL, never garbage
+    assert spool.slicer_filament == "GFZZ99"
+
+
+@pytest.mark.asyncio
+async def test_link_tag_fills_the_family_on_an_untagged_spool(db_session):
+    spool = Spool(material="PLA", brand="Bambu Lab", label_weight=1000, core_weight=250)
+    db_session.add(spool)
+    await db_session.flush()
+
+    await link_tag_to_inventory_spool(db_session, spool, SAMPLE_TRAY)
+    await db_session.commit()
+
+    assert spool.slicer_filament == "GFL99"
+    assert spool.filament_family_id == "GFL99"
+
+
+@pytest.mark.asyncio
+async def test_link_tag_derives_the_family_from_the_spools_own_code(db_session):
+    """The user's own slicer choice outranks the tag for the link too."""
+    spool = Spool(material="PETG", brand="Generic", slicer_filament="GFSG99_00", label_weight=1000, core_weight=250)
+    db_session.add(spool)
+    await db_session.flush()
+
+    await link_tag_to_inventory_spool(db_session, spool, SAMPLE_TRAY)
+    await db_session.commit()
+
+    assert spool.slicer_filament == "GFSG99_00"
+    assert spool.filament_family_id == "GFG99"

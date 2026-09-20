@@ -111,6 +111,29 @@ def test_name_matches_subtask_rejects_mismatch_and_empty():
     assert _name_matches_subtask(a, "   ") is False
 
 
+def test_a_file_named_only_by_its_extension_still_matches_itself():
+    """Regression, from the farm on 2026-09-06.
+
+    A library file was called just ``.gcode.3mf``. The dispatcher uploads the
+    stem plus ``.3mf`` — here ``/.3mf`` — and the X2D echoed ``subtask: .3mf``.
+    Both sides normalise to the empty string, and the matcher read that empty
+    string as "printer between jobs" and refused. The completion then left the
+    queue row in ``printing`` for good (only the claim was released), and one
+    reconnect during the seven-hour print would have closed it as completed.
+
+    Emptiness is decided on what the printer actually SAID, not on what is left
+    after the extensions are stripped: a printer between jobs echoes nothing.
+    """
+    a = _archive_stub(print_name="", filename=".gcode.3mf")
+    assert _name_matches_subtask(a, ".3mf") is True
+    assert _name_matches_subtask(a, ".gcode.3mf") is True
+    # The raw-empty guard is untouched — an idle printer still matches nothing.
+    assert _name_matches_subtask(a, "") is False
+    # And an archive that recorded no name at all is not "the same empty name".
+    nameless = _archive_stub(print_name="", filename="")
+    assert _name_matches_subtask(nameless, ".3mf") is False
+
+
 def test_subtask_norm_folds_spaces_onto_underscores():
     """The printer echoes ``subtask_name`` as the sanitised file stem, spaces
     turned into underscores; the archive keeps the name as uploaded."""

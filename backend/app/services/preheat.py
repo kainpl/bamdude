@@ -44,7 +44,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from backend.app.services import chamber_history
@@ -261,6 +261,7 @@ async def preheat_and_soak(
     *,
     options: dict[str, Any] | None = None,
     cancel_check: Callable[[], None] | None = None,
+    on_heating: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Run the preheat + heat-soak stage on the idle printer (see module docstring).
 
@@ -351,6 +352,13 @@ async def preheat_and_soak(
         logger.warning("Preheat bed M140 failed on printer %s: %s", printer.id, exc)
         return
 
+    if on_heating:
+        try:
+            await on_heating()
+        except Exception:
+            # An observer must never abort dispatch after heaters are enabled.
+            logger.debug("Could not publish preheat phase", exc_info=True)
+
     # Airduct flap: flip to heating before the setpoint when the preheat wants chamber heat,
     # back to cooling otherwise (a PLA-only print on an H2D that previously ran ABS
     # would else stay sealed in heating mode). Idempotent via the current-state read.
@@ -382,8 +390,10 @@ async def preheat_and_soak(
     # above; the wait/soak loop only polls printer_manager state and sleeps — it
     # never touches the DB. Without this the caller's transaction sat "idle in
     # transaction" for the whole soak, pinning one pooled connection per
-    # preheating printer. expire_on_commit=False keeps printer/archive readable;
-    # there are no pending writes to lose here.
+    # preheating printer. ``printer`` and ``archive`` below are deliberately a
+    # dispatch-start snapshot; callers must re-read any state that controls a
+    # later decision (the dispatch runner's final routing-claim check does).
+    # There are no pending writes to lose here.
     await db.commit()
 
     # Wait for convergence. Bed warm-up is fast; chamber via set_ctt a few minutes;

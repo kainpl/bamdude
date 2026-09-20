@@ -2,22 +2,55 @@ import { api } from '../api/client';
 import type { PrinterQueue, PrinterStatus, PrintQueueItem } from '../api/client';
 import type { SequencedFile } from '../components/QueueSequencer';
 
-/** One thing a copy run can queue elsewhere, with what the dialog shows about it. */
+/** One row of the copy dialog: what it is, and what a copy of it would queue. */
 export interface CopyableItem {
-  file: SequencedFile;
+  /**
+   * The file a copy would queue — `null` when this row has no original left to
+   * re-read, in which case the row is LISTED but cannot be copied.
+   *
+   * ⚠️ A copy is an ordinary add, so it needs a library file or an archive to
+   * read again: m173 saved this job's own bytes, but nothing can queue a
+   * snapshot onto another printer yet. Not being copyable is a fact about the
+   * row, not a reason to hide it.
+   */
+  file: SequencedFile | null;
+  /** Why a visible row cannot be selected. */
+  unavailableReason?: 'originalGone' | 'sourceUnavailable';
+  /** Stable list key — the queue row, or the live print's archive. */
+  key: string;
+  /** What to call the row, copyable or not. */
+  name: string;
+  /** The plate the row was queued with. */
+  plateId: number | null;
   /** This is the print running right now — worth saying, and it sorts first. */
   printing: boolean;
+  /** The order the copy will be filed under, shown in the row so the operator
+   *  sees it BEFORE anything queues — the dialog will not ask again. Null for
+   *  a row filed under no order, and for the live print, which has no row. */
+  orderName?: string | null;
   printTimeSeconds: number | null;
   filamentGrams: number | null;
+  /** A picture built from an ORIGINAL row's id, when there is one. */
   thumbnailUrl: string | null;
+  /**
+   * The queue row whose OWN snapshot renders this plate, or `null`.
+   *
+   * Preferred over `thumbnailUrl` — the job prints the bytes it accepted, and
+   * the original may have been re-sliced since (A03) — and the only picture a
+   * job whose originals are gone has at all.
+   */
+  pictureItemId: number | null;
 }
 
 /**
- * The queue items that can actually be queued somewhere else.
+ * Every row of this queue, and for each one whether it can be queued elsewhere.
  *
- * ⚠️ An item with neither backing row cannot be copied — there is nothing to
- * queue elsewhere. It is filtered rather than shown greyed out, and the dialog
- * says how many it dropped.
+ * A ready snapshot is the primary source, even when its old archive or library
+ * row still exists.  That preserves the exact bytes the source queue accepted
+ * and avoids an SMB/library read for every target.  Legacy rows retain the
+ * previous original-file route; broken snapshots stay visible but cannot be
+ * selected, because falling back after a snapshot was captured could print a
+ * different revision.
  *
  * ⚠️ **The plate travels with the item.** Copying onto another printer of the
  * same model means literally the same file, so the plate it was queued with
@@ -26,33 +59,69 @@ export interface CopyableItem {
  * right; a bulk selection of arbitrary files must never do it.
  */
 export function copyableItems(items: readonly PrintQueueItem[]): CopyableItem[] {
-  return items
-    .filter((item) => item.library_file_id != null || item.archive_id != null)
-    .map((item) => {
-      // The library file wins when both are set: it is the row that outlives
-      // this print, and re-queueing from it is what the operator did the first
-      // time.
-      const fromLibrary = item.library_file_id != null;
-      const id = (item.library_file_id ?? item.archive_id) as number;
-      return {
-        file: {
-          id,
-          source: fromLibrary ? ('library' as const) : ('archive' as const),
-          name: item.library_file_name || item.archive_name || `#${item.id}`,
-          plateId: item.plate_id,
-        },
-        printing: item.status === 'printing',
-        printTimeSeconds: item.print_time_seconds ?? null,
-        filamentGrams: item.filament_used_grams ?? null,
-        thumbnailUrl: fromLibrary
-          ? item.library_file_thumbnail
-            ? api.getLibraryFileThumbnailUrl(id)
-            : null
-          : item.archive_thumbnail
-            ? api.getArchiveThumbnail(id)
-            : null,
-      };
-    });
+  return items.map((item) => {
+    // The library file wins when both are set: it is the row that outlives
+    // this print, and re-queueing from it is what the operator did the first
+    // time.
+    const fromLibrary = item.library_file_id != null;
+    const id = item.library_file_id ?? item.archive_id ?? null;
+    const name = item.library_file_name || item.archive_name || `#${item.id}`;
+    const snapshotReady = item.source_storage === 'ready';
+    const snapshotBroken = item.source_storage === 'broken';
+    return {
+      file:
+        snapshotReady
+          ? {
+              // `id` is the queue row id for this source kind, never a library
+              // id. It is passed as source_queue_item_id by PrintModal.
+              id: item.id,
+              source: 'queue_snapshot' as const,
+              name,
+              plateId: item.plate_id,
+              routing: item.filament_routing ?? undefined,
+              itemId: item.id,
+              batchId: item.batch_id,
+              orderFiling: { projectId: item.project_id ?? null, projectLineId: item.project_line_id ?? null },
+            }
+          : id === null || snapshotBroken
+            ? null
+          : {
+              id,
+              source: fromLibrary ? ('library' as const) : ('archive' as const),
+              name,
+              plateId: item.plate_id,
+              routing: item.filament_routing ?? undefined,
+              // What makes two copies of one file and plate two copies, and what
+              // tells the run the plate is already decided.
+              itemId: item.id,
+              batchId: item.batch_id,
+              // The order the source row was filed under — "none" included. Always
+              // set for a queue row: the question WAS answered when it was queued.
+              orderFiling: { projectId: item.project_id ?? null, projectLineId: item.project_line_id ?? null },
+            },
+      key: `item-${item.id}`,
+      unavailableReason: snapshotBroken ? 'sourceUnavailable' : id === null ? 'originalGone' : undefined,
+      name,
+      plateId: item.plate_id ?? null,
+      orderName: item.project_name,
+      printing: item.status === 'printing',
+      printTimeSeconds: item.print_time_seconds ?? null,
+      filamentGrams: item.filament_used_grams ?? null,
+      // The job's own render is asked for by item id; the original's thumbnail is
+      // the fallback, and for a row with no ids it is all there ever was.
+      pictureItemId: item.source_thumbnail ? item.id : null,
+      thumbnailUrl:
+        id === null
+          ? null
+          : fromLibrary
+            ? item.library_file_thumbnail
+              ? api.getLibraryFileThumbnailUrl(id)
+              : null
+            : item.archive_thumbnail
+              ? api.getArchiveThumbnail(id)
+              : null,
+    };
+  });
 }
 
 /**
@@ -82,10 +151,17 @@ export function copyableCurrentPrint(status: PrinterStatus | undefined | null): 
       name,
       plateId: status.current_plate_id,
     },
+    key: `live-archive-${status.current_archive_id}`,
+    name,
+    plateId: status.current_plate_id ?? null,
     printing: true,
     printTimeSeconds: null,
     filamentGrams: null,
     thumbnailUrl: api.getArchiveThumbnail(status.current_archive_id),
+    // The live print is read from the printer, not from a queue row — there is
+    // no row whose snapshot could be asked for, and the archive it names has a
+    // thumbnail of its own.
+    pictureItemId: null,
   };
 }
 
@@ -103,10 +179,12 @@ export function withCurrentPrint(
 ): CopyableItem[] {
   const live = copyableCurrentPrint(status);
   if (!live) return fromQueue;
+  // ⚠️ `entry.file?`, not `entry.file` — a row whose originals are gone has no
+  // file at all now, and it is not the live print either way.
   const alreadyThere = fromQueue.some(
     (entry) =>
       entry.printing ||
-      (entry.file.source === 'archive' && entry.file.id === live.file.id),
+      (entry.file?.source === 'archive' && entry.file.id === live.file?.id),
   );
   return alreadyThere ? fromQueue : [live, ...fromQueue];
 }

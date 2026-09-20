@@ -44,7 +44,7 @@ interface CardSelectProps {
 }
 
 const CARD =
-  'w-full text-left p-2.5 rounded-lg border bg-bambu-dark flex items-center gap-2 disabled:opacity-50';
+  'w-full text-left py-2.5 pl-2.5 pr-2 rounded-lg border bg-bambu-dark flex items-center gap-2 disabled:opacity-50';
 
 /** Tallest the panel gets, the gap it keeps from the trigger, the margin it
  *  keeps from the bottom of the window, and the height below which shrinking it
@@ -120,7 +120,11 @@ export function CardSelect({ label, options, value, onChange, disabled }: CardSe
       setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
+      // Escape stops at this dropdown — the modal stack must not also close the dialog behind it.
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        setOpen(false);
+      }
     };
     // Capture: a scroll inside the dialog does not bubble to the window, and
     // that is exactly the scroll that moves the trigger out from under us.

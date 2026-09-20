@@ -6,11 +6,12 @@ import { api, withStreamToken } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { ConfirmModal } from './ConfirmModal';
+import { Modal } from './Modal';
 import { PlateMarkers } from './PlateObjectMarkers';
 import {
   COLUMN_PX,
   DIALOG_FRAME,
-  DIALOG_WIDTH_PX,
+  DIALOG_FRAME_STYLE,
   LIGHTBOX_SCALE,
   LIST_COLUMN,
   LIST_COLUMN_PX,
@@ -79,40 +80,15 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
 
   return (
     <>
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      onClick={onClose}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') {
-          if (enlarged) setEnlarged(false);
-          else onClose();
-        }
-      }}
-      tabIndex={-1}
-      ref={(el) => el?.focus()}
-    >
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/50 z-0" />
-      {/* Modal */}
-      <div
-        style={{ width: DIALOG_WIDTH_PX }}
-        className={`relative z-10 bg-white dark:bg-bambu-dark border border-gray-200 dark:border-bambu-dark-tertiary rounded-xl shadow-2xl ${DIALOG_FRAME} flex flex-col overflow-hidden`}
-        onClick={(e) => e.stopPropagation()}
+      <Modal
+        onClose={onClose}
+        title={t('printers.skipObjects.title')}
+        icon={<SkipObjectsIcon className="w-4 h-4 text-bambu-green" />}
+        size="4xl"
+        panelClassName={`${DIALOG_FRAME} overflow-hidden`}
+        panelStyle={DIALOG_FRAME_STYLE}
+        bodyClassName="flex flex-col"
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-bambu-dark-tertiary bg-gray-50 dark:bg-bambu-dark">
-          <div className="flex items-center gap-2">
-            <SkipObjectsIcon className="w-4 h-4 text-bambu-green" />
-            <span className="text-sm font-medium text-gray-900 dark:text-white">{t('printers.skipObjects.title')}</span>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1 text-gray-500 dark:text-bambu-gray hover:text-gray-900 dark:hover:text-white rounded transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
         {!objectsData ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="w-5 h-5 animate-spin text-bambu-gray" />
@@ -270,73 +246,65 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
             </div>
           </div>
         )}
-      </div>
-    </div>
-    {pendingSkip && (
-      <ConfirmModal
-        variant="warning"
-        title={t('printers.skipObjects.confirmTitle')}
-        message={t('printers.skipObjects.confirmMessage', { name: pendingSkip.name })}
-        confirmText={t('printers.skipObjects.skip')}
-        isLoading={skipObjectsMutation.isPending}
-        // The lightbox sits at z-60, above ConfirmModal's default z-50 — a
-        // confirm raised from a marker there would render *behind* it and be
-        // unreachable. Lift it over the lightbox while that view is open.
-        overlayZIndex={enlarged ? 'z-[70]' : undefined}
-        onConfirm={() => skipObjectsMutation.mutate([pendingSkip.id])}
-        onCancel={() => setPendingSkip(null)}
-      />
-    )}
-    {/* Enlarged lightbox overlay */}
-    {enlarged && objectsData && (
-      <div
-        className="fixed inset-0 bg-black/90 flex items-center justify-center z-60"
-        onClick={() => setEnlarged(false)}
-      >
-        <button
-          onClick={() => setEnlarged(false)}
-          className="absolute top-4 right-4 p-2 text-white/70 hover:text-white transition-colors"
-        >
-          <X className="w-6 h-6" />
-        </button>
-        {/* Square is load-bearing, not cosmetic: PlateMarkers positions every
-            marker as a percentage of THIS box while the image inside is
-            object-contain. Let the box go rectangular and the image letterboxes
-            inside it while the markers keep using the full box — they drift off
-            the plate. Hence `aspect-square` with only a max-WIDTH cap in vmin
-            (the smaller viewport axis), so a clamp shrinks the width and the
-            aspect ratio pulls the height down with it. A max-height cap would
-            squash one axis independently and break exactly that. */}
-        <div
-          style={{ width: PLATE_IMAGE_PX * LIGHTBOX_SCALE }}
-          className="relative aspect-square max-w-[90vmin]"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {status?.cover_url ? (
-            <img
-              src={withStreamToken(`${status.cover_url}?view=top`)}
-              alt={t('printers.printPreview')}
-              className="w-full h-full object-contain rounded-lg bg-gray-900"
+      </Modal>
+      {pendingSkip && (
+        <ConfirmModal
+          variant="warning"
+          title={t('printers.skipObjects.confirmTitle')}
+          message={t('printers.skipObjects.confirmMessage', { name: pendingSkip.name })}
+          confirmText={t('printers.skipObjects.skip')}
+          isLoading={skipObjectsMutation.isPending}
+          onConfirm={() => skipObjectsMutation.mutate([pendingSkip.id])}
+          onCancel={() => setPendingSkip(null)}
+        />
+      )}
+      {/* Enlarged lightbox */}
+      {enlarged && objectsData && (
+        <Modal variant="lightbox" onClose={() => setEnlarged(false)} ariaLabel={t('printers.skipObjects.title')}>
+          <button
+            onClick={() => setEnlarged(false)}
+            className="absolute top-4 right-4 p-2 text-white/70 hover:text-white transition-colors"
+          >
+            <X className="w-6 h-6" />
+          </button>
+          {/* Square is load-bearing, not cosmetic: PlateMarkers positions every
+              marker as a percentage of THIS box while the image inside is
+              object-contain. Let the box go rectangular and the image letterboxes
+              inside it while the markers keep using the full box — they drift off
+              the plate. Hence `aspect-square` with only a max-WIDTH cap in vmin
+              (the smaller viewport axis), so a clamp shrinks the width and the
+              aspect ratio pulls the height down with it. A max-height cap would
+              squash one axis independently and break exactly that. */}
+          <div
+            style={{ width: PLATE_IMAGE_PX * LIGHTBOX_SCALE }}
+            className="relative aspect-square max-w-[90vmin]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {status?.cover_url ? (
+              <img
+                src={withStreamToken(`${status.cover_url}?view=top`)}
+                alt={t('printers.printPreview')}
+                className="w-full h-full object-contain rounded-lg bg-gray-900"
+              />
+            ) : (
+              <div className="w-full h-full rounded-lg bg-gray-800 flex items-center justify-center">
+                <Box className="w-16 h-16 text-gray-500" />
+              </div>
+            )}
+            {/* Same interactive markers as the inline preview — see PlateMarkers. */}
+            <PlateMarkers
+              objects={objectsData.objects}
+              canSkip={canSkipObject}
+              onSkip={setPendingSkip}
+              t={t}
             />
-          ) : (
-            <div className="w-full h-full rounded-lg bg-gray-800 flex items-center justify-center">
-              <Box className="w-16 h-16 text-gray-500" />
+            {/* Active count badge */}
+            <div className="absolute bottom-2 right-2 px-2 py-1 bg-white/90 dark:bg-black/80 rounded text-[10px] text-gray-700 dark:text-white shadow-sm">
+              {t('printers.skipObjects.activeCount', { count: objectsData.objects.filter(o => !o.skipped).length })}
             </div>
-          )}
-          {/* Same interactive markers as the inline preview — see PlateMarkers. */}
-          <PlateMarkers
-            objects={objectsData.objects}
-            canSkip={canSkipObject}
-            onSkip={setPendingSkip}
-            t={t}
-          />
-          {/* Active count badge */}
-          <div className="absolute bottom-2 right-2 px-2 py-1 bg-white/90 dark:bg-black/80 rounded text-[10px] text-gray-700 dark:text-white shadow-sm">
-            {t('printers.skipObjects.activeCount', { count: objectsData.objects.filter(o => !o.skipped).length })}
           </div>
-        </div>
-      </div>
-    )}
-  </>
+        </Modal>
+      )}
+    </>
   );
 }

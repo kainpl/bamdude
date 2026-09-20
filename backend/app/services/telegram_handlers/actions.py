@@ -9,7 +9,13 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.printer_manager import printer_manager
-from backend.app.services.telegram_handlers.common import NS, ensure_fresh, get_printers_data, has_perm
+from backend.app.services.telegram_handlers.common import (
+    NS,
+    deny_out_of_scope,
+    ensure_fresh,
+    get_printers_data,
+    has_perm,
+)
 
 if TYPE_CHECKING:
     from backend.app.models.telegram_chat import TelegramChat
@@ -25,7 +31,7 @@ async def camera_controls(printer_id: int, tg_chat: TelegramChat | None, lang: s
     """
     from backend.app.services.telegram_handlers.print_controls import print_control_rows
 
-    printers = await get_printers_data()
+    printers = await get_printers_data(tg_chat)
     printer = next((p for p in printers if p["id"] == printer_id), None)
     if not printer:
         return None
@@ -56,6 +62,8 @@ async def cb_camera_snapshot(callback: CallbackQuery, tg_chat: TelegramChat | No
         return
 
     printer_id = int(callback.data.split(":")[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     await callback.answer(t(lang, NS, "camera.capturing"))
 
     from sqlalchemy import select
@@ -73,13 +81,19 @@ async def cb_camera_snapshot(callback: CallbackQuery, tg_chat: TelegramChat | No
 
     # Try capture
     try:
-        from backend.app.services.camera import capture_camera_frame_bytes
+        from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-        jpeg_bytes = await capture_camera_frame_bytes(
-            ip_address=printer.ip_address,
-            access_code=printer.access_code,
-            model=printer.model,
-        )
+        jpeg_bytes = (
+            await capture(
+                CameraCaptureRequest.builtin(
+                    ip_address=printer.ip_address,
+                    access_code=printer.access_code,
+                    model=printer.model,
+                    purpose="telegram",
+                    printer_id=printer.id,
+                )
+            )
+        ).frame
 
         if jpeg_bytes:
             from aiogram.types import BufferedInputFile
@@ -121,9 +135,11 @@ async def cb_speed_menu(
 
     if printer_id is None:
         printer_id = int(callback.data.split(":")[2])
+        if await deny_out_of_scope(callback, tg_chat, printer_id):
+            return
     await callback.answer()
 
-    printers = await get_printers_data()
+    printers = await get_printers_data(tg_chat)
     printer = next((p for p in printers if p["id"] == printer_id), None)
     current_speed = printer["speed_level"] if printer else 2
     name = escape_md(printer["name"]) if printer else f"#{printer_id}"
@@ -173,6 +189,8 @@ async def cb_speed_set(callback: CallbackQuery, tg_chat: TelegramChat | None = N
 
     parts = callback.data.split(":")
     printer_id = int(parts[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     mode = int(parts[3])
 
     await ensure_fresh(printer_id)
@@ -202,16 +220,24 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
         return
 
     printer_id = int(callback.data.split(":")[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
 
+    finished_id = None
     try:
         printer_manager.set_awaiting_plate_clear(printer_id, False)
         # \u26a0\ufe0f The same answer as the card's Clear plate, so the held row goes here
         # too. Without this, clearing from Telegram leaks a row that nothing
         # else will ever remove.
         from backend.app.core.database import async_session
-        from backend.app.services.plate_hold import answer_by_clearing
+        from backend.app.services.plate_hold import answer_by_clearing, waiting_archive
 
         async with async_session() as _db:
+            # Resolved BEFORE the answer — clearing deletes the row.
+            finished = await waiting_archive(_db, printer_id)
+            finished_id = (
+                finished.id if finished is not None and finished.status == "completed" and finished.quantity else None
+            )
             await answer_by_clearing(_db, printer_id)
         await callback.answer(f"\u2705 {t(lang, NS, 'printers.clear_plate_ok')}")
     except Exception:
@@ -222,6 +248,11 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
     from backend.app.services.telegram_handlers.printers import show_printer_detail
 
     await show_printer_detail(callback, printer_id, tg_chat)
+
+    if finished_id is not None:
+        from backend.app.services.telegram_handlers.defects import start_defects_prompt
+
+        await start_defects_prompt(callback.message, finished_id, tg_chat)
 
 
 @router.callback_query(F.data.startswith("action:repeat_print:"))
@@ -237,12 +268,21 @@ async def cb_repeat_print(callback: CallbackQuery, tg_chat: TelegramChat | None 
         return
 
     printer_id = int(callback.data.split(":")[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
 
     from backend.app.core.database import async_session
-    from backend.app.services.plate_hold import RepeatNotPossible, answer_by_repeating
+    from backend.app.services.plate_hold import RepeatNotPossible, answer_by_repeating, waiting_archive
 
+    finished_id = None
     try:
         async with async_session() as _db:
+            # Resolved BEFORE the answer — repeating re-arms the row, so what it
+            # is about is read here, while the question is still the old print.
+            finished = await waiting_archive(_db, printer_id)
+            finished_id = (
+                finished.id if finished is not None and finished.status == "completed" and finished.quantity else None
+            )
             row = await answer_by_repeating(_db, printer_id)
     except RepeatNotPossible as e:
         # Nothing to send again — said plainly rather than queued and failed.
@@ -267,6 +307,11 @@ async def cb_repeat_print(callback: CallbackQuery, tg_chat: TelegramChat | None 
     from backend.app.services.telegram_handlers.printers import show_printer_detail
 
     await show_printer_detail(callback, printer_id, tg_chat)
+
+    if finished_id is not None:
+        from backend.app.services.telegram_handlers.defects import start_defects_prompt
+
+        await start_defects_prompt(callback.message, finished_id, tg_chat)
 
 
 # === Stop, which asks first ===
@@ -293,6 +338,8 @@ async def cb_stop_ask(callback: CallbackQuery, tg_chat: TelegramChat | None = No
     from backend.app.services.telegram_handlers.print_controls import stop_confirm_rows
 
     printer_id = int(callback.data.split(":")[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     back = f"action:controls:{printer_id}" if callback.message.photo else f"printer:{printer_id}"
 
     await callback.answer()
@@ -311,6 +358,8 @@ async def cb_restore_controls(callback: CallbackQuery, tg_chat: TelegramChat | N
     """
     lang = await get_language()
     printer_id = int(callback.data.split(":")[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=await camera_controls(printer_id, tg_chat, lang))
 
@@ -330,6 +379,8 @@ async def cb_printer_action(callback: CallbackQuery, tg_chat: TelegramChat | Non
     parts = callback.data.split(":")
     action = parts[1]
     printer_id = int(parts[2])
+    if await deny_out_of_scope(callback, tg_chat, printer_id):
+        return
 
     await ensure_fresh(printer_id)
 

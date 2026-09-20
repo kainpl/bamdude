@@ -24,6 +24,8 @@ from backend.app.models.project import Project
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool import Spool
 from backend.app.models.user import User
+from backend.app.schemas.system import DbHealth
+from backend.app.services import db_health
 from backend.app.services.log_health import ScanResult, scan_logs
 from backend.app.services.log_reader import collect_sensitive_strings
 from backend.app.services.printer_manager import printer_manager
@@ -98,6 +100,20 @@ def _get_database_paths() -> list[Path]:
 
 def _get_database_items() -> list[dict]:
     items: list[dict] = []
+    embedded_pg_dir = _get_embedded_pg_dir()
+    if embedded_pg_dir is not None and embedded_pg_dir.exists():
+        # One entry for the whole cluster: a PostgreSQL data directory is
+        # thousands of files, and listing them would bury the page it is meant
+        # to explain.
+        size = get_directory_size(embedded_pg_dir)
+        items.append(
+            {
+                "name": embedded_pg_dir.name,
+                "path": str(embedded_pg_dir),
+                "bytes": size,
+                "formatted": format_bytes(size),
+            }
+        )
     for path in _get_database_paths():
         try:
             size = path.stat().st_size
@@ -115,6 +131,22 @@ def _get_database_items() -> list[dict]:
     return items
 
 
+def _get_embedded_pg_dir() -> Path | None:
+    """``DATA_DIR/postgres`` when BamDude runs the bundled server.
+
+    The cluster is the largest thing in DATA_DIR on such an install, and the
+    storage breakdown — the page whose whole job is «where did the space go» —
+    listed nothing for it, because the classifier only knew about SQLite files.
+
+    An external server's files live on another machine, so there is nothing of
+    ours to count and this returns None.
+    """
+    data_dir = getattr(settings, "embedded_pg_data_dir", None)
+    if not settings.embedded_postgres or data_dir is None:
+        return None
+    return Path(data_dir).parent
+
+
 def _get_app_dir() -> Path:
     return settings.static_dir.parent
 
@@ -122,6 +154,9 @@ def _get_app_dir() -> Path:
 def _get_data_dirs() -> list[Path]:
     return [
         settings.archive_dir,
+        settings.library_dir,
+        settings.projects_dir,
+        settings.products_dir,
         settings.log_dir,
         settings.plate_calibration_dir,
         settings.base_dir / "virtual_printer",
@@ -139,17 +174,18 @@ def _is_system_path(path: Path) -> bool:
 def _get_storage_rules() -> list[tuple[str, str, Callable]]:
     base_dir = settings.base_dir
     archive_dir = settings.archive_dir
-    library_dir = archive_dir / "library"
+    library_dir = settings.library_dir
     virtual_printer_dir = base_dir / "virtual_printer"
     upload_dir = virtual_printer_dir / "uploads"
 
     db_paths = set(_get_database_paths())
+    embedded_pg_dir = _get_embedded_pg_dir()
 
     return [
         (
             "database",
             "Database",
-            lambda path: path in db_paths,
+            lambda path: path in db_paths or (embedded_pg_dir is not None and _is_under(path, embedded_pg_dir)),
         ),
         (
             "library_thumbnails",
@@ -200,6 +236,11 @@ def _get_storage_rules() -> list[tuple[str, str, Callable]]:
             "virtual_printer_other",
             "Virtual Printer Other",
             lambda path: _is_under(path, virtual_printer_dir),
+        ),
+        (
+            "attachments",
+            "Attachments",
+            lambda path: _is_under(path, settings.projects_dir) or _is_under(path, settings.products_dir),
         ),
         (
             "downloads",
@@ -464,10 +505,17 @@ async def get_system_info(
     archive_dir = settings.archive_dir
     archive_size = get_directory_size(archive_dir) if archive_dir.exists() else 0
 
-    # Database file size — ``bamdude.db``; the pre-rename name reported 0 here
-    # on every current install. See routes/support.py for the same fix.
-    db_path = settings.base_dir / "bamdude.db"
-    db_size = db_path.stat().st_size if db_path.exists() else 0
+    # Database size, per backend. Statting ``bamdude.db`` is right only on
+    # SQLite; on PostgreSQL that file does not exist, so this field reported
+    # **0** on every PostgreSQL install — including the bundled one, whose
+    # cluster is sitting in DATA_DIR the whole time. PostgreSQL can answer for
+    # itself (``pg_database_size``), so ask it.
+    #
+    # Best-effort: the System page must render even if the probe cannot run.
+    try:
+        db_size = await db_health.probe_size_bytes(db) or 0
+    except Exception:  # noqa: BLE001
+        db_size = 0
 
     # Disk usage
     disk = psutil.disk_usage(str(settings.base_dir))
@@ -489,6 +537,16 @@ async def get_system_info(
         boot_time = datetime.fromtimestamp(psutil.boot_time(), tz=timezone.utc)
     uptime_seconds = (datetime.now(timezone.utc) - boot_time).total_seconds()
 
+    # PID 1 describes the container or host. The current process is the
+    # BamDude service on native installs, so it answers the separate question
+    # "did BamDude restart?" without changing the established system fields.
+    try:
+        app_started_at = datetime.fromtimestamp(psutil.Process().create_time(), tz=timezone.utc)
+        app_uptime_seconds: float | None = max(0.0, time.time() - app_started_at.timestamp())
+    except (psutil.Error, OSError):
+        app_started_at = None
+        app_uptime_seconds = None
+
     # Python and system info
     import sys
 
@@ -507,6 +565,9 @@ async def get_system_info(
             "version": APP_VERSION,
             "base_dir": str(settings.base_dir),
             "archive_dir": str(archive_dir),
+            "started_at": app_started_at.isoformat() if app_started_at else None,
+            "uptime_seconds": app_uptime_seconds,
+            "uptime_formatted": format_uptime(app_uptime_seconds) if app_uptime_seconds is not None else None,
         },
         "database": {
             "engine": engine_name,
@@ -593,6 +654,21 @@ async def get_system_health(
     """
     sensitive_strings = await collect_sensitive_strings(db)
     return await asyncio.to_thread(scan_logs, sensitive_strings=sensitive_strings)
+
+
+@router.get("/database", response_model=DbHealth)
+async def get_database_health(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SYSTEM_READ),
+):
+    """What the database can say about itself, on either backend.
+
+    Separate from ``/system/info`` because that one is polled every 30 s by a
+    page that also wants disk and CPU, while this is heavier, dialect-branched
+    and interesting at a slower cadence. Reuses ``SYSTEM_READ``, so it needs no
+    new permission, no API-key scope edit and no migration.
+    """
+    return await db_health.collect(db)
 
 
 @router.get("/db-pool")
