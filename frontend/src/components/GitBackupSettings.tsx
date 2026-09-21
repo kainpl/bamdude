@@ -40,6 +40,7 @@ import { Button } from './Button';
 import { Toggle } from './Toggle';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime as fmtDateTime, formatRelativeTime, type DateFormat, type TimeFormat } from '../utils/date';
 import { Select } from './Select';
 
@@ -100,6 +101,11 @@ export function GitBackupSettings() {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
+  const canReadSettings = hasPermission('settings:read');
+  const canUpdateSettings = hasPermission('settings:update');
+  const canCreateBackup = hasPermission('settings:backup');
+  const canRestoreBackup = hasPermission('settings:restore');
 
   // Pull system time/date format so backup status timestamps follow the
   // user's preference instead of falling through to the browser locale.
@@ -139,11 +145,13 @@ export function GitBackupSettings() {
     queryKey: ['local-backup-status'],
     queryFn: () => api.getLocalBackupStatus(),
     refetchInterval: 30000,
+    enabled: canReadSettings,
   });
   const { data: localBackups, refetch: refetchLocalBackups } = useQuery<LocalBackupFile[]>({
     queryKey: ['local-backup-files'],
     queryFn: () => api.listLocalBackups(),
     refetchInterval: 30000,
+    enabled: canReadSettings,
   });
   // Probe the output directory with a real write when the card opens and after
   // the path is saved. An unwritable path (a NAS share outside the systemd
@@ -153,8 +161,24 @@ export function GitBackupSettings() {
   const { data: localBackupPathCheck, refetch: refetchLocalPathCheck } = useQuery<LocalBackupPathCheck>({
     queryKey: ['local-backup-path-check'],
     queryFn: () => api.checkLocalBackupPath(),
-    enabled: localBackupStatus?.enabled === true,
+    enabled: canCreateBackup && localBackupStatus?.enabled === true,
   });
+
+  const handleLocalBackupDownload = async (filename: string) => {
+    try {
+      const blob = await api.downloadLocalBackup(filename);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Failed to download backup', 'error');
+    }
+  };
   useEffect(() => {
     if (localBackupStatus?.path !== undefined) {
       setLocalBackupPath(localBackupStatus.path);
@@ -958,7 +982,7 @@ export function GitBackupSettings() {
               <Button
                 variant="secondary"
                 size="sm"
-                disabled={isExporting || isRestoring}
+                disabled={!canCreateBackup || isExporting || isRestoring}
                 onClick={async () => {
                   setIsExporting(true);
                   setOperationStatus(t('backup.preparingBackup'));
@@ -1014,7 +1038,7 @@ export function GitBackupSettings() {
               <Button
                 variant="secondary"
                 size="sm"
-                disabled={isRestoring || isExporting}
+                disabled={!canRestoreBackup || isRestoring || isExporting}
                 onClick={() => fileInputRef.current?.click()}
               >
                 <Upload className="w-4 h-4" />
@@ -1078,6 +1102,7 @@ export function GitBackupSettings() {
               <span className="text-sm text-white">{t('backup.scheduledLocalBackup.enabled')}</span>
               <Toggle
                 checked={localBackupStatus?.enabled ?? false}
+                disabled={!canUpdateSettings}
                 onChange={async (checked) => {
                   try {
                     await api.updateSettings({ local_backup_enabled: checked });
@@ -1099,6 +1124,7 @@ export function GitBackupSettings() {
                     <Select
                       className="w-full"
                       value={localBackupStatus?.schedule ?? 'daily'}
+                      disabled={!canUpdateSettings}
                       onChange={async (e) => {
                         try {
                           await api.updateSettings({ local_backup_schedule: e.target.value });
@@ -1120,6 +1146,7 @@ export function GitBackupSettings() {
                       <input
                         type="time"
                         value={localBackupStatus?.time ?? '03:00'}
+                        disabled={!canUpdateSettings}
                         onChange={async (e) => {
                           try {
                             await api.updateSettings({ local_backup_time: e.target.value });
@@ -1145,6 +1172,7 @@ export function GitBackupSettings() {
                       min={1}
                       max={100}
                       value={localBackupStatus?.retention ?? 5}
+                      disabled={!canUpdateSettings}
                       onChange={async (e) => {
                         const v = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 1));
                         try {
@@ -1164,6 +1192,7 @@ export function GitBackupSettings() {
                       type="text"
                       value={localBackupPath}
                       placeholder={localBackupStatus?.default_path ?? ''}
+                      disabled={!canUpdateSettings}
                       onChange={(e) => setLocalBackupPath(e.target.value)}
                       onBlur={async () => {
                         if (localBackupPath === (localBackupStatus?.path ?? '')) return;
@@ -1270,7 +1299,7 @@ export function GitBackupSettings() {
             {/* Run-now button */}
             <Button
               variant="secondary"
-              disabled={localBackupStatus?.is_running}
+              disabled={!canCreateBackup || localBackupStatus?.is_running}
               onClick={async () => {
                 try {
                   const result = await api.triggerLocalBackup();
@@ -1310,29 +1339,30 @@ export function GitBackupSettings() {
                           {(b.size / (1024 * 1024)).toFixed(1)} MB · {formatDateTime(b.created_at, timeFormat, dateFormat)}
                         </p>
                       </div>
-                      <a
-                        href={api.getLocalBackupDownloadUrl(b.filename)}
+                      <button
+                        type="button"
+                        onClick={() => void handleLocalBackupDownload(b.filename)}
                         title={t('backup.scheduledLocalBackup.download')}
                         className="p-1.5 rounded hover:bg-bambu-green/20 text-bambu-green transition-colors"
                       >
                         <Download className="w-4 h-4" />
-                      </a>
-                      <button
+                      </button>
+                      {canRestoreBackup && <button
                         type="button"
                         onClick={() => setScheduledRestoreFile(b.filename)}
                         title={t('backup.scheduledLocalBackup.restore')}
                         className="p-1.5 rounded hover:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400 transition-colors"
                       >
                         <RotateCcw className="w-4 h-4" />
-                      </button>
-                      <button
+                      </button>}
+                      {canCreateBackup && <button
                         type="button"
                         onClick={() => setScheduledDeleteFile(b.filename)}
                         title={t('backup.scheduledLocalBackup.delete')}
                         className="p-1.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 transition-colors"
                       >
                         <Trash2 className="w-4 h-4" />
-                      </button>
+                      </button>}
                     </div>
                   ))}
                 </div>

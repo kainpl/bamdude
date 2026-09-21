@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { GitBackupSettings } from '../../components/GitBackupSettings';
 import { http, HttpResponse } from 'msw';
@@ -95,6 +95,32 @@ describe('GitBackupSettings - Scheduled Local Backups', () => {
     await waitFor(() => {
       expect(screen.getByText(/50\.0 MB/)).toBeInTheDocument();
     });
+  });
+
+  it('downloads an existing backup with the session bearer token', async () => {
+    let authorization: string | null = null;
+    const createObjectURL = vi.fn(() => 'blob:backup');
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = vi.fn();
+    server.use(
+      http.get('/api/v1/local-backup/backups/:filename/download', ({ request }) => {
+        authorization = request.headers.get('authorization');
+        return new HttpResponse('backup', { headers: { 'Content-Type': 'application/zip' } });
+      }),
+    );
+
+    render(<GitBackupSettings />);
+    fireEvent.click(await screen.findByTitle('Download'));
+    await waitFor(() => expect(authorization).toBe('Bearer test-admin-token'));
+    expect(createObjectURL).toHaveBeenCalledOnce();
+    expect(click).toHaveBeenCalledOnce();
+
+    URL.createObjectURL = originalCreateObjectURL;
+    URL.revokeObjectURL = originalRevokeObjectURL;
+    click.mockRestore();
   });
 
   it('shows Run Now button', async () => {

@@ -18,7 +18,7 @@ router = APIRouter(prefix="/local-backup", tags=["local-backup"])
 
 @router.get("/status")
 async def get_status(
-    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get local backup scheduler status and configuration."""
     from backend.app.services.local_backup import _local_zone
@@ -68,7 +68,7 @@ async def trigger_backup(
 
 @router.get("/backups")
 async def list_backups(
-    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """List existing backup files."""
     settings = await local_backup_service._load_settings()
@@ -78,7 +78,7 @@ async def list_backups(
 @router.get("/backups/{filename}/download")
 async def download_backup(
     filename: str = Path(..., description="Backup filename to download"),
-    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Download a specific backup file."""
     settings = await local_backup_service._load_settings()

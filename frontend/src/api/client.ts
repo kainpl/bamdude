@@ -11467,8 +11467,18 @@ export const api = {
     request<LocalBackupRunResponse>('/local-backup/run', { method: 'POST' }),
   listLocalBackups: () =>
     request<LocalBackupFile[]>('/local-backup/backups'),
-  getLocalBackupDownloadUrl: (filename: string) =>
-    `${API_BASE}/local-backup/backups/${encodeURIComponent(filename)}/download`,
+  downloadLocalBackup: async (filename: string): Promise<Blob> => {
+    const headers: Record<string, string> = {};
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    const response = await fetch(
+      `${API_BASE}/local-backup/backups/${encodeURIComponent(filename)}/download`,
+      { headers },
+    );
+    if (!response.ok) {
+      throw new Error((await response.text()) || `Backup download failed with status ${response.status}`);
+    }
+    return response.blob();
+  },
   restoreLocalBackup: (filename: string) =>
     request<{ success?: boolean; message?: string }>(
       `/local-backup/backups/${encodeURIComponent(filename)}/restore`,
