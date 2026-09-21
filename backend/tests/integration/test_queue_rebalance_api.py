@@ -51,8 +51,8 @@ async def test_line_button_moves_with_the_setting_off_and_reports_the_counts(
 ):
     farm = await rebalance_farm(db_session, printer_factory, tmp_path)
     await _the_dialogs_saved_preference(db_session, printer_model="A1MINI")
-    p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-    with p_elig, p_sched, p_ams:
+    p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+    with p_elig, p_sched:
         r = await committing_client.post(f"/api/v1/projects/{farm.project.id}/lines/{farm.line.id}/rebalance")
     assert r.status_code == 200, r.text
     assert r.json() == {"converted": 1, "created": 2, "cancelled": 0, "moved_parts": 6, "skipped": []}
@@ -91,8 +91,8 @@ async def test_the_companions_inherit_the_source_rows_job_flags(
     farm.item.require_previous_success = True
     await db_session.commit()
 
-    p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-    with p_elig, p_sched, p_ams:
+    p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+    with p_elig, p_sched:
         r = await committing_client.post(f"/api/v1/projects/{farm.project.id}/lines/{farm.line.id}/rebalance")
     assert r.status_code == 200, r.text
     assert (r.json()["converted"], r.json()["created"]) == (1, 2)
@@ -112,8 +112,8 @@ async def test_the_companions_inherit_the_source_rows_job_flags(
 @pytest.mark.asyncio
 async def test_line_button_ignores_the_cooldown(committing_client, db_session, printer_factory, tmp_path):
     farm = await rebalance_farm(db_session, printer_factory, tmp_path)
-    p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-    with p_elig, p_sched, p_ams:
+    p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+    with p_elig, p_sched:
         first = await committing_client.post(f"/api/v1/projects/{farm.project.id}/lines/{farm.line.id}/rebalance")
     assert first.json()["converted"] == 1
     mini2, _q = await _make_printer_with_queue(db_session, printer_factory, name="Mini-2", model="A1MINI")
@@ -131,8 +131,8 @@ async def test_line_button_ignores_the_cooldown(committing_client, db_session, p
         )
     )
     await db_session.commit()
-    p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id, mini2.id})
-    with p_elig, p_sched, p_ams:
+    p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id, mini2.id})
+    with p_elig, p_sched:
         second = await committing_client.post(f"/api/v1/projects/{farm.project.id}/lines/{farm.line.id}/rebalance")
     assert second.status_code == 200, second.text
     assert second.json()["converted"] == 1, "force: the five-minute pause does not apply to the button"
@@ -189,8 +189,8 @@ async def test_panel_action_moves_the_named_items_and_names_why_the_others_stay(
     db_session.add_all([staged, unfiled, pinned])
     await db_session.commit()
 
-    p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-    with p_elig, p_sched, p_ams:
+    p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+    with p_elig, p_sched:
         r = await async_client.post(
             "/api/v1/auto-queue/rebalance",
             json={"item_ids": [farm.item.id, staged.id, unfiled.id, pinned.id, 999_999]},
@@ -281,8 +281,8 @@ async def _a_captured_farm(db_session, printer_factory, tmp_path):
 
 
 async def _move(db_session, farm):
-    p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-    with p_elig, p_sched, p_ams:
+    p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+    with p_elig, p_sched:
         return await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
 
 

@@ -1,8 +1,9 @@
 """Tests for the inventory-weight "Prefer Lowest Remaining Filament" sort (#1508).
 
-Covers the two-tier sort key + slot tiebreaker (pure), the inventory-remain
+Covers the two-tier sort key + slot tiebreaker (pure) and the inventory-remain
 override builder (internal-inventory mode via DB, Spoolman mode via a mocked
-client), and the integration through _match_filaments_to_slots.
+client). Both are read by ``filament_preflight`` and ``background_dispatch``;
+the greedy matcher they also used to feed is gone.
 """
 
 from __future__ import annotations
@@ -68,34 +69,6 @@ def test_sort_key_ascending_within_inventory_tier():
 def test_sort_key_mqtt_unknown_maps_to_101():
     k = PrintScheduler._prefer_lowest_sort_key(_loaded(10, 0, 0, remain=-1), None)
     assert k == (1, 101.0, 0)
-
-
-# ── Integration through _match_filaments_to_slots ───────────────────────────
-
-
-def test_match_prefers_lower_inventory_remaining():
-    """Two trays of the same filament; the one with less inventory-tracked
-    remaining wins when prefer_lowest is on."""
-    scheduler = PrintScheduler()
-    required = [{"slot_id": 1, "type": "PLA", "color": "FF0000", "tray_info_idx": ""}]
-    loaded = [
-        _loaded(0, 0, 0, remain=90),  # MQTT says lots left
-        _loaded(1, 0, 1, remain=90),
-    ]
-    overrides = {0: 700.0, 1: 150.0}  # tray gtid=1 has less inventory remaining
-
-    mapping = scheduler._match_filaments_to_slots(
-        required, loaded, prefer_lowest=True, inventory_remain_overrides=overrides
-    )
-    assert mapping == [1]  # slot 1 → global_tray_id 1 (the lower-inventory tray)
-
-
-def test_match_without_prefer_lowest_keeps_slot_order():
-    scheduler = PrintScheduler()
-    required = [{"slot_id": 1, "type": "PLA", "color": "FF0000", "tray_info_idx": ""}]
-    loaded = [_loaded(0, 0, 0, remain=10), _loaded(1, 0, 1, remain=90)]
-    mapping = scheduler._match_filaments_to_slots(required, loaded, prefer_lowest=False)
-    assert mapping == [0]  # first matching tray, no remain-based reorder
 
 
 # ── _build_inventory_remain_overrides — internal mode (DB) ──────────────────

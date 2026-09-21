@@ -64,31 +64,6 @@ from backend.app.utils.printer_models import normalize_model_name
 logger = logging.getLogger(__name__)
 
 
-def _get_missing_filament_types(printer_id: int, required_types: list[str]) -> list[str]:
-    """Return the subset of ``required_types`` not loaded on the printer.
-
-    Empty list means all required types are present. Uses canonical-type
-    matching for equivalence groups.
-    """
-    status = printer_manager.get_status(printer_id)
-    if not status:
-        # Cannot determine; treat as "all missing" (caller skips the printer)
-        return list(required_types)
-
-    loaded: set[str] = set()
-    for ams_unit in status.raw_data.get("ams", []) or []:
-        for tray in ams_unit.get("tray", []) or []:
-            t = tray.get("tray_type")
-            if t:
-                loaded.add(_canonical_filament_type(t))
-    for vt in status.raw_data.get("vt_tray") or []:
-        t = vt.get("tray_type")
-        if t:
-            loaded.add(_canonical_filament_type(t))
-
-    return [t for t in required_types if _canonical_filament_type(t) not in loaded]
-
-
 def _get_missing_force_color_slots(printer_id: int, force_overrides: list[dict]) -> list[str]:
     """For force_color_match overrides, return descriptive strings of unmatched slots.
 

@@ -1,44 +1,20 @@
-"""AMS mapping computation for auto-queue items.
+"""What an auto-queue item's printer is holding, read off live status.
 
-When the AutoQueueScheduler assigns an auto-queue item to an idle
-printer, it needs to compute which AMS tray to use for each filament
-slot in the 3MF. This module ports upstream Bambuddy's AMS-matching
-logic (see ``temp/upstream-queue-deep-dive.md``) adapted to BamDude's
-AutoQueueItem.
+⚠️ **This module no longer decides anything.** It used to carry a port of
+upstream Bambuddy's greedy AMS matcher, which nothing has called since complete
+routing landed: ``services/filament_routing.resolve_filament_routing`` is the
+one place a slot is bound to a feed, under the job's own
+``RoutingPolicy``. Deleting the port removed a second, weaker answer to the same
+question — never re-add one here.
 
-Matching priority:
-    1. Exact colour match (type + RGB), searched among the trays carrying the
-       slicer's ``tray_info_idx`` first, then among all loaded trays.
-    2. Similar colour match (RGB within threshold), same two rounds.
-    3. Type-only fallback (any tray of the right canonical type).
-    4. Right variant, wrong colour — last resort.
-
-⚠️ ``tray_info_idx`` names the filament **variant**, not an individual spool:
-GFA00 is PLA Basic, GFA01 PLA Matte, GFA17 PLA Translucent, in every colour
-Bambu sells. It therefore narrows *where to look first* and never substitutes
-for comparing the colour — a unique idx match used to be accepted as definitive
-on the premise "same preset = same spool = same colour", which mapped a red
-requirement onto a green tray whenever one spool of that variant was loaded
-(#2687).
-
-Filament overrides (with optional ``force_color_match``) and the
-``prefer_lowest_filament`` setting are honoured the same way as in
-upstream.
+What remains is the reader every caller still needs: one loaded-filament list
+per printer, with an advertised-profile overlay seen through
+(``ams_advertised_overlay``) so a masked slot reports the spool it REALLY holds.
 """
 
 from __future__ import annotations
 
-import json
-import logging
-
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.services import ams_advertised_overlay as overlay
-from backend.app.services.print_scheduler import _canonical_filament_type
-from backend.app.services.printer_manager import printer_manager
-
-logger = logging.getLogger(__name__)
 
 
 def _normalize_color(color: str | None) -> str:
@@ -54,31 +30,6 @@ def _normalize_color_for_compare(color: str | None) -> str:
     if not color:
         return ""
     return color.replace("#", "").lower()[:6]
-
-
-def _colors_are_similar(color1: str | None, color2: str | None, threshold: int = 40) -> bool:
-    """True if two RGB colors are within ``threshold`` per channel."""
-    hex1 = _normalize_color_for_compare(color1)
-    hex2 = _normalize_color_for_compare(color2)
-    if not hex1 or not hex2 or len(hex1) < 6 or len(hex2) < 6:
-        return False
-    try:
-        r1, g1, b1 = int(hex1[0:2], 16), int(hex1[2:4], 16), int(hex1[4:6], 16)
-        r2, g2, b2 = int(hex2[0:2], 16), int(hex2[2:4], 16), int(hex2[4:6], 16)
-        return abs(r1 - r2) <= threshold and abs(g1 - g2) <= threshold and abs(b1 - b2) <= threshold
-    except ValueError:
-        return False
-
-
-async def get_filament_requirements(db: AsyncSession, item: AutoQueueItem) -> list[dict] | None:
-    """Read exact plate-scoped requirements; never merge all file channels."""
-    from backend.app.services.filament_intake import read_item_requirements
-
-    requirements = await read_item_requirements(db, item)
-    if requirements.status != "ok":
-        return None
-    item.plate_id = requirements.resolved_plate_id
-    return [dict(f) for f in requirements.used_filaments]
 
 
 def build_loaded_filaments(status, printer_id: int | None = None) -> list[dict]:
@@ -160,184 +111,3 @@ def build_loaded_filaments(status, printer_id: int | None = None) -> list[dict]:
         )
 
     return filaments
-
-
-def match_filaments_to_slots(
-    required: list[dict],
-    loaded: list[dict],
-    prefer_lowest: bool = False,
-) -> list[int] | None:
-    """Match required filaments to loaded trays and build the AMS mapping.
-
-    Priority: unique tray_info_idx > exact color > similar color > type-only.
-
-    Returns: ``[global_tray_id_for_slot_1, ..., global_tray_id_for_slot_N]``
-    where the index is ``slot_id - 1``. ``-1`` for slots with no match.
-    Returns ``None`` if no required filaments.
-
-    Direct port of upstream ``PrintScheduler._match_filaments_to_slots``.
-    """
-    if not required:
-        return None
-
-    used_tray_ids: set[int] = set()
-    comparisons: list[dict] = []
-
-    for req in required:
-        req_type = (req.get("type") or "").upper()
-        req_color = req.get("color", "")
-        req_tray_info_idx = req.get("tray_info_idx", "")
-
-        exact_match = None
-        similar_match = None
-        type_only_match = None
-
-        available = [f for f in loaded if f["global_tray_id"] not in used_tray_ids]
-
-        # Hard filter by nozzle (dual-nozzle cross-assignment causes failures)
-        req_nozzle_id = req.get("nozzle_id")
-        if req_nozzle_id is not None:
-            available = [f for f in available if f.get("extruder_id") == req_nozzle_id]
-
-        if prefer_lowest:
-            available.sort(key=lambda f: f.get("remain", -1) if f.get("remain", -1) >= 0 else 101)
-
-        # Pass 1: trays carrying the slicer's tray_info_idx.
-        #
-        # A unique idx match used to be accepted as definitive, on the premise
-        # "same preset = same spool = same colour" (#2687). The premise is false:
-        # **an idx names the filament VARIANT, not a spool** — GFA00 is PLA Basic,
-        # GFA01 PLA Matte, GFA17 PLA Translucent, in every colour Bambu sells. So
-        # with one Matte spool loaded, every Matte requirement matched it whatever
-        # colour it was, and the comparison below was never reached.
-        #
-        # The asymmetry gave it away: the ``> 1`` branch already compared colour.
-        # Only uniqueness was trusted to imply it. Now every idx candidate is
-        # classified the same way, so the variant still decides *selection* among
-        # colour-agreeing trays (#2650 — Basic is not Matte) and no longer decides
-        # the verdict on its own.
-        idx_type_only = None
-        if req_tray_info_idx:
-            # Type-filtered like pass 2 below. An idx encodes the preset, which
-            # implies the material, so a same-idx tray of another type is
-            # inconsistent data rather than a candidate — and pass 2 has always
-            # filtered on type, so accepting one here made the two disagree.
-            idx_matches = [
-                f
-                for f in available
-                if f.get("tray_info_idx") == req_tray_info_idx
-                and _canonical_filament_type((f.get("type") or "").upper()) == _canonical_filament_type(req_type)
-            ]
-            if prefer_lowest and len(idx_matches) > 1:
-                idx_matches.sort(key=lambda f: f.get("remain", -1) if f.get("remain", -1) >= 0 else 101)
-            for f in idx_matches:
-                f_color = f.get("color", "")
-                if _normalize_color_for_compare(f_color) == _normalize_color_for_compare(req_color):
-                    if not exact_match:
-                        exact_match = f
-                elif _colors_are_similar(f_color, req_color):
-                    if not similar_match:
-                        similar_match = f
-                elif not idx_type_only:
-                    # Right variant, wrong colour. Kept only as a last resort —
-                    # letting it block pass 2 would hide a correctly-coloured
-                    # tray of the same type sitting in another slot.
-                    idx_type_only = f
-
-        # Pass 2: standard type/color matching when no idx match agreed on colour
-        if not exact_match and not similar_match and not type_only_match:
-            for f in available:
-                f_type = (f.get("type") or "").upper()
-                if _canonical_filament_type(f_type) != _canonical_filament_type(req_type):
-                    continue
-                f_color = f.get("color", "")
-                if _normalize_color_for_compare(f_color) == _normalize_color_for_compare(req_color):
-                    if not exact_match:
-                        exact_match = f
-                elif _colors_are_similar(f_color, req_color):
-                    if not similar_match:
-                        similar_match = f
-                elif not type_only_match:
-                    type_only_match = f
-
-        # Colour agreement first, wherever it was found; then any tray of the
-        # right type; then the right-variant-wrong-colour tray from pass 1, which
-        # is better than nothing but must not outrank a colour match.
-        match = exact_match or similar_match or type_only_match or idx_type_only
-        if match:
-            used_tray_ids.add(match["global_tray_id"])
-            comparisons.append({"slot_id": req.get("slot_id", 0), "global_tray_id": match["global_tray_id"]})
-        else:
-            comparisons.append({"slot_id": req.get("slot_id", 0), "global_tray_id": -1})
-
-    if not comparisons:
-        return None
-    max_slot_id = max(c["slot_id"] for c in comparisons)
-    if max_slot_id <= 0:
-        return None
-
-    mapping = [-1] * max_slot_id
-    for c in comparisons:
-        slot_id = c["slot_id"]
-        if slot_id and slot_id > 0:
-            mapping[slot_id - 1] = c["global_tray_id"]
-    return mapping
-
-
-async def compute_ams_mapping_for_printer(
-    db: AsyncSession,
-    printer_id: int,
-    item: AutoQueueItem,
-    prefer_lowest: bool = False,
-) -> list[int] | None:
-    """End-to-end: read 3MF, apply overrides, build mapping for the printer.
-
-    Returns the ``ams_mapping`` value to store on the dispatched
-    print_queue item. ``None`` if no mapping is needed (no filament
-    requirements) or possible (printer offline, file missing).
-    """
-    status = printer_manager.get_status(printer_id)
-    if not status:
-        logger.warning("AMS mapping: printer %s status unavailable", printer_id)
-        return None
-
-    requirements = await get_filament_requirements(db, item)
-    if not requirements:
-        return None
-
-    if item.filament_overrides:
-        try:
-            overrides = json.loads(item.filament_overrides)
-            override_map = {o["slot_id"]: o for o in overrides}
-            for req in requirements:
-                if req["slot_id"] in override_map:
-                    o = override_map[req["slot_id"]]
-                    req["type"] = o.get("type", req["type"])
-                    req["color"] = o.get("color", req["color"])
-                    # A preference override SWAPS the slot's filament, so the 3MF's
-                    # tray_info_idx now points at the spool being replaced and must be
-                    # cleared — matching then falls back to type+colour. A
-                    # force_color_match override is not a swap: it carries the 3MF's
-                    # intended variant (PLA Basic GFA00 / Matte GFA01 / Silk GFA06),
-                    # so keep it and let the matcher pin the right tray on a printer
-                    # holding two same-colour spools of different variants (#2650).
-                    # Eligibility already refused printers without that variant, so
-                    # keeping it here is what stops dispatch landing on the very tray
-                    # the matcher just rejected. When the variant is absent the
-                    # matcher falls through to type+colour by itself.
-                    req["tray_info_idx"] = (o.get("tray_info_idx") or "") if o.get("force_color_match") else ""
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.warning("Failed to apply filament_overrides for auto item %s: %s", item.id, e)
-
-    loaded = build_loaded_filaments(status, printer_id)
-    if not loaded:
-        return None
-
-    # AMS Filament Backup gates prefer-lowest here too (#1766), keeping this dispatch path
-    # consistent with print_scheduler — backup OFF means no mid-print same-material switch,
-    # so don't prefer-lowest. Only coerce on explicit False; None preserves current behaviour.
-    if prefer_lowest and status.ams_auto_switch_filament is False:
-        logger.info("[prefer-lowest] skipped: AMS Backup OFF on printer %s", printer_id)
-        prefer_lowest = False
-
-    return match_filaments_to_slots(requirements, loaded, prefer_lowest)

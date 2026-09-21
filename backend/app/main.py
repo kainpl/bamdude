@@ -1201,10 +1201,11 @@ def _printer_reported_options(data: dict, archive_id: int | None, plate_id: int 
     both columns empty.
 
     ⚠️ Empty does not mean the repeat fails, which is why this went unnoticed.
-    ``PrintScheduler._ensure_ams_mapping`` recomputes a missing mapping from
-    whatever is loaded on the printer *now*, and that is the weaker source the
-    filament-attribution rule exists to rank last: it charges the repeat to
-    today's spools rather than to the slots the print was actually sliced for.
+    A row with no mapping is routed from scratch at dispatch — preflight resolves
+    a plan against whatever is loaded on the printer *now*, and that is the weaker
+    source the filament-attribution rule exists to rank last: it charges the
+    repeat to today's spools rather than to the slots the print was actually
+    sliced for.
 
     ⚠️ **Both can still come back None here, and often do.** Measured on a
     BambuStudio-launched print (2026-08-21): the printer announced it as

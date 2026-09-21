@@ -6,12 +6,12 @@ those cannot honour the slot the user chose in Bambu Studio. The slicer already
 resolved it; this keeps that answer instead of re-deriving a worse one.
 
 It is a **toggle**, not a fix, and the reason is the whole point of these tests:
-a queue item that carries a mapping makes ``_ensure_ams_mapping`` return early,
-so ``_compute_ams_mapping_for_printer`` never runs — and that function holds
-``prefer_lowest_filament``, the AMS-Filament-Backup gate (#1766), the
-inventory-remain overrides (#1508) and the FTS routing rule (#2186). FTS has no
-upstream counterpart and is the one that can strand a print on a wrong-nozzle
-slot rather than merely pick a different spool.
+the captured array reaches ``prepare_routing`` as ``manual_mapping: True``,
+which is what turns a mapping into PHYSICAL PINS — a person pointing at trays.
+A pinned slot is bound to the feed the slicer named; it is not routed at
+dispatch, so prefer_lowest_filament, the AMS-Filament-Backup gate (#1766), the
+inventory-remain overrides (#1508) and the FTS routing rule (#2186) have nothing
+left to decide for it.
 
 **Off is exactly today's behaviour**, and that is what most of this file pins.
 """
@@ -22,7 +22,7 @@ import inspect
 import json
 
 from backend.app.services import virtual_printer as vp_pkg
-from backend.app.services.print_scheduler import PrintScheduler
+from backend.app.services.filament_policy import choices_policy
 
 
 class TestTheDefaultIsUnchangedBehaviour:
@@ -63,30 +63,29 @@ class TestTheCaptureIsGated:
         assert "ams_mapping=ams_mapping_json," in self._source()
 
 
-class TestWhatTheToggleSwitchesOff:
-    """These live in ``_compute_ams_mapping_for_printer``, which a stored
-    mapping skips. The UI description has to name them, so the test names them
-    too — if one is ever moved out of that function, this is the reminder that
-    the description became a lie."""
+class TestTheCapturedMappingIsConsumedAsAPin:
+    """The live path, end of story: ``manual_mapping: True`` or it is only a plan."""
 
-    def test_the_skipped_function_still_owns_all_four(self) -> None:
-        source = inspect.getsource(PrintScheduler._compute_ams_mapping_for_printer)
+    def test_the_manager_hands_it_over_as_a_manual_mapping(self) -> None:
+        source = inspect.getsource(vp_pkg.manager)
 
-        assert "prefer_lowest_filament" in source
-        assert "ams_auto_switch_filament" in source, "the AMS-Backup gate (#1766)"
-        assert "_build_inventory_remain_overrides" in source, "inventory remain (#1508)"
-        assert "fila_switch" in source, "FTS routing (#2186) — ours, not upstream's"
+        assert '"ams_mapping": ams_mapping_json,' in source
+        assert '"manual_mapping": True,' in source
 
-    def test_a_resolved_mapping_makes_the_computation_be_skipped(self) -> None:
-        """States the mechanism the toggle trades against, in one place."""
-        source = inspect.getsource(PrintScheduler._ensure_ams_mapping)
+    def test_that_flag_is_what_makes_the_slots_physical_pins(self) -> None:
+        """Same array, both answers — the flag is the whole difference."""
+        mapping = json.dumps([0, -1, 2])
+        pinned = choices_policy({"ams_mapping": mapping, "use_ams": True, "manual_mapping": True})
+        plan_only = choices_policy({"ams_mapping": mapping, "use_ams": True})
 
-        assert "if item.ams_mapping and not _mapping_is_all_unresolved(stored_mapping):" in source
-        assert "return" in source
+        assert pinned.mode == "pinned"
+        assert sorted(pinned.physical_pins) == [1, 3], "slot 2 is unresolved (-1) and is not a pin"
+        assert pinned.physical_pins[1]["source_id"] == 0
+        assert (plan_only.mode, plan_only.physical_pins) == ("auto", {})
 
 
 class TestTheStoredShape:
     def test_it_is_a_json_array_of_slots(self) -> None:
-        """Same shape ``_ensure_ams_mapping`` already reads, so nothing
-        downstream has to learn a second encoding."""
+        """``choices_policy`` decodes exactly this, so nothing downstream has to
+        learn a second encoding."""
         assert json.loads("[0, -1, 2]") == [0, -1, 2]

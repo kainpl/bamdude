@@ -1130,11 +1130,13 @@ class VirtualPrinterInstance:
                 import json
 
                 # The slicer's own resolved AMS pick (#2700). Captured only
-                # when this VP asks for it: storing a mapping on the queue item
-                # makes ``_ensure_ams_mapping`` return early, which skips
+                # when this VP asks for it: the mapping travels to
+                # ``prepare_routing`` below as ``manual_mapping: True``, which
+                # turns it into physical pins — so those slots keep the slicer's
+                # trays instead of being routed at dispatch, and
                 # prefer_lowest_filament, the AMS-Backup gate, the
-                # inventory-remain overrides and FTS routing. Off is today's
-                # behaviour, exactly.
+                # inventory-remain overrides and FTS routing have nothing left to
+                # decide for them. Off is today's behaviour, exactly.
                 ams_mapping_json: str | None = None
                 if self.save_ams_mapping and slicer_opts is not None:
                     raw_ams_mapping = slicer_opts.get("ams_mapping")

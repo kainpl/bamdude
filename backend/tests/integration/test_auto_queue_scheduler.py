@@ -110,7 +110,12 @@ def _finished_status(filament_types: list[str], colors: list[str] | None = None)
 
 
 def _patch_printer_manager(idle_ids: set[int], status_map: dict | None = None, awaiting_ids: set[int] | None = None):
-    """Context manager that mocks both printer_manager singletons used across modules."""
+    """Mock the printer_manager singleton every module in this flow shares.
+
+    Two paths to the SAME object — ``patch.multiple`` replaces attributes on it,
+    so the eligibility read and the scheduler read see one mock. The third path,
+    ``auto_queue_ams``, went with the matcher that used to live there.
+    """
     status_map = status_map or {}
     awaiting_ids = awaiting_ids or set()
 
@@ -148,10 +153,6 @@ def _patch_printer_manager(idle_ids: set[int], status_map: dict | None = None, a
             get_status=get_status_side_effect,
             is_awaiting_plate_clear=is_awaiting_pc_side_effect,
         ),
-        patch.multiple(
-            "backend.app.services.auto_queue_ams.printer_manager",
-            get_status=get_status_side_effect,
-        ),
     )
 
 
@@ -183,11 +184,10 @@ class TestAutoQueueSchedulerTick:
         db_session.add(item)
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({printer.id})
+        p_elig, p_sched = _patch_printer_manager({printer.id})
         with (
             p_elig,
             p_sched,
-            p_ams,
             patch(
                 "backend.app.services.auto_queue_scheduler.ws_manager.send_queue_changed", new_callable=AsyncMock
             ) as queue_changed,
@@ -222,8 +222,8 @@ class TestAutoQueueSchedulerTick:
         db_session.add(item)
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager(set())
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager(set())
+        with p_elig, p_sched:
             await scheduler.tick()
 
         await db_session.refresh(item)
@@ -248,8 +248,8 @@ class TestAutoQueueSchedulerTick:
         db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager(set())
-        with caplog.at_level("INFO"), p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager(set())
+        with caplog.at_level("INFO"), p_elig, p_sched:
             await scheduler.tick()
 
         assert "placed nothing this tick" in caplog.text
@@ -266,8 +266,8 @@ class TestAutoQueueSchedulerTick:
         db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager(set())
-        with caplog.at_level("INFO"), p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager(set())
+        with caplog.at_level("INFO"), p_elig, p_sched:
             await scheduler.tick()
             await scheduler.tick()
             await scheduler.tick()
@@ -296,12 +296,12 @@ class TestRoutingIsNotDispatching:
         db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager(
+        p_elig, p_sched = _patch_printer_manager(
             {printer.id},
             status_map={printer.id: _finished_status(["PLA"])},
             awaiting_ids={printer.id},
         )
-        with p_elig, p_sched, p_ams:
+        with p_elig, p_sched:
             await scheduler.tick()
 
         item = (await db_session.execute(select(AutoQueueItem))).scalars().one()
@@ -322,12 +322,12 @@ class TestRoutingIsNotDispatching:
         db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager(
+        p_elig, p_sched = _patch_printer_manager(
             {gated.id, ready.id},
             status_map={gated.id: _finished_status(["PLA"]), ready.id: _idle_status(["PLA"])},
             awaiting_ids={gated.id},
         )
-        with p_elig, p_sched, p_ams:
+        with p_elig, p_sched:
             await scheduler.tick()
 
         placed = (await db_session.execute(select(PrintQueueItem))).scalars().one()
@@ -367,8 +367,8 @@ class TestRequirePreviousSuccessRoutesAround:
         db_session.add(routing_item(target_model="A1MINI", status="pending", position=1, require_previous_success=True))
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({broken.id, healthy.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({broken.id, healthy.id})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         placed = (
@@ -390,8 +390,8 @@ class TestRequirePreviousSuccessRoutesAround:
         )
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({broken.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({broken.id})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         item = (await db_session.execute(select(AutoQueueItem))).scalars().one()
@@ -408,8 +408,8 @@ class TestRequirePreviousSuccessRoutesAround:
         db_session.add(routing_item(target_model="A1MINI", status="pending", position=1, require_previous_success=True))
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({broken.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({broken.id})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         item = (await db_session.execute(select(AutoQueueItem))).scalars().one()
@@ -427,8 +427,8 @@ class TestRequirePreviousSuccessRoutesAround:
         db_session.add(routing_item(target_model="A1MINI", status="pending", position=1, require_previous_success=True))
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({printer.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({printer.id})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         placed = (await db_session.execute(select(PrintQueueItem))).scalars().one()
@@ -453,12 +453,11 @@ class TestAStalledQueueTellsTheOperator:
         await db_session.commit()
 
         sent = AsyncMock()
-        p_elig, p_sched, p_ams = _patch_printer_manager(set())
+        p_elig, p_sched = _patch_printer_manager(set())
         with (
             patch("backend.app.services.notification_service.notification_service.on_queue_job_waiting", sent),
             p_elig,
             p_sched,
-            p_ams,
         ):
             await scheduler.tick()
             await scheduler.tick()
@@ -477,12 +476,11 @@ class TestAStalledQueueTellsTheOperator:
         await db_session.commit()
 
         sent = AsyncMock()
-        p_elig, p_sched, p_ams = _patch_printer_manager({printer.id})
+        p_elig, p_sched = _patch_printer_manager({printer.id})
         with (
             patch("backend.app.services.notification_service.notification_service.on_queue_job_waiting", sent),
             p_elig,
             p_sched,
-            p_ams,
         ):
             await scheduler.tick()
 
@@ -500,12 +498,11 @@ class TestAStalledQueueTellsTheOperator:
         await db_session.commit()
 
         boom = AsyncMock(side_effect=RuntimeError("telegram is down"))
-        p_elig, p_sched, p_ams = _patch_printer_manager(set())
+        p_elig, p_sched = _patch_printer_manager(set())
         with (
             patch("backend.app.services.notification_service.notification_service.on_queue_job_waiting", boom),
             p_elig,
             p_sched,
-            p_ams,
         ):
             await scheduler.tick()
 
@@ -524,8 +521,8 @@ class TestAStalledQueueTellsTheOperator:
         db_session.add(item)
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({printer.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({printer.id})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         await db_session.refresh(item)
@@ -551,8 +548,8 @@ class TestAStalledQueueTellsTheOperator:
             db_session.add(it)
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({p1.id, p2.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({p1.id, p2.id})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         for it in items:
@@ -577,8 +574,8 @@ class TestAStalledQueueTellsTheOperator:
         db_session.add(item)
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({printer.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({printer.id})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         await db_session.refresh(item)
@@ -594,8 +591,8 @@ class TestAStalledQueueTellsTheOperator:
         db_session.add(item)
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({printer.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({printer.id})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         await db_session.refresh(item)
@@ -622,8 +619,8 @@ class TestAStalledQueueTellsTheOperator:
             db_session.add(it)
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({printer.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({printer.id})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         # short should win the assignment (only 1 printer)
@@ -667,8 +664,8 @@ class TestAutoQueueDryingPriority:
         await db_session.commit()
 
         # Printer is connected (in idle_ids) but reports a non-idle (drying) state.
-        p_elig, p_sched, p_ams = _patch_printer_manager({printer.id}, {printer.id: _drying_status(["PLA"])})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({printer.id}, {printer.id: _drying_status(["PLA"])})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         await db_session.refresh(item)
@@ -688,8 +685,8 @@ class TestAutoQueueDryingPriority:
         db_session.add(item)
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({printer.id}, {printer.id: _drying_status(["PLA"])})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({printer.id}, {printer.id: _drying_status(["PLA"])})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         await db_session.refresh(item)
@@ -714,8 +711,8 @@ class TestAutoQueueDryingPriority:
         await db_session.commit()
 
         status_map = {drying_p.id: _drying_status(["PLA"]), idle_p.id: _idle_status(["PLA"])}
-        p_elig, p_sched, p_ams = _patch_printer_manager({drying_p.id, idle_p.id}, status_map)
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({drying_p.id, idle_p.id}, status_map)
+        with p_elig, p_sched:
             await scheduler.tick()
 
         await db_session.refresh(item)
@@ -842,8 +839,8 @@ class TestRebalanceAcrossModels:
     @pytest.mark.integration
     async def test_setting_off_moves_nothing(self, db_session, scheduler, printer_factory, tmp_path) -> None:
         farm = await rebalance_farm(db_session, printer_factory, tmp_path)
-        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched:
             await scheduler.tick()
         await db_session.refresh(farm.item)
         assert (farm.item.status, farm.item.target_model, farm.item.rebalanced_at) == ("pending", "P1S", None)
@@ -858,8 +855,8 @@ class TestRebalanceAcrossModels:
         db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
         await db_session.commit()
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         rows = await _pending_rows(db_session)
@@ -881,7 +878,7 @@ class TestRebalanceAcrossModels:
             )
             assert r.rebalanced_from_model == "P1S" and r.batch_id == converted.batch_id and r.batch_id is not None
 
-        with p_elig, p_sched, p_ams:
+        with p_elig, p_sched:
             await scheduler.tick()
         placed = (await db_session.execute(select(PrintQueueItem))).scalars().all()
         assert len(placed) == 1 and placed[0].queue_id == farm.mini_q.id
@@ -897,8 +894,8 @@ class TestRebalanceAcrossModels:
         farm = await rebalance_farm(db_session, printer_factory, tmp_path, mini_seconds=5000)
         db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
         await db_session.commit()
-        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched:
             await scheduler.tick()
         await db_session.refresh(farm.item)
         assert (farm.item.target_model, farm.item.rebalanced_at) == ("P1S", None)
@@ -911,12 +908,12 @@ class TestRebalanceAcrossModels:
         farm = await rebalance_farm(db_session, printer_factory, tmp_path)
         db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
         await db_session.commit()
-        p_elig, p_sched, p_ams = _patch_printer_manager(
+        p_elig, p_sched = _patch_printer_manager(
             {farm.p1s.id, farm.mini.id},
             status_map={farm.mini.id: _finished_status(["PLA"])},
             awaiting_ids={farm.mini.id},
         )
-        with p_elig, p_sched, p_ams:
+        with p_elig, p_sched:
             await scheduler.tick()
         await db_session.refresh(farm.item)
         assert farm.item.target_model == "P1S"
@@ -935,8 +932,8 @@ class TestRebalanceAcrossModels:
         farm.mini_q.status = queue_status
         db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
         await db_session.commit()
-        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched:
             await scheduler.tick()
         await db_session.refresh(farm.item)
         assert (farm.item.target_model, farm.item.rebalanced_at) == ("P1S", None)
@@ -951,8 +948,8 @@ class TestRebalanceAcrossModels:
         )
         db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
         await db_session.commit()
-        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched:
             await scheduler.tick()
         await db_session.refresh(farm.item)
         assert (farm.item.target_model, farm.item.rebalanced_at) == ("P1S", None)
@@ -966,8 +963,8 @@ class TestRebalanceAcrossModels:
         farm = await rebalance_farm(db_session, printer_factory, tmp_path)
         db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
         await db_session.commit()
-        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched:
             await scheduler.tick()
         moved = await _pending_rows(db_session)
         assert len(moved) == 3
@@ -990,7 +987,7 @@ class TestRebalanceAcrossModels:
         )
         db_session.add(second)
         await db_session.commit()
-        with p_elig, p_sched, p_ams:
+        with p_elig, p_sched:
             await scheduler.tick()
         await db_session.refresh(second)
         assert (second.target_model, second.rebalanced_at) == ("P1S", None), "cooldown: the line was moved seconds ago"
@@ -999,7 +996,7 @@ class TestRebalanceAcrossModels:
         for row in moved:
             row.rebalanced_at = row.rebalanced_at - timedelta(minutes=10)
         await db_session.commit()
-        with p_elig, p_sched, p_ams:
+        with p_elig, p_sched:
             await scheduler.tick()
         await db_session.refresh(second)
         assert second.rebalanced_from_model == "P1S" and model_key(second.target_model) == model_key("A1MINI")
@@ -1036,8 +1033,8 @@ class TestRebalanceAcrossModels:
 
         monkeypatch.setattr(queue_rebalance, "add_items_to_auto_queue", _refuse)
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         await db_session.refresh(farm.item)
@@ -1054,7 +1051,7 @@ class TestRebalanceAcrossModels:
         # The same run, called directly, names the reason — and counts nothing.
         # ⚠️ Inside the patch: outside it no printer is connected, so the run
         # would refuse for want of a receiver and never reach the writer.
-        with p_elig, p_sched, p_ams:
+        with p_elig, p_sched:
             result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
         assert (result.converted, result.created, result.moved_parts) == (0, 0, 0)
         assert (farm.item.id, "creation_failed") in result.skipped
@@ -1093,8 +1090,8 @@ class TestRebalanceAcrossModels:
 
         monkeypatch.setattr(queue_rebalance, "add_items_to_auto_queue", _commit_then_arm_the_flush)
 
-        p_elig, p_sched, p_ams = _patch_printer_manager({farm.p1s.id, farm.mini.id})
-        with p_elig, p_sched, p_ams:
+        p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+        with p_elig, p_sched:
             await scheduler.tick()
 
         rows = await _pending_rows(db_session)
@@ -1104,7 +1101,7 @@ class TestRebalanceAcrossModels:
         assert (farm.item.print_time_seconds, farm.item.batch_id) == (3600, None)
         assert (farm.item.rebalanced_at, farm.item.rebalanced_from_model) == (None, None)
 
-        with p_elig, p_sched, p_ams:
+        with p_elig, p_sched:
             result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
         assert (result.converted, result.created, result.moved_parts) == (0, 0, 0)
         assert (farm.item.id, "creation_failed") in result.skipped

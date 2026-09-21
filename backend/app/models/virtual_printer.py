@@ -34,12 +34,13 @@ class VirtualPrinter(Base):
     # the-same-red-PLA case, where the file cannot tell them apart and the user
     # already made the choice in Bambu Studio.
     #
-    # ⚠️ It is a toggle, not a fix, because a stored mapping makes
-    # ``_ensure_ams_mapping`` return early and skip
-    # ``_compute_ams_mapping_for_printer`` — prefer_lowest_filament, the
+    # ⚠️ It is a toggle, not a fix, because the captured mapping is handed to
+    # ``prepare_routing`` as ``manual_mapping: True`` — physical pins, i.e. a
+    # person pointing at trays. Pinned slots are bound to the feed the slicer
+    # named instead of being routed at dispatch, so prefer_lowest_filament, the
     # AMS-Backup gate (#1766), the inventory-remain overrides (#1508) and FTS
-    # routing (#2186) all live in there. Off (the default) is exactly today's
-    # behaviour.
+    # routing (#2186) have nothing left to decide for them. Off (the default) is
+    # exactly today's behaviour.
     save_ams_mapping: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     model: Mapped[str | None] = mapped_column(String(50), nullable=True)  # SSDP model code (server mode)
     access_code: Mapped[str | None] = mapped_column(String(8), nullable=True)  # 8 chars (server mode)
