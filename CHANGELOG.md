@@ -1,8 +1,16 @@
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-21
+
+Stable 0.6.1 release. Images: `ghcr.io/kainpl/bamdude:0.6.1` / `kainpl/bamdude:0.6.1` (`:latest` tracks this).
+
+This release makes the farm plan describe the machines that actually exist, makes the queue tell the operator when a job cannot currently be run, and finishes the Telegram integration's move from one shared bot to independently owned bots and chats. It also makes staggered starts safe to tune per tag and location, keeps backup and forecast controls honest for read-only operators, and closes the last routing gaps around base-material matching.
+
+Thanks to @UVCXanth for the precise field report and proposed contracts behind the farm-planning work in #49 and the Telegram-poller diagnosis in #50.
+
 ### Changed
 
-- **An order's first plan now starts with the farm it actually has.** When sliced recipes make the same needed parts on different models, BamDude chooses with the usable active AutoQueue lanes and the work already occupying them in mind, aiming to finish the order sooner rather than merely minimise one printer's hours. An offline printer remains part of that capacity; an archived, maintenance, paused or AutoQueue-disabled printer does not receive new planned work. If the only recipe needs a model the farm cannot currently take, it stays visible and the forecast names the blockage instead of pretending the parts are not needed. The same shared plan is used by an existing order and **Calculate** in the File Manager; queue dispatch and the operator's final split are unchanged.
+- **An order's first plan now starts with the farm it actually has.** When sliced recipes make the same needed parts on different models, BamDude chooses with the usable active AutoQueue lanes and the work already occupying them in mind, aiming to finish the order sooner rather than merely minimise one printer's hours. An offline printer remains part of that capacity; an archived, maintenance, paused or AutoQueue-disabled printer does not receive new planned work. If the only recipe needs a model the farm cannot currently take, it stays visible and the forecast names the blockage instead of pretending the parts are not needed. The same shared plan is used by an existing order and **Calculate** in the File Manager; queue dispatch and the operator's final split are unchanged. Contributed by @UVCXanth in #49.
 
 - **Staggered Start group limits can now be higher or lower than the default.** A default of two with an A1 mini tag set to six allows six starts in that group without raising the others. With both tags and locations enabled, each axis uses its own override (or inherits the default) and each tag/location pair uses the lower limit. Existing installations keep their effective heating limits during the upgrade: previously saved numbers above the old ceiling are reduced to that ceiling once. Raise them explicitly after upgrading if your electrical capacity permits it. Queue starts, direct prints, the stagger banner and ETA all use the same rule.
 
