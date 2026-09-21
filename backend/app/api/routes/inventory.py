@@ -3508,6 +3508,7 @@ async def get_inventory_forecast(
             UnmatchedReservedResponse(material=u.material, colour=u.colour, grams=u.grams)
             for u in result.unmatched_reserved
         ],
+        reserved_incomplete=result.reserved_incomplete,
     )
 
 

@@ -817,12 +817,23 @@ class TestForecastReserved:
         assert row["free_g"] == pytest.approx(500.0)
         assert row["over_committed"] is False
         assert body["unmatched_reserved"] == [{"material": "ASA", "colour": "red", "grams": 20.0}]
+        assert body["reserved_incomplete"] is False
+
+    async def test_unknown_order_weights_mark_the_forecast_response_incomplete(self, async_client, db_session):
+        await _spool(db_session, material="PLA", brand="Bambu", color_name="Black")
+        needs = Needs()
+        needs.unknown_by_key[NeedKey("PLA", "black")] += 1
+        with _promised(needs):
+            body = (await async_client.get("/api/v1/inventory/forecast")).json()
+        assert body["reserved_incomplete"] is True
+        assert body["items"][0]["reserved_g"] == 0.0
 
     async def test_no_orders_means_zero_reserved_and_an_empty_unmatched_list(self, async_client, db_session):
         await _spool(db_session, material="PLA", brand="Bambu", color_name="Black")
         body = (await async_client.get("/api/v1/inventory/forecast")).json()
         assert body["items"][0]["reserved_g"] == 0.0 and body["items"][0]["over_committed"] is False
         assert body["unmatched_reserved"] == []
+        assert body["reserved_incomplete"] is False
 
     async def test_reserved_and_free_are_sort_keys(self, async_client, db_session):
         await _spool(db_session, material="PLA", brand="Bambu", color_name="Black")  # 1000 left

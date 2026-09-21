@@ -6064,6 +6064,8 @@ export interface ForecastListPage {
   alert_count: number;
   global_lead_time_days: number;
   unmatched_reserved: UnmatchedReserved[];
+  /** One or more active order prints has no per-filament slicer weight. */
+  reserved_incomplete: boolean;
 }
 
 export interface ForecastListParams {

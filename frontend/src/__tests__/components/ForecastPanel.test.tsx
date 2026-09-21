@@ -98,6 +98,7 @@ function setupHandlers({
   shoppingList = [] as unknown[],
   detailSpools = [detailSpool(1), detailSpool(2)],
   unmatched = [] as { material: string; colour: string | null; grams: number }[],
+  reservedIncomplete = false,
 }: {
   rows?: SkuForecastRow[];
   alertCount?: number;
@@ -106,6 +107,7 @@ function setupHandlers({
   shoppingList?: unknown[];
   detailSpools?: ReturnType<typeof detailSpool>[];
   unmatched?: { material: string; colour: string | null; grams: number }[];
+  reservedIncomplete?: boolean;
 } = {}) {
   forecastRequests = [];
   chartRequests = [];
@@ -131,6 +133,7 @@ function setupHandlers({
         alert_count: alertCount,
         global_lead_time_days: 3,
         unmatched_reserved: unmatched,
+        reserved_incomplete: reservedIncomplete,
       });
     }),
     http.get('/api/v1/inventory/forecast/chart', ({ request }) => {
@@ -846,5 +849,13 @@ describe('ForecastPanel — failures are loud and the served mean is the only sp
     const before = attempts;
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(attempts).toBeGreaterThan(before));
+  });
+
+  it('warns that the order reservation is only the known part, even with no SKU rows', async () => {
+    setupHandlers({ rows: [], reservedIncomplete: true });
+    render(<ForecastPanel />);
+    expect(await screen.findByTestId('forecast-reserved-incomplete')).toHaveTextContent(
+      'Some active-order filament weights are unknown',
+    );
   });
 });

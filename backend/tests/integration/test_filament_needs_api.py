@@ -1,5 +1,7 @@
 """Filament needs over real rows: the plan's plates, the order's queue, the shelf of either backend."""
 
+import zipfile
+
 import pytest
 
 from backend.app.models.color_catalog import ColorCatalogEntry
@@ -13,6 +15,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.services import filament_needs
+from backend.app.services.archive import parse_plates_from_3mf
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 from backend.tests.unit.services.test_product_composition import counting_statements
@@ -71,6 +74,15 @@ async def shelf(db_session, tmp_path):
             model="P1S",
         )
     )
+    # Keep the metadata in the exact shape a library import persists.  The
+    # queue file still carries slicer's original ``used_g``; the plan must read
+    # the parser's ``used_grams`` cache without losing the same figures. The
+    # routing fixture intentionally has no object-exclusion gcode; restore
+    # that unrelated product-composition fact after parsing it.
+    with zipfile.ZipFile(hook.file_path) as zf:
+        parsed_plates = parse_plates_from_3mf(zf)
+    parsed_plates[0]["printable_objects"] = {"1": "hook"}
+    hook.file_metadata = {**hook.file_metadata, "plates": parsed_plates}
     product = Product(name="Hook")
     db_session.add_all([hook, product])
     await db_session.flush()

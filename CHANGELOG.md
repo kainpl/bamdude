@@ -2,6 +2,8 @@
 
 ### Fixed
 
+- **Order-filament weight now survives the library cache.** Imported 3MF metadata names a slicer channel's weight `used_grams`; a legacy queue reader calls it `used_g`. The plan advisor read only the latter, so before a job entered the queue it could say PETG needs 0 g while the plan total correctly carried the slicer's grams. Both shapes now use one validated reader, with the imported value taking precedence and a genuine 0 remaining a genuine 0. A channel whose weight is truly unavailable is now visibly *unknown* (or *at least* the known part), rather than a false 0 or «everything is on the shelf». The order strip and inventory forecast carry that uncertainty too: **Reserved** and **Reorder by** explicitly say when they include only known grams. Reported and diagnosed by @UVCXanth in #51.
+
 - **Filament Track Switch routing now follows the printer's actual topology.** FTS presence comes from the firmware's authoritative accessory bit, including removal and reconnects, and reaches both the first printer status and live updates. With FTS installed, any suitable AMS spool can feed either nozzle, but external holders are excluded everywhere — the mapping picker, printer queue, Auto-Queue and the final dispatch check — because the firmware itself cannot print through one. Explicit external selections on raw G-code and server calibration jobs are stopped too; unknown raw metadata is not guessed. On models that report the extra left-nozzle TPU capability, a plain `TPU` job waits for that confirmation on the left only; `TPU-AMS` remains its own material and the right nozzle is unaffected.
 
 ## [0.6.1] - 2026-09-21

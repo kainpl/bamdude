@@ -32,6 +32,7 @@ job is «will the shelf hold out».
 from __future__ import annotations
 
 import logging
+import math
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -176,6 +177,10 @@ class Needs:
         """Every key a row will be made for — the grams AND the gramless-but-typed ones."""
         return set(self.grams) | set(self.unknown_by_key)
 
+    def incomplete(self) -> bool:
+        """Whether at least one active print has no trustworthy per-filament weight."""
+        return self.unknown_prints > 0 or any(self.unknown_by_key.values())
+
 
 def need_of_plan(
     plan: OrderPlan | None, line_colours: dict[int, str | None], plate_filaments: dict[int, list[FilamentLine]]
@@ -315,16 +320,29 @@ logger = logging.getLogger(__name__)
 
 
 def _grams(value) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        grams = float(value)
+        if math.isfinite(grams) and grams >= 0:
+            return grams
+    return None
+
+
+def _filament_grams(filament: dict) -> float | None:
+    """Read current library metadata first, then legacy queue metadata.
+
+    ``parse_plates_from_3mf`` persists ``used_grams``.  Queue readers predate
+    that cache and return ``used_g`` directly from slice_info.config.  A real
+    zero is a valid current answer and must not fall through to the legacy key.
+    """
+    current = _grams(filament.get("used_grams"))
+    return current if current is not None else _grams(filament.get("used_g"))
 
 
 def _lines_of(raw: list[dict] | None) -> list[FilamentLine] | None:
     if not raw:
         return None
     return [
-        FilamentLine(material=(f.get("type") or None), grams=_grams(f.get("used_g")))
-        for f in raw
-        if isinstance(f, dict)
+        FilamentLine(material=(f.get("type") or None), grams=_filament_grams(f)) for f in raw if isinstance(f, dict)
     ]
 
 

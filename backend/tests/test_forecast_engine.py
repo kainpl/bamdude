@@ -746,6 +746,20 @@ class TestComputeForecastReserved:
         assert rows[_PLA_BLACK].free_g == pytest.approx(400.0)
         assert rows[("PLA", None, "eSun", "Black")].reserved_g == pytest.approx(100.0)
         assert result.unmatched_reserved == [engine.UnmatchedReserved("PLA", "coral", 50.0)]
+        assert result.reserved_incomplete is False
+
+    async def test_unknown_order_weight_marks_the_reserved_figure_incomplete(self, engine, db_session):
+        await _spool(db_session)
+        needs = Needs()
+        needs.unknown_by_key[NeedKey("PLA", "black")] += 1
+        result = await engine.compute_forecast_full(db_session, now=NOW, reserved=needs)
+        assert result.reserved_incomplete is True
+        assert result.rows[0].reserved_g == 0.0
+
+    async def test_an_untyped_unknown_print_also_marks_the_reserved_figure_incomplete(self, engine, db_session):
+        await _spool(db_session)
+        result = await engine.compute_forecast_full(db_session, now=NOW, reserved=Needs(unknown_prints=1))
+        assert result.reserved_incomplete is True
 
     async def test_an_archived_only_sku_is_never_a_candidate(self, engine, db_session):
         gone = await _spool(db_session, weight_used=100.0, archived_at=_naive(NOW - timedelta(days=1)))

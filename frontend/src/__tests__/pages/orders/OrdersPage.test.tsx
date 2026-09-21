@@ -148,4 +148,25 @@ describe('OrdersPage', () => {
     render(<OrdersPage />);
     expect(await screen.findByText('Filament: everything is on the shelf')).toBeInTheDocument();
   });
+
+  it('does not claim the shelf covers a partial or wholly unknown requirement', async () => {
+    vi.spyOn(api, 'getOrdersFilament').mockResolvedValue({
+      ...EMPTY_FARM, orders_count: 1,
+      rows: [
+        { material: 'PETG', colour: null, need_g: 120, have_g: 900, have_type_g: 900, short_g: 0, unknown_prints: 1, orders_count: 1 },
+      ],
+    });
+    render(<OrdersPage />);
+    const chip = await screen.findByTestId('filament-strip-PETG');
+    expect(chip).toHaveTextContent('at least 120g / 900g');
+    expect(chip).toHaveAttribute('title', '1 order · 1 print without grams');
+    expect(screen.queryByTestId('filament-strip-covered')).not.toBeInTheDocument();
+  });
+
+  it('shows an untyped unknown requirement instead of hiding the strip', async () => {
+    vi.spyOn(api, 'getOrdersFilament').mockResolvedValue({ ...EMPTY_FARM, unknown_prints: 1 });
+    render(<OrdersPage />);
+    expect(await screen.findByTestId('filament-strip')).toHaveTextContent('1 print with unknown filament');
+    expect(screen.queryByTestId('filament-strip-covered')).not.toBeInTheDocument();
+  });
 });

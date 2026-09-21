@@ -75,6 +75,9 @@ class ForecastListPage(BaseModel):
     alert_count: int
     global_lead_time_days: int
     unmatched_reserved: list[UnmatchedReservedResponse]
+    # The known reserved grams are still useful, but cannot promise that every
+    # active order is covered when a slicer omitted a channel weight.
+    reserved_incomplete: bool = False
 
 
 class ForecastChartSku(BaseModel):

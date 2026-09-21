@@ -9,6 +9,7 @@ from backend.app.services.filament_needs import (
     NeedKey,
     QueuedNeed,
     SpoolStock,
+    _lines_of,
     colour_matches,
     coloured_index,
     farm_of,
@@ -72,6 +73,36 @@ def test_unknown_grams_are_counted_per_key_and_a_plate_without_filaments_per_ord
 def test_zero_grams_is_an_answer():
     needs = need_of_plan(_plan([(10, 100, 2)]), {10: None}, {100: [FilamentLine("PETG", 0.0)]})
     assert needs.grams == {NeedKey("PETG", None): 0.0} and needs.unknown_prints == 0
+
+
+def test_cached_and_legacy_filament_weights_share_one_safe_reader():
+    lines = _lines_of(
+        [
+            {"type": "PETG", "used_grams": 126.7},
+            {"type": "PLA", "used_g": 2.0},
+            {"type": "ABS", "used_grams": 0.0, "used_g": 99.0},
+            {"type": "ASA", "used_grams": float("nan"), "used_g": 3.0},
+            {"type": "PA", "used_grams": -1.0, "used_g": 4.0},
+            {"type": "PC", "used_grams": "5"},
+            {"type": "PVA", "used_g": True},
+        ]
+    )
+    assert [(line.material, line.grams) for line in lines or []] == [
+        ("PETG", 126.7),
+        ("PLA", 2.0),
+        ("ABS", 0.0),
+        ("ASA", 3.0),
+        ("PA", 4.0),
+        ("PC", None),
+        ("PVA", None),
+    ]
+
+
+def test_a_cached_plate_weight_reaches_the_need_instead_of_becoming_unknown():
+    lines = _lines_of([{"type": "PETG", "used_grams": 126.7}])
+    needs = need_of_plan(_plan([(10, 100, 2)]), {10: None}, {100: lines or []})
+    assert needs.grams == {NeedKey("PETG", None): 253.4}
+    assert needs.incomplete() is False
 
 
 def test_queue_rows_add_their_own_need():

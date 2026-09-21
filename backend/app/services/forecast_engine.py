@@ -362,6 +362,7 @@ class UnmatchedReserved:
 class ForecastResult:
     rows: list[SkuForecastRow]
     unmatched_reserved: list[UnmatchedReserved]
+    reserved_incomplete: bool = False
 
 
 def reserved_by_sku(
@@ -630,6 +631,7 @@ async def compute_forecast_full(
     # ── Project what active orders have promised onto the live groups ────────
     if reserved is None:
         reserved = await needs_grams_of_farm(db)
+    reserved_incomplete = reserved.incomplete()
     live = [
         LiveSku(key, g.fields, g.rgba_live or g.rgba_archived, g.remaining_g)
         for key, g in groups.items()
@@ -728,7 +730,7 @@ async def compute_forecast_full(
             )
         )
 
-    return ForecastResult(rows=rows, unmatched_reserved=unmatched)
+    return ForecastResult(rows=rows, unmatched_reserved=unmatched, reserved_incomplete=reserved_incomplete)
 
 
 async def compute_forecast(

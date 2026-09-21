@@ -17,12 +17,19 @@ export function FilamentNeeds({ needs }: { needs: OrderNeeds }) {
         {needs.rows.map((row) => {
           const short = row.short_g != null && row.short_g > 0;
           const shelfUnknown = row.have_g == null;
+          const weightUnknown = row.unknown_prints > 0 && row.need_g === 0;
           return (
             <li key={needTestId(row.material, row.colour)} data-testid={needTestId(row.material, row.colour)} data-short={String(short)}
                 className={`flex flex-wrap items-baseline gap-x-3 ${short ? 'text-amber-300' : 'text-white'}`}>
               <span className="font-medium">{row.colour ? `${row.material} · ${row.colour}` : row.material}</span>
               <span className="text-bambu-gray">{t('orders.filament.need')}</span>
-              <span className="tabular-nums">{formatWeight(row.need_g)}</span>
+              <span className="tabular-nums">
+                {weightUnknown
+                  ? t('orders.filament.weightUnknown')
+                  : row.unknown_prints > 0
+                    ? t('orders.filament.atLeast', { amount: formatWeight(row.need_g) })
+                    : formatWeight(row.need_g)}
+              </span>
               <span className="text-bambu-gray">{t('orders.filament.shelf')}</span>
               {shelfUnknown ? (
                 <span title={t('orders.filament.stockUnavailable')}>—</span>
@@ -34,12 +41,13 @@ export function FilamentNeeds({ needs }: { needs: OrderNeeds }) {
                   )}
                 </span>
               )}
-              {short && <span>{t('orders.filament.short', { amount: formatWeight(row.short_g as number) })}</span>}
+              {short && <span>{t(row.unknown_prints > 0 ? 'orders.filament.shortAtLeast' : 'orders.filament.short', { amount: formatWeight(row.short_g as number) })}</span>}
+              {row.unknown_prints > 0 && <span className="text-amber-300">{t('orders.filament.unknownPrints', { count: row.unknown_prints })}</span>}
             </li>
           );
         })}
       </ul>
-      {needs.unknown_prints > 0 && <p className="text-xs text-amber-300 mt-2">{t('orders.filament.unknownPrints', { count: needs.unknown_prints })}</p>}
+      {needs.unknown_prints > 0 && <p className="text-xs text-amber-300 mt-2">{t('orders.filament.unattributedPrints', { count: needs.unknown_prints })}</p>}
     </div>
   );
 }

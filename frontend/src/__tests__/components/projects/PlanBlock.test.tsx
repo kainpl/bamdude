@@ -1409,7 +1409,7 @@ describe('PlanBlock', () => {
     expect(pla).toHaveTextContent('PLA');
     expect(pla).not.toHaveTextContent('in total');
     expect(pla).toHaveAttribute('data-short', 'false');
-    expect(screen.getByText('1 print without grams')).toBeInTheDocument();
+    expect(screen.getByText('1 print with unknown filament')).toBeInTheDocument();
     expect(screen.getByLabelText(/slicer estimate/)).toBeInTheDocument();
   });
 
@@ -1426,6 +1426,18 @@ describe('PlanBlock', () => {
     render(<PlanBlock order={order} canEdit />);
     expect(await screen.findByTestId('plan-empty')).toBeInTheDocument();
     expect(await screen.findByTestId('filament-need-PETG')).toHaveTextContent('500g');
+  });
+
+  it('does not present a channel without a slicer weight as zero grams', async () => {
+    vi.spyOn(api, 'getOrderFilament').mockResolvedValue({
+      ...EMPTY_NEEDS,
+      rows: [{ material: 'PETG', colour: null, need_g: 0, have_g: 900, have_type_g: 900, short_g: 0, unknown_prints: 1 }],
+    });
+    render(<PlanBlock order={order} canEdit />);
+    const row = await screen.findByTestId('filament-need-PETG');
+    expect(row).toHaveTextContent('weight unknown');
+    expect(row).toHaveTextContent('1 print without grams');
+    expect(row).not.toHaveTextContent('need 0g');
   });
 
   it('says so when the shelf could not be read', async () => {

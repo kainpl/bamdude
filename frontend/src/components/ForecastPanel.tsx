@@ -454,6 +454,12 @@ export function ForecastPanel() {
         <UsageChart series={chartSeries} days={chartDays} onDaysChange={setChartDays} />
       )}
 
+      {forecastQuery.data?.reserved_incomplete && (
+        <p className="rounded-lg border border-amber-400/50 bg-amber-400/10 px-3 py-2 text-xs text-amber-200" data-testid="forecast-reserved-incomplete">
+          {t('forecast.reservedIncomplete')}
+        </p>
+      )}
+
       {/* ── Table ── */}
       {forecastQuery.isLoading ? (
         <LoadingBlock label={t('common.loading')} />
