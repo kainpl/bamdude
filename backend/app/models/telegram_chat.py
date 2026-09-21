@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
@@ -93,9 +93,13 @@ class TelegramChat(Base):
     """
 
     __tablename__ = "telegram_chats"
+    # A chat's identity is the pair (bot, chat_id): Telegram's private chat
+    # id is the user's id, identical in every bot they start, so the same
+    # person is a different chat in each bot — one row per bot (m180).
+    __table_args__ = (Index("ix_telegram_chats_provider_chat", "provider_id", "chat_id", unique=True),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False, index=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     # The bot this chat wrote to (m180). A Telegram chat exists for exactly
     # one bot — the one whose token registered it — and a provider row IS a
     # bot, so the binding is the provider's id and it is never NULL: the
