@@ -63,6 +63,7 @@ class LineForecastOut(BaseModel):
     after_seconds: int | None
     unknown_prints: int
     unroutable_prints: int
+    eta_complete: bool
     rows: list[RowForecastOut] = []
 
 
@@ -75,6 +76,7 @@ class OrderForecastOut(BaseModel):
     machine_seconds: int | None
     unknown_prints: int
     unroutable_prints: int
+    eta_complete: bool
     ahead_count: int
     assumptions: list[str]
 

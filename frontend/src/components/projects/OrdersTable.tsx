@@ -51,7 +51,7 @@ export function OrdersTable({
         case 'remaining': return remaining(o);
         case 'printing': return o.prints_in_progress;
         case 'queued': return o.prints_queued;
-        case 'ready': return forecasts?.[o.id]?.now_eta ? Date.parse(forecasts[o.id].now_eta!) : Number.MAX_SAFE_INTEGER;
+        case 'ready': return forecasts?.[o.id]?.eta_complete && forecasts[o.id]?.now_eta ? Date.parse(forecasts[o.id].now_eta!) : Number.MAX_SAFE_INTEGER;
         case 'hours': return forecasts?.[o.id]?.machine_seconds ?? -1;
       }
     };
@@ -116,6 +116,8 @@ export function OrdersTable({
                     '—'
                   ) : !forecasts ? (
                     '…'
+                  ) : !forecasts[o.id]?.eta_complete ? (
+                    t('orders.figures.readyIncomplete')
                   ) : !forecasts[o.id]?.now_eta ? (
                     t('farmForecast.unavailable')
                   ) : (

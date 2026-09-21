@@ -450,6 +450,7 @@ def _order_forecast_fields(f: farm_forecast.OrderForecast) -> dict:
         "machine_seconds": f.machine_seconds,
         "unknown_prints": f.unknown_prints,
         "unroutable_prints": f.unroutable_prints,
+        "eta_complete": f.eta_complete,
         "ahead_count": f.ahead_count,
         "assumptions": list(f.assumptions),
     }
@@ -1821,6 +1822,7 @@ async def get_order_forecast(
                 after_seconds=line.after_seconds,
                 unknown_prints=line.unknown_prints,
                 unroutable_prints=line.unroutable_prints,
+                eta_complete=line.eta_complete,
                 rows=[RowForecastOut(plate_id=r.plate_id, proposed_split=r.proposed_split) for r in line.rows],
             )
             for line in f.lines

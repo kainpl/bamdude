@@ -36,6 +36,19 @@ export interface PlanProjection {
   cost: number | null;
 }
 
+/** The figures for one row's effective enqueue distribution.  This is shared
+ * by the row UI and whole-plan totals so a split cannot look like one file but
+ * enqueue another. */
+export interface RowProjection {
+  prints: number;
+  seconds: number | null;
+  grams: number;
+  /** Whether at least one effective print supplied a weight. The total follows
+   * the engine's additive rule, while a row with no weight must not read 0 g. */
+  hasGrams: boolean;
+  cost: number | null;
+}
+
 /** `plate_id → parts made by ONE print of that plate, toward this line. */
 export type YieldByPlate = Record<number, PlanPartCount[]>;
 
@@ -136,6 +149,47 @@ export function splitIsOff(split: Record<number, number> | undefined, count: num
   return split != null && splitTotal(split) !== count;
 }
 
+export function projectRow(
+  row: PlanRow,
+  count: number,
+  chosen: number | undefined,
+  split: Record<number, number> | undefined,
+): RowProjection {
+  let seconds = 0;
+  let timeUnknown = false;
+  let grams = 0;
+  let hasGrams = false;
+  let cost = 0;
+  let costed = false;
+  const options = [chosenPlate(row), ...row.alternatives];
+  const distribution = rowDistribution(row, count, chosen, split);
+
+  for (const entry of distribution) {
+    // `rowDistribution` only emits the row's plate or an alternative. Keep
+    // the defensive fallback so a stale split never turns an unknown figure
+    // into a made-up zero while React is reconciling a changed server plan.
+    const plate = options.find((option) => option.plate_id === entry.plate_id);
+    if (!plate || plate.print_time_seconds == null || plate.time_unknown) timeUnknown = true;
+    else seconds += entry.count * plate.print_time_seconds;
+    if (plate?.filament_used_grams != null) {
+      grams += entry.count * plate.filament_used_grams;
+      hasGrams = true;
+    }
+    if (plate?.cost != null) {
+      cost += entry.count * plate.cost;
+      costed = true;
+    }
+  }
+
+  return {
+    prints: distribution.reduce((sum, entry) => sum + entry.count, 0),
+    seconds: timeUnknown ? null : seconds,
+    grams: Math.round(grams * 100) / 100,
+    hasGrams,
+    cost: costed ? Math.round(cost * 100) / 100 : null,
+  };
+}
+
 /**
  * What the operator typed in a count box, as a count.
  *
@@ -168,6 +222,7 @@ export function projectPlan(
   counts: Record<number, number>,
   yields: YieldByPlate,
   chosen: ChosenByRow = {},
+  split: SplitByRow = {},
 ): PlanProjection {
   let prints = 0;
   let seconds = 0;
@@ -181,22 +236,18 @@ export function projectPlan(
   const names = new Map<number, string>();
 
   for (const row of line.rows) {
-    const n = Math.max(0, Math.trunc(counts[row.plate_id] ?? row.count));
-    if (n === 0) continue;
+    const count = Math.max(0, Math.trunc(counts[row.plate_id] ?? row.count));
+    const projected = projectRow(row, count, chosen[row.plate_id], split[row.plate_id]);
+    if (projected.prints === 0) continue;
 
-    // ⚠️ The FIGURES follow the file the row is set to, the YIELD never does:
-    // an alternative is by construction a plate making the same counted parts,
-    // so switching files changes what the farm spends and nothing about what
-    // comes off it. A split (`rowDistribution`) is deliberately NOT projected
-    // here — it is a routing decision taken at the moment of queueing, and the
-    // row's figures stay those of the one file it is showing.
-    const plate = chosenPlate(row, chosen[row.plate_id]);
-    prints += n;
-    if (plate.print_time_seconds == null || plate.time_unknown) timeUnknown = true;
-    else seconds += n * plate.print_time_seconds;
-    if (plate.filament_used_grams != null) grams += n * plate.filament_used_grams;
-    if (plate.cost != null) {
-      cost += n * plate.cost;
+    // Alternatives promise the same output, but their figures can differ.
+    // `projectRow` follows the effective enqueue distribution for those.
+    prints += projected.prints;
+    if (projected.seconds == null) timeUnknown = true;
+    else seconds += projected.seconds;
+    grams += projected.grams;
+    if (projected.cost != null) {
+      cost += projected.cost;
       costed = true;
     }
 
@@ -206,7 +257,7 @@ export function projectPlan(
       continue;
     }
     for (const entry of perPrint) {
-      made.set(entry.part_id, (made.get(entry.part_id) ?? 0) + n * entry.count);
+      made.set(entry.part_id, (made.get(entry.part_id) ?? 0) + projected.prints * entry.count);
       names.set(entry.part_id, entry.name);
     }
   }

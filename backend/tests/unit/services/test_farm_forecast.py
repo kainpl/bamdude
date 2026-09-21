@@ -176,6 +176,15 @@ def test_a_model_with_no_printer_is_unroutable():
     assert f.unroutable_prints == 1
 
 
+def test_partial_placement_never_marks_the_order_or_line_eta_complete():
+    """A routable P1S print still gets a timestamp, but it is not the order's
+    finish while a second model has nowhere to run."""
+    plan = _plan(7, [(100, 1, H, "P1S", []), (200, 1, H, "X1C", [])])
+    f = _one(FarmSnapshot(printers=[_machine(1, "P1S")], staged=[]), plan)
+    assert f.now_seconds == H and f.unroutable_prints == 1 and f.eta_complete is False
+    assert f.lines[0].now_seconds == H and f.lines[0].unroutable_prints == 1 and f.lines[0].eta_complete is False
+
+
 def test_queued_rows_of_the_order_give_an_eta_without_a_plan():
     snap = FarmSnapshot(printers=[_machine(1, queued=[(7, H), (7, None)])], staged=[])
     f = forecast_orders(snap, {}, [7], {7}, NOW)[7]

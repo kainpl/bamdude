@@ -144,7 +144,7 @@ export function PlanLine({
     return out;
   }, [plates, counted]);
 
-  const projected = projectPlan(line, counts, yields, chosen);
+  const projected = projectPlan(line, counts, yields, chosen, split);
   const surplus = projected.surplusAfter ?? line.surplus_after;
 
   // ⚠️ A row's ALTERNATIVES are as planned as the row itself — the row already
@@ -174,7 +174,7 @@ export function PlanLine({
                 .join(' · ')}`}
             </p>
           )}
-          {forecast?.now_eta && (
+          {forecast?.eta_complete && forecast.now_eta && (
             <span className="text-xs text-bambu-gray" data-testid={`plan-line-${line.line_id}-ready`}>
               {t('orders.plan.readyAt', { when: etaShort(forecast.now_eta, settings?.time_format) })}
             </span>

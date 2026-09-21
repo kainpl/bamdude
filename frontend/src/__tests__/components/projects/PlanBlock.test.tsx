@@ -288,7 +288,7 @@ const farm = [
  *  specific forecast. */
 const EMPTY_FORECAST: OrderForecastDetail = {
   project_id: order.id, now_eta: null, now_seconds: null, after_eta: null, after_seconds: null, machine_seconds: 0,
-  unknown_prints: 0, unroutable_prints: 0, ahead_count: 0, assumptions: [], lines: [],
+  unknown_prints: 0, unroutable_prints: 0, eta_complete: true, ahead_count: 0, assumptions: [], lines: [],
 };
 
 /** No filament need reported yet — the shape every test gets unless it asks
@@ -1261,7 +1261,7 @@ describe('PlanBlock', () => {
     vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
     vi.spyOn(api, 'getOrderForecast').mockResolvedValue({
       ...EMPTY_FORECAST,
-      lines: [{ line_id: 10, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: null, after_seconds: null, unknown_prints: 0, unroutable_prints: 0,
+      lines: [{ line_id: 10, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: null, after_seconds: null, unknown_prints: 0, unroutable_prints: 0, eta_complete: true,
                 rows: [{ plate_id: 100, proposed_split: { 100: 0, 400: 1 } }] }],
     });
     render(<PlanBlock order={order} canEdit />);
@@ -1274,6 +1274,36 @@ describe('PlanBlock', () => {
     await userEvent.click(screen.getByTestId('plan-row-10-100-apply-farm'));
     expect(screen.getByTestId('plan-row-10-100-split-100')).toHaveValue(0);
     expect(screen.getByTestId('plan-row-10-100-split-400')).toHaveValue(1);
+    expect(screen.getByTestId('plan-forecast-stale')).toHaveTextContent('previous plan');
+    expect(screen.queryByTestId('plan-line-10-ready')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('plan-row-10-100-proposal')).not.toBeInTheDocument();
+
+    // The comparison is against effective enqueue items, not whether an editor
+    // map exists: returning exactly to the server plan makes its forecast fresh.
+    fireEvent.change(screen.getByTestId('plan-row-10-100-split-100'), { target: { value: '1' } });
+    fireEvent.change(screen.getByTestId('plan-row-10-100-split-400'), { target: { value: '0' } });
+    expect(screen.queryByTestId('plan-forecast-stale')).not.toBeInTheDocument();
+    expect(screen.getByTestId('plan-line-10-ready')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-row-10-100-proposal')).toBeInTheDocument();
+  });
+
+  it('uses the effective split for totals instead of the file shown before splitting', async () => {
+    vi.spyOn(api, 'getOrderPlan').mockResolvedValue(planWithAlternative);
+    render(<PlanBlock order={order} canEdit />);
+
+    expect(await screen.findByTestId('plan-totals-time')).toHaveTextContent('1h 30m');
+    expect(screen.getByTestId('plan-totals-grams')).toHaveTextContent('120.0');
+    expect(screen.getByTestId('plan-totals-cost')).toHaveTextContent('₴2.40');
+
+    await userEvent.click(screen.getByTestId('plan-row-10-100-split'));
+    fireEvent.change(screen.getByTestId('plan-row-10-100-split-100'), { target: { value: '0' } });
+    fireEvent.change(screen.getByTestId('plan-row-10-100-split-400'), { target: { value: '1' } });
+
+    // 2 h on the P1S file + the 30 min small plate; 150 g / $3 replace
+    // 100 g / $2. Both totals must match the same entries enqueue would send.
+    expect(screen.getByTestId('plan-totals-time')).toHaveTextContent('2h 30m');
+    expect(screen.getByTestId('plan-totals-grams')).toHaveTextContent('170.0');
+    expect(screen.getByTestId('plan-totals-cost')).toHaveTextContent('₴3.40');
   });
 
   it('keeps a row’s alternative out of the add-plate menu', async () => {

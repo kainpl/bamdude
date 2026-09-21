@@ -5336,6 +5336,9 @@ export default {
       printing: 'Printing',
       queued: 'Queued',
       readyAt: 'Ready ≈',
+      readyIncomplete: 'Incomplete estimate',
+      forecastStale: 'Refresh after plan changes',
+      draftTotalsBelow: 'See edited plan below',
       machineHours: 'Machine h left',
       afterAhead_one: 'after {{count}} more urgent order: {{when}}',
       afterAhead_other: 'after {{count}} more urgent orders: {{when}}',
@@ -5400,6 +5403,7 @@ export default {
       truncated: 'The plan stopped early — this order needs more prints than one plan shows',
       outstanding: 'Outstanding:',
       readyAt: 'ready ≈ {{when}}',
+      forecastStale: 'The farm estimate is for the previous plan. Send this draft to the queue, or undo the changes to see it again.',
       rebalance: {
         button: 'Rebalance',
         title: 'Move this line’s pending prints to idle printers of another model when that finishes sooner',

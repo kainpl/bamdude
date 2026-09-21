@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -48,6 +48,9 @@ export function OrderPage() {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
+  const [planDraftChanged, setPlanDraftChanged] = useState(false);
+
+  useEffect(() => setPlanDraftChanged(false), [id]);
 
   const {
     data: order,
@@ -179,11 +182,15 @@ export function OrderPage() {
 
       {canEdit && <CloseSuggestionBanner order={order} onComplete={() => setStatus.mutate('completed')} />}
 
-      <OrderFigures figures={order.figures} forecast={order.status === 'active' ? forecast.data ?? null : null} />
+      <OrderFigures
+        figures={order.figures}
+        forecast={order.status === 'active' ? forecast.data ?? null : null}
+        forecastStale={order.status === 'active' && planDraftChanged}
+      />
 
       <OrderLinesTable order={order} canEdit={canEdit} />
 
-      <PlanBlock order={order} canEdit={canEdit} />
+      <PlanBlock order={order} canEdit={canEdit} onDraftChanged={setPlanDraftChanged} />
 
       <ProcurementChecklist order={order} canEdit={canEdit} />
 

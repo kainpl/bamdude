@@ -157,6 +157,9 @@ class LineForecast:
     after_seconds: int | None
     unknown_prints: int
     unroutable_prints: int
+    #: A date names the whole line only when every planned print participated
+    #: in this run.  The date itself may still be absent when nothing remains.
+    eta_complete: bool
     rows: list[RowForecast] = field(default_factory=list)
 
 
@@ -170,6 +173,10 @@ class OrderForecast:
     machine_seconds: int | None
     unknown_prints: int
     unroutable_prints: int
+    #: See ``LineForecast.eta_complete``.  This is deliberately separate from
+    #: the advisory assumptions: unknown / unroutable is a missing planned
+    #: print, while assumptions qualify a complete simulation.
+    eta_complete: bool
     ahead_count: int
     lines: list[LineForecast] = field(default_factory=list)
     #: What the snapshot could not model — the hint every surface shows (spec §8).
@@ -542,6 +549,7 @@ def _order_result(
                 after_seconds=None,
                 unknown_prints=state.line_unknown[line.line_id],
                 unroutable_prints=state.line_unroutable[line.line_id],
+                eta_complete=(state.line_unknown[line.line_id] == 0 and state.line_unroutable[line.line_id] == 0),
                 rows=rows,
             )
         )
@@ -555,6 +563,7 @@ def _order_result(
         machine_seconds=machine_seconds_of(plan),
         unknown_prints=state.unknown[order_id],
         unroutable_prints=state.unroutable[order_id],
+        eta_complete=state.unknown[order_id] == 0 and state.unroutable[order_id] == 0,
         ahead_count=ahead,
         lines=lines,
         assumptions=list(state.assumptions),
@@ -846,6 +855,7 @@ def _empty_forecast(project_id: int) -> OrderForecast:
         machine_seconds=0,
         unknown_prints=0,
         unroutable_prints=0,
+        eta_complete=True,
         ahead_count=0,
         lines=[],
         assumptions=[],

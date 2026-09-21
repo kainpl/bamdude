@@ -8,7 +8,7 @@ import { formatDuration } from '../../utils/date';
 import { normalizeModelName } from '../../utils/printer';
 import { Button } from '../Button';
 import { PrintModal } from '../PrintModal';
-import { chosenPlate, parseCount, splitIsOff, type ChosenPlate } from './planMath';
+import { chosenPlate, parseCount, projectRow, splitIsOff, type ChosenPlate } from './planMath';
 import { Select } from '../Select';
 
 /** The server's own ceiling on one enqueue item (`PlanEnqueueItem.count`). */
@@ -57,10 +57,10 @@ function optionLabel(plate: ChosenPlate): string {
 /**
  * One recommended plate, printed `count` times.
  *
- * ⚠️ **The figures on the row are PER PRINT** — `count` is the multiplier, and
- * multiplying is this component's whole job. That is also why the count editor
- * is here rather than in a modal: the operator changes a number and reads the
- * consequence in the same line.
+ * ⚠️ **The figures on the row describe its effective enqueue distribution.**
+ * Until split opens that is one file × `count`; afterwards each file carries
+ * its own time, grams and cost. The count editor stays here so the operator
+ * changes a number and reads that consequence in the same line.
  *
  * ⚠️ **`plate_id` is `ProductPlate.id`, `plate_index` is the slicer's.** The
  * queue and `PrintModal` speak the second one, where 0 means "no plate pinned",
@@ -161,6 +161,7 @@ export function PlanRow({
     'px-2 py-1 rounded border border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary disabled:opacity-40 disabled:hover:bg-transparent';
 
   const currentSplit = split ?? { [plate.plate_id]: count };
+  const figures = projectRow(row, count, chosen, split);
 
   /** The file this print should use, given the printer it is going to.
    *
@@ -257,16 +258,16 @@ export function PlanRow({
       </td>
 
       <td className="px-3 py-2 text-right text-bambu-gray tabular-nums whitespace-nowrap">
-        {plate.print_time_seconds == null ? '—' : formatDuration(plate.print_time_seconds * count)}
+        {figures.seconds == null ? '—' : formatDuration(figures.seconds)}
       </td>
 
       <td className="px-3 py-2 text-right text-bambu-gray tabular-nums whitespace-nowrap">
-        {plate.filament_used_grams == null ? '—' : (plate.filament_used_grams * count).toFixed(1)}
+        {figures.hasGrams ? figures.grams.toFixed(1) : '—'}
       </td>
 
       {showCost && (
         <td className="px-3 py-2 text-right text-bambu-gray tabular-nums whitespace-nowrap">
-          {plate.cost == null ? '—' : formatMoney(plate.cost * count, currency)}
+          {figures.cost == null ? '—' : formatMoney(figures.cost, currency)}
         </td>
       )}
 

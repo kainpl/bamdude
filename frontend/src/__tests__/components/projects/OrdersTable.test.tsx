@@ -13,7 +13,7 @@ const row = (over: Partial<OrderListItem>): OrderListItem => ({
 
 const fc = (over: Partial<OrderForecast>): OrderForecast => ({
   project_id: 1, now_eta: null, now_seconds: null, after_eta: null, after_seconds: null, machine_seconds: null,
-  unknown_prints: 0, unroutable_prints: 0, ahead_count: 0, assumptions: ['drying'], ...over,
+  unknown_prints: 0, unroutable_prints: 0, eta_complete: true, ahead_count: 0, assumptions: ['drying'], ...over,
 });
 
 describe('OrdersTable', () => {
@@ -84,6 +84,17 @@ describe('OrdersTable', () => {
     expect(screen.getByTestId('order-1-ready')).toHaveTextContent('No estimate');
     render(<OrdersTable orders={[row({ id: 5, name: 'C' })]} />);
     expect(screen.getByTestId('order-5-ready')).toHaveTextContent('…');
+  });
+
+  it('does not call the placed subset ready when the forecast is incomplete', () => {
+    render(
+      <OrdersTable
+        orders={[row({ id: 1, name: 'A' })]}
+        forecasts={{ 1: fc({ now_eta: '2026-09-07T10:00:00Z', eta_complete: false, unroutable_prints: 1 }) }}
+      />,
+    );
+    expect(screen.getByTestId('order-1-ready')).toHaveTextContent('Incomplete estimate');
+    expect(screen.getByTestId('order-1-ready')).not.toHaveTextContent('Sep');
   });
 
   it('a failed fetch reads as an error, never as «No estimate»', () => {

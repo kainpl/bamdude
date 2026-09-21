@@ -26,7 +26,15 @@ function Tile({ label, value, detail }: { label: ReactNode; value: string | numb
  * bit of arithmetic is formatting. Three copies of "printed" disagreeing with
  * each other is what this rule exists to prevent.
  */
-export function OrderFigures({ figures, forecast }: { figures: ProjectFigures; forecast?: OrderForecastDetail | null }) {
+export function OrderFigures({
+  figures,
+  forecast,
+  forecastStale = false,
+}: {
+  figures: ProjectFigures;
+  forecast?: OrderForecastDetail | null;
+  forecastStale?: boolean;
+}) {
   const { t } = useTranslation();
   // The app-wide currency, fetched the way every other money-showing screen
   // fetches it; `formatMoney` covers the unresolved first paint.
@@ -67,17 +75,30 @@ export function OrderFigures({ figures, forecast }: { figures: ProjectFigures; f
         />
         <Tile label={t('orders.figures.defective')} value={figures.defective} />
         <Tile
-          label={<>{t('orders.figures.readyAt')} {forecast && <ForecastHint forecast={forecast} />}</>}
-          value={forecast ? (forecast.now_eta ? etaShort(forecast.now_eta, settings?.time_format) : t('farmForecast.unavailable')) : '…'}
+          label={<>{t('orders.figures.readyAt')} {forecast && !forecastStale && <ForecastHint forecast={forecast} />}</>}
+          value={
+            forecastStale
+              ? t('orders.figures.forecastStale')
+              : forecast
+                ? forecast.eta_complete && forecast.now_eta
+                  ? etaShort(forecast.now_eta, settings?.time_format)
+                  : forecast.eta_complete
+                    ? t('farmForecast.unavailable')
+                    : t('orders.figures.readyIncomplete')
+                : '…'
+          }
         />
-        <Tile label={t('orders.figures.machineHours')} value={forecast ? hoursMinutes(forecast.machine_seconds) : '…'} />
+        <Tile
+          label={t('orders.figures.machineHours')}
+          value={forecastStale ? t('orders.figures.draftTotalsBelow') : forecast ? hoursMinutes(forecast.machine_seconds) : '…'}
+        />
       </div>
 
-      {forecast && forecast.after_eta && forecast.after_eta !== forecast.now_eta && (
+      {!forecastStale && forecast?.eta_complete && forecast.after_eta && forecast.after_eta !== forecast.now_eta && (
         <p className="text-xs text-bambu-gray">{t('orders.figures.afterAhead', { count: forecast.ahead_count, when: etaShort(forecast.after_eta, settings?.time_format) })}</p>
       )}
-      {forecast && forecast.unknown_prints > 0 && <p className="text-xs text-amber-300">{t('orders.figures.unknownPrints', { count: forecast.unknown_prints })}</p>}
-      {forecast && forecast.unroutable_prints > 0 && <p className="text-xs text-amber-300">{t('orders.figures.unroutablePrints', { count: forecast.unroutable_prints })}</p>}
+      {!forecastStale && forecast && forecast.unknown_prints > 0 && <p className="text-xs text-amber-300">{t('orders.figures.unknownPrints', { count: forecast.unknown_prints })}</p>}
+      {!forecastStale && forecast && forecast.unroutable_prints > 0 && <p className="text-xs text-amber-300">{t('orders.figures.unroutablePrints', { count: forecast.unroutable_prints })}</p>}
 
       {/*
         The bar lives alone in this wrapper so the stray-zero detector can be

@@ -45,6 +45,7 @@ export function PlanBlock({
   canEdit,
   variant = 'page',
   onEnqueued,
+  onDraftChanged,
 }: {
   order: Order;
   canEdit: boolean;
@@ -52,6 +53,9 @@ export function PlanBlock({
   variant?: 'page' | 'dialog';
   /** Fired once per successful enqueue, after the invalidations. */
   onEnqueued?: () => void;
+  /** The page uses this to keep its order-level ETA from describing an edited
+   * draft. The dialog relies on this block's own notice. */
+  onDraftChanged?: (changed: boolean) => void;
 }) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
@@ -295,14 +299,20 @@ export function PlanBlock({
     let grams = 0;
     let cost: number | null = null;
     for (const line of lines) {
-      const projected = projectPlan(line, counts[line.line_id] ?? {}, {}, chosen[line.line_id] ?? {});
+      const projected = projectPlan(
+        line,
+        counts[line.line_id] ?? {},
+        {},
+        chosen[line.line_id] ?? {},
+        split[line.line_id] ?? {},
+      );
       prints += projected.prints;
       seconds = seconds == null || projected.seconds == null ? null : seconds + projected.seconds;
       grams += projected.grams;
       if (projected.cost != null) cost = (cost ?? 0) + projected.cost;
     }
     return { prints, seconds, grams: Math.round(grams * 100) / 100, cost };
-  }, [lines, counts, chosen]);
+  }, [lines, counts, chosen, split]);
 
   /** One item per (line, file) with something on it — the row's own plate, the
    *  alternative it was switched to, or every file of a split. */
@@ -322,6 +332,27 @@ export function PlanBlock({
   );
 
   const items = useMemo(() => lines.flatMap((line) => itemsFor(line)), [lines, itemsFor]);
+
+  // A forecast belongs to the exact server plan. Compare effective enqueue
+  // items rather than the editor's state maps: setting a count back to its
+  // planned value is fresh again, and an added row is naturally included.
+  const draftChanged = useMemo(() => {
+    if (!plan) return false;
+    const baseline = plan.lines.flatMap((line) =>
+      line.rows.flatMap((row) =>
+        rowDistribution(row, row.count, undefined, undefined).map((entry) => ({ ...entry, line_id: line.line_id })),
+      ),
+    );
+    return baseline.length !== items.length || baseline.some((item, index) => {
+      const actual = items[index];
+      return actual?.line_id !== item.line_id || actual?.plate_id !== item.plate_id || actual?.count !== item.count;
+    });
+  }, [plan, items]);
+
+  useEffect(() => {
+    onDraftChanged?.(draftChanged);
+    return () => onDraftChanged?.(false);
+  }, [draftChanged, onDraftChanged]);
 
   const overCap = items.some((item) => item.count > MAX_PER_PLATE);
   // ⚠️ A half-made split blocks the WHOLE-plan button too, not only its own
@@ -440,6 +471,13 @@ export function PlanBlock({
         </div>
       )}
 
+      {draftChanged && (
+        <div className="flex items-center gap-2 text-sm" data-testid="plan-forecast-stale">
+          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+          <span className="text-amber-300">{t('orders.plan.forecastStale')}</span>
+        </div>
+      )}
+
       {lines.length === 0 ? (
         <p className="text-sm text-bambu-gray" data-testid="plan-empty">
           {t('orders.plan.nothingOutstanding')}
@@ -452,7 +490,7 @@ export function PlanBlock({
                 key={line.line_id}
                 order={order}
                 line={line}
-                forecast={forecast.data?.lines.find((l) => l.line_id === line.line_id)}
+                forecast={draftChanged ? undefined : forecast.data?.lines.find((l) => l.line_id === line.line_id)}
                 counts={counts[line.line_id] ?? {}}
                 chosen={chosen[line.line_id] ?? {}}
                 split={split[line.line_id] ?? {}}

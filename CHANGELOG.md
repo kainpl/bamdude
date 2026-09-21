@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- **Order forecasts no longer call a partly routable plan “ready”.** An order or its row now shows *Ready ≈* only when every planned print has a time estimate and a printer of its model. If a file is unknown or its model is absent, BamDude keeps the concrete count and reason but withholds both completion dates; machine-hours remain a separate total, never a calendar promise. Editing the plan's count, file or model split also marks the old farm forecast stale instead of leaving its date, proposal and machine-hours beside a different draft. The plan's time, filament and cost now follow the exact file split that will be queued. This applies both to an existing order and to **Calculate** from the File Manager.
+
 - **Queue counts update as soon as AutoQueue assigns work.** Promoting a job now refreshes its printer queue's pending and skipped counters in the same transaction. Queue cards and the summary no longer show zero waiting jobs beside visible pending rows while those jobs wait for staggered start or other dispatch checks.
 
 - **Print checks now use the server's complete plate-to-printer assignment.** Manual tray choices, per-channel overrides, feed policy and nozzle constraints are checked together, including jobs spread across several printers. The dialog shows the server's selected trays and refusal reason, instead of treating a filled dropdown as permission to print. A flexible channel no longer steals the only tray available to a stricter channel; automatic ranking agrees with dispatch with base-material matching both on and off. Offline or failed checks reveal a silent batch's dialog before anything is submitted.

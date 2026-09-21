@@ -4415,6 +4415,8 @@ export interface LineForecast {
   now_eta: string | null; now_seconds: number | null;
   after_eta: string | null; after_seconds: number | null;
   unknown_prints: number; unroutable_prints: number;
+  /** True only when this ETA covers every print in this line. */
+  eta_complete: boolean;
   rows: RowForecast[];
 }
 export interface OrderForecast {
@@ -4424,6 +4426,8 @@ export interface OrderForecast {
   /** Σ estimates of the plan's prints; null when no print has one; 0 when nothing is left to plan. */
   machine_seconds: number | null;
   unknown_prints: number; unroutable_prints: number;
+  /** True only when this ETA covers every print in this order. */
+  eta_complete: boolean;
   /** Active orders ranked ahead (priority → due → age). */
   ahead_count: number;
   /** What the simulation does not model: `stagger` | `plate_clear` | `drying` | `prep`. */

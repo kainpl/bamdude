@@ -133,16 +133,31 @@ describe('OrderFigures', () => {
     expect(screen.queryByText('From stock')).not.toBeInTheDocument();
   });
 
-  it('shows the ready-at and machine-hours tiles and the unknown-prints line', () => {
+  it('keeps machine hours and the concrete reason, but not a ready date, for an incomplete forecast', () => {
     render(
       <OrderFigures
         figures={FIGURES}
-        forecast={{ project_id: 1, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: null, after_seconds: null, machine_seconds: 5400, unknown_prints: 2, unroutable_prints: 0, ahead_count: 0, assumptions: ['drying'], lines: [] }}
+        forecast={{ project_id: 1, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: null, after_seconds: null, machine_seconds: 5400, unknown_prints: 2, unroutable_prints: 0, eta_complete: false, ahead_count: 0, assumptions: ['drying'], lines: [] }}
       />,
     );
     expect(screen.getByText('Ready ≈')).toBeInTheDocument();
+    expect(screen.getByText('Incomplete estimate')).toBeInTheDocument();
+    expect(screen.queryByText(/Sep 7/)).not.toBeInTheDocument();
     expect(screen.getByText('1:30')).toBeInTheDocument();
     expect(screen.getByText('2 prints without an estimate')).toBeInTheDocument();
     expect(screen.getByLabelText(/drying between prints/)).toBeInTheDocument();
+  });
+
+  it('marks an edited draft stale even when the server forecast itself was complete', () => {
+    render(
+      <OrderFigures
+        figures={FIGURES}
+        forecast={{ project_id: 1, now_eta: '2026-09-07T10:00:00Z', now_seconds: 7200, after_eta: null, after_seconds: null, machine_seconds: 5400, unknown_prints: 0, unroutable_prints: 0, eta_complete: true, ahead_count: 0, assumptions: [], lines: [] }}
+        forecastStale
+      />,
+    );
+    expect(screen.getByText('Refresh after plan changes')).toBeInTheDocument();
+    expect(screen.getByText('See edited plan below')).toBeInTheDocument();
+    expect(screen.queryByText(/Sep 7/)).not.toBeInTheDocument();
   });
 });

@@ -225,6 +225,7 @@ async def test_the_batch_route_answers_per_order_with_the_farm_header(committing
     assert row["project_id"] == o and row["now_seconds"] == H and row["now_eta"].endswith("Z")
     assert row["assumptions"] == []
     assert row["machine_seconds"] == 2 * H and row["unknown_prints"] == 0 and row["unroutable_prints"] == 0
+    assert row["eta_complete"] is True
 
 
 @pytest.mark.asyncio
@@ -257,10 +258,20 @@ async def test_a_closed_order_answers_an_empty_forecast(committing_client, db_se
     body = (await committing_client.get(f"/api/v1/projects/forecast?ids={done}")).json()
     (row,) = body["orders"]
     assert row["project_id"] == done and row["now_eta"] is None and row["now_seconds"] is None
-    assert row["after_eta"] is None and row["machine_seconds"] == 0 and row["ahead_count"] == 0
+    assert (
+        row["after_eta"] is None
+        and row["machine_seconds"] == 0
+        and row["eta_complete"] is True
+        and row["ahead_count"] == 0
+    )
     one = await committing_client.get(f"/api/v1/projects/{done}/forecast")
     assert one.status_code == 200
-    assert one.json()["now_eta"] is None and one.json()["machine_seconds"] == 0 and one.json()["lines"] == []
+    assert (
+        one.json()["now_eta"] is None
+        and one.json()["machine_seconds"] == 0
+        and one.json()["eta_complete"] is True
+        and one.json()["lines"] == []
+    )
 
 
 @pytest.mark.asyncio
@@ -269,7 +280,7 @@ async def test_the_order_route_carries_lines_and_the_proposed_split(committing_c
     o, line_id = await _order(db_session, product.id, 3, name="D")
     body = (await committing_client.get(f"/api/v1/projects/{o}/forecast")).json()
     (line,) = body["lines"]
-    assert line["line_id"] == line_id and line["now_seconds"] == H
+    assert line["line_id"] == line_id and line["now_seconds"] == H and line["eta_complete"] is True
     (row,) = line["rows"]
     assert sum(row["proposed_split"].values()) == 3
     assert (await committing_client.get("/api/v1/projects/999999/forecast")).status_code == 404
