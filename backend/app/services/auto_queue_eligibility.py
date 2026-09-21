@@ -7,9 +7,11 @@ current scheduler tick, pick the printer whose queue the item should join:
 2. Matches ``target_location`` if specified.
 3. Has ``auto_distribute_eligible=True`` on its PrinterQueue.
 4. Is connected over MQTT.
-5. Has all ``required_filament_types`` loaded across AMS + external
-   trays (canonical-type matching, so PA-CF / PA12-CF / PAHT-CF are
-   equivalent — same as upstream).
+5. Can feed every used channel of the plate: the routing plan is resolved
+   against the printer's feed under the item's own policy
+   (``resolve_filament_routing``), so what counts as a match — base
+   material or the exact profile, exact colour or not — is the question the
+   item was queued with, and the same one dispatch asks again.
 6. Satisfies ``filament_overrides``: when an override has
    ``force_color_match=True``, the printer must have an exact type+color
    match in some loaded slot — and the same ``tray_info_idx`` when both
