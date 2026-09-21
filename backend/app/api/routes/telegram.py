@@ -56,10 +56,11 @@ def _to_response(chat: TelegramChat) -> TelegramChatResponse:
 async def _provider_for_new_chat(db: AsyncSession, requested: int | None) -> int:
     """The bot a manually added chat belongs to (m180).
 
-    Named explicitly (the provider card adds chats to ITS bot), else the bot
-    that is running, else the one that would run — the oldest enabled
-    telegram provider. With none of those there is no bot the chat could
-    have written to, and a row without one would never be messaged.
+    Named explicitly — which is what the provider card does, adding chats to
+    ITS bot. Unnamed is only answerable when the install has exactly one
+    Telegram provider; with several, guessing would file the chat under a bot
+    it never wrote to, and that chat would simply never be messaged. With
+    none there is no bot at all to bind to.
     """
     if requested is not None:
         provider = await db.get(NotificationProvider, requested)
@@ -69,14 +70,21 @@ async def _provider_for_new_chat(db: AsyncSession, requested: int | None) -> int
             raise HTTPException(400, "Provider is not a Telegram provider")
         return provider.id
 
-    from backend.app.services.telegram_bot import current_bot_providers, running_bot_provider_ids
-
-    running = running_bot_provider_ids()
-    if running:
-        return running[0]
-    configured = await current_bot_providers()
-    if configured:
-        return configured[0][0]
+    rows = (
+        (
+            await db.execute(
+                select(NotificationProvider)
+                .where(NotificationProvider.provider_type == "telegram")
+                .order_by(NotificationProvider.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if len(rows) == 1:
+        return rows[0].id
+    if rows:
+        raise HTTPException(400, "Name the Telegram provider this chat belongs to")
     raise HTTPException(409, "No Telegram provider to bind the chat to. Add a Telegram provider first.")
 
 
@@ -215,8 +223,16 @@ async def create_chat(
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new Telegram chat."""
-    # Check duplicate
-    existing = await db.execute(select(TelegramChat).where(TelegramChat.chat_id == data.chat_id))
+    provider_id = await _provider_for_new_chat(db, data.provider_id)
+
+    # Check duplicate — per BOT (m180): the same chat id under another
+    # provider is a different chat, the same person talking to another bot.
+    existing = await db.execute(
+        select(TelegramChat).where(
+            TelegramChat.provider_id == provider_id,
+            TelegramChat.chat_id == data.chat_id,
+        )
+    )
     if existing.scalar_one_or_none():
         raise HTTPException(400, "Chat ID already registered")
 
@@ -237,8 +253,6 @@ async def create_chat(
         invalid = set(data.notify_events) - set(ALL_NOTIFY_EVENTS)
         if invalid:
             raise HTTPException(400, f"Invalid event types: {', '.join(invalid)}")
-
-    provider_id = await _provider_for_new_chat(db, data.provider_id)
 
     chat = TelegramChat(
         chat_id=data.chat_id,

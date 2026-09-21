@@ -91,7 +91,9 @@ def _render_calibration_screen(
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=btns)
 
 
-_calib_selections: dict[int, set[str]] = {}
+# Keyed by (bot account, chat): the same person talking to two bots is
+# two chats, and a half-made selection in one is not the other's.
+_calib_selections: dict[tuple[int, int], set[str]] = {}
 
 
 @router.callback_query(F.data.startswith("calib:show:"))
@@ -111,7 +113,7 @@ async def cb_calibration_show(callback: CallbackQuery, tg_chat: TelegramChat | N
     model = printer["model"] if printer else None
     name = printer["name"] if printer else f"#{printer_id}"
 
-    _calib_selections[callback.message.chat.id] = set()
+    _calib_selections[(callback.bot.id, callback.message.chat.id)] = set()
     text, keyboard = _render_calibration_screen(lang, printer_id, name, model, set())
     await callback.message.edit_text(text, reply_markup=keyboard)
 
@@ -125,10 +127,10 @@ async def cb_calibration_toggle(callback: CallbackQuery, tg_chat: TelegramChat |
         return
     cal_type = parts[3]
 
-    chat_id = callback.message.chat.id
-    selected = _calib_selections.get(chat_id, set())
+    key = (callback.bot.id, callback.message.chat.id)
+    selected = _calib_selections.get(key, set())
     selected.symmetric_difference_update({cal_type})
-    _calib_selections[chat_id] = selected
+    _calib_selections[key] = selected
 
     await callback.answer()
 
@@ -154,7 +156,7 @@ async def cb_calibration_start(callback: CallbackQuery, tg_chat: TelegramChat | 
     printer_id = int(callback.data.split(":")[2])
     if await deny_out_of_scope(callback, tg_chat, printer_id):
         return
-    selected = _calib_selections.pop(callback.message.chat.id, set())
+    selected = _calib_selections.pop((callback.bot.id, callback.message.chat.id), set())
 
     if not selected:
         await callback.answer(t(lang, NS, "calibration.none_selected"), show_alert=True)

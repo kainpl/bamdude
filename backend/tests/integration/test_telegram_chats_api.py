@@ -1,18 +1,18 @@
 """A Telegram chat belongs to the bot it wrote to (m180) — the routes' and the fan-out's half.
 
-A manually added chat is registered under the provider named, else the
-running bot, else the bot that would run; with no bot there is no chat to
-add. A provider's fan-out reaches its own chats and no other's. Deleting a
-telegram provider takes its chats with it — in code, because SQLite never
-gets ``PRAGMA foreign_keys``.
+A manually added chat is registered under the provider named; unnamed is
+answerable only when the install has exactly one Telegram provider, and with
+none there is no chat to add. The same chat id under two bots is two chats. A
+provider's fan-out reaches its own chats and no other's, and its test message
+goes through its own bot. Deleting a telegram provider takes its chats with
+it — in code, because SQLite never gets ``PRAGMA foreign_keys``.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
 
-from backend.app.services import telegram_bot as tb
 from backend.app.services.notification_service import NotificationService
 
 pytestmark = pytest.mark.integration
@@ -53,37 +53,34 @@ class TestChatBinding:
         assert older.id != younger.id
 
     @pytest.mark.asyncio
-    async def test_without_a_provider_named_the_running_bot_takes_it(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot, monkeypatch
+    async def test_with_several_bots_the_provider_must_be_named(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
-        await _bot(notification_provider_factory, "111:AAolder")
-        running = await _bot(notification_provider_factory, "222:AArunning")
-        monkeypatch.setattr(tb, "_bots", {running.id: MagicMock()})
+        """Guessing would file the chat under a bot it never wrote to, and it would never be messaged."""
+        await _bot(notification_provider_factory, "111:AAfirst")
+        await _bot(notification_provider_factory, "222:AAsecond")
 
         response = await _add_chat(async_client, 101)
 
-        assert response.status_code == 201
-        assert response.json()["provider_id"] == running.id
+        assert response.status_code == 400
+        assert "Name the Telegram provider" in response.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_with_no_bot_running_the_bot_that_would_run_takes_it(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot, monkeypatch
+    async def test_with_exactly_one_bot_it_takes_the_chat_unasked(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
-        monkeypatch.setattr(tb, "_bots", {})
-        off = await _bot(notification_provider_factory, "111:AAoff", enabled=False)
-        would_run = await _bot(notification_provider_factory, "222:AAon")
+        """One Telegram provider, switched off or not, is the only bot a chat could mean."""
+        only = await _bot(notification_provider_factory, "111:AAoff", enabled=False)
 
         response = await _add_chat(async_client, 102)
 
         assert response.status_code == 201
-        assert response.json()["provider_id"] == would_run.id
-        assert off.id < would_run.id
+        assert response.json()["provider_id"] == only.id
 
     @pytest.mark.asyncio
     async def test_with_no_bot_at_all_there_is_nothing_to_bind_to(
-        self, async_client: AsyncClient, notification_provider_factory, monkeypatch
+        self, async_client: AsyncClient, notification_provider_factory
     ):
-        monkeypatch.setattr(tb, "_bots", {})
         await notification_provider_factory(provider_type="ntfy")
 
         response = await _add_chat(async_client, 103)
@@ -99,6 +96,40 @@ class TestChatBinding:
 
         assert (await _add_chat(async_client, 104, provider_id=ntfy.id)).status_code == 400
         assert (await _add_chat(async_client, 105, provider_id=ntfy.id + 1000)).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_the_same_chat_id_under_two_bots_is_two_chats(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """Telegram's private chat id is the person's user id — the same number in every bot."""
+        a = await _bot(notification_provider_factory, "111:AAa")
+        b = await _bot(notification_provider_factory, "222:AAb")
+
+        assert (await _add_chat(async_client, 600, provider_id=a.id)).status_code == 201
+        assert (await _add_chat(async_client, 600, provider_id=b.id)).status_code == 201
+        again = await _add_chat(async_client, 600, provider_id=a.id)
+        assert again.status_code == 400, "the same person twice in the SAME bot is one chat"
+
+        listed = (await async_client.get("/api/v1/telegram/chats")).json()
+        assert sorted(c["provider_id"] for c in listed if c["chat_id"] == 600) == sorted([a.id, b.id])
+
+    @pytest.mark.asyncio
+    async def test_the_test_button_sends_through_the_chats_own_bot(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        a = await _bot(notification_provider_factory, "111:AAa")
+        b = await _bot(notification_provider_factory, "222:AAb")
+        created = await _add_chat(async_client, 700, provider_id=b.id)
+        assert created.status_code == 201
+        chat_db_id = created.json()["id"]
+
+        with patch("backend.app.services.telegram_bot.send_message", AsyncMock(return_value=True)) as send:
+            response = await async_client.post(f"/api/v1/telegram/chats/{chat_db_id}/test")
+
+        assert response.status_code == 200
+        assert send.await_args.args[0] == b.id, "the chat's own bot, not the first telegram provider"
+        assert send.await_args.args[1] == 700
+        assert a.id != b.id
 
 
 class TestChatsFollowTheirBot:

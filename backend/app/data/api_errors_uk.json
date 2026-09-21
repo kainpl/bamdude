@@ -376,6 +376,7 @@
   "Missing spool tag (tray_uuid or tag_uid)": "Немає тегу котушки (tray_uuid або tag_uid)",
   "Mode must be 'print_queue', 'file_manager', or 'proxy'": "Режим має бути «print_queue», «file_manager» або «proxy»",
   "More than {} spools match — narrow the filter before selecting all": "Під фільтр підпадає більше ніж {} котушок — звузьте фільтр, перш ніж вибирати всі",
+  "Name the Telegram provider this chat belongs to": "Вкажіть Telegram-провайдера, якому належить цей чат",
   "Network error deleting Orca Cloud profiles: {}": "Помилка мережі під час видалення профілів Orca Cloud: {}",
   "Network error during Orca Cloud refresh: {}": "Помилка мережі під час оновлення Orca Cloud: {}",
   "Network error fetching Orca Cloud introspection: {}": "Помилка мережі під час отримання інтроспекції Orca Cloud: {}",

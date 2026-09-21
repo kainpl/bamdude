@@ -13,8 +13,11 @@ logger = logging.getLogger(__name__)
 
 NS = "telegram_ui"
 
-# Cache to avoid spamming "disabled" / "pending" messages
-_notified_chats: set[int] = set()
+# Cache to avoid spamming "disabled" / "pending" messages. Keyed by (bot
+# account, chat) because the same person is a different chat in every bot
+# they start — one bot having told them they are disabled says nothing about
+# the other.
+_notified_chats: set[tuple[int, int]] = set()
 
 
 class TelegramAuthMiddleware(BaseMiddleware):
@@ -31,6 +34,20 @@ class TelegramAuthMiddleware(BaseMiddleware):
         if chat_id is None:
             return await handler(event, data)
 
+        # WHICH bot this arrived on. A chat belongs to one bot (m180) and the
+        # same person is a different chat in each bot they start, so the pair
+        # is the identity — never the chat id alone.
+        from backend.app.services.telegram_bot import provider_id_for_bot
+
+        bot_account_id = getattr(getattr(event, "bot", None), "id", None)
+        provider_id = provider_id_for_bot(bot_account_id) if bot_account_id is not None else None
+        if provider_id is None:
+            # An update from a bot this process does not run: a session being
+            # torn down, or a bot removed between the long poll and here.
+            logger.error("Telegram update from an unknown bot account %s - ignored", bot_account_id)
+            return
+        notified_key = (bot_account_id, chat_id)
+
         # Look up chat in DB
         from sqlalchemy import select
 
@@ -38,34 +55,35 @@ class TelegramAuthMiddleware(BaseMiddleware):
         from backend.app.models.telegram_chat import TelegramChat
 
         async with async_session() as db:
-            result = await db.execute(select(TelegramChat).where(TelegramChat.chat_id == chat_id))
+            result = await db.execute(
+                select(TelegramChat).where(
+                    TelegramChat.provider_id == provider_id,
+                    TelegramChat.chat_id == chat_id,
+                )
+            )
             tg_chat = result.scalar_one_or_none()
 
             if tg_chat is None:
                 # Check if we should auto-register
-                should_register = await self._should_auto_register(db)
+                should_register = await self._should_auto_register(db, provider_id)
                 if should_register:
-                    tg_chat = await self._auto_register(db, event, chat_id)
-                    if tg_chat is None:
-                        return  # No running bot to bind it to (logged) — nothing to say
+                    tg_chat = await self._auto_register(db, event, chat_id, provider_id)
                     lang = await get_language()
                     await self._reply(event, t(lang, NS, "auth.registered"))
                     return  # Don't process further - chat is disabled
                 # Unknown chat, silently ignore
                 return
 
-            await self._rebind_to_running_bot(db, tg_chat)
-
             if not tg_chat.is_active:
-                if chat_id not in _notified_chats:
-                    _notified_chats.add(chat_id)
+                if notified_key not in _notified_chats:
+                    _notified_chats.add(notified_key)
                     lang = await get_language()
                     await self._reply(event, t(lang, NS, "auth.disabled"))
                 return
 
             if tg_chat.group_id is None:
-                if chat_id not in _notified_chats:
-                    _notified_chats.add(chat_id)
+                if notified_key not in _notified_chats:
+                    _notified_chats.add(notified_key)
                     lang = await get_language()
                     await self._reply(event, t(lang, NS, "auth.pending_setup"))
                 return
@@ -83,15 +101,23 @@ class TelegramAuthMiddleware(BaseMiddleware):
         return None
 
     @staticmethod
-    async def _should_auto_register(db) -> bool:
-        """Check if auto-registration is allowed (table empty OR registration open)."""
+    async def _should_auto_register(db, provider_id: int) -> bool:
+        """Is auto-registration allowed — this bot has no chat yet, OR registration is open.
+
+        "No chat yet" is asked per bot: a newly added bot is somebody's first
+        setup even on a farm whose other bot has had chats for a year, and
+        whoever presses Start on it first is the operator standing in front of
+        it. The ``telegram_registration_open`` switch stays global — it is the
+        operator's intent, not a property of one bot.
+        """
         from sqlalchemy import func, select
 
         from backend.app.models.settings import Settings
         from backend.app.models.telegram_chat import TelegramChat
 
-        # Always allow if table is empty (first setup)
-        count = (await db.execute(select(func.count(TelegramChat.id)))).scalar() or 0
+        count = (
+            await db.execute(select(func.count(TelegramChat.id)).where(TelegramChat.provider_id == provider_id))
+        ).scalar() or 0
         if count == 0:
             return True
 
@@ -101,33 +127,14 @@ class TelegramAuthMiddleware(BaseMiddleware):
         return val == "true"
 
     @staticmethod
-    async def _rebind_to_running_bot(db, tg_chat) -> None:
-        """A chat that writes to a DIFFERENT bot than it is bound to now belongs to that bot (m180).
+    async def _auto_register(db, event: TelegramObject, chat_id: int, provider_id: int):
+        """Create a disabled TelegramChat record for auto-registration.
 
-        The operator retires one bot for another (a new provider row, the
-        old one off): every chat still points at the old row, and the new
-        bot could reach none of them. The chat's own message is the proof
-        it started the new bot, so the binding follows it — authorization
-        (group, user, scope) is BamDude's and stays. Same bot: nothing to do.
+        Bound to the bot the message arrived on (m180), which the caller
+        resolved from ``event.bot.id``. A person writing to a second bot gets
+        a second row: it is a different chat in Telegram, and each bot
+        carries its own authorization, scope and notification opt-ins.
         """
-        from backend.app.services.telegram_bot import running_bot_provider_ids
-
-        running = running_bot_provider_ids()
-        provider_id = running[0] if running else None
-        if provider_id is None or tg_chat.provider_id == provider_id:
-            return
-        logger.info(
-            "Telegram chat %s wrote to bot (provider %s); re-bound from provider %s",
-            tg_chat.chat_id,
-            provider_id,
-            tg_chat.provider_id,
-        )
-        tg_chat.provider_id = provider_id
-        await db.commit()
-
-    @staticmethod
-    async def _auto_register(db, event: TelegramObject, chat_id: int):
-        """Create a disabled TelegramChat record for auto-registration."""
         from backend.app.models.telegram_chat import TelegramChat
 
         # Extract label from Telegram
@@ -138,17 +145,6 @@ class TelegramAuthMiddleware(BaseMiddleware):
         elif isinstance(event, CallbackQuery) and event.message and event.message.chat:
             chat = event.message.chat
             label = chat.title or chat.full_name or chat.username
-
-        # The chat wrote to THIS bot, so it belongs to the provider row the
-        # poller was built from (m180) — never to "the first telegram
-        # provider", which may be another row by now.
-        from backend.app.services.telegram_bot import running_bot_provider_ids
-
-        running = running_bot_provider_ids()
-        provider_id = running[0] if running else None
-        if provider_id is None:
-            logger.error("Cannot register Telegram chat %s: no running bot to bind it to", chat_id)
-            return None
 
         tg_chat = TelegramChat(
             chat_id=chat_id,
