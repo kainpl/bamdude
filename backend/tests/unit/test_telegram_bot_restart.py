@@ -8,11 +8,12 @@ router whose ``_parent_router`` still points at an earlier dispatcher.
 
 ``stop_telegram_bot`` handles this on the happy path — it walks
 ``_dispatcher.sub_routers`` and clears ``_parent_router`` on each. But the
-error branch of ``start_telegram_bot`` (line 108 — ``except Exception``)
-only nulls ``_bot`` / ``_dispatcher`` and returns. The routers it just
-attached stay bound to the now-orphaned dispatcher, and the *next* start
-attempt explodes inside ``include_router`` with
-``"Router is already attached to ..."``.
+error branch of the original ``start_telegram_bot`` only nulled ``_bot`` /
+``_dispatcher`` and returned. The routers it had just attached stayed bound
+to the now-orphaned dispatcher, and the *next* start attempt exploded inside
+``include_router`` with ``"Router is already attached to ..."``. Today the
+start-failure branch and the dead-poller guard share ``stop``'s teardown
+tail (grep ``_discard_bot_locked``).
 
 These tests pin the contract: when start fails (invalid token / network
 blip), the next start with a valid token must succeed. We mock the aiogram

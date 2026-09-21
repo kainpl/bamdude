@@ -74,7 +74,7 @@ async def _discard_bot_locked(dispatcher: Dispatcher | None, bot: Bot | None) ->
         try:
             await bot.session.close()
         except Exception:
-            logger.debug("Bot session close raised during teardown", exc_info=True)
+            logger.warning("Bot session close raised during teardown", exc_info=True)
 
     _bot = None
     _dispatcher = None
@@ -344,11 +344,14 @@ async def stop_telegram_bot_bounded(timeout: float = 15.0) -> None:
 
     ⚠️ ``_stop_locked`` clears the module globals before its first await, so
     after a timed-out stop the module already holds nothing while that poller
-    is still alive. A later ``start`` would therefore see a clean slate and
-    build a SECOND poller beside it — two of them competing for the same
-    updates, which is #50 again. Unreachable today because the only caller is
-    the lifespan handler at process exit; a second caller has to be a
-    decision, not an accident.
+    is still alive — and the cancel re-raise skips ``_discard_bot_locked``, so
+    the handler routers stay attached to the abandoned dispatcher. A later
+    ``start`` would therefore see a clean slate, crash in ``include_router``
+    ("Router is already attached"), and had it got past that, build a SECOND
+    poller beside the live one — two of them competing for the same updates,
+    which is #50 again. Unreachable today because the only caller is the
+    lifespan handler at process exit; a second caller has to be a decision,
+    not an accident.
     """
     try:
         await asyncio.wait_for(stop_telegram_bot(), timeout=timeout)
