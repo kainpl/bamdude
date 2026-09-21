@@ -500,10 +500,15 @@ class NotificationService:
         printer_id: int | None = None,
         extra_data: dict | None = None,
         chat_filter: Callable[[Any], bool] | None = None,
+        *,
+        provider_id: int,
     ) -> tuple[bool, str]:
-        """Send Telegram notification to all active chats subscribed to this event.
+        """Send Telegram notification to this provider's active chats subscribed to this event.
 
-        ``chat_filter`` lets an event apply per-chat criteria beyond
+        ``provider_id`` is the bot: a chat belongs to the provider row whose
+        bot it wrote to (m180), and this provider's token can reach no other
+        — Telegram answers "chat not found" for a chat that never started
+        it. ``chat_filter`` lets an event apply per-chat criteria beyond
         ``notify_events`` — today the progress-milestone duration floor (#28),
         which is per chat because that is telegram's whole authority model.
         """
@@ -521,6 +526,7 @@ class NotificationService:
                 result = await session.execute(
                     select(TelegramChat).where(
                         TelegramChat.is_active == True,  # noqa: E712
+                        TelegramChat.provider_id == provider_id,
                     )
                 )
                 chats = result.scalars().all()
@@ -570,9 +576,12 @@ class NotificationService:
         config: dict,
         title: str,
         body: str,
+        *,
+        provider_id: int,
     ) -> tuple[bool, str]:
-        """Fan-out a daily digest body to every active TelegramChat that
-        opted into ``daily_digest=True``. Bypasses ``notify_events`` and
+        """Fan-out a daily digest body to every active TelegramChat of this
+        provider (the bot it wrote to, m180) that opted into
+        ``daily_digest=True``. Bypasses ``notify_events`` and
         ``quiet_hours_*`` — the daily digest is its own opt-in channel,
         not a per-event notification, so it shouldn't be filtered through
         ``should_notify(event_type)``.
@@ -598,6 +607,7 @@ class NotificationService:
                     select(TelegramChat).where(
                         TelegramChat.is_active.is_(True),
                         TelegramChat.daily_digest.is_(True),
+                        TelegramChat.provider_id == provider_id,
                     )
                 )
                 chats = result.scalars().all()
@@ -1220,6 +1230,7 @@ class NotificationService:
                     printer_id=printer_id,
                     extra_data=extra_data,
                     chat_filter=chat_filter,
+                    provider_id=provider.id,
                 )
             elif provider.provider_type == "email":
                 # finish_photo_url is pulled from the rendered template variables
@@ -3055,7 +3066,7 @@ class NotificationService:
             # which rejected every chat).
             if provider.provider_type == "telegram":
                 config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
-                success, error = await self._send_telegram_digest_to_chats(config, title, body)
+                success, error = await self._send_telegram_digest_to_chats(config, title, body, provider_id=provider.id)
             else:
                 success, error = await self._send_to_provider(provider, title, body, db)
 

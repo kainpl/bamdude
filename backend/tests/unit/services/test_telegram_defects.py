@@ -334,12 +334,15 @@ def _button_data(markup):
 
 async def _ops_chat(db_session) -> None:
     from backend.app.models.group import Group
+    from backend.app.models.notification import NotificationProvider
     from backend.app.models.telegram_chat import TelegramChat
 
     group = Group(name="Ops", permissions=["printers:clear_plate"])
-    db_session.add(group)
+    # A chat belongs to a bot (m180): the row it wrote to.
+    bot = NotificationProvider(name="Bot", provider_type="telegram", enabled=True, config='{"bot_token": "1:A"}')
+    db_session.add_all([group, bot])
     await db_session.flush()
-    db_session.add(TelegramChat(chat_id=4242, group_id=group.id, is_active=True))
+    db_session.add(TelegramChat(chat_id=4242, provider_id=bot.id, group_id=group.id, is_active=True))
     await db_session.commit()
 
 

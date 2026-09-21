@@ -28,6 +28,10 @@ class TelegramChatCreate(BaseModel):
         default=None,
         description="Printer scope for notifications and bot control (null = all printers)",
     )
+    provider_id: int | None = Field(
+        default=None,
+        description="The Telegram provider (bot) this chat belongs to; null = the bot that is running",
+    )
 
 
 class TelegramChatUpdate(BaseModel):
@@ -51,6 +55,7 @@ class TelegramChatResponse(BaseModel):
 
     id: int
     chat_id: int
+    provider_id: int
     label: str | None
     group_id: int | None
     group_name: str | None = None

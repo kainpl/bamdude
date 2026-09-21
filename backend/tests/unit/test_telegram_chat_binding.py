@@ -1,0 +1,97 @@
+"""A Telegram chat belongs to the bot it wrote to (m180) — the middleware's half.
+
+Registration binds the new chat to the provider row the LIVE poller was built
+from; a chat that writes to a different bot than it is bound to is re-bound on
+contact; with no running bot there is nothing to bind to and nothing is
+registered.
+"""
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from sqlalchemy import select
+
+from backend.app.models.notification import NotificationProvider
+from backend.app.models.telegram_chat import TelegramChat
+from backend.app.services import telegram_bot as tb
+from backend.app.services.telegram_handlers.auth_middleware import TelegramAuthMiddleware
+
+pytestmark = pytest.mark.unit
+
+
+async def _bot_row(db_session, name: str) -> NotificationProvider:
+    row = NotificationProvider(name=name, provider_type="telegram", enabled=True, config='{"bot_token": "1:A"}')
+    db_session.add(row)
+    await db_session.commit()
+    await db_session.refresh(row)
+    return row
+
+
+@pytest.mark.asyncio
+async def test_registration_binds_the_chat_to_the_running_bot(db_session, monkeypatch):
+    bot = await _bot_row(db_session, "Bot A")
+    monkeypatch.setattr(tb, "_bot_provider_id", bot.id)
+
+    with patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()):
+        chat = await TelegramAuthMiddleware._auto_register(db_session, MagicMock(), 4242)
+
+    assert chat is not None
+    assert chat.provider_id == bot.id
+    assert chat.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_without_a_running_bot_nothing_is_registered(db_session, monkeypatch):
+    monkeypatch.setattr(tb, "_bot_provider_id", None)
+
+    chat = await TelegramAuthMiddleware._auto_register(db_session, MagicMock(), 4242)
+
+    assert chat is None
+    assert (await db_session.execute(select(TelegramChat))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_a_chat_that_writes_to_another_bot_is_re_bound_to_it(db_session, monkeypatch):
+    old = await _bot_row(db_session, "Old bot")
+    new = await _bot_row(db_session, "New bot")
+    chat = TelegramChat(chat_id=7, provider_id=old.id, is_active=True)
+    db_session.add(chat)
+    await db_session.commit()
+
+    # Plain ints BEFORE expire_all(): an expired attribute read outside an
+    # await is a MissingGreenlet, not a useful failure.
+    chat_row_id, new_id = chat.id, new.id
+    monkeypatch.setattr(tb, "_bot_provider_id", new_id)
+    await TelegramAuthMiddleware._rebind_to_running_bot(db_session, chat)
+
+    db_session.expire_all()
+    assert (await db_session.get(TelegramChat, chat_row_id)).provider_id == new_id
+
+
+@pytest.mark.asyncio
+async def test_the_same_bot_leaves_the_binding_alone(db_session, monkeypatch):
+    bot = await _bot_row(db_session, "Bot")
+    chat = TelegramChat(chat_id=8, provider_id=bot.id, is_active=True)
+    db_session.add(chat)
+    await db_session.commit()
+    commit = AsyncMock(wraps=db_session.commit)
+
+    monkeypatch.setattr(tb, "_bot_provider_id", bot.id)
+    monkeypatch.setattr(db_session, "commit", commit)
+    await TelegramAuthMiddleware._rebind_to_running_bot(db_session, chat)
+
+    commit.assert_not_awaited()
+    assert chat.provider_id == bot.id
+
+
+@pytest.mark.asyncio
+async def test_no_running_bot_re_binds_nothing(db_session, monkeypatch):
+    bot = await _bot_row(db_session, "Bot")
+    chat = TelegramChat(chat_id=9, provider_id=bot.id, is_active=True)
+    db_session.add(chat)
+    await db_session.commit()
+
+    monkeypatch.setattr(tb, "_bot_provider_id", None)
+    await TelegramAuthMiddleware._rebind_to_running_bot(db_session, chat)
+
+    assert chat.provider_id == bot.id

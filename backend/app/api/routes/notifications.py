@@ -48,19 +48,22 @@ def _coerce_telegram_provider_fields(provider: NotificationProvider) -> None:
     provider.printer_ids = None
 
 
-async def _restart_bot_if_its_token_moved(token_before: str | None) -> None:
-    """Bounce the poller only when the token it runs on is no longer the one it read.
+async def _restart_bot_if_its_provider_moved(provider_before: tuple[int, str] | None) -> None:
+    """Bounce the poller only when the provider it runs on is no longer the one it read.
 
-    The bot reads ONE thing: ``telegram_bot.current_bot_token`` — the oldest
-    enabled telegram provider's token, or ``None`` for "no bot". So the three
-    provider routes ask that reader before they write and again after they
-    commit, and restart on a different answer. That is the whole rule, and it
-    answers every case the same way: a rename, a digest time or any other
-    config key (same token); a token typed into a disabled provider, into a
-    non-telegram one, or into a second enabled telegram row that is not the
-    oldest (the reader never returns it); creating that second row (the
-    oldest still wins); deleting or disabling the bot's own row (the reader
-    moves to the next, or to ``None``); a retype into or out of telegram.
+    The bot reads ONE thing: ``telegram_bot.current_bot_provider`` — the
+    oldest enabled telegram provider's ``(id, token)``, or ``None`` for "no
+    bot". So the three provider routes ask that reader before they write and
+    again after they commit, and restart on a different answer. That is the
+    whole rule, and it answers every case the same way: a rename, a digest
+    time or any other config key (same pair); a token typed into a disabled
+    provider, into a non-telegram one, or into a second enabled telegram row
+    that is not the oldest (the reader never returns it); creating that
+    second row (the oldest still wins); deleting or disabling the bot's own
+    row (the reader moves to the next, or to ``None``); a retype into or out
+    of telegram. The id is part of the answer because a chat that writes to
+    the running bot is registered under that row (m180): a row swap behind
+    the same token must re-point registration too.
 
     Every restart drops a healthy ``getUpdates`` long poll, and before the
     lifecycle lock it raced the start that replaced it (#50) — which is why
@@ -70,9 +73,9 @@ async def _restart_bot_if_its_token_moved(token_before: str | None) -> None:
     stops it from doing so, and the per-printer providers of before m157 left
     exactly that shape behind.
     """
-    from backend.app.services.telegram_bot import current_bot_token, restart_telegram_bot
+    from backend.app.services.telegram_bot import current_bot_provider, restart_telegram_bot
 
-    if await current_bot_token() != token_before:
+    if await current_bot_provider() != provider_before:
         await restart_telegram_bot()
 
 
@@ -132,10 +135,10 @@ async def create_notification_provider(
     _: User | None = RequirePermission(Permission.NOTIFICATIONS_CREATE),
 ):
     """Create a new notification provider."""
-    from backend.app.services.telegram_bot import current_bot_token
+    from backend.app.services.telegram_bot import current_bot_provider
 
     # Asked BEFORE the write; compared again after the commit (see the helper).
-    bot_token_before = await current_bot_token()
+    bot_provider_before = await current_bot_provider()
 
     provider = NotificationProvider(
         name=provider_data.name,
@@ -164,10 +167,10 @@ async def create_notification_provider(
 
     logger.info("Created notification provider: %s (%s)", provider.name, provider.provider_type)
 
-    # A new row is the bot's only if the reader now answers with its token —
-    # a disabled one, a non-telegram one, or a second enabled telegram row
+    # A new row is the bot's only if the reader now answers with it — a
+    # disabled one, a non-telegram one, or a second enabled telegram row
     # behind an older one changes nothing the poller runs on.
-    await _restart_bot_if_its_token_moved(bot_token_before)
+    await _restart_bot_if_its_provider_moved(bot_provider_before)
 
     return _provider_to_dict(provider)
 
@@ -439,11 +442,11 @@ async def update_notification_provider(
     if not provider:
         raise HTTPException(status_code=404, detail="Notification provider not found")
 
-    from backend.app.services.telegram_bot import current_bot_token
+    from backend.app.services.telegram_bot import current_bot_provider
 
     # Read what the bot runs on BEFORE the update touches the row — the
     # comparison after the commit is the whole point (see below).
-    bot_token_before = await current_bot_token()
+    bot_provider_before = await current_bot_provider()
 
     # Update only provided fields
     update_dict = update_data.model_dump(exclude_unset=True)
@@ -474,7 +477,7 @@ async def update_notification_provider(
     # row the reader never returns — does not. Restarting for those dropped a
     # healthy long poll on every save and, before the lifecycle lock, raced
     # the start that replaced it.
-    await _restart_bot_if_its_token_moved(bot_token_before)
+    await _restart_bot_if_its_provider_moved(bot_provider_before)
 
     return _provider_to_dict(provider)
 
@@ -492,20 +495,31 @@ async def delete_notification_provider(
     if not provider:
         raise HTTPException(status_code=404, detail="Notification provider not found")
 
-    from backend.app.services.telegram_bot import current_bot_token
+    from backend.app.services.telegram_bot import current_bot_provider
 
     name = provider.name
-    bot_token_before = await current_bot_token()
+    bot_provider_before = await current_bot_provider()
+    # A telegram provider IS a bot, and its chats exist for that bot alone
+    # (m180): they go with it. Done here because SQLite never gets
+    # ``PRAGMA foreign_keys``; the CASCADE on the column is the PostgreSQL
+    # backstop, not the mechanism.
+    removed_chats = 0
+    if provider.provider_type == "telegram":
+        from backend.app.models.telegram_chat import TelegramChat
+
+        removed_chats = (
+            await db.execute(delete(TelegramChat).where(TelegramChat.provider_id == provider.id))
+        ).rowcount or 0
     await db.delete(provider)
     await db.commit()
 
-    logger.info("Deleted notification provider: %s", name)
+    logger.info("Deleted notification provider: %s (with %d Telegram chat(s))", name, removed_chats)
 
     # The bot may have been polling on this row's token, so it has to let go
     # of it and pick up the next enabled provider's, if any. A row the reader
     # never returned — disabled, not telegram, or a younger enabled one — was
     # never its source, and dropping the poll for it buys nothing.
-    await _restart_bot_if_its_token_moved(bot_token_before)
+    await _restart_bot_if_its_provider_moved(bot_provider_before)
 
     return {"message": f"Notification provider '{name}' deleted"}
 

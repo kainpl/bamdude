@@ -107,6 +107,9 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
         queryFn: api.getTelegramChats,
         enabled: isTelegram,
     });
+    // A chat belongs to the bot it wrote to (m180): this card shows only ITS
+    // chats, and a chat it adds is registered under this provider.
+    const providerChats = (telegramChats ?? []).filter((chat) => chat.provider_id === provider.id);
 
     // Fetch printers for linking
     const {data: printers} = useQuery({
@@ -491,9 +494,9 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                 <div className="flex justify-center py-4">
                                     <Loader2 className="w-5 h-5 text-bambu-green animate-spin"/>
                                 </div>
-                            ) : telegramChats && telegramChats.length > 0 ? (
+                            ) : providerChats.length > 0 ? (
                                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
-                                    {telegramChats.map((chat) => (
+                                    {providerChats.map((chat) => (
                                         <TelegramChatCard
                                             key={chat.id}
                                             chat={chat}
@@ -525,6 +528,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
             {showTelegramChatModal && (
                 <AddTelegramChatModal
                     chat={editingTelegramChat}
+                    providerId={provider.id}
                     onClose={() => {
                         setShowTelegramChatModal(false);
                         setEditingTelegramChat(null);

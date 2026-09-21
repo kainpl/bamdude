@@ -46,11 +46,15 @@ class TelegramAuthMiddleware(BaseMiddleware):
                 should_register = await self._should_auto_register(db)
                 if should_register:
                     tg_chat = await self._auto_register(db, event, chat_id)
+                    if tg_chat is None:
+                        return  # No running bot to bind it to (logged) — nothing to say
                     lang = await get_language()
                     await self._reply(event, t(lang, NS, "auth.registered"))
                     return  # Don't process further - chat is disabled
                 # Unknown chat, silently ignore
                 return
+
+            await self._rebind_to_running_bot(db, tg_chat)
 
             if not tg_chat.is_active:
                 if chat_id not in _notified_chats:
@@ -97,6 +101,30 @@ class TelegramAuthMiddleware(BaseMiddleware):
         return val == "true"
 
     @staticmethod
+    async def _rebind_to_running_bot(db, tg_chat) -> None:
+        """A chat that writes to a DIFFERENT bot than it is bound to now belongs to that bot (m180).
+
+        The operator retires one bot for another (a new provider row, the
+        old one off): every chat still points at the old row, and the new
+        bot could reach none of them. The chat's own message is the proof
+        it started the new bot, so the binding follows it — authorization
+        (group, user, scope) is BamDude's and stays. Same bot: nothing to do.
+        """
+        from backend.app.services.telegram_bot import running_bot_provider_id
+
+        provider_id = running_bot_provider_id()
+        if provider_id is None or tg_chat.provider_id == provider_id:
+            return
+        logger.info(
+            "Telegram chat %s wrote to bot (provider %s); re-bound from provider %s",
+            tg_chat.chat_id,
+            provider_id,
+            tg_chat.provider_id,
+        )
+        tg_chat.provider_id = provider_id
+        await db.commit()
+
+    @staticmethod
     async def _auto_register(db, event: TelegramObject, chat_id: int):
         """Create a disabled TelegramChat record for auto-registration."""
         from backend.app.models.telegram_chat import TelegramChat
@@ -110,8 +138,19 @@ class TelegramAuthMiddleware(BaseMiddleware):
             chat = event.message.chat
             label = chat.title or chat.full_name or chat.username
 
+        # The chat wrote to THIS bot, so it belongs to the provider row the
+        # poller was built from (m180) — never to "the first telegram
+        # provider", which may be another row by now.
+        from backend.app.services.telegram_bot import running_bot_provider_id
+
+        provider_id = running_bot_provider_id()
+        if provider_id is None:
+            logger.error("Cannot register Telegram chat %s: no running bot to bind it to", chat_id)
+            return None
+
         tg_chat = TelegramChat(
             chat_id=chat_id,
+            provider_id=provider_id,
             label=label,
             is_active=False,
             group_id=None,
@@ -120,7 +159,7 @@ class TelegramAuthMiddleware(BaseMiddleware):
         db.add(tg_chat)
         await db.commit()
         await db.refresh(tg_chat)
-        logger.info("Auto-registered Telegram chat %s (label=%s)", chat_id, label)
+        logger.info("Auto-registered Telegram chat %s (label=%s, provider=%s)", chat_id, label, provider_id)
 
         # Notify frontend via WebSocket
         from backend.app.core.websocket import ws_manager

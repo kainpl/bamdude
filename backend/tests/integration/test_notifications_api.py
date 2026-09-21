@@ -732,7 +732,7 @@ class TestTelegramProviderRestarts:
     A restart drops a healthy ``getUpdates`` long poll and builds a new bot;
     every save of a telegram provider used to do it, so renaming one raced a
     start against the poller it was replacing. The bot reads exactly one
-    thing — ``telegram_bot.current_bot_token``, the OLDEST enabled telegram
+    thing — ``telegram_bot.current_bot_provider``, the OLDEST enabled telegram
     row's token — and the routes ask that reader before and after a save:
     only a different answer costs a restart. So a token on a disabled row, on
     a non-telegram row or on a younger enabled telegram row is as invisible
@@ -835,7 +835,7 @@ class TestTelegramProviderRestarts:
     async def test_switching_the_provider_on_restarts(
         self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
-        """``current_bot_token`` only sees enabled rows, so this one just became the bot's."""
+        """``current_bot_provider`` only sees enabled rows, so this one just became the bot's."""
         provider = await self._telegram(notification_provider_factory, enabled=False)
 
         response = await async_client.patch(f"/api/v1/notifications/{provider.id}", json={"enabled": True})
@@ -848,7 +848,7 @@ class TestTelegramProviderRestarts:
     async def test_editing_a_disabled_providers_token_leaves_the_poller_alone(
         self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
-        """A disabled row's token is invisible to ``current_bot_token``, so nothing the bot runs on moved.
+        """A disabled row's token is invisible to ``current_bot_provider``, so nothing the bot runs on moved.
 
         On an install that also carries an enabled telegram provider,
         bouncing the poller here would drop a healthy long poll for an edit
@@ -886,7 +886,7 @@ class TestTelegramProviderRestarts:
     async def test_retyping_another_provider_as_telegram_restarts(
         self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
-        """An enabled row that just became telegram is what ``current_bot_token`` now reads, there being no older one."""
+        """An enabled row that just became telegram is what ``current_bot_provider`` now reads, there being no older one."""
         provider = await notification_provider_factory(
             provider_type="ntfy",
             enabled=True,
@@ -1008,7 +1008,7 @@ class TestTelegramProviderRestarts:
     async def test_the_oldest_enabled_telegram_row_is_the_bot(
         self, async_client: AsyncClient, notification_provider_factory
     ):
-        """``current_bot_token`` answers with the smallest enabled id, whatever else exists.
+        """``current_bot_provider`` answers with the smallest enabled id, whatever else exists.
 
         Pins "oldest, not youngest" — reversing the reader's ORDER BY fails
         it. It cannot pin "ordered at all": on SQLite, where this suite runs,
@@ -1021,25 +1021,25 @@ class TestTelegramProviderRestarts:
         that points the module-level session factory the reader opens at the
         test database.
         """
-        from backend.app.services.telegram_bot import current_bot_token
+        from backend.app.services.telegram_bot import current_bot_provider
 
         older = await self._telegram(notification_provider_factory, config={"bot_token": "111:AAolder"})
         younger = await self._telegram(notification_provider_factory, config={"bot_token": "222:AAyounger"})
         assert older.id < younger.id
 
-        assert await current_bot_token() == "111:AAolder"
+        assert await current_bot_provider() == (older.id, "111:AAolder")
 
         with patch("backend.app.services.telegram_bot.restart_telegram_bot", new_callable=AsyncMock):
             assert (
                 await async_client.patch(f"/api/v1/notifications/{older.id}", json={"enabled": False})
             ).status_code == 200
-        assert await current_bot_token() == "222:AAyounger"
+        assert await current_bot_provider() == (younger.id, "222:AAyounger")
 
         with patch("backend.app.services.telegram_bot.restart_telegram_bot", new_callable=AsyncMock):
             assert (
                 await async_client.patch(f"/api/v1/notifications/{older.id}", json={"enabled": True})
             ).status_code == 200
-        assert await current_bot_token() == "111:AAolder"
+        assert await current_bot_provider() == (older.id, "111:AAolder")
 
     @pytest.mark.asyncio
     @pytest.mark.integration

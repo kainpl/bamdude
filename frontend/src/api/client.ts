@@ -11668,6 +11668,8 @@ export const api = {
 export interface TelegramChat {
   id: number;
   chat_id: number;
+  /** The Telegram provider (bot) this chat wrote to — its notifications come from that bot alone. */
+  provider_id: number;
   label: string | null;
   group_id: number | null;
   group_name: string | null;
@@ -11687,6 +11689,8 @@ export interface TelegramChat {
 
 export interface TelegramChatCreate {
   chat_id: number;
+  /** The bot to register the chat under; omitted = the bot that is running. */
+  provider_id?: number;
   label?: string | null;
   group_id?: number | null;
   user_id?: number | null;

@@ -2,7 +2,7 @@
 
 Manages bot lifecycle, polling, and provides send methods for notifications.
 Bot token is read from the oldest ENABLED Telegram notification provider in
-the DB (see ``current_bot_token``).
+the DB (see ``current_bot_provider``).
 """
 
 import asyncio
@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 _bot: Bot | None = None
 _dispatcher: Dispatcher | None = None
 _polling_task: asyncio.Task | None = None
+# The provider row the live poller was built from — the bot a chat that
+# writes to us is registered under (m180). Lives and dies with the three above.
+_bot_provider_id: int | None = None
 
 # One lock over the whole lifecycle, because the singleton above is THREE
 # references and every operation rewrites all of them around network awaits —
@@ -67,7 +70,7 @@ async def _discard_bot_locked(dispatcher: Dispatcher | None, bot: Bot | None) ->
     start that just failed on this very bot, and a raise here would strand the
     globals pointing at the wreck. Assumes ``_lifecycle_lock`` is held.
     """
-    global _bot, _dispatcher, _polling_task
+    global _bot, _dispatcher, _polling_task, _bot_provider_id
 
     if dispatcher is not None:
         _detach_sub_routers(dispatcher)
@@ -80,6 +83,7 @@ async def _discard_bot_locked(dispatcher: Dispatcher | None, bot: Bot | None) ->
     _bot = None
     _dispatcher = None
     _polling_task = None
+    _bot_provider_id = None
 
 
 def get_bot() -> Bot | None:
@@ -87,8 +91,8 @@ def get_bot() -> Bot | None:
     return _bot
 
 
-async def current_bot_token() -> str | None:
-    """The token the poller runs on: the OLDEST enabled Telegram provider's.
+async def current_bot_provider() -> tuple[int, str] | None:
+    """The provider the poller runs on — ``(id, token)`` of the OLDEST enabled Telegram provider.
 
     One process runs one poller, whatever the number of Telegram providers —
     the others still notify, over httpx with their own token
@@ -100,8 +104,11 @@ async def current_bot_token() -> str | None:
     wherever there is room), so renaming the bot's own row could have handed
     the poller to another provider on the next restart.
 
-    ``None`` means no bot should run. The provider routes compare this
-    answer before and after a save to decide whether to bounce the poller.
+    ``None`` means no bot should run. The id matters as much as the token:
+    a chat that writes to the running bot is registered under this row
+    (``telegram_chats.provider_id``, m180), so the provider routes compare
+    the whole pair before and after a save to decide whether to bounce the
+    poller — a row swap behind the same token must re-point registration.
     """
     from sqlalchemy import select
 
@@ -134,7 +141,19 @@ async def current_bot_token() -> str | None:
             # hand edit): the routes ask this reader on every provider save,
             # so one bad row must not turn all provider CRUD into a 500.
             return None
-    return config.get("bot_token") if isinstance(config, dict) else None
+    token = config.get("bot_token") if isinstance(config, dict) else None
+    return (provider.id, token) if token else None
+
+
+def running_bot_provider_id() -> int | None:
+    """The provider row the LIVE poller was built from, or ``None`` when no bot runs.
+
+    Set beside the poller task and cleared with it, so the auth middleware
+    can register a chat under the bot it actually wrote to without a
+    database round trip — and without guessing from the provider table,
+    which may have changed since the poller started.
+    """
+    return _bot_provider_id
 
 
 async def start_telegram_bot() -> None:
@@ -145,7 +164,7 @@ async def start_telegram_bot() -> None:
 
 async def _start_locked() -> None:
     """Build the bot and its poller. Assumes ``_lifecycle_lock`` is held."""
-    global _bot, _dispatcher, _polling_task
+    global _bot, _dispatcher, _polling_task, _bot_provider_id
 
     if _polling_task is not None and not _polling_task.done():
         # Idempotent: a poller is already running, and a second one would
@@ -164,10 +183,11 @@ async def _start_locked() -> None:
         logger.debug("Clearing a dead Telegram bot before starting a new one")
         await _discard_bot_locked(_dispatcher, _bot)
 
-    token = await current_bot_token()
-    if not token:
+    provider = await current_bot_provider()
+    if provider is None:
         print("[TG-BOT] No Telegram bot token configured - bot not started")
         return
+    provider_id, token = provider
     print(f"[TG-BOT] Token found: {token[:10]}...")
 
     # Register handlers
@@ -239,6 +259,9 @@ async def _start_locked() -> None:
 
     # Start polling in background
     print("[TG-BOT] Starting polling...")
+    # Recorded beside the poller: a chat that writes to this bot is registered
+    # under this row (the auth middleware asks ``running_bot_provider_id``).
+    _bot_provider_id = provider_id
     _polling_task = asyncio.create_task(_run_polling(_dispatcher, _bot))
 
 

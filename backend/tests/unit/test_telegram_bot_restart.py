@@ -39,7 +39,7 @@ async def test_start_failure_detaches_routers_so_next_start_succeeds(monkeypatch
     from backend.app.services import telegram_bot as tb
 
     # Token-fetch always returns a non-empty string so we hit the Bot/Dispatcher path.
-    monkeypatch.setattr(tb, "current_bot_token", AsyncMock(return_value="123:AAfake"))
+    monkeypatch.setattr(tb, "current_bot_provider", AsyncMock(return_value=(1, "123:AAfake")))
 
     # Force the global state to a known starting point (clean test).
     tb._bot = None
@@ -117,7 +117,7 @@ async def test_restart_with_token_change_clean_path(monkeypatch):
 
     from backend.app.services import telegram_bot as tb
 
-    monkeypatch.setattr(tb, "current_bot_token", AsyncMock(return_value="123:AAvalid"))
+    monkeypatch.setattr(tb, "current_bot_provider", AsyncMock(return_value=(1, "123:AAvalid")))
 
     tb._bot = None
     tb._dispatcher = None
@@ -253,7 +253,7 @@ async def tg(monkeypatch):
     # "bound to a different event loop" in the next test. The app has exactly
     # one loop, which is why the module can keep one lock for its lifetime.
     monkeypatch.setattr(tb, "_lifecycle_lock", asyncio.Lock())
-    monkeypatch.setattr(tb, "current_bot_token", AsyncMock(return_value="123:AAfake"))
+    monkeypatch.setattr(tb, "current_bot_provider", AsyncMock(return_value=(1, "123:AAfake")))
     monkeypatch.setattr(tb, "Bot", harness.make_bot)
     monkeypatch.setattr(tb, "Dispatcher", harness.make_dispatcher)
     monkeypatch.setattr(tb, "_run_polling", harness.run_polling)

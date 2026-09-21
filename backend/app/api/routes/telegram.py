@@ -10,6 +10,7 @@ from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.group import Group
+from backend.app.models.notification import NotificationProvider
 from backend.app.models.telegram_chat import (
     ALL_NOTIFY_EVENTS,
     DEFAULT_NOTIFY_EVENTS,
@@ -33,6 +34,7 @@ def _to_response(chat: TelegramChat) -> TelegramChatResponse:
     return TelegramChatResponse(
         id=chat.id,
         chat_id=chat.chat_id,
+        provider_id=chat.provider_id,
         label=chat.label,
         group_id=chat.group_id,
         group_name=chat.group.name if chat.group else None,
@@ -49,6 +51,33 @@ def _to_response(chat: TelegramChat) -> TelegramChatResponse:
         created_at=chat.created_at,
         updated_at=chat.updated_at,
     )
+
+
+async def _provider_for_new_chat(db: AsyncSession, requested: int | None) -> int:
+    """The bot a manually added chat belongs to (m180).
+
+    Named explicitly (the provider card adds chats to ITS bot), else the bot
+    that is running, else the one that would run — the oldest enabled
+    telegram provider. With none of those there is no bot the chat could
+    have written to, and a row without one would never be messaged.
+    """
+    if requested is not None:
+        provider = await db.get(NotificationProvider, requested)
+        if provider is None:
+            raise HTTPException(404, "Notification provider not found")
+        if provider.provider_type != "telegram":
+            raise HTTPException(400, "Provider is not a Telegram provider")
+        return provider.id
+
+    from backend.app.services.telegram_bot import current_bot_provider, running_bot_provider_id
+
+    running = running_bot_provider_id()
+    if running is not None:
+        return running
+    current = await current_bot_provider()
+    if current is not None:
+        return current[0]
+    raise HTTPException(409, "No Telegram provider to bind the chat to. Add a Telegram provider first.")
 
 
 # Event type metadata for the frontend
@@ -209,13 +238,23 @@ async def create_chat(
         if invalid:
             raise HTTPException(400, f"Invalid event types: {', '.join(invalid)}")
 
+    provider_id = await _provider_for_new_chat(db, data.provider_id)
+
     chat = TelegramChat(
         chat_id=data.chat_id,
+        provider_id=provider_id,
         label=data.label,
         group_id=data.group_id,
         user_id=data.user_id,
         is_active=data.is_active,
         notify_events=data.notify_events,
+        # The schema has carried these four since the chat refactor, and the
+        # dialog sends them on create — the row never took them (only an
+        # update did), so a chat added with its digest on had it off.
+        daily_digest=data.daily_digest,
+        quiet_hours_enabled=data.quiet_hours_enabled,
+        quiet_hours_start=data.quiet_hours_start,
+        quiet_hours_end=data.quiet_hours_end,
         progress_min_duration_minutes=data.progress_min_duration_minutes,
         printer_ids=data.printer_ids,
     )
