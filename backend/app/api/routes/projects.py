@@ -1793,8 +1793,9 @@ async def get_order_plan(
     """What to print next for every line of this order (spec pass 3).
 
     Computed on every read, never cached and never stored: a second call after
-    enqueuing sees the new queue rows and plans that much less. Reads nothing
-    about any printer — this is a question about parts, not about machines.
+    enqueuing sees the new queue rows and plans that much less.  Recipe choice
+    accounts for a read-only snapshot of usable farm capacity; it neither
+    claims a printer nor changes dispatch readiness.
     """
     plan = await plan_for_order(db, project_id)
     if plan is None:

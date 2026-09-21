@@ -142,12 +142,16 @@ async def test_archived_printers_are_gone_and_parked_ones_owe_but_take_nothing(d
     off = await printer_factory(name="off", model="P1S", is_active=False)
     db_session.add_all([PrinterQueue(id=gone.id, printer_id=gone.id), PrinterQueue(id=off.id, printer_id=off.id)])
     (await db_session.get(PrinterQueue, x1.id)).is_paused = True
+    (await db_session.get(PrinterQueue, p2.id)).auto_distribute_eligible = False
     await db_session.commit()
     snap = await farm_forecast.load_snapshot(db_session, NOW)
     accepts = {m.printer_id: m.accepts_new_work for m in snap.printers}
     assert gone.id not in accepts
-    assert accepts[off.id] is False and accepts[x1.id] is False
-    assert accepts[p1.id] is True and accepts[p2.id] is True
+    assert accepts[off.id] is False and accepts[x1.id] is False and accepts[p2.id] is False
+    assert accepts[p1.id] is True
+    # The parked machines remain in the snapshot so held work is not erased,
+    # but only the active, unpaused, auto-eligible P1S becomes a plan lane.
+    assert [lane.printer_id for lane in farm_forecast.capacity_from_snapshot(snap).machines] == [p1.id]
 
 
 @pytest.mark.asyncio

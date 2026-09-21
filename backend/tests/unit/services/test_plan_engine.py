@@ -13,7 +13,7 @@ from backend.app.models.project_line import ProjectLine
 from backend.app.services import plan_engine
 from backend.app.services.filament_cost import cost_of
 from backend.app.services.order_metrics import LineFigures, OrderContext, PartFigures, attribute
-from backend.app.services.plan_engine import plan_lines
+from backend.app.services.plan_engine import FleetCapacity, FleetMachine, plan_lines
 from backend.app.services.product_composition import PlateRecipe
 
 
@@ -158,6 +158,63 @@ def test_waste_tie_break_then_time():
     quick = _cand(2, 10, {1: 5}, secs=100)
     plan = plan_lines(ctx, {line.id: _figs(line, [p], {1: 10})}, {10: [slow, quick]}, {}, None)
     assert [(r.plate_id, r.count) for r in plan.lines[0].rows] == [(2, 2)]
+
+
+def test_fleet_capacity_uses_available_model_instead_of_absent_faster_recipe():
+    """Three A1 Minis and no P1S must produce an A1-only initial plan.
+
+    The P1S plate is more efficient in machine-hours, but it is not a useful
+    recommendation for this actual farm.  This is the Discussion 49 fleet
+    example reduced to the pure covering boundary.
+    """
+    part = _part(1, 10, "leg", 1)
+    line = _line(100, 10, 925)
+    ctx = _ctx([line], [part])
+    p1s = _cand(1, 10, {1: 80}, secs=13 * 3600, model="P1S")
+    a1 = _cand(2, 10, {1: 36}, secs=8 * 3600, model="A1MINI")
+    capacity = FleetCapacity([FleetMachine(i, "A1 mini") for i in range(1, 4)])
+    plan = plan_lines(ctx, {line.id: _figs(line, [part], {1: 925})}, {10: [p1s, a1]}, {}, None, capacity)
+    assert [(row.plate_id, row.count) for row in plan.lines[0].rows] == [(2, 26)]
+
+
+def test_fleet_capacity_accounts_for_load_shared_by_order_lines():
+    """A later line sees the A1 already reserved by the earlier one."""
+    first, second = _part(1, 10, "first", 1), _part(2, 20, "second", 1)
+    left, right = _line(100, 10, 1), _line(200, 20, 1, sort=1)
+    ctx = _ctx([left, right], [first, second])
+    # First line occupies the only A1 for eight hours.  For the second, an
+    # idle P1S finishes at 13h while that A1 would finish at 16h.
+    first_a1 = _cand(1, 10, {1: 1}, secs=8 * 3600, model="A1MINI")
+    second_a1 = _cand(2, 20, {2: 1}, secs=8 * 3600, model="A1MINI")
+    second_p1s = _cand(3, 20, {2: 1}, secs=13 * 3600, model="P1S")
+    plan = plan_lines(
+        ctx,
+        {left.id: _figs(left, [first], {1: 1}), right.id: _figs(right, [second], {2: 1})},
+        {10: [first_a1], 20: [second_a1, second_p1s]},
+        {},
+        None,
+        FleetCapacity([FleetMachine(1, "A1 mini"), FleetMachine(2, "P1S")]),
+    )
+    assert plan.lines[0].rows[0].plate_id == 1
+    assert plan.lines[1].rows[0].plate_id == 3
+
+
+def test_only_absent_model_recipe_stays_visible_for_the_forecast_reason():
+    """No lane is not an unsatisfied part and must not hide the sole recipe."""
+    part = _part(1, 10, "leg", 1)
+    line = _line(100, 10, 1)
+    ctx = _ctx([line], [part])
+    p1s = _cand(1, 10, {1: 1}, secs=13 * 3600, model="P1S")
+    plan = plan_lines(
+        ctx,
+        {line.id: _figs(line, [part], {1: 1})},
+        {10: [p1s]},
+        {},
+        None,
+        FleetCapacity([FleetMachine(1, "A1 mini")]),
+    )
+    assert [(row.plate_id, row.count) for row in plan.lines[0].rows] == [(1, 1)]
+    assert plan.lines[0].unsatisfiable == []
 
 
 def test_a_foreign_objects_waste_is_not_this_lines_waste():

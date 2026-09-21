@@ -28,6 +28,7 @@ was free. No new setting is added by this pass.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,12 +48,78 @@ from backend.app.services.order_metrics import (
     line_accepts_materials,
 )
 from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
+from backend.app.utils.printer_models import normalize_model_name
 
 # A defence, not a feature: a plate whose yield somehow never shrinks the
 # outstanding map would otherwise spin forever inside a request.
 MAX_ITERATIONS = 10_000
 
 Candidate = tuple[ProductPlate, LibraryFile, PlateRecipe]
+
+
+def _model_key(model: str | None) -> str | None:
+    """The same normalized model key the auto queue and forecast route on."""
+    normalised = normalize_model_name(model) if model else None
+    return normalised.strip().lower() if normalised else None
+
+
+@dataclass
+class FleetMachine:
+    """One *currently usable* lane in the initial-plan heuristic.
+
+    This is intentionally smaller than the forecast's machine state.  It is a
+    snapshot for choosing recipes, not a second dispatcher: its clock starts
+    after work already held by the printer and only advances in memory while a
+    single order's lines are being covered.
+    """
+
+    printer_id: int
+    model: str | None
+    free_at: float = 0.0
+    prep_seconds: float = 0.0
+    gap_seconds: float = 0.0
+
+    @property
+    def key(self) -> str | None:
+        return _model_key(self.model)
+
+
+@dataclass
+class FleetCapacity:
+    """Mutable per-order capacity ledger supplied by the farm-snapshot adapter.
+
+    Empty capacity is meaningful: it deliberately preserves the legacy plan
+    when a recipe is the only way to make a part.  The forecast can then report
+    the actual reason (no such active/eligible model) instead of the planner
+    silently turning that demand into an unsatisfied part.
+    """
+
+    machines: list[FleetMachine] = field(default_factory=list)
+
+    def copy(self) -> FleetCapacity:
+        return FleetCapacity(
+            [FleetMachine(m.printer_id, m.model, m.free_at, m.prep_seconds, m.gap_seconds) for m in self.machines]
+        )
+
+    def preview(self, recipe: PlateRecipe) -> tuple[float, FleetMachine] | None:
+        seconds = estimate_seconds(recipe)
+        key = _model_key(recipe.printer_model)
+        if key is None or seconds is None or seconds <= 0:
+            return None
+        choices = [m for m in self.machines if m.key == key]
+        if not choices:
+            return None
+        machine = min(choices, key=lambda m: (m.free_at + m.prep_seconds + seconds, m.printer_id))
+        return machine.free_at + machine.prep_seconds + seconds, machine
+
+    def reserve(self, recipe: PlateRecipe) -> float | None:
+        """Place one selected print on its earliest lane, only in this ledger."""
+        preview = self.preview(recipe)
+        if preview is None:
+            return None
+        finish, machine = preview
+        machine.free_at = finish + machine.gap_seconds
+        return finish
 
 
 @dataclass
@@ -337,6 +404,7 @@ def cover(
     candidates: list[Candidate],
     counted: set[int],
     price_per_gram: float | None,
+    capacity: FleetCapacity | None = None,
 ) -> tuple[list[PlanRow], dict[int, int], bool]:
     """Greedy covering (spec decision 4): plates for one line, until nothing helps.
 
@@ -362,6 +430,14 @@ def cover(
     # inside the loop it was recomputed ``MAX_ITERATIONS × len(candidates)``
     # times for an answer that cannot have changed.
     seconds = {plate.id: estimate_seconds(recipe) for plate, _file, recipe in candidates}
+    # If the order has at least one candidate that a current lane can actually
+    # schedule, absent/parked-model recipes must not win merely because they
+    # make more parts per machine-hour.  If there is no usable lane for ANY
+    # recipe, retain the old covering result so the sole recipe remains visible
+    # and the forecast can explain why it cannot run yet.
+    fleet_can_choose = capacity is not None and any(
+        capacity.preview(recipe) is not None for _p, _f, recipe in candidates
+    )
     rows: dict[int, PlanRow] = {}
     order: list[int] = []
     truncated = True
@@ -373,13 +449,29 @@ def cover(
             if useful <= 0:
                 continue
             waste = sum(max(0, n - remaining.get(pid, 0)) for pid, n in yields[plate.id].items())
-            key = _pick_key(useful, waste, seconds[plate.id], plate.id)
+            schedule = capacity.preview(recipe) if fleet_can_choose and capacity is not None else None
+            if fleet_can_choose and schedule is None:
+                continue
+            # Calendar finish is the objective when there is real capacity.
+            # The established useful/waste/time/id ordering remains the stable
+            # tie-break, and remains the whole rule where a farm cannot inform
+            # the decision at all.
+            key = (
+                (schedule[0], *_pick_key(useful, waste, seconds[plate.id], plate.id))
+                if schedule is not None
+                else _pick_key(useful, waste, seconds[plate.id], plate.id)
+            )
             if best is None or key < best[0]:
                 best = (key, plate, file, recipe, gain)
         if best is None:
             truncated = False
             break  # nothing left that covers anything: the plan is complete
         _key, plate, file, recipe, gain = best
+        if fleet_can_choose and capacity is not None:
+            # ``schedule`` above came from this unchanged ledger; reserve the
+            # same earliest machine immediately so later prints — including a
+            # later line of this order — see the load this choice created.
+            capacity.reserve(recipe)
         row = rows.get(plate.id)
         if row is None:
             row = rows[plate.id] = _row_for(plate, file, recipe, price_per_gram)
@@ -391,6 +483,25 @@ def cover(
             row.useful[pid] = row.useful.get(pid, 0) + n
             remaining[pid] = max(0, remaining[pid] - n)
     planned = [rows[plate_id] for plate_id in order]
+    if fleet_can_choose:
+        # Scheduling can deliberately reserve equal-yield variants on different
+        # model lanes.  The plan surface already represents that as one row
+        # plus alternatives, and the forecast carries the proposed split.  Do
+        # not turn a single plate choice into two confusing operator rows just
+        # because the private capacity ledger used both variants while scoring.
+        merged: dict[frozenset[tuple[int, int]], PlanRow] = {}
+        compact: list[PlanRow] = []
+        for row in planned:
+            key = frozenset(yields[row.plate_id].items())
+            first = merged.get(key)
+            if first is None:
+                merged[key] = row
+                compact.append(row)
+                continue
+            first.count += row.count
+            for part_id, count in row.useful.items():
+                first.useful[part_id] = first.useful.get(part_id, 0) + count
+        planned = compact
     surplus = {}
     for pid, want in outstanding.items():
         made = sum(row.count * yields[row.plate_id].get(pid, 0) for row in planned)
@@ -440,6 +551,7 @@ def plan_lines(
     recipes_by_product: dict[int, list[Candidate]],
     queued: dict[int, dict[int, int]],
     price_per_gram: float | None,
+    capacity: FleetCapacity | None = None,
 ) -> OrderPlan:
     """The plan for every line of the order. Pure — see the module docstring.
 
@@ -474,7 +586,7 @@ def plan_lines(
         # is listed whole — the operator slices it and it becomes a candidate.
         not_sliced = [plate.id for plate, _file, recipe in recipes if not recipe.sliced]
         candidates = [row for row in recipes if row[2].sliced and line_accepts_materials(line, row[2].materials)]
-        rows, surplus, line_truncated = cover(outstanding, candidates, counted, price_per_gram)
+        rows, surplus, line_truncated = cover(outstanding, candidates, counted, price_per_gram, capacity)
         _attach_alternatives(rows, candidates, counted, price_per_gram)
         truncated = truncated or line_truncated
         yielded: set[int] = set()
@@ -668,7 +780,27 @@ async def queued_yield_by_line(
     return out
 
 
-async def plan_for_orders(db: AsyncSession, project_ids: list[int]) -> dict[int, OrderPlan]:
+async def _current_fleet_capacity(db: AsyncSession) -> FleetCapacity:
+    """Read the forecast-owned farm snapshot through its narrow planning adapter.
+
+    The pure covering functions above accept only :class:`FleetCapacity`; they
+    neither query a printer nor know what online means.  Keeping the loader at
+    this database boundary makes the initial-plan result shared by the order
+    page, order-from-files wizard and every other ``plan_for_orders`` caller.
+    It does *not* call ``forecast_projects`` (which itself asks us for plans),
+    so there is no forecast/planner recursion.
+    """
+    # Runtime import avoids the module-import cycle: farm_forecast imports the
+    # public plan shapes for its advisory simulation, while this wrapper merely
+    # asks its snapshot loader for a capacity-only view.
+    from backend.app.services.farm_forecast import capacity_from_snapshot, load_snapshot
+
+    return capacity_from_snapshot(await load_snapshot(db, datetime.utcnow()))
+
+
+async def plan_for_orders(
+    db: AsyncSession, project_ids: list[int], *, capacity: FleetCapacity | None = None
+) -> dict[int, OrderPlan]:
     """The plan of every order in ``project_ids``, in ONE round of queries.
 
     ``project_id → OrderPlan``, with no entry for an id that names no order —
@@ -696,7 +828,9 @@ async def plan_for_orders(db: AsyncSession, project_ids: list[int]) -> dict[int,
       ``line_for_plate`` only ever looks at the lines of the row's own order.
 
     Computed on every read, never cached and never stored: a second call after
-    enqueuing sees the new queue rows and plans that much less.
+    enqueuing sees the new queue rows and plans that much less.  A snapshot of
+    usable farm capacity chooses among viable recipes; it never dispatches and
+    every order in this batch receives its own copy of that snapshot.
     """
     if not project_ids:
         return {}
@@ -714,20 +848,35 @@ async def plan_for_orders(db: AsyncSession, project_ids: list[int]) -> dict[int,
     queued = await queued_yield_by_line(db, recipes_by_product, all_lines, counted_by_line)
     rate_per_kg = await default_rate_per_kg(db)
     price_per_gram = rate_per_kg / 1000.0 if rate_per_kg > 0 else None
+    # A batch is often a comparison of independent orders (the candidates
+    # dialog is one caller), so every order starts from the same farm snapshot.
+    # Within an order ``plan_lines`` shares its copy across every line.
+    fleet = capacity if capacity is not None else await _current_fleet_capacity(db)
     return {
-        ctx.project.id: plan_lines(ctx, figures_by_project[ctx.project.id], recipes_by_product, queued, price_per_gram)
+        ctx.project.id: plan_lines(
+            ctx,
+            figures_by_project[ctx.project.id],
+            recipes_by_product,
+            queued,
+            price_per_gram,
+            fleet.copy(),
+        )
         for ctx in contexts
     }
 
 
-async def plan_for_order(db: AsyncSession, project_id: int) -> OrderPlan | None:
+async def plan_for_order(
+    db: AsyncSession, project_id: int, *, capacity: FleetCapacity | None = None
+) -> OrderPlan | None:
     """One order's plan — :func:`plan_for_orders` for one. ``None`` = no order."""
-    return (await plan_for_orders(db, [project_id])).get(project_id)
+    return (await plan_for_orders(db, [project_id], capacity=capacity)).get(project_id)
 
 
 __all__ = [
     "MAX_ITERATIONS",
     "Candidate",
+    "FleetCapacity",
+    "FleetMachine",
     "LinePlan",
     "OrderPlan",
     "PlanAlternative",

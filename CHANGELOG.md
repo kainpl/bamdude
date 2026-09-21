@@ -2,6 +2,8 @@
 
 ### Changed
 
+- **An order's first plan now starts with the farm it actually has.** When sliced recipes make the same needed parts on different models, BamDude chooses with the usable active AutoQueue lanes and the work already occupying them in mind, aiming to finish the order sooner rather than merely minimise one printer's hours. An offline printer remains part of that capacity; an archived, maintenance, paused or AutoQueue-disabled printer does not receive new planned work. If the only recipe needs a model the farm cannot currently take, it stays visible and the forecast names the blockage instead of pretending the parts are not needed. The same shared plan is used by an existing order and **Calculate** in the File Manager; queue dispatch and the operator's final split are unchanged.
+
 - **Staggered Start group limits can now be higher or lower than the default.** A default of two with an A1 mini tag set to six allows six starts in that group without raising the others. With both tags and locations enabled, each axis uses its own override (or inherits the default) and each tag/location pair uses the lower limit. Existing installations keep their effective heating limits during the upgrade: previously saved numbers above the old ceiling are reduced to that ceiling once. Raise them explicitly after upgrading if your electrical capacity permits it. Queue starts, direct prints, the stagger banner and ETA all use the same rule.
 
 ### Added
