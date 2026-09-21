@@ -7,7 +7,8 @@ from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from backend.app.services.printer_feed_snapshot import FeedSource, PrinterFeedSnapshot
-from backend.app.utils.filament_types import filament_types_compatible
+from backend.app.utils.filament_types import canonical_filament_type, filament_types_compatible
+from backend.app.utils.printer_configs import requires_left_tpu_firmware_check
 from backend.app.utils.printer_models import is_gcode_compatible, normalize_model_name
 
 if TYPE_CHECKING:
@@ -248,6 +249,14 @@ def resolve_filament_routing(
         unknown = False
         reason = "material_mismatch"
         for source in snapshot.sources:
+            # Firmware (and Bambu Studio) refuse any external feed while FTS is
+            # installed, including an external TPU Feed Assist path.  Filter it
+            # before source-policy/pin selection so external_only cannot turn a
+            # physical refusal into an accidental bypass.
+            if (snapshot.fts or snapshot.fts_pending_confirmation) and source.kind == "external":
+                reason = "fts_external_unsupported" if snapshot.fts else "fts_state_unavailable"
+                unknown = unknown or snapshot.fts_pending_confirmation
+                continue
             if policy.feed_policy == "ams_only" and source.kind != "ams":
                 continue
             if policy.feed_policy == "external_only" and source.kind != "external":
@@ -266,6 +275,22 @@ def resolve_filament_routing(
                 continue
             if nozzle not in source.nozzles:
                 reason = "nozzle_mismatch"
+                continue
+            # This is deliberately the actual structured source material, not
+            # a profile name and not a broad TPU-* family match.  TPU-AMS is a
+            # different material string in Bambu Studio's own check.
+            if (
+                nozzle == 1
+                and requires_left_tpu_firmware_check(snapshot.model)
+                and canonical_filament_type(source.material) == "TPU"
+                and snapshot.left_tpu_firmware is not True
+            ):
+                unknown |= snapshot.left_tpu_firmware is None
+                reason = (
+                    "tpu_left_firmware_unavailable"
+                    if snapshot.left_tpu_firmware is None
+                    else "tpu_left_firmware_unsupported"
+                )
                 continue
             if source.kind == "external" and nozzle_counts[nozzle] > 1:
                 reason = "feed_topology_mismatch"

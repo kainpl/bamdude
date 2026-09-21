@@ -1529,6 +1529,7 @@ async def _build_printer_status(
             if state.fila_switch and state.fila_switch.installed
             else None
         ),
+        fila_switch_pending_confirmation=state.fts_pending_confirmation is True,
     )
 
 

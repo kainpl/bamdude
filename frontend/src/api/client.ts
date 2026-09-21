@@ -964,6 +964,7 @@ export interface PrinterStatus {
   // either extruder, so per-extruder slot filtering must be skipped. Upstream
   // Bambuddy #1162.
   fila_switch: FilaSwitchState | null;
+  fila_switch_pending_confirmation?: boolean;
   // Currently loaded tray (global tray ID, 255 = no filament loaded, 254 = external spool)
   tray_now: number;
   // Runout / filament-replacement guidance. Populated only while PAUSED.

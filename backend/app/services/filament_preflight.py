@@ -1,5 +1,6 @@
 """Read-only dispatch preflight and a synchronous guard at the MQTT boundary."""
 
+import json
 from dataclasses import asdict, dataclass, replace
 
 from backend.app.models.queue_source import FORMAT_GCODE
@@ -87,6 +88,8 @@ def feed_signature(policy, snapshot) -> tuple[int, str]:
                 "external_known": snapshot.external_known,
                 "nozzles": snapshot.nozzle_diameters,
                 "fts": snapshot.fts,
+                "fts_pending_confirmation": snapshot.fts_pending_confirmation,
+                "left_tpu_firmware": snapshot.left_tpu_firmware,
                 "backup_enabled": snapshot.backup_enabled,
                 "incomplete": snapshot.incomplete,
                 "sources": [
@@ -133,9 +136,16 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
         # wrongly for a raw source; the format the capture verified is the answer.
         raw_gcode = descriptor.format == FORMAT_GCODE
     # These flags come from a server-created queue row, never request options.
-    if item.is_calibration and item.calibration_session_id is not None:
-        return None
-    if raw_gcode and item.source_auto_item_id is None:
+    # Raw G-code and calibration deliberately have no normal 3MF requirement
+    # contract.  They still must not send a *known* external-holder selection
+    # through FTS: firmware rejects that physical topology.  Unknown/no mapping
+    # stays exempt — this is a narrow wire-safety rule, not invented metadata.
+    exempt_from_normal_routing = (item.is_calibration and item.calibration_session_id is not None) or (
+        raw_gcode and item.source_auto_item_id is None
+    )
+    if exempt_from_normal_routing:
+        if _has_explicit_external_mapping(item) and printer_manager.get_feed_snapshot(printer_id).fts:
+            raise RoutingDeferred("fts_external_unsupported")
         return None
     req = await read_item_requirements(db, item, cache)
     if req.status != "ok":
@@ -194,6 +204,24 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
     if saved.get("runtime", {}).get("blocked_revision") == revision:
         raise RoutingDeferred(saved["runtime"].get("reason", "feed_state_changed"), revision=revision)
     return DispatchRoutingGuard(req, policy, result.plan, exact_model, revision, feed_signature(policy, snapshot))
+
+
+def _has_explicit_external_mapping(item) -> bool:
+    """Whether an exempt item explicitly selected Bambu's virtual tray.
+
+    ``-1`` is intentionally not treated as external: it is also the on-wire
+    marker for an unresolved slot.  Only the durable queue values 254/255
+    prove that an operator selected an external holder.
+    """
+    mapping = getattr(item, "ams_mapping", None)
+    if isinstance(mapping, str):
+        try:
+            mapping = json.loads(mapping)
+        except (TypeError, ValueError):
+            return False
+    return isinstance(mapping, list) and any(
+        isinstance(slot, int) and not isinstance(slot, bool) and slot >= 254 for slot in mapping
+    )
 
 
 async def ranked_feed(db, printer_id, policy, prefer_lowest=None):

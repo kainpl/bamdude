@@ -135,7 +135,8 @@ export function FilamentMapping({
     if (!fs?.installed) return null;
     const track = fs.in_slots.indexOf(globalTrayId);
     if (track < 0) return null;
-    return fs.out_extruders[track] ?? null;
+    const extruder = fs.out_extruders[track];
+    return extruder === 0 || extruder === 1 ? extruder : null;
   };
 
   // Don't render if no filament requirements
@@ -289,7 +290,12 @@ export function FilamentMapping({
                     Printer firmware accepts/rejects the ams_mapping at start-print
                     — failure is loud, not silent.
                   */}
-                  {loadedFilaments.map((f) => {
+                  {loadedFilaments
+                    // An old saved external pin remains visible so it can be
+                    // corrected, but external is never newly selectable while
+                    // FTS is connected.
+                    .filter((f) => !ftsInstalled || !f.isExternal || f.globalTrayId === item.loaded?.globalTrayId)
+                    .map((f) => {
                       const remainingWeight = trayRemainingWeightMap.get(f.globalTrayId);
                       const remainingLabel = remainingWeight != null
                         ? t('printModal.slotRemainingShort', {
@@ -308,8 +314,14 @@ export function FilamentMapping({
                           ? ''
                           : ` [${ftsTargetExtruder === 1 ? t('printModal.leftNozzle') : t('printModal.rightNozzle')}]`;
                       return (
-                        <option key={f.globalTrayId} value={f.globalTrayId} className="bg-bambu-dark text-white">
+                        <option
+                          key={f.globalTrayId}
+                          value={f.globalTrayId}
+                          disabled={ftsInstalled && f.isExternal}
+                          className="bg-bambu-dark text-white"
+                        >
                           {f.label}: {f.traySubBrands || f.type} ({f.colorName}){remainingLabel}{ftsBadge}
+                          {ftsInstalled && f.isExternal ? ` — ${t('filamentRouting.feasibility.reason.fts_external_unsupported')}` : ''}
                         </option>
                       );
                   })}

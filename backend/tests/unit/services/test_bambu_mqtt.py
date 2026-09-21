@@ -4796,6 +4796,58 @@ class TestFilamentTrackSwitchDetection:
         assert fs.in_slots == []
         assert fs.out_extruders == []
 
+    def test_fts_decodes_packed_ams_and_ht_slots_and_preserves_sparse_fields(self, mqtt_client):
+        mqtt_client._update_state(
+            {
+                "aux": "20000000",
+                "device": {"fila_switch": {"in": [-1, (1 << 8) | 2], "out": [0, 1], "stat": 4}},
+            }
+        )
+        fs = mqtt_client.state.fila_switch
+        assert fs.authoritative and fs.in_slots == [-1, 6]
+        assert fs.out_extruders == [0, 1] and fs.stat == 4
+
+        # The following delta intentionally omits out/stat; it must not erase
+        # either. AMS HT has a single canonical global tray id, not id * 4.
+        mqtt_client._update_state({"device": {"fila_switch": {"in": [(128 << 8), -1]}}})
+        assert fs.in_slots == [128, -1]
+        assert fs.out_extruders == [0, 1] and fs.stat == 4
+
+    def test_fts_aux_false_clears_and_stale_detail_cannot_resurrect_it(self, mqtt_client):
+        mqtt_client._update_state({"aux": "20000000", "device": {"fila_switch": {"in": [-1, 0]}}})
+        assert mqtt_client.state.fila_switch.installed
+        mqtt_client._update_state({"aux": "0", "device": {"fila_switch": {"in": [-1, 0]}}})
+        assert not mqtt_client.state.fila_switch.installed
+        assert mqtt_client.state.fila_switch.authoritative
+
+        mqtt_client._update_state({"device": {"fila_switch": {"in": [-1, 0]}}})
+        assert not mqtt_client.state.fila_switch.installed
+
+    def test_fts_and_tpu_capabilities_reach_generation_scoped_feed_snapshot(self, mqtt_client):
+        mqtt_client.model = "H2D"
+        mqtt_client.state.connected = True
+        mqtt_client._process_message(
+            {"print": {"aux": "20000000", "fun2": "80", "device": {"fila_switch": {}}, "ams": {"ams": []}}}
+        )
+        snapshot = mqtt_client.get_feed_snapshot(1)
+        assert snapshot.fts and snapshot.left_tpu_firmware is True
+
+    def test_reconnect_keeps_external_routing_unconfirmed_until_fresh_fts_state(self, mqtt_client):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import FilaSwitchState
+
+        mqtt_client.state.fila_switch = FilaSwitchState(installed=True, authoritative=True)
+        mqtt_client._request_topic_supported = False
+        mqtt_client._on_connect(MagicMock(), None, None, 0)
+
+        snapshot = mqtt_client.get_feed_snapshot(1)
+        assert not snapshot.fts
+        assert snapshot.fts_pending_confirmation
+
+        mqtt_client._process_message({"print": {"aux": "0", "ams": {"ams": []}}})
+        assert not mqtt_client.get_feed_snapshot(1).fts_pending_confirmation
+
 
 class TestStartPrintRecordsDispatchedPlate:
     """Tests for the dispatched-plate record set by start_print() — used by

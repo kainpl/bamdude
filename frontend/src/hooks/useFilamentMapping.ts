@@ -273,6 +273,10 @@ export function buildFilamentComparison(
   preferLowest = false,
 ): FilamentComparison[] {
   if (!filamentReqs?.filaments || filamentReqs.filaments.length === 0) return [];
+  // FTS makes AMS reach both nozzles, not external feed supported.  Keep this
+  // matcher aligned with the server resolver so auto-selection cannot pin an
+  // external spool which firmware will refuse at dispatch.
+  const routableFilaments = ftsActive ? loadedFilaments.filter((source) => !source.isExternal) : loadedFilaments;
   if (filamentReqs.filaments.some(req => req.ignore_profile || req.strict_profile_match)) {
     return buildPolicyComparison(filamentReqs.filaments, loadedFilaments, manualMappings, ftsActive, preferLowest);
   }
@@ -294,6 +298,19 @@ export function buildFilamentComparison(
       const manualLoaded = loadedFilaments.find((f) => f.globalTrayId === manualTrayId);
 
       if (manualLoaded) {
+        if (ftsActive && manualLoaded.isExternal) {
+          // Preserve a saved pin visibly, but never treat it as a valid
+          // assignment. The authoritative preview names the FTS refusal.
+          return {
+            ...req,
+            loaded: manualLoaded,
+            hasFilament: false,
+            typeMatch: false,
+            colorMatch: false,
+            status: 'mismatch',
+            isManual: true,
+          };
+        }
         const typeMatch = loadedFilamentMatches(req, manualLoaded);
         const colorMatch = filamentColorMatches(req, manualLoaded);
 
@@ -333,7 +350,7 @@ export function buildFilamentComparison(
     const reqTrayInfoIdx = req.ignore_profile ? '' : req.tray_info_idx || '';
 
     // Get available trays (not already used)
-    let available = loadedFilaments.filter((f) => !usedTrayIds.has(f.globalTrayId));
+    let available = routableFilaments.filter((f) => !usedTrayIds.has(f.globalTrayId));
 
     // Nozzle-aware filtering: restrict to trays on the correct nozzle.
     // This is a hard filter - cross-nozzle assignment causes print failures.
@@ -480,6 +497,7 @@ function buildPolicyComparison(
       ((ranked.length + 1) * requirements.length + 1) - (preferLowest ? ranked.indexOf(source) : 0);
   const candidates = requirements.map(req => loaded.filter(source =>
     (manual[req.slot_id] === undefined || manual[req.slot_id] === source.globalTrayId) &&
+    (!fts || !source.isExternal) &&
     loadedFilamentMatches(req, source) && (req.nozzle_id == null || fts || source.extruderId === req.nozzle_id) &&
     (!req.strict_color_match || filamentColorMatches(req, source)),
   ).sort((a, b) => score(req, b) - score(req, a) || a.globalTrayId - b.globalTrayId));
@@ -509,7 +527,8 @@ function buildPolicyComparison(
     // permission to print; the authoritative preview names its refusal.
     const source = manual[req.slot_id] !== undefined
       ? loaded.find(row => row.globalTrayId === manual[req.slot_id]) : best?.get(i);
-    const typeMatch = source ? loadedFilamentMatches(req, source) : loaded.some(row => loadedFilamentMatches(req, row));
+    const blockedExternal = Boolean(fts && source?.isExternal);
+    const typeMatch = !blockedExternal && (source ? loadedFilamentMatches(req, source) : loaded.some(row => loadedFilamentMatches(req, row) && !row.isExternal));
     const colorMatch = !!source && filamentColorMatches(req, source);
     const assigned = source && (!req.strict_color_match || colorMatch) ? source : undefined;
     return { ...req, loaded: assigned, hasFilament: !!assigned, typeMatch, colorMatch,

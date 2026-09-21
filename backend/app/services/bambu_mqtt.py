@@ -274,6 +274,37 @@ def normalize_am_unit_id(ams_id: int) -> int:
     return A2L_LITE_NORMALIZED_AMS_ID if ams_id == A2L_LITE_PHYSICAL_AMS_ID else ams_id
 
 
+def _fts_global_slot(value: object) -> int:
+    """Decode a FilaSwitch ``in`` item into our canonical global tray id.
+
+    The wire is ``ams_id << 8 | slot_id``, not the global id used by the rest
+    of BamDude.  ``-1`` is empty; malformed values deliberately become the same
+    non-displayable sentinel rather than pointing a badge at a random tray.
+    """
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return -1
+    ams_id = normalize_am_unit_id((value >> 8) & 0xFF)
+    slot_id = value & 0xFF
+    if 128 <= ams_id <= 143:
+        return ams_id if slot_id == 0 else -1
+    if 0 <= ams_id < 16 and 0 <= slot_id <= 3:
+        return ams_id * 4 + slot_id
+    return -1
+
+
+def _fts_out_extruder(value: object) -> int:
+    """Normalise the FTS output sentinel (0xE) and malformed values to -1."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value in (0, 1) else -1
+
+
+def _fts_int(value: object, previous: int) -> int:
+    """Accept an explicitly supplied numeric status field, else preserve delta state."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return previous
+
+
 def a2l_lite_wire_ids(ams_id: int, tray_id: int) -> tuple[int, int, int] | None:
     """Translate a normalised A2L slot back to the physical wire form.
 
@@ -1055,18 +1086,23 @@ class FilaSwitchState:
     The FTS is an external accessory that mediates filament routing between an
     AMS and the printer's extruders. When installed, the AMS no longer has a
     fixed extruder assignment — any slot can be routed to any extruder via the
-    track switch. Detected from print.device.fila_switch in MQTT. Upstream
+    track switch. ``aux`` bit 29 is authoritative when firmware sends it;
+    ``device.fila_switch`` is only the legacy positive fallback. Upstream
     Bambuddy #1162.
     """
 
     installed: bool = False
     # in[track] = currently loaded slot for that track (-1 = empty). The slot
-    # value is reported as observed in MQTT (treated as a global tray ID).
+    # value is normalised to BamDude's global tray ID (-1 = no verified slot).
     in_slots: list[int] = field(default_factory=list)
-    # out[track] = extruder this track terminates at (0 = right/main, 1 = left)
+    # out[track] = extruder this track terminates at (0 = right/main, 1 = left;
+    # -1 = firmware's unknown sentinel or malformed data).
     out_extruders: list[int] = field(default_factory=list)
     stat: int = 0  # status flags (0 = idle)
     info: int = 0  # info flags
+    # Internal only: once a generation supplied aux, a later sparse legacy dict
+    # must not resurrect an explicitly removed FTS.
+    authoritative: bool = False
 
 
 @dataclass
@@ -1123,6 +1159,7 @@ class PrinterState:
     connected: bool = False
     connection_generation: int = 0
     feed_telemetry: FeedTelemetry = field(default_factory=FeedTelemetry)
+    fts_pending_confirmation: bool = False
     state: str = "unknown"
     current_print: str | None = None
     subtask_name: str | None = None
@@ -2354,8 +2391,11 @@ class BambuMQTTClient:
     @_routing_locked
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
+            previous_fts = self.state.fila_switch.installed or self.state.fila_switch.authoritative
             self.state.connection_generation = next(_connection_generations)
             self.state.feed_telemetry = FeedTelemetry()
+            self.state.fila_switch = FilaSwitchState()
+            self.state.fts_pending_confirmation = previous_fts
             self.state.connected = True
 
             # ⚠️ Anything paho is still retrying was published BEFORE this link
@@ -2579,8 +2619,11 @@ class BambuMQTTClient:
             # A recovered link must not refresh cached spools with an unrelated report.
             self._last_message_time = time.time()
             if not self.state.connected:
+                previous_fts = self.state.fila_switch.installed or self.state.fila_switch.authoritative
                 self.state.connection_generation = next(_connection_generations)
                 self.state.feed_telemetry = FeedTelemetry()
+                self.state.fila_switch = FilaSwitchState()
+                self.state.fts_pending_confirmation = previous_fts
             self.state.connected = True
 
             # Intercept request-topic messages (print commands from slicer/BamDude)
@@ -5222,20 +5265,38 @@ class BambuMQTTClient:
                 if "cur" in ext_data:
                     logger.debug("[%s] device.extruder.cur: %s", self.serial_number, ext_data["cur"])
 
-        # Filament Track Switch (FTS) detection — upstream #1162. Presence of
-        # device.fila_switch in MQTT means the FTS accessory is installed.
-        if "device" in data and isinstance(data.get("device"), dict):
-            fs_data = data["device"].get("fila_switch")
-            if isinstance(fs_data, dict):
-                in_raw = fs_data.get("in")
-                out_raw = fs_data.get("out")
-                self.state.fila_switch = FilaSwitchState(
-                    installed=True,
-                    in_slots=list(in_raw) if isinstance(in_raw, list) else [],
-                    out_extruders=list(out_raw) if isinstance(out_raw, list) else [],
-                    stat=int(fs_data.get("stat", 0) or 0),
-                    info=int(fs_data.get("info", 0) or 0),
-                )
+        # FTS: BS treats aux bit 29 as the installation authority.  A sparse
+        # ``fila_switch`` object is a legacy-positive fallback only; it cannot
+        # undo a same-generation explicit aux=false.  Arrays are sparse deltas,
+        # and their members are packed AMS/slot values, not global tray ids.
+        device = data.get("device") if isinstance(data.get("device"), dict) else {}
+        fs_data = device.get("fila_switch") if isinstance(device, dict) else None
+        aux = parse_hex_bitfield(data.get("aux")) if "aux" in data else None
+        fs = self.state.fila_switch
+        if aux is not None:
+            installed = bool((aux >> 29) & 1)
+            self.state.fts_pending_confirmation = False
+            if not installed:
+                self.state.fila_switch = FilaSwitchState(authoritative=True)
+                fs = self.state.fila_switch
+            else:
+                fs.installed = True
+                fs.authoritative = True
+        elif isinstance(fs_data, dict) and not fs.authoritative:
+            fs.installed = True
+            self.state.fts_pending_confirmation = False
+
+        if fs.installed and isinstance(fs_data, dict):
+            in_raw = fs_data.get("in")
+            if isinstance(in_raw, list) and len(in_raw) == 2:
+                fs.in_slots = [_fts_global_slot(value) for value in in_raw]
+            out_raw = fs_data.get("out")
+            if isinstance(out_raw, list) and len(out_raw) == 2:
+                fs.out_extruders = [_fts_out_extruder(value) for value in out_raw]
+            if "stat" in fs_data:
+                fs.stat = _fts_int(fs_data["stat"], fs.stat)
+            if "info" in fs_data:
+                fs.info = _fts_int(fs_data["info"], fs.info)
 
         if "bed_temper" in data:
             temps["bed"] = float(data["bed_temper"])

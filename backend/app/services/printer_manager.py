@@ -2147,6 +2147,21 @@ def printer_state_to_dict(
         "ams_backup_groups": state.ams_backup_groups,
         # Per-AMS extruder map: {ams_id: extruder_id} where 0=right, 1=left
         "ams_extruder_map": ams_extruder_map,
+        # Keep live FTS state in the same projection as REST.  The print modal
+        # merges WebSocket payloads into its status cache, so omitting this made
+        # a reconnect/removal look installed until a later REST refresh.
+        "fila_switch": (
+            {
+                "installed": True,
+                "in_slots": list(state.fila_switch.in_slots),
+                "out_extruders": list(state.fila_switch.out_extruders),
+                "stat": state.fila_switch.stat,
+                "info": state.fila_switch.info,
+            }
+            if state.fila_switch.installed
+            else None
+        ),
+        "fila_switch_pending_confirmation": getattr(state, "fts_pending_confirmation", False) is True,
         # WiFi signal strength
         "wifi_signal": state.wifi_signal,
         "wired_network": state.wired_network,

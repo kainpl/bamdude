@@ -920,6 +920,24 @@ describe('X1C model tests (single nozzle, real data)', () => {
       expect(result).toEqual([1]);  // Picks AMS 0 tray 1 (PETG green) regardless of nozzle
     });
 
+    it('does not auto-map an external spool when FTS is installed', () => {
+      const reqs = {
+        filaments: [{ slot_id: 1, type: 'PETG', color: '#00FF00', used_grams: 10, nozzle_id: 1 }],
+      };
+      const status = createPrinterStatus(
+        [{ id: 0, tray: [{ id: 1, tray_type: 'PETG', tray_color: '00FF00' }] }],
+        [{ id: 254, tray_type: 'PETG', tray_color: '00FF00' } as PrinterStatus['vt_tray'][number]],
+      );
+      (status as PrinterStatus).ams_extruder_map = {};
+      (status as unknown as { fila_switch: unknown }).fila_switch = {
+        installed: true, in_slots: [-1, -1], out_extruders: [-1, -1], stat: 0, info: 0,
+      };
+
+      // The AMS source remains valid through FTS; external must not be a
+      // candidate even though its colour is equally good.
+      expect(computeAmsMapping(reqs, status)).toEqual([1]);
+    });
+
     // X2D / H2D / X2 Pro with no AMS but two external spools (one feeding each
     // extruder). Pre-fix, dual-nozzle was inferred from `ams_extruder_map` being
     // non-empty, which fails when there are no AMS units — both vt_tray entries

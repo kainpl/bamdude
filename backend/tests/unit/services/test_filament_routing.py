@@ -51,6 +51,14 @@ def test_sparse_external_serializes_padding_without_enabling_ams():
     assert result.plan.use_ams is False
 
 
+def test_reconnecting_after_fts_does_not_authorize_an_explicit_external_path():
+    result = resolve_filament_routing(
+        requirements({"slot_id": 4}), RoutingPolicy(), snapshot(feed(), fts_pending_confirmation=True)
+    )
+    assert result.status == "unknown"
+    assert result.reason == "fts_state_unavailable"
+
+
 def test_global_strict_without_overrides_and_relaxed_zero_colour_matches():
     req, state = requirements({}), snapshot(feed(color="00FF00"))
     assert resolve_filament_routing(req, RoutingPolicy(force_color_match=True), state).reason == "color_mismatch"
@@ -299,6 +307,41 @@ def test_fts_source_reaches_either_extruder():
     req = requirements({"nozzle_id": 1}, model="X2D")
     state = snapshot(replace(feed(0, kind="ams"), nozzles=(0, 1)), model="X2D", fts=True)
     assert resolve_filament_routing(req, RoutingPolicy(), state).status == "compatible"
+
+
+@pytest.mark.parametrize("policy", [RoutingPolicy(), RoutingPolicy(feed_policy="external_only")])
+def test_fts_never_routes_an_external_source(policy):
+    req = requirements({"nozzle_id": 1}, model="H2D")
+    state = snapshot(feed(254, nozzle=1), model="H2D", fts=True)
+    result = resolve_filament_routing(req, policy, state)
+    assert result.status == "incompatible"
+    assert result.reason == "fts_external_unsupported"
+
+
+def test_left_tpu_requires_the_applicable_firmware_capability_but_right_does_not():
+    left = requirements({"type": "TPU", "nozzle_id": 1}, model="H2D")
+    right = requirements({"type": "TPU", "nozzle_id": 0}, model="H2D")
+    left_source = feed(0, kind="ams", material="TPU", nozzle=1)
+    right_source = feed(1, kind="ams", material="TPU", nozzle=0)
+
+    unknown = resolve_filament_routing(left, RoutingPolicy(), snapshot(left_source, model="H2D"))
+    assert unknown.status == "unknown" and unknown.reason == "tpu_left_firmware_unavailable"
+    refused = resolve_filament_routing(
+        left, RoutingPolicy(), snapshot(left_source, model="H2D", left_tpu_firmware=False)
+    )
+    assert refused.status == "incompatible" and refused.reason == "tpu_left_firmware_unsupported"
+    assert (
+        resolve_filament_routing(
+            left, RoutingPolicy(), snapshot(left_source, model="H2D", left_tpu_firmware=True)
+        ).status
+        == "compatible"
+    )
+    assert (
+        resolve_filament_routing(
+            right, RoutingPolicy(), snapshot(right_source, model="H2D", left_tpu_firmware=False)
+        ).status
+        == "compatible"
+    )
 
 
 # --------------------------------------------------------------------------- #

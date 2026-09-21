@@ -74,6 +74,7 @@ LIVE_FIELDS = [
     "firmware_consistency_request",
     "firmware_force_upgrade",
     "ams_backup_groups",
+    "fila_switch",
 ]
 
 # Carried to the browser, but deliberately not allowed to CAUSE a broadcast.
@@ -107,6 +108,7 @@ class TestAChangeCanTriggerABroadcast:
         key_aliases = {
             "airduct_fans": "airduct_key",
             "ams_backup_groups": "ams_backup_key",
+            "fila_switch": "fts_key",
         }
         needle = key_aliases.get(field, field)
         assert needle in _STATUS_KEY, f"{field} does not appear in status_key — changing it alone broadcasts nothing"

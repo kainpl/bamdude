@@ -828,6 +828,20 @@ class TestPrinterStateToDict:
         assert result["progress"] == 50
         assert result["temperatures"] == {"nozzle": 200, "bed": 60}
 
+    def test_fts_is_carried_in_the_live_status_projection(self, mock_state):
+        """The modal's cached status is updated by WebSocket as well as REST."""
+        from backend.app.services.bambu_mqtt import FilaSwitchState
+
+        mock_state.fila_switch = FilaSwitchState(installed=True, in_slots=[6, -1], out_extruders=[0, -1], stat=4)
+
+        assert printer_state_to_dict(mock_state)["fila_switch"] == {
+            "installed": True,
+            "in_slots": [6, -1],
+            "out_extruders": [0, -1],
+            "stat": 4,
+            "info": 0,
+        }
+
     def test_ams_data_parsing(self, mock_state):
         """Verify AMS data is parsed correctly."""
         mock_state.raw_data = {

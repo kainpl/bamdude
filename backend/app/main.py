@@ -1721,6 +1721,14 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if state.ams_backup_groups is not None
         else None
     )
+    fts_key = (
+        state.fila_switch.installed,
+        state.fts_pending_confirmation,
+        tuple(state.fila_switch.in_slots),
+        tuple(state.fila_switch.out_extruders),
+        state.fila_switch.stat,
+        state.fila_switch.info,
+    )
     status_key = (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:"
         f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:"
@@ -1747,6 +1755,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         f"{state.firmware_version}:{state.mc_print_sub_stage}:"
         f"{state.firmware_consistency_request}:{state.firmware_force_upgrade}:"
         f"{ams_dry_key}:{ams_tray_key}:{state.ams_auto_switch_filament}:{ams_backup_key}:"
+        f"{fts_key}:"
         # The bounds the temperature inputs are drawn with. They arrive late and
         # rarely — a reported range, or the mains-voltage bit that lowers the bed
         # ceiling — and land in no other field here, so without them the browser

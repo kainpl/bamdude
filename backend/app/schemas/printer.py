@@ -521,6 +521,7 @@ class PrinterStatus(BaseModel):
     # not installed so the frontend keeps applying the per-extruder filter on
     # regular dual-nozzle printers. Upstream #1162.
     fila_switch: FilaSwitchResponse | None = None
+    fila_switch_pending_confirmation: bool = False
     # Currently loaded tray (global ID): 254 = external spool, 255 = no filament
     tray_now: int = 255
     # Runout / filament-replacement guidance (upstream #2587). Populated only while

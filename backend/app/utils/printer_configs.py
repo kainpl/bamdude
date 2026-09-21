@@ -184,6 +184,17 @@ def load_printer_config(model: str | None, firmware_version: str | None = None) 
     return _merged_block(data, firmware_version) if isinstance(data, dict) else None
 
 
+def requires_left_tpu_firmware_check(model: str | None) -> bool:
+    """Whether this model's mirrored Bambu Studio config gates TPU on deputy.
+
+    The model list is intentionally not copied into Python: Bambu Studio owns
+    this per-model fact in the mirrored config and it can change on re-sync.
+    """
+    config = load_printer_config(model)
+    print_config = config.get("print") if isinstance(config, dict) else None
+    return bool(isinstance(print_config, dict) and print_config.get("support_print_check_firmware_for_tpu_left"))
+
+
 def printer_arch(model: str | None) -> str:
     """The model's kinematic architecture — ``"core_xy"`` or ``"i3"``.
 

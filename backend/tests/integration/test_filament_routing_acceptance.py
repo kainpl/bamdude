@@ -1,5 +1,6 @@
 """Cross-boundary acceptance cases beyond the parser and pure matcher."""
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -54,7 +55,7 @@ async def test_only_raw_gcode_or_server_calibration_is_exempt_from_normal_prefli
 ):
     from backend.app.services.filament_routing import RoutingDeferred
 
-    source, printer, queue, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    source, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     row = PrintQueueItem(queue_id=queue.id, library_file_id=source.id)
     db_session.add(row)
     await db_session.commit()
@@ -70,6 +71,13 @@ async def test_only_raw_gcode_or_server_calibration_is_exempt_from_normal_prefli
     row.is_calibration = True
     row.calibration_session_id = 9  # Server-created calibration context; preflight is read-only.
     assert await preflight_item(db_session, row, printer.id) is None
+
+    # Exempt paths have no reliable material contract, but an explicit virtual
+    # tray is still enough evidence to stop an FTS-incompatible send.
+    mqtt._process_message({"print": {"aux": "20000000", "device": {"fila_switch": {}}}})
+    row.ams_mapping = json.dumps([254])
+    with pytest.raises(RoutingDeferred, match="fts_external_unsupported"):
+        await preflight_item(db_session, row, printer.id)
 
 
 @pytest.mark.parametrize("material", ["PETG", "PVA"])

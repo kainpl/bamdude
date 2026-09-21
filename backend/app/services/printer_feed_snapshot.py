@@ -39,6 +39,10 @@ class PrinterFeedSnapshot:
     fts: bool = False
     backup_enabled: bool | None = None
     incomplete: bool = False
+    # ``fun2`` bit 7 on models whose mirrored config asks for it.  None means
+    # this connection has not supplied the capability yet, not "firmware says no".
+    left_tpu_firmware: bool | None = None
+    fts_pending_confirmation: bool = False
 
     @property
     def marker(self) -> tuple[int, str]:
@@ -61,6 +65,8 @@ class FeedTelemetry:
     external: dict[int, dict] = field(default_factory=dict)
     nozzles: dict[int, set[float]] = field(default_factory=dict)
     fts: bool = False
+    fts_authoritative: bool = False
+    left_tpu_firmware: bool | None = None
 
     def observe(self, payload: dict, model: str | None) -> None:
         report = payload.get("print", {})
@@ -69,6 +75,24 @@ class FeedTelemetry:
         # Calibration replies describe a queried diameter, not installed hardware.
         if report.get("command") not in (None, "push_status"):
             report = {}
+        # FTS installation is authoritative in aux bit 29.  Some older
+        # firmware emits only the detail object; retain it as positive fallback
+        # until an aux value has appeared in this connection generation.
+        if "aux" in report:
+            try:
+                aux = report["aux"] if isinstance(report["aux"], int) else int(str(report["aux"]), 16)
+            except (TypeError, ValueError):
+                aux = None
+            if aux is not None:
+                self.fts_authoritative = True
+                self.fts = bool((aux >> 29) & 1)
+        if "fun2" in report:
+            try:
+                fun2 = report["fun2"] if isinstance(report["fun2"], int) else int(str(report["fun2"]), 16)
+            except (TypeError, ValueError):
+                fun2 = None
+            if fun2 is not None:
+                self.left_tpu_firmware = bool((fun2 >> 7) & 1)
         ams = report.get("ams", payload.get("ams"))
         if isinstance(ams, (dict, list)):
             envelope = ams if isinstance(ams, dict) else {"ams": ams}
@@ -162,8 +186,8 @@ class FeedTelemetry:
                 self.external[tid] = merged
         device = report.get("device") or {}
         if isinstance(device, dict):
-            if "fila_switch" in device:
-                self.fts = isinstance(device["fila_switch"], dict)
+            if isinstance(device.get("fila_switch"), dict) and not self.fts_authoritative:
+                self.fts = True
             nozzle = device.get("nozzle") or {}
             if isinstance(nozzle, dict) and isinstance(nozzle.get("info"), list):
                 # A full info list replaces the installed/rack set, including empty.
@@ -276,6 +300,8 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
         "external_known": telemetry.external_known,
         "nozzles": diameters,
         "fts": telemetry.fts,
+        "fts_pending_confirmation": getattr(state, "fts_pending_confirmation", False) is True,
+        "left_tpu_firmware": telemetry.left_tpu_firmware,
         "incomplete": incomplete,
         "sources": [{k: v for k, v in asdict(s).items() if k != "remain"} for s in sources],
         # Sorted, because these are collected in ``telemetry.units`` insertion
@@ -299,4 +325,6 @@ def snapshot_from_state(printer_id: int, model: str | None, state, overlay=None)
         telemetry.fts,
         getattr(state, "ams_auto_switch_filament", None),
         incomplete,
+        telemetry.left_tpu_firmware,
+        getattr(state, "fts_pending_confirmation", False) is True,
     )

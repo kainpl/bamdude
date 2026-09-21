@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed
+
+- **Filament Track Switch routing now follows the printer's actual topology.** FTS presence comes from the firmware's authoritative accessory bit, including removal and reconnects, and reaches both the first printer status and live updates. With FTS installed, any suitable AMS spool can feed either nozzle, but external holders are excluded everywhere — the mapping picker, printer queue, Auto-Queue and the final dispatch check — because the firmware itself cannot print through one. Explicit external selections on raw G-code and server calibration jobs are stopped too; unknown raw metadata is not guessed. On models that report the extra left-nozzle TPU capability, a plain `TPU` job waits for that confirmation on the left only; `TPU-AMS` remains its own material and the right nozzle is unaffected.
+
 ## [0.6.1] - 2026-09-21
 
 Stable 0.6.1 release. Images: `ghcr.io/kainpl/bamdude:0.6.1` / `kainpl/bamdude:0.6.1` (`:latest` tracks this).
