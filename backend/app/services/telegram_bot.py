@@ -18,6 +18,26 @@ _bot: Bot | None = None
 _dispatcher: Dispatcher | None = None
 _polling_task: asyncio.Task | None = None
 
+# One lock over the whole lifecycle, because the singleton above is THREE
+# references and every operation rewrites all of them around network awaits —
+# the token read, ``get_me()``, ``set_my_commands()``. Two of those operations
+# overlapping is not hypothetical: saving a notification provider restarts the
+# bot, and the UI saves from more than one place, so ``restart_telegram_bot``
+# could be entered again while the first one was still between "I built a Bot"
+# and "I stored the polling task". The second start then overwrote
+# ``_polling_task`` while the first poller was still running: nothing referenced
+# the old task any more, so shutdown had nothing to cancel, and the orphan sat
+# inside a ``getUpdates`` long poll — two pollers competing for the same
+# updates (Telegram refuses one of them with 409 Conflict, and which poller a
+# button press reaches is a coin toss) and a container that would not come
+# down. #50.
+#
+# So: start / stop / restart are serialised end to end, network awaits
+# included, and ``restart`` holds the lock across both halves. The three public
+# functions are thin wrappers; ``_start_locked`` / ``_stop_locked`` below do
+# the work and assume the lock is held.
+_lifecycle_lock = asyncio.Lock()
+
 
 def _detach_sub_routers(dispatcher: Dispatcher) -> None:
     """Clear ``_parent_router`` on every sub-router of ``dispatcher``.
@@ -72,7 +92,19 @@ async def _get_bot_token() -> str | None:
 
 async def start_telegram_bot() -> None:
     """Start the Telegram bot polling in background."""
+    async with _lifecycle_lock:
+        await _start_locked()
+
+
+async def _start_locked() -> None:
+    """Build the bot and its poller. Assumes ``_lifecycle_lock`` is held."""
     global _bot, _dispatcher, _polling_task
+
+    if _polling_task is not None and not _polling_task.done():
+        # Idempotent: a poller is already running, and a second one would
+        # compete with it for the same updates.
+        logger.debug("Telegram bot is already polling - start request ignored")
+        return
 
     token = await _get_bot_token()
     if not token:
@@ -155,7 +187,7 @@ async def start_telegram_bot() -> None:
 
     # Start polling in background
     print("[TG-BOT] Starting polling...")
-    _polling_task = asyncio.create_task(_run_polling())
+    _polling_task = asyncio.create_task(_run_polling(_dispatcher, _bot))
 
 
 async def _register_commands() -> None:
@@ -182,11 +214,18 @@ async def _register_commands() -> None:
         logger.warning("Failed to register bot commands: %s", e)
 
 
-async def _run_polling() -> None:
-    """Run dispatcher polling (background task)."""
+async def _run_polling(dispatcher: Dispatcher, bot: Bot) -> None:
+    """Run dispatcher polling (background task).
+
+    Takes the pair it polls with as arguments instead of reading the module
+    globals: the task outlives the call that created it, and by the time it
+    first runs those globals can already belong to a newer bot — or be ``None``
+    because a stop is under way. It polls what it was handed, and the only way
+    to end it is to cancel the task.
+    """
     try:
         print("[TG-BOT] Polling started")
-        await _dispatcher.start_polling(_bot, handle_signals=False)
+        await dispatcher.start_polling(bot, handle_signals=False)
     except asyncio.CancelledError:
         print("[TG-BOT] Polling cancelled")
     except Exception as e:
@@ -196,23 +235,48 @@ async def _run_polling() -> None:
 
 async def stop_telegram_bot() -> None:
     """Stop the Telegram bot."""
+    async with _lifecycle_lock:
+        await _stop_locked()
+
+
+async def _stop_locked() -> None:
+    """Tear the bot down. Assumes ``_lifecycle_lock`` is held.
+
+    Detaches the three module references BEFORE the first await and works on
+    the local copies from there on. Everything below can yield, and whoever
+    looks at this module while we are yielding must see "there is no bot", not
+    a half-dismantled one — and must never be handed back a Bot we are in the
+    middle of closing.
+    """
     global _bot, _dispatcher, _polling_task
 
-    if _polling_task and not _polling_task.done():
-        _polling_task.cancel()
-        try:
-            await _polling_task
-        except asyncio.CancelledError:
-            pass
+    task, dispatcher, bot = _polling_task, _dispatcher, _bot
+    _polling_task = None
+    _dispatcher = None
+    _bot = None
 
-    if _dispatcher:
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            # Two cancellations can surface here and they mean opposite things:
+            # the poller finishing the cancel we just asked for (ours, swallow
+            # it), and somebody cancelling *us* — a bounded shutdown giving up
+            # on a poller that will not die. Swallowing the second would make
+            # that bound silently useless, so let it travel on.
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+
+    if dispatcher is not None:
         # aiogram's stop_polling() raises RuntimeError("Polling is not started")
         # when polling already stopped - which is exactly our state after the
         # cancel above, or if an earlier TelegramNetworkError tore the poller
         # down on its own. Tolerate that case; any other RuntimeError still
         # surfaces.
         try:
-            await _dispatcher.stop_polling()
+            await dispatcher.stop_polling()
         except RuntimeError as e:
             if "not started" not in str(e).lower():
                 raise
@@ -220,22 +284,43 @@ async def stop_telegram_bot() -> None:
 
         # Detach module-level router singletons so the next Dispatcher can
         # re-attach them. See ``_detach_sub_routers`` for the full rationale.
-        _detach_sub_routers(_dispatcher)
-        _dispatcher = None
+        # After stop_polling(), never before: winding the poller down emits the
+        # dispatcher's shutdown hooks, which walk the routers we would remove.
+        _detach_sub_routers(dispatcher)
 
-    if _bot:
-        await _bot.session.close()
-        _bot = None
+    if bot is not None:
+        await bot.session.close()
 
-    _polling_task = None
     logger.info("Telegram bot stopped")
+
+
+async def stop_telegram_bot_bounded(timeout: float = 15.0) -> None:
+    """Stop the bot, giving up after ``timeout`` seconds instead of hanging.
+
+    Shutdown runs against a clock: Docker and systemd hand the process a grace
+    period and then kill it. A poller parked inside a ``getUpdates`` long poll
+    must not be able to spend that budget on our behalf, so the shutdown path
+    puts a bound on the wait and says so in the log rather than blocking the
+    rest of the teardown. The abandoned task dies with the process.
+    """
+    try:
+        await asyncio.wait_for(stop_telegram_bot(), timeout=timeout)
+    except TimeoutError:
+        logger.warning(
+            "Telegram bot did not stop within %ss - abandoning it and continuing shutdown",
+            timeout,
+        )
 
 
 async def restart_telegram_bot() -> None:
     """Restart the Telegram bot (stop if running, then start with fresh config)."""
     logger.info("Restarting Telegram bot...")
-    await stop_telegram_bot()
-    await start_telegram_bot()
+    # One acquisition across both halves. Released in between, the module
+    # briefly holds no bot at all — and a start let in there builds one that
+    # this restart's own start then duplicates.
+    async with _lifecycle_lock:
+        await _stop_locked()
+        await _start_locked()
 
 
 async def send_message(chat_id: str | int, text: str, **kwargs) -> bool:

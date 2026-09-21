@@ -9787,11 +9787,12 @@ async def lifespan(app: FastAPI):
         await cloud_link_service.stop()
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to stop Cloud Link: %s", e)
-    # Stop Telegram bot
+    # Stop Telegram bot — bounded, because a poller sitting in a getUpdates
+    # long poll would otherwise spend the whole shutdown grace period here.
     try:
-        from backend.app.services.telegram_bot import stop_telegram_bot
+        from backend.app.services.telegram_bot import stop_telegram_bot_bounded
 
-        await stop_telegram_bot()
+        await stop_telegram_bot_bounded()
     except Exception:
         pass
     print_scheduler.stop()

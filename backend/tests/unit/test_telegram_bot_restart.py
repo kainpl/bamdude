@@ -19,6 +19,8 @@ blip), the next start with a valid token must succeed. We mock the aiogram
 ``Bot`` so the test doesn't touch the real Telegram API.
 """
 
+import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -69,8 +71,10 @@ async def test_start_failure_detaches_routers_so_next_start_succeeds(monkeypatch
 
     # Patch the Bot constructor inside telegram_bot's import namespace.
     with patch.object(tb, "Bot", side_effect=_bot_factory):
-        # Suppress real polling — return a no-op task so we don't actually hit Telegram.
-        async def _noop():
+        # Suppress real polling — return a no-op task so we don't actually hit
+        # Telegram. ``*_args`` because ``_run_polling`` is handed the dispatcher
+        # and the bot it should poll with (see the lifecycle tests below).
+        async def _noop(*_args):
             return None
 
         with patch.object(tb, "_run_polling", _noop):
@@ -131,7 +135,7 @@ async def test_restart_with_token_change_clean_path(monkeypatch):
 
     with patch.object(tb, "Bot", side_effect=_bot_factory):
 
-        async def _noop():
+        async def _noop(*_args):
             return None
 
         with patch.object(tb, "_run_polling", _noop):
@@ -150,3 +154,253 @@ async def test_restart_with_token_change_clean_path(monkeypatch):
     tb._bot = None
     tb._dispatcher = None
     tb._polling_task = None
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle races (#50): one poller per process, under any interleaving.
+#
+# The module keeps three references and rewrites them around network awaits,
+# so two overlapping restarts could each create a polling task while only the
+# last one stayed referenced. The orphan kept long-polling ``getUpdates`` —
+# two pollers fighting over the same updates, and a shutdown with nothing to
+# cancel. These tests pin the contract rather than the implementation: however
+# start / stop / restart interleave, at most one poller is alive and the module
+# is holding it.
+# ---------------------------------------------------------------------------
+
+
+class _TelegramHarness:
+    """The network half of ``telegram_bot``, faked, plus a record of what it built.
+
+    ``get_me`` is a real coroutine rather than an ``AsyncMock`` on purpose: an
+    ``AsyncMock`` returns without ever yielding to the loop, so two concurrent
+    starts would run one after the other and the race under test could not
+    occur at all.
+    """
+
+    def __init__(self, tb):
+        self.tb = tb
+        self._real_dispatcher = tb.Dispatcher
+        self.bots: list[MagicMock] = []
+        self.dispatchers: list = []
+        self.pollers: list[asyncio.Task] = []
+        # Never set while a test body runs: the fake pollers stay alive so the
+        # test can count them. Released in teardown.
+        self.release = asyncio.Event()
+        # When set to an Event, ``get_me`` parks on it — the "start is halfway
+        # through the network round trip" moment.
+        self.get_me_gate: asyncio.Event | None = None
+
+    def make_bot(self, *args, **kwargs):
+        import aiogram
+
+        bot = MagicMock(spec=aiogram.Bot)
+        bot.session = MagicMock()
+        bot.session.close = AsyncMock()
+        bot.set_my_commands = AsyncMock()
+        me = MagicMock()
+        me.username = "bamdude_test_bot"
+        me.full_name = "BamDude Test"
+
+        async def _get_me():
+            if self.get_me_gate is not None:
+                await self.get_me_gate.wait()
+            else:
+                await asyncio.sleep(0)
+            return me
+
+        bot.get_me = _get_me
+        self.bots.append(bot)
+        return bot
+
+    def make_dispatcher(self, *args, **kwargs):
+        dispatcher = self._real_dispatcher(*args, **kwargs)
+        self.dispatchers.append(dispatcher)
+        return dispatcher
+
+    async def run_polling(self, *_args):
+        """Stand-in for ``_run_polling`` that lives until it is cancelled.
+
+        Takes ``*_args`` so the very same test runs against both the old
+        zero-argument call site and the new ``(dispatcher, bot)`` one — which
+        is what lets it show RED before the fix and GREEN after.
+        """
+        self.pollers.append(asyncio.current_task())
+        await self.release.wait()
+
+    @property
+    def alive_pollers(self) -> list[asyncio.Task]:
+        return [task for task in self.pollers if not task.done()]
+
+
+@pytest.fixture
+async def tg(monkeypatch):
+    """``telegram_bot`` with its network faked and its globals reset.
+
+    Teardown detaches the router singletons from every ``Dispatcher`` the test
+    built: these tests leave the module mid-flight on purpose, and a router
+    still pointing at an abandoned dispatcher makes the *next* test explode
+    inside ``include_router``.
+    """
+    from backend.app.services import telegram_bot as tb
+
+    harness = _TelegramHarness(tb)
+
+    # A fresh lock per test. ``asyncio.Lock`` binds itself to the loop of the
+    # first caller that has to *wait* on it, and pytest-asyncio gives every
+    # test its own loop — so the module's own lock, contended once, would raise
+    # "bound to a different event loop" in the next test. The app has exactly
+    # one loop, which is why the module can keep one lock for its lifetime.
+    monkeypatch.setattr(tb, "_lifecycle_lock", asyncio.Lock())
+    monkeypatch.setattr(tb, "_get_bot_token", AsyncMock(return_value="123:AAfake"))
+    monkeypatch.setattr(tb, "Bot", harness.make_bot)
+    monkeypatch.setattr(tb, "Dispatcher", harness.make_dispatcher)
+    monkeypatch.setattr(tb, "_run_polling", harness.run_polling)
+
+    tb._bot = None
+    tb._dispatcher = None
+    tb._polling_task = None
+
+    yield harness
+
+    harness.release.set()
+    if harness.get_me_gate is not None:
+        harness.get_me_gate.set()
+    # Cancel in rounds: one of these fakes ignores its first cancel on purpose,
+    # so a single ``gather`` would wait on it for as long as it chooses to sleep.
+    for _ in range(3):
+        pending = [task for task in harness.pollers if not task.done()]
+        if not pending:
+            break
+        for task in pending:
+            task.cancel()
+        await asyncio.wait(pending, timeout=1)
+    for dispatcher in harness.dispatchers:
+        tb._detach_sub_routers(dispatcher)
+    tb._bot = None
+    tb._dispatcher = None
+    tb._polling_task = None
+
+
+async def _settle() -> None:
+    """Give every task that was created a chance to reach its first line."""
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+async def test_concurrent_restarts_leave_exactly_one_poller(tg):
+    """Three restarts at once: one poller survives and the module holds it."""
+    tb = tg.tb
+
+    await asyncio.gather(
+        tb.restart_telegram_bot(),
+        tb.restart_telegram_bot(),
+        tb.restart_telegram_bot(),
+    )
+    await _settle()
+
+    alive = tg.alive_pollers
+    assert len(alive) == 1, (
+        f"{len(alive)} pollers still running after three concurrent restarts — "
+        "each orphan keeps long-polling getUpdates and nothing can cancel it"
+    )
+    assert tb._polling_task is alive[0], "the module must reference the poller that is actually running"
+    assert tb._bot is not None
+    assert tb._dispatcher is not None
+    for task in tg.pollers:
+        assert task.done() or task is tb._polling_task, "a poller that nothing references is an orphan"
+
+
+async def test_concurrent_starts_build_one_bot_and_one_poller(tg):
+    """Two starts at once: the second is a no-op, not a second bot."""
+    tb = tg.tb
+
+    await asyncio.gather(tb.start_telegram_bot(), tb.start_telegram_bot())
+    await _settle()
+
+    assert len(tg.bots) == 1, f"two concurrent starts built {len(tg.bots)} Bot instances — start must be idempotent"
+    alive = tg.alive_pollers
+    assert len(alive) == 1, f"expected one live poller, found {len(alive)}"
+    assert tb._polling_task is alive[0]
+
+
+async def test_stop_racing_a_start_leaves_no_orphan(tg):
+    """A stop arriving while a start is inside ``get_me()``.
+
+    Either side may win — zero pollers (stop won) or one (start won) — but the
+    state has to be coherent: a live poller means a live bot, and no poller is
+    left running behind the module's back.
+    """
+    tb = tg.tb
+    tg.get_me_gate = asyncio.Event()
+
+    start = asyncio.create_task(tb.start_telegram_bot())
+    await _settle()  # parks inside get_me()
+
+    stop = asyncio.create_task(tb.stop_telegram_bot())
+    await _settle()
+
+    tg.get_me_gate.set()
+    await asyncio.gather(start, stop)
+    await _settle()
+
+    alive = tg.alive_pollers
+    assert len(alive) <= 1, f"{len(alive)} pollers alive after a stop raced a start"
+    if alive:
+        assert tb._polling_task is alive[0]
+        assert tb._bot is not None, "a poller is running for a bot the module has already dropped"
+        assert tb._dispatcher is not None
+    else:
+        assert tb._polling_task is None
+        assert tb._bot is None
+    for task in tg.pollers:
+        assert task.done() or task is tb._polling_task
+
+
+def _stubborn_poller(tg, started: asyncio.Event):
+    """A poller that ignores the first cancel for far longer than any shutdown.
+
+    Stands in for a ``getUpdates`` long poll that does not come back. The
+    second cancel — the one the timeout delivers — does end it, so nothing is
+    left running after the test.
+    """
+
+    async def _run(*_args):
+        tg.pollers.append(asyncio.current_task())
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await asyncio.sleep(3600)
+
+    return _run
+
+
+async def test_stop_can_be_bounded_when_the_poller_ignores_cancellation(tg):
+    """``stop`` must stay interruptible, or putting a clock on it changes nothing."""
+    tb = tg.tb
+    started = asyncio.Event()
+
+    with patch.object(tb, "_run_polling", _stubborn_poller(tg, started)):
+        await tb.start_telegram_bot()
+        await started.wait()
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(tb.stop_telegram_bot(), 0.5)
+
+
+async def test_bounded_stop_logs_instead_of_hanging(tg, caplog):
+    """The shutdown path gives up out loud rather than spending the grace period."""
+    tb = tg.tb
+    started = asyncio.Event()
+
+    with patch.object(tb, "_run_polling", _stubborn_poller(tg, started)):
+        await tb.start_telegram_bot()
+        await started.wait()
+
+        with caplog.at_level(logging.WARNING, logger="backend.app.services.telegram_bot"):
+            await tb.stop_telegram_bot_bounded(timeout=0.5)
+
+    assert any("did not stop" in record.getMessage() for record in caplog.records), (
+        f"the abandoned stop must be logged, got: {caplog.text!r}"
+    )
