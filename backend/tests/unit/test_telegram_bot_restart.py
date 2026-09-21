@@ -310,6 +310,19 @@ async def test_concurrent_restarts_leave_exactly_one_poller(tg):
     for task in tg.pollers:
         assert task.done() or task is tb._polling_task, "a poller that nothing references is an orphan"
 
+    # One poller alive is also what a restart that released the lock between
+    # its two halves produces — it just gets there by letting one restart's
+    # start be swallowed as "already polling" by another's. Counting the bots
+    # tells the two shapes apart: three restarts that each hold the lock end
+    # to end build three bots (this is the measured number), the lock-releasing
+    # shape builds two.
+    assert len(tg.bots) == 3, (
+        f"three restarts built {len(tg.bots)} bots - each restart must hold the lock across BOTH "
+        "halves, or a start slipping in between somebody else's stop and start does one of them "
+        "for them"
+    )
+    assert tb._bot is tg.bots[-1], "the module must hold the bot the last restart built"
+
 
 async def test_concurrent_starts_build_one_bot_and_one_poller(tg):
     """Two starts at once: the second is a no-op, not a second bot."""
@@ -322,6 +335,45 @@ async def test_concurrent_starts_build_one_bot_and_one_poller(tg):
     alive = tg.alive_pollers
     assert len(alive) == 1, f"expected one live poller, found {len(alive)}"
     assert tb._polling_task is alive[0]
+
+
+async def test_a_poller_that_died_on_its_own_is_cleared_before_the_next_start(tg):
+    """A dead poller leaves a dispatcher behind, and the routers are still bolted to it.
+
+    ``_run_polling`` swallows its own exceptions, so a network failure ends the
+    task quietly and the module keeps holding the dispatcher it polled with.
+    The handler routers are module-level singletons attached to that
+    dispatcher; a start that builds a second one without clearing the first
+    raises ``"Router is already attached"`` inside ``include_router``.
+    """
+    tb = tg.tb
+
+    async def _dies_immediately(*_args):
+        raise RuntimeError("polling died: connection reset")
+
+    with patch.object(tb, "_run_polling", _dies_immediately):
+        await tb.start_telegram_bot()
+        await _settle()
+
+    dead_task = tb._polling_task
+    dead_dispatcher = tb._dispatcher
+    assert dead_task is not None and dead_task.done(), "the first poller must have ended on its own"
+    assert dead_task.exception() is not None, "this test is about a poller that died, not one that stopped"
+    assert dead_dispatcher is not None and dead_dispatcher.sub_routers, (
+        "the dead poller's dispatcher must still be holding the router singletons"
+    )
+    attached = len(dead_dispatcher.sub_routers)
+
+    await tb.start_telegram_bot()
+    await _settle()
+
+    assert not dead_dispatcher.sub_routers, "the routers must be detached from the dispatcher that died"
+    assert tb._dispatcher is not None and tb._dispatcher is not dead_dispatcher
+    assert len(tb._dispatcher.sub_routers) == attached, "the new dispatcher must hold each handler router exactly once"
+    alive = tg.alive_pollers
+    assert len(alive) == 1, f"expected exactly one live poller after the restart, found {len(alive)}"
+    assert tb._polling_task is alive[0]
+    assert tb._bot is tg.bots[-1]
 
 
 async def test_stop_racing_a_start_leaves_no_orphan(tg):

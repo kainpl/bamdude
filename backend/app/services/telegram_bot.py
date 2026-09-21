@@ -56,6 +56,31 @@ def _detach_sub_routers(dispatcher: Dispatcher) -> None:
     dispatcher.sub_routers.clear()
 
 
+async def _discard_bot_locked(dispatcher: Dispatcher | None, bot: Bot | None) -> None:
+    """Throw a bot pair away and leave the module holding nothing.
+
+    Three paths end here and they need the same three things done: the router
+    singletons detached from the dispatcher that is going away (see
+    ``_detach_sub_routers``), the HTTP session closed, and the module globals
+    cleared. Closing the session is best-effort — one of those paths is a
+    start that just failed on this very bot, and a raise here would strand the
+    globals pointing at the wreck. Assumes ``_lifecycle_lock`` is held.
+    """
+    global _bot, _dispatcher, _polling_task
+
+    if dispatcher is not None:
+        _detach_sub_routers(dispatcher)
+    if bot is not None:
+        try:
+            await bot.session.close()
+        except Exception:
+            logger.debug("Bot session close raised during teardown", exc_info=True)
+
+    _bot = None
+    _dispatcher = None
+    _polling_task = None
+
+
 def get_bot() -> Bot | None:
     """Get the active bot instance."""
     return _bot
@@ -105,6 +130,17 @@ async def _start_locked() -> None:
         # compete with it for the same updates.
         logger.debug("Telegram bot is already polling - start request ignored")
         return
+
+    if _dispatcher is not None:
+        # No live poller, but a dispatcher is still here: the poller died on
+        # its own (``_run_polling`` logs the exception and returns, so nothing
+        # tore the rest down). Its dispatcher still holds the module-level
+        # router singletons, and building a second dispatcher now would
+        # ``include_router`` them a second time — "Router is already attached".
+        # Clear the wreck first: the same teardown ``_stop_locked`` ends with,
+        # minus a poller there is nothing left to cancel.
+        logger.debug("Clearing a dead Telegram bot before starting a new one")
+        await _discard_bot_locked(_dispatcher, _bot)
 
     token = await _get_bot_token()
     if not token:
@@ -172,17 +208,11 @@ async def _start_locked() -> None:
         await _register_commands()
     except Exception as e:
         logger.error("Failed to start Telegram bot: %s", e)
-        # Detach the routers we just attached so the next start can re-include
-        # them. Without this the singletons stay bound to this now-orphaned
-        # dispatcher and a follow-up start (e.g. user fixes the token) raises
-        # "Router is already attached to <Dispatcher>" inside include_router.
-        _detach_sub_routers(_dispatcher)
-        try:
-            await _bot.session.close()
-        except Exception:
-            logger.debug("Bot session close raised during start-failure cleanup", exc_info=True)
-        _bot = None
-        _dispatcher = None
+        # Throw the half-built pair away, routers included: without the detach
+        # the singletons stay bound to this now-orphaned dispatcher and a
+        # follow-up start (e.g. the user fixes the token) raises "Router is
+        # already attached to <Dispatcher>" inside include_router.
+        await _discard_bot_locked(_dispatcher, _bot)
         return
 
     # Start polling in background
@@ -220,8 +250,12 @@ async def _run_polling(dispatcher: Dispatcher, bot: Bot) -> None:
     Takes the pair it polls with as arguments instead of reading the module
     globals: the task outlives the call that created it, and by the time it
     first runs those globals can already belong to a newer bot — or be ``None``
-    because a stop is under way. It polls what it was handed, and the only way
-    to end it is to cancel the task.
+    because a stop is under way. It polls what it was handed.
+
+    Two things end it: cancelling the task, and ``dispatcher.stop_polling()``,
+    which makes ``start_polling`` return. ``_stop_locked`` does both — the
+    cancel first, which is why the ``stop_polling()`` after it usually reports
+    "Polling is not started", and why that answer is tolerated there.
     """
     try:
         print("[TG-BOT] Polling started")
@@ -282,14 +316,14 @@ async def _stop_locked() -> None:
                 raise
             logger.debug("stop_polling() reported polling already stopped - ignoring")
 
-        # Detach module-level router singletons so the next Dispatcher can
-        # re-attach them. See ``_detach_sub_routers`` for the full rationale.
-        # After stop_polling(), never before: winding the poller down emits the
-        # dispatcher's shutdown hooks, which walk the routers we would remove.
-        _detach_sub_routers(dispatcher)
-
-    if bot is not None:
-        await bot.session.close()
+    # Detach the module-level router singletons so the next Dispatcher can
+    # re-attach them, close the session, and leave the globals empty — the
+    # same teardown a start that never got off the ground runs. The dispatcher
+    # is safe to strip by now: aiogram emits its shutdown hooks INSIDE the
+    # poller task (``start_polling`` awaits ``emit_shutdown`` in its own
+    # ``finally``), and that task was awaited above, so nothing is still
+    # walking the routers we are about to unhook.
+    await _discard_bot_locked(dispatcher, bot)
 
     logger.info("Telegram bot stopped")
 
@@ -301,7 +335,20 @@ async def stop_telegram_bot_bounded(timeout: float = 15.0) -> None:
     period and then kill it. A poller parked inside a ``getUpdates`` long poll
     must not be able to spend that budget on our behalf, so the shutdown path
     puts a bound on the wait and says so in the log rather than blocking the
-    rest of the teardown. The abandoned task dies with the process.
+    rest of the teardown.
+
+    What the timeout abandons is the POLLER, not a wrapper task: on 3.12
+    ``wait_for`` runs ``stop_telegram_bot`` inline in this task and cancels it
+    in place, so the task left behind is the one ``_stop_locked`` was waiting
+    on — the long poll that would not die. It dies with the process.
+
+    ⚠️ ``_stop_locked`` clears the module globals before its first await, so
+    after a timed-out stop the module already holds nothing while that poller
+    is still alive. A later ``start`` would therefore see a clean slate and
+    build a SECOND poller beside it — two of them competing for the same
+    updates, which is #50 again. Unreachable today because the only caller is
+    the lifespan handler at process exit; a second caller has to be a
+    decision, not an accident.
     """
     try:
         await asyncio.wait_for(stop_telegram_bot(), timeout=timeout)

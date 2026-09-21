@@ -756,7 +756,7 @@ class TestTelegramProviderRestarts:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_renaming_a_provider_leaves_the_poller_alone(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot, db_session
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
         provider = await self._telegram(notification_provider_factory, name="Farm bot")
 
@@ -769,7 +769,7 @@ class TestTelegramProviderRestarts:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_the_digest_schedule_is_not_the_bots_business(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot, db_session
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
         provider = await self._telegram(notification_provider_factory, daily_digest_enabled=False)
 
@@ -787,7 +787,7 @@ class TestTelegramProviderRestarts:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_a_config_key_beside_the_token_does_not_restart(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot, db_session
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
         """The comparison is the token, not the config blob."""
         provider = await self._telegram(notification_provider_factory, config={"bot_token": "111:AAold"})
@@ -803,9 +803,7 @@ class TestTelegramProviderRestarts:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_a_new_token_restarts(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot, db_session
-    ):
+    async def test_a_new_token_restarts(self, async_client: AsyncClient, notification_provider_factory, restart_bot):
         provider = await self._telegram(notification_provider_factory, config={"bot_token": "111:AAold"})
 
         response = await async_client.patch(
@@ -819,7 +817,7 @@ class TestTelegramProviderRestarts:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_switching_the_provider_off_restarts(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot, db_session
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
         """The bot is running on this row's token; it has to let go of it."""
         provider = await self._telegram(notification_provider_factory, enabled=True)
@@ -832,7 +830,7 @@ class TestTelegramProviderRestarts:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_switching_the_provider_on_restarts(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot, db_session
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
         """``_get_bot_token`` only sees enabled rows, so this one just became the bot's."""
         provider = await self._telegram(notification_provider_factory, enabled=False)
@@ -840,6 +838,65 @@ class TestTelegramProviderRestarts:
         response = await async_client.patch(f"/api/v1/notifications/{provider.id}", json={"enabled": True})
 
         assert response.status_code == 200
+        assert restart_bot.await_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_editing_a_disabled_providers_token_leaves_the_poller_alone(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """A disabled row's token is invisible to ``_get_bot_token``, so nothing the bot runs on moved.
+
+        On a farm with a second, enabled telegram provider — the reporter's —
+        bouncing the poller here would drop a healthy long poll for an edit
+        the bot cannot see.
+        """
+        provider = await self._telegram(notification_provider_factory, enabled=False, config={"bot_token": "111:AAold"})
+
+        response = await async_client.patch(
+            f"/api/v1/notifications/{provider.id}",
+            json={"config": {"bot_token": "222:AAnew"}},
+        )
+
+        assert response.status_code == 200
+        assert restart_bot.await_count == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_retyping_a_telegram_provider_as_something_else_restarts(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """The bot was polling on this row; after the retype it is not a telegram row at all."""
+        provider = await self._telegram(notification_provider_factory, enabled=True)
+
+        response = await async_client.patch(
+            f"/api/v1/notifications/{provider.id}",
+            json={"provider_type": "ntfy"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["provider_type"] == "ntfy"
+        assert restart_bot.await_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_retyping_another_provider_as_telegram_restarts(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """An enabled row that just became telegram is what ``_get_bot_token`` now reads first."""
+        provider = await notification_provider_factory(
+            provider_type="ntfy",
+            enabled=True,
+            config={"server": "https://ntfy.sh", "topic": "farm"},
+        )
+
+        response = await async_client.patch(
+            f"/api/v1/notifications/{provider.id}",
+            json={"provider_type": "telegram", "config": {"bot_token": "444:AAnew"}},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["provider_type"] == "telegram"
         assert restart_bot.await_count == 1
 
     # ------------------------------------------------------------------
@@ -887,7 +944,7 @@ class TestTelegramProviderRestarts:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_deleting_an_enabled_provider_restarts(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot, db_session
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
         """The restart re-reads the next enabled provider, if there is one."""
         provider = await self._telegram(notification_provider_factory, enabled=True)
@@ -900,7 +957,7 @@ class TestTelegramProviderRestarts:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_deleting_a_disabled_provider_does_not_restart(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot, db_session
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
         provider = await self._telegram(notification_provider_factory, enabled=False)
 
@@ -915,7 +972,7 @@ class TestTelegramProviderRestarts:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_a_non_telegram_provider_never_restarts(self, async_client: AsyncClient, restart_bot, db_session):
+    async def test_a_non_telegram_provider_never_restarts(self, async_client: AsyncClient, restart_bot):
         """Create, rename, re-key, switch off and delete an ntfy row: no bot involved."""
         created = await async_client.post(
             "/api/v1/notifications/",
