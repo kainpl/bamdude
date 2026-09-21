@@ -204,6 +204,15 @@ describe('ForecastPanel — a renderer of server-computed rows', () => {
     expect(spoolListRequests.length).toBe(0);
   });
 
+  it('formats stock with the same compact inventory weight formatter as a spool remaining bar', async () => {
+    setupHandlers({ rows: [row({ total_remaining_g: 12_345, total_label_g: 13_000 })] });
+    render(<ForecastPanel />);
+
+    // The inventory table uses 12.35kg at this magnitude (not a five-digit
+    // gram value); the forecast's stock bar describes that same inventory.
+    expect(await screen.findByText('12.35kg')).toBeInTheDocument();
+  });
+
   it('sanitizes a garbage persisted sort key to the default before the first request (the 400 lesson)', async () => {
     localStorage.setItem(FORECAST_SORT_KEY, JSON.stringify({ key: 'velocity', dir: 'sideways' }));
     render(<ForecastPanel />);

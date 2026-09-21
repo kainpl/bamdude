@@ -4,6 +4,7 @@ import { buildFilamentBackground } from '../components/filamentSwatchHelpers';
 import { SpoolTableSkeleton } from '../components/SpoolTableSkeleton';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { formatInventoryWeight as formatWeight } from '../utils/weight';
 import {
   Plus, Trash2, Archive, RotateCcw, Edit2, Package,
   Search,
@@ -292,25 +293,6 @@ function toRenderColumns(visible: string[]): string[] {
     }
   });
   return out;
-}
-
-/**
- * A weight for a table cell or the stats tile.
- *
- * `useKg` is the stats tile's coarse form — kilograms to one decimal, where a
- * farm total of 214.3kg is the useful reading.
- *
- * Everything else is grams below 5kg. Group rows regularly exceed that, and a
- * five-digit gram value is slower to read than kilograms. Precision decreases
- * with magnitude: three decimals retain gram precision below 10kg, then two
- * and one decimal keep larger farm totals readable.
- */
-function formatWeight(g: number, useKg = false): string {
-  if (useKg && g >= 1000) return `${(g / 1000).toFixed(1)}kg`;
-  if (g >= 100_000) return `${(g / 1000).toFixed(1)}kg`;
-  if (g >= 10_000) return `${(g / 1000).toFixed(2)}kg`;
-  if (g >= 5_000) return `${(g / 1000).toFixed(3)}kg`;
-  return `${Math.round(g)}g`;
 }
 
 // Material color mapping for pills

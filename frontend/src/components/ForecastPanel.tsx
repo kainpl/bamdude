@@ -13,6 +13,7 @@ import {
 } from 'recharts';
 import { api } from '../api/client';
 import { getSwatchStyle } from '../utils/colors';
+import { formatInventoryWeight } from '../utils/weight';
 import type {
   SkuForecastRow,
   ForecastListParams,
@@ -1037,7 +1038,7 @@ function ForecastRow({
                 style={{ width: `${Math.min(remainPct, 100)}%` }}
               />
             </div>
-            <span className="text-xs text-bambu-gray min-w-[40px] text-right">{Math.round(row.total_remaining_g)}g</span>
+            <span className="text-xs text-bambu-gray min-w-[40px] text-right">{formatInventoryWeight(row.total_remaining_g)}</span>
           </div>
         </td>
 
