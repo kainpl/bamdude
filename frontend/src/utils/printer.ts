@@ -147,6 +147,44 @@ export function normalizeModelName(model: string | null | undefined): string {
   return byCode.replace(/^Bambu Lab\s+/, '').trim() || byCode;
 }
 
+/**
+ * Models that run each other's G-code. The frontend mirror of the backend's
+ * `GCODE_COMPAT_FAMILIES` (`backend/app/utils/printer_models.py`) — one row,
+ * and it stays one row until Bambu says otherwise.
+ */
+const GCODE_COMPAT_FAMILIES: readonly ReadonlySet<string>[] = [
+  new Set(['X1', 'X1C', 'X1E', 'P1P', 'P1S']),
+];
+
+/**
+ * May a file sliced for one model be sent to a printer of another?
+ *
+ * The mirror of the backend's `is_gcode_compatible`, and it has to be the
+ * mirror rather than a plain `!==`: a job queued to a chosen printer is
+ * resolved with `exact_model=False`, so the machine accepts an X1C plate on a
+ * P1S. A stricter answer here would refuse, in the dialog, a print the printer
+ * would have taken — and a refusal about the TARGET carries no override.
+ *
+ * ⚠️ Unknown metadata on either side answers YES. Only what the 3MF declares
+ * can be validated, and a file without `sliced_for_model` predates the field.
+ *
+ * Both sides are normalised the same way, and by `normalizeModelName` rather
+ * than by the backend's narrower code-map-only `_norm`: it also resolves the
+ * long marketing spelling a `Printer.model` column carries, which the backend
+ * has already applied by the time it compares.
+ */
+export function isGcodeCompatible(
+  slicedForModel: string | null | undefined,
+  targetModel: string | null | undefined,
+): boolean {
+  if (!slicedForModel || !targetModel) return true;
+  const key = (model: string) => normalizeModelName(model).toUpperCase().replace(/[\s-]/g, '');
+  const a = key(slicedForModel);
+  const b = key(targetModel);
+  if (a === b) return true;
+  return GCODE_COMPAT_FAMILIES.some((family) => family.has(a) && family.has(b));
+}
+
 export function getWifiStrength(rssi: number): { labelKey: string; color: string; bars: number } {
   if (rssi >= -50) return { labelKey: 'printers.wifiSignal.excellent', color: 'text-bambu-green', bars: 4 };
   if (rssi >= -60) return { labelKey: 'printers.wifiSignal.good', color: 'text-bambu-green', bars: 3 };

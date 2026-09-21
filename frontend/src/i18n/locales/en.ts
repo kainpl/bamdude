@@ -193,7 +193,32 @@ export default {
     "ams_absent": "Without AMS",
     "ams_unknown": "AMS state unknown",
     "counts": "Compatible: {{compatible}}/{{total}} · Ready: {{ready}}",
-    "nextFileReview": "Channel choices apply to this file. The next file in the group will open a dialog."
+    "nextFileReview": "Channel choices apply to this file. The next file in the group will open a dialog.",
+    // Whether the print button can honestly be pressed. `reason` and `detail`
+    // mirror backend/app/data/filament_routing_en.json one for one — no
+    // endpoint hands out a per-printer sentence for a printer picked in this
+    // dialog, so the vocabulary is mirrored rather than fetched.
+    feasibility: {
+      blocked: "Nothing selected can print this plate as it is loaded.",
+      queueAnyway: "Queue anyway — it will wait for the right filament",
+      queueInsteadOfPrinting: "Add to the queue — it will wait for the right filament",
+      confirmTitle: "Queue it anyway?",
+      confirmBody: "The job is added and waits in the queue until a printer has what it needs.",
+      confirmBodyPrint: "The job goes to this printer's queue and waits there. Printing it now would be cancelled instead of waiting.",
+      reason: {
+        material_mismatch: "No compatible filament source is available.",
+        variant_mismatch: "The filament variant does not match.",
+        color_mismatch: "The required color is not loaded.",
+        nozzle_mismatch: "Nozzle size or physical binding does not match.",
+        distinct_sources_required: "Each used channel needs a separate compatible source.",
+        model_mismatch: "The sliced printer model does not match.",
+      },
+      detail: {
+        wantedAndLoaded: "Channel {{slot}} needs {{wanted}}; loaded: {{loaded}}.",
+        wantedNothingLoaded: "Channel {{slot}} needs {{wanted}}; nothing is loaded.",
+        wantedOnly: "Channel {{slot}} needs {{wanted}}.",
+      },
+    },
 },
   // Navigation
   nav: {

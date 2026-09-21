@@ -31,8 +31,17 @@ import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
 import { getBedTypeInfo } from '../../utils/bedType';
 import { getGlobalTrayId, isPlaceholderDate } from '../../utils/amsHelpers';
+import { isGcodeCompatible } from '../../utils/printer';
 import { splitRoundRobin } from '../../lib/quantitySplit';
 import { AutoModeOptions } from './AutoModeOptions';
+import {
+  autoFeasibility,
+  printerFeasibility,
+  worstVerdict,
+  FEASIBLE,
+  UNKNOWN,
+  type FeasibilityVerdict,
+} from './feasibility';
 import { groupTraysForBackup, privateBackupGroup, type BackupGroup } from './filamentBackupGroups';
 import { FilamentMapping } from './FilamentMapping';
 import { PlateSelector } from './PlateSelector';
@@ -64,6 +73,19 @@ import {
   readStoredQuantityMode,
   storeQuantityMode,
 } from './types';
+
+/**
+ * What an answered question carries back into the submit.
+ *
+ * Both flags are an operator's answer to a dialog that interrupted the submit,
+ * and both have to survive a SECOND interruption: the low-spool warning and the
+ * feasibility override can be raised by the same press, and an answer dropped
+ * between them is a confirmation the dialog silently ignores.
+ */
+interface SubmitOptions {
+  skipFilamentCheck?: boolean;
+  overrideFeasibility?: boolean;
+}
 
 /**
  * Unified PrintModal component that handles four modes:
@@ -393,6 +415,12 @@ export function PrintModal({
     routingPreview.data.plates.every(plate => plate.status === 'ok');
 
   const [filamentWarningItems, setFilamentWarningItems] = useState<FilamentWarningItem[] | null>(null);
+  /**
+   * The options the submit that raised the low-spool warning was carrying, so
+   * the operator's «print anyway» resumes the SAME submit rather than a fresh,
+   * unanswered one.
+   */
+  const warnedSubmitOptionsRef = useRef<{ overrideFeasibility?: boolean }>({});
 
   // Track which printers have had the "Expand custom mapping by default" setting applied
   // This ensures the setting only affects initial state, not preventing unchecking
@@ -1463,8 +1491,149 @@ export function PrintModal({
     return storedRoutingIsPinned;
   };
 
-  const runSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean }) => {
+  /**
+   * Can what is selected print this, as the trays stand right now? (spec Д6.)
+   *
+   * ⚠️ **Four states, not three.** `unknown` — offline, telemetry in flight, a
+   * preview that could not cover every printer — never blocks and is never
+   * worded as an incompatibility; `blocked_now` disables with an explicit
+   * override beside it; `blocked_target` disables with none, because an
+   * override cannot make the file fit another model. Busy, drying, an uncleared
+   * plate and a staggered start are deliberately absent from all of it — those
+   * are dispatch's questions, not routing's.
+   *
+   * ⚠️ **Only a single chosen printer gets a real answer.** A fan-out ships no
+   * per-printer mapping at all (the scheduler maps each plate against the
+   * printer it picks) and `getMappingForPrinter` hands every target the FIRST
+   * printer's mapping, so a verdict built on it would be about a machine the
+   * operator did not ask about. That is exactly "we do not know", and it is why
+   * `canQueueWithoutAsking` short-circuits on the same condition.
+   *
+   * ⚠️ Read directly from `amsMapping` / `perPlateAmsMappings` rather than
+   * through `getMappingForPrinter`, which is a fresh closure every render: with
+   * one printer selected the two are the same value by construction — the
+   * per-printer-override branch of that function is unreachable below two.
+   */
+  const feasibility = useMemo<FeasibilityVerdict>(() => {
+    if (isAutoMode) return autoFeasibility(routingPreview.data);
+    if (selectedPrinters.length !== 1) return UNKNOWN;
+
+    // ⚠️ The machine's own predicate, not a string comparison: a job queued to
+    // a chosen printer is resolved with `exact_model=False`, so an X1C plate on
+    // a P1S is accepted — and a refusal about the TARGET carries no override,
+    // so a stricter answer here would be a dead end in the dialog.
+    const printer = printers?.find((p) => p.id === selectedPrinters[0]);
+    if (printer?.model && !isGcodeCompatible(slicedForModel, printer.model)) {
+      return { state: 'blocked_target', reason: { code: 'model_mismatch' } };
+    }
+
+    // A printer nobody has heard from tells us nothing — and an empty loaded
+    // list refuses every channel, so reading it as an answer would disable the
+    // button for a machine that is merely unreachable.
+    if (printerStatusFailed || !printerStatusLoaded || printerStatus?.connected === false) return UNKNOWN;
+
+    const loaded = buildLoadedFilaments(printerStatus);
+    const ftsActive = printerStatus?.fila_switch?.installed === true;
+
+    if (isMultiPlateSelection) {
+      if (perPlateReqsPending || perPlateReqsFailed) return UNKNOWN;
+      // Per plate and its actual target, never per file: two plates of one
+      // container routinely need different materials.
+      return selectedPlateIds.reduce<FeasibilityVerdict>(
+        (worst, plateId) =>
+          worstVerdict(
+            worst,
+            printerFeasibility({
+              requirements: perPlateReqs.get(plateId)?.filaments ?? [],
+              mapping: perPlateAmsMappings.get(plateId),
+              loaded,
+              ftsActive,
+            }),
+          ),
+        FEASIBLE,
+      );
+    }
+
+    if (effectiveFilamentReqsError || effectiveFilamentReqs === undefined) return UNKNOWN;
+    return printerFeasibility({
+      requirements: routingFilamentReqs?.filaments ?? [],
+      mapping: amsMapping,
+      loaded,
+      ftsActive,
+    });
+  }, [
+    isAutoMode,
+    routingPreview.data,
+    selectedPrinters,
+    printers,
+    slicedForModel,
+    printerStatus,
+    printerStatusLoaded,
+    printerStatusFailed,
+    isMultiPlateSelection,
+    perPlateReqsPending,
+    perPlateReqsFailed,
+    selectedPlateIds,
+    perPlateReqs,
+    perPlateAmsMappings,
+    effectiveFilamentReqs,
+    effectiveFilamentReqsError,
+    routingFilamentReqs,
+    amsMapping,
+  ]);
+
+  /**
+   * An edit is not new work: a missing spool must never stop the operator
+   * re-scheduling a row that is already queued (spec Д6, action 3). The verdict
+   * is still computed and still shown there — as information.
+   */
+  const isEditMode = mode === 'edit-queue-item' || mode === 'edit-auto-item';
+  const verdictBlocks =
+    !isEditMode && (feasibility.state === 'blocked_now' || feasibility.state === 'blocked_target');
+  /** `blocked_target` has no override — the file does not fit this machine. */
+  const verdictOverridable = !isEditMode && feasibility.state === 'blocked_now';
+  const showFeasibility = feasibility.state === 'blocked_now' || feasibility.state === 'blocked_target';
+  const [feasibilityConfirm, setFeasibilityConfirm] = useState(false);
+
+  /**
+   * The sentence beside the button: the refusal, then the facts behind it.
+   *
+   * The same two-part shape the backend's `routing_detail` builds — code
+   * sentence, then one of three detail forms — so a refusal read here and the
+   * same refusal read in a waiting reason are recognisably the same statement.
+   * A verdict that came from the routing preview already carries the backend's
+   * own localised sentence and is rendered verbatim.
+   */
+  const feasibilityMessage = useMemo(() => {
+    const reason = feasibility.reason;
+    if (!reason) return t('filamentRouting.feasibility.blocked');
+    if (reason.message) return reason.message;
+    const head = t(`filamentRouting.feasibility.reason.${reason.code}`);
+    if (!reason.wanted) return head;
+    // `''` is "the trays are known to be empty"; absent is "not asked".
+    const detail = reason.loaded ? 'wantedAndLoaded' : reason.loaded === '' ? 'wantedNothingLoaded' : 'wantedOnly';
+    const facts = t(`filamentRouting.feasibility.detail.${detail}`, {
+      slot: reason.slot,
+      wanted: reason.wanted,
+      loaded: reason.loaded,
+    });
+    return `${head} ${facts}`;
+  }, [feasibility, t]);
+
+  const runSubmit = async (e?: React.FormEvent, options?: SubmitOptions) => {
     e?.preventDefault();
+
+    // ⚠️ **The disabled button is not the gate.** Enter in a field reaches this
+    // function without passing through it, and a grouped run's silent member
+    // never renders a button at all. A settled refusal there must SHOW the
+    // dialog rather than wait: the sequencer advances only on `onClose`, so a
+    // hidden member that neither submits nor renders hangs the whole run.
+    if (verdictBlocks && !(options?.overrideFeasibility && verdictOverridable)) {
+      if (autoSubmitWhenUnambiguous && !autoSubmitRefused) setAutoSubmitRefused(true);
+      return;
+    }
+    /** «Print now», overridden: the job goes to this printer's queue and waits there. */
+    const queuedInsteadOfPrinting = mode === 'reprint' && options?.overrideFeasibility === true;
 
     // ⚠️ A dialog that never showed itself does not announce itself either.
     // A group of 57 plates submits 56 times without rendering, and each of
@@ -1628,9 +1797,14 @@ export function PrintModal({
       // can also draw on the same spool, so the demand is summed per tray before
       // it is weighed against what is left on it - 60 g left does not cover two
       // plates of 40 g, even though it covers either one of them (upstream #2551).
+      // ⚠️ Both halves read the requirements as ROUTED — `perPlateReqs` already
+      // carries the policy, and the single-plate half used to take the raw
+      // query beside it. Nothing here weighs a policy field, so the two agreed
+      // by luck; asking the same question of two different objects is the part
+      // that was wrong.
       const plateJobs = isMultiPlateSelection
         ? selectedPlateIds.map((plateId) => ({ plateId, reqs: perPlateReqs.get(plateId)?.filaments ?? [] }))
-        : [{ plateId: selectedPlate, reqs: effectiveFilamentReqs?.filaments ?? [] }];
+        : [{ plateId: selectedPlate, reqs: routingFilamentReqs?.filaments ?? [] }];
 
       if (plateJobs.some((job) => job.reqs.length > 0) && spoolAssignmentsByPrinter.size > 0) {
         const getRemainingWeight = (labelWeight: number, weightUsed: number) => {
@@ -1730,6 +1904,11 @@ export function PrintModal({
       }
 
       if (warningItems.length > 0) {
+        // ⚠️ Remember what this submit was carrying. The operator's «print
+        // anyway» calls straight back in here, and an `overrideFeasibility`
+        // dropped on the way would be refused by the gate at the top — the
+        // dialog would answer a confirmation with silence.
+        warnedSubmitOptionsRef.current = { overrideFeasibility: options?.overrideFeasibility };
         setFilamentWarningItems(warningItems);
         return;
       }
@@ -1904,7 +2083,18 @@ export function PrintModal({
         setSubmitProgress({ current: progressCounter, total: totalCount });
 
         try {
-          if (mode === 'reprint') {
+          if (mode === 'reprint' && queuedInsteadOfPrinting) {
+            // ⚠️ **The override on «print now» writes a QUEUE ROW.** A direct
+            // dispatch that has to wait for filament does not wait — the
+            // deferral ends the job `cancelled` (`defer_claim(direct=True)`) —
+            // so repeating the immediate request would answer a deliberate
+            // "queue it anyway" with a job that quietly disappears. Same
+            // payload the queue path builds, so the row carries the routing
+            // answers, the pin flag and the order filing exactly as an ordinary
+            // add would.
+            const added = await addToQueueMutation.mutateAsync(getQueueData(printerId, plateId));
+            createdItemIds.push(...(added.created_item_ids ?? (added.id != null ? [added.id] : [])));
+          } else if (mode === 'reprint') {
             // Reprint mode - start print immediately (single plate only, multi-select not available)
             const printerMapping = getMappingForPrinter(printerId, plateId);
             const swapPayload = getSwapPayloadForPrinter(printerId);
@@ -2009,7 +2199,10 @@ export function PrintModal({
       persistPreference();
       reportAnswer();
       if (createdItemIds.length > 0) onQueued?.(createdItemIds);
-      if (mode !== 'reprint' && announces) {
+      // Reprint normally stays silent here — the dispatch toast speaks for it.
+      // An overridden one queued instead, and a queued job that says nothing at
+      // all is a job the operator has no reason to believe exists.
+      if ((mode !== 'reprint' || queuedInsteadOfPrinting) && announces) {
         if (mode === 'edit-queue-item') {
           showToast(t('printModal.queueItemUpdated'));
         } else if (results.queued === 1) {
@@ -2121,7 +2314,7 @@ export function PrintModal({
    * straight back in here.
    */
   const submitInFlightRef = useRef(false);
-  const handleSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean }) => {
+  const handleSubmit = async (e?: React.FormEvent, options?: SubmitOptions) => {
     // The default has to be prevented even when the guard swallows the submit,
     // or the second Enter navigates the browser away from the app.
     e?.preventDefault();
@@ -2266,9 +2459,22 @@ export function PrintModal({
       }
       if (effectiveFilamentReqs === undefined) return;
     }
+    // ⚠️ A settled refusal, as opposed to a query still in flight: waiting on
+    // one of these is the whole-run hang. Everything above has already waited
+    // for the honest signals, so a `blocked_*` here is an answer, and the only
+    // safe thing to do with it is to show the operator the dialog.
+    if (verdictBlocks) {
+      setAutoSubmitRefused(true);
+      return;
+    }
+
+    // ROUTED on both paths — `canQueueWithoutAsking` promises "the identical
+    // call the dialog makes", and the single-plate half used to hand it the raw
+    // query while the dialog read the routed one. Under a strict colour or a
+    // strict profile the two give different verdicts.
     const plateRequirements = isMultiPlateSelection
       ? selectedPlateIds.map((plateId) => perPlateReqs.get(plateId)?.filaments ?? [])
-      : [effectiveFilamentReqs?.filaments ?? []];
+      : [routingFilamentReqs?.filaments ?? []];
 
     const loaded = buildLoadedFilaments(printerStatus);
     const refused = plateRequirements.some(
@@ -2320,6 +2526,7 @@ export function PrintModal({
     perPlateReqs,
     effectiveFilamentReqs,
     effectiveFilamentReqsError,
+    routingFilamentReqs,
     perPlateReqsFailed,
     queueSourceProfileError,
     printersFetched,
@@ -2327,6 +2534,7 @@ export function PrintModal({
     orderAnswerPending,
     routingPreview.isPending,
     routingSourceReady,
+    verdictBlocks,
   ]);
 
   // Tell the run it had to ask after all. Once only, and by ref rather than by
@@ -2885,6 +3093,38 @@ export function PrintModal({
               </div>
             )}
 
+            {/* Why the button is off, and the one way past it.
+                ⚠️ `unknown` renders NOTHING here: a printer nobody has heard
+                from, telemetry still in flight or an evaluation that could not
+                cover every machine is not an incompatibility, and wording it as
+                one is the failure this whole block exists to remove. An edit
+                shows the line and no override — it never blocks saving. */}
+            {showFeasibility && (
+              <div
+                data-testid="feasibility-notice"
+                className="flex items-start gap-2 p-3 bg-orange-50 dark:bg-orange-500/10 border border-orange-300 dark:border-orange-500/30 rounded-lg text-sm"
+              >
+                <AlertTriangle className="w-4 h-4 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" />
+                <div className="space-y-2 min-w-0">
+                  <p className="text-orange-700 dark:text-orange-400">{feasibilityMessage}</p>
+                  {verdictOverridable && (
+                    <button
+                      type="button"
+                      data-testid="feasibility-override"
+                      onClick={() => setFeasibilityConfirm(true)}
+                      className="text-xs underline text-orange-700 dark:text-orange-300 hover:text-orange-900 dark:hover:text-orange-200"
+                    >
+                      {t(
+                        mode === 'reprint'
+                          ? 'filamentRouting.feasibility.queueInsteadOfPrinting'
+                          : 'filamentRouting.feasibility.queueAnyway',
+                      )}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Actions */}
             <div className={`flex gap-3 ${mode === 'reprint' ? '' : 'pt-2'}`}>
               <Button type="button" variant="secondary" onClick={onClose} className="flex-1" disabled={isSubmitting}>
@@ -2896,8 +3136,10 @@ export function PrintModal({
                   out under no order and nothing says it could have had one. */}
               <Button
                 type="submit"
-                disabled={!canSubmit || orderAnswerPending}
-                title={orderAnswerPending ? t('orderFiling.loading') : undefined}
+                disabled={!canSubmit || orderAnswerPending || verdictBlocks}
+                title={
+                  orderAnswerPending ? t('orderFiling.loading') : verdictBlocks ? feasibilityMessage : undefined
+                }
                 className="flex-1"
               >
                 {isPending ? (
@@ -2926,9 +3168,36 @@ export function PrintModal({
           variant="warning"
           onConfirm={() => {
             setFilamentWarningItems(null);
-            void handleSubmit(undefined, { skipFilamentCheck: true });
+            void handleSubmit(undefined, { ...warnedSubmitOptionsRef.current, skipFilamentCheck: true });
           }}
           onCancel={() => setFilamentWarningItems(null)}
+        />
+      )}
+
+      {/* The deliberate bypass. It is a separate control rather than an armed
+          submit button: what it agrees to is not «print this now» but «put it
+          in the queue and let it wait», and on the «print now» path that is a
+          different request entirely. */}
+      {feasibilityConfirm && (
+        <ConfirmModal
+          title={t('filamentRouting.feasibility.confirmTitle')}
+          message={`${feasibilityMessage}\n\n${t(
+            mode === 'reprint'
+              ? 'filamentRouting.feasibility.confirmBodyPrint'
+              : 'filamentRouting.feasibility.confirmBody',
+          )}`}
+          confirmText={t(
+            mode === 'reprint'
+              ? 'filamentRouting.feasibility.queueInsteadOfPrinting'
+              : 'filamentRouting.feasibility.queueAnyway',
+          )}
+          cancelText={t('common.cancel')}
+          variant="warning"
+          onConfirm={() => {
+            setFeasibilityConfirm(false);
+            void handleSubmit(undefined, { overrideFeasibility: true });
+          }}
+          onCancel={() => setFeasibilityConfirm(false)}
         />
       )}
     </>

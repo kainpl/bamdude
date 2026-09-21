@@ -5,7 +5,13 @@ import {
 } from '../hooks/useFilamentMapping';
 
 export interface EligibilityInput {
-  /** What this plate needs, as the dialog would receive it. */
+  /**
+   * What this plate needs, **already under the dialog's routing policy** —
+   * `ignore_profile` / `strict_profile_match` and `strict_color_match` set, as
+   * `applyRoutingPolicy` sets them. Handed the raw query instead, this answers
+   * a different question than the panel beside it: a strict colour or a strict
+   * profile can turn a match into none.
+   */
   requirements: FilamentRequirement[];
   loadedFilaments: LoadedFilament[];
   /** How many printers the run targets. 0 = auto-queue. */
@@ -35,7 +41,15 @@ export type EligibilityVerdict = { ok: true } | { ok: false; reason: 'filament_t
  * `ftsActive` / `trayNow` are threaded through so the comparison run here is
  * the identical call the dialog makes for the same plate — `ftsActive` in
  * particular lifts the per-nozzle slot restriction and can therefore turn a
- * `mismatch` into a match.
+ * `mismatch` into a match. Identical is meant literally, and the caller owes
+ * this the ROUTED requirements for it to hold: the single-plate path used to
+ * pass the raw query while the visible dialog read the routed one.
+ *
+ * ⚠️ **This is not the feasibility verdict** (`PrintModal/feasibility.ts`). It
+ * answers only "is there a question worth interrupting a silent run for", and
+ * it answers it from a status word, which is exactly what the verdict may not
+ * do — `mismatch` is also a pure profile veto, `type_only` also a strict-colour
+ * channel with nothing assigned. The two live side by side on purpose.
  *
  * The two arguments the dialog passes and this does not are deliberate, and
  * neither can move the verdict: manual overrides (`{}`) because a silent run
