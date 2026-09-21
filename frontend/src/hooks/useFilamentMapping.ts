@@ -342,8 +342,10 @@ export function buildFilamentComparison(
     // "Prefer lowest remaining filament": drain the emptiest compatible spool
     // first. Sorting the candidate pool rather than each match tier keeps the
     // priority order above intact — this only ever breaks ties WITHIN a tier
-    // and can never promote a worse match. Same key the backend uses in
-    // auto_queue_ams.py, so a mapping pinned here and one computed there agree.
+    // and can never promote a worse match. Same ordering the backend reaches
+    // through `print_scheduler._prefer_lowest_sort_key` (imported by
+    // `filament_preflight`), so the tray ranked first here is the one routing
+    // would reach for.
     if (preferLowest) {
       available = sortByRemainAscending(available);
     }

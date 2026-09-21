@@ -2,16 +2,19 @@
  * "Prefer lowest remaining filament" in the auto-matcher.
  *
  * Back-audit finding, row D1 of 0.2.4.7->0.2.4.8. The setting was honoured only
- * by AutoQueue. On Print → pick printer → Add to queue the dialog pins a
- * mapping, and the dispatcher deliberately will NOT re-derive a mapping that is
- * already resolved — a stored mapping is consumed as it stands by the routing
- * plan and its preflight — so a mapping pinned without the setting applied
- * meant the setting was silently ignored on that whole path.
+ * by AutoQueue; the dialog answered the same question by rules of its own, so
+ * the tray it showed could be one the machine would not have chosen.
  *
- * The rule mirrors the backend (`auto_queue_ams.py`): sort the candidate pool
- * ascending by `remain`, unknown (-1) last, and let each match tier pick the
- * first hit. That makes it a tiebreaker WITHIN a tier — it must never promote a
- * worse-matching spool over a better one.
+ * ⚠️ An ordinary add no longer PINS a mapping — it is stored as routed
+ * automatically and picks its tray at dispatch — so what this rule governs here
+ * is which candidate the dialog RANKS first, and it has to be the one routing
+ * would reach for, or the dialog promises a spool the dispatch would not pick.
+ *
+ * The rule mirrors the backend (`print_scheduler._prefer_lowest_sort_key`,
+ * imported by `filament_preflight`): sort the candidate pool ascending by
+ * `remain`, unknown (-1) last, and let each match tier pick the first hit. That
+ * makes it a tiebreaker WITHIN a tier — it must never promote a worse-matching
+ * spool over a better one.
  */
 
 import { describe, it, expect } from 'vitest';

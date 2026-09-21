@@ -7,9 +7,11 @@
  * dialog already pinned. A badge that disagrees with the scheduler is not a
  * cosmetic bug — it is a promise about which spool will be used.
  *
- * ⚠️ The CIEDE2000 implementation here mirrors
- * `backend/app/utils/color_utils.py`. It is verified against the same published
- * reference values the backend test uses, so the two cannot drift silently.
+ * ⚠️ The CIEDE2000 implementation this drives is now the ONLY one: the backend
+ * copy it was written to mirror went with its last caller, so nothing on the
+ * server ranks colours perceptually any more. That makes the published
+ * reference values below the whole guarantee — there is no second
+ * implementation left to disagree with, only the CIE's own numbers.
  */
 
 import { readFileSync } from 'node:fs';
@@ -19,8 +21,8 @@ import { colorDistance, nearerColour, autoMatchFilament, filamentTypesCompatible
 
 describe('colorDistance', () => {
   // Sharma, Wu & Dalal reference pairs, expressed as the sRGB hexes that
-  // produce them — the backend test drives L*a*b* directly; this one has to go
-  // through the conversion, so it checks the pair end to end.
+  // produce them — so the conversion and the metric are checked end to end
+  // rather than the metric alone against L*a*b* triples.
   it('is zero for a colour against itself', () => {
     expect(colorDistance('1E4821', '1E4821')).toBeCloseTo(0, 9);
   });

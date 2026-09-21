@@ -142,4 +142,16 @@ describe('the profile id once a base-material match is allowed', () => {
     expect(asked(strict, loaded, 'PETG').status).toBe('mismatch');
     expect(asked({ tray_info_idx: 'Pa240002' }, loaded, 'PETG').status).toBe('match');
   });
+
+  it('⚠️ ignores the profile when BOTH flags are set, rather than letting strict win', () => {
+    // The two flags answer the same question and a caller can carry both: the
+    // routing snapshot says «allow base material match» while a stored
+    // requirement still remembers it was once strict. `ignore_profile` is the
+    // later word and must be structurally exclusive, not exclusive by the
+    // convention that nobody sets both.
+    const loaded = [tray(0, RED, 'GFG99', 'PETG')];
+    const both = { tray_info_idx: 'Pa240002', strict_profile_match: true, ignore_profile: true };
+
+    expect(asked(both, loaded, 'PETG').status).toBe('match');
+  });
 });

@@ -20,7 +20,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
@@ -312,6 +312,56 @@ describe('the print button and what the trays actually hold', () => {
     const submit = await submitButton();
     await waitFor(() => expect(submit).toBeEnabled());
     expect(screen.queryByTestId('feasibility-notice')).not.toBeInTheDocument();
+  });
+
+  it('⚠️ leaves the legacy «sliced for» banner out for two models of one family', async () => {
+    // The banner predates the verdict and asked a raw `!==`. An X1C plate on a
+    // P1S would show a yellow warning while the feasibility block beside it
+    // said nothing at all — two answers to one question, in one dialog.
+    server.use(
+      http.get('/api/v1/printers/', () =>
+        HttpResponse.json([{ ...printers[0], name: 'P1S', model: 'P1S' }]),
+      ),
+      http.get('/api/v1/archives/:id', () => HttpResponse.json({ id: 1, sliced_for_model: 'X1C' })),
+      needs([{ slot_id: 1, type: 'PETG', color: '#FF0000', used_grams: 10 }]),
+      http.get('/api/v1/printers/:id/status', () =>
+        HttpResponse.json(statusWith([{ tray_type: 'PETG', tray_color: 'FF0000FF' }])),
+      ),
+    );
+
+    openQueueDialog();
+
+    const submit = await submitButton();
+    await waitFor(() => expect(submit).toBeEnabled());
+    expect(screen.queryByText(/was sliced for/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('feasibility-notice')).not.toBeInTheDocument();
+  });
+
+  it('⚠️ refuses the form’s own submit too — the disabled button is not the gate', async () => {
+    // Enter in a field submits the FORM; `runSubmit` is reached by that event
+    // without passing through the button at all, and a grouped run's silent
+    // member never renders a button in the first place. So the verdict is
+    // re-asked inside `runSubmit`, and this drives the form event directly:
+    // jsdom suppresses implicit submission while the default button is
+    // disabled, which would test the button rather than the guard.
+    server.use(
+      needs(oneAbsChannel),
+      http.get('/api/v1/printers/:id/status', () =>
+        HttpResponse.json(statusWith([{ tray_type: 'PETG', tray_color: 'FF0000FF' }])),
+      ),
+    );
+
+    openQueueDialog();
+
+    const notice = await screen.findByTestId('feasibility-notice');
+    const form = notice.closest('form');
+    expect(form).not.toBeNull();
+
+    fireEvent.submit(form!);
+
+    await waitFor(() => expect(screen.getByTestId('feasibility-notice')).toBeInTheDocument());
+    expect(queuePosts).toBe(0);
+    expect(onSuccess).not.toHaveBeenCalled();
   });
 
   describe('auto mode reads the preview, and reads it three-valued', () => {
