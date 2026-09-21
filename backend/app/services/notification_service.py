@@ -635,12 +635,14 @@ class NotificationService:
             return False, f"Failed to send digest to all chats: {'; '.join(errors)}"
 
     @staticmethod
-    async def _has_telegram_digest_subscribers() -> bool:
-        """True iff at least one active TelegramChat has opted into daily digest.
+    async def _has_telegram_digest_subscribers(provider_id: int) -> bool:
+        """True iff at least one of THIS provider's active chats opted into the daily digest.
 
         Used by ``_send_to_providers`` to skip the digest queue write when
-        no chats subscribed — keeps ``notification_digest_queue`` from
-        accumulating rows that would never be delivered to anyone.
+        no chat subscribed — keeps ``notification_digest_queue`` from
+        accumulating rows that would never be delivered to anyone. Per
+        provider, like the fan-out it stands in for (m180): a chat belongs
+        to one bot, and another bot's digest chats are not this one's.
         """
         from sqlalchemy import select
 
@@ -655,6 +657,7 @@ class NotificationService:
                         .where(
                             TelegramChat.is_active.is_(True),
                             TelegramChat.daily_digest.is_(True),
+                            TelegramChat.provider_id == provider_id,
                         )
                         .limit(1)
                     )
@@ -1568,7 +1571,7 @@ class NotificationService:
                 if provider.daily_digest_enabled and provider.daily_digest_time:
                     should_queue = True
                     if provider.provider_type == "telegram":
-                        should_queue = await self._has_telegram_digest_subscribers()
+                        should_queue = await self._has_telegram_digest_subscribers(provider.id)
                     if should_queue:
                         await self._queue_for_digest(
                             provider=provider,

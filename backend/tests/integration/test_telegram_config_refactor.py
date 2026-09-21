@@ -279,17 +279,22 @@ async def test_skip_on_empty_telegram_digest_subscribers(async_client, db_sessio
     """`_has_telegram_digest_subscribers` returns False when no chat opted
     in, True when any active chat has daily_digest=True."""
     svc = NotificationService()
-    # No chats: False.
-    assert await svc._has_telegram_digest_subscribers() is False
-
     provider = await _telegram_provider(db_session)
+    # No chats: False.
+    assert await svc._has_telegram_digest_subscribers(provider.id) is False
+
     await _chat(db_session, chat_id=1, provider_id=provider.id, daily_digest=False)
-    assert await svc._has_telegram_digest_subscribers() is False
+    assert await svc._has_telegram_digest_subscribers(provider.id) is False
 
     await _chat(db_session, chat_id=2, provider_id=provider.id, daily_digest=True)
-    assert await svc._has_telegram_digest_subscribers() is True
+    assert await svc._has_telegram_digest_subscribers(provider.id) is True
 
     # Inactive opted-in chat: still False (we only deliver to active).
     await _chat(db_session, chat_id=3, provider_id=provider.id, is_active=False, daily_digest=True)
     # The previous chat 2 is still active, so this stays True.
-    assert await svc._has_telegram_digest_subscribers() is True
+    assert await svc._has_telegram_digest_subscribers(provider.id) is True
+
+    # Another bot's chats are not this one's (m180): a second provider with
+    # no digest chats of its own must not queue a digest on the strength of
+    # the first provider's subscribers.
+    assert await svc._has_telegram_digest_subscribers(provider.id + 1000) is False

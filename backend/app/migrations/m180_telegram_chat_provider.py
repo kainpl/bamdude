@@ -60,13 +60,32 @@ async def upgrade(conn):
 
     if is_postgres():
         await conn.execute(text("ALTER TABLE telegram_chats ALTER COLUMN provider_id SET NOT NULL"))
+        # The constraint is looked up BY COLUMN, never by an assumed name
+        # (m018 / m173 are the pattern): a fresh install runs ``create_all``
+        # before the chain and already carries this key under PostgreSQL's
+        # own generated name, and a second CASCADE key beside it would be a
+        # permanent divergence between fresh and upgraded installs.
         await conn.execute(
             text(
-                "DO $$ BEGIN "
-                "IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_telegram_chats_provider_id') THEN "
-                "ALTER TABLE telegram_chats ADD CONSTRAINT fk_telegram_chats_provider_id "
-                "FOREIGN KEY (provider_id) REFERENCES notification_providers (id) ON DELETE CASCADE; "
-                "END IF; END $$;"
+                """
+                DO $$
+                DECLARE
+                    existing TEXT;
+                BEGIN
+                    SELECT c.conname INTO existing
+                    FROM pg_constraint c
+                    JOIN pg_class t ON c.conrelid = t.oid
+                    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
+                    WHERE t.relname = 'telegram_chats' AND a.attname = 'provider_id' AND c.contype = 'f'
+                    LIMIT 1;
+                    IF existing IS NULL THEN
+                        ALTER TABLE telegram_chats
+                            ADD CONSTRAINT telegram_chats_provider_id_fkey
+                            FOREIGN KEY (provider_id)
+                            REFERENCES notification_providers (id) ON DELETE CASCADE;
+                    END IF;
+                END$$;
+                """
             )
         )
 
@@ -77,13 +96,16 @@ async def backfill(conn) -> tuple[int, int]:
     Returns ``(bound, removed)``. The candidate order is the poller's own —
     enabled first, then the oldest — see the module docstring.
     """
-    # ``enabled`` is 0/1 on SQLite and boolean on PostgreSQL; DESC puts the
-    # enabled rows first on both.
+    # Enabled rows first, then the oldest. Spelled as a CASE rather than
+    # ``enabled DESC``: the column is nullable, and a NULL sorts FIRST under
+    # DESC on PostgreSQL but last on SQLite — the CASE lands it in the ELSE
+    # branch on both, behind every genuinely enabled row, which is also what
+    # ``current_bot_provider`` (``enabled == True``) would pick.
     row = (
         await conn.execute(
             text(
                 "SELECT id FROM notification_providers WHERE provider_type = 'telegram' "
-                "ORDER BY enabled DESC, id ASC LIMIT 1"
+                "ORDER BY CASE WHEN enabled THEN 0 ELSE 1 END, id ASC LIMIT 1"
             )
         )
     ).first()

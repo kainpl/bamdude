@@ -113,3 +113,29 @@ async def test_an_already_bound_chat_is_left_alone(tmp_path):
         await m180.upgrade(conn)
         assert await _bindings(conn) == {40: 2, 41: 1}
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_row_whose_enabled_is_null_never_beats_an_enabled_one(tmp_path):
+    """``enabled`` is nullable; a NULL must sort behind a real True on both dialects.
+
+    Spelled as ``ORDER BY enabled DESC`` it would come FIRST on PostgreSQL
+    (NULLS FIRST under DESC) and last on SQLite — the CASE the backfill uses
+    puts it in the ELSE branch on both.
+    """
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/e.db")
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql(_PROVIDERS)
+        await conn.exec_driver_sql(_CHATS)
+        await conn.execute(
+            text(
+                "INSERT INTO notification_providers (id, name, provider_type, enabled, config) "
+                "VALUES (1, 'p1', 'telegram', NULL, '{}')"
+            )
+        )
+        await _provider(conn, 2, "telegram", enabled=True)
+        await _chat(conn, 50)
+
+        await m180.upgrade(conn)
+        assert await _bindings(conn) == {50: 2}
+    await engine.dispose()
