@@ -701,7 +701,16 @@ class NotificationService:
                     ok = await send_photo(chat_id, image_data, caption=md2_message, reply_markup=reply_markup)
                 else:
                     ok = await send_message(chat_id, md2_message, reply_markup=reply_markup)
-                return (True, "Message sent successfully") if ok else (False, "Failed to send via aiogram")
+                if ok:
+                    return True, "Message sent successfully"
+                # The helpers swallow their own exception and answer ``False``
+                # — and so does a bot whose session was closed between our
+                # ``get_bot()`` above and the send (a restart in flight). The
+                # message is not lost for that: it goes the direct way, on the
+                # provider's own token, exactly as it would had the bot not
+                # been running. The inline keyboard is the one thing the
+                # fallback cannot carry.
+                logger.warning("aiogram send returned no result, falling back to httpx")
             except Exception as e:
                 logger.warning("aiogram send failed, falling back to httpx: %s", e)
 

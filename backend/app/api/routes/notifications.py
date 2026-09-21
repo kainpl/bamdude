@@ -48,38 +48,32 @@ def _coerce_telegram_provider_fields(provider: NotificationProvider) -> None:
     provider.printer_ids = None
 
 
-def _telegram_bot_config(provider: NotificationProvider) -> tuple[str | None, bool]:
-    """What ``telegram_bot._get_bot_token`` can see on this row, and nothing else.
+async def _restart_bot_if_its_token_moved(token_before: str | None) -> None:
+    """Bounce the poller only when the token it runs on is no longer the one it read.
 
-    That reader takes the FIRST ENABLED TELEGRAM provider and reads
-    ``config["bot_token"]`` off it. So the pair answers one question — is this
-    row an input to the running bot, and with which token — and two kinds of
-    row contribute nothing to it: one that is not telegram, and one that is
-    switched off. Both answer ``(None, False)``, because the bot cannot see
-    either of them; the name, the digest schedule, the printer scope and every
-    other config key are invisible to it on any row.
+    The bot reads ONE thing: ``telegram_bot.current_bot_token`` — the oldest
+    enabled telegram provider's token, or ``None`` for "no bot". So the three
+    provider routes ask that reader before they write and again after they
+    commit, and restart on a different answer. That is the whole rule, and it
+    answers every case the same way: a rename, a digest time or any other
+    config key (same token); a token typed into a disabled provider, into a
+    non-telegram one, or into a second enabled telegram row that is not the
+    oldest (the reader never returns it); creating that second row (the
+    oldest still wins); deleting or disabling the bot's own row (the reader
+    moves to the next, or to ``None``); a retype into or out of telegram.
 
-    Comparing this pair before and after an edit is what tells a save that
-    must bounce the poller from one that must not — and every bounce drops a
-    healthy ``getUpdates`` long poll. Editing the token of a DISABLED provider
-    moves nothing the bot reads, so on a farm running a second, enabled bot it
-    must not reach across and restart that one.
-
-    ``config`` is a JSON string on the row and a dict in flight, so both
-    shapes are handled here.
+    Every restart drops a healthy ``getUpdates`` long poll, and before the
+    lifecycle lock it raced the start that replaced it (#50) — which is why
+    the question is asked of the reader rather than of the row: a per-row
+    "did its token or enabled flag change" bounced the bot for edits it could
+    not see whenever an install carried more than one telegram row — nothing
+    stops it from doing so, and the per-printer providers of before m157 left
+    exactly that shape behind.
     """
-    if provider.provider_type != "telegram":
-        return None, False
+    from backend.app.services.telegram_bot import current_bot_token, restart_telegram_bot
 
-    config = provider.config
-    if isinstance(config, str):
-        try:
-            config = json.loads(config)
-        except ValueError:
-            config = None
-    token = config.get("bot_token") if isinstance(config, dict) else None
-    enabled = bool(provider.enabled)
-    return (token if enabled else None), enabled
+    if await current_bot_token() != token_before:
+        await restart_telegram_bot()
 
 
 def _provider_to_dict(provider: NotificationProvider) -> dict:
@@ -138,6 +132,11 @@ async def create_notification_provider(
     _: User | None = RequirePermission(Permission.NOTIFICATIONS_CREATE),
 ):
     """Create a new notification provider."""
+    from backend.app.services.telegram_bot import current_bot_token
+
+    # Asked BEFORE the write; compared again after the commit (see the helper).
+    bot_token_before = await current_bot_token()
+
     provider = NotificationProvider(
         name=provider_data.name,
         provider_type=provider_data.provider_type.value,
@@ -165,14 +164,10 @@ async def create_notification_provider(
 
     logger.info("Created notification provider: %s (%s)", provider.name, provider.provider_type)
 
-    # Only a row the token reader can see is worth a restart: a disabled or
-    # non-telegram provider is invisible to ``_get_bot_token``, and every
-    # restart drops the long poll the bot is parked in.
-    _, bot_can_see_it = _telegram_bot_config(provider)
-    if bot_can_see_it:
-        from backend.app.services.telegram_bot import restart_telegram_bot
-
-        await restart_telegram_bot()
+    # A new row is the bot's only if the reader now answers with its token —
+    # a disabled one, a non-telegram one, or a second enabled telegram row
+    # behind an older one changes nothing the poller runs on.
+    await _restart_bot_if_its_token_moved(bot_token_before)
 
     return _provider_to_dict(provider)
 
@@ -444,9 +439,11 @@ async def update_notification_provider(
     if not provider:
         raise HTTPException(status_code=404, detail="Notification provider not found")
 
+    from backend.app.services.telegram_bot import current_bot_token
+
     # Read what the bot runs on BEFORE the update touches the row — the
     # comparison after the commit is the whole point (see below).
-    before = _telegram_bot_config(provider)
+    bot_token_before = await current_bot_token()
 
     # Update only provided fields
     update_dict = update_data.model_dump(exclude_unset=True)
@@ -471,16 +468,13 @@ async def update_notification_provider(
 
     logger.info("Updated notification provider: %s", provider.name)
 
-    # A new token, an enabled/disabled flip or a retype into or out of
-    # telegram makes the running poller wrong; a rename, a digest time or any
-    # other config key does not. Restarting for those dropped a healthy long
-    # poll on every save — and, before the lifecycle lock, raced the start
-    # that replaced it. The pair answers all of it: a row the bot cannot see,
-    # for whatever reason, reads as ``(None, False)`` on both sides.
-    if _telegram_bot_config(provider) != before:
-        from backend.app.services.telegram_bot import restart_telegram_bot
-
-        await restart_telegram_bot()
+    # A new token on the bot's row, an enabled/disabled flip that moves the
+    # reader, or a retype into or out of telegram makes the running poller
+    # wrong; a rename, a digest time, any other config key — or a token on a
+    # row the reader never returns — does not. Restarting for those dropped a
+    # healthy long poll on every save and, before the lifecycle lock, raced
+    # the start that replaced it.
+    await _restart_bot_if_its_token_moved(bot_token_before)
 
     return _provider_to_dict(provider)
 
@@ -498,21 +492,20 @@ async def delete_notification_provider(
     if not provider:
         raise HTTPException(status_code=404, detail="Notification provider not found")
 
+    from backend.app.services.telegram_bot import current_bot_token
+
     name = provider.name
-    _, bot_was_reading_it = _telegram_bot_config(provider)
+    bot_token_before = await current_bot_token()
     await db.delete(provider)
     await db.commit()
 
     logger.info("Deleted notification provider: %s", name)
 
     # The bot may have been polling on this row's token, so it has to let go
-    # of it and re-read the next enabled provider, if any. A row it could not
-    # see — disabled, or not telegram at all — was never its source, and
-    # dropping the poll for it buys nothing.
-    if bot_was_reading_it:
-        from backend.app.services.telegram_bot import restart_telegram_bot
-
-        await restart_telegram_bot()
+    # of it and pick up the next enabled provider's, if any. A row the reader
+    # never returned — disabled, not telegram, or a younger enabled one — was
+    # never its source, and dropping the poll for it buys nothing.
+    await _restart_bot_if_its_token_moved(bot_token_before)
 
     return {"message": f"Notification provider '{name}' deleted"}
 

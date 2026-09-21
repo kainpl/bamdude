@@ -86,8 +86,22 @@ def get_bot() -> Bot | None:
     return _bot
 
 
-async def _get_bot_token() -> str | None:
-    """Read bot token from the first enabled Telegram notification provider."""
+async def current_bot_token() -> str | None:
+    """The token the poller runs on: the OLDEST enabled Telegram provider's.
+
+    One process runs one poller, whatever the number of Telegram providers —
+    the others still notify, over httpx with their own token
+    (``notification_service._send_telegram``), but only one bot answers
+    commands. Which one is decided here and nowhere else: the enabled
+    telegram row with the smallest id. The ``ORDER BY`` is not decoration —
+    an unordered ``LIMIT 1`` is rowid order on SQLite but, on PostgreSQL, a
+    heap scan whose order an UPDATE can move (the new tuple version lands
+    wherever there is room), so renaming the bot's own row could have handed
+    the poller to another provider on the next restart.
+
+    ``None`` means no bot should run. The provider routes compare this
+    answer before and after a save to decide whether to bounce the poller.
+    """
     from sqlalchemy import select
 
     from backend.app.core.database import async_session
@@ -100,6 +114,7 @@ async def _get_bot_token() -> str | None:
                 NotificationProvider.provider_type == "telegram",
                 NotificationProvider.enabled == True,  # noqa: E712
             )
+            .order_by(NotificationProvider.id)
             .limit(1)
         )
         provider = result.scalar_one_or_none()
@@ -142,7 +157,7 @@ async def _start_locked() -> None:
         logger.debug("Clearing a dead Telegram bot before starting a new one")
         await _discard_bot_locked(_dispatcher, _bot)
 
-    token = await _get_bot_token()
+    token = await current_bot_token()
     if not token:
         print("[TG-BOT] No Telegram bot token configured - bot not started")
         return

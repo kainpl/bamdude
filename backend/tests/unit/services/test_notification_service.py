@@ -2907,3 +2907,62 @@ class TestFilamentRunoutNotification:
         ):
             await service.on_filament_runout(1, "P1S", "A2", "pause", db)
         send.assert_not_awaited()
+
+
+class TestTelegramSendFallsThroughToHttpx:
+    """A running bot that could not hand a message over does not lose it.
+
+    ``telegram_bot.send_message`` / ``send_photo`` swallow their own exception
+    and answer ``False`` — and so does a bot whose session was closed between
+    ``get_bot()`` and the send, which is exactly the window a restart opens.
+    ``_send_telegram`` used to return "Failed to send via aiogram" there and
+    never try the direct route it takes whenever the bot is NOT running; now
+    the direct route is the fallback for that answer too.
+    """
+
+    @staticmethod
+    def _telegram_ok_response():
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"ok": True}
+        return response
+
+    @pytest.mark.asyncio
+    async def test_an_aiogram_send_that_answers_false_goes_the_direct_way(self):
+        service = NotificationService()
+        bot = MagicMock()
+        bot.token = "111:AAbot"
+        client = MagicMock()
+        client.post = AsyncMock(return_value=self._telegram_ok_response())
+
+        with (
+            patch("backend.app.services.telegram_bot.get_bot", return_value=bot),
+            patch("backend.app.services.telegram_bot.send_message", AsyncMock(return_value=False)) as aiogram_send,
+            patch.object(service, "_build_telegram_actions", AsyncMock(return_value=None)),
+            patch.object(service, "_get_client", AsyncMock(return_value=client)),
+        ):
+            ok, detail = await service._send_telegram({"bot_token": "111:AAbot", "chat_id": "42"}, "Title\nbody")
+
+        assert ok is True, detail
+        aiogram_send.assert_awaited_once()
+        client.post.assert_awaited_once()
+        assert "/bot111:AAbot/sendMessage" in client.post.await_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_a_delivered_aiogram_send_never_reaches_httpx(self):
+        service = NotificationService()
+        bot = MagicMock()
+        bot.token = "111:AAbot"
+        client = MagicMock()
+        client.post = AsyncMock(return_value=self._telegram_ok_response())
+
+        with (
+            patch("backend.app.services.telegram_bot.get_bot", return_value=bot),
+            patch("backend.app.services.telegram_bot.send_message", AsyncMock(return_value=True)),
+            patch.object(service, "_build_telegram_actions", AsyncMock(return_value=None)),
+            patch.object(service, "_get_client", AsyncMock(return_value=client)),
+        ):
+            ok, _detail = await service._send_telegram({"bot_token": "111:AAbot", "chat_id": "42"}, "Title\nbody")
+
+        assert ok is True
+        client.post.assert_not_awaited()
