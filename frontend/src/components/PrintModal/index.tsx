@@ -2902,10 +2902,14 @@ export function PrintModal({
               />
             )}
 
-            {/* Compatibility warning when sliced model doesn't match selected printer */}
+            {/* Compatibility warning when sliced model doesn't match selected printer.
+                ⚠️ `isGcodeCompatible`, never a raw `!==`: the feasibility block above
+                answers with the family mirror (an X1C plate runs on a P1S), and a
+                stricter question here would paint a yellow warning over a print the
+                machine accepts — while the block beside it says nothing at all. */}
             {!isAutoMode && slicedForModel && selectedPrinters.length === 1 && (() => {
               const selectedPrinter = printers?.find(p => p.id === selectedPrinters[0]);
-              if (selectedPrinter && selectedPrinter.model && slicedForModel !== selectedPrinter.model) {
+              if (selectedPrinter && selectedPrinter.model && !isGcodeCompatible(slicedForModel, selectedPrinter.model)) {
                 return (
                   <div className="p-3 mb-2 bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-300 dark:border-yellow-500/30 rounded-lg flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />

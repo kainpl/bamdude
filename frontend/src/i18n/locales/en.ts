@@ -204,7 +204,7 @@ export default {
       queueInsteadOfPrinting: "Add to the queue — it will wait for the right filament",
       confirmTitle: "Queue it anyway?",
       confirmBody: "The job is added and waits in the queue until a printer has what it needs.",
-      confirmBodyPrint: "The job goes to this printer's queue and waits there. Printing it now would be cancelled instead of waiting.",
+      confirmBodyPrint: "The job goes to this printer's queue and waits there. Printing it now would be cancelled instead of waiting. A file uploaded with «print and delete» stays in the library: a queued job is not the immediate print that was going to clean it up.",
       reason: {
         material_mismatch: "No compatible filament source is available.",
         variant_mismatch: "The filament variant does not match.",

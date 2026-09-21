@@ -120,6 +120,10 @@ export function filamentRequirementMatches(
   loaded: { type?: string; trayInfoIdx?: string },
 ): boolean {
   return filamentTypesCompatible(loaded.type, req.type) && !(
+    // ⚠️ `ignore_profile` first, and structurally rather than by convention:
+    // the two flags are answers to the same question and the caller that sets
+    // both must not get a profile veto it has just been told to drop.
+    !req.ignore_profile &&
     req.strict_profile_match &&
     req.tray_info_idx &&
     loaded.trayInfoIdx &&
@@ -333,10 +337,18 @@ export function isPlaceholderDate(scheduledTime: string | null | undefined): boo
  *
  * Ascending by remaining percentage, with unknown (``-1`` / absent — no RFID,
  * calibration off) pushed past the 0-100 range so it is only chosen when
- * nothing measurable qualifies. Byte-for-byte the backend's rule in
- * ``auto_queue_ams.py``: ``f.get("remain", -1) if f.get("remain", -1) >= 0 else 101``.
- * The two must agree — the backend applies it when it computes a mapping for
- * AutoQueue, the frontend when the Print dialog pins one.
+ * nothing measurable qualifies — the same ``101`` sentinel, for the same
+ * reason, as the remain component of the backend's
+ * ``print_scheduler._prefer_lowest_sort_key`` (imported by
+ * ``filament_preflight``). ⚠️ That key is a THREE-part tuple and this is only
+ * its middle: the backend tiers inventory-tracked spools ahead of MQTT-only
+ * ones and breaks the last tie by slot position, neither of which the dialog
+ * knows. So the orders agree on what this function decides and the backend may
+ * still refine further — it must never CONTRADICT it. The two are asked at
+ * different moments: the backend when routing picks the tray a channel is
+ * actually fed from, the frontend when the Print dialog RANKS the candidates
+ * it offers. An ordinary add no longer pins a mapping at all, so the dialog's
+ * answer has to be the one the printer would reach on its own.
  */
 export function remainSortKey(f: { remain?: number }): number {
   const r = f.remain ?? -1;
@@ -744,11 +756,10 @@ export function resolveBackupGroups(
 // is all this ever sees, since candidates are already inside a narrow tolerance
 // — are exactly the regime its predecessors handle worst.
 //
-// ⚠️ Written as a mirror of `backend/app/utils/color_utils.py`
-// (`perceptual_color_distance`) and kept structurally identical so the two can
-// be read side by side — but that function has no caller left in the backend,
-// so this is now the only consumer of the metric. Nothing on the server ranks
-// colours against it any more; there is no second answer to disagree with.
+// ⚠️ The frontend is the only consumer of this metric: nothing on the server
+// ranks colours perceptually any more, and the backend copy it was once
+// written to mirror has been deleted along with its last caller. There is no
+// second answer left to disagree with, so this file is the definition.
 
 const D65_WHITE: readonly [number, number, number] = [0.95047, 1.0, 1.08883];
 const LAB_DELTA = 6 / 29;

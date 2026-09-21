@@ -228,14 +228,21 @@ function previewReason(groups: RoutingPreview['plates'][number]['groups']): Feas
 export function autoFeasibility(preview: RoutingPreview | undefined): FeasibilityVerdict {
   if (!preview) return UNKNOWN;
   const advisoryUnavailable = preview.advisory_unavailable === true;
-  let worst = FEASIBLE;
+  // ⚠️ The accumulator starts EMPTY, not at `FEASIBLE`: a preview whose every
+  // plate was skipped evaluated nothing, and "nothing was evaluated" is not
+  // "everything is fine" — it is `unknown`, which is what an unevaluated farm
+  // has always been told to answer. Seeding `UNKNOWN` instead would be wrong
+  // the other way: `unknown` is WORSE than `ok` under `SEVERITY`, so it would
+  // swallow every genuine `ok` and the function could never return one.
+  let worst: FeasibilityVerdict | undefined;
   for (const plate of preview.plates) {
     // A plate that could not be read at all is already what `routingSourceReady`
     // holds the button on; it is not a compatibility answer.
     if (plate.status !== 'ok') continue;
-    worst = worstVerdict(worst, platePreviewVerdict(plate, advisoryUnavailable));
+    const verdict = platePreviewVerdict(plate, advisoryUnavailable);
+    worst = worst ? worstVerdict(worst, verdict) : verdict;
   }
-  return worst;
+  return worst ?? UNKNOWN;
 }
 
 function platePreviewVerdict(
