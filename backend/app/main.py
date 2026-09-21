@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 import os
 import re
@@ -6855,13 +6856,15 @@ async def on_print_complete(printer_id: int, data: dict):
     # change_table macro) run above this line.
     if archive_id and not _plate_auto_cleared_by_swap:
         try:
-            from backend.app.models.printer import Printer
-
-            async with async_session() as db:
-                _r = await db.execute(select(Printer.require_plate_clear).where(Printer.id == printer_id))
-                _require = _r.scalar_one_or_none()
-            if _require:
+            _armed = printer_manager.arm_awaiting_plate_clear(printer_id, archive_id)
+            # Old third-party manager adapters (and focused lifecycle tests)
+            # expose only the former synchronous setter. Production returns a
+            # coroutine and persists owner+generation before the queue moves.
+            if inspect.isawaitable(_armed):
+                _armed = await _armed
+            else:
                 printer_manager.set_awaiting_plate_clear(printer_id, True)
+            if _armed:
                 logger.info("[PLATE] Armed awaiting_plate_clear gate for printer %s", printer_id)
         except Exception as e:
             logger.warning("[PLATE] Failed to arm awaiting_plate_clear: %s", e)

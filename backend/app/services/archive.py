@@ -3142,6 +3142,15 @@ class ArchiveService:
 
         await delete_for_archive(self.db, archive_id)
 
+        # Completion receipts are disposable run-bound acknowledgements.  The
+        # model declares CASCADE, but SQLite does not enforce it in every
+        # deployment, so remove them explicitly with the hard delete.
+        from sqlalchemy import delete
+
+        from backend.app.models.print_completion_receipt import PrintCompletionReceipt
+
+        await self.db.execute(delete(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive_id))
+
         # Free-stock movements go the OTHER way: the parts this print made are
         # on a shelf and stay there (pass 8, §Invariants touched — "deleting an
         # archive does not delete its movements"), so the link is cut and the

@@ -9227,7 +9227,10 @@ export function PrintersPage() {
           // immediately before the mutation gives it the same stale-card guard
           // as the individual card instead of silently clearing a newer run.
           const waiting = await api.getWaitingPrint(id);
-          await api.clearPlate(id, { expected_archive_id: waiting.archive_id });
+          await api.clearPlate(id, {
+            expected_archive_id: waiting.archive_id,
+            expected_gate_token: waiting.gate_token ?? undefined,
+          });
         }
         else if (action === 'clearHMS') await api.clearHMSErrors(id);
         successCount++;

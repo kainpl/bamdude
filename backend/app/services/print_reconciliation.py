@@ -459,7 +459,7 @@ async def _reconcile_complete_archive(
     if archive.printer_id is not None and not swap_owed:
         from backend.app.services.printer_manager import printer_manager
 
-        printer_manager.set_awaiting_plate_clear(archive.printer_id, True)
+        await printer_manager.arm_awaiting_plate_clear(archive.printer_id, archive.id)
 
     logger.info(
         "reconcile: closed archive %s as %s%s",

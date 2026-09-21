@@ -1192,6 +1192,8 @@ export interface WaitingPrint {
   status: string;
   quantity: number;
   defective_count: number;
+  /** Opaque generation of the durable plate-clear gate, when this is a new hold. */
+  gate_token: string | null;
   parts: ArchivePart[];
 }
 
@@ -6077,6 +6079,7 @@ export interface ForecastListPage {
 export interface PlateAnswerBody {
   /** The run shown beside the controls; server refuses if another run now waits. */
   expected_archive_id?: number;
+  expected_gate_token?: string;
   defects?: DefectsWriteBody;
 }
 

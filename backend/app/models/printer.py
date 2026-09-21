@@ -165,11 +165,22 @@ class Printer(Base):
     # DB (vs the previous in-memory set) means Auto Off power cycles can't
     # silently bypass the confirmation (#961).
     awaiting_plate_clear: Mapped[bool] = mapped_column(Boolean, default=False)
+    # The boolean alone cannot distinguish an old completion card from the
+    # currently held run.  New gates persist their owner and an opaque
+    # generation token; pre-m182 gates remain deliberately ownerless.
+    awaiting_plate_clear_archive_id: Mapped[int | None] = mapped_column(
+        ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    awaiting_plate_clear_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     # Relationships
-    archives: Mapped[list["PrintArchive"]] = relationship(back_populates="printer", cascade="all, delete-orphan")
+    archives: Mapped[list["PrintArchive"]] = relationship(
+        back_populates="printer",
+        cascade="all, delete-orphan",
+        foreign_keys="PrintArchive.printer_id",
+    )
     smart_plugs: Mapped[list["SmartPlug"]] = relationship(back_populates="printer")
     # No cascade on either of these two: a plug and a sensor are physical
     # hardware that outlive the printer they were wired to, so deleting the

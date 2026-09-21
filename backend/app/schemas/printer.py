@@ -706,6 +706,9 @@ class PlateAnswerIn(BaseModel):
     # A card can sit in a chat while this printer completes another print. New
     # clients name the run they saw; old API callers retain current-hold behavior.
     expected_archive_id: int | None = Field(default=None, ge=1)
+    # Returned with a newly-owned hold. Optional keeps old API clients and
+    # ownerless gates usable; new clients send it to reject stale cards.
+    expected_gate_token: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class WaitingPrintOut(BaseModel):
@@ -714,4 +717,5 @@ class WaitingPrintOut(BaseModel):
     status: str
     quantity: int
     defective_count: int
+    gate_token: str | None = None
     parts: list[ArchivePartRow] = []

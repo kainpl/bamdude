@@ -20,6 +20,7 @@ not a leak.
 """
 
 import logging
+from contextlib import AsyncExitStack
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -155,7 +156,12 @@ async def answer_by_clearing(
 
 
 async def answer_by_repeating(
-    db: AsyncSession, printer_id: int, *, expected_archive_id: int | None = None, commit: bool = True
+    db: AsyncSession,
+    printer_id: int,
+    *,
+    expected_archive_id: int | None = None,
+    commit: bool = True,
+    source_guards: AsyncExitStack | None = None,
 ) -> PrintQueueItem | None:
     """The operator took the part off and wants another: re-arm the same row.
 
@@ -193,7 +199,14 @@ async def answer_by_repeating(
         # below touches no storage — so mapping it to the operator's own refusal
         # here cannot swallow anything else.
         try:
-            async with reusing_sources(db, [row.queue_source_id]):
+            if source_guards is None:
+                async with reusing_sources(db, [row.queue_source_id]):
+                    await _rearm(db, row, commit=commit)
+            else:
+                # The outer plate answer commits defects, receipt, gate and
+                # re-arm together.  Holding the source guard until that commit
+                # stops the collector from deleting bytes in the tiny gap.
+                await source_guards.enter_async_context(reusing_sources(db, [row.queue_source_id]))
                 await _rearm(db, row, commit=commit)
         except QueueSourceError as exc:
             raise RepeatNotPossible(

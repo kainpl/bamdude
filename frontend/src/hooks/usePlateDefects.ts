@@ -77,10 +77,15 @@ export function usePlateDefects(printerId: number, enabled: boolean): PlateDefec
   const body = (): PlateAnswerBody | undefined => {
     if (!waiting) return undefined;
     const expected_archive_id = waiting.archive_id;
-    if (!touched) return { expected_archive_id };
+    const expected_gate_token = waiting.gate_token ?? undefined;
+    if (!touched) return { expected_archive_id, expected_gate_token };
     return waiting.parts.length > 0
-      ? { expected_archive_id, defects: { parts: waiting.parts.map((p) => ({ id: p.id, defective: values[p.id] ?? 0 })) } }
-      : { expected_archive_id, defects: { defective_count: flat } };
+      ? {
+          expected_archive_id,
+          expected_gate_token,
+          defects: { parts: waiting.parts.map((p) => ({ id: p.id, defective: values[p.id] ?? 0 })) },
+        }
+      : { expected_archive_id, expected_gate_token, defects: { defective_count: flat } };
   };
 
   const afterAnswer = (ledgerRefused?: number) => {

@@ -2,6 +2,7 @@ import asyncio
 import concurrent.futures
 import logging
 import re
+import secrets
 import time
 import traceback
 from collections.abc import Callable
@@ -727,6 +728,38 @@ class PrinterManager:
             self._schedule_async(self._persist_awaiting_plate_clear(printer_id, awaiting))
             self._schedule_async(self._broadcast_status_change(printer_id))
 
+    async def arm_awaiting_plate_clear(self, printer_id: int, archive_id: int) -> str | None:
+        """Persist a new plate-clear gate before exposing it to the scheduler.
+
+        Completion used to update memory first and queue a best-effort Boolean
+        write.  A restart in that gap lost the hold, and an old card could not
+        prove which print it answered.  The database is now authoritative for
+        a newly armed gate; legacy callers can keep using the Boolean setter.
+        """
+        from backend.app.core.database import async_session
+
+        token = secrets.token_urlsafe(24)
+        async with async_session() as db:
+            printer = await db.get(Printer, printer_id)
+            if printer is None or not printer.require_plate_clear:
+                return None
+            printer.awaiting_plate_clear = True
+            printer.awaiting_plate_clear_archive_id = archive_id
+            printer.awaiting_plate_clear_token = token
+            await db.commit()
+
+        # Keep the established in-process/publication path. Its follow-up
+        # Boolean write is harmless (the committed row is already True) and
+        # preserves callers that observe this manager method in tests/plugins.
+        self.set_awaiting_plate_clear(printer_id, True)
+        return token
+
+    def confirm_awaiting_plate_clear_released(self, printer_id: int) -> None:
+        """Publish an already-committed release without another DB write."""
+        self._awaiting_plate_clear.discard(printer_id)
+        if self._loop and self._loop.is_running():
+            self._schedule_async(self._broadcast_status_change(printer_id))
+
     async def _broadcast_status_change(self, printer_id: int) -> None:
         """Emit a ``printer_status`` WebSocket update for this printer (#1128).
 
@@ -775,6 +808,9 @@ class PrinterManager:
                 printer = result.scalar_one_or_none()
                 if printer and printer.awaiting_plate_clear != awaiting:
                     printer.awaiting_plate_clear = awaiting
+                    if not awaiting:
+                        printer.awaiting_plate_clear_archive_id = None
+                        printer.awaiting_plate_clear_token = None
                     await db.commit()
         except Exception as e:  # pragma: no cover — persistence is best-effort
             logger.warning("Failed to persist awaiting_plate_clear for printer %s: %s", printer_id, e)

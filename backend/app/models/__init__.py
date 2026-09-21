@@ -20,6 +20,7 @@ from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, 
 from backend.app.models.notification import NotificationLog
 from backend.app.models.notification_template import NotificationTemplate
 from backend.app.models.orca_base_cache import OrcaBaseProfile
+from backend.app.models.print_completion_receipt import PrintCompletionReceipt
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.printer_sensor_history import PrinterSensorHistory
@@ -64,6 +65,7 @@ __all__ = [
     "AmsLabel",
     "AmsSettingAudit",
     "PrinterSettingAudit",
+    "PrintCompletionReceipt",
     "FilamentCalibration",
     "CalibrationSession",
     "CalibrationAudit",

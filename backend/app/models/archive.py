@@ -229,7 +229,7 @@ class PrintArchive(Base):
         return select(cls).where(cls.deleted_at.is_(None))
 
     # Relationships
-    printer: Mapped["Printer | None"] = relationship(back_populates="archives")
+    printer: Mapped["Printer | None"] = relationship(back_populates="archives", foreign_keys=[printer_id])
     project: Mapped["Project | None"] = relationship(back_populates="archives")
     created_by: Mapped["User | None"] = relationship()
 

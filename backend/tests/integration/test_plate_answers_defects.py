@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
+from backend.app.models.print_completion_receipt import PrintCompletionReceipt
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 
@@ -337,3 +338,46 @@ async def test_a_body_less_answer_reports_zero_refusals(async_client, printer_fa
         resp = await async_client.post(f"/api/v1/printers/{printer.id}/clear-plate")
     assert resp.status_code == 200, resp.text
     assert resp.json()["ledger_refused_parts"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_retry_returns_the_saved_completion_receipt(async_client, printer_factory, db_session):
+    """A lost HTTP response must not turn a successful clear into a 409."""
+    printer = await printer_factory()
+    archive, _row = await _finished_flat(db_session, printer, 2)
+    body = {"expected_archive_id": archive.id, "defects": {"defective_count": 1}}
+
+    with _finished_printer():
+        first = await async_client.post(f"/api/v1/printers/{printer.id}/clear-plate", json=body)
+    assert first.status_code == 200, first.text
+
+    with _finished_printer():
+        retry = await async_client.post(f"/api/v1/printers/{printer.id}/clear-plate", json=body)
+    assert retry.status_code == 200, retry.text
+    receipt = await db_session.scalar(
+        select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive.id)
+    )
+    assert receipt is not None
+    assert receipt.plate_action == "clear"
+    assert receipt.assessment == {"defective_count": 1, "parts": [], "ledger_refused_parts": []}
+
+
+@pytest.mark.asyncio
+async def test_new_gate_token_refuses_an_old_card(async_client, printer_factory, db_session):
+    printer = await printer_factory()
+    archive, row = await _finished_on(db_session, printer, {"lid": 2})
+    row_id = row.id
+    printer.awaiting_plate_clear = True
+    printer.awaiting_plate_clear_archive_id = archive.id
+    printer.awaiting_plate_clear_token = "current-token"
+    await db_session.commit()
+
+    with _finished_printer():
+        response = await async_client.post(
+            f"/api/v1/printers/{printer.id}/clear-plate",
+            json={"expected_archive_id": archive.id, "expected_gate_token": "old-token"},
+        )
+
+    assert response.status_code == 409, response.text
+    db_session.expire_all()
+    assert (await db_session.get(PrintQueueItem, row_id)).status == "completed"

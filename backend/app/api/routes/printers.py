@@ -77,7 +77,7 @@ from backend.app.services.bambu_mqtt import (
 )
 from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
-from backend.app.services.plate_answers import answer_plate_run
+from backend.app.services.plate_answers import InvalidPlateAssessment, answer_plate_run
 from backend.app.services.plate_hold import (
     RepeatNotPossible,
     StalePlateAnswer,
@@ -3253,6 +3253,7 @@ async def get_waiting_print(
         status=archive.status,
         quantity=int(archive.quantity or 0),
         defective_count=int(archive.defective_count or 0),
+        gate_token=(await db.get(Printer, printer_id)).awaiting_plate_clear_token,
         parts=[ArchivePartRow.from_row(r) for r in rows],
     )
 
@@ -3318,7 +3319,10 @@ async def clear_plate(
             action="clear",
             defects=write,
             actor_id=current_user.id if current_user else None,
+            expected_gate_token=data.expected_gate_token if data is not None else None,
         )
+    except InvalidPlateAssessment as e:
+        raise HTTPException(422, str(e)) from e
     except StalePlateAnswer as e:
         raise HTTPException(409, str(e)) from e
 
@@ -3375,7 +3379,10 @@ async def repeat_print(
             action="repeat",
             defects=write,
             actor_id=current_user.id if current_user else None,
+            expected_gate_token=data.expected_gate_token if data is not None else None,
         )
+    except InvalidPlateAssessment as e:
+        raise HTTPException(422, str(e)) from e
     except RepeatNotPossible as e:
         # Said out loud rather than queued and failed later: a failed dispatch
         # errors the whole queue, which is what this feature exists to avoid.
