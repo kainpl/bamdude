@@ -709,8 +709,11 @@ class NotificationService:
                 # message is not lost for that: it goes the direct way, on the
                 # provider's own token, exactly as it would had the bot not
                 # been running. The inline keyboard is the one thing the
-                # fallback cannot carry.
-                logger.warning("aiogram send returned no result, falling back to httpx")
+                # fallback cannot carry; a duplicate is the one thing it can
+                # do — a network error raised AFTER Telegram accepted the
+                # request reads as ``False`` too — and for an alarm channel a
+                # rare double beats a silent loss.
+                logger.warning("aiogram send did not confirm delivery, falling back to httpx")
             except Exception as e:
                 logger.warning("aiogram send failed, falling back to httpx: %s", e)
 

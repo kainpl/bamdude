@@ -886,7 +886,7 @@ class TestTelegramProviderRestarts:
     async def test_retyping_another_provider_as_telegram_restarts(
         self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
-        """An enabled row that just became telegram is what ``current_bot_token`` now reads first."""
+        """An enabled row that just became telegram is what ``current_bot_token`` now reads, there being no older one."""
         provider = await notification_provider_factory(
             provider_type="ntfy",
             enabled=True,
@@ -1009,6 +1009,13 @@ class TestTelegramProviderRestarts:
         self, async_client: AsyncClient, notification_provider_factory
     ):
         """``current_bot_token`` answers with the smallest enabled id, whatever else exists.
+
+        Pins "oldest, not youngest" — reversing the reader's ORDER BY fails
+        it. It cannot pin "ordered at all": on SQLite, where this suite runs,
+        an unordered ``LIMIT 1`` over a table scan is rowid order anyway, so
+        dropping the ORDER BY stays green here. The half of the clause with
+        real value is PostgreSQL, where an UPDATE can move the row — that is
+        the reader's docstring's argument, not this test's.
 
         ``async_client`` is requested for its side effect: it is the fixture
         that points the module-level session factory the reader opens at the

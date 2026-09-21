@@ -1,7 +1,8 @@
 """Telegram bot service using aiogram 3.x.
 
 Manages bot lifecycle, polling, and provides send methods for notifications.
-Bot token is read from the first Telegram notification provider in DB.
+Bot token is read from the oldest ENABLED Telegram notification provider in
+the DB (see ``current_bot_token``).
 """
 
 import asyncio
@@ -126,8 +127,14 @@ async def current_bot_token() -> str | None:
 
     config = provider.config
     if isinstance(config, str):
-        config = json.loads(config)
-    return config.get("bot_token")
+        try:
+            config = json.loads(config)
+        except ValueError:
+            # A row that arrived some other way than the routes (a restore, a
+            # hand edit): the routes ask this reader on every provider save,
+            # so one bad row must not turn all provider CRUD into a 500.
+            return None
+    return config.get("bot_token") if isinstance(config, dict) else None
 
 
 async def start_telegram_bot() -> None:
