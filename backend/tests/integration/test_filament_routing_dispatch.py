@@ -506,6 +506,35 @@ async def test_a_block_recorded_the_old_way_no_longer_holds_a_compatible_job(
     assert (await preflight_item(db_session, item, printer.id)).plan is not None
 
 
+async def test_the_same_old_block_still_holds_a_job_that_kept_the_profile(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """The mirror of the test above, and the reason it is not a regression.
+
+    Nothing was migrated and no latch was cleared: with the option OFF
+    ``feed_signature`` IS the snapshot's own marker, so the revision an older
+    build wrote is byte-for-byte the one this build computes, and the block goes
+    on holding. Only jobs that had been told to ignore profiles were let go.
+    """
+    item, _source, printer, _plate, _mqtt = await a_routed_job(
+        db_session, tmp_path, printer_factory, monkeypatch, allow_base_material_match=False
+    )
+    req = await read_item_requirements(db_session, item)
+    stale = fingerprint(
+        {
+            "source": req.source_identity.revision(),
+            "policy": queue_policy(item).fingerprint,
+            "snapshot": printer_manager.get_feed_snapshot(printer.id).marker,
+        }
+    )
+    item.filament_routing = json.dumps(
+        {**json.loads(item.filament_routing), "runtime": {"reason": "feed_state_changed", "blocked_revision": stale}}
+    )
+    await db_session.commit()
+    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+        await preflight_item(db_session, item, printer.id)
+
+
 async def test_a_block_recorded_the_new_way_still_holds_while_nothing_changes(
     db_session, tmp_path, printer_factory, monkeypatch
 ):

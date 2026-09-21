@@ -53,6 +53,7 @@ from backend.app.services import queue_rebalance
 from backend.app.services.auto_queue_eligibility import busy_printer_ids, find_eligible_printer, offline_candidates_for
 from backend.app.services.filament_intake import fail_auto_source, read_item_requirements
 from backend.app.services.filament_policy import auto_policy, serialize_policy
+from backend.app.services.filament_preflight import feed_signature
 from backend.app.services.filament_requirements import PrintRequirementsCache, probe_identity
 from backend.app.services.filament_routing import resolve_filament_routing
 from backend.app.services.print_option_defaults import preference_options
@@ -66,6 +67,28 @@ logger = logging.getLogger(__name__)
 
 SJF_SETTING_KEY = "queue_shortest_first"
 PREFER_LOWEST_SETTING_KEY = "prefer_lowest_filament"
+
+
+def _feed_moved(printer_id: int, policy, plan, signature: tuple[int, str] | None) -> bool:
+    """Has the feed moved since this plan was resolved — asked under its own policy?
+
+    ⚠️ Not ``plan.snapshot_marker``. That is the RAW revision, and it hashes
+    every tray's ``tray_info_idx``: re-profiling a spool between the routing pass
+    and this assignment moved it, so a job that said «any ABS will do» lost its
+    placement to a fact its own plan had been told to ignore — and the tick
+    reported it with a full ``logger.exception`` stack trace, which reads like a
+    bug because it looks like one.
+
+    ``signature`` is :func:`feed_signature` taken at plan time, when the policy
+    and that snapshot were both in hand (``EligiblePrinter.snapshot_signature``).
+    Without one — a caller that handed a plan over on its own — the raw marker is
+    the baseline, which is exactly what ``feed_signature`` answers for a policy
+    that keeps the profile.
+    """
+    current = printer_manager.get_feed_snapshot(printer_id)
+    if signature is None:
+        return current.marker != plan.snapshot_marker
+    return feed_signature(policy, current) != signature
 
 
 async def _get_bool_setting(db: AsyncSession, key: str, default: bool = False) -> bool:
@@ -175,6 +198,7 @@ class AutoQueueScheduler:
                         prefer_lowest=prefer_lowest,
                         plan=eligible.plan,
                         requirements=eligible.requirements,
+                        snapshot_signature=eligible.snapshot_signature,
                     )
                 except SourceUnavailable as exc:
                     # The nested assignment rolled back; reload its expired row
@@ -447,11 +471,14 @@ class AutoQueueScheduler:
         *,
         plan=None,
         requirements=None,
+        snapshot_signature=None,
     ) -> PrintQueueItem:
         """Copy auto item into the printer's print_queue and mark assigned.
 
-        Computes AMS mapping from current printer state (mirrors
-        upstream's "compute on dispatch" approach — overrides applied here).
+        The routing plan decides the mapping — resolved by the caller (the tick's
+        eligibility pass) or here, and revalidated below before the row is
+        claimed. ``snapshot_signature`` travels with a plan the caller resolved:
+        see :func:`_feed_moved` for why the plan's own marker is not that answer.
         """
         async with db.begin_nested():
             policy = auto_policy(item)
@@ -459,9 +486,9 @@ class AutoQueueScheduler:
             if requirements.reason in SOURCE_FAILURES:
                 raise SourceUnavailable(requirements.reason)
             if plan is None:
-                plan = resolve_filament_routing(
-                    requirements, policy, printer_manager.get_feed_snapshot(printer.id), prefer_lowest=prefer_lowest
-                ).plan
+                snapshot = printer_manager.get_feed_snapshot(printer.id)
+                plan = resolve_filament_routing(requirements, policy, snapshot, prefer_lowest=prefer_lowest).plan
+                snapshot_signature = feed_signature(policy, snapshot)
             if plan is None:
                 raise ValueError("No complete filament routing plan")
             ams_mapping_json = json.dumps(plan.mapping)
@@ -508,7 +535,7 @@ class AutoQueueScheduler:
             identity = requirements.source_identity
             current_identity = await probe_identity(identity)
             if (
-                printer_manager.get_feed_snapshot(printer.id).marker != plan.snapshot_marker
+                _feed_moved(printer.id, policy, plan, snapshot_signature)
                 or policy.fingerprint != plan.policy_fingerprint
                 or identity != current_identity
             ):
@@ -550,10 +577,7 @@ class AutoQueueScheduler:
                     raise ValueError("Auto item is no longer pending")
 
                 current_identity = await probe_identity(identity)
-                if (
-                    printer_manager.get_feed_snapshot(printer.id).marker != plan.snapshot_marker
-                    or identity != current_identity
-                ):
+                if _feed_moved(printer.id, policy, plan, snapshot_signature) or identity != current_identity:
                     raise ValueError("Filament routing evidence changed while claiming assignment")
 
                 # 4. Build the per-printer item with the target model's profile.

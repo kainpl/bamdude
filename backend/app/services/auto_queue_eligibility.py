@@ -54,6 +54,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.auto_queue_ams import _normalize_color_for_compare
 from backend.app.services.filament_intake import read_item_requirements, routing_detail
 from backend.app.services.filament_policy import auto_policy
+from backend.app.services.filament_preflight import feed_signature
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.filament_routing import resolve_filament_routing
 from backend.app.services.print_scheduler import _canonical_filament_type, scheduler
@@ -271,6 +272,13 @@ class EligiblePrinter:
     reason: str | None = None
     plan: object = None
     requirements: object = None
+    #: What "the feed has not moved" meant when this plan was resolved, read
+    #: under the item's own policy — the carrier's half of the same deal
+    #: ``DispatchRoutingGuard.snapshot_signature`` holds at the dispatch
+    #: boundary. The plan's own ``snapshot_marker`` cannot stand in for it: that
+    #: is the raw revision, and it moves on a profile retag a job with «allow
+    #: base material match» was told to ignore.
+    snapshot_signature: tuple[int, str] | None = None
 
     def __iter__(self):
         # Compatibility for callers that only display the result. Assignment
@@ -309,9 +317,11 @@ async def find_eligible_printer(
         if item.require_previous_success and not await scheduler.previous_print_succeeded(db, printer.id):
             reasons.append(f"{printer.name}: " + routing_detail("previous_print_failed")["message"])
             continue
-        result = resolve_filament_routing(
-            req, policy, printer_manager.get_feed_snapshot(printer.id), prefer_lowest=prefer_lowest
-        )
+        # Bound, not inlined: the snapshot the plan was resolved against is what
+        # the assignment's re-read is compared to, and only here are the policy
+        # and that snapshot both in hand.
+        snapshot = printer_manager.get_feed_snapshot(printer.id)
+        result = resolve_filament_routing(req, policy, snapshot, prefer_lowest=prefer_lowest)
         if result.plan is None:
             # With the facts: this line names ONE printer, so its trays can be
             # listed. Without them a farm-wide refusal reads as 24 identical
@@ -319,8 +329,10 @@ async def find_eligible_printer(
             reasons.append(f"{printer.name}: " + routing_detail(result.reason, **result.params)["message"])
             continue
         ready = scheduler._is_printer_idle(printer.id, require_plate_clear)
-        candidates.append((ready, result.plan.color_matches, -printer.id, printer, result.plan))
+        candidates.append((ready, result.plan.color_matches, -printer.id, printer, result.plan, snapshot))
     if candidates:
-        _, _, _, printer, plan = max(candidates, key=lambda c: c[:3])
-        return EligiblePrinter(printer, plan=plan, requirements=req)
+        _, _, _, printer, plan, snapshot = max(candidates, key=lambda c: c[:3])
+        return EligiblePrinter(
+            printer, plan=plan, requirements=req, snapshot_signature=feed_signature(policy, snapshot)
+        )
     return EligiblePrinter(reason=" | ".join(reasons))

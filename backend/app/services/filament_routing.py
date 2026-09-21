@@ -61,6 +61,13 @@ class RoutingPlan:
     resolved_plate_id: int
     source_revision: dict
     policy_fingerprint: str
+    #: Raw provenance: the policy-BLIND marker of the snapshot this plan was
+    #: resolved against. It is not how either boundary decides "the feed moved" —
+    #: both compare ``filament_preflight.feed_signature`` under the job's own
+    #: policy, because this revision hashes every tray's profile id and a job
+    #: told to ignore profiles must not be stopped by one. It survives as the
+    #: plan's stamp, and as the baseline of last resort for a plan handed over
+    #: without its plan-time signature (``auto_queue_scheduler._feed_moved``).
     snapshot_marker: tuple[int, str]
     assignments: dict[int, FeedSource]
     color_matches: int

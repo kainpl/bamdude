@@ -575,7 +575,14 @@ async def assign_now(
         raise HTTPException(409, reason or "No eligible printer available")
 
     try:
-        await auto_queue_scheduler._assign(db, item, printer, plan=eligible.plan, requirements=eligible.requirements)
+        await auto_queue_scheduler._assign(
+            db,
+            item,
+            printer,
+            plan=eligible.plan,
+            requirements=eligible.requirements,
+            snapshot_signature=eligible.snapshot_signature,
+        )
     except SourceUnavailable as exc:
         await db.refresh(item)
         if exc.reason in SOURCE_FAILURES:

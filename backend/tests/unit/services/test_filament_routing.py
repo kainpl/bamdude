@@ -354,6 +354,21 @@ def test_a_changed_material_never_reaches_the_plan_comparison_at_all():
     assert (result.plan, result.reason) == (None, "material_mismatch")
 
 
+def test_the_feed_signature_of_an_off_job_IS_the_snapshots_own_marker():
+    """Byte-for-byte, not merely equivalent — and two things rest on it.
+
+    A job that keeps the profile is compared exactly as it was before the
+    boundary learned about policy, so nothing re-hashes and nothing can drift;
+    and a ``blocked_revision`` recorded by an older build, which hashed the raw
+    marker, still matches such a job and keeps latching it.
+    """
+    off = RoutingPolicy(allow_base_material_match=False)
+    state = snapshot(feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL"))
+    assert feed_signature(off, state) == state.marker == (state.generation, state.revision)
+    retag = retagged(state, state.sources[0])
+    assert feed_signature(off, retag) == retag.marker, "still the raw marker once the feed has moved"
+
+
 def test_the_feed_signature_ignores_the_profile_only_when_the_option_is_on():
     source = feed(0, kind="ams", variant="GFA00", identity="THE-SPOOL")
     state = snapshot(source)

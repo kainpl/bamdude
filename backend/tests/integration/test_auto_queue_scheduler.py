@@ -212,6 +212,58 @@ class TestAutoQueueSchedulerTick:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    @pytest.mark.parametrize("allow_base_material_match,assigned", [(True, True), (False, False)])
+    async def test_a_profile_only_retag_inside_the_tick_defers_only_a_job_that_asked_for_the_profile(
+        self,
+        db_session,
+        scheduler,
+        printer_factory,
+        routing_item,
+        monkeypatch,
+        allow_base_material_match,
+        assigned,
+    ) -> None:
+        """Routing and assignment are two reads of the feed, and a spool can be
+        re-profiled between them.
+
+        ``_assign`` re-reads the feed before it claims the row. Read RAW, a
+        variant-only retag moves the marker — and for a job that said «any ABS
+        will do» that is a fact its own plan had already been told to ignore, so
+        the placement died on ``Filament routing evidence changed`` and the tick
+        logged a full stack trace for something benign. With the option off the
+        profile IS part of what the job asked for, and the refusal is right.
+        """
+        printer, pq = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
+        item = routing_item(
+            target_model="A1MINI",
+            status="pending",
+            position=1,
+            allow_base_material_match=allow_base_material_match,
+        )
+        db_session.add(item)
+        await db_session.commit()
+
+        status = _idle_status(["PLA"])
+        assign = AutoQueueScheduler._assign
+
+        async def retag_then_assign(self, db, auto_item, target, *args, **kwargs):
+            status.raw_data["ams"][0]["tray"][0]["tray_info_idx"] = "GFA01"
+            return await assign(self, db, auto_item, target, *args, **kwargs)
+
+        monkeypatch.setattr(AutoQueueScheduler, "_assign", retag_then_assign)
+        p_elig, p_sched = _patch_printer_manager({printer.id}, {printer.id: status})
+        with p_elig, p_sched:
+            await scheduler.tick()
+
+        await db_session.refresh(item)
+        rows = (
+            (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.queue_id == pq.id))).scalars().all()
+        )
+        assert (item.status == "assigned") == assigned
+        assert len(rows) == (1 if assigned else 0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_sets_waiting_reason_when_no_printer_matches(
         self, db_session, scheduler, printer_factory, routing_item
     ) -> None:

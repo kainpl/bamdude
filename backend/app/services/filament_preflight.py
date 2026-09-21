@@ -66,6 +66,14 @@ def feed_signature(policy, snapshot) -> tuple[int, str]:
     revision but not exposed on the snapshot. An overlay whose actual values
     equal the live ones is therefore invisible to this signature — and to the
     resolver too, which sees identical ``FeedSource`` rows either way.
+
+    ⚠️ In the other direction, ``backup_enabled`` makes the ON signature STRICTER
+    than the raw marker on that one axis: the revision does not hash it, this
+    does. So the first status push that fills it in between preflight and publish
+    defers an ON job once, on a fact that changed nothing about the trays. The
+    next preflight re-reads it and the job goes — accepted rather than papered
+    over, because a feed whose backup state we have only just learned is a feed
+    we were routing against half-known.
     """
     if not getattr(policy, "allow_base_material_match", False):
         return snapshot.marker
