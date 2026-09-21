@@ -8,6 +8,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
+from backend.app.models.telegram_chat import TelegramChat
+from backend.app.services.notification_service import NotificationService
+
 
 class TestNotificationsAPI:
     """Integration tests for /api/v1/notifications/ endpoints."""
@@ -308,6 +311,55 @@ class TestNotificationsAPI:
 
         # Test should still work for disabled providers
         assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_test_notification_for_telegram_uses_its_active_chats(
+        self, async_client: AsyncClient, notification_provider_factory, db_session, monkeypatch
+    ):
+        """A saved Telegram provider has chats, not a legacy config chat_id."""
+        provider = await notification_provider_factory(provider_type="telegram", config={"bot_token": "test-token"})
+        db_session.add(TelegramChat(chat_id=42, provider_id=provider.id, is_active=True, notify_events=[]))
+        await db_session.commit()
+
+        sent: list[tuple[str, int | None]] = []
+
+        async def fake_send(self, config, message, chat_id="", **kwargs):
+            sent.append((chat_id, kwargs.get("provider_id")))
+            return True, "ok"
+
+        monkeypatch.setattr(NotificationService, "_send_telegram", fake_send)
+
+        response = await async_client.post(f"/api/v1/notifications/{provider.id}/test")
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+        assert sent == [("42", provider.id)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_test_all_for_telegram_uses_its_active_chats(
+        self, async_client: AsyncClient, notification_provider_factory, db_session, monkeypatch
+    ):
+        """Regression: /test-all must not ask Telegram config for chat_id."""
+        provider = await notification_provider_factory(provider_type="telegram", config={"bot_token": "test-token"})
+        db_session.add(TelegramChat(chat_id=42, provider_id=provider.id, is_active=True, notify_events=[]))
+        await db_session.commit()
+
+        sent: list[tuple[str, int | None]] = []
+
+        async def fake_send(self, config, message, chat_id="", **kwargs):
+            sent.append((chat_id, kwargs.get("provider_id")))
+            return True, "ok"
+
+        monkeypatch.setattr(NotificationService, "_send_telegram", fake_send)
+
+        response = await async_client.post("/api/v1/notifications/test-all")
+
+        assert response.status_code == 200
+        assert response.json()["success"] == 1
+        assert response.json()["failed"] == 0
+        assert sent == [("42", provider.id)]
 
     # ========================================================================
     # Delete endpoint

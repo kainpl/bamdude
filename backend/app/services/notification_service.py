@@ -214,9 +214,23 @@ class NotificationService:
         return title, body
 
     async def send_test_notification(
-        self, provider_type: str, config: dict[str, Any], db: AsyncSession | None = None
+        self,
+        provider_type: str,
+        config: dict[str, Any],
+        db: AsyncSession | None = None,
+        *,
+        provider_id: int | None = None,
     ) -> tuple[bool, str]:
-        """Send a test notification to verify configuration."""
+        """Send a test notification to verify configuration.
+
+        A saved Telegram provider owns its recipients through
+        ``TelegramChat.provider_id``.  Testing it through the legacy
+        ``config.chat_id`` path therefore cannot work after m180: the token is
+        valid, but the provider config intentionally has no chat id.  Route
+        saved providers through their active chats instead.  The unsaved
+        configuration endpoint deliberately keeps the legacy path because it
+        has no provider (and consequently no recipient set) yet.
+        """
         if db:
             title, message = await self._build_message_from_template(db, "test", {})
         else:
@@ -233,6 +247,13 @@ class NotificationService:
             elif provider_type == "bark":
                 return await self._send_bark(config, title, message)
             elif provider_type == "telegram":
+                if provider_id is not None:
+                    return await self._send_telegram_to_chats(
+                        config,
+                        f"*{title}*\n{message}",
+                        event_type="test",
+                        provider_id=provider_id,
+                    )
                 return await self._send_telegram(config, f"*{title}*\n{message}")
             elif provider_type == "email":
                 return await self._send_email(config, title, message)
@@ -536,14 +557,24 @@ class NotificationService:
         if not chats:
             return False, "No active Telegram chats configured"
 
-        # Filter chats subscribed to this event, inside their printer scope
-        # (m157 — NULL scope = every printer, unattributed events pass for
-        # all), plus the event's own per-chat criteria, when it brought any.
-        target_chats = [
-            c
-            for c in chats
-            if c.should_notify(event_type) and c.allows_printer(printer_id) and (chat_filter is None or chat_filter(c))
-        ]
+        # A test checks delivery to every active chat of this bot; it is not a
+        # production event and must not depend on the chat's subscriptions,
+        # printer scope, quiet hours, or duration floor.  Real notifications
+        # still apply all of those filters below.
+        if event_type == "test":
+            target_chats = chats
+        else:
+            # Filter chats subscribed to this event, inside their printer
+            # scope (m157 — NULL scope = every printer, unattributed events
+            # pass for all), plus the event's own per-chat criteria, when it
+            # brought any.
+            target_chats = [
+                c
+                for c in chats
+                if c.should_notify(event_type)
+                and c.allows_printer(printer_id)
+                and (chat_filter is None or chat_filter(c))
+            ]
         if not target_chats:
             return True, f"No chats subscribed to {event_type}"
 

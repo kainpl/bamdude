@@ -281,7 +281,9 @@ async def test_all_notification_providers(
 
     for provider in providers:
         config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
-        success, message = await notification_service.send_test_notification(provider.provider_type, config, db)
+        success, message = await notification_service.send_test_notification(
+            provider.provider_type, config, db, provider_id=provider.id
+        )
 
         # Update provider status
         if success:
@@ -629,7 +631,9 @@ async def test_notification_provider(
         raise HTTPException(status_code=404, detail="Notification provider not found")
 
     config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
-    success, message = await notification_service.send_test_notification(provider.provider_type, config, db)
+    success, message = await notification_service.send_test_notification(
+        provider.provider_type, config, db, provider_id=provider.id
+    )
 
     # Update provider status
     if success:

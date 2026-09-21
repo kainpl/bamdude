@@ -16,6 +16,8 @@
 
 ### Fixed
 
+- **Telegram notification tests now reach the bot's own chats.** The saved-provider test and **Test All** still used the pre-multi-bot shape, looking for a chat id in the provider configuration even though a Telegram provider now owns recipients through its registered chats. A valid bot therefore appeared to fail its test while ordinary notifications continued to work. Each test now sends to every active chat attached to that bot, irrespective of its event choices, printer scope or quiet hours — a delivery test should prove that each recipient can be reached, not impersonate a farm event.
+
 - **Order forecasts no longer call a partly routable plan “ready”.** An order or its row now shows *Ready ≈* only when every planned print has a time estimate and a printer of its model. If a file is unknown or its model is absent, BamDude keeps the concrete count and reason but withholds both completion dates; machine-hours remain a separate total, never a calendar promise. Editing the plan's count, file or model split also marks the old farm forecast stale instead of leaving its date, proposal and machine-hours beside a different draft. The plan's time, filament and cost now follow the exact file split that will be queued. This applies both to an existing order and to **Calculate** from the File Manager.
 
 - **Queue counts update as soon as AutoQueue assigns work.** Promoting a job now refreshes its printer queue's pending and skipped counters in the same transaction. Queue cards and the summary no longer show zero waiting jobs beside visible pending rows while those jobs wait for staggered start or other dispatch checks.
