@@ -495,11 +495,11 @@ export function useFilamentMapping(
   manualMappings: Record<number, number>
 ): UseFilamentMappingResult {
   const loadedFilaments = useLoadedFilaments(printerStatus);
-  // The dispatcher will not re-derive a mapping the dialog already pinned
-  // (`_ensure_ams_mapping` returns early on a resolved one so a manual override
-  // survives), so "prefer lowest remaining filament" has to be honoured HERE or
-  // it is honoured nowhere on this path. Reads the ['settings'] query the modal
-  // already has cached.
+  // The dispatcher will not re-derive a mapping the dialog already pinned — a
+  // stored mapping is consumed as it stands by the routing plan and its
+  // preflight — so "prefer lowest remaining filament" has to be honoured HERE
+  // or it is honoured nowhere on this path. Reads the ['settings'] query the
+  // modal already has cached.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const preferLowest = settings?.prefer_lowest_filament ?? true;
 

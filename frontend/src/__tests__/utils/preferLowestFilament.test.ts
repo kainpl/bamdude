@@ -4,9 +4,9 @@
  * Back-audit finding, row D1 of 0.2.4.7->0.2.4.8. The setting was honoured only
  * by AutoQueue. On Print → pick printer → Add to queue the dialog pins a
  * mapping, and the dispatcher deliberately will NOT re-derive a mapping that is
- * already resolved (`_ensure_ams_mapping` returns early so a manual override is
- * never clobbered) — so a mapping pinned without the setting applied meant the
- * setting was silently ignored on that whole path.
+ * already resolved — a stored mapping is consumed as it stands by the routing
+ * plan and its preflight — so a mapping pinned without the setting applied
+ * meant the setting was silently ignored on that whole path.
  *
  * The rule mirrors the backend (`auto_queue_ams.py`): sort the candidate pool
  * ascending by `remain`, unknown (-1) last, and let each match tier pick the

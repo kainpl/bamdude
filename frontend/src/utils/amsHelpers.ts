@@ -359,10 +359,9 @@ export function sortByRemainAscending<T extends { remain?: number }>(items: T[])
  *
  * ``preferLowest`` mirrors the ``prefer_lowest_filament`` setting. It matters
  * here because the dispatcher will NOT re-derive a mapping the Print dialog
- * already pinned — ``_ensure_ams_mapping`` returns early on a resolved mapping
- * so a manual override is never clobbered — so if this function ignores the
- * setting, the setting is simply ignored on the whole Print → pick printer →
- * Add to queue path.
+ * already pinned — a stored mapping is consumed as it stands by the routing
+ * plan and its preflight — so if this function ignores the setting, the setting
+ * is simply ignored on the whole Print → pick printer → Add to queue path.
  */
 export function autoMatchFilament(
   req: FilamentMatchRequirement & { nozzle_id?: number | null },
@@ -745,9 +744,11 @@ export function resolveBackupGroups(
 // is all this ever sees, since candidates are already inside a narrow tolerance
 // — are exactly the regime its predecessors handle worst.
 //
-// ⚠️ Mirrored from `backend/app/utils/color_utils.py` (`perceptual_color_distance`),
-// kept structurally identical so the two can be read side by side. They MUST
-// agree: this dialog must not promise a spool the scheduler would not pick.
+// ⚠️ Written as a mirror of `backend/app/utils/color_utils.py`
+// (`perceptual_color_distance`) and kept structurally identical so the two can
+// be read side by side — but that function has no caller left in the backend,
+// so this is now the only consumer of the metric. Nothing on the server ranks
+// colours against it any more; there is no second answer to disagree with.
 
 const D65_WHITE: readonly [number, number, number] = [0.95047, 1.0, 1.08883];
 const LAB_DELTA = 6 / 29;
