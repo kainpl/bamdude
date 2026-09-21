@@ -177,6 +177,23 @@ def test_fleet_capacity_uses_available_model_instead_of_absent_faster_recipe():
     assert [(row.plate_id, row.count) for row in plan.lines[0].rows] == [(2, 26)]
 
 
+def test_fleet_capacity_uses_all_models_to_reduce_finish_waves():
+    """A slow, high-yield plate does not strand six faster lanes unused."""
+    part = _part(1, 10, "leg", 1)
+    line = _line(100, 10, 925)
+    ctx = _ctx([line], [part])
+    p1s = _cand(1, 10, {1: 80}, secs=13 * 3600 + 5 * 60, model="P1S")
+    a1 = _cand(2, 10, {1: 36}, secs=8 * 3600 + 7 * 60, model="A1MINI")
+    capacity = FleetCapacity(
+        [*(FleetMachine(i, "P1S") for i in range(1, 6)), *(FleetMachine(i, "A1 mini") for i in range(6, 12))]
+    )
+    plan = plan_lines(ctx, {line.id: _figs(line, [part], {1: 925})}, {10: [p1s, a1]}, {}, None, capacity)
+    # 15 A1 prints are three parallel waves (24h21) and five P1S prints fit in
+    # one; the older useful/hour-only rule mostly filled P1S and needed three
+    # of their 13h05 waves instead.
+    assert {row.plate_id: row.count for row in plan.lines[0].rows} == {2: 15, 1: 5}
+
+
 def test_fleet_capacity_accounts_for_load_shared_by_order_lines():
     """A later line sees the A1 already reserved by the earlier one."""
     first, second = _part(1, 10, "first", 1), _part(2, 20, "second", 1)
