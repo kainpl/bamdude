@@ -148,7 +148,12 @@ async def test_create_order_with_lines_and_read_figures(committing_client, db_se
     body = r.json()
     pid, line = body["id"], body["lines"][0]
     assert body["customer_name"] == "ACME" and line["quantity"] == 3 and line["units_printed"] == 0
-    assert body["figures"]["ordered"] == 3 and body["figures"]["all_printed"] is False
+    assert line["covered_units"] == 0
+    assert (
+        body["figures"]["ordered"] == 3
+        and body["figures"]["covered_units"] == 0
+        and body["figures"]["all_printed"] is False
+    )
 
     await _completed_print(db_session, pid, catalog["file"].id, line_id=line["id"])
     await _completed_print(db_session, pid, catalog["file"].id, defective_arms=1)  # implicit: plate + material
@@ -168,6 +173,44 @@ async def test_create_order_with_lines_and_read_figures(committing_client, db_se
         f"/api/v1/projects/{pid}/procurement/{catalog['screw'].id}", json={"quantity_acquired": 8}
     )
     assert r.json()["procurement"][0]["acquired"] == 8 and r.json()["figures"]["complete"] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_and_detail_cap_coverage_per_line_before_summing(committing_client, db_session, catalog):
+    """The public wire must not let a surplus under line A cover line B.
+
+    The two completed archives are explicitly filed under the one-unit line,
+    so the raw history correctly says two printed while only one ordered unit is
+    covered and two sibling units are still missing.
+    """
+    created = (
+        await committing_client.post(
+            "/api/v1/projects/",
+            json={
+                "name": "Per-line coverage",
+                "lines": [
+                    {"product_id": catalog["product"].id, "quantity": 1},
+                    {"product_id": catalog["product"].id, "quantity": 2},
+                ],
+            },
+        )
+    ).json()
+    pid, first_line = created["id"], created["lines"][0]["id"]
+    await _completed_print(db_session, pid, catalog["file"].id, line_id=first_line)
+    await _completed_print(db_session, pid, catalog["file"].id, line_id=first_line)
+
+    detail = (await committing_client.get(f"/api/v1/projects/{pid}")).json()
+    assert [line["covered_units"] for line in detail["lines"]] == [1, 0]
+    assert (
+        detail["figures"]["ordered"],
+        detail["figures"]["printed"],
+        detail["figures"]["covered_units"],
+        detail["figures"]["remaining"],
+        detail["figures"]["progress"],
+    ) == (3, 2, 1, 2, round(1 / 3, 4))
+
+    listed = next(row for row in (await committing_client.get("/api/v1/projects/")).json() if row["id"] == pid)
+    assert (listed["covered_units"], listed["remaining"], listed["progress"]) == (1, 2, round(1 / 3, 4))
 
 
 @pytest.mark.asyncio
@@ -1778,15 +1821,29 @@ async def test_the_orders_list_reports_what_each_order_page_reports(committing_c
 
     rows = {r["name"]: r for r in (await committing_client.get("/api/v1/projects/")).json()}
     live, dead = rows["Parity live order"], rows["Parity cancelled order"]
-    assert (live["ordered"], live["printed"], live["progress"]) == (3, 4, 1.0)
-    assert (dead["ordered"], dead["printed"], dead["progress"]) == (1, 0, 0.0)
+    assert (live["ordered"], live["printed"], live["covered_units"], live["remaining"], live["progress"]) == (
+        3,
+        4,
+        3,
+        0,
+        1.0,
+    )
+    assert (dead["ordered"], dead["printed"], dead["covered_units"], dead["remaining"], dead["progress"]) == (
+        1,
+        0,
+        0,
+        1,
+        0.0,
+    )
     assert (live["lines_count"], dead["lines_count"]) == (2, 1)
 
     for row, project_id in ((live, ids["live"]), (dead, ids["dead"])):
         figures = (await committing_client.get(f"/api/v1/projects/{project_id}")).json()["figures"]
-        assert (row["ordered"], row["printed"], row["progress"]) == (
+        assert (row["ordered"], row["printed"], row["covered_units"], row["remaining"], row["progress"]) == (
             figures["ordered"],
             figures["printed"],
+            figures["covered_units"],
+            figures["remaining"],
             figures["progress"],
         )
 
@@ -3051,6 +3108,12 @@ async def test_the_list_and_the_order_page_report_the_same_kits(committing_clien
     detail = (await committing_client.get(f"/api/v1/projects/{order_id}")).json()
 
     assert listed["from_stock_units"] == detail["figures"]["from_stock_units"] == 3
+    assert (listed["covered_units"], listed["remaining"], listed["progress"]) == (3, 3, 0.5)
+    assert (listed["covered_units"], listed["remaining"], listed["progress"]) == (
+        detail["figures"]["covered_units"],
+        detail["figures"]["remaining"],
+        detail["figures"]["progress"],
+    )
 
 
 async def _balances_by_name(db, product_id: int) -> dict[str, int]:

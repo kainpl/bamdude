@@ -141,6 +141,9 @@ class LineFigures:
     material: str | None
     units_printed: int = 0
     from_stock_units: int = 0
+    #: Units this line has covered with printed kits and its allocated stock.
+    #: Unlike both sources, it can never cover more than the line asks for.
+    covered_units: int = 0
     progress: float = 0.0
     parts: list[PartFigures] = field(default_factory=list)
     archive_ids: list[int] = field(default_factory=list)
@@ -163,6 +166,10 @@ class ProcurementFigures:
 class ProjectFigures:
     ordered: int = 0
     printed: int = 0
+    #: Sum of every line's capped ``covered_units``.  This is deliberately not
+    #: a cap applied after adding the order's raw sources: a surplus on one
+    #: line must not hide a shortage on another.
+    covered_units: int = 0
     complete: int = 0
     remaining: int = 0
     total_time_seconds: int = 0
@@ -455,8 +462,8 @@ def _finish(figs: LineFigures) -> None:
     # a unit the order has, so a fully reserved line reads 100 % with nothing
     # printed. ``units_printed`` stays prints only — the two numbers are shown
     # side by side and must not be one number that quietly means both.
-    done = figs.units_printed + figs.from_stock_units
-    figs.progress = min(1.0, round(done / figs.quantity, 4)) if figs.quantity else 0.0
+    figs.covered_units = min(figs.quantity, figs.units_printed + figs.from_stock_units)
+    figs.progress = round(figs.covered_units / figs.quantity, 4) if figs.quantity else 0.0
 
 
 def line_accepts_materials(line: ProjectLine, materials: set[str]) -> bool:
@@ -680,6 +687,7 @@ def project_figures(
     for figs in line_figures.values():
         pf.ordered += figs.quantity
         pf.printed += figs.units_printed
+        pf.covered_units += figs.covered_units
         # Kits off the shelf are units the order HAS, so they enter ``complete``
         # (still gated by the purchased parts — a kit with no screws assembles
         # into nothing) and every "still needed" figure below. Only ``printed``
@@ -702,7 +710,7 @@ def project_figures(
         # lights over an order it then reports "nothing to bank" for.
         pf.bankable_surplus += sum(p.bankable for p in figs.parts)
     pf.complete = sum(_units_complete(ctx, pid, printed) for pid, printed in printed_by_product.items())
-    pf.remaining = max(0, pf.ordered - pf.printed - pf.from_stock_units)
+    pf.remaining = pf.ordered - pf.covered_units
     for a in ctx.archives:
         pf.total_time_seconds += int(a.actual_time_seconds or a.print_time_seconds or 0)
         pf.total_filament_grams += float(a.filament_used_grams or 0)
@@ -719,14 +727,12 @@ def project_figures(
     # Capped for the same reason a line's is (see ``_finish``): ``printed`` and
     # ``ordered`` sit beside it uncapped, so an overprinted order still reads
     # "5 of 3" while its bar stays full rather than overflowing its track.
-    pf.progress = min(1.0, round((pf.printed + pf.from_stock_units) / pf.ordered, 4)) if pf.ordered else 0.0
+    pf.progress = round(pf.covered_units / pf.ordered, 4) if pf.ordered else 0.0
     pf.other_prints_count = len(other)
     # ⚠️ ``all_printed`` is what the close-the-order banner reads, so a line
     # covered entirely from stock must satisfy it — otherwise an order that
     # needs no further print never suggests closing.
-    pf.all_printed = bool(line_figures) and all(
-        f.units_printed + f.from_stock_units >= f.quantity for f in line_figures.values()
-    )
+    pf.all_printed = bool(line_figures) and all(f.covered_units >= f.quantity for f in line_figures.values())
     return pf
 
 
@@ -770,6 +776,8 @@ class GroupedOrderFigures:
     project_id: int
     ordered: int
     printed: int
+    covered_units: int
+    remaining: int
     progress: float
     total_cost: float
     #: The order's kits off the shelf, ALREADY CAPPED per line — literally
@@ -966,6 +974,8 @@ async def grouped_figures(
                 project_id=ctx.project.id,
                 ordered=pf.ordered,
                 printed=pf.printed,
+                covered_units=pf.covered_units,
+                remaining=pf.remaining,
                 progress=pf.progress,
                 total_cost=pf.total_cost,
                 from_stock_units=pf.from_stock_units,

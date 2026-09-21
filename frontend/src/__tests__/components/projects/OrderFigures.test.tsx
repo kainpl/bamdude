@@ -7,6 +7,7 @@ import { OrderFigures } from '../../../components/projects/OrderFigures';
 const FIGURES = {
   ordered: 0,
   printed: 0,
+  covered_units: 0,
   complete: 0,
   remaining: 0,
   total_time_seconds: 0,
@@ -39,6 +40,7 @@ describe('OrderFigures', () => {
         figures={{
           ordered: 10,
           printed: 4,
+          covered_units: 4,
           complete: 3,
           remaining: 6,
           total_time_seconds: 5400,
@@ -83,6 +85,7 @@ describe('OrderFigures', () => {
         figures={{
           ordered: 10,
           printed: 4,
+          covered_units: 4,
           complete: 3,
           remaining: 6,
           total_time_seconds: 5400,
@@ -100,8 +103,8 @@ describe('OrderFigures', () => {
         }}
       />,
     );
-    expect(screen.getByText('Printing').nextSibling).toHaveTextContent('2');
-    expect(screen.getByText('Queued').nextSibling).toHaveTextContent('3');
+    expect(screen.getByText('Printing (prints)').nextSibling).toHaveTextContent('2');
+    expect(screen.getByText('Queued (jobs)').nextSibling).toHaveTextContent('3');
   });
   it('shows what came off the shelf beside the printed count, and only when there is any', () => {
     // Pass 8, Decision 5. `ordered` and `printed` stay literal — the customer
@@ -111,6 +114,7 @@ describe('OrderFigures', () => {
     const figures = {
       ordered: 10,
       printed: 4,
+      covered_units: 7,
       complete: 3,
       remaining: 3,
       total_time_seconds: 0,
@@ -128,9 +132,23 @@ describe('OrderFigures', () => {
     };
     const { rerender } = render(<OrderFigures figures={figures} />);
     expect(screen.getByText('From stock')).toBeInTheDocument();
+    expect(screen.getByTestId('order-progress')).toHaveTextContent('7 / 10');
+    expect(screen.getByTestId('order-coverage-sources')).toHaveTextContent('4 printed · 3 from stock');
+    expect(screen.getByText('Printed kits and allocated stock; purchased components are counted separately.')).toBeInTheDocument();
 
     rerender(<OrderFigures figures={{ ...figures, from_stock_units: 0 }} />);
     expect(screen.queryByText('From stock')).not.toBeInTheDocument();
+  });
+
+  it('uses the server coverage rather than raw prints for a mixed-product order', () => {
+    // Four prints of one product must not fill an order that still lacks three
+    // units of another product. The server owns that per-line cap.
+    render(
+      <OrderFigures figures={{ ...FIGURES, ordered: 4, printed: 4, covered_units: 1, remaining: 3, progress: 0.25 }} />,
+    );
+
+    expect(screen.getByTestId('order-progress')).toHaveTextContent('1 / 4');
+    expect(screen.getByTestId('order-progress-fill')).toHaveStyle({ width: '25%' });
   });
 
   it('keeps machine hours and the concrete reason, but not a ready date, for an incomplete forecast', () => {

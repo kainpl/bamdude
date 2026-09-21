@@ -376,7 +376,29 @@ def test_progress_never_exceeds_one_however_far_a_line_is_overprinted():
     assert figs[100].units_printed == 3 and figs[100].parts[0].surplus == 2  # the excess still shows
     assert figs[100].progress == 1.0
     pf = project_figures(ctx, figs, other)
-    assert pf.printed == 3 and pf.ordered == 1 and pf.progress == 1.0
+    assert pf.printed == 3 and pf.covered_units == 1 and pf.ordered == 1 and pf.progress == 1.0
+
+
+def test_order_coverage_caps_each_line_before_sum_even_for_print_surplus():
+    """One product's extras cannot make another product look covered.
+
+    The raw `printed` total intentionally remains four: it is the production
+    record.  Coverage is an order-fulfilment metric, so only the one unit its
+    own line asks for can enter it while the three-unit sibling stays missing.
+    """
+    parts = [_part(1, 10, "a", 1), _part(2, 20, "b", 1)]
+    lines = [_line(100, 10, 1, sort=0), _line(101, 20, 3, sort=1)]
+    archives = [_archive(i, file_id=5, plate=1) for i in range(1, 5)]
+    ap = {i: [_ap(i, "a", 1)] for i in range(1, 5)}
+    ctx = _ctx(lines, parts, archives, ap, {(5, 1): 10})
+
+    figs, other = attribute(ctx)
+    pf = project_figures(ctx, figs, other)
+
+    assert figs[100].units_printed == 4 and figs[100].covered_units == 1
+    assert figs[101].units_printed == figs[101].covered_units == 0
+    assert (pf.ordered, pf.printed, pf.covered_units, pf.remaining, pf.progress) == (4, 4, 1, 3, 0.25)
+    assert pf.all_printed is False
 
 
 # ---------- the batched figures (pass 6): one loader, the same arithmetic ----------
@@ -884,7 +906,7 @@ def test_the_order_level_sum_caps_each_line_at_what_it_ordered():
     pf = project_figures(ctx, figs, other)
 
     assert figs[100].from_stock_units == 5, "the line still reports what the ledger holds"
-    assert (pf.ordered, pf.printed, pf.from_stock_units) == (11, 0, 1)
+    assert (pf.ordered, pf.printed, pf.covered_units, pf.from_stock_units) == (11, 0, 1, 1)
     assert pf.complete == 1 and pf.remaining == 10
     assert pf.progress == round(1 / 11, 4)
     assert pf.all_printed is False, "the ten-unit line has printed nothing"

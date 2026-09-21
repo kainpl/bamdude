@@ -56,10 +56,10 @@ export function OrderFigures({
         {figures.from_stock_units > 0 && (
           <Tile label={t('stock.figures.fromStock')} value={figures.from_stock_units} />
         )}
-        <Tile label={t('orders.figures.complete')} value={figures.complete} />
+        <Tile label={t('orders.figures.assemblyReady')} value={figures.complete} />
         <Tile label={t('orders.figures.remaining')} value={figures.remaining} />
-        <Tile label={t('orders.figures.printing')} value={figures.prints_in_progress} />
-        <Tile label={t('orders.figures.queued')} value={figures.prints_queued} />
+        <Tile label={t('orders.figures.printingPrints')} value={figures.prints_in_progress} />
+        <Tile label={t('orders.figures.queuedJobs')} value={figures.prints_queued} />
         <Tile label={t('orders.figures.time')} value={hoursMinutes(figures.total_time_seconds)} />
         <Tile label={t('orders.figures.grams')} value={figures.total_filament_grams.toFixed(1)} />
         <Tile
@@ -107,12 +107,20 @@ export function OrderFigures({
       */}
       <div data-testid="order-progress-area">
         <ProgressBar
-          value={figures.printed}
+          value={figures.covered_units}
           max={figures.ordered}
-          label={t('orders.figures.progress')}
+          progress={figures.progress}
+          label={t('orders.figures.coverage')}
           testId="order-progress"
         />
       </div>
+
+      {figures.from_stock_units > 0 && (
+        <p className="text-xs text-bambu-gray tabular-nums" data-testid="order-coverage-sources">
+          {t('orders.figures.coverageSources', { printed: figures.printed, stock: figures.from_stock_units })}
+        </p>
+      )}
+      <p className="text-xs text-bambu-gray">{t('orders.figures.coverageHint')}</p>
 
       {figures.other_prints_count > 0 && (
         <p className="text-xs text-bambu-gray">

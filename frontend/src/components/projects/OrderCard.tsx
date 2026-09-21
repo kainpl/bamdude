@@ -184,7 +184,13 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
             </p>
           )}
 
-          <ProgressBar value={order.printed} max={order.ordered} testId={`order-${order.id}-progress`} />
+          <ProgressBar
+            value={order.covered_units}
+            max={order.ordered}
+            progress={order.progress}
+            label={t('orders.card.covered')}
+            testId={`order-${order.id}-progress`}
+          />
 
           {/* Beside the printed count, and only when there is something to say
               (pass 8, Decision 5). `printed` stays literal — the farm printed
@@ -193,7 +199,13 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
               say, and `&&` would render the 0 itself. */}
           {order.from_stock_units > 0 && (
             <p className="text-xs text-bambu-gray" data-testid={`order-${order.id}-from-stock`}>
-              {t('stock.order.fromStock', { n: order.from_stock_units })}
+              {t('orders.card.coverageSources', { printed: order.printed, stock: order.from_stock_units })}
+            </p>
+          )}
+
+          {order.remaining > 0 && (
+            <p className="text-xs text-bambu-gray" data-testid={`order-${order.id}-remaining`}>
+              {t('orders.card.remaining', { count: order.remaining })}
             </p>
           )}
 

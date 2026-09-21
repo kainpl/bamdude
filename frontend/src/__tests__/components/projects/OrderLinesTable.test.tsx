@@ -79,6 +79,7 @@ const order = {
       sort_order: 1,
       units_printed: 4,
       from_stock_units: 0,
+      covered_units: 4,
       progress: 1,
       archive_ids: [],
       parts: [],
@@ -94,7 +95,8 @@ const order = {
       sort_order: 0,
       units_printed: 1,
       from_stock_units: 2,
-      progress: 0.5,
+      covered_units: 2,
+      progress: 1,
       archive_ids: [],
       parts: [
         { part_id: 1, name: 'flask', qty_per_unit: 1, need: 2, usable: 1, in_progress: 0, remaining: 1, surplus: 0 },
@@ -112,7 +114,8 @@ describe('OrderLinesTable', () => {
     render(<OrderLinesTable order={order} canEdit />);
     const rows = screen.getAllByRole('row').filter((r) => r.getAttribute('data-line'));
     expect(rows.map((r) => r.getAttribute('data-line'))).toEqual(['10', '11']);
-    expect(screen.getByText('1 / 2')).toBeInTheDocument();
+    expect(screen.getByText('2 / 2')).toBeInTheDocument();
+    expect(screen.getByTestId('line-10-coverage-sources')).toHaveTextContent('1 printed · 2 from stock');
     fireEvent.click(screen.getByTestId('line-10-expand'));
     expect(screen.getByText('flask')).toBeInTheDocument();
     expect(screen.getByTestId('part-1-remaining').textContent).toBe('1');
@@ -240,7 +243,7 @@ describe('OrderLinesTable', () => {
       ),
     } as unknown as Order;
     render(<OrderLinesTable order={withLive} canEdit />);
-    expect(screen.getByTestId('line-10-live')).toHaveTextContent('printing 1 · queued 1');
+    expect(screen.getByTestId('line-10-live')).toHaveTextContent('printing 1 print(s) · queued 1 job(s)');
     const row11 = screen.getByTestId('line-11-expand').closest('tr') as HTMLElement;
     expect(screen.queryByTestId('line-11-live')).not.toBeInTheDocument();
     expect(strayZeroTextNodes(row11)).toHaveLength(0);

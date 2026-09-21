@@ -1,6 +1,8 @@
 interface ProgressBarProps {
   value: number;
   max: number;
+  /** Server-calculated fraction, when `value / max` has a different meaning. */
+  progress?: number;
   label?: string;
   testId?: string;
 }
@@ -14,9 +16,13 @@ interface ProgressBarProps {
  * inside this component: a caller that prints its own numbers beside the bar is
  * the second source of truth this component exists to remove.
  */
-export function ProgressBar({ value, max, label, testId = 'progress' }: ProgressBarProps) {
+export function ProgressBar({ value, max, progress, label, testId = 'progress' }: ProgressBarProps) {
   if (max <= 0) return null;
-  const pct = Math.min(100, Math.round((value / max) * 100));
+  // Keep the server's fractional result exact.  Rounding 0.9999 to 100 would
+  // make an unfinished order look complete, even though its caption says so.
+  const pct = progress == null
+    ? Math.min(100, Math.round((value / max) * 100))
+    : Math.min(100, Math.max(0, progress * 100));
   return (
     <div data-testid={testId} className="space-y-1">
       <div className="flex items-center justify-between text-xs text-bambu-gray">

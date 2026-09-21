@@ -131,6 +131,7 @@ const ORDER_STUB: Order = {
     progress: 0,
     other_prints_count: 0,
     all_printed: false,
+    covered_units: 0,
     from_stock_units: 0,
     bankable_surplus: 0,
     prints_in_progress: 0,

@@ -1619,6 +1619,8 @@ export interface ProjectLine {
    *  kits_available)` — and not what the dialog asked for. `units_printed`
    *  stays prints only; "done" is the two added, which is what `progress` is. */
   from_stock_units: number;
+  /** Printed-and-stock coverage, capped at this line's quantity. */
+  covered_units: number;
   progress: number;
   parts: PartFigures[];
   /** Archives attributed to this line, in processing order. One archive can
@@ -1664,6 +1666,8 @@ export interface ProcurementRow {
 export interface ProjectFigures {
   ordered: number;
   printed: number;
+  /** Sum of each line's capped printed-and-stock coverage. */
+  covered_units: number;
   complete: number;
   remaining: number;
   total_time_seconds: number;
@@ -1735,6 +1739,8 @@ export interface OrderListItem {
   lines_count: number;
   ordered: number;
   printed: number;
+  covered_units: number;
+  remaining: number;
   progress: number;
   /**
    * Kits taken off free stock across the order (pass 8, Decision 5) — shown on

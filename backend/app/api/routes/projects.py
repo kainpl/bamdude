@@ -160,6 +160,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
             sort_order=line.sort_order,
             units_printed=figs[line.id].units_printed,
             from_stock_units=figs[line.id].from_stock_units,
+            covered_units=figs[line.id].covered_units,
             progress=figs[line.id].progress,
             parts=[
                 PartFiguresOut(
@@ -282,6 +283,8 @@ async def list_projects(
                 lines_count=len(project.lines),
                 ordered=pf.ordered,
                 printed=pf.printed,
+                covered_units=pf.covered_units,
+                remaining=pf.remaining,
                 # Off the same batch as ``ordered``/``printed``/``progress``,
                 # already capped per line by ``project_figures`` — no second
                 # query and no second copy of the cap rule.

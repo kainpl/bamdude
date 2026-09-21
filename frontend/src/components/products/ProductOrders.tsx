@@ -44,7 +44,7 @@ export function ProductOrders({ productId }: { productId: number }) {
               {order.customer_name && <span className="text-sm text-bambu-gray truncate">{order.customer_name}</span>}
               <StatusBadge status={order.status} />
               <div className="ml-auto w-40">
-                <ProgressBar value={order.printed} max={order.ordered} testId={`product-order-${order.id}-progress`} />
+                <ProgressBar value={order.covered_units} max={order.ordered} progress={order.progress} label={t('orders.card.covered')} testId={`product-order-${order.id}-progress`} />
               </div>
             </div>
           ))}

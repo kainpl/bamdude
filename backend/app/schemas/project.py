@@ -203,6 +203,9 @@ class ProjectLineResponse(BaseModel):
     # dialog asked for. ``units_printed`` stays prints only; "done" is the two
     # added, which is what ``progress`` already is.
     from_stock_units: int = 0
+    #: Capped printed-plus-stock coverage for this line.  A production surplus
+    #: stays visible in ``units_printed`` but cannot overfill this number.
+    covered_units: int
     # 0.0–1.0, capped server-side (``order_metrics._finish`` /
     # ``project_figures``). An overprinted line reports its excess through
     # ``units_printed`` and each part's ``surplus``, never through this.
@@ -229,6 +232,7 @@ class ProcurementOut(BaseModel):
 class ProjectFiguresOut(BaseModel):
     ordered: int
     printed: int
+    covered_units: int
     complete: int
     remaining: int
     total_time_seconds: int
@@ -300,6 +304,8 @@ class ProjectListResponse(BaseModel):
     lines_count: int
     ordered: int
     printed: int
+    covered_units: int
+    remaining: int
     # Kits this order took off its products' free stock, capped per line and
     # summed — the same number the order page's figures carry, so a card and
     # the page it opens cannot disagree about what is already done. Beside

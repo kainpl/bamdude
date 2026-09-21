@@ -14,11 +14,11 @@ vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
   return { ...actual, useAuth: () => ({ ...actual.useAuth(), hasPermission: () => true }) };
 });
 
-const base: OrderListItem = { id: 1, name: 'Ten flasks', customer_id: 2, customer_name: 'ACME', color: '#00ae42', status: 'active', due_date: null, priority: 'normal', price: 120, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z', lines_count: 2, ordered: 10, printed: 4, from_stock_units: 0, progress: 0.4, prints_in_progress: 0, prints_queued: 0, line_products: [{ product_id: 11, has_cover: true }, { product_id: 12, has_cover: false }] };
+const base: OrderListItem = { id: 1, name: 'Ten flasks', customer_id: 2, customer_name: 'ACME', color: '#00ae42', status: 'active', due_date: null, priority: 'normal', price: 120, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00Z', lines_count: 2, ordered: 10, printed: 4, covered_units: 4, remaining: 6, from_stock_units: 0, progress: 0.4, prints_in_progress: 0, prints_queued: 0, line_products: [{ product_id: 11, has_cover: true }, { product_id: 12, has_cover: false }] };
 const noop = () => {};
 
 describe('OrderCard', () => {
-  it('shows printed / ordered from the server and links to the order', () => {
+  it('shows covered / ordered from the server and links to the order', () => {
     render(<OrderCard order={base} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
     expect(screen.getByText('4 / 10')).toBeInTheDocument();
     expect(screen.getByRole('link')).toHaveAttribute('href', '/projects/1');
@@ -35,8 +35,10 @@ describe('OrderCard', () => {
     // Pass 8, Decision 5 + Ruling 21: `ProjectListResponse` carries the order's
     // own capped sum, so the card reads it directly. `printed` stays literal —
     // the farm printed four — and this is the other half of "done".
-    render(<OrderCard order={{ ...base, from_stock_units: 3 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
-    expect(screen.getByTestId('order-1-from-stock')).toHaveTextContent('from stock 3');
+    render(<OrderCard order={{ ...base, from_stock_units: 3, covered_units: 7, remaining: 3, progress: 0.7 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    expect(screen.getByTestId('order-1-from-stock')).toHaveTextContent('4 printed · 3 from stock');
+    expect(screen.getByTestId('order-1-progress')).toHaveTextContent('7 / 10');
+    expect(screen.getByTestId('order-1-remaining')).toHaveTextContent('3 left to cover');
   });
   it('shows nothing, and no bare zero, for an order that reserved none', () => {
     // A zero is not "no stock reserved, shown as 0" — it is nothing at all, and
@@ -62,7 +64,7 @@ describe('OrderCard', () => {
   });
   it('shows what is printing and queued right now, and nothing when both are zero', () => {
     const { rerender } = render(<OrderCard order={{ ...base, prints_in_progress: 2, prints_queued: 3 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
-    expect(screen.getByTestId('order-1-live')).toHaveTextContent('printing 2 · queued 3');
+    expect(screen.getByTestId('order-1-live')).toHaveTextContent('printing 2 print(s) · queued 3 job(s)');
 
     rerender(<OrderCard order={{ ...base, prints_in_progress: 0, prints_queued: 0 }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
     expect(screen.queryByText(/printing/)).not.toBeInTheDocument();

@@ -355,7 +355,10 @@ export function OrderLinesTable({ order, canEdit }: OrderLinesTableProps) {
                     )}
                   </td>
                   <td className="p-2">
-                    <ProgressBar value={line.units_printed} max={line.quantity} testId={`line-${line.id}-progress`} />
+                    <ProgressBar value={line.covered_units} max={line.quantity} progress={line.progress} testId={`line-${line.id}-progress`} />
+                    <p className="text-xs text-bambu-gray mt-1 tabular-nums" data-testid={`line-${line.id}-coverage-sources`}>
+                      {t('orders.lines.coverageSources', { printed: line.units_printed, stock: line.from_stock_units })}
+                    </p>
                     {(line.prints_in_progress > 0 || line.prints_queued > 0) && (
                       <p className="text-xs text-bambu-gray mt-1" data-testid={`line-${line.id}-live`}>
                         {t('orders.lines.live', { printing: line.prints_in_progress, queued: line.prints_queued })}

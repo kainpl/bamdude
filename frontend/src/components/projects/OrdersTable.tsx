@@ -11,8 +11,6 @@ import { etaFull, etaShort, hoursMinutes } from '../../utils/forecast';
 
 type SortKey = 'name' | 'due' | 'progress' | 'remaining' | 'printing' | 'queued' | 'ready' | 'hours';
 
-const remaining = (o: OrderListItem) => Math.max(0, o.ordered - o.printed - o.from_stock_units);
-
 /** A fresh click on one of these sorts most-first; `name` and `due` sort
  *  ascending instead — A→Z, soonest due first. `ready` joins them (soonest
  *  ETA first); only `hours` (machine time left) sorts most-first. */
@@ -20,10 +18,10 @@ const DESC_FIRST: ReadonlySet<SortKey> = new Set(['printing', 'queued', 'remaini
 
 /**
  * The orders list as a table — the farm's roll-up (spec 2026-09-06, Slice F).
- * Every number is the server's; the only arithmetic is `remaining`, which is
- * the same subtraction `project_figures` does and is shown nowhere else on
- * the list. Default order: due date, then name; a header click sorts by that
- * column and clicks again to flip.
+ * Every number is the server's.  In particular, `remaining` is the sum of
+ * per-line deficits, so production surplus for one product cannot mask a
+ * shortage in another. Default order: due date, then name; a header click
+ * sorts by that column and clicks again to flip.
  */
 export function OrdersTable({
   orders,
@@ -48,7 +46,7 @@ export function OrdersTable({
         case 'name': return o.name.toLowerCase();
         case 'due': return o.due_date ? Date.parse(o.due_date) : Number.MAX_SAFE_INTEGER;
         case 'progress': return o.progress;
-        case 'remaining': return remaining(o);
+        case 'remaining': return o.remaining;
         case 'printing': return o.prints_in_progress;
         case 'queued': return o.prints_queued;
         case 'ready': return forecasts?.[o.id]?.eta_complete && forecasts[o.id]?.now_eta ? Date.parse(forecasts[o.id].now_eta!) : Number.MAX_SAFE_INTEGER;
@@ -81,6 +79,7 @@ export function OrdersTable({
             <th className="font-normal p-2 text-left">{t('orders.table.status')}</th>
             <th className="font-normal p-2 text-right">{t('orders.table.ordered')}</th>
             <th className="font-normal p-2 text-right">{t('orders.table.printed')}</th>
+            <th className="font-normal p-2 text-right">{t('orders.table.fromStock')}</th>
             {header('printing', t('orders.table.printing'))}
             {header('queued', t('orders.table.queued'))}
             {header('remaining', t('orders.table.remaining'))}
@@ -99,14 +98,12 @@ export function OrdersTable({
                 <td className="p-2 text-bambu-gray">{o.customer_name ?? ''}</td>
                 <td className="p-2"><StatusBadge status={o.status} /></td>
                 <td className="p-2 text-right tabular-nums">{o.ordered}</td>
-                <td className="p-2 text-right tabular-nums">
-                  {o.printed}
-                  {o.from_stock_units > 0 && <span className="text-xs text-bambu-gray"> +{o.from_stock_units}</span>}
-                </td>
+                <td className="p-2 text-right tabular-nums">{o.printed}</td>
+                <td className="p-2 text-right tabular-nums">{o.from_stock_units}</td>
                 <td className="p-2 text-right tabular-nums" data-testid={`order-${o.id}-printing`}>{o.prints_in_progress}</td>
                 <td className="p-2 text-right tabular-nums" data-testid={`order-${o.id}-queued`}>{o.prints_queued}</td>
-                <td className="p-2 text-right tabular-nums">{remaining(o)}</td>
-                <td className="p-2 min-w-[8rem]"><ProgressBar value={o.printed} max={o.ordered} testId={`order-${o.id}-table-progress`} /></td>
+                <td className="p-2 text-right tabular-nums">{o.remaining}</td>
+                <td className="p-2 min-w-[8rem]"><ProgressBar value={o.covered_units} max={o.ordered} progress={o.progress} testId={`order-${o.id}-table-progress`} /></td>
                 <td className={`p-2 text-xs ${overdue ? 'text-red-500' : 'text-bambu-gray'}`}>{o.due_date ? new Date(o.due_date).toLocaleDateString() : ''}</td>
                 <td className="p-2 text-xs whitespace-nowrap" data-testid={`order-${o.id}-ready`}>
                   {forecastError ? (

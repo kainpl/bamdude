@@ -8,7 +8,7 @@ import type { OrderForecast, OrderListItem } from '../../../api/client';
 const row = (over: Partial<OrderListItem>): OrderListItem => ({
   id: 1, name: 'A', customer_id: null, customer_name: null, color: null, status: 'active', due_date: null, priority: 'normal',
   price: null, tags: null, cover_image_filename: null, created_at: '2026-09-01T00:00:00', lines_count: 1, ordered: 10, printed: 4,
-  progress: 0.4, from_stock_units: 0, line_products: [], prints_in_progress: 2, prints_queued: 3, ...over,
+  progress: 0.4, covered_units: 4, remaining: 6, from_stock_units: 0, line_products: [], prints_in_progress: 2, prints_queued: 3, ...over,
 });
 
 const fc = (over: Partial<OrderForecast>): OrderForecast => ({
@@ -21,13 +21,13 @@ describe('OrdersTable', () => {
     render(<OrdersTable orders={[row({ id: 1, name: 'A', prints_queued: 3 }), row({ id: 2, name: 'B', prints_queued: 9 })]} />);
     const rows = () => screen.getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[0].textContent);
     expect(rows()).toEqual(['A', 'B']);
-    await userEvent.click(screen.getByRole('button', { name: 'Queued' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Queued (jobs)' }));
     expect(rows()).toEqual(['B', 'A']);
     expect(screen.getByTestId('order-1-queued')).toHaveTextContent('3');
     expect(screen.getByTestId('order-1-printing')).toHaveTextContent('2');
 
     // A second click on the same column flips it — back to ascending.
-    await userEvent.click(screen.getByRole('button', { name: 'Queued' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Queued (jobs)' }));
     expect(rows()).toEqual(['A', 'B']);
   });
 
@@ -57,7 +57,7 @@ describe('OrdersTable', () => {
     const rows = () => screen.getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[0].textContent);
 
     // Switch away from the due default first — a fresh numeric-column click sorts most-first.
-    await userEvent.click(screen.getByRole('button', { name: 'Printing' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Printing (prints)' }));
     expect(rows()).toEqual(['A', 'B']);
 
     // A fresh click on Due sorts ascending — the soonest date leads.

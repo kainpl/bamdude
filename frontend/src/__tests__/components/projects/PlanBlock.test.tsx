@@ -105,6 +105,7 @@ const order = {
       note: null,
       sort_order: 0,
       units_printed: 0,
+      covered_units: 0,
       progress: 0,
       archive_ids: [],
       parts: [
