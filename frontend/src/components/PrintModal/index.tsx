@@ -24,19 +24,18 @@ import {
 import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
 import { useOrderCandidates } from '../../hooks/useOrderCandidates';
 import { OrderFilingField, type OrderFilingValue } from '../OrderFilingField';
-import { canQueueWithoutAsking } from '../../utils/bulkQueueEligibility';
 import { isUnknownOutcome, queueAddOutcomeText, type QueueAddFailure } from '../../utils/queueSource';
 import { invalidateOrderCandidates, invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
 import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
 import { getBedTypeInfo } from '../../utils/bedType';
-import { getGlobalTrayId, isPlaceholderDate } from '../../utils/amsHelpers';
+import { filamentColorMatches, filamentTypesCompatible, getGlobalTrayId, isPlaceholderDate } from '../../utils/amsHelpers';
 import { isGcodeCompatible } from '../../utils/printer';
 import { splitRoundRobin } from '../../lib/quantitySplit';
 import { AutoModeOptions } from './AutoModeOptions';
 import {
   autoFeasibility,
-  printerFeasibility,
+  targetFeasibility,
   worstVerdict,
   FEASIBLE,
   UNKNOWN,
@@ -44,6 +43,7 @@ import {
 } from './feasibility';
 import { groupTraysForBackup, privateBackupGroup, type BackupGroup } from './filamentBackupGroups';
 import { FilamentMapping } from './FilamentMapping';
+import { mappingWithManualChoices, targetHasManualMapping } from './mappingIntent';
 import { PlateSelector } from './PlateSelector';
 import { PrinterSelector } from './PrinterSelector';
 import { PrintOptionsPanel } from './PrintOptions';
@@ -325,6 +325,9 @@ export function PrintModal({
 
   // Per-printer override configs (for multi-printer selection)
   const [perPrinterConfigs, setPerPrinterConfigs] = useState<Record<number, PerPrinterConfig>>({});
+  // A same-number tray selection can explicitly review changed spool evidence.
+  // Opening/saving a row alone must never do that.
+  const [mappingReviewed, setMappingReviewed] = useState(false);
 
   // Track initial values for clearing mappings on change (edit mode only)
   const [initialPrinterIds] = useState(() => (mode === 'edit-queue-item' && queueItem?.printer_id ? [queueItem.printer_id] : []));
@@ -795,20 +798,26 @@ export function PrintModal({
     if (!requirements?.filaments) return requirements;
     return {
       ...requirements,
-      filaments: requirements.filaments.map(filament => ({
+      filaments: requirements.filaments.map(filament => {
+        const override = autoOverrides.find(entry => entry.slot_id === filament.slot_id);
+        return ({
         ...filament,
+        ...(override?.type ? { type: override.type } : {}),
+        ...(override?.color ? { color: override.color } : {}),
+        tray_info_idx: override?.tray_info_idx || (
+          override?.type && !filamentTypesCompatible(override.type, filament.type) ? undefined : filament.tray_info_idx
+        ),
         // ON: the id stops being asked about at all — neither an eligibility
         // condition nor a selection priority. OFF: the same profile is required
         // wherever the id is known on BOTH sides, whether or not the family was
         // resolved; the backend compares the ids either way, and asking only
         // for a known family is how a `variant_mismatch` job showed as ready.
-        ...(autoModeOptions.allow_base_material_match
-          ? { ignore_profile: true }
-          : { strict_profile_match: true }),
-        strict_color_match: autoModeOptions.force_color_match,
-      })),
+        ignore_profile: autoModeOptions.allow_base_material_match,
+        strict_profile_match: !autoModeOptions.allow_base_material_match,
+        strict_color_match: autoModeOptions.force_color_match || !!override?.force_color_match,
+      }); }),
     };
-  }, [autoModeOptions.allow_base_material_match, autoModeOptions.force_color_match]);
+  }, [autoModeOptions.allow_base_material_match, autoModeOptions.force_color_match, autoOverrides]);
   const routingFilamentReqs = useMemo(
     () => applyRoutingPolicy(effectiveFilamentReqs),
     [applyRoutingPolicy, effectiveFilamentReqs],
@@ -1030,7 +1039,7 @@ export function PrintModal({
     selectedPrinters,
     printers,
     routingFilamentReqs,
-    manualMappings,
+    selectedPrinters.length === 1 ? manualMappings : {},
     perPrinterConfigs,
     setPerPrinterConfigs
   );
@@ -1270,6 +1279,7 @@ export function PrintModal({
 
   // Clear manual mappings and per-printer configs when printer or plate changes
   useEffect(() => {
+    setMappingReviewed(false);
     if (mode === 'edit-queue-item') {
       // For edit mode, clear mappings if printer selection or plate changed from initial
       // Sort COPIES: `selectedPrinters`' own order is load-bearing now (it is
@@ -1285,6 +1295,7 @@ export function PrintModal({
       }
     } else {
       setManualMappings({});
+      setManualMappingsByPlate({});
       setPerPrinterConfigs({});
       setInitialExpandApplied(new Set());
     }
@@ -1440,22 +1451,23 @@ export function PrintModal({
   // Without a per-plate mapping we send NONE at all and let the scheduler
   // compute one at dispatch (which it already does per plate); a union mapping
   // would be used verbatim and could feed a slot from the wrong tray.
-  const getMappingForPrinter = (printerId: number, plateId: number | null): number[] | undefined => {
+  const localMappingForPrinter = (printerId: number, plateId: number | null): number[] | undefined => {
     if (isMultiPlateSelection) {
       // Fanning several plates across several printers would be a mapping per
       // plate *per printer*; those items go out without one and the scheduler
       // maps each plate against the printer it actually picks.
       if (plateId === null || selectedPrinters.length !== 1) return undefined;
-      return perPlateAmsMappings.get(plateId);
+      return mappingWithManualChoices(perPlateAmsMappings.get(plateId), manualMappingsByPlate[plateId] ?? {});
     }
     // For multi-printer selection, check if this printer has an override
     if (selectedPrinters.length > 1) {
       const printerConfig = perPrinterConfigs[printerId];
       if (printerConfig && !printerConfig.useDefault) {
-        return multiPrinterMapping.getFinalMapping(printerId);
+        return mappingWithManualChoices(multiPrinterMapping.getFinalMapping(printerId),
+          printerConfig.autoConfigured ? {} : printerConfig.manualMappings);
       }
     }
-    return amsMapping;
+    return mappingWithManualChoices(amsMapping, manualMappings);
   };
 
   /** A job that already carries a hand pin, so an edit about something else keeps it.
@@ -1484,103 +1496,64 @@ export function PrintModal({
    * says nothing about the slots.
    */
   const isManualMapping = (printerId: number, plateId: number | null): boolean => {
-    if (Object.keys(manualMappings).length > 0) return true;
-    if (plateId !== null && Object.keys(manualMappingsByPlate[plateId] ?? {}).length > 0) return true;
-    const perPrinter = perPrinterConfigs[printerId];
-    if (perPrinter && !perPrinter.useDefault && !perPrinter.autoConfigured) return true;
-    return storedRoutingIsPinned;
+    return targetHasManualMapping({ printerCount: selectedPrinters.length, multiPlate: isMultiPlateSelection,
+      plateId, manual: manualMappings, byPlate: manualMappingsByPlate,
+      config: perPrinterConfigs[printerId], storedPinned: storedRoutingIsPinned });
   };
 
-  /**
-   * Can what is selected print this, as the trays stand right now? (spec Д6.)
-   *
-   * ⚠️ **Four states, not three.** `unknown` — offline, telemetry in flight, a
-   * preview that could not cover every printer — never blocks and is never
-   * worded as an incompatibility; `blocked_now` disables with an explicit
-   * override beside it; `blocked_target` disables with none, because an
-   * override cannot make the file fit another model. Busy, drying, an uncleared
-   * plate and a staggered start are deliberately absent from all of it — those
-   * are dispatch's questions, not routing's.
-   *
-   * ⚠️ **Only a single chosen printer gets a real answer.** A fan-out ships no
-   * per-printer mapping at all (the scheduler maps each plate against the
-   * printer it picks) and `getMappingForPrinter` hands every target the FIRST
-   * printer's mapping, so a verdict built on it would be about a machine the
-   * operator did not ask about. That is exactly "we do not know", and it is why
-   * `canQueueWithoutAsking` short-circuits on the same condition.
-   *
-   * ⚠️ Read directly from `amsMapping` / `perPlateAmsMappings` rather than
-   * through `getMappingForPrinter`, which is a fresh closure every render: with
-   * one printer selected the two are the same value by construction — the
-   * per-printer-override branch of that function is unreachable below two.
-   */
-  const feasibility = useMemo<FeasibilityVerdict>(() => {
-    if (isAutoMode) return autoFeasibility(routingPreview.data);
-    if (selectedPrinters.length !== 1) return UNKNOWN;
-
-    // ⚠️ The machine's own predicate, not a string comparison: a job queued to
-    // a chosen printer is resolved with `exact_model=False`, so an X1C plate on
-    // a P1S is accepted — and a refusal about the TARGET carries no override,
-    // so a stricter answer here would be a dead end in the dialog.
-    const printer = printers?.find((p) => p.id === selectedPrinters[0]);
-    if (printer?.model && !isGcodeCompatible(slicedForModel, printer.model)) {
-      return { state: 'blocked_target', reason: { code: 'model_mismatch' } };
-    }
-
-    // A printer nobody has heard from tells us nothing — and an empty loaded
-    // list refuses every channel, so reading it as an answer would disable the
-    // button for a machine that is merely unreachable.
-    if (printerStatusFailed || !printerStatusLoaded || printerStatus?.connected === false) return UNKNOWN;
-
-    const loaded = buildLoadedFilaments(printerStatus);
-    const ftsActive = printerStatus?.fila_switch?.installed === true;
-
-    if (isMultiPlateSelection) {
-      if (perPlateReqsPending || perPlateReqsFailed) return UNKNOWN;
-      // Per plate and its actual target, never per file: two plates of one
-      // container routinely need different materials.
-      return selectedPlateIds.reduce<FeasibilityVerdict>(
-        (worst, plateId) =>
-          worstVerdict(
-            worst,
-            printerFeasibility({
-              requirements: perPlateReqs.get(plateId)?.filaments ?? [],
-              mapping: perPlateAmsMappings.get(plateId),
-              loaded,
-              ftsActive,
-            }),
-          ),
-        FEASIBLE,
-      );
-    }
-
-    if (effectiveFilamentReqsError || effectiveFilamentReqs === undefined) return UNKNOWN;
-    return printerFeasibility({
-      requirements: routingFilamentReqs?.filaments ?? [],
-      mapping: amsMapping,
-      loaded,
-      ftsActive,
-    });
-  }, [
-    isAutoMode,
-    routingPreview.data,
-    selectedPrinters,
-    printers,
-    slicedForModel,
-    printerStatus,
-    printerStatusLoaded,
-    printerStatusFailed,
-    isMultiPlateSelection,
-    perPlateReqsPending,
-    perPlateReqsFailed,
-    selectedPlateIds,
-    perPlateReqs,
-    perPlateAmsMappings,
-    effectiveFilamentReqs,
-    effectiveFilamentReqsError,
-    routingFilamentReqs,
-    amsMapping,
-  ]);
+  // Query only pairs that receive work, not the Cartesian product of selections.
+  const previewTargets = (isMultiPlateSelection ? selectedPlateIds : [selectedPlate ?? 0])
+    .flatMap(plateId => selectedPrinters.filter(id => dealtCopies(plateId, id) > 0).map(printerId => ({
+      printer_id: printerId,
+      plate_id: plateId,
+      manual_mapping: isManualMapping(printerId, plateId),
+      ams_mapping: isManualMapping(printerId, plateId) ? localMappingForPrinter(printerId, plateId) : undefined,
+      remap_filament: mappingReviewed,
+    })));
+  const previewSourceItemId = sourceQueueItemId ?? (mode === 'edit-queue-item' ? queueItem?.id : undefined);
+  const printerPreviewInput = {
+    archive_id: previewSourceItemId ? undefined : isArchiveSource ? archiveId : undefined,
+    library_file_id: previewSourceItemId ? undefined : isLibraryFile ? libraryFileId : undefined,
+    source_queue_item_id: previewSourceItemId,
+    editing_queue_item: mode === 'edit-queue-item',
+    targets: previewTargets,
+    feed_policy: autoModeOptions.feed_policy ?? 'auto',
+    force_color_match: autoModeOptions.force_color_match,
+    allow_base_material_match: autoModeOptions.allow_base_material_match,
+    filament_overrides: autoOverrides,
+  };
+  const printerPreview = useQuery({
+    queryKey: ['printer-routing-preview', printerPreviewInput],
+    queryFn: () => api.previewPrinterRouting(printerPreviewInput),
+    enabled: !isAutoMode && previewTargets.length > 0,
+    retry: false,
+    refetchInterval: 30_000,
+  });
+  const targetPreview = (printerId: number, plateId: number | null) =>
+    printerPreview.data?.targets.find(target => target.printer_id === printerId && target.plate_id === (plateId ?? 0));
+  const displayedPrinterMappings = multiPrinterMapping.printerResults.map(result => {
+    const preview = isMultiPlateSelection ? undefined : targetPreview(result.printerId, selectedPlate);
+    if (!preview) return result;
+    const finalMapping = preview.mapping ?? (isManualMapping(result.printerId, selectedPlate) ? result.finalMapping : undefined);
+    const exactMatches = preview.status === 'compatible' ? (routingFilamentReqs?.filaments ?? []).filter(req => {
+      const source = result.loadedFilaments.find(f => f.globalTrayId === finalMapping?.[req.slot_id - 1]);
+      return source && filamentColorMatches(req, source);
+    }).length : 0;
+    return { ...result, finalMapping, exactMatches, routingReason: preview.reason?.message,
+      matchStatus: preview.status !== 'compatible' ? 'missing' as const
+        : exactMatches === result.totalSlots ? 'full' as const : 'partial' as const };
+  });
+  const getMappingForPrinter = (printerId: number, plateId: number | null): number[] | undefined =>
+    isManualMapping(printerId, plateId)
+      ? localMappingForPrinter(printerId, plateId)
+      : targetPreview(printerId, plateId)?.mapping ?? undefined;
+  const feasibilityPending = isAutoMode ? routingPreview.isFetching : printerPreview.isFetching;
+  const feasibility = isAutoMode
+    ? autoFeasibility(routingPreview.isError ? undefined : routingPreview.data)
+    : previewTargets.length === 0 || printerPreview.isError
+      ? UNKNOWN
+      : previewTargets.reduce<FeasibilityVerdict>((worst, target) =>
+          worstVerdict(worst, targetFeasibility(targetPreview(target.printer_id, target.plate_id))), FEASIBLE);
 
   /**
    * An edit is not new work: a missing spool must never stop the operator
@@ -1622,6 +1595,11 @@ export function PrintModal({
 
   const runSubmit = async (e?: React.FormEvent, options?: SubmitOptions) => {
     e?.preventDefault();
+    if (!isEditMode && feasibilityPending) return;
+    if (autoSubmitWhenUnambiguous && !autoSubmitRefused && feasibility.state === 'unknown') {
+      setAutoSubmitRefused(true);
+      return;
+    }
 
     // ⚠️ **The disabled button is not the gate.** Enter in a field reaches this
     // function without passing through it, and a grouped run's silent member
@@ -2144,7 +2122,7 @@ export function PrintModal({
               auto_off_after: scheduleOptions.autoOffAfter,
               manual_start: scheduleOptions.scheduleType === 'manual',
               require_previous_success: scheduleOptions.requirePreviousSuccess,
-              ams_mapping: printerMapping,
+              ams_mapping: mappingReviewed ? printerMapping : undefined,
               // ⚠️ The same routing answers `getQueueData` sends on the add
               // path. The PATCH merges only what arrives (`exclude_unset=True`),
               // so leaving them out kept the stored answer and the operator's
@@ -2152,6 +2130,7 @@ export function PrintModal({
               // keeps the mapping above from re-pinning an auto job — and what
               // keeps a stored pin through an edit that never touched the slots.
               manual_mapping: isManualMapping(printerId, plateId),
+              remap_filament: mappingReviewed,
               feed_policy: autoModeOptions.feed_policy,
               force_color_match: autoModeOptions.force_color_match,
               allow_base_material_match: autoModeOptions.allow_base_material_match,
@@ -2434,11 +2413,14 @@ export function PrintModal({
     // dialog the operator saw filed correctly. The submit BUTTON is gated on
     // the same flag, so both halves wait for the same thing.
     if (orderAnswerPending) return;
+    if (feasibilityPending) return;
+    if (feasibility.state === 'unknown') {
+      setAutoSubmitRefused(true);
+      return;
+    }
 
-    // Only a run at exactly one specific printer consults filaments at all:
-    // `canQueueWithoutAsking` short-circuits on any other printer count. An
-    // auto-queue or fan-out member must therefore not wait for a status that
-    // is never fetched.
+    // The single-printer panel also needs its display status. Fan-out and auto
+    // use their full server preview and must not wait for this unused query.
     const consultsPrinter = !isAutoMode && selectedPrinters.length === 1;
     if (consultsPrinter) {
       // No status, no verdict — and a refusal is the safe half of the guess.
@@ -2468,31 +2450,6 @@ export function PrintModal({
       return;
     }
 
-    // ROUTED on both paths — `canQueueWithoutAsking` promises "the identical
-    // call the dialog makes", and the single-plate half used to hand it the raw
-    // query while the dialog read the routed one. Under a strict colour or a
-    // strict profile the two give different verdicts.
-    const plateRequirements = isMultiPlateSelection
-      ? selectedPlateIds.map((plateId) => perPlateReqs.get(plateId)?.filaments ?? [])
-      : [routingFilamentReqs?.filaments ?? []];
-
-    const loaded = buildLoadedFilaments(printerStatus);
-    const refused = plateRequirements.some(
-      (requirements) =>
-        !canQueueWithoutAsking({
-          requirements,
-          loadedFilaments: loaded,
-          printerCount: isAutoMode ? 0 : selectedPrinters.length,
-          ftsActive: printerStatus?.fila_switch?.installed === true,
-          trayNow: printerStatus?.tray_now,
-        }).ok,
-    );
-    if (refused) {
-      // Show ourselves instead. The operator sees every plate of this file with
-      // its own mapping panel, so which plate is the problem is visible.
-      setAutoSubmitRefused(true);
-      return;
-    }
     // The ref makes it fire once: `canSubmit` stays true after the submit starts.
     autoSubmittedRef.current = true;
     // ⚠️ The submit path does not always end in `onClose`, and a silent member
@@ -2535,6 +2492,8 @@ export function PrintModal({
     routingPreview.isPending,
     routingSourceReady,
     verdictBlocks,
+    feasibilityPending,
+    feasibility.state,
   ]);
 
   // Tell the run it had to ask after all. Once only, and by ref rather than by
@@ -2888,7 +2847,7 @@ export function PrintModal({
                 allowMultiple={true}
                 showInactive={mode === 'edit-queue-item'}
                 disableBusy={mode === 'reprint'}
-                printerMappingResults={multiPrinterMapping.printerResults}
+                printerMappingResults={displayedPrinterMappings}
                 // The per-printer tray editor inside the selector maps ONE filament list
                 // onto each printer. Several plates have several lists, and a fan-out across
                 // printers ships no mapping at all (the scheduler maps each plate against
@@ -2950,7 +2909,9 @@ export function PrintModal({
                 printerId={effectivePrinterId!}
                 filamentReqs={routingFilamentReqs}
                 manualMappings={manualMappings}
-                onManualMappingChange={setManualMappings}
+                resolvedMapping={targetPreview(effectivePrinterId!, selectedPlate)?.mapping}
+                routingReason={targetPreview(effectivePrinterId!, selectedPlate)?.reason?.message}
+                onManualMappingChange={(mappings) => { setMappingReviewed(true); setManualMappings(mappings); }}
                 requireExactColor={autoModeOptions.force_color_match}
                 defaultExpanded={!!initialSelectedPrinterIds?.length || (settings?.per_printer_mapping_expanded ?? false)}
                 currencySymbol={currencySymbol}
@@ -2971,9 +2932,12 @@ export function PrintModal({
                   plateLabel={plate?.name || t('printModal.plateNumber', { number: plateId })}
                   filamentReqs={plateReqs}
                   manualMappings={manualMappingsByPlate[plateId] ?? {}}
-                  onManualMappingChange={(mappings) =>
-                    setManualMappingsByPlate((prev) => ({ ...prev, [plateId]: mappings }))
-                  }
+                  resolvedMapping={targetPreview(effectivePrinterId!, plateId)?.mapping}
+                  routingReason={targetPreview(effectivePrinterId!, plateId)?.reason?.message}
+                  onManualMappingChange={(mappings) => {
+                    setMappingReviewed(true);
+                    setManualMappingsByPlate((prev) => ({ ...prev, [plateId]: mappings }));
+                  }}
                   defaultExpanded={false}
                   currencySymbol={currencySymbol}
                   defaultCostPerKg={defaultCostPerKg}
@@ -3140,7 +3104,7 @@ export function PrintModal({
                   out under no order and nothing says it could have had one. */}
               <Button
                 type="submit"
-                disabled={!canSubmit || orderAnswerPending || verdictBlocks}
+                disabled={!canSubmit || orderAnswerPending || verdictBlocks || (!isEditMode && feasibilityPending)}
                 title={
                   orderAnswerPending ? t('orderFiling.loading') : verdictBlocks ? feasibilityMessage : undefined
                 }

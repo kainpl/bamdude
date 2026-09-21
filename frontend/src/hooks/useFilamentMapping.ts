@@ -273,6 +273,9 @@ export function buildFilamentComparison(
   preferLowest = false,
 ): FilamentComparison[] {
   if (!filamentReqs?.filaments || filamentReqs.filaments.length === 0) return [];
+  if (filamentReqs.filaments.some(req => req.ignore_profile || req.strict_profile_match)) {
+    return buildPolicyComparison(filamentReqs.filaments, loadedFilaments, manualMappings, ftsActive, preferLowest);
+  }
 
   // One-colour print: default the auto-mapping to the spool already loaded
   // in the extruder (tray_now) rather than slot 0. See matchLoadedExtruderTray.
@@ -464,6 +467,57 @@ export function buildFilamentComparison(
   });
 }
 
+/** Complete assignment for routing-aware callers. A flexible channel must not
+ * consume the only source of a constrained one. Profiles are vetoes under OFF,
+ * never ranking tiers; the server remains authoritative for hardware checks. */
+function buildPolicyComparison(
+  requirements: FilamentRequirement[], loaded: LoadedFilament[], manual: Record<number, number>,
+  fts: boolean, preferLowest: boolean,
+): FilamentComparison[] {
+  const ranked = preferLowest ? sortByRemainAscending(loaded) : loaded;
+  const score = (req: FilamentRequirement, source: LoadedFilament) =>
+    (normalizeColorForCompare(req.color) === normalizeColorForCompare(source.color) ? 1 : 0) *
+      ((ranked.length + 1) * requirements.length + 1) - (preferLowest ? ranked.indexOf(source) : 0);
+  const candidates = requirements.map(req => loaded.filter(source =>
+    (manual[req.slot_id] === undefined || manual[req.slot_id] === source.globalTrayId) &&
+    loadedFilamentMatches(req, source) && (req.nozzle_id == null || fts || source.extruderId === req.nozzle_id) &&
+    (!req.strict_color_match || filamentColorMatches(req, source)),
+  ).sort((a, b) => score(req, b) - score(req, a) || a.globalTrayId - b.globalTrayId));
+  const order = requirements.map((_, i) => i).sort((a, b) => candidates[a].length - candidates[b].length || a - b);
+  let best: Map<number, LoadedFilament> | undefined;
+  let bestScore = -Infinity;
+  const search = (depth: number, chosen: Map<number, LoadedFilament>, used: Set<number>, total: number) => {
+    if (depth === order.length) {
+      if (total > bestScore) { best = new Map(chosen); bestScore = total; }
+      return;
+    }
+    const remaining = order.slice(depth);
+    const available = remaining.map(i => candidates[i].filter(source => !used.has(source.globalTrayId)));
+    if (available.some(rows => !rows.length) || new Set(available.flat().map(source => source.globalTrayId)).size < remaining.length) return;
+    const ceiling = available.reduce((sum, rows, i) => sum + score(requirements[remaining[i]], rows[0]), total);
+    if (ceiling <= bestScore) return;
+    const i = order[depth];
+    for (const source of available[0]) {
+      chosen.set(i, source); used.add(source.globalTrayId);
+      search(depth + 1, chosen, used, total + score(requirements[i], source));
+      chosen.delete(i); used.delete(source.globalTrayId);
+    }
+  };
+  search(0, new Map(), new Set(), 0);
+  return requirements.map((req, i) => {
+    // Preserve the visible manual selection even when invalid. It is not a
+    // permission to print; the authoritative preview names its refusal.
+    const source = manual[req.slot_id] !== undefined
+      ? loaded.find(row => row.globalTrayId === manual[req.slot_id]) : best?.get(i);
+    const typeMatch = source ? loadedFilamentMatches(req, source) : loaded.some(row => loadedFilamentMatches(req, row));
+    const colorMatch = !!source && filamentColorMatches(req, source);
+    const assigned = source && (!req.strict_color_match || colorMatch) ? source : undefined;
+    return { ...req, loaded: assigned, hasFilament: !!assigned, typeMatch, colorMatch,
+      status: !typeMatch ? 'mismatch' : colorMatch ? 'match' : 'type_only',
+      isManual: manual[req.slot_id] !== undefined };
+  });
+}
+
 /**
  * Build the AMS mapping array the print command expects from a comparison list.
  *
@@ -497,11 +551,8 @@ export function useFilamentMapping(
   manualMappings: Record<number, number>
 ): UseFilamentMappingResult {
   const loadedFilaments = useLoadedFilaments(printerStatus);
-  // The dispatcher will not re-derive a mapping the dialog already pinned — a
-  // stored mapping is consumed as it stands by the routing plan and its
-  // preflight — so "prefer lowest remaining filament" has to be honoured HERE
-  // or it is honoured nowhere on this path. Reads the ['settings'] query the
-  // modal already has cached.
+  // Provisional display honours the preference too; the server preview adds
+  // inventory weights and hardware policy before the dialog grants a verdict.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const preferLowest = settings?.prefer_lowest_filament ?? true;
 

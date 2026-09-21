@@ -160,6 +160,14 @@ async def test_auto_rule_survives_deleted_origin_without_relaxing_model(
     monkeypatch.setitem(printer_manager._models, printer.id, "P1S")
     with pytest.raises(RoutingDeferred, match="model_mismatch"):
         await preflight_item(db_session, queued, printer.id)
+    preview = {"source_queue_item_id": queued.id, "targets": [{"printer_id": printer.id, "plate_id": 15}]}
+    editing = await committing_client.post(
+        "/api/v1/auto-queue/printer-routing-preview", json={**preview, "editing_queue_item": True}
+    )
+    assert editing.status_code == 200, editing.text
+    assert editing.json()["targets"][0]["reason"]["code"] == "model_mismatch"
+    copying = await committing_client.post("/api/v1/auto-queue/printer-routing-preview", json=preview)
+    assert copying.json()["targets"][0]["status"] == "compatible"
 
 
 async def test_pinned_queue_intake_refuses_file_local_rules_for_an_unused_slot(

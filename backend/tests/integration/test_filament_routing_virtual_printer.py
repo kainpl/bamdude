@@ -17,6 +17,39 @@ from backend.tests.integration.test_filament_routing_dispatch import setup_sourc
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.parametrize(
+    "save_mapping,mapping,expected", [(True, None, "auto"), (False, [254], "auto"), (True, [-1, -1, 254], "pinned")]
+)
+async def test_vp_only_pins_a_mapping_it_actually_captured(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, save_mapping, mapping, expected
+):
+    source, printer, queue, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    source.file_metadata = {"sliced_for_model": "P1P", "plates": [{"index": 15}]}
+    await db_session.commit()
+    vp = VirtualPrinterInstance(
+        vp_id=1,
+        name="Synthetic",
+        mode="print_queue",
+        model="C11",
+        access_code="00000000",
+        serial_suffix="000000001",
+        target_printer_id=printer.id,
+        auto_dispatch=True,
+        save_ams_mapping=save_mapping,
+        base_dir=tmp_path,
+        session_factory=async_sessionmaker(test_engine, expire_on_commit=False),
+    )
+    monkeypatch.setattr(vp, "_save_to_library", AsyncMock(return_value=source))
+    monkeypatch.setattr(vp, "_find_best_queue", AsyncMock(return_value=queue))
+    vp._slicer_print_options[Path(source.file_path).name] = {"use_ams": True, "ams_mapping": mapping}
+    await vp._add_to_print_queue(Path(source.file_path), "127.0.0.1")
+    row = (await db_session.execute(select(PrintQueueItem))).scalar_one()
+    rules = json.loads(row.filament_routing)
+    assert rules["mode"] == expected
+    if expected == "pinned":
+        assert rules["physical_pins"]["3"]["source_id"] == 254
+
+
 @pytest.mark.parametrize("mode", ["print_queue", "auto_queue"])
 async def test_virtual_printer_intake_and_late_options_preserve_exact_plate_and_feed(
     db_session,

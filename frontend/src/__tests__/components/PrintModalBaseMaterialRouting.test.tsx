@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 import { render } from '../utils';
@@ -161,6 +161,9 @@ describe('what the print dialog counts as a match', () => {
       { tray_type: 'PETG', tray_info_idx: 'GFG99' },
     );
 
-    expect(await screen.findByText(/type not found/i)).toBeInTheDocument();
+    expect(await screen.findByText(/filament variant does not match/i)).toBeInTheDocument();
+    expect(screen.queryByText(/type not found/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText(/filament variant does not match/i).closest('button')!);
+    expect(screen.getByTitle(/filament variant does not match/i)).toBeInTheDocument();
   });
 });

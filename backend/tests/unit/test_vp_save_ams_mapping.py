@@ -70,7 +70,7 @@ class TestTheCapturedMappingIsConsumedAsAPin:
         source = inspect.getsource(vp_pkg.manager)
 
         assert '"ams_mapping": ams_mapping_json,' in source
-        assert '"manual_mapping": True,' in source
+        assert '"manual_mapping": ams_mapping_json is not None,' in source
 
     def test_that_flag_is_what_makes_the_slots_physical_pins(self) -> None:
         """Same array, both answers — the flag is the whole difference."""

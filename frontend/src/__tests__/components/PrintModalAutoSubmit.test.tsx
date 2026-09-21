@@ -122,6 +122,12 @@ describe('PrintModal self-submit', () => {
   });
 
   it('renders itself instead of queueing a type that is not loaded', async () => {
+    server.use(http.post('/api/v1/auto-queue/printer-routing-preview', async ({ request }) => {
+      const data = await request.json() as { targets: { printer_id: number; plate_id: number }[] };
+      return HttpResponse.json({ targets: data.targets.map(target => ({ ...target,
+        status: 'incompatible', mapping: null, reason: { code: 'material_mismatch', message: 'No compatible filament source is available.' },
+      })) });
+    }));
     server.use(
       http.get('/api/v1/archives/:id/filament-requirements', () =>
         HttpResponse.json({ filaments: [{ slot_id: 1, type: 'ABS', color: '#FF0000', used_grams: 10 }] })

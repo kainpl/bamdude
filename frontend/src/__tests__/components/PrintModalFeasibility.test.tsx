@@ -54,6 +54,13 @@ const routing = (over: Partial<FilamentRoutingSnapshot> = {}): FilamentRoutingSn
   ...over,
 });
 
+function backendRefusal(code = 'material_mismatch', message = 'No compatible filament source is available. Channel 1 needs ABS.') {
+  server.use(http.post('/api/v1/auto-queue/printer-routing-preview', async ({ request }) => {
+    const data = await request.json() as { targets: { printer_id: number; plate_id: number }[] };
+    return HttpResponse.json({ targets: data.targets.map(target => ({ ...target, status: 'incompatible', mapping: null, reason: { code, message } })) });
+  }));
+}
+
 /** A pending per-printer row, for the edit-mode case. */
 const queueItem = (): PrintQueueItem => ({
   id: 7,
@@ -181,7 +188,85 @@ describe('the print button and what the trays actually hold', () => {
 
   const submitButton = () => screen.findByRole('button', { name: /add to queue/i });
 
+  it('a manually selected wrong material cannot clear the backend refusal', async () => {
+    const user = userEvent.setup();
+    let manualSeen = false;
+    server.use(needs(oneAbsChannel),
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(statusWith([{ tray_type: 'PETG', tray_color: 'FF0000FF' }]))),
+      http.post('/api/v1/auto-queue/printer-routing-preview', async ({ request }) => {
+        const data = await request.json() as { targets: { printer_id: number; plate_id: number; manual_mapping: boolean }[] };
+        manualSeen ||= data.targets.some(target => target.manual_mapping);
+        return HttpResponse.json({ targets: data.targets.map(target => ({ ...target, status: 'incompatible', mapping: null,
+          reason: { code: 'material_mismatch', message: 'No compatible filament source is available.' } })) });
+      }));
+    openQueueDialog();
+    await screen.findByTestId('feasibility-notice');
+    await user.selectOptions(await screen.findByTitle('Auto-matched'), '0');
+    await waitFor(() => expect(manualSeen).toBe(true));
+    expect(await submitButton()).toBeDisabled();
+    expect(queuePosts).toBe(0);
+  });
+
+  it('a backend feed-policy refusal is not overridden by a populated local mapping', async () => {
+    backendRefusal('feed_topology_mismatch', 'The feed topology does not match.');
+    server.use(needs(oneAbsChannel), http.get('/api/v1/printers/:id/status', () =>
+      HttpResponse.json(statusWith([{ tray_type: 'ABS', tray_color: 'FF0000FF' }]))));
+    openQueueDialog({ initialRouting: routing({ feed_policy: 'external_only' }) });
+    expect(await screen.findByTestId('feasibility-notice')).toHaveTextContent('feed topology');
+    expect(await submitButton()).toBeDisabled();
+  });
+
+  it('sends a manually selected wrong-colour tray instead of hiding it as an absent pin', async () => {
+    const user = userEvent.setup();
+    let manualMapping: number[] | undefined;
+    server.use(needs(oneAbsChannel),
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(statusWith([{ tray_type: 'ABS', tray_color: '00FF00FF' }]))),
+      http.post('/api/v1/auto-queue/printer-routing-preview', async ({ request }) => {
+        const data = await request.json() as { targets: { printer_id: number; plate_id: number; manual_mapping: boolean; ams_mapping?: number[] }[] };
+        manualMapping = data.targets.find(target => target.manual_mapping)?.ams_mapping;
+        return HttpResponse.json({ targets: data.targets.map(target => ({ ...target, status: 'incompatible', mapping: null,
+          reason: { code: 'color_mismatch', message: 'The loaded colour does not match.' } })) });
+      }));
+    openQueueDialog({ initialRouting: routing({ force_color_match: true }) });
+    await screen.findByTestId('feasibility-notice');
+    await user.selectOptions(await screen.findByTitle('Auto-matched'), '0');
+    await waitFor(() => expect(manualMapping).toEqual([0]));
+    expect(await submitButton()).toBeDisabled();
+    expect(queuePosts).toBe(0);
+  });
+
+  it('shows settled unknown BEFORE any silent auto-queue POST', async () => {
+    let autoPosts = 0;
+    server.use(needs(oneAbsChannel),
+      http.post('/api/v1/auto-queue/routing-preview', () => HttpResponse.json(previewWith([group({ unknown: 1 })]))),
+      http.post('/api/v1/auto-queue/', () => { autoPosts++; return HttpResponse.json({ id: 9 }); }));
+    openQueueDialog({ initialDispatchMode: 'auto', initialSelectedPrinterIds: undefined,
+      autoSubmitWhenUnambiguous: true, onAutoSubmitRefused });
+    await waitFor(() => expect(onAutoSubmitRefused).toHaveBeenCalled());
+    expect(autoPosts).toBe(0);
+    expect(await submitButton()).toBeEnabled();
+  });
+
+  it('checks every actual target in a fan-out, including an incompatible model', async () => {
+    let targets: number[] = [];
+    server.use(needs(oneAbsChannel),
+      http.get('/api/v1/printers/', () => HttpResponse.json([...printers, { ...printers[0], id: 2, model: 'A1' }])),
+      http.post('/api/v1/auto-queue/printer-routing-preview', async ({ request }) => {
+        const data = await request.json() as { targets: { printer_id: number; plate_id: number }[] };
+        targets = data.targets.map(target => target.printer_id);
+        return HttpResponse.json({ targets: data.targets.map(target => ({ ...target,
+          status: target.printer_id === 2 ? 'incompatible' : 'compatible', mapping: target.printer_id === 2 ? null : [0],
+          reason: target.printer_id === 2 ? { code: 'model_mismatch', message: 'The sliced printer model does not match.' } : null })) });
+      }));
+    openQueueDialog({ initialSelectedPrinterIds: [1, 2] });
+    await screen.findByTestId('feasibility-notice');
+    expect(targets).toEqual([1, 2]);
+    expect(screen.getByTestId('feasibility-notice').closest('form')?.querySelector('button[type="submit"]')).toBeDisabled();
+    expect(screen.queryByTestId('feasibility-override')).not.toBeInTheDocument();
+  });
+
   it('disables the button, names the reason and offers an override when a used channel has no source', async () => {
+    backendRefusal();
     const user = userEvent.setup();
     server.use(
       needs(oneAbsChannel),
@@ -208,6 +293,7 @@ describe('the print button and what the trays actually hold', () => {
   });
 
   it('⚠️ blocks a strict-colour channel with no source, which reports `type_only`', async () => {
+    backendRefusal('color_mismatch', 'The required color is not loaded.');
     // The first design read the channel's status word: `type_only` was taken to
     // mean "a spool was found, only the colour is off". Under a strict colour it
     // means the opposite — nothing was assigned at all and the mapping holds -1.
@@ -226,6 +312,7 @@ describe('the print button and what the trays actually hold', () => {
   });
 
   it('⚠️ names the PROFILE when the option is off and the material is in the tray', async () => {
+    backendRefusal('variant_mismatch', 'The filament variant does not match. Channel 1 needs PETG (Pa240002); loaded: PETG (GFG99).');
     // The mirror counter-example: `mismatch` is also the answer for a pure
     // profile veto, and «No compatible filament source» would be a lie about a
     // machine holding exactly the right material.
@@ -278,6 +365,7 @@ describe('the print button and what the trays actually hold', () => {
   });
 
   it('disables with no override when the file was sliced for another model', async () => {
+    backendRefusal('model_mismatch', 'The sliced printer model does not match.');
     server.use(
       http.get('/api/v1/archives/:id', () => HttpResponse.json({ id: 1, sliced_for_model: 'A1' })),
       needs([{ slot_id: 1, type: 'PETG', color: '#FF0000', used_grams: 10 }]),
@@ -338,6 +426,7 @@ describe('the print button and what the trays actually hold', () => {
   });
 
   it('⚠️ refuses the form’s own submit too — the disabled button is not the gate', async () => {
+    backendRefusal();
     // Enter in a field submits the FORM; `runSubmit` is reached by that event
     // without passing through the button at all, and a grouped run's silent
     // member never renders a button in the first place. So the verdict is
@@ -353,11 +442,9 @@ describe('the print button and what the trays actually hold', () => {
 
     openQueueDialog();
 
-    const notice = await screen.findByTestId('feasibility-notice');
-    const form = notice.closest('form');
-    expect(form).not.toBeNull();
-
-    fireEvent.submit(form!);
+    await screen.findByTestId('feasibility-notice');
+    await waitFor(() => expect(screen.getByTestId('feasibility-notice').closest('form')).not.toBeNull());
+    fireEvent.submit(screen.getByTestId('feasibility-notice').closest('form')!);
 
     await waitFor(() => expect(screen.getByTestId('feasibility-notice')).toBeInTheDocument());
     expect(queuePosts).toBe(0);
@@ -431,6 +518,7 @@ describe('the print button and what the trays actually hold', () => {
   });
 
   it('⚠️ shows itself instead of hanging a silent group run on an unprintable member', async () => {
+    backendRefusal();
     // The sequencer advances only on `onClose`. A hidden member that neither
     // submits nor renders stops the whole run with a blank screen.
     server.use(
@@ -452,6 +540,7 @@ describe('the print button and what the trays actually hold', () => {
   });
 
   it('never blocks saving an edit of a job already in a queue', async () => {
+    backendRefusal();
     server.use(
       needs(oneAbsChannel),
       http.get('/api/v1/printers/:id/status', () =>
@@ -478,6 +567,7 @@ describe('the print button and what the trays actually hold', () => {
   });
 
   it('⚠️ queues the job instead of repeating the direct print when «print now» is overridden', async () => {
+    backendRefusal();
     // A direct print that has to wait for filament ends `cancelled`
     // (`defer_claim(direct=True)`), so the override has to write a queue row.
     const user = userEvent.setup();

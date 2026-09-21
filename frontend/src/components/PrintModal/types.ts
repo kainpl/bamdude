@@ -156,8 +156,8 @@ export interface PrintModalProps {
   onQueued?: (createdItemIds: number[]) => void;
   /** Submit without rendering once the dialog is ready and nothing is
    *  ambiguous. The modal still owns the payload — this only removes the
-   *  click. Falls back to rendering normally whenever ``canQueueWithoutAsking``
-   *  says no, so a run can never queue a plate the operator would have been
+   *  click. Falls back to rendering on a settled unknown or refusal from the
+   *  full routing preview, so a run never queues a plate the operator should be
    *  asked about — and likewise whenever the submit itself ends in a question
    *  (a low-spool warning) or a failure, so a silent member can never stall a
    *  run with nothing on screen. */
@@ -487,6 +487,9 @@ export interface FilamentReqsData {
  * Props for the FilamentMapping component.
  */
 export interface FilamentMappingProps {
+  /** Authoritative backend assignment; null means no complete assignment. */
+  resolvedMapping?: number[] | null;
+  routingReason?: string;
   printerId: number;
   /** Pre-fetched filament requirements data */
   filamentReqs: FilamentReqsData | undefined;

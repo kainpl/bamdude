@@ -4,17 +4,12 @@ import { api } from '../api/client';
 import type { PrinterStatus, Printer } from '../api/client';
 import {
   buildLoadedFilaments,
+  buildFilamentComparison,
+  buildAmsMapping,
   computeAmsMapping,
   type LoadedFilament,
   type FilamentRequirement,
 } from './useFilamentMapping';
-import {
-  normalizeColorForCompare,
-  sortByRemainAscending,
-  filamentColorMatches,
-  filamentRequirementMatches,
-  matchLoadedExtruderTray,
-} from '../utils/amsHelpers';
 
 /**
  * Match status for a single printer's filament configuration.
@@ -51,6 +46,8 @@ export interface PrinterMappingResult {
   finalMapping: number[] | undefined;
   /** Match status: full (all exact), partial (some mismatches), missing (type not found) */
   matchStatus: PrinterMatchStatus;
+  /** Authoritative full-assignment refusal, when supplied by the dialog. */
+  routingReason?: string;
   /** Number of slots with exact match (type + color) */
   exactMatches: number;
   /** Number of slots with type-only match */
@@ -89,213 +86,25 @@ export interface UseMultiPrinterFilamentMappingResult {
  * Compute match details for a printer given filament requirements and loaded filaments.
  */
 function computeMatchDetails(
-  filamentReqs: FilamentRequirement[] | undefined,
-  loadedFilaments: LoadedFilament[],
-  manualMappings: Record<number, number>,
-  trayNow: number | null | undefined,
-  preferLowest = false
+  filamentReqs: FilamentRequirement[] | undefined, loadedFilaments: LoadedFilament[],
+  manualMappings: Record<number, number>, trayNow: number | null | undefined,
+  preferLowest = false, ftsActive = false,
 ): { exactMatches: number; typeOnlyMatches: number; missingTypes: number; totalSlots: number; status: PrinterMatchStatus } {
-  if (!filamentReqs || filamentReqs.length === 0) {
-    return { exactMatches: 0, typeOnlyMatches: 0, missingTypes: 0, totalSlots: 0, status: 'full' };
-  }
-
-  let exactMatches = 0;
-  let typeOnlyMatches = 0;
-  let missingTypes = 0;
-  const usedTrayIds = new Set<number>(Object.values(manualMappings));
-  // One-colour print: the loaded-in-extruder tray is the auto default.
-  const isSingleFilament = filamentReqs.length === 1;
-
-  for (const req of filamentReqs) {
-    const slotId = req.slot_id || 0;
-
-    // Check manual override first
-    if (slotId > 0 && manualMappings[slotId] !== undefined) {
-      const manualTrayId = manualMappings[slotId];
-      const manualLoaded = loadedFilaments.find((f) => f.globalTrayId === manualTrayId);
-
-      if (manualLoaded) {
-        const typeMatch = filamentRequirementMatches(req, manualLoaded);
-        const colorMatch = filamentColorMatches(req, manualLoaded);
-
-        if (typeMatch && colorMatch) {
-          exactMatches++;
-        } else if (typeMatch) {
-          if (req.strict_color_match) missingTypes++;
-          else typeOnlyMatches++;
-        } else {
-          missingTypes++;
-        }
-        continue;
-      }
-    }
-
-    // Auto-match with nozzle-aware filtering
-    let candidates = loadedFilaments.filter((f) => !usedTrayIds.has(f.globalTrayId));
-    if (req.nozzle_id != null) {
-      const nozzleFiltered = candidates.filter((f) => f.extruderId === req.nozzle_id);
-      if (nozzleFiltered.length > 0) {
-        candidates = nozzleFiltered;
-      }
-    }
-
-    // Emptiest spool first, so each tier's `.find()` below picks the lowest
-    // remaining among equally-good matches (prefer_lowest_filament). Sorting
-    // the pool rather than each tier keeps match precedence intact — this can
-    // only break ties, never promote a worse tier.
-    if (preferLowest) {
-      candidates = sortByRemainAscending(candidates);
-    }
-
-    const extruderTray = isSingleFilament
-      ? matchLoadedExtruderTray(req, candidates, trayNow)
-      : undefined;
-    const exactMatch = candidates.find(
-      (f) =>
-        filamentRequirementMatches(req, f) &&
-        normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
-    );
-    const similarMatch = exactMatch || req.strict_color_match
-      ? undefined
-      : candidates.find(
-          (f) =>
-            filamentRequirementMatches(req, f) &&
-            filamentColorMatches(req, f)
-        );
-    const typeOnlyMatch = req.strict_color_match
-      ? undefined
-      :
-      exactMatch || similarMatch
-        ? undefined
-        : candidates.find(
-            (f) => filamentRequirementMatches(req, f)
-          );
-    const loaded = extruderTray && filamentColorMatches(req, extruderTray)
-      ? extruderTray
-      : exactMatch ?? similarMatch ?? typeOnlyMatch;
-
-    if (loaded) {
-      usedTrayIds.add(loaded.globalTrayId);
-    }
-
-    // Classify the actually-picked tray: type is always compatible, so it
-    // counts as an exact match when the colour also matches, else type-only.
-    if (!loaded) {
-      missingTypes++;
-    } else if (filamentColorMatches(req, loaded)) {
-      exactMatches++;
-    } else {
-      typeOnlyMatches++;
-    }
-  }
-
-  const totalSlots = filamentReqs.length;
-  let status: PrinterMatchStatus = 'full';
-  if (missingTypes > 0) {
-    status = 'missing';
-  } else if (typeOnlyMatches > 0) {
-    status = 'partial';
-  }
-
-  return { exactMatches, typeOnlyMatches, missingTypes, totalSlots, status };
+  const rows = buildFilamentComparison({ filaments: filamentReqs ?? [] }, loadedFilaments,
+    manualMappings, ftsActive, trayNow ?? undefined, preferLowest);
+  const exactMatches = rows.filter(row => row.hasFilament && row.typeMatch && row.colorMatch).length;
+  const typeOnlyMatches = rows.filter(row => row.hasFilament && row.typeMatch && !row.colorMatch).length;
+  const missingTypes = rows.length - exactMatches - typeOnlyMatches;
+  return { exactMatches, typeOnlyMatches, missingTypes, totalSlots: rows.length,
+    status: missingTypes ? 'missing' : typeOnlyMatches ? 'partial' : 'full' };
 }
 
-/**
- * Compute AMS mapping with manual overrides applied.
- */
 function computeMappingWithOverrides(
   filamentReqs: { filaments: FilamentRequirement[] } | undefined,
-  printerStatus: PrinterStatus | undefined,
-  manualMappings: Record<number, number>,
-  preferLowest = false
+  printerStatus: PrinterStatus | undefined, manualMappings: Record<number, number>, preferLowest = false,
 ): number[] | undefined {
-  if (!filamentReqs?.filaments || filamentReqs.filaments.length === 0) return undefined;
-
-  const loadedFilaments = buildLoadedFilaments(printerStatus);
-  if (loadedFilaments.length === 0) return undefined;
-
-  const usedTrayIds = new Set<number>(Object.values(manualMappings));
-  const comparisons: { slot_id: number; globalTrayId: number }[] = [];
-  // One-colour print: the loaded-in-extruder tray is the auto default.
-  const isSingleFilament = filamentReqs.filaments.length === 1;
-
-  for (const req of filamentReqs.filaments) {
-    const slotId = req.slot_id || 0;
-
-    // Check manual override first
-    if (slotId > 0 && manualMappings[slotId] !== undefined) {
-      const manualLoaded = loadedFilaments.find((f) => f.globalTrayId === manualMappings[slotId]);
-      comparisons.push({
-        slot_id: slotId,
-        globalTrayId: !req.strict_color_match || (manualLoaded && filamentColorMatches(req, manualLoaded))
-          ? manualMappings[slotId]
-          : -1,
-      });
-      continue;
-    }
-
-    // Auto-match with nozzle-aware filtering
-    let candidates = loadedFilaments.filter((f) => !usedTrayIds.has(f.globalTrayId));
-    if (req.nozzle_id != null) {
-      const nozzleFiltered = candidates.filter((f) => f.extruderId === req.nozzle_id);
-      if (nozzleFiltered.length > 0) {
-        candidates = nozzleFiltered;
-      }
-    }
-
-    // Emptiest spool first, so each tier's `.find()` below picks the lowest
-    // remaining among equally-good matches (prefer_lowest_filament). Sorting
-    // the pool rather than each tier keeps match precedence intact — this can
-    // only break ties, never promote a worse tier.
-    if (preferLowest) {
-      candidates = sortByRemainAscending(candidates);
-    }
-
-    const extruderTray = isSingleFilament
-      ? matchLoadedExtruderTray(req, candidates, printerStatus?.tray_now)
-      : undefined;
-    const exactMatch = candidates.find(
-      (f) =>
-        filamentRequirementMatches(req, f) &&
-        normalizeColorForCompare(f.color) === normalizeColorForCompare(req.color)
-    );
-    const similarMatch = exactMatch || req.strict_color_match
-      ? undefined
-      : candidates.find(
-          (f) =>
-            filamentRequirementMatches(req, f) &&
-            filamentColorMatches(req, f)
-        );
-    const typeOnlyMatch = req.strict_color_match
-      ? undefined
-      :
-      exactMatch || similarMatch
-        ? undefined
-        : candidates.find(
-            (f) => filamentRequirementMatches(req, f)
-          );
-    const loaded = extruderTray && filamentColorMatches(req, extruderTray)
-      ? extruderTray
-      : exactMatch ?? similarMatch ?? typeOnlyMatch;
-
-    if (loaded) {
-      usedTrayIds.add(loaded.globalTrayId);
-    }
-
-    comparisons.push({ slot_id: slotId, globalTrayId: loaded?.globalTrayId ?? -1 });
-  }
-
-  const maxSlotId = Math.max(...comparisons.map((f) => f.slot_id || 0));
-  if (maxSlotId <= 0) return undefined;
-
-  const mapping = new Array(maxSlotId).fill(-1);
-  comparisons.forEach((f) => {
-    if (f.slot_id && f.slot_id > 0) {
-      mapping[f.slot_id - 1] = f.globalTrayId;
-    }
-  });
-
-  return mapping;
+  return buildAmsMapping(buildFilamentComparison(filamentReqs, buildLoadedFilaments(printerStatus),
+    manualMappings, printerStatus?.fila_switch?.installed === true, printerStatus?.tray_now, preferLowest));
 }
 
 /**
@@ -319,12 +128,8 @@ export function useMultiPrinterFilamentMapping(
   perPrinterConfigs: Record<number, PerPrinterConfig>,
   setPerPrinterConfigs: React.Dispatch<React.SetStateAction<Record<number, PerPrinterConfig>>>
 ): UseMultiPrinterFilamentMappingResult {
-  // "Prefer lowest remaining filament" also governs what the Print dialog PINS,
-  // not just AutoQueue: the dispatcher refuses to re-derive a mapping that is
-  // already resolved (so it never clobbers a manual override), which means a
-  // mapping pinned here without the setting applied silently ignores it for the
-  // whole Print -> pick printer -> Add to queue path. Reads the same cached
-  // ['settings'] query the modal already issues, so this costs no extra fetch.
+  // Local provisional display uses the same preference. The dialog replaces it
+  // with the server assignment, which also has inventory remaining weights.
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const preferLowest = settings?.prefer_lowest_filament ?? true;
 
@@ -373,7 +178,8 @@ export function useMultiPrinterFilamentMapping(
         loadedFilaments,
         effectiveMappings,
         printerStatus?.tray_now,
-        preferLowest
+        preferLowest,
+        printerStatus?.fila_switch?.installed === true,
       );
 
       return {

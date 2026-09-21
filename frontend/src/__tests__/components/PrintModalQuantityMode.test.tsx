@@ -256,6 +256,7 @@ describe('quantity mode', () => {
     await screen.findByTestId('quantity-mode-toggle');
     fireEvent.click(screen.getByTestId('quantity-mode-total'));
     setQuantity(3);
+    await waitFor(() => expect(screen.getByRole('button', { name: /^(add to queue|queue to \d+ printers)$/i })).toBeEnabled());
     submit();
     await waitFor(() => expect(onAnswered).toHaveBeenCalled());
     expect(onAnswered.mock.calls[0][0].quantityMode).toBe('total');

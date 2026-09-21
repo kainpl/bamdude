@@ -23,6 +23,7 @@ CHOICE_FIELDS = {
     "allow_base_material_match",
     "filament_overrides",
     "manual_mapping",
+    "remap_filament",
 }
 
 
@@ -101,7 +102,9 @@ def choices_policy(choices, snapshot=None):
     explicit = choices.get("feed_policy")
     policy = "auto" if pins and explicit is None else feed_policy(explicit, choices.get("use_ams", True))
     return RoutingPolicy(
-        mode="pinned" if manual and mapping is not None else "auto",
+        mode="pinned" if manual else "auto",
+        # Missing physical evidence must not silently release an explicit pin.
+        review_required=manual and not isinstance(mapping, list),
         feed_policy=policy,
         force_color_match=bool(choices.get("force_color_match", False)),
         allow_base_material_match=bool(choices.get("allow_base_material_match", True)),

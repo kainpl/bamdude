@@ -42,6 +42,142 @@ async def test_preview_uses_strict_reader_and_never_exposes_paths(
     assert strict.json()["plates"][0]["groups"][0]["reasons"][0]["code"] == "color_mismatch"
 
 
+async def test_printer_preview_checks_actual_manual_source_and_feed_policy(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch
+):
+    source, printer, _, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    body = {"library_file_id": source.id, "targets": [{"printer_id": printer.id, "plate_id": 15}]}
+    response = await committing_client.post("/api/v1/auto-queue/printer-routing-preview", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["targets"][0]["mapping"] == [-1, -1, 254]
+    response = await committing_client.post(
+        "/api/v1/auto-queue/printer-routing-preview", json={**body, "feed_policy": "ams_only"}
+    )
+    assert response.json()["targets"][0]["status"] == "incompatible"
+    mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_type": "PETG"}}})
+    body["targets"][0].update(manual_mapping=True, ams_mapping=[-1, -1, 254])
+    response = await committing_client.post("/api/v1/auto-queue/printer-routing-preview", json=body)
+    assert response.json()["targets"][0]["reason"]["code"] == "material_mismatch"
+    mqtt._client.publish.assert_not_called()
+
+
+async def test_printer_preview_reads_captured_bytes_after_original_is_gone(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch
+):
+    from pathlib import Path
+
+    source, printer, queue, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    added = await committing_client.post("/api/v1/queue/", json={"queue_id": queue.id, "library_file_id": source.id})
+    assert added.status_code == 200, added.text
+    Path(source.file_path).unlink()  # only this test's synthetic tmp_path source
+    preview = await committing_client.post(
+        "/api/v1/auto-queue/printer-routing-preview",
+        json={
+            "source_queue_item_id": added.json()["id"],
+            "targets": [{"printer_id": printer.id, "plate_id": 15}],
+        },
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["targets"][0]["status"] == "compatible"
+
+
+async def test_printer_preview_keeps_saved_pin_until_explicit_review(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch
+):
+    source, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    # Queue primary keys are not printer IDs.
+    queue.id = printer.id + 1000
+    await db_session.commit()
+    added = await committing_client.post(
+        "/api/v1/queue/",
+        json={"queue_id": queue.id, "library_file_id": source.id, "manual_mapping": True, "ams_mapping": [-1, -1, 254]},
+    )
+    assert added.status_code == 200, added.text
+    target = {"printer_id": printer.id, "plate_id": 15, "manual_mapping": True, "ams_mapping": [-1, -1, 254]}
+    body = {"source_queue_item_id": added.json()["id"], "editing_queue_item": True, "targets": [target]}
+    response = await committing_client.post("/api/v1/auto-queue/printer-routing-preview", json=body)
+    assert response.json()["targets"][0]["status"] == "compatible"
+    mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_type": "PLA", "tray_color": "00FF00"}}})
+    response = await committing_client.post("/api/v1/auto-queue/printer-routing-preview", json=body)
+    assert response.json()["targets"][0]["reason"]["code"] == "mapping_review_required"
+    copied = await committing_client.post(
+        "/api/v1/auto-queue/printer-routing-preview", json={**body, "editing_queue_item": False}
+    )
+    assert copied.json()["targets"][0]["status"] == "compatible"
+    target["remap_filament"] = True
+    response = await committing_client.post("/api/v1/auto-queue/printer-routing-preview", json=body)
+    assert response.json()["targets"][0]["status"] == "compatible"
+    mqtt._client.publish.assert_not_called()
+
+
+async def test_printer_preview_checks_full_assignment_overrides_nozzle_and_unknown(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch
+):
+    from dataclasses import replace
+
+    from backend.tests.unit.services.test_filament_routing import feed, snapshot
+
+    source, printer, _, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    write_routing_3mf(
+        tmp_path / source.filename,
+        {
+            1: [
+                {"id": 1, "type": "PLA", "color": "#FF0000", "used_g": "1"},
+                {"id": 2, "type": "PLA", "color": "#FF0000", "tray_info_idx": "A", "used_g": "1"},
+            ]
+        },
+        settings={"nozzle_diameter": ["0.4"]},
+    )
+    state = snapshot(feed(0, kind="ams", variant="A"), feed(1, kind="ams", variant="B"), nozzle_diameters={0: (0.4,)})
+    monkeypatch.setattr(printer_manager, "get_feed_snapshot", lambda _: state)
+    body = {
+        "library_file_id": source.id,
+        "allow_base_material_match": False,
+        "targets": [{"printer_id": printer.id, "plate_id": 1}],
+    }
+
+    async def result(**changes):
+        response = await committing_client.post("/api/v1/auto-queue/printer-routing-preview", json={**body, **changes})
+        assert response.status_code == 200, response.text
+        return response.json()["targets"][0]
+
+    assert (await result())["mapping"] == [1, 0]
+    assert (await result(filament_overrides=[{"slot_id": 2, "type": "PETG"}]))["reason"]["code"] == "material_mismatch"
+    state = replace(state, nozzle_diameters={0: (0.6,)})
+    assert (await result())["reason"]["code"] == "nozzle_mismatch"
+    state = replace(state, connected=False)
+    assert (await result())["status"] == "unknown"
+
+
+@pytest.mark.parametrize("owns", [False, True])
+async def test_printer_preview_obeys_queue_source_ownership(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch, owns
+):
+    from backend.app.core.auth import create_access_token
+    from backend.app.models.group import Group
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.user import User
+
+    source, printer, queue, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    added = await committing_client.post("/api/v1/queue/", json={"queue_id": queue.id, "library_file_id": source.id})
+    item = await db_session.get(PrintQueueItem, added.json()["id"])
+    group = Group(name="Preview own queue", permissions=["printers:read", "queue:read_own"])
+    user = User(username="preview_owner", password_hash="unused", role="user", is_active=True, groups=[group])
+    db_session.add_all([group, user])
+    await db_session.flush()
+    item.created_by_id = user.id if owns else None
+    await db_session.commit()
+    response = await committing_client.post(
+        "/api/v1/auto-queue/printer-routing-preview",
+        json={
+            "source_queue_item_id": item.id,
+            "targets": [{"printer_id": printer.id, "plate_id": 15}],
+        },
+        headers={"Authorization": f"Bearer {create_access_token(data={'sub': user.username})}"},
+    )
+    assert response.status_code == (200 if owns else 404), response.text
+
+
 async def test_preview_matches_the_base_material_by_default_and_can_require_the_exact_preset(
     committing_client, db_session, tmp_path, printer_factory, monkeypatch
 ):
@@ -160,14 +296,15 @@ async def test_compatible_printer_with_pending_work_is_not_ready(
         (["queue:create", "printers:read"], True, 403),
     ],
 )
+@pytest.mark.parametrize("specific", [False, True])
 async def test_preview_respects_source_ownership_and_printer_read_permission(
-    committing_client, db_session, tmp_path, printer_factory, monkeypatch, permissions, owns_source, expected
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch, permissions, owns_source, expected, specific
 ):
     from backend.app.core.auth import create_access_token
     from backend.app.models.group import Group
     from backend.app.models.user import User
 
-    source, *_ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    source, printer, *_ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     group = Group(name="Routing preview reader", permissions=permissions)
     user = User(username="routing_reader", password_hash="unused", role="user", is_active=True, groups=[group])
     db_session.add_all([group, user])
@@ -176,8 +313,11 @@ async def test_preview_respects_source_ownership_and_printer_read_permission(
     await db_session.commit()
     token = create_access_token(data={"sub": user.username})
     response = await committing_client.post(
-        "/api/v1/auto-queue/routing-preview",
-        json={"library_file_id": source.id},
+        "/api/v1/auto-queue/printer-routing-preview" if specific else "/api/v1/auto-queue/routing-preview",
+        json={
+            "library_file_id": source.id,
+            **({"targets": [{"printer_id": printer.id, "plate_id": 15}]} if specific else {}),
+        },
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == expected, response.text

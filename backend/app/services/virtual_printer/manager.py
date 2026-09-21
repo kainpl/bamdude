@@ -1213,7 +1213,7 @@ class VirtualPrinterInstance:
                                 "plate_id": plate,
                                 "ams_mapping": ams_mapping_json,
                                 "use_ams": use_ams,
-                                "manual_mapping": True,
+                                "manual_mapping": ams_mapping_json is not None,
                             },
                             cache=cache,
                             staged=staged,

@@ -49,7 +49,7 @@ from backend.app.schemas.auto_queue import (
     AutoQueueStatsResponse,
 )
 from backend.app.schemas.calibration_mode import derive_mode, mode_to_bool
-from backend.app.schemas.filament_routing import RoutingPreviewRequest
+from backend.app.schemas.filament_routing import PrinterRoutingPreviewRequest, RoutingPreviewRequest
 from backend.app.schemas.project import RebalanceOut
 from backend.app.services import queue_rebalance
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
@@ -61,7 +61,7 @@ from backend.app.services.filament_intake import (
     routing_detail,
     source_display_filename,
 )
-from backend.app.services.filament_preview import routing_preview
+from backend.app.services.filament_preview import printer_routing_preview, routing_preview
 from backend.app.services.queue_source_descriptor import source_storage_state
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
 from backend.app.utils.printer_models import normalize_model_name
@@ -79,6 +79,17 @@ async def preview_routing(
     user: User | None = RequirePermission(Permission.PRINTERS_READ),
 ):
     return await routing_preview(db, data, user)
+
+
+@router.post("/printer-routing-preview")
+async def preview_printer_routing(
+    data: PrinterRoutingPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.PRINTERS_READ),
+):
+    # This is a read, also used while editing an existing job. Source ownership
+    # is checked by the service; no queue-create permission or write is needed.
+    return await printer_routing_preview(db, data, user)
 
 
 def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:

@@ -4497,6 +4497,7 @@ export interface QueueCopySourceProfile {
 }
 
 export interface PrintQueueItemUpdate {
+  remap_filament?: boolean;
   feed_policy?: FeedPolicy;
   force_color_match?: boolean;
   allow_base_material_match?: boolean;
@@ -4590,6 +4591,22 @@ export interface FilamentRoutingSnapshot {
   allow_base_material_match?: boolean;
   filament_overrides: AutoQueueFilamentOverride[];
   review_required?: boolean;
+}
+export interface PrinterRoutingTarget {
+  printer_id: number;
+  plate_id: number;
+  ams_mapping?: number[];
+  manual_mapping: boolean;
+  remap_filament?: boolean;
+}
+export interface PrinterRoutingPreview {
+  targets: {
+    printer_id: number;
+    plate_id: number;
+    status: 'compatible' | 'incompatible' | 'unknown';
+    mapping: number[] | null;
+    reason: { code: string; message: string } | null;
+  }[];
 }
 export interface RoutingPreview {
   advisory_unavailable?: boolean;
@@ -9352,6 +9369,10 @@ export const api = {
     allow_base_material_match: boolean;
     filament_overrides?: AutoQueueFilamentOverride[] }) =>
     request<RoutingPreview>('/auto-queue/routing-preview', { method: 'POST', body: JSON.stringify(data) }),
+  previewPrinterRouting: (data: { archive_id?: number; library_file_id?: number; source_queue_item_id?: number; editing_queue_item?: boolean;
+    targets: PrinterRoutingTarget[]; feed_policy?: FeedPolicy; force_color_match: boolean;
+    allow_base_material_match: boolean; filament_overrides?: AutoQueueFilamentOverride[] }) =>
+    request<PrinterRoutingPreview>('/auto-queue/printer-routing-preview', { method: 'POST', body: JSON.stringify(data) }),
   getAutoQueueStats: () => request<AutoQueueStats>('/auto-queue/stats'),
   getAutoQueueItem: (id: number) => request<AutoQueueItem>(`/auto-queue/${id}`),
   addToAutoQueue: (data: AutoQueueItemCreate) =>

@@ -176,6 +176,28 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
     # Reuse the established inventory/Spoolman ranking adapter, not the legacy
     # matcher. Ranking is a preference; source compatibility comes from the
     # fresh snapshot and the complete resolver below.
+    snapshot, prefer_lowest, source_priority = await ranked_feed(db, printer_id, policy, prefer_lowest)
+    revision = revision_for(req, policy, snapshot)
+    exact_model = saved.get("exact_model", item.source_auto_item_id is not None)
+    result = resolve_filament_routing(
+        req, policy, snapshot, prefer_lowest=prefer_lowest, exact_model=exact_model, source_priority=source_priority
+    )
+    if result.plan is None:
+        raise RoutingDeferred(result.reason or "mapping_review_required", revision=revision, params=result.params)
+    # The latch: a refusal this job already recorded is not re-asked while the
+    # evidence behind it is unchanged. ⚠️ Nothing CLEARS a stored block, and
+    # nothing should: when the feed half of the revision changed shape — as it
+    # did when it became policy-aware — an old block simply stops matching by
+    # construction, and this job is re-evaluated on its next tick like any
+    # other. An unconditional clear would instead re-dispatch every genuinely
+    # blocked row on the first boot after such a change.
+    if saved.get("runtime", {}).get("blocked_revision") == revision:
+        raise RoutingDeferred(saved["runtime"].get("reason", "feed_state_changed"), revision=revision)
+    return DispatchRoutingGuard(req, policy, result.plan, exact_model, revision, feed_signature(policy, snapshot))
+
+
+async def ranked_feed(db, printer_id, policy, prefer_lowest=None):
+    """One ranking adapter for the dialog preview and the eventual dispatch."""
     from backend.app.services.print_scheduler import scheduler
 
     if prefer_lowest is None:
@@ -198,23 +220,7 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
             source["global_tray_id"]: scheduler._prefer_lowest_sort_key(source, remaining) for source in loaded
         }
         snapshot = printer_manager.get_feed_snapshot(printer_id)
-    revision = revision_for(req, policy, snapshot)
-    exact_model = saved.get("exact_model", item.source_auto_item_id is not None)
-    result = resolve_filament_routing(
-        req, policy, snapshot, prefer_lowest=prefer_lowest, exact_model=exact_model, source_priority=source_priority
-    )
-    if result.plan is None:
-        raise RoutingDeferred(result.reason or "mapping_review_required", revision=revision, params=result.params)
-    # The latch: a refusal this job already recorded is not re-asked while the
-    # evidence behind it is unchanged. ⚠️ Nothing CLEARS a stored block, and
-    # nothing should: when the feed half of the revision changed shape — as it
-    # did when it became policy-aware — an old block simply stops matching by
-    # construction, and this job is re-evaluated on its next tick like any
-    # other. An unconditional clear would instead re-dispatch every genuinely
-    # blocked row on the first boot after such a change.
-    if saved.get("runtime", {}).get("blocked_revision") == revision:
-        raise RoutingDeferred(saved["runtime"].get("reason", "feed_state_changed"), revision=revision)
-    return DispatchRoutingGuard(req, policy, result.plan, exact_model, revision, feed_signature(policy, snapshot))
+    return snapshot, prefer_lowest, source_priority
 
 
 async def final_guard(guard, printer_id):
@@ -233,6 +239,11 @@ async def final_guard(guard, printer_id):
     result = resolve_filament_routing(guard.requirements, guard.policy, snapshot, exact_model=guard.exact_model)
     if result.plan is None:
         raise RoutingDeferred(result.reason or "feed_state_changed", revision=revision, params=result.params)
+    # Do not adopt a new baseline after a reconnect or a topology change during
+    # preparation. The signature ignores remain (and variant under ON), not
+    # physical identity. Checking only chosen-source fingerprints lost generation.
+    if feed_signature(guard.policy, snapshot) != guard.snapshot_signature:
+        raise RoutingDeferred("feed_state_changed", revision=revision)
     # Keep the prepared assignment if it remains valid. Remain-only updates
     # cannot select another spool after calibration/colour attribution ran.
     selected = {

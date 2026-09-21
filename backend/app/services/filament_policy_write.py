@@ -107,20 +107,27 @@ async def routing_update(db, item, changes, cache=None):
         return changes
     previous = queue_policy(item)
     scope_changed = any(k in changes and changes[k] != getattr(item, k) for k in ("queue_id", "plate_id"))
-    if previous.mode == "pinned" and scope_changed and "ams_mapping" not in changes:
-        raise HTTPException(422, routing_detail("mapping_review_required"))
+    remapped = changes.get("remap_filament", False) or (
+        "ams_mapping" in changes and decode(changes["ams_mapping"]) != decode(item.ams_mapping)
+    )
     choices = {**asdict(previous), "plate_id": item.plate_id, "use_ams": item.use_ams}
     # Absence of a physical mapping is deliberate for semantic auto jobs.
     # ⚠️ The stored MODE is what an edit inherits, never the mapping column: an
     # auto job carries one too (the dialog echoes back the routing it displayed),
     # so re-sending it must not convert the job. A hand pin survives every edit
     # that does not speak about it, and is released only by an explicit
-    # ``manual_mapping: False`` — the operator's own answer, not a side effect.
+    # ``manual_mapping: False`` (or the older explicit mapping-clear API).
     if previous.mode == "pinned":
         choices["ams_mapping"] = decode(item.ams_mapping)
         choices["manual_mapping"] = True
     choices.update(changes)
+    # Backward-compatible explicit clear. Absence is NOT a clear; nor can null
+    # overrule a caller that explicitly said this is still a physical selection.
+    if "ams_mapping" in changes and changes["ams_mapping"] is None and "manual_mapping" not in changes:
+        choices["manual_mapping"] = False
     de_pinned = previous.mode == "pinned" and not choices.get("manual_mapping")
+    if previous.mode == "pinned" and scope_changed and not (de_pinned or (remapped and "ams_mapping" in changes)):
+        raise HTTPException(422, routing_detail("mapping_review_required"))
     if changes.get("use_ams") is not None and "feed_policy" not in changes and previous.mode == "auto":
         choices["feed_policy"] = "auto" if changes["use_ams"] else "external_only"
     queue = await db.get(PrinterQueue, changes.get("queue_id") or item.queue_id)
@@ -147,7 +154,7 @@ async def routing_update(db, item, changes, cache=None):
     # nothing about the mapping keeps THAT record rather than re-reading today's
     # trays. An edit that released the pin is the one case where carrying it
     # over would reinstate what the operator just cleared.
-    if routing and "ams_mapping" not in changes and not de_pinned:
+    if routing and not remapped and not scope_changed and not de_pinned:
         stored = json.loads(routing)
         stored["physical_pins"] = previous.physical_pins
         stored["review_required"] = previous.review_required

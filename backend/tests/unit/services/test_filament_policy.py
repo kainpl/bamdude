@@ -69,6 +69,14 @@ def test_a_legacy_row_still_reads_its_own_mapping_as_physical_intent():
     assert not policy.review_required
 
 
+@pytest.mark.parametrize("mapping", [None, "broken", {}])
+def test_manual_intent_without_mapping_requires_review_not_auto(mapping):
+    policy = choices_policy({"manual_mapping": True, "ams_mapping": mapping}, a_one_tray_snapshot())
+    assert policy.mode == "pinned"
+    assert policy.review_required
+    assert policy.physical_pins == {}
+
+
 def test_auto_global_color_policy_survives_without_overrides():
     item = SimpleNamespace(
         use_ams=True,

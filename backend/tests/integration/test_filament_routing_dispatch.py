@@ -440,6 +440,68 @@ async def test_the_same_retag_still_stops_the_job_when_the_option_is_off(
         await final_guard(guard, printer.id)
 
 
+@pytest.mark.parametrize("allow_base_material_match", [True, False])
+async def test_reconnect_during_preparation_cannot_be_rebaselined(
+    db_session, tmp_path, printer_factory, monkeypatch, allow_base_material_match
+):
+    item, _, printer, _, mqtt = await a_routed_job(
+        db_session,
+        tmp_path,
+        printer_factory,
+        monkeypatch,
+        allow_base_material_match=allow_base_material_match,
+    )
+    guard = await preflight_item(db_session, item, printer.id)
+    mqtt.state.connection_generation += 1
+    with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+        await final_guard(guard, printer.id)
+    mqtt._client.publish.assert_not_called()
+
+
+async def test_edit_echoing_mapping_keeps_original_pin_evidence(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch
+):
+    source, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    added = await committing_client.post(
+        "/api/v1/queue/",
+        json={
+            "queue_id": queue.id,
+            "library_file_id": source.id,
+            "ams_mapping": [-1, -1, 254],
+            "manual_mapping": True,
+        },
+    )
+    assert added.status_code == 200, added.text
+    item = await db_session.get(PrintQueueItem, added.json()["id"])
+    before = json.loads(item.filament_routing)["physical_pins"]
+    mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_color": "00FF00"}}})
+    edited = await committing_client.patch(
+        f"/api/v1/queue/{item.id}",
+        json={
+            "ams_mapping": [-1, -1, 254],
+            "manual_mapping": True,
+            "manual_start": True,
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    await db_session.refresh(item)
+    assert json.loads(item.filament_routing)["physical_pins"] == before
+    with pytest.raises(RoutingDeferred, match="mapping_review_required"):
+        await preflight_item(db_session, item, printer.id)
+    reviewed = await committing_client.patch(
+        f"/api/v1/queue/{item.id}",
+        json={
+            "ams_mapping": [-1, -1, 254],
+            "manual_mapping": True,
+            "remap_filament": True,
+        },
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    await db_session.refresh(item)
+    assert json.loads(item.filament_routing)["physical_pins"] != before
+    assert await preflight_item(db_session, item, printer.id)
+
+
 @pytest.mark.parametrize(
     ("change", "reason"),
     [({"tray_type": "PETG"}, "material_mismatch"), ({"tray_uuid": "ANOTHER-SPOOL"}, "feed_state_changed")],

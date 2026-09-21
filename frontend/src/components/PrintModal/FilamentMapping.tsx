@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Circle, Check, AlertTriangle, RefreshCw, ChevronDown, ChevronUp, Palette } from 'lucide-react';
 import { api } from '../../api/client';
 import { useFilamentMapping } from '../../hooks/useFilamentMapping';
-import { getGlobalTrayId } from '../../utils/amsHelpers';
+import { filamentColorMatches, filamentRequirementMatches, filamentTypesCompatible, getGlobalTrayId } from '../../utils/amsHelpers';
 import { getColorName } from '../../utils/colors';
 import { useFilamentLabels } from './useFilamentLabels';
 import type { FilamentMappingProps } from './types';
@@ -25,6 +25,8 @@ export function FilamentMapping({
   onForceColorMatchChange,
   requireExactColor = false,
   plateLabel,
+  resolvedMapping,
+  routingReason,
 }: FilamentMappingProps & { defaultExpanded?: boolean }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -49,14 +51,25 @@ export function FilamentMapping({
   // The global exact-colour rule is a routing rule, not merely a warning.  The
   // old panel still painted it yellow, which made the checkbox look inert even
   // though dispatch would subsequently reject that selection.
-  const filamentComparison = useMemo(
-    () => requireExactColor
-      ? rawFilamentComparison.map(item => item.status === 'type_only' ? { ...item, status: 'mismatch' as const } : item)
-      : rawFilamentComparison,
-    [requireExactColor, rawFilamentComparison],
-  );
-  const hasTypeMismatch = rawTypeMismatch || (requireExactColor && rawColorMismatch);
-  const hasColorMismatch = !requireExactColor && rawColorMismatch;
+  const filamentComparison = useMemo(() => {
+    const comparison = Array.isArray(resolvedMapping) ? rawFilamentComparison.map(item => {
+      const loaded = loadedFilaments.find(source => source.globalTrayId === resolvedMapping[item.slot_id - 1]);
+      const typeMatch = !!loaded && filamentRequirementMatches(item, loaded);
+      const colorMatch = !!loaded && filamentColorMatches(item, loaded);
+      return { ...item, loaded, hasFilament: !!loaded, typeMatch, colorMatch,
+        status: !typeMatch ? 'mismatch' as const : colorMatch ? 'match' as const : 'type_only' as const };
+    }) : rawFilamentComparison;
+    return requireExactColor
+      ? comparison.map(item => item.status === 'type_only' ? { ...item, status: 'mismatch' as const } : item)
+      : comparison;
+  }, [requireExactColor, rawFilamentComparison, resolvedMapping, loadedFilaments]);
+  const profileMismatch = rawFilamentComparison.some(item => !item.typeMatch &&
+    loadedFilaments.some(source => filamentTypesCompatible(source.type, item.type)) &&
+    !loadedFilaments.some(source => filamentRequirementMatches(item, source)));
+  const hasTypeMismatch = Array.isArray(resolvedMapping)
+    ? filamentComparison.some(item => !item.hasFilament || !item.typeMatch || (requireExactColor && !item.colorMatch))
+    : rawTypeMismatch || (requireExactColor && rawColorMismatch);
+  const hasColorMismatch = !requireExactColor && filamentComparison.some(item => item.typeMatch && !item.colorMatch);
 
   // Per-slot sub-brand + material-disambiguated colour labels (#1718). Shared
   // hook, extracted back when a second (model-mode) panel consumed it, so the
@@ -136,7 +149,7 @@ export function FilamentMapping({
   }
 
   // Determine status indicator color
-  const statusColor = hasTypeMismatch
+  const statusColor = routingReason || hasTypeMismatch
     ? '#f97316' // orange
     : hasColorMismatch
     ? '#facc15' // yellow
@@ -166,6 +179,7 @@ export function FilamentMapping({
       // Wait a moment for printer to respond, then refetch
       await new Promise((r) => setTimeout(r, 500));
       await queryClient.refetchQueries({ queryKey: ['printer-status', printerId] });
+      await queryClient.invalidateQueries({ queryKey: ['printer-routing-preview'] });
     } finally {
       setIsRefreshing(false);
     }
@@ -180,8 +194,8 @@ export function FilamentMapping({
       >
         <Circle className="w-4 h-4" fill={statusColor} stroke="none" />
         <span>{plateLabel ? `${t('printModal.filamentMapping')} — ${plateLabel}` : t('printModal.filamentMapping')}</span>
-        {hasTypeMismatch ? (
-          <span className="text-xs text-orange-700 dark:text-orange-400">({t(requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeNotFound')})</span>
+        {routingReason || hasTypeMismatch ? (
+          <span className="text-xs text-orange-700 dark:text-orange-400">({routingReason || t(profileMismatch ? 'filamentRouting.feasibility.reason.variant_mismatch' : requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeNotFound')})</span>
         ) : hasColorMismatch ? (
           <span className="text-xs text-yellow-700 dark:text-yellow-400">({t('printModal.filamentColorMismatch')})</span>
         ) : (
@@ -209,11 +223,8 @@ export function FilamentMapping({
             </button>
           </div>
           {filamentComparison.map((item, idx) => {
-            // #1717: per-slot force-color-match checkbox. Rendered only
-            // when a handler is wired (onForceColorMatchChange). NOTE: BamDude's
-            // specific-printer path pins an explicit ams_mapping at scheduling
-            // time (PrintQueueItem has no force_color_match field), so this stays
-            // dormant unless a caller opts in — see agent report / backend flag.
+            // Per-slot strict colour is part of the routing policy, not a pin.
+            // Show its control only when the caller can persist that choice.
             const slotId = item.slot_id ?? 0;
             const canForceMatch = slotId > 0 && onForceColorMatchChange != null;
             // #1718: sub-brand + colour resolution via the shared hook.
@@ -311,7 +322,7 @@ export function FilamentMapping({
                     <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
                   </span>
                 ) : (
-                  <span title={t(requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeNotLoaded')}>
+                  <span title={routingReason || t(profileMismatch ? 'filamentRouting.feasibility.reason.variant_mismatch' : requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeNotLoaded')}>
                     <AlertTriangle className="w-3 h-3 text-orange-600 dark:text-orange-400" />
                   </span>
                 )}

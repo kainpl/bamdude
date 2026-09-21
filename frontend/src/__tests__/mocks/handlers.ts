@@ -89,12 +89,21 @@ const mockPrinters = [
 ];
 
 export const handlers = [
+  // Default successful routing fixture. Behaviour tests override this endpoint
+  // with explicit backend verdicts; the mock does not implement a second solver.
+  http.post('/api/v1/auto-queue/printer-routing-preview', async ({ request }) => {
+    const data = await request.json() as { targets: { printer_id: number; plate_id: number; ams_mapping?: number[] }[] };
+    return HttpResponse.json({ targets: data.targets.map(target => ({ ...target,
+      status: 'compatible', mapping: target.ams_mapping ?? [0], reason: null,
+    })) });
+  }),
   http.post('/api/v1/auto-queue/routing-preview', async ({ request }) => {
     const data = await request.json() as { plate_ids: number[] };
     return HttpResponse.json({ plates: data.plate_ids.map(id => ({
       requested_plate_id: id, plate_id: id || 1, model: 'X1C', status: 'ok', reason: null,
       filaments: [{ slot_id: 1, type: 'PLA', color: '#FFFFFF', nozzle_id: null, used_grams: 1 }],
-      groups: [],
+      groups: [{ key: 'X1C/1/present', model: 'X1C', nozzles: 1, ams: 'present',
+        total: 1, compatible: 1, incompatible: 0, unknown: 0, ready: 1, reasons: [] }],
     })) });
   }),
   // ========================================================================

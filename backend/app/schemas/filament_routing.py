@@ -30,6 +30,33 @@ class FilamentRoutingChoices(BaseModel):
     # statement, never an inference. It is a request choice and not a column;
     # what persists is the intent's ``mode``.
     manual_mapping: bool = False
+    # Explicit operator review, even if the selected tray numbers did not change.
+    remap_filament: bool = False
+
+
+class PrinterRoutingTarget(BaseModel):
+    printer_id: int = Field(gt=0)
+    plate_id: int = Field(default=0, ge=0)
+    ams_mapping: list[int] | None = None
+    manual_mapping: bool = False
+    remap_filament: bool = False
+
+
+class PrinterRoutingPreviewRequest(FilamentRoutingChoices):
+    archive_id: int | None = None
+    library_file_id: int | None = None
+    source_queue_item_id: int | None = None
+    # Editing preserves historical intent; a copy is a new operator submission.
+    editing_queue_item: bool = False
+    targets: list[PrinterRoutingTarget] = Field(min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def one_source(self):
+        if sum(bool(value) for value in (self.archive_id, self.library_file_id, self.source_queue_item_id)) != 1:
+            raise ValueError("Exactly one source is required")
+        if self.editing_queue_item and not self.source_queue_item_id:
+            raise ValueError("Editing requires a queue item source")
+        return self
 
 
 class RoutingPreviewRequest(FilamentRoutingChoices):

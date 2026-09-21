@@ -194,6 +194,40 @@ describe('who chose the trays', () => {
     expect(patched).toMatchObject({ manual_mapping: false, manual_start: true });
   });
 
+  it('pins only the printer whose displayed assignment the operator changes', async () => {
+    const user = userEvent.setup();
+    const posts: Record<string, unknown>[] = [];
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([
+        printers[0], { ...printers[0], id: 2, name: 'Second printer' },
+      ])),
+      http.post('/api/v1/auto-queue/printer-routing-preview', async ({ request }) => {
+        const body = await request.json() as { targets: { printer_id: number; plate_id: number; ams_mapping?: number[] }[] };
+        return HttpResponse.json({ targets: body.targets.map(target => ({ ...target,
+          status: 'compatible', mapping: target.ams_mapping ?? [1], reason: null })) });
+      }),
+      http.post('/api/v1/queue/', async ({ request }) => {
+        posts.push(await request.json() as Record<string, unknown>);
+        return HttpResponse.json({ id: posts.length, status: 'pending', created_item_ids: [posts.length] });
+      }),
+    );
+    render(<PrintModal mode="add-to-queue" archiveId={1} archiveName="Bracket" initialSelectedPrinterIds={[1, 2]}
+      lockPrinterSelection onClose={vi.fn()} onSuccess={vi.fn()} />);
+    const custom = await screen.findAllByRole('checkbox', { name: /custom mapping/i });
+    await user.click(custom[0]);
+    await user.click(custom[1]);
+    const picks = await screen.findAllByTitle('Auto-matched');
+    // Server assignment wins over the local tray-0 provisional preference.
+    await waitFor(() => expect(picks[0]).toHaveValue('1'));
+    await user.selectOptions(picks[0], '0');
+    const submit = screen.getByRole('button', { name: /queue to 2 printers/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await user.click(submit);
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts[0]).toMatchObject({ queue_id: 1, manual_mapping: true, ams_mapping: [0] });
+    expect(posts[1]).toMatchObject({ queue_id: 2, manual_mapping: false, ams_mapping: [1] });
+  });
+
   it('a hand-pinned row keeps its pin through an edit that never touched the slots', async () => {
     const user = userEvent.setup();
     openEdit(queueItem('pinned'));
@@ -203,6 +237,8 @@ describe('who chose the trays', () => {
 
     await waitFor(() => expect(patched).toBeDefined());
     expect(patched).toMatchObject({ manual_mapping: true, manual_start: true });
+    expect(patched).not.toHaveProperty('ams_mapping');
+    expect(patched?.remap_filament).toBe(false);
   });
 
   /**

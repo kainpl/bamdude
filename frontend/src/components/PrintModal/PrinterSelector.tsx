@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useQueryClient, useQueries, useQuery } from '@tanstack/react-query';
+import { useQueryClient, useQueries } from '@tanstack/react-query';
 import {
   Printer as PrinterIcon,
   Loader2,
@@ -14,14 +14,13 @@ import {
 import { api, type PrinterStatus } from '../../api/client';
 import { getColorName } from '../../utils/colors';
 import {
-  autoMatchFilament,
   filterFilamentsByNozzle,
   filamentColorMatches,
   filamentRequirementMatches,
 } from '../../utils/amsHelpers';
 import type { PrinterSelectorProps } from './types';
 import type { PrinterMappingResult, PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
-import type { FilamentRequirement, LoadedFilament } from '../../hooks/useFilamentMapping';
+import type { FilamentRequirement } from '../../hooks/useFilamentMapping';
 
 interface PrinterSelectorWithMappingProps extends PrinterSelectorProps {
   /** Per-printer mapping results (only used when multiple printers selected) */
@@ -56,7 +55,9 @@ function InlineMappingEditor({
   const handleSlotChange = (slotId: number, value: string) => {
     if (slotId <= 0) return;
 
-    const newMappings = { ...printerResult.config.manualMappings };
+    const newMappings: Record<number, number> = printerResult.config.autoConfigured
+      ? Object.fromEntries((printerResult.finalMapping ?? []).flatMap((tray, index) => tray >= 0 ? [[index + 1, tray]] : []))
+      : { ...printerResult.config.manualMappings };
     if (value === '') {
       delete newMappings[slotId];
     } else {
@@ -76,43 +77,20 @@ function InlineMappingEditor({
       await api.refreshPrinterStatus(printerResult.printerId);
       await new Promise((r) => setTimeout(r, 500));
       await queryClient.refetchQueries({ queryKey: ['printer-status', printerResult.printerId] });
+      await queryClient.invalidateQueries({ queryKey: ['printer-routing-preview'] });
     } finally {
       setIsRefreshing(false);
     }
   };
 
-  // Same reasoning as the mapping hooks: the dispatcher will not re-derive a
-  // mapping this dialog pinned, so "prefer lowest remaining filament" has to be
-  // applied at pin time or not at all.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
-  const preferLowest = settings?.prefer_lowest_filament ?? true;
-
-  // Compute current slot assignments
+  // Show the full assignment, not a second per-channel greedy match. In the
+  // dialog this is the same server plan used by the verdict and submit path.
   const slotAssignments = filamentReqs.map((req) => {
     const slotId = req.slot_id || 0;
-    const currentMapping = printerResult.config.manualMappings[slotId];
-
-    let loaded: LoadedFilament | undefined;
-    let isManual = false;
-
-    if (currentMapping !== undefined) {
-      loaded = printerResult.loadedFilaments.find((f) => f.globalTrayId === currentMapping);
-      if (loaded && req.strict_color_match && !filamentColorMatches(req, loaded)) {
-        loaded = undefined;
-      }
-      isManual = true;
-    } else {
-      const usedTrayIds = new Set<number>(Object.values(printerResult.config.manualMappings));
-      // One-colour print: default to the spool already loaded in the extruder.
-      const preferredTrayId = filamentReqs.length === 1 ? printerResult.status?.tray_now : undefined;
-      loaded = autoMatchFilament(
-        req,
-        printerResult.loadedFilaments,
-        usedTrayIds,
-        preferredTrayId,
-        preferLowest,
-      ) as LoadedFilament | undefined;
-    }
+    const selected = printerResult.finalMapping?.[slotId - 1];
+    const loaded = printerResult.loadedFilaments.find(f => f.globalTrayId === selected);
+    const isManual = !printerResult.config.autoConfigured &&
+      printerResult.config.manualMappings[slotId] !== undefined;
 
     // Determine status
     let status: 'match' | 'type_only' | 'mismatch' = 'mismatch';
@@ -176,7 +154,9 @@ function InlineMappingEditor({
             <option value="" className="bg-bambu-dark text-bambu-gray">
               {t('printModal.selectSlot')}
             </option>
-            {filterFilamentsByNozzle(printerResult.loadedFilaments, req.nozzle_id)
+            {(printerResult.status?.fila_switch?.installed
+              ? printerResult.loadedFilaments
+              : filterFilamentsByNozzle(printerResult.loadedFilaments, req.nozzle_id))
               .map((f) => (
               <option key={f.globalTrayId} value={f.globalTrayId} className="bg-bambu-dark text-white">
                 {f.label}: {f.traySubBrands || f.type} ({f.colorName})
@@ -190,7 +170,7 @@ function InlineMappingEditor({
               <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
             </span>
           ) : (
-            <span title={t('printModal.filamentTypeNotLoaded')}>
+            <span title={printerResult.routingReason || t('printModal.filamentTypeNotLoaded')}>
               <AlertTriangle className="w-3 h-3 text-orange-600 dark:text-orange-400" />
             </span>
           )}
@@ -514,7 +494,7 @@ export function PrinterSelector({
                       ? 'text-yellow-700 dark:text-yellow-400'
                       : 'text-orange-700 dark:text-orange-400'
                   }`}>
-                    ({t('printModal.matched', { matched: mappingResult.exactMatches, total: mappingResult.totalSlots })})
+                    ({mappingResult.routingReason || t('printModal.matched', { matched: mappingResult.exactMatches, total: mappingResult.totalSlots })})
                   </span>
 
                   {/* Loading indicator */}
