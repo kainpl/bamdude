@@ -11,10 +11,12 @@ import { Select } from './Select';
 
 interface AddTelegramChatModalProps {
   chat?: TelegramChat | null;
+  /** The bot a NEW chat is registered under — the provider whose card opened this dialog. */
+  providerId: number;
   onClose: () => void;
 }
 
-export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProps) {
+export function AddTelegramChatModal({ chat, providerId, onClose }: AddTelegramChatModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const isEditing = !!chat;
@@ -53,7 +55,10 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
     queryKey: ['notification-providers'],
     queryFn: api.getNotificationProviders,
   });
-  const telegramProvider = providers?.find((p) => p.provider_type === 'telegram') ?? null;
+  // The chat's own bot (m180): the row it is bound to when editing, the card's
+  // provider when adding — never "the first telegram provider".
+  const boundProviderId = chat?.provider_id ?? providerId;
+  const telegramProvider = providers?.find((p) => p.id === boundProviderId) ?? null;
   const providerDigestOn = telegramProvider?.daily_digest_enabled ?? false;
   const showDigestProviderWarning = dailyDigest && telegramProvider != null && !providerDigestOn;
 
@@ -96,7 +101,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
     }
 
     const data = {
-      ...(isEditing ? {} : { chat_id: parseInt(chatId) }),
+      ...(isEditing ? {} : { chat_id: parseInt(chatId), provider_id: providerId }),
       label: label.trim() || null,
       group_id: groupId,
       user_id: userId,

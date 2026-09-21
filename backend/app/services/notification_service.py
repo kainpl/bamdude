@@ -500,10 +500,15 @@ class NotificationService:
         printer_id: int | None = None,
         extra_data: dict | None = None,
         chat_filter: Callable[[Any], bool] | None = None,
+        *,
+        provider_id: int,
     ) -> tuple[bool, str]:
-        """Send Telegram notification to all active chats subscribed to this event.
+        """Send Telegram notification to this provider's active chats subscribed to this event.
 
-        ``chat_filter`` lets an event apply per-chat criteria beyond
+        ``provider_id`` is the bot: a chat belongs to the provider row whose
+        bot it wrote to (m180), and this provider's token can reach no other
+        — Telegram answers "chat not found" for a chat that never started
+        it. ``chat_filter`` lets an event apply per-chat criteria beyond
         ``notify_events`` — today the progress-milestone duration floor (#28),
         which is per chat because that is telegram's whole authority model.
         """
@@ -521,6 +526,7 @@ class NotificationService:
                 result = await session.execute(
                     select(TelegramChat).where(
                         TelegramChat.is_active == True,  # noqa: E712
+                        TelegramChat.provider_id == provider_id,
                     )
                 )
                 chats = result.scalars().all()
@@ -552,6 +558,7 @@ class NotificationService:
                 event_type=event_type,
                 printer_id=printer_id,
                 extra_data=extra_data,
+                provider_id=provider_id,
             )
             if ok:
                 sent += 1
@@ -570,9 +577,12 @@ class NotificationService:
         config: dict,
         title: str,
         body: str,
+        *,
+        provider_id: int,
     ) -> tuple[bool, str]:
-        """Fan-out a daily digest body to every active TelegramChat that
-        opted into ``daily_digest=True``. Bypasses ``notify_events`` and
+        """Fan-out a daily digest body to every active TelegramChat of this
+        provider (the bot it wrote to, m180) that opted into
+        ``daily_digest=True``. Bypasses ``notify_events`` and
         ``quiet_hours_*`` — the daily digest is its own opt-in channel,
         not a per-event notification, so it shouldn't be filtered through
         ``should_notify(event_type)``.
@@ -598,6 +608,7 @@ class NotificationService:
                     select(TelegramChat).where(
                         TelegramChat.is_active.is_(True),
                         TelegramChat.daily_digest.is_(True),
+                        TelegramChat.provider_id == provider_id,
                     )
                 )
                 chats = result.scalars().all()
@@ -611,7 +622,7 @@ class NotificationService:
         sent = 0
         errors: list[str] = []
         for chat in chats:
-            ok, err = await self._send_telegram(config, full, chat_id=str(chat.chat_id))
+            ok, err = await self._send_telegram(config, full, chat_id=str(chat.chat_id), provider_id=provider_id)
             if ok:
                 sent += 1
             else:
@@ -625,12 +636,14 @@ class NotificationService:
             return False, f"Failed to send digest to all chats: {'; '.join(errors)}"
 
     @staticmethod
-    async def _has_telegram_digest_subscribers() -> bool:
-        """True iff at least one active TelegramChat has opted into daily digest.
+    async def _has_telegram_digest_subscribers(provider_id: int) -> bool:
+        """True iff at least one of THIS provider's active chats opted into the daily digest.
 
         Used by ``_send_to_providers`` to skip the digest queue write when
-        no chats subscribed — keeps ``notification_digest_queue`` from
-        accumulating rows that would never be delivered to anyone.
+        no chat subscribed — keeps ``notification_digest_queue`` from
+        accumulating rows that would never be delivered to anyone. Per
+        provider, like the fan-out it stands in for (m180): a chat belongs
+        to one bot, and another bot's digest chats are not this one's.
         """
         from sqlalchemy import select
 
@@ -645,6 +658,7 @@ class NotificationService:
                         .where(
                             TelegramChat.is_active.is_(True),
                             TelegramChat.daily_digest.is_(True),
+                            TelegramChat.provider_id == provider_id,
                         )
                         .limit(1)
                     )
@@ -664,8 +678,17 @@ class NotificationService:
         event_type: str = "unknown",
         printer_id: int | None = None,
         extra_data: dict | None = None,
+        provider_id: int | None = None,
     ) -> tuple[bool, str]:
-        """Send notification to a single Telegram chat (aiogram or httpx fallback)."""
+        """Send notification to a single Telegram chat (aiogram or httpx fallback).
+
+        ``provider_id`` names the bot: a chat belongs to one provider (m180),
+        and that provider's bot is the only one that can reach it. When that
+        bot is running its aiogram session carries the message — inline
+        keyboard included — and the direct HTTP route is the fallback for
+        everything else (the bot not running, a token whose bot failed to
+        start, an aiogram send that did not confirm).
+        """
         bot_token = config.get("bot_token", "").strip()
         if not chat_id:
             chat_id = config.get("chat_id", "").strip()
@@ -673,11 +696,11 @@ class NotificationService:
         if not bot_token or not chat_id:
             return False, "Bot token and chat ID are required"
 
-        # Try aiogram bot first (if running and same token)
+        # Try this provider's own aiogram bot first, when it is running
         from backend.app.services.telegram_bot import get_bot, send_message, send_photo
 
-        aiogram_bot = get_bot()
-        if aiogram_bot and aiogram_bot.token == bot_token:
+        aiogram_bot = get_bot(provider_id) if provider_id is not None else None
+        if aiogram_bot is not None:
             try:
                 # Bot uses MarkdownV2 - escape dynamic content, keep bold markers
                 from backend.app.i18n import escape_md
@@ -698,10 +721,24 @@ class NotificationService:
                 )
 
                 if image_data:
-                    ok = await send_photo(chat_id, image_data, caption=md2_message, reply_markup=reply_markup)
+                    ok = await send_photo(
+                        provider_id, chat_id, image_data, caption=md2_message, reply_markup=reply_markup
+                    )
                 else:
-                    ok = await send_message(chat_id, md2_message, reply_markup=reply_markup)
-                return (True, "Message sent successfully") if ok else (False, "Failed to send via aiogram")
+                    ok = await send_message(provider_id, chat_id, md2_message, reply_markup=reply_markup)
+                if ok:
+                    return True, "Message sent successfully"
+                # The helpers swallow their own exception and answer ``False``
+                # — and so does a bot whose session was closed between the
+                # registry lookup above and the send (a restart in flight). The
+                # message is not lost for that: it goes the direct way, on the
+                # provider's own token, exactly as it would had the bot not
+                # been running. The inline keyboard is the one thing the
+                # fallback cannot carry; a duplicate is the one thing it can
+                # do — a network error raised AFTER Telegram accepted the
+                # request reads as ``False`` too — and for an alarm channel a
+                # rare double beats a silent loss.
+                logger.warning("aiogram send did not confirm delivery, falling back to httpx")
             except Exception as e:
                 logger.warning("aiogram send failed, falling back to httpx: %s", e)
 
@@ -1208,6 +1245,7 @@ class NotificationService:
                     printer_id=printer_id,
                     extra_data=extra_data,
                     chat_filter=chat_filter,
+                    provider_id=provider.id,
                 )
             elif provider.provider_type == "email":
                 # finish_photo_url is pulled from the rendered template variables
@@ -1545,7 +1583,7 @@ class NotificationService:
                 if provider.daily_digest_enabled and provider.daily_digest_time:
                     should_queue = True
                     if provider.provider_type == "telegram":
-                        should_queue = await self._has_telegram_digest_subscribers()
+                        should_queue = await self._has_telegram_digest_subscribers(provider.id)
                     if should_queue:
                         await self._queue_for_digest(
                             provider=provider,
@@ -3043,7 +3081,7 @@ class NotificationService:
             # which rejected every chat).
             if provider.provider_type == "telegram":
                 config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
-                success, error = await self._send_telegram_digest_to_chats(config, title, body)
+                success, error = await self._send_telegram_digest_to_chats(config, title, body, provider_id=provider.id)
             else:
                 success, error = await self._send_to_provider(provider, title, body, db)
 

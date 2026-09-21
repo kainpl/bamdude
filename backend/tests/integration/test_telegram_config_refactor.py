@@ -88,6 +88,7 @@ async def _chat(
     db_session: AsyncSession,
     *,
     chat_id: int,
+    provider_id: int,
     is_active: bool = True,
     notify_events: list[str] | None = None,
     daily_digest: bool = False,
@@ -97,6 +98,7 @@ async def _chat(
 ) -> TelegramChat:
     c = TelegramChat(
         chat_id=chat_id,
+        provider_id=provider_id,
         is_active=is_active,
         notify_events=notify_events,
         daily_digest=daily_digest,
@@ -120,8 +122,8 @@ async def test_telegram_provider_event_gate_bypassed(async_client, db_session, m
     of the legacy ``on_*`` flag — per-chat ``notify_events`` is the
     authority."""
     # Provider says NO to print_complete — but a chat opted into it.
-    await _telegram_provider(db_session, on_print_complete=False)
-    await _chat(db_session, chat_id=42, notify_events=["print_complete"])
+    provider = await _telegram_provider(db_session, on_print_complete=False)
+    await _chat(db_session, chat_id=42, provider_id=provider.id, notify_events=["print_complete"])
 
     sent: list[str] = []
 
@@ -140,7 +142,7 @@ async def test_telegram_provider_event_gate_bypassed(async_client, db_session, m
     for p in providers:
         if p.provider_type == "telegram":
             cfg = json.loads(p.config)
-            await svc._send_telegram_to_chats(cfg, "msg", event_type="print_complete")
+            await svc._send_telegram_to_chats(cfg, "msg", event_type="print_complete", provider_id=p.id)
     assert sent == ["42"]
 
 
@@ -157,9 +159,9 @@ async def test_non_telegram_provider_event_gate_still_applies(async_client, db_s
 async def test_digest_routes_only_to_opted_in_chats(async_client, db_session, monkeypatch):
     """Telegram digest send must fan out only to chats with daily_digest=True."""
     provider = await _telegram_provider(db_session, daily_digest_enabled=True, daily_digest_time="08:00")
-    await _chat(db_session, chat_id=1, daily_digest=True)
-    await _chat(db_session, chat_id=2, daily_digest=False)
-    await _chat(db_session, chat_id=3, daily_digest=True)
+    await _chat(db_session, chat_id=1, provider_id=provider.id, daily_digest=True)
+    await _chat(db_session, chat_id=2, provider_id=provider.id, daily_digest=False)
+    await _chat(db_session, chat_id=3, provider_id=provider.id, daily_digest=True)
 
     # Seed digest queue with one entry so send_digest has something to ship.
     db_session.add(
@@ -202,7 +204,7 @@ async def test_digest_with_no_opted_in_chats_clears_queue(async_client, db_sessi
     so the table doesn't grow forever — sends to zero chats successfully."""
     provider = await _telegram_provider(db_session, daily_digest_enabled=True, daily_digest_time="08:00")
     # One active chat exists, but not opted in.
-    await _chat(db_session, chat_id=99, daily_digest=False)
+    await _chat(db_session, chat_id=99, provider_id=provider.id, daily_digest=False)
 
     db_session.add(
         NotificationDigestQueue(
@@ -239,7 +241,7 @@ async def test_digest_with_no_opted_in_chats_clears_queue(async_client, db_sessi
 
 async def test_chat_quiet_hours_blocks_event_even_when_provider_active(async_client, db_session, monkeypatch):
     """Per-chat quiet hours win over provider-side enable."""
-    await _telegram_provider(db_session)
+    provider = await _telegram_provider(db_session)
     # Quiet for the whole day, so the assertion does not depend on when the
     # suite runs.
     #
@@ -252,6 +254,7 @@ async def test_chat_quiet_hours_blocks_event_even_when_provider_active(async_cli
     await _chat(
         db_session,
         chat_id=77,
+        provider_id=provider.id,
         notify_events=["print_complete"],
         quiet_hours_enabled=True,
         quiet_hours_start="00:00",
@@ -267,7 +270,7 @@ async def test_chat_quiet_hours_blocks_event_even_when_provider_active(async_cli
     monkeypatch.setattr(NotificationService, "_send_telegram", fake_send)
     svc = NotificationService()
     cfg = {"bot_token": "test-token"}
-    await svc._send_telegram_to_chats(cfg, "msg", event_type="print_complete")
+    await svc._send_telegram_to_chats(cfg, "msg", event_type="print_complete", provider_id=provider.id)
 
     assert sent == [], "quiet-hours chat must not receive event"
 
@@ -276,16 +279,22 @@ async def test_skip_on_empty_telegram_digest_subscribers(async_client, db_sessio
     """`_has_telegram_digest_subscribers` returns False when no chat opted
     in, True when any active chat has daily_digest=True."""
     svc = NotificationService()
+    provider = await _telegram_provider(db_session)
     # No chats: False.
-    assert await svc._has_telegram_digest_subscribers() is False
+    assert await svc._has_telegram_digest_subscribers(provider.id) is False
 
-    await _chat(db_session, chat_id=1, daily_digest=False)
-    assert await svc._has_telegram_digest_subscribers() is False
+    await _chat(db_session, chat_id=1, provider_id=provider.id, daily_digest=False)
+    assert await svc._has_telegram_digest_subscribers(provider.id) is False
 
-    await _chat(db_session, chat_id=2, daily_digest=True)
-    assert await svc._has_telegram_digest_subscribers() is True
+    await _chat(db_session, chat_id=2, provider_id=provider.id, daily_digest=True)
+    assert await svc._has_telegram_digest_subscribers(provider.id) is True
 
     # Inactive opted-in chat: still False (we only deliver to active).
-    await _chat(db_session, chat_id=3, is_active=False, daily_digest=True)
+    await _chat(db_session, chat_id=3, provider_id=provider.id, is_active=False, daily_digest=True)
     # The previous chat 2 is still active, so this stays True.
-    assert await svc._has_telegram_digest_subscribers() is True
+    assert await svc._has_telegram_digest_subscribers(provider.id) is True
+
+    # Another bot's chats are not this one's (m180): a second provider with
+    # no digest chats of its own must not queue a digest on the strength of
+    # the first provider's subscribers.
+    assert await svc._has_telegram_digest_subscribers(provider.id + 1000) is False

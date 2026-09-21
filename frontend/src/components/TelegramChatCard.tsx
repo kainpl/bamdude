@@ -53,7 +53,8 @@ export function TelegramChatCard({ chat, onEdit }: TelegramChatCardProps) {
     queryKey: ['notification-providers'],
     queryFn: api.getNotificationProviders,
   });
-  const telegramProvider = providers?.find((p) => p.provider_type === 'telegram') ?? null;
+  // The chat's own bot (m180), not "the first telegram provider".
+  const telegramProvider = providers?.find((p) => p.id === chat.provider_id) ?? null;
   const providerDigestOn = telegramProvider?.daily_digest_enabled ?? false;
   const providerDigestTime = telegramProvider?.daily_digest_time ?? null;
 

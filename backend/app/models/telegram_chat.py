@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
@@ -93,9 +93,30 @@ class TelegramChat(Base):
     """
 
     __tablename__ = "telegram_chats"
+    # A chat's identity is the pair (bot, chat_id): Telegram's private chat
+    # id is the user's id, identical in every bot they start, so the same
+    # person is a different chat in each bot — one row per bot (m180).
+    __table_args__ = (Index("ix_telegram_chats_provider_chat", "provider_id", "chat_id", unique=True),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False, index=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    # The bot this chat wrote to (m180). A Telegram chat exists for exactly
+    # one bot — the one whose token registered it — and a provider row IS a
+    # bot, so the binding is the provider's id and it is never NULL: the
+    # middleware fills it from the running bot at registration, the manual
+    # route from the provider named or the running one, and a chat that
+    # writes to a DIFFERENT bot is re-bound to it on contact. Every reader
+    # that fans a provider's message out to "its chats" filters on this
+    # column; without it two telegram providers sent every message to every
+    # chat, one of them into "chat not found". ⚠️ SQLite never gets
+    # ``PRAGMA foreign_keys``: the provider delete route removes its chats in
+    # code; the CASCADE is the PostgreSQL backstop.
+    provider_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("notification_providers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     label: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # Role - defines permissions. NULL only for auto-registered chats pending setup.

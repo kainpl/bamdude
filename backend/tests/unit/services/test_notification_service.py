@@ -2907,3 +2907,93 @@ class TestFilamentRunoutNotification:
         ):
             await service.on_filament_runout(1, "P1S", "A2", "pause", db)
         send.assert_not_awaited()
+
+
+class TestTelegramSendFallsThroughToHttpx:
+    """A running bot that could not hand a message over does not lose it.
+
+    ``telegram_bot.send_message`` / ``send_photo`` swallow their own exception
+    and answer ``False`` — and so does a bot whose session was closed between
+    the registry lookup and the send, which is exactly the window a restart
+    opens. ``_send_telegram`` used to return "Failed to send via aiogram"
+    there and never try the direct route it takes whenever the bot is NOT
+    running; now the direct route is the fallback for that answer too.
+
+    The bot is looked up by provider (m180): the aiogram path is taken only
+    for a named provider whose bot is running.
+    """
+
+    @staticmethod
+    def _telegram_ok_response():
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"ok": True}
+        return response
+
+    @pytest.mark.asyncio
+    async def test_an_aiogram_send_that_answers_false_goes_the_direct_way(self):
+        service = NotificationService()
+        bot = MagicMock()
+        bot.token = "111:AAbot"
+        client = MagicMock()
+        client.post = AsyncMock(return_value=self._telegram_ok_response())
+
+        with (
+            patch("backend.app.services.telegram_bot.get_bot", lambda pid: bot if pid == 7 else None),
+            patch("backend.app.services.telegram_bot.send_message", AsyncMock(return_value=False)) as aiogram_send,
+            patch.object(service, "_build_telegram_actions", AsyncMock(return_value=None)),
+            patch.object(service, "_get_client", AsyncMock(return_value=client)),
+        ):
+            ok, detail = await service._send_telegram(
+                {"bot_token": "111:AAbot", "chat_id": "42"}, "Title\nbody", provider_id=7
+            )
+
+        assert ok is True, detail
+        aiogram_send.assert_awaited_once()
+        assert aiogram_send.await_args.args[0] == 7, "the send names the provider whose bot it is"
+        client.post.assert_awaited_once()
+        assert "/bot111:AAbot/sendMessage" in client.post.await_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_a_delivered_aiogram_send_never_reaches_httpx(self):
+        service = NotificationService()
+        bot = MagicMock()
+        bot.token = "111:AAbot"
+        client = MagicMock()
+        client.post = AsyncMock(return_value=self._telegram_ok_response())
+
+        with (
+            patch("backend.app.services.telegram_bot.get_bot", lambda pid: bot if pid == 7 else None),
+            patch("backend.app.services.telegram_bot.send_message", AsyncMock(return_value=True)),
+            patch.object(service, "_build_telegram_actions", AsyncMock(return_value=None)),
+            patch.object(service, "_get_client", AsyncMock(return_value=client)),
+        ):
+            ok, _detail = await service._send_telegram(
+                {"bot_token": "111:AAbot", "chat_id": "42"}, "Title\nbody", provider_id=7
+            )
+
+        assert ok is True
+        client.post.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_chat_of_a_provider_whose_bot_is_not_running_goes_the_direct_way(self):
+        """Another provider's bot being up is not this provider's bot (m180)."""
+        service = NotificationService()
+        other_bot = MagicMock()
+        other_bot.token = "111:AAother"
+        client = MagicMock()
+        client.post = AsyncMock(return_value=self._telegram_ok_response())
+
+        with (
+            patch("backend.app.services.telegram_bot.get_bot", lambda pid: other_bot if pid == 7 else None),
+            patch("backend.app.services.telegram_bot.send_message", AsyncMock(return_value=True)) as aiogram_send,
+            patch.object(service, "_build_telegram_actions", AsyncMock(return_value=None)),
+            patch.object(service, "_get_client", AsyncMock(return_value=client)),
+        ):
+            ok, detail = await service._send_telegram(
+                {"bot_token": "222:AAmine", "chat_id": "42"}, "Title\nbody", provider_id=9
+            )
+
+        assert ok is True, detail
+        aiogram_send.assert_not_awaited()
+        assert "/bot222:AAmine/sendMessage" in client.post.await_args.args[0]

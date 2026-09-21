@@ -10,6 +10,7 @@ from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.group import Group
+from backend.app.models.notification import NotificationProvider
 from backend.app.models.telegram_chat import (
     ALL_NOTIFY_EVENTS,
     DEFAULT_NOTIFY_EVENTS,
@@ -33,6 +34,7 @@ def _to_response(chat: TelegramChat) -> TelegramChatResponse:
     return TelegramChatResponse(
         id=chat.id,
         chat_id=chat.chat_id,
+        provider_id=chat.provider_id,
         label=chat.label,
         group_id=chat.group_id,
         group_name=chat.group.name if chat.group else None,
@@ -49,6 +51,41 @@ def _to_response(chat: TelegramChat) -> TelegramChatResponse:
         created_at=chat.created_at,
         updated_at=chat.updated_at,
     )
+
+
+async def _provider_for_new_chat(db: AsyncSession, requested: int | None) -> int:
+    """The bot a manually added chat belongs to (m180).
+
+    Named explicitly — which is what the provider card does, adding chats to
+    ITS bot. Unnamed is only answerable when the install has exactly one
+    Telegram provider; with several, guessing would file the chat under a bot
+    it never wrote to, and that chat would simply never be messaged. With
+    none there is no bot at all to bind to.
+    """
+    if requested is not None:
+        provider = await db.get(NotificationProvider, requested)
+        if provider is None:
+            raise HTTPException(404, "Notification provider not found")
+        if provider.provider_type != "telegram":
+            raise HTTPException(400, "Provider is not a Telegram provider")
+        return provider.id
+
+    rows = (
+        (
+            await db.execute(
+                select(NotificationProvider)
+                .where(NotificationProvider.provider_type == "telegram")
+                .order_by(NotificationProvider.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if len(rows) == 1:
+        return rows[0].id
+    if rows:
+        raise HTTPException(400, "Name the Telegram provider this chat belongs to")
+    raise HTTPException(409, "No Telegram provider to bind the chat to. Add a Telegram provider first.")
 
 
 # Event type metadata for the frontend
@@ -186,8 +223,16 @@ async def create_chat(
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new Telegram chat."""
-    # Check duplicate
-    existing = await db.execute(select(TelegramChat).where(TelegramChat.chat_id == data.chat_id))
+    provider_id = await _provider_for_new_chat(db, data.provider_id)
+
+    # Check duplicate — per BOT (m180): the same chat id under another
+    # provider is a different chat, the same person talking to another bot.
+    existing = await db.execute(
+        select(TelegramChat).where(
+            TelegramChat.provider_id == provider_id,
+            TelegramChat.chat_id == data.chat_id,
+        )
+    )
     if existing.scalar_one_or_none():
         raise HTTPException(400, "Chat ID already registered")
 
@@ -211,11 +256,19 @@ async def create_chat(
 
     chat = TelegramChat(
         chat_id=data.chat_id,
+        provider_id=provider_id,
         label=data.label,
         group_id=data.group_id,
         user_id=data.user_id,
         is_active=data.is_active,
         notify_events=data.notify_events,
+        # The schema has carried these four since the chat refactor, and the
+        # dialog sends them on create — the row never took them (only an
+        # update did), so a chat added with its digest on had it off.
+        daily_digest=data.daily_digest,
+        quiet_hours_enabled=data.quiet_hours_enabled,
+        quiet_hours_start=data.quiet_hours_start,
+        quiet_hours_end=data.quiet_hours_end,
         progress_min_duration_minutes=data.progress_min_duration_minutes,
         printer_ids=data.printer_ids,
     )
@@ -291,7 +344,8 @@ async def test_chat(
     from backend.app.services.telegram_bot import send_message
 
     text = escape_md("Test message from BamDude. If you see this, the chat is connected!")
-    ok = await send_message(chat.chat_id, f"\u2705 {text}")
+    # As the chat's own bot: no other bot can reach it (m180).
+    ok = await send_message(chat.provider_id, chat.chat_id, f"\u2705 {text}")
     if not ok:
         raise HTTPException(500, "Failed to send message. Is the bot running?")
 
