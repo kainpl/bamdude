@@ -58,6 +58,7 @@ from backend.app.services.filament_requirements import PrintRequirementsCache, p
 from backend.app.services.filament_routing import resolve_filament_routing
 from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.queue_counters import update_queue_counters
 from backend.app.services.queue_ops import queue_scope_lock
 from backend.app.services.queue_rebalance import REBALANCE_SETTING_KEY
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
@@ -646,6 +647,9 @@ class AutoQueueScheduler:
                 )
                 db.add(new_item)
                 await db.flush()
+                # Persist the same live counts ordinary enqueue maintains before
+                # the tick commits and tells clients to refetch this queue.
+                await update_queue_counters(db, printer_queue.id)
 
                 # 5. Mark auto item as assigned (back-reference + timestamp + clear reason)
                 item.status = "assigned"

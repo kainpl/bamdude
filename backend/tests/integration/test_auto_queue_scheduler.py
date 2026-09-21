@@ -208,7 +208,75 @@ class TestAutoQueueSchedulerTick:
         assert len(pq_items) == 1
         assert pq_items[0].source_auto_item_id == item.id
         assert pq_items[0].position == 1
+        await db_session.refresh(pq)
+        assert pq.pending_count == 1
         queue_changed.assert_awaited_once_with(printer.id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_assignment_recounts_skipped_and_is_idempotent(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
+        from backend.app.services.queue_counters import update_queue_counters
+
+        printer, pq = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
+        db_session.add(PrintQueueItem(queue_id=pq.id, status="skipped", position=1))
+        item = routing_item(target_model="A1MINI", status="pending", position=1)
+        db_session.add(item)
+        await db_session.commit()
+
+        p_elig, p_sched = _patch_printer_manager({printer.id})
+        with p_elig, p_sched:
+            await scheduler.tick()
+            await scheduler.tick()
+
+        await db_session.refresh(pq)
+        assert (pq.pending_count, pq.skipped_count) == (1, 1)
+        rows = (await db_session.scalars(select(PrintQueueItem).where(PrintQueueItem.queue_id == pq.id))).all()
+        assert len(rows) == 2
+        promoted = next(row for row in rows if row.source_auto_item_id == item.id)
+        # The existing dispatch counter path removes printing rows from pending.
+        promoted.status = "printing"
+        await db_session.flush()
+        await update_queue_counters(db_session, pq.id)
+        await db_session.commit()
+        await db_session.refresh(pq)
+        assert (pq.pending_count, pq.skipped_count) == (0, 1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_counter_failure_rolls_back_assignment(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
+        from backend.app.services.queue_counters import update_queue_counters
+
+        printer, pq = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
+        item = routing_item(target_model="A1MINI", status="pending", position=1)
+        db_session.add(item)
+        await db_session.commit()
+        queue_id = pq.id
+
+        async def fail_after_recount(db, qid):
+            await update_queue_counters(db, qid)
+            await db.flush()
+            raise RuntimeError("counter write failed")
+
+        p_elig, p_sched = _patch_printer_manager({printer.id})
+        with (
+            p_elig,
+            p_sched,
+            patch("backend.app.services.auto_queue_scheduler.update_queue_counters", side_effect=fail_after_recount),
+            pytest.raises(RuntimeError, match="counter write failed"),
+        ):
+            await scheduler._assign(db_session, item, printer)
+
+        await db_session.commit()
+        await db_session.refresh(pq)
+        await db_session.refresh(item)
+        assert pq.pending_count == 0
+        assert item.status == "pending"
+        assert item.assigned_to_item_id is None
+        assert not (await db_session.scalars(select(PrintQueueItem).where(PrintQueueItem.queue_id == queue_id))).all()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -610,6 +678,12 @@ class TestAStalledQueueTellsTheOperator:
         pending_count = sum(1 for it in items if it.status == "pending")
         assert assigned_count == 2
         assert pending_count == 2
+        queues = (
+            await db_session.scalars(select(PrinterQueue).where(PrinterQueue.printer_id.in_([p1.id, p2.id])))
+        ).all()
+        for queue in queues:
+            await db_session.refresh(queue)
+            assert queue.pending_count == 1
 
         # First two by position should be the assigned ones
         assert items[0].status == "assigned"

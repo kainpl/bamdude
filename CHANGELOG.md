@@ -6,6 +6,8 @@
 
 ### Fixed
 
+- **Queue counts update as soon as AutoQueue assigns work.** Promoting a job now refreshes its printer queue's pending and skipped counters in the same transaction. Queue cards and the summary no longer show zero waiting jobs beside visible pending rows while those jobs wait for staggered start or other dispatch checks.
+
 - **Print checks now use the server's complete plate-to-printer assignment.** Manual tray choices, per-channel overrides, feed policy and nozzle constraints are checked together, including jobs spread across several printers. The dialog shows the server's selected trays and refusal reason, instead of treating a filled dropdown as permission to print. A flexible channel no longer steals the only tray available to a stricter channel; automatic ranking agrees with dispatch with base-material matching both on and off. Offline or failed checks reveal a silent batch's dialog before anything is submitted.
 
 - **Editing a schedule no longer silently approves a replaced spool.** Untouched physical pins keep their original evidence even if the same tray numbers are sent again. A deliberate remap can confirm those numbers anew. Manual intent belongs only to the printer and plate where it was chosen; missing mapping evidence requires review, never an automatic replacement. Reconnects during preparation are checked against the original snapshot, not adopted as a new baseline.
