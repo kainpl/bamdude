@@ -1100,3 +1100,206 @@ class TestTelegramProviderRestarts:
 
         assert (await async_client.patch(f"/api/v1/notifications/{bots.id}", json={"enabled": True})).status_code == 200
         assert restart_bot.await_count == 2
+
+
+class TestTelegramTokenIsUnique:
+    """A bot token belongs to ONE Telegram provider row, and the API says so (m180).
+
+    A telegram provider row IS a bot — its token — and Telegram serves one
+    ``getUpdates`` consumer per token, so two rows behind one token are one
+    bot polled twice (409 from Telegram) the moment every enabled provider
+    gets its own poller. m180 cleaned up the installs that already carried
+    such a pair; these are the doors that stop a new one.
+
+    The owner's ``enabled`` flag is deliberately not asked: a switched-off
+    row still owns its bot, and letting a duplicate in beside it would only
+    postpone the clash to whenever somebody switches it back on.
+    """
+
+    @pytest.fixture
+    def restart_bot(self):
+        """The attribute the routes' lazy import resolves at call time."""
+        with patch("backend.app.services.telegram_bot.restart_telegram_bot", new_callable=AsyncMock) as mock:
+            yield mock
+
+    @staticmethod
+    async def _telegram(notification_provider_factory, **kwargs):
+        kwargs.setdefault("provider_type", "telegram")
+        kwargs.setdefault("config", {"bot_token": "111:AAold"})
+        return await notification_provider_factory(**kwargs)
+
+    @staticmethod
+    def _create(name: str, token: str, **fields):
+        return {
+            "name": name,
+            "provider_type": "telegram",
+            "enabled": True,
+            "config": {"bot_token": token},
+            **fields,
+        }
+
+    # ------------------------------------------------------------------
+    # Create
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_creating_a_second_row_behind_one_token_is_refused(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """409, and the refusal names the row that already owns the bot."""
+        await self._telegram(notification_provider_factory, name="Farm bot", config={"bot_token": "111:AAbot"})
+
+        response = await async_client.post("/api/v1/notifications/", json=self._create("Second bot", "111:AAbot"))
+
+        assert response.status_code == 409
+        assert "Farm bot" in response.json()["detail"]
+        assert restart_bot.await_count == 0
+
+        listed = (await async_client.get("/api/v1/notifications/")).json()
+        assert [row["name"] for row in listed] == ["Farm bot"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_switched_off_owner_still_owns_its_token(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """Enabling the spare row later must not produce the pair m180 just undid."""
+        await self._telegram(
+            notification_provider_factory, name="Spare bot", enabled=False, config={"bot_token": "111:AAbot"}
+        )
+
+        response = await async_client.post("/api/v1/notifications/", json=self._create("Farm bot", "111:AAbot"))
+
+        assert response.status_code == 409
+        assert "Spare bot" in response.json()["detail"]
+        assert restart_bot.await_count == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_token_is_compared_trimmed(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """Telegram reads the same bot either way; a stray space is not a second token."""
+        await self._telegram(notification_provider_factory, name="Farm bot", config={"bot_token": "111:AAbot"})
+
+        response = await async_client.post("/api/v1/notifications/", json=self._create("Second bot", "  111:AAbot  "))
+
+        assert response.status_code == 409
+        assert "Farm bot" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_another_provider_type_holding_the_same_string_does_not_block(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """An ntfy row is not a bot, so nothing it carries in its config owns a token."""
+        await notification_provider_factory(
+            name="Ntfy",
+            provider_type="ntfy",
+            config={"server": "https://ntfy.sh", "topic": "farm", "bot_token": "111:AAbot"},
+        )
+
+        response = await async_client.post("/api/v1/notifications/", json=self._create("Farm bot", "111:AAbot"))
+
+        assert response.status_code == 200
+        assert restart_bot.await_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_row_whose_config_is_not_json_owns_nothing(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """A restore or a hand edit can leave one behind; it must not turn provider CRUD into a 500."""
+        await self._telegram(notification_provider_factory, name="Hand edited", config="not json at all")
+
+        response = await async_client.post("/api/v1/notifications/", json=self._create("Farm bot", "111:AAbot"))
+
+        assert response.status_code == 200
+        assert response.json()["name"] == "Farm bot"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_row_with_no_token_yet_owns_nothing(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """Two half-filled rows are not one bot twice — there is no bot yet."""
+        await self._telegram(notification_provider_factory, name="Half set up", config={})
+
+        response = await async_client.post(
+            "/api/v1/notifications/",
+            json={"name": "Also half", "provider_type": "telegram", "enabled": True, "config": {}},
+        )
+
+        assert response.status_code == 200
+
+    # ------------------------------------------------------------------
+    # Update
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_updating_a_row_onto_anothers_token_is_refused_and_persists_nothing(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """The refusal lands after the attributes were applied, so the rollback is the contract."""
+        await self._telegram(notification_provider_factory, name="Farm bot", config={"bot_token": "111:AAbot"})
+        other = await self._telegram(
+            notification_provider_factory, name="Shop bot", config={"bot_token": "222:AAother"}
+        )
+
+        response = await async_client.patch(
+            f"/api/v1/notifications/{other.id}",
+            json={"name": "Renamed too", "config": {"bot_token": "111:AAbot"}},
+        )
+
+        assert response.status_code == 409
+        assert "Farm bot" in response.json()["detail"]
+        assert restart_bot.await_count == 0
+
+        kept = (await async_client.get(f"/api/v1/notifications/{other.id}")).json()
+        assert kept["config"] == {"bot_token": "222:AAother"}
+        assert kept["name"] == "Shop bot"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_re_sending_a_rows_own_token_is_not_a_duplicate(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """The row is never its own owner — and the pair the reader answers with has not moved."""
+        provider = await self._telegram(
+            notification_provider_factory, name="Farm bot", config={"bot_token": "111:AAbot"}
+        )
+
+        response = await async_client.patch(
+            f"/api/v1/notifications/{provider.id}",
+            json={"name": "Renamed", "config": {"bot_token": "111:AAbot"}},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["name"] == "Renamed"
+        assert response.json()["config"] == {"bot_token": "111:AAbot"}
+        assert restart_bot.await_count == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_retyping_a_row_into_telegram_onto_a_taken_token_is_refused(
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+    ):
+        """The question is asked of the FINAL row: the retype brings its config with it."""
+        await self._telegram(notification_provider_factory, name="Farm bot", config={"bot_token": "111:AAbot"})
+        other = await notification_provider_factory(
+            name="Ntfy", provider_type="ntfy", config={"server": "https://ntfy.sh", "topic": "farm"}
+        )
+
+        response = await async_client.patch(
+            f"/api/v1/notifications/{other.id}",
+            json={"provider_type": "telegram", "config": {"bot_token": "111:AAbot"}},
+        )
+
+        assert response.status_code == 409
+        assert "Farm bot" in response.json()["detail"]
+        assert restart_bot.await_count == 0
+
+        kept = (await async_client.get(f"/api/v1/notifications/{other.id}")).json()
+        assert kept["provider_type"] == "ntfy"

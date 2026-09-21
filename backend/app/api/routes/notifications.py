@@ -111,6 +111,76 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
     }
 
 
+def _telegram_bot_token(config: str | dict | None) -> str:
+    """The ``bot_token`` a provider's config carries, stripped; empty when it carries none.
+
+    ``config`` is a JSON string on a stored row and a dict in flight. A row
+    that arrived some other way than these routes — a restore, a hand edit —
+    can hold something that is not JSON at all: it carries no token, and it
+    must never turn provider CRUD into a 500 — the same allowance
+    ``telegram_bot``'s token reader and m180's ``dedupe_tokens`` make.
+    """
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except ValueError:
+            return ""
+    token = config.get("bot_token") if isinstance(config, dict) else None
+    return token.strip() if isinstance(token, str) else ""
+
+
+async def _telegram_token_owner(db: AsyncSession, token: str, *, except_id: int | None) -> NotificationProvider | None:
+    """The telegram provider other than ``except_id`` already holding ``token`` — oldest first.
+
+    A telegram provider row IS a bot (its token), and Telegram serves one
+    ``getUpdates`` consumer per token: two rows behind one token are one bot
+    polled twice — a 409 from Telegram — once every enabled provider gets
+    its own poller. m180 cleaned up the installs that already carried such a
+    pair; this is what keeps a new one from being written.
+
+    ``enabled`` is deliberately not asked. A switched-off row still owns its
+    bot, and admitting a duplicate beside it would only postpone the clash
+    to whenever somebody switches it back on. A provider of another type is
+    not a bot, so the same string in its config owns nothing.
+    """
+    if not token:
+        return None
+    result = await db.execute(
+        select(NotificationProvider)
+        .where(NotificationProvider.provider_type == "telegram")
+        .order_by(NotificationProvider.id)
+    )
+    for other in result.scalars().all():
+        if other.id == except_id:
+            continue
+        if _telegram_bot_token(other.config) == token:
+            return other
+    return None
+
+
+async def _refuse_a_second_row_behind_one_token(db: AsyncSession, provider: NotificationProvider) -> None:
+    """Refuse a telegram row whose token another telegram row already owns.
+
+    Asked of the FINAL shape of the row in both writing routes, because a
+    retype into telegram brings its config with it. A row that has not been
+    added to the session yet has no id, which is exactly the "skip nothing"
+    the create path wants.
+
+    In the update route the refusal lands after the incoming fields were
+    applied and before the commit: the request ends without one and
+    ``get_db`` rolls its session back, so nothing of the refused edit is
+    persisted.
+    """
+    if provider.provider_type != "telegram":
+        return
+    owner = await _telegram_token_owner(db, _telegram_bot_token(provider.config), except_id=provider.id)
+    if owner is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This bot token is already used by Telegram provider '{owner.name}'",
+        )
+
+
 # ============================================================================
 # Provider List/Create Routes (no path parameters)
 # ============================================================================
@@ -161,6 +231,7 @@ async def create_notification_provider(
     )
 
     _coerce_telegram_provider_fields(provider)
+    await _refuse_a_second_row_behind_one_token(db, provider)
     db.add(provider)
     await db.commit()
     await db.refresh(provider)
@@ -465,6 +536,7 @@ async def update_notification_provider(
             setattr(provider, key, value)
 
     _coerce_telegram_provider_fields(provider)
+    await _refuse_a_second_row_behind_one_token(db, provider)
 
     await db.commit()
     await db.refresh(provider)

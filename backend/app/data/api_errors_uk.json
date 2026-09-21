@@ -664,6 +664,7 @@
   "This .3mf file isn't a valid ZIP container. 3MF files are ZIP archives — either the file is corrupted or it's raw gcode renamed to .3mf. Re-export from your slicer using its 'Export Plate Sliced File' action.": "Цей файл .3mf не є коректним ZIP-контейнером. Файли 3MF — це ZIP-архіви, тож або файл пошкоджено, або це звичайний G-code, перейменований на .3mf. Експортуйте його зі свого слайсера заново дією «Export Plate Sliced File».",
   "This OIDC provider is managed by environment variables and cannot be modified.": "Цей OIDC-провайдер керується змінними середовища, тому його не можна змінити.",
   "This archive has no 3MF stored — it was printed from the printer's own screen and the file could not be retrieved.": "У цьому архіві не збережено 3MF — друк запустили з екрана самого принтера, і файл не вдалося отримати.",
+  "This bot token is already used by Telegram provider '{}'": "Цей токен бота вже використовує Telegram-провайдер «{}»",
   "This camera is switched off.": "Цю камеру вимкнено.",
   "This device has never paired with BamDude.": "Цей пристрій ніколи не парувався з BamDude.",
   "This device has no '{}' to report.": "Цей пристрій не має що повідомити про «{}».",
