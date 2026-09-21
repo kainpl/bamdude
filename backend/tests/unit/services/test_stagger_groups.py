@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from backend.app.services.stagger_groups import (
     GLOBAL,
     StaggerGroupResolver,
@@ -170,9 +172,27 @@ class TestCapFor:
         r = _resolver(split, tags_by_printer={10: {1}}, location_by_printer={10: 20})
         assert r.cap_for((1, 20), 5) == 1
 
-    def test_a_limit_never_raises_the_cap_above_the_global(self):
+    def test_a_limit_can_raise_the_cap_above_the_default(self):
         split = StaggerSplit(by_tags=True, tag_ids=frozenset({1}), tag_limits={1: 9})
-        assert _resolver(split, tags_by_printer={10: {1}}).cap_for((1, None), 2) == 2
+        assert _resolver(split, tags_by_printer={10: {1}}).cap_for((1, None), 2) == 9
+
+    @pytest.mark.parametrize(
+        "tag_limits,location_limits,expected", [({1: 6}, {}, 2), ({}, {20: 6}, 2), ({1: 6}, {20: 4}, 4)]
+    )
+    def test_each_active_axis_has_its_own_default(self, tag_limits, location_limits, expected):
+        split = StaggerSplit(
+            by_tags=True,
+            tag_ids=frozenset({1}),
+            tag_limits=tag_limits,
+            by_location=True,
+            location_ids=frozenset({20}),
+            location_limits=location_limits,
+        )
+        assert _resolver(split).cap_for((1, 20), 2) == expected
+
+    def test_disabled_stays_zero_even_with_overrides(self):
+        split = StaggerSplit(by_tags=True, tag_ids=frozenset({1}), tag_limits={1: 6})
+        assert _resolver(split).cap_for((1, None), 0) == 0
 
     def test_a_limit_on_an_unpicked_or_unknown_id_is_ignored(self):
         split = StaggerSplit(by_tags=True, tag_ids=frozenset({1}), tag_limits={2: 1, 999: 1})

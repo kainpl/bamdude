@@ -191,6 +191,21 @@ def _phases_with_limits(tag_limits: dict[int, int]) -> StaggerGroupResolver:
 
 
 class TestPerGroupLimit:
+    def test_six_printers_can_start_at_base_two_but_seventh_waits(self, scheduler):
+        r = StaggerGroupResolver(
+            StaggerSplit(by_tags=True, tag_ids=frozenset({1, 2}), tag_limits={1: 6}),
+            tags_by_printer={i: frozenset({1 if i <= 7 else 2}) for i in range(1, 11)},
+            tag_names=TAGS,
+            location_by_printer={},
+            parent_by_location={},
+            location_names={},
+        )
+        assert _gate(scheduler, r, 2, range(1, 11)) == [1, 2, 3, 4, 5, 6, 8, 9]
+
+    def test_raised_override_admits_more_only_in_its_group(self, scheduler):
+        r = _phases_with_limits({1: 6})
+        assert _gate(scheduler, r, 1, [1, 4, 2, 5, 9]) == [1, 4, 2]
+
     def test_a_tag_limit_below_the_global_cap_holds_that_phase_only(self, scheduler):
         first_tag = min(TAGS)
         r = _phases_with_limits({first_tag: 1})
@@ -209,9 +224,10 @@ class TestPerGroupLimit:
 
 
 @pytest.mark.asyncio
-async def test_the_snapshot_reports_each_groups_own_cap(scheduler, monkeypatch):
+@pytest.mark.parametrize("cap", [1, 6])
+async def test_the_snapshot_reports_each_groups_own_cap(scheduler, monkeypatch, cap):
     first_tag = min(TAGS)
-    r = _phases_with_limits({first_tag: 1})
+    r = _phases_with_limits({first_tag: cap})
 
     async def _settings(_db):
         return True, 2, 120, True
@@ -226,10 +242,30 @@ async def test_the_snapshot_reports_each_groups_own_cap(scheduler, monkeypatch):
     scheduler._register_stagger_start(next(pid for pid, tags in LINKS.items() if first_tag in tags), 120)
     snapshot = await scheduler.get_stagger_state_snapshot(db=None)
     by_tag = {g["tag_id"]: g for g in snapshot["groups"]}
-    assert by_tag[first_tag]["cap"] == 1
-    assert by_tag[first_tag]["occupied"] == 1 and by_tag[first_tag]["free_slots"] == 0
+    assert by_tag[first_tag]["cap"] == cap
+    assert by_tag[first_tag]["occupied"] == 1 and by_tag[first_tag]["free_slots"] == cap - 1
     assert all(g["cap"] == 2 for tag_id, g in by_tag.items() if tag_id != first_tag)
     assert all(g["free_slots"] == g["cap"] - g["occupied"] for g in snapshot["groups"])
+
+
+@pytest.mark.asyncio
+async def test_direct_acquire_and_strict_gate_use_the_raised_limit(scheduler):
+    r = _phases_with_limits({1: 2})
+    scheduler._register_stagger_start(1, 120)
+    with (
+        patch("backend.app.services.print_scheduler.async_session"),
+        patch.object(scheduler, "_get_stagger_settings", AsyncMock(return_value=(True, 1, 300, True))),
+        patch.object(scheduler, "_get_printer", AsyncMock(return_value=None)),
+        patch.object(scheduler, "_load_stagger_resolver", AsyncMock(return_value=r)),
+        patch.object(scheduler, "_refresh_stagger_slots", AsyncMock()),
+        patch("backend.app.services.print_scheduler.asyncio.sleep", AsyncMock(side_effect=RuntimeError("full"))),
+    ):
+        assert await scheduler.stagger_blocks(4) is False
+        await scheduler.acquire_stagger_slot(4)
+        assert {s.printer_id for s in scheduler._stagger_slots} == {1, 4}
+        assert await scheduler.stagger_blocks(9) is True  # wildcard must wait on the full group
+        with pytest.raises(RuntimeError, match="full"):
+            await scheduler.acquire_stagger_slot(9)
 
 
 @pytest.mark.asyncio

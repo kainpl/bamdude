@@ -321,21 +321,17 @@ class StaggerGroupResolver:
         return self._tag_colors.get(key[0]) if key[0] is not None else None
 
     def cap_for(self, key: GroupKey, global_cap: int) -> int:
-        """The cap this group starts under: the global number, lowered by an override on its tag or its location.
+        """Each active axis overrides the default; their intersection takes the minimum.
 
-        An override never raises the cap above the global one, and an override
-        on an id that is not a picked, existing group is simply not asked for —
-        the universe already dropped that id.
-
-        Not floored at 1: the snapshot asks for the global group with
-        ``concurrent=0`` while stagger is off, and a floor would answer with a
-        free slot nobody has. The enabled path already guarantees a global cap
-        and every override are at least 1.
+        An empty override inherits ``global_cap`` on that axis only. No axes
+        means the farm-wide default. Zero remains zero for disabled snapshots.
         """
+        if global_cap <= 0:
+            return global_cap
         tag_id, location_id = key
-        caps = [global_cap]
-        if tag_id is not None and tag_id in self._tag_ids and tag_id in self.split.tag_limits:
-            caps.append(self.split.tag_limits[tag_id])
-        if location_id is not None and location_id in self._location_ids and location_id in self.split.location_limits:
-            caps.append(self.split.location_limits[location_id])
-        return min(caps)
+        caps = []
+        if tag_id is not None and tag_id in self._tag_ids:
+            caps.append(self.split.tag_limits.get(tag_id, global_cap))
+        if location_id is not None and location_id in self._location_ids:
+            caps.append(self.split.location_limits.get(location_id, global_cap))
+        return min(caps) if caps else global_cap

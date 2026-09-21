@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Changed
+
+- **Staggered Start group limits can now be higher or lower than the default.** A default of two with an A1 mini tag set to six allows six starts in that group without raising the others. With both tags and locations enabled, each axis uses its own override (or inherits the default) and each tag/location pair uses the lower limit. Existing installations keep their effective heating limits during the upgrade: previously saved numbers above the old ceiling are reduced to that ceiling once. Raise them explicitly after upgrading if your electrical capacity permits it. Queue starts, direct prints, the stagger banner and ETA all use the same rule.
+
 ### Added
 
 - **Print and queue buttons now distinguish compatible, incompatible, unverified and missing-target jobs.** A complete compatible assignment enables the normal action. A known refusal or incomplete check disables it, explains the result and offers a separate **Queue anyway — wait for compatibility** action with confirmation. Unknown telemetry is not described as incompatibility, and a partial profile refusal no longer appears beside an unexplained green button. On **Print now**, that explicit action creates a printer-queue job instead of sending an immediate print; the confirmation warns that waiting work can hold up later jobs on that printer. If AutoQueue has no active printer of the required model in the selected scope, the dialog names the model and offers only an explicit **Save in AutoQueue for the future** action. A compatible but busy printer still accepts normal queue work, and saving edits to existing queued jobs is not blocked. A conclusively wrong selected printer model has no override; models sharing G-code (X1, X1C, X1E, P1P, P1S) do not count as a mismatch.

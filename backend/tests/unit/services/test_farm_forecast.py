@@ -47,10 +47,10 @@ def _stagger(concurrent=1, interval=300, wait_for_bed=False, resolver=None, live
     )
 
 
-def _tag_resolver(tags_by_printer):
+def _tag_resolver(tags_by_printer, tag_limits=None):
     """Two picked tags, A=10 and B=20; a printer with neither is a wildcard."""
     return StaggerGroupResolver(
-        StaggerSplit(by_tags=True, tag_ids=frozenset({10, 20})),
+        StaggerSplit(by_tags=True, tag_ids=frozenset({10, 20}), tag_limits=tag_limits or {}),
         tags_by_printer={pid: frozenset(tags) for pid, tags in tags_by_printer.items()},
         tag_names={10: "A", 20: "B"},
         location_by_printer={},
@@ -335,6 +335,17 @@ def test_stagger_groups_cap_each_phase_alone():
     assert _one(by_group, plan).now_seconds == H + 300
     farm_wide = FarmSnapshot(printers=printers, staged=[], stagger=_stagger(concurrent=1, interval=300))
     assert _one(farm_wide, plan).now_seconds == H + 900
+
+
+def test_forecast_uses_raised_override_but_other_group_inherits_default():
+    plan = _plan(7, [(100, 6, H, "P1S", [])])
+    printers = [_machine(i) for i in range(1, 7)]
+    for tag, expected in ((10, H), (20, H + 600)):
+        resolver = _tag_resolver({i: {tag} for i in range(1, 7)}, tag_limits={10: 6})
+        snap = FarmSnapshot(
+            printers=printers, staged=[], stagger=_stagger(concurrent=2, interval=300, resolver=resolver)
+        )
+        assert _one(snap, plan).now_seconds == expected
 
 
 def test_a_wildcard_printer_waits_for_room_in_every_group():

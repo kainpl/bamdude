@@ -21,6 +21,37 @@ async def test_defaults_and_round_trip(async_client):
     assert after["stagger_group_tag_ids"] == "[1, 3]"  # sorted, de-duplicated
 
 
+async def test_override_above_default_round_trips_and_reaches_the_banner(async_client):
+    tag = (await async_client.post("/api/v1/printer-tags", json={"name": "A1M"})).json()["id"]
+    loc = (await async_client.post("/api/v1/printer-locations", json={"name": "Room"})).json()["id"]
+    rsp = await async_client.put(
+        "/api/v1/settings/",
+        json={
+            "stagger_enabled": True,
+            "stagger_concurrent": 2,
+            "stagger_split_by_tags": True,
+            "stagger_group_tag_ids": f"[{tag}]",
+            "stagger_tag_limits": f'{{"{tag}":6}}',
+        },
+    )
+    assert rsp.status_code == 200, rsp.text
+    state = (await async_client.get("/api/v1/queue/stagger-state")).json()
+    assert state["groups"][0]["cap"] == 6
+    assert state["groups"][0]["free_slots"] == 6
+    for limits, expected in (("{}", 2), (f'{{"{loc}":4}}', 4)):
+        rsp = await async_client.put(
+            "/api/v1/settings/",
+            json={
+                "stagger_split_by_location": True,
+                "stagger_group_location_ids": f"[{loc}]",
+                "stagger_location_limits": limits,
+            },
+        )
+        assert rsp.status_code == 200, rsp.text
+        state = (await async_client.get("/api/v1/queue/stagger-state")).json()
+        assert state["groups"][0]["cap"] == expected
+
+
 async def test_from_settings_reads_all_six_rows(async_client, db_session):
     """The one round-trip that feeds every scheduler tick. Six keys, one query —
     a key dropped from the ``IN`` list reads as its default and nothing else notices.

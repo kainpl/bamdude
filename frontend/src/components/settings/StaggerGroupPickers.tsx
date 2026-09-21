@@ -56,13 +56,8 @@ interface LimitFieldProps {
 }
 
 /**
- * The per-group cap beside a picked row. Empty = the global cap, which the
- * placeholder shows.
- *
- * ⚠️ Clamped to the global cap, and not merely offered as a `max`. `cap_for`
- * takes the min of the two anyway, so a number above the farm-wide one is not a
- * bigger cap — it is a number the scheduler ignores, sitting in Settings looking
- * like it does something.
+ * The per-axis override beside a picked row. Empty inherits the default shown
+ * by the placeholder; explicit values may raise or lower it.
  */
 function LimitField({ name, value, globalCap, onChange }: LimitFieldProps) {
   const { t } = useTranslation();
@@ -70,13 +65,12 @@ function LimitField({ name, value, globalCap, onChange }: LimitFieldProps) {
     <input
       type="number"
       min={1}
-      max={globalCap}
       inputMode="numeric"
       aria-label={t('settings.staggerGroupLimitFor', { name })}
       placeholder={String(globalCap)}
       value={value ?? ''}
       onChange={(e) =>
-        onChange(e.target.value === '' ? null : Math.min(globalCap, Math.max(1, parseInt(e.target.value, 10) || 1)))
+        onChange(e.target.value === '' ? null : Math.max(1, parseInt(e.target.value, 10) || 1))
       }
       className="w-14 ml-1 px-1.5 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-xs text-center focus:border-bambu-green focus:outline-none"
     />

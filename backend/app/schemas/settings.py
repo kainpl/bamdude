@@ -334,7 +334,7 @@ class AppSettings(BaseModel):
     stagger_enabled: bool = Field(
         default=False, description="Enable staggered start to limit concurrent printer heating"
     )
-    stagger_concurrent: int = Field(default=2, description="Max printers that can be heating simultaneously")
+    stagger_concurrent: int = Field(default=2, description="Default simultaneous heating limit; groups may override it")
     stagger_interval_minutes: int = Field(
         default=5, description="Wait time (minutes) after a slot frees before next start"
     )
