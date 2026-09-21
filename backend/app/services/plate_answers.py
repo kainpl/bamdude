@@ -50,6 +50,26 @@ def _assessment_payload(result: DefectsResult) -> dict:
     }
 
 
+async def record_completion_assessment(
+    db, archive: PrintArchive, write: DefectsWrite, *, actor_id: int | None = None
+) -> DefectsResult:
+    """Persist a complete Telegram assessment without answering the plate gate.
+
+    A defect grade and Clear/Repeat are separate facts.  The latter may happen
+    first, later, or never; recording zero just because a plate was cleared
+    would falsify the print history.
+    """
+    result = await record_defects(db, archive, write, actor_id=actor_id)
+    receipt = await db.scalar(select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive.id))
+    if receipt is None:
+        receipt = PrintCompletionReceipt(archive_id=archive.id)
+        db.add(receipt)
+    receipt.assessment = _assessment_payload(result)
+    receipt.assessment_at = datetime.now(timezone.utc)
+    receipt.assessment_actor_id = actor_id
+    return result
+
+
 async def _validate_completion_assessment(db, archive: PrintArchive, write: DefectsWrite) -> None:
     """Completion submissions are snapshots, unlike the archive editor's PATCH.
 
