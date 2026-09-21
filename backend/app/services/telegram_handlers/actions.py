@@ -212,34 +212,32 @@ async def cb_speed_set(callback: CallbackQuery, tg_chat: TelegramChat | None = N
 
 @router.callback_query(F.data.startswith("action:clear_plate:"))
 async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
-    """Clear plate confirmation."""
+    """Clear exactly the run named by this completion card."""
     lang = await get_language()
 
     if not has_perm(tg_chat, "printers:clear_plate"):
         await callback.answer(t(lang, NS, "auth.no_permission"), show_alert=True)
         return
 
-    printer_id = int(callback.data.split(":")[2])
+    parts = callback.data.split(":")
+    if len(parts) != 4:
+        await callback.answer(t(lang, NS, "printers.plate_action_stale"), show_alert=True)
+        return
+    printer_id, archive_id = int(parts[2]), int(parts[3])
     if await deny_out_of_scope(callback, tg_chat, printer_id):
         return
 
-    finished_id = None
     try:
-        printer_manager.set_awaiting_plate_clear(printer_id, False)
-        # \u26a0\ufe0f The same answer as the card's Clear plate, so the held row goes here
-        # too. Without this, clearing from Telegram leaks a row that nothing
-        # else will ever remove.
         from backend.app.core.database import async_session
-        from backend.app.services.plate_hold import answer_by_clearing, waiting_archive
+        from backend.app.services.plate_answers import answer_plate_run
+        from backend.app.services.plate_hold import StalePlateAnswer
 
         async with async_session() as _db:
-            # Resolved BEFORE the answer — clearing deletes the row.
-            finished = await waiting_archive(_db, printer_id)
-            finished_id = (
-                finished.id if finished is not None and finished.status == "completed" and finished.quantity else None
-            )
-            await answer_by_clearing(_db, printer_id)
+            await answer_plate_run(_db, printer_id=printer_id, expected_archive_id=archive_id, action="clear")
         await callback.answer(f"\u2705 {t(lang, NS, 'printers.clear_plate_ok')}")
+    except StalePlateAnswer:
+        await callback.answer(t(lang, NS, "printers.plate_action_stale"), show_alert=True)
+        return
     except Exception:
         await callback.answer(t(lang, NS, "printers.clear_plate_fail"), show_alert=True)
         return
@@ -248,11 +246,6 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
     from backend.app.services.telegram_handlers.printers import show_printer_detail
 
     await show_printer_detail(callback, printer_id, tg_chat)
-
-    if finished_id is not None:
-        from backend.app.services.telegram_handlers.defects import start_defects_prompt
-
-        await start_defects_prompt(callback.message, finished_id, tg_chat)
 
 
 @router.callback_query(F.data.startswith("action:repeat_print:"))
@@ -267,51 +260,36 @@ async def cb_repeat_print(callback: CallbackQuery, tg_chat: TelegramChat | None 
         await callback.answer(t(lang, NS, "auth.no_permission"), show_alert=True)
         return
 
-    printer_id = int(callback.data.split(":")[2])
+    parts = callback.data.split(":")
+    if len(parts) != 4:
+        await callback.answer(t(lang, NS, "printers.plate_action_stale"), show_alert=True)
+        return
+    printer_id, archive_id = int(parts[2]), int(parts[3])
     if await deny_out_of_scope(callback, tg_chat, printer_id):
         return
 
     from backend.app.core.database import async_session
-    from backend.app.services.plate_hold import RepeatNotPossible, answer_by_repeating, waiting_archive
+    from backend.app.services.plate_answers import answer_plate_run
+    from backend.app.services.plate_hold import RepeatNotPossible, StalePlateAnswer
 
-    finished_id = None
     try:
         async with async_session() as _db:
-            # Resolved BEFORE the answer — repeating re-arms the row, so what it
-            # is about is read here, while the question is still the old print.
-            finished = await waiting_archive(_db, printer_id)
-            finished_id = (
-                finished.id if finished is not None and finished.status == "completed" and finished.quantity else None
-            )
-            row = await answer_by_repeating(_db, printer_id)
+            await answer_plate_run(_db, printer_id=printer_id, expected_archive_id=archive_id, action="repeat")
     except RepeatNotPossible as e:
         # Nothing to send again — said plainly rather than queued and failed.
         await callback.answer(str(e), show_alert=True)
         return
 
-    try:
-        if row is None:
-            # ⚠️ The gate stays armed: the plate has not been dealt with, and
-            # dropping it would let the queue dispatch onto a bed nobody cleared.
-            await callback.answer(t(lang, NS, "printers.repeat_print_none"), show_alert=True)
-            return
-        # Releasing the gate is part of the answer — while it is armed
-        # ``_is_printer_idle`` is False and the re-armed row would never go out.
-        printer_manager.set_awaiting_plate_clear(printer_id, False)
-        await callback.answer(f"✅ {t(lang, NS, 'printers.repeat_print_ok')}")
-    except Exception:
-        await callback.answer(t(lang, NS, "printers.clear_plate_fail"), show_alert=True)
+    except StalePlateAnswer:
+        await callback.answer(t(lang, NS, "printers.plate_action_stale"), show_alert=True)
         return
+
+    await callback.answer(f"✅ {t(lang, NS, 'printers.repeat_print_ok')}")
 
     # Refresh printer detail
     from backend.app.services.telegram_handlers.printers import show_printer_detail
 
     await show_printer_detail(callback, printer_id, tg_chat)
-
-    if finished_id is not None:
-        from backend.app.services.telegram_handlers.defects import start_defects_prompt
-
-        await start_defects_prompt(callback.message, finished_id, tg_chat)
 
 
 # === Stop, which asks first ===

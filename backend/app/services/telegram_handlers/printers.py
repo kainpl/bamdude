@@ -230,23 +230,26 @@ async def show_printer_detail(
         # exactly when repeating is most wanted. Repeat, though, needs a
         # finished row to re-arm, and the gate can be armed over nothing \u2014
         # then the button only ever answered "nothing is waiting" (2026-09-04).
-        from backend.app.services.plate_hold import repeat_available
+        from backend.app.core.database import async_session
+        from backend.app.services.plate_hold import waiting_archive
 
+        async with async_session() as db:
+            held_archive = await waiting_archive(db, printer_id)
         answers = []
-        if await repeat_available(printer_id):
+        if held_archive is not None:
             answers.append(
                 InlineKeyboardButton(
                     text=f"\U0001f501 {t(lang, NS, 'printers.btn_repeat_print')}",
-                    callback_data=f"action:repeat_print:{printer_id}",
+                    callback_data=f"action:repeat_print:{printer_id}:{held_archive.id}",
                 )
             )
-        answers.append(
-            InlineKeyboardButton(
-                text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
-                callback_data=f"action:clear_plate:{printer_id}",
+            answers.append(
+                InlineKeyboardButton(
+                    text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
+                    callback_data=f"action:clear_plate:{printer_id}:{held_archive.id}",
+                )
             )
-        )
-        btns.append(answers)
+            btns.append(answers)
 
     # Maintenance
     maint_btns = []

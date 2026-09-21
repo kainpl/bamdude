@@ -19,11 +19,12 @@ from typing import TYPE_CHECKING
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from backend.app.i18n import escape_md, get_language, t
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
+from backend.app.models.printer import Printer
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_parts import load_rows
 from backend.app.services.telegram_handlers.common import NS, chat_allows_printer, has_perm
@@ -69,9 +70,27 @@ def _keyboard(archive_id: int, row_id: int, quantity: int, lang: str) -> InlineK
     return InlineKeyboardMarkup(inline_keyboard=[numbers, extra])
 
 
-def _prompt_text(lang: str, archive: PrintArchive, row: PrintArchivePart | None) -> str:
+async def _context_text(lang: str, archive: PrintArchive) -> str:
+    """Every Telegram prompt identifies the physical run, not just its quantity."""
+    from backend.app.core.database import async_session
+
+    async with async_session() as db:
+        printer = await db.get(Printer, archive.printer_id) if archive.printer_id is not None else None
+    return escape_md(
+        t(
+            lang,
+            NS,
+            "defects.context",
+            printer=printer.name if printer is not None else f"#{archive.printer_id or '–'}",
+            print_name=archive.print_name or archive.filename,
+            archive_id=archive.id,
+        )
+    )
+
+
+async def _prompt_text(lang: str, archive: PrintArchive, row: PrintArchivePart | None) -> str:
     if row is None:
-        return escape_md(
+        question = escape_md(
             t(
                 lang,
                 NS,
@@ -80,13 +99,21 @@ def _prompt_text(lang: str, archive: PrintArchive, row: PrintArchivePart | None)
                 quantity=archive.quantity or 0,
             )
         )
-    return escape_md(t(lang, NS, "defects.prompt_part", name=row.name, quantity=row.quantity))
+    else:
+        question = escape_md(t(lang, NS, "defects.prompt_part", name=row.name, quantity=row.quantity))
+    return f"{await _context_text(lang, archive)}\n{question}"
+
+
+async def _done_text(lang: str, archive: PrintArchive, defective: int, quantity: int) -> str:
+    return f"{await _context_text(lang, archive)}\n{escape_md(t(lang, NS, 'defects.done', defective=defective, quantity=quantity))}"
 
 
 async def _ask(message: Message, lang: str, archive: PrintArchive, row: PrintArchivePart | None) -> None:
     row_id = row.id if row is not None else 0
     quantity = row.quantity if row is not None else int(archive.quantity or 0)
-    await message.answer(_prompt_text(lang, archive, row), reply_markup=_keyboard(archive.id, row_id, quantity, lang))
+    await message.answer(
+        await _prompt_text(lang, archive, row), reply_markup=_keyboard(archive.id, row_id, quantity, lang)
+    )
 
 
 async def start_defects_prompt(message: Message, archive_id: int, tg_chat: TelegramChat | None = None) -> None:
@@ -179,7 +206,7 @@ async def _write_and_continue(
         await _ask(callback.message, lang, archive, remaining[0])
     else:
         await callback.message.edit_text(
-            escape_md(t(lang, NS, "defects.done", defective=result.defective_count, quantity=total_quantity))
+            await _done_text(lang, archive, result.defective_count, total_quantity)
             + _refused_line(lang, result.ledger_refused)
         )
     await callback.answer()
@@ -237,7 +264,7 @@ async def cb_defects_none(callback: CallbackQuery, state: FSMContext, tg_chat: T
         await db.commit()
         total_quantity = int(archive.quantity or 0)
     await callback.message.edit_text(
-        escape_md(t(lang, NS, "defects.done", defective=result.defective_count, quantity=total_quantity))
+        await _done_text(lang, archive, result.defective_count, total_quantity)
         + _refused_line(lang, result.ledger_refused)
     )
     await callback.answer()
@@ -257,26 +284,28 @@ async def cb_defects_other(callback: CallbackQuery, state: FSMContext, tg_chat: 
     row = next((r for r in rows if r.id == row_id), None)
     maximum = row.quantity if row is not None else int(archive.quantity or 0)
     await callback.answer()
-    await callback.message.answer(
-        escape_md(t(lang, NS, "defects.enter_count", max=maximum)),
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=f"❌ {t(lang, NS, 'defects.btn_cancel')}",
-                        callback_data=f"defects_cancel:{archive_id}",
-                    )
-                ]
-            ]
-        ),
+    prompt = await callback.message.answer(
+        f"{await _context_text(lang, archive)}\n{escape_md(t(lang, NS, 'defects.enter_count', max=maximum))}",
+        reply_markup=ForceReply(force_reply=True, input_field_placeholder=t(lang, NS, "defects.reply_placeholder")),
     )
     await state.set_state(DefectsState.waiting_for_count)
-    await state.update_data(archive_id=archive_id, row_id=row_id, maximum=maximum)
+    prompt_message_id = getattr(prompt, "message_id", None)
+    state_data = {"archive_id": archive_id, "row_id": row_id, "maximum": maximum}
+    # aiogram always returns an integer message id.  Do not turn an adapter or
+    # test double with an arbitrary attribute into a permanent false mismatch.
+    if isinstance(prompt_message_id, int):
+        state_data["prompt_message_id"] = prompt_message_id
+    await state.update_data(**state_data)
 
 
 @router.callback_query(F.data.startswith("defects_cancel:"))
 async def cb_defects_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language()
+    archive_id = int(callback.data.split(":")[1])
+    data = await state.get_data()
+    if data and data.get("archive_id") != archive_id:
+        await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
+        return
     await state.clear()
     await callback.answer(t(lang, NS, "defects.cancelled"))
 
@@ -290,6 +319,12 @@ async def msg_defects_count(message: Message, state: FSMContext, tg_chat: Telegr
     archive_id, row_id = data.get("archive_id"), data.get("row_id", 0)
     if not archive_id:
         await state.clear()
+        return
+    expected_prompt_id = data.get("prompt_message_id")
+    reply = getattr(message, "reply_to_message", None)
+    reply_id = getattr(reply, "message_id", None)
+    if expected_prompt_id is not None and reply_id != expected_prompt_id:
+        await message.answer(escape_md(t(lang, NS, "defects.reply_to_prompt")))
         return
     text = (message.text or "").strip()
     # ``isdecimal`` and not ``isdigit``: "²" is a digit to Python and a
@@ -331,6 +366,6 @@ async def msg_defects_count(message: Message, state: FSMContext, tg_chat: Telegr
         await _ask(message, lang, archive, remaining[0])
     else:
         await message.answer(
-            escape_md(t(lang, NS, "defects.done", defective=result.defective_count, quantity=total_quantity))
+            await _done_text(lang, archive, result.defective_count, total_quantity)
             + _refused_line(lang, result.ledger_refused)
         )

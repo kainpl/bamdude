@@ -6074,6 +6074,12 @@ export interface ForecastListPage {
   reserved_incomplete: boolean;
 }
 
+export interface PlateAnswerBody {
+  /** The run shown beside the controls; server refuses if another run now waits. */
+  expected_archive_id?: number;
+  defects?: DefectsWriteBody;
+}
+
 export interface ForecastListParams {
   page?: number;
   per_page?: number;
@@ -7613,7 +7619,7 @@ export const api = {
   // the ledger refused (already spent) — the answer's defects were saved either
   // way, and the operator is told there is a hand correction to make. 0 when no
   // defects travelled with the answer, and absent on an older backend.
-  clearPlate: (printerId: number, body?: { defects: DefectsWriteBody }) =>
+  clearPlate: (printerId: number, body?: PlateAnswerBody) =>
     request<{ success: boolean; message: string; ledger_refused_parts?: number }>(
       `/printers/${printerId}/clear-plate`,
       {
@@ -7623,7 +7629,7 @@ export const api = {
     ),
   // The other answer to a full plate: re-arm the job that just finished and
   // print it again. Same permission as clearPlate — two answers, one question.
-  repeatPrint: (printerId: number, body?: { defects: DefectsWriteBody }) =>
+  repeatPrint: (printerId: number, body?: PlateAnswerBody) =>
     request<{ success: boolean; item_id: number; ledger_refused_parts?: number }>(
       `/printers/${printerId}/repeat-print`,
       {

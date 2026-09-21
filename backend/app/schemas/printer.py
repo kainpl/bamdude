@@ -703,6 +703,9 @@ class PlateAnswerIn(BaseModel):
     """Optional body of Clear plate / Repeat: the defects travel with the answer."""
 
     defects: DefectsWriteIn | None = None
+    # A card can sit in a chat while this printer completes another print. New
+    # clients name the run they saw; old API callers retain current-hold behavior.
+    expected_archive_id: int | None = Field(default=None, ge=1)
 
 
 class WaitingPrintOut(BaseModel):

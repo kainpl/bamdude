@@ -186,6 +186,27 @@ async def test_a_body_less_answer_behaves_as_before(async_client, printer_factor
     assert await db_session.get(PrintQueueItem, row_id) is None
 
 
+@pytest.mark.parametrize("endpoint", ["clear-plate", "repeat-print"])
+async def test_an_answer_for_an_old_completion_card_cannot_mutate_the_current_hold(
+    async_client, printer_factory, db_session, endpoint
+):
+    """The client names the run it displayed; printer id alone is never enough."""
+    printer = await printer_factory()
+    archive, row = await _finished_on(db_session, printer, {"lid": 2})
+    archive_id, row_id = archive.id, row.id
+
+    with _finished_printer():
+        resp = await async_client.post(
+            f"/api/v1/printers/{printer.id}/{endpoint}",
+            json={"expected_archive_id": archive_id + 1, "defects": {"defective_count": 1}},
+        )
+
+    assert resp.status_code == 409, resp.text
+    db_session.expire_all()
+    assert (await db_session.get(PrintArchive, archive_id)).defective_count == 0
+    assert (await db_session.get(PrintQueueItem, row_id)).status == "completed"
+
+
 async def _no_file_finished(db_session, printer, quantity: int) -> tuple[PrintArchive, PrintQueueItem]:
     """A finished row Repeat must REFUSE: its only source is an archive with no
     file behind it (a print picked up from the printer's screen whose 3MF was

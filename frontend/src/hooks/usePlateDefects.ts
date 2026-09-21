@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
-import type { DefectsWriteBody, WaitingPrint } from '../api/client';
+import type { PlateAnswerBody, WaitingPrint } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { invalidateQueueViews, invalidateOrderViews } from '../utils/queryInvalidation';
 
@@ -30,8 +30,8 @@ export interface PlateDefects {
   shown: number;
   setPart: (id: number, next: number) => void;
   setFlat: (next: number) => void;
-  /** The request body for either answer, or nothing when the counters were not touched. */
-  body: () => { defects: DefectsWriteBody } | undefined;
+  /** The request names the displayed run even when no defect counter was touched. */
+  body: () => PlateAnswerBody | undefined;
   /** After a successful answer: refresh everything the defects may have moved, close the row. */
   afterAnswer: (ledgerRefused?: number) => void;
   /** After a refused answer: the server rolled the defects back, so stop showing what was typed. */
@@ -74,11 +74,13 @@ export function usePlateDefects(printerId: number, enabled: boolean): PlateDefec
         ? Object.values(values).reduce((a, n) => a + n, 0)
         : flat;
 
-  const body = (): { defects: DefectsWriteBody } | undefined => {
-    if (!touched || !waiting) return undefined;
+  const body = (): PlateAnswerBody | undefined => {
+    if (!waiting) return undefined;
+    const expected_archive_id = waiting.archive_id;
+    if (!touched) return { expected_archive_id };
     return waiting.parts.length > 0
-      ? { defects: { parts: waiting.parts.map((p) => ({ id: p.id, defective: values[p.id] ?? 0 })) } }
-      : { defects: { defective_count: flat } };
+      ? { expected_archive_id, defects: { parts: waiting.parts.map((p) => ({ id: p.id, defective: values[p.id] ?? 0 })) } }
+      : { expected_archive_id, defects: { defective_count: flat } };
   };
 
   const afterAnswer = (ledgerRefused?: number) => {

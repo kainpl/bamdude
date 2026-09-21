@@ -40,6 +40,10 @@ class RepeatNotPossible(Exception):
     """
 
 
+class StalePlateAnswer(Exception):
+    """A completion card names a run that is no longer this printer's hold."""
+
+
 async def should_hold_for_plate_clear(db: AsyncSession, printer_id: int, *, plate_auto_cleared: bool) -> bool:
     """Whether this printer's finished row waits for an answer.
 
@@ -119,7 +123,9 @@ async def clean_up_finished_row(
     return True
 
 
-async def answer_by_clearing(db: AsyncSession, printer_id: int) -> int:
+async def answer_by_clearing(
+    db: AsyncSession, printer_id: int, *, expected_archive_id: int | None = None, commit: bool = True
+) -> int:
     """The operator took the part off: drop the row and let the queue move on.
 
     This is what used to happen the moment the print ended, only later — which
@@ -133,6 +139,7 @@ async def answer_by_clearing(db: AsyncSession, printer_id: int) -> int:
     from backend.app.services.queue_counters import detach_print_queue_refs, update_queue_counters
 
     row = await waiting_row(db, printer_id)
+    _require_expected_archive(row, expected_archive_id)
     if row is None:
         return 0
 
@@ -141,12 +148,15 @@ async def answer_by_clearing(db: AsyncSession, printer_id: int) -> int:
     await detach_print_queue_refs(db, [row_id])
     await db.delete(row)
     await update_queue_counters(db, queue_id)
-    await db.commit()
+    if commit:
+        await db.commit()
     logger.info("Plate cleared on printer %s — dropped the finished queue row %s", printer_id, row_id)
     return 1
 
 
-async def answer_by_repeating(db: AsyncSession, printer_id: int) -> PrintQueueItem | None:
+async def answer_by_repeating(
+    db: AsyncSession, printer_id: int, *, expected_archive_id: int | None = None, commit: bool = True
+) -> PrintQueueItem | None:
     """The operator took the part off and wants another: re-arm the same row.
 
     The same row, deliberately — not a copy. ``queue_ops.clone_item`` builds a
@@ -171,6 +181,7 @@ async def answer_by_repeating(db: AsyncSession, printer_id: int) -> PrintQueueIt
     from backend.app.services.queue_sources import QueueSourceError
 
     row = await waiting_row(db, printer_id)
+    _require_expected_archive(row, expected_archive_id)
     if row is None:
         return None
 
@@ -183,14 +194,14 @@ async def answer_by_repeating(db: AsyncSession, printer_id: int) -> PrintQueueIt
         # here cannot swallow anything else.
         try:
             async with reusing_sources(db, [row.queue_source_id]):
-                await _rearm(db, row)
+                await _rearm(db, row, commit=commit)
         except QueueSourceError as exc:
             raise RepeatNotPossible(
                 "This print has no file to send again — the queue's saved copy of it is no longer readable."
             ) from exc
     else:
         await _refuse_a_legacy_row_with_no_file(db, row)
-        await _rearm(db, row)
+        await _rearm(db, row, commit=commit)
     logger.info("Repeat requested on printer %s — re-armed queue row %s", printer_id, row.id)
     return row
 
@@ -229,7 +240,7 @@ async def _refuse_a_legacy_row_with_no_file(db: AsyncSession, row: PrintQueueIte
         )
 
 
-async def _rearm(db: AsyncSession, row: PrintQueueItem) -> None:
+async def _rearm(db: AsyncSession, row: PrintQueueItem, *, commit: bool = True) -> None:
     """Put the waiting row back into its queue, at the front. Commits.
 
     Split out so the two answers to "does this row still have bytes?" —
@@ -268,8 +279,9 @@ async def _rearm(db: AsyncSession, row: PrintQueueItem) -> None:
     # "Again" means now: front of the queue, renumbering the rest properly.
     await bump_block_to_top(db, row.queue_id, [row.id])
     await update_queue_counters(db, row.queue_id)
-    await db.commit()
-    await db.refresh(row)
+    if commit:
+        await db.commit()
+        await db.refresh(row)
 
 
 async def has_waiting_row(db: AsyncSession, printer_id: int) -> bool:
@@ -321,6 +333,12 @@ async def waiting_row(db: AsyncSession, printer_id: int) -> PrintQueueItem | Non
         .scalars()
         .first()
     )
+
+
+def _require_expected_archive(row: PrintQueueItem | None, expected_archive_id: int | None) -> None:
+    """Refuse an old completion card before it can touch a newer held print."""
+    if expected_archive_id is not None and (row is None or row.archive_id != expected_archive_id):
+        raise StalePlateAnswer("This completion card is no longer current for this printer")
 
 
 async def waiting_archive(db: AsyncSession, printer_id: int) -> PrintArchive | None:

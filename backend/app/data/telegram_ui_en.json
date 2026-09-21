@@ -68,6 +68,7 @@
     "repeat_print_none": "Nothing finished is waiting on this printer.",
     "clear_plate_ok": "Plate cleared! Next print starts shortly.",
     "clear_plate_fail": "Failed to clear plate",
+    "plate_action_stale": "This completion card is no longer current. Open the printer again.",
     "next_in_queue": "Next: {name}"
   },
   "maintenance": {
@@ -190,7 +191,11 @@
     "done": "Defects recorded: {defective} of {quantity}",
     "ledger_refused": "⚠ The free-stock shelf could not be corrected for {count} part(s) — they were already spent; fix it by hand on the product page",
     "gone": "This print no longer exists",
-    "cancelled": "Cancelled"
+    "cancelled": "Cancelled",
+    "context": "🖨 {printer}\nPrint: {print_name}\nRun #{archive_id}",
+    "reply_placeholder": "Reply with a number",
+    "reply_to_prompt": "Reply directly to the number request so the result reaches the right print.",
+    "stale_prompt": "That defect prompt is no longer active."
   },
   "queue_add": {
     "title": "Add to Queue",

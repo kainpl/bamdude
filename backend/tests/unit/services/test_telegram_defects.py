@@ -217,6 +217,29 @@ async def test_other_takes_a_typed_number(patched_session, db_session):
     assert state.clears == 1
 
 
+async def test_typed_count_must_reply_to_its_own_other_prompt(patched_session, db_session):
+    """A late reply to run A cannot be charged to a newer run B's FSM state."""
+    from backend.app.services.telegram_handlers.defects import msg_defects_count
+
+    archive = await _print(db_session, {"lid": 2})
+    row = (await _rows(db_session, archive))["lid"]
+    row_id = row.id
+    state = _FakeState()
+    await state.set_state("waiting")
+    await state.update_data(archive_id=archive.id, row_id=row.id, maximum=2, prompt_message_id=400)
+
+    message = _message("1")
+    message.reply_to_message = MagicMock(message_id=399)
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await msg_defects_count(message, state)
+
+    db_session.expire_all()
+    assert (await db_session.get(PrintArchivePart, row_id)).defective == 0
+    assert state.clears == 0
+    assert "Reply" in message.answer.await_args.args[0]
+
+
 async def test_a_number_above_the_row_is_refused_and_the_question_stays(patched_session, db_session):
     """The prompt promised "0 to {max}" — an over-count is a typo, not a clamp."""
     from backend.app.services.telegram_handlers.defects import msg_defects_count
@@ -395,6 +418,29 @@ async def test_the_button_names_the_archive_it_was_given_and_no_other(patched_se
     assert f"action:defects:{newer_id}" not in _button_data(markup), "not the newest — the one announced"
 
 
+async def test_completion_controls_name_the_held_run_not_only_the_printer(patched_session, db_session):
+    from backend.app.services.notification_service import notification_service
+
+    archive = await _print(db_session, {"lid": 2})
+    await _ops_chat(db_session)
+    held = MagicMock(id=archive.id)
+    with (
+        patch("backend.app.i18n.get_language", AsyncMock(return_value="en")),
+        patch(
+            "backend.app.services.printer_manager.printer_manager.is_awaiting_plate_clear",
+            MagicMock(return_value=True),
+        ),
+        patch("backend.app.services.plate_hold.waiting_archive", AsyncMock(return_value=held)),
+    ):
+        markup = await notification_service._build_telegram_actions(
+            "print_complete", 5, 4242, {"archive_id": archive.id}
+        )
+
+    buttons = _button_data(markup)
+    assert f"action:clear_plate:5:{archive.id}" in buttons
+    assert f"action:repeat_print:5:{archive.id}" in buttons
+
+
 async def test_a_completion_with_no_archive_gets_no_defects_button(patched_session, db_session):
     """``main.py``'s no-archive path ("Could not find archive for print complete")
     still sends the completion notification. A print we could not attach to an
@@ -483,5 +529,6 @@ async def test_a_done_message_with_nothing_refused_carries_no_extra_line(patched
         await cb_defects_set(cb, _FakeState())
 
     said = cb.message.edit_text.await_args.args[0]
-    assert "\n" not in said
+    assert "Print: Plate" in said
+    assert escape_md(t("en", NS, "defects.ledger_refused", count=1)) not in said
     assert cb.message.edit_text.await_count == 1, "one edit for the last part, not a confirmation then a total"

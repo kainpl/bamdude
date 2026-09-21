@@ -37,7 +37,6 @@ from backend.app.schemas.printer import (
     AmsTrayActual,
     AMSUnit,
     BackupCompatibilityApplyRequest,
-    DefectsWriteIn,
     DiagnosticRequest,
     FilaSwitchResponse,
     HmsActionBody,
@@ -61,7 +60,7 @@ from backend.app.services import ams_advertised_overlay, archive_parts
 from backend.app.services.ams_backup_compatibility import NAMESPACE as AMS_BACKUP_COMPAT_NAMESPACE
 from backend.app.services.ams_backup_compatibility_apply import bulk_apply, forget_printer_rebuild
 from backend.app.services.archive import find_archive_for_sd_file, parse_plates_from_3mf, sd_stem
-from backend.app.services.archive_defects import DefectsResult, DefectsWrite, record_defects
+from backend.app.services.archive_defects import DefectsWrite
 from backend.app.services.bambu_ftp import (
     clear_sdcard_async,
     get_storage_info_async,
@@ -78,7 +77,13 @@ from backend.app.services.bambu_mqtt import (
 )
 from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
-from backend.app.services.plate_hold import has_waiting_row as _has_waiting_row, waiting_archive
+from backend.app.services.plate_answers import answer_plate_run
+from backend.app.services.plate_hold import (
+    RepeatNotPossible,
+    StalePlateAnswer,
+    has_waiting_row as _has_waiting_row,
+    waiting_archive,
+)
 from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_location_service import load_tree, subtree_ids
@@ -3230,34 +3235,6 @@ async def stop_print(
     return {"success": True, "message": "Print stop command sent"}
 
 
-async def _record_waiting_defects(
-    db: AsyncSession, printer_id: int, defects: DefectsWriteIn, actor_id: int | None
-) -> DefectsResult:
-    """Write the answer's defects onto the ONE print the gate is about, or 409.
-
-    Resolved before the answer itself — clearing deletes the row and repeating
-    re-arms it — and written under ``printers:clear_plate``: the operator at the
-    machine need not hold ``archives:update_all`` for a print somebody else
-    started, and the scope is exactly the print on the plate.
-
-    ⚠️ **Does not commit.** The answer that follows does (``answer_by_clearing``
-    / ``answer_by_repeating``, and ``get_db`` after them), and that is the
-    point: ``repeat_print`` can still refuse with a 409 after this ran
-    (``RepeatNotPossible``, or nothing left to re-arm), and a committed write
-    behind a failed request left the defects — and their free-stock ledger
-    movement — standing while the client was told nothing happened.
-    """
-    archive = await waiting_archive(db, printer_id)
-    if archive is None:
-        raise HTTPException(409, "No finished print is waiting on this printer")
-    return await record_defects(
-        db,
-        archive,
-        DefectsWrite(parts=tuple((p.id, p.defective) for p in defects.parts or ()), flat=defects.defective_count),
-        actor_id=actor_id,
-    )
-
-
 @router.get("/{printer_id}/waiting-print", response_model=WaitingPrintOut)
 async def get_waiting_print(
     printer_id: int,
@@ -3327,19 +3304,25 @@ async def clear_plate(
             f"Printer is not in FINISH, FAILED, or IDLE state (current: {state.state if state else 'unknown'})",
         )
 
-    # The defects travel with the answer — written before the row is answered
-    # away (spec 2026-09-11 §5). A body-less call is the old behaviour.
-    refused = 0
-    if data is not None and data.defects is not None:
-        result = await _record_waiting_defects(db, printer_id, data.defects, current_user.id if current_user else None)
-        refused = len(result.ledger_refused)
+    defects = data.defects if data is not None else None
+    write = (
+        DefectsWrite(parts=tuple((p.id, p.defective) for p in defects.parts or ()), flat=defects.defective_count)
+        if defects is not None
+        else None
+    )
+    try:
+        answered = await answer_plate_run(
+            db,
+            printer_id=printer_id,
+            expected_archive_id=data.expected_archive_id if data is not None else None,
+            action="clear",
+            defects=write,
+            actor_id=current_user.id if current_user else None,
+        )
+    except StalePlateAnswer as e:
+        raise HTTPException(409, str(e)) from e
 
-    printer_manager.set_awaiting_plate_clear(printer_id, False)
-
-    # The finished row was held for this answer — see ``services/plate_hold``.
-    from backend.app.services.plate_hold import answer_by_clearing
-
-    await answer_by_clearing(db, printer_id)
+    refused = len(answered.defects.ledger_refused) if answered.defects is not None else 0
 
     # ``ledger_refused_parts`` is reported HERE because here it can happen: the
     # print on the plate is usually filed under no order, so its defects correct
@@ -3374,31 +3357,35 @@ async def repeat_print(
 
     Same permission as Clear plate: they are two answers to one question.
     """
-    from backend.app.services.plate_hold import RepeatNotPossible, answer_by_repeating
-
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     if result.scalar_one_or_none() is None:
         raise HTTPException(404, "Printer not found")
 
-    # The defects travel with the answer — written before the row is answered
-    # away (spec 2026-09-11 §5). A body-less call is the old behaviour.
-    refused = 0
-    if data is not None and data.defects is not None:
-        result = await _record_waiting_defects(db, printer_id, data.defects, current_user.id if current_user else None)
-        refused = len(result.ledger_refused)
-
     try:
-        row = await answer_by_repeating(db, printer_id)
+        defects = data.defects if data is not None else None
+        write = (
+            DefectsWrite(parts=tuple((p.id, p.defective) for p in defects.parts or ()), flat=defects.defective_count)
+            if defects is not None
+            else None
+        )
+        answered = await answer_plate_run(
+            db,
+            printer_id=printer_id,
+            expected_archive_id=data.expected_archive_id if data is not None else None,
+            action="repeat",
+            defects=write,
+            actor_id=current_user.id if current_user else None,
+        )
     except RepeatNotPossible as e:
         # Said out loud rather than queued and failed later: a failed dispatch
         # errors the whole queue, which is what this feature exists to avoid.
         raise HTTPException(409, str(e)) from e
-    if row is None:
-        raise HTTPException(409, "No finished print is waiting on this printer")
+    except StalePlateAnswer as e:
+        raise HTTPException(409, str(e)) from e
 
-    printer_manager.set_awaiting_plate_clear(printer_id, False)
+    refused = len(answered.defects.ledger_refused) if answered.defects is not None else 0
     # See ``clear_plate`` on why the refusal is reported here.
-    return {"success": True, "item_id": row.id, "ledger_refused_parts": refused}
+    return {"success": True, "item_id": answered.item_id, "ledger_refused_parts": refused}
 
 
 @router.post("/{printer_id}/print/pause")

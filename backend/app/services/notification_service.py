@@ -1352,23 +1352,24 @@ class NotificationService:
                             # the row that just finished; see services/plate_hold \u2014
                             # and is offered only when that row exists, because
                             # the gate can be armed over nothing (2026-09-04).
-                            from backend.app.services.plate_hold import repeat_available
+                            from backend.app.services.plate_hold import waiting_archive
 
+                            held_archive = await waiting_archive(db, printer_id)
                             answers = []
-                            if await repeat_available(printer_id):
+                            if held_archive is not None:
                                 answers.append(
                                     InlineKeyboardButton(
                                         text=f"\U0001f501 {t(lang, NS, 'printers.btn_repeat_print')}",
-                                        callback_data=f"action:repeat_print:{printer_id}",
+                                        callback_data=f"action:repeat_print:{printer_id}:{held_archive.id}",
                                     )
                                 )
-                            answers.append(
-                                InlineKeyboardButton(
-                                    text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
-                                    callback_data=f"action:clear_plate:{printer_id}",
+                                answers.append(
+                                    InlineKeyboardButton(
+                                        text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
+                                        callback_data=f"action:clear_plate:{printer_id}:{held_archive.id}",
+                                    )
                                 )
-                            )
-                            buttons.append(answers)
+                                buttons.append(answers)
 
                         # «Брак…» on the completion message, gate or no gate — for
                         # the print this message ANNOUNCES and no other (spec
