@@ -349,9 +349,10 @@ export function FilamentMapping({
               {totalCost > 0 || hasAnyCost ? `${currencySymbol}${totalCost.toFixed(2)}` : 'N/A'}
             </span>
           </div>
-          {hasTypeMismatch && (
+          {(routingReason || hasTypeMismatch) && (
             <p className="text-xs text-orange-700 dark:text-orange-400 mt-2">
-              {t(requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeMismatch')}
+              {routingReason || t(profileMismatch ? 'filamentRouting.feasibility.reason.variant_mismatch'
+                : requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeMismatch')}
             </p>
           )}
         </div>

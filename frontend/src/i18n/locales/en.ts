@@ -164,7 +164,7 @@ export default {
     copyReview: "This copy had a manual filament mapping. Check the mapping for the destination printer before queuing.",
     copyRules: "This copy keeps its source feed and color rules. Automatic routing will validate them again before printing.",
 
-    advisoryUnavailable: "Live printer compatibility is unavailable. You can queue this file; it will wait for a compatible printer.",
+    advisoryUnavailable: "Some printers could not be checked. Compatibility is not fully verified; missing results do not mean those printers are incompatible.",
     "feedPolicy": "Filament source",
     "feedAuto": "Automatic: AMS or external spool",
     "feedAms": "AMS only",
@@ -184,7 +184,7 @@ export default {
     "pinColor": "Require this color",
     "reset": "Reset channel",
     "compatibilityHint": "Compatibility reflects the loaded filament. Ready also accounts for the printer state; dispatch checks again before starting.",
-    "noPrinters": "No matching printers yet. This valid job can wait in AutoQueue.",
+    "noPrinters": "No active {{model}} printers in the selected farm scope. This job cannot be assigned here.",
     "nozzles_one": "{{count}} nozzle",
     "nozzles_few": "{{count}} nozzles",
     "nozzles_many": "{{count}} nozzles",
@@ -193,6 +193,7 @@ export default {
     "ams_absent": "Without AMS",
     "ams_unknown": "AMS state unknown",
     "counts": "Compatible: {{compatible}}/{{total}} · Ready: {{ready}}",
+    "unresolvedCounts": "Incompatible: {{incompatible}} · Unverified: {{unknown}}",
     "nextFileReview": "Channel choices apply to this file. The next file in the group will open a dialog.",
     // Whether the print button can honestly be pressed. `reason` and `detail`
     // mirror backend/app/data/filament_routing_en.json one for one — no
@@ -200,11 +201,15 @@ export default {
     // dialog, so the vocabulary is mirrored rather than fetched.
     feasibility: {
       blocked: "Nothing selected can print this plate as it is loaded.",
-      queueAnyway: "Queue anyway — it will wait for the right filament",
-      queueInsteadOfPrinting: "Add to the queue — it will wait for the right filament",
+      unknown: "Compatibility is not fully verified. Printing is unavailable until a complete assignment is confirmed.",
+      unknownDetail: "Compatibility is not fully verified. Latest check: {{detail}}",
+      queueAnyway: "Queue anyway — wait for compatibility",
+      queueInsteadOfPrinting: "Add to the queue instead of printing — wait for compatibility",
+      queueForFuture: "Save in AutoQueue for the future",
       confirmTitle: "Queue it anyway?",
-      confirmBody: "The job is added and waits in the queue until a printer has what it needs.",
-      confirmBodyPrint: "The job goes to this printer's queue and waits there. Printing it now would be cancelled instead of waiting. A file uploaded with «print and delete» stays in the library: a queued job is not the immediate print that was going to clean it up.",
+      confirmBody: "The job will wait until compatibility is confirmed. It may require changing filament, settings or hardware. In a printer queue, it can hold up later jobs until the cause is resolved or the job is moved or removed.",
+      confirmBodyFuture: "This job will stay unassigned until an active printer of the required model exists in the selected scope. Saving it does not make it printable on the current farm.",
+      confirmBodyPrint: "Printing will not start now. The job goes to this printer's queue and waits for confirmed compatibility; it can hold up later jobs until the cause is resolved or the job is moved or removed. A file uploaded with «print and delete» stays in the library: queuing does not delete it.",
       reason: {
         material_mismatch: "No compatible filament source is available.",
         variant_mismatch: "The filament variant does not match.",
@@ -7259,8 +7264,8 @@ export default {
     requirePreviousSuccessHint: "Held back when the printer's last print failed. A print you cancelled yourself doesn't count.",
     runNext: 'Run next',
     runNextHint: 'Place this job before other pending jobs on the selected printer. The current print will not be interrupted.',
-    hintAsap: 'Print will start as soon as the printer is idle.',
-    hintScheduled: 'Print will start at the scheduled time if the printer is idle. If busy, it will wait until the printer becomes available.',
+    hintAsap: 'Print will start once the printer is idle and all start checks pass.',
+    hintScheduled: 'Print can start at the scheduled time once the printer is idle and all start checks pass. Otherwise, the job waits.',
     hintManual: "Print will be staged but won't start automatically. Use the Start button to release it to the queue.",
 
     // PrinterSelector

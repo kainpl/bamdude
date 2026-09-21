@@ -56,7 +56,7 @@ describe('AutoQueue routing options', () => {
 });
 
 
-it('queues a valid source with unavailable live compatibility and keeps the selected color rule', async () => {
+it('queues with confirmed compatible candidates despite incomplete farm checks and keeps the selected color rule', async () => {
   const posts: Record<string, unknown>[] = [];
   server.use(
     http.get('/api/v1/archives/:id/plates', () => HttpResponse.json({ is_multi_plate: false, plates: [{ index: 15, name: 'Part' }] })),
@@ -70,7 +70,7 @@ it('queues a valid source with unavailable live compatibility and keeps the sele
     preselectedPlateId={15} onClose={vi.fn()} />);
   const button = await screen.findByRole('button', { name: /Add to Queue/i });
   await waitFor(() => expect(button).toBeEnabled());
-  expect(screen.getByText(/Live printer compatibility is unavailable/)).toBeInTheDocument();
+  expect(screen.getByText(/Some printers could not be checked/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole('switch', { name: 'Force exact color match' }));
   await waitFor(() => expect(button).toBeEnabled());
   await userEvent.click(button);

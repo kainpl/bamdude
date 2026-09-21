@@ -1531,15 +1531,24 @@ export function PrintModal({
   });
   const targetPreview = (printerId: number, plateId: number | null) =>
     printerPreview.data?.targets.find(target => target.printer_id === printerId && target.plate_id === (plateId ?? 0));
+  const targetRoutingMessage = (target: ReturnType<typeof targetPreview>) => {
+    if (printerPreview.isFetching) return t('filamentRouting.loading');
+    if (!target || printerPreview.isError || target.status === 'unknown') {
+      return target?.reason?.message && !printerPreview.isError
+        ? t('filamentRouting.feasibility.unknownDetail', { detail: target.reason.message })
+        : t('filamentRouting.feasibility.unknown');
+    }
+    return target.reason?.message;
+  };
   const displayedPrinterMappings = multiPrinterMapping.printerResults.map(result => {
     const preview = isMultiPlateSelection ? undefined : targetPreview(result.printerId, selectedPlate);
-    if (!preview) return result;
+    if (!preview) return { ...result, routingReason: targetRoutingMessage(preview) };
     const finalMapping = preview.mapping ?? (isManualMapping(result.printerId, selectedPlate) ? result.finalMapping : undefined);
     const exactMatches = preview.status === 'compatible' ? (routingFilamentReqs?.filaments ?? []).filter(req => {
       const source = result.loadedFilaments.find(f => f.globalTrayId === finalMapping?.[req.slot_id - 1]);
       return source && filamentColorMatches(req, source);
     }).length : 0;
-    return { ...result, finalMapping, exactMatches, routingReason: preview.reason?.message,
+    return { ...result, finalMapping, exactMatches, routingReason: targetRoutingMessage(preview),
       matchStatus: preview.status !== 'compatible' ? 'missing' as const
         : exactMatches === result.totalSlots ? 'full' as const : 'partial' as const };
   });
@@ -1561,11 +1570,15 @@ export function PrintModal({
    * is still computed and still shown there — as information.
    */
   const isEditMode = mode === 'edit-queue-item' || mode === 'edit-auto-item';
-  const verdictBlocks =
-    !isEditMode && (feasibility.state === 'blocked_now' || feasibility.state === 'blocked_target');
+  const verdictBlocks = !isEditMode && feasibility.state !== 'ok';
   /** `blocked_target` has no override — the file does not fit this machine. */
-  const verdictOverridable = !isEditMode && feasibility.state === 'blocked_now';
-  const showFeasibility = feasibility.state === 'blocked_now' || feasibility.state === 'blocked_target';
+  const verdictOverridable = verdictBlocks && feasibility.state !== 'blocked_target';
+  const showFeasibility = !feasibilityPending && (isAutoMode || previewTargets.length > 0) && feasibility.state !== 'ok';
+  const overrideLabel = t(feasibility.state === 'no_target'
+    ? 'filamentRouting.feasibility.queueForFuture'
+    : mode === 'reprint'
+      ? 'filamentRouting.feasibility.queueInsteadOfPrinting'
+      : 'filamentRouting.feasibility.queueAnyway');
   const [feasibilityConfirm, setFeasibilityConfirm] = useState(false);
 
   /**
@@ -1579,6 +1592,10 @@ export function PrintModal({
    */
   const feasibilityMessage = useMemo(() => {
     const reason = feasibility.reason;
+    if (feasibility.state === 'no_target') return t('filamentRouting.noPrinters', { model: feasibility.model ?? '—' });
+    if (feasibility.state === 'unknown') return reason?.message
+      ? t('filamentRouting.feasibility.unknownDetail', { detail: reason.message })
+      : t('filamentRouting.feasibility.unknown');
     if (!reason) return t('filamentRouting.feasibility.blocked');
     if (reason.message) return reason.message;
     const head = t(`filamentRouting.feasibility.reason.${reason.code}`);
@@ -1595,6 +1612,8 @@ export function PrintModal({
 
   const runSubmit = async (e?: React.FormEvent, options?: SubmitOptions) => {
     e?.preventDefault();
+    // Form submission and explicit waiting use the same source/selection gate.
+    if (!canSubmit || orderAnswerPending) return;
     if (!isEditMode && feasibilityPending) return;
     if (autoSubmitWhenUnambiguous && !autoSubmitRefused && feasibility.state === 'unknown') {
       setAutoSubmitRefused(true);
@@ -2910,7 +2929,7 @@ export function PrintModal({
                 filamentReqs={routingFilamentReqs}
                 manualMappings={manualMappings}
                 resolvedMapping={targetPreview(effectivePrinterId!, selectedPlate)?.mapping}
-                routingReason={targetPreview(effectivePrinterId!, selectedPlate)?.reason?.message}
+                routingReason={targetRoutingMessage(targetPreview(effectivePrinterId!, selectedPlate))}
                 onManualMappingChange={(mappings) => { setMappingReviewed(true); setManualMappings(mappings); }}
                 requireExactColor={autoModeOptions.force_color_match}
                 defaultExpanded={!!initialSelectedPrinterIds?.length || (settings?.per_printer_mapping_expanded ?? false)}
@@ -2933,7 +2952,7 @@ export function PrintModal({
                   filamentReqs={plateReqs}
                   manualMappings={manualMappingsByPlate[plateId] ?? {}}
                   resolvedMapping={targetPreview(effectivePrinterId!, plateId)?.mapping}
-                  routingReason={targetPreview(effectivePrinterId!, plateId)?.reason?.message}
+                  routingReason={targetRoutingMessage(targetPreview(effectivePrinterId!, plateId))}
                   onManualMappingChange={(mappings) => {
                     setMappingReviewed(true);
                     setManualMappingsByPlate((prev) => ({ ...prev, [plateId]: mappings }));
@@ -3061,12 +3080,8 @@ export function PrintModal({
               </div>
             )}
 
-            {/* Why the button is off, and the one way past it.
-                ⚠️ `unknown` renders NOTHING here: a printer nobody has heard
-                from, telemetry still in flight or an evaluation that could not
-                cover every machine is not an incompatibility, and wording it as
-                one is the failure this whole block exists to remove. An edit
-                shows the line and no override — it never blocks saving. */}
+            {/* Unknown is explained as unverified, never as incompatible.
+                New work needs explicit consent to wait; edits remain savable. */}
             {showFeasibility && (
               <div
                 data-testid="feasibility-notice"
@@ -3075,18 +3090,21 @@ export function PrintModal({
                 <AlertTriangle className="w-4 h-4 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" />
                 <div className="space-y-2 min-w-0">
                   <p className="text-orange-700 dark:text-orange-400">{feasibilityMessage}</p>
+                  {feasibility.state === 'unknown' && (
+                    <button type="button" onClick={() => void (isAutoMode ? routingPreview : printerPreview).refetch()}
+                      className="block text-xs underline text-orange-700 dark:text-orange-300">
+                      {t('filamentRouting.retry')}
+                    </button>
+                  )}
                   {verdictOverridable && (
                     <button
                       type="button"
                       data-testid="feasibility-override"
                       onClick={() => setFeasibilityConfirm(true)}
-                      className="text-xs underline text-orange-700 dark:text-orange-300 hover:text-orange-900 dark:hover:text-orange-200"
+                      disabled={!canSubmit || orderAnswerPending}
+                      className="text-xs underline text-orange-700 dark:text-orange-300 hover:text-orange-900 dark:hover:text-orange-200 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {t(
-                        mode === 'reprint'
-                          ? 'filamentRouting.feasibility.queueInsteadOfPrinting'
-                          : 'filamentRouting.feasibility.queueAnyway',
-                      )}
+                      {overrideLabel}
                     </button>
                   )}
                 </div>
@@ -3150,15 +3168,13 @@ export function PrintModal({
         <ConfirmModal
           title={t('filamentRouting.feasibility.confirmTitle')}
           message={`${feasibilityMessage}\n\n${t(
-            mode === 'reprint'
+            feasibility.state === 'no_target'
+              ? 'filamentRouting.feasibility.confirmBodyFuture'
+              : mode === 'reprint'
               ? 'filamentRouting.feasibility.confirmBodyPrint'
               : 'filamentRouting.feasibility.confirmBody',
           )}`}
-          confirmText={t(
-            mode === 'reprint'
-              ? 'filamentRouting.feasibility.queueInsteadOfPrinting'
-              : 'filamentRouting.feasibility.queueAnyway',
-          )}
+          confirmText={overrideLabel}
           cancelText={t('common.cancel')}
           variant="warning"
           onConfirm={() => {

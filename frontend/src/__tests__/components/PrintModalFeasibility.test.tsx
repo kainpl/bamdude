@@ -13,10 +13,9 @@
  * channel with no source at all (mapping `-1`), and `mismatch` is ALSO the
  * answer for a pure profile veto with the material sitting right there.
  *
- * ⚠️ Four states, not three. «Unknown» — offline, telemetry in flight, a
- * preview that could not read every printer — never blocks and is never worded
- * as an incompatibility. Busy, drying and an uncleared plate never block
- * either: that is [[inv-routing-is-not-dispatching]].
+ * Unknown is not an incompatibility, but it needs explicit consent to wait.
+ * A missing model is separate again. Busy compatible printers still accept
+ * normal queue work: routing and dispatch readiness remain different things.
  */
 
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
@@ -188,6 +187,48 @@ describe('the print button and what the trays actually hold', () => {
 
   const submitButton = () => screen.findByRole('button', { name: /add to queue/i });
 
+  it.each(['add-to-queue', 'reprint'] as const)('partial PETG profile refusal needs consent in %s and never starts a direct print', async (mode) => {
+    const user = userEvent.setup();
+    server.use(
+      needs([{ slot_id: 1, type: 'PETG', color: '#000000', used_grams: 244.6, tray_info_idx: 'P8e36324' }]),
+      http.get('/api/v1/printers/:id/status', () => HttpResponse.json(statusWith([
+        { tray_type: 'PETG', tray_color: '000000FF', tray_info_idx: 'GFG99' },
+      ]))),
+      http.post('/api/v1/auto-queue/printer-routing-preview', async ({ request }) => {
+        const data = await request.json() as { targets: { printer_id: number; plate_id: number }[] };
+        return HttpResponse.json({ targets: data.targets.map(target => ({ ...target, status: 'unknown', mapping: null,
+          reason: { code: 'variant_mismatch', message: 'Channel 1 needs PETG (P8e36324); loaded: PETG (GFG99).' } })) });
+      }),
+    );
+    openQueueDialog({ mode, initialRouting: routing({ allow_base_material_match: false }) });
+    const notice = await screen.findByTestId('feasibility-notice');
+    expect(notice).toHaveTextContent(/not fully verified/i);
+    expect(notice).toHaveTextContent(/P8e36324/);
+    expect(notice).toHaveTextContent(/GFG99/);
+    await waitFor(() => expect(screen.getByTestId('feasibility-notice').closest('form')?.querySelector('button[type="submit"]')).toBeDisabled());
+    expect(screen.queryByText(/required filament type not found/i)).not.toBeInTheDocument();
+    fireEvent.submit(screen.getByTestId('feasibility-notice').closest('form')!);
+    expect(queuePosts).toBe(0);
+    expect(reprints).toBe(0);
+    await user.click(screen.getByTestId('feasibility-override'));
+    const confirmation = await screen.findByRole('dialog', { name: /queue it anyway/i });
+    expect(queuePosts).toBe(0);
+    await user.click(within(confirmation).getByRole('button', { name: /wait for compatibility/i }));
+    await waitFor(() => expect(queuePosts).toBe(1));
+    expect(reprints).toBe(0);
+  });
+
+  it('a failed per-printer preview cannot silently enable print and offers a retry', async () => {
+    server.use(needs(oneAbsChannel),
+      http.post('/api/v1/auto-queue/printer-routing-preview', () => new HttpResponse(null, { status: 503 })));
+    openQueueDialog({ mode: 'reprint' });
+    expect(await screen.findByTestId('feasibility-notice')).toHaveTextContent(/not fully verified/i);
+    expect(screen.getByRole('button', { name: /^print$/i })).toBeDisabled();
+    expect(within(screen.getByTestId('feasibility-notice')).getByRole('button', { name: /retry/i })).toBeEnabled();
+    fireEvent.submit(screen.getByTestId('feasibility-notice').closest('form')!);
+    expect(reprints).toBe(0);
+  });
+
   it('a manually selected wrong material cannot clear the backend refusal', async () => {
     const user = userEvent.setup();
     let manualSeen = false;
@@ -244,7 +285,9 @@ describe('the print button and what the trays actually hold', () => {
       autoSubmitWhenUnambiguous: true, onAutoSubmitRefused });
     await waitFor(() => expect(onAutoSubmitRefused).toHaveBeenCalled());
     expect(autoPosts).toBe(0);
-    expect(await submitButton()).toBeEnabled();
+    expect(await submitButton()).toBeDisabled();
+    expect(screen.getByTestId('feasibility-notice')).toHaveTextContent(/not fully verified/i);
+    expect(screen.getByTestId('feasibility-override')).toBeEnabled();
   });
 
   it('checks every actual target in a fan-out, including an incompatible model', async () => {
@@ -347,11 +390,9 @@ describe('the print button and what the trays actually hold', () => {
     expect(screen.queryByTestId('feasibility-notice')).not.toBeInTheDocument();
   });
 
-  it('⚠️ treats an unreadable printer status as unknown, not as an incompatibility', async () => {
-    // `buildLoadedFilaments(undefined)` is an empty list, which refuses every
-    // channel. Reading that as proof would disable the button for a printer
-    // nobody has heard from — the one state that must never be worded as a
-    // refusal.
+  it('uses a compatible resolver assignment even when the separate display status request fails', async () => {
+    // The display endpoint is not the authority. The default preview handler
+    // confirms a complete assignment independently of this failed request.
     server.use(
       needs(oneAbsChannel),
       http.get('/api/v1/printers/:id/status', () => new HttpResponse(null, { status: 503 })),
@@ -479,15 +520,16 @@ describe('the print button and what the trays actually hold', () => {
       expect(screen.getByTestId('feasibility-override')).toBeInTheDocument();
     });
 
-    it('⚠️ does not block when every printer is offline — zero compatible is not proof', async () => {
+    it('asks for explicit waiting when every printer is offline, without claiming incompatibility', async () => {
       openAuto(previewWith([group({ unknown: 2, total: 2 })]));
 
       const submit = await submitButton();
-      await waitFor(() => expect(submit).toBeEnabled());
-      expect(screen.queryByTestId('feasibility-notice')).not.toBeInTheDocument();
+      expect(await screen.findByTestId('feasibility-notice')).toHaveTextContent(/not fully verified/i);
+      expect(submit).toBeDisabled();
+      expect(screen.getByTestId('feasibility-override')).toBeEnabled();
     });
 
-    it('⚠️ does not block when a printer was skipped entirely (advisory_unavailable)', async () => {
+    it('requires explicit waiting for incomplete evaluation, not a false incompatibility verdict', async () => {
       // One incompatible plus one printer whose snapshot failed reads as
       // `compatible=0, unknown=0, incompatible=1` — counters that look complete
       // while the evaluation is not.
@@ -504,8 +546,9 @@ describe('the print button and what the trays actually hold', () => {
       );
 
       const submit = await submitButton();
-      await waitFor(() => expect(submit).toBeEnabled());
-      expect(screen.queryByTestId('feasibility-notice')).not.toBeInTheDocument();
+      expect(await screen.findByTestId('feasibility-notice')).toHaveTextContent(/not fully verified/i);
+      expect(submit).toBeDisabled();
+      expect(screen.getByTestId('feasibility-override')).toBeEnabled();
     });
 
     it('leaves the button alive when nothing is READY but something is compatible', async () => {
@@ -514,6 +557,46 @@ describe('the print button and what the trays actually hold', () => {
       const submit = await submitButton();
       await waitFor(() => expect(submit).toBeEnabled());
       expect(screen.queryByTestId('feasibility-notice')).not.toBeInTheDocument();
+    });
+
+    it('shows the unknown counter and qualifies a partial profile reason', async () => {
+      openAuto(previewWith([group({ unknown: 1, reasons: [
+        { code: 'variant_mismatch', message: 'Channel 1 needs PETG (P8e36324).', count: 1 },
+      ] })]));
+      const notice = await screen.findByTestId('feasibility-notice');
+      expect(notice).toHaveTextContent(/not fully verified/i);
+      expect(notice).toHaveTextContent(/P8e36324/);
+      expect(screen.getByText(/Incompatible: 0 · Unverified: 1/)).toBeInTheDocument();
+      expect(await submitButton()).toBeDisabled();
+    });
+
+    it('requires a separate future-queue action when the farm has no target model', async () => {
+      const user = userEvent.setup();
+      let autoPosts = 0;
+      server.use(http.post('/api/v1/auto-queue/', () => { autoPosts++; return HttpResponse.json({ id: 9 }); }));
+      const preview = previewWith([]);
+      preview.plates[0].model = 'P2S';
+      openAuto(preview);
+      const notice = await screen.findByTestId('feasibility-notice');
+      expect(notice).toHaveTextContent(/no active P2S printers/i);
+      expect(notice).not.toHaveTextContent(/not fully verified/i);
+      expect(await submitButton()).toBeDisabled();
+      fireEvent.submit(screen.getByTestId('feasibility-notice').closest('form')!);
+      expect(autoPosts).toBe(0);
+      await user.click(screen.getByRole('button', { name: /save in AutoQueue for the future/i }));
+      const confirmation = await screen.findByRole('dialog', { name: /queue it anyway/i });
+      expect(confirmation).toHaveTextContent(/does not make it printable/i);
+      expect(autoPosts).toBe(0);
+      await user.click(within(confirmation).getByRole('button', { name: /save in AutoQueue for the future/i }));
+      await waitFor(() => expect(autoPosts).toBe(1));
+    });
+
+    it('does not claim a missing model when all snapshots failed', async () => {
+      openAuto(previewWith([], true));
+      expect(await screen.findByTestId('feasibility-notice')).toHaveTextContent(/not fully verified/i);
+      expect(screen.queryByText(/no active .* printers/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /save in AutoQueue for the future/i })).not.toBeInTheDocument();
+      expect(await submitButton()).toBeDisabled();
     });
   });
 

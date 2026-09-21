@@ -1,7 +1,7 @@
 import type { PrinterRoutingPreview, RoutingPreview } from '../../api/client';
 
 /** Backend assignment verdict, shared by the button and silent submission. */
-export type FeasibilityState = 'unknown' | 'blocked_now' | 'blocked_target' | 'ok';
+export type FeasibilityState = 'unknown' | 'no_target' | 'blocked_now' | 'blocked_target' | 'ok';
 
 /**
  * Local fallback vocabulary, checked against the backend by a drift guard.
@@ -33,40 +33,43 @@ export interface FeasibilityReason {
 export interface FeasibilityVerdict {
   state: FeasibilityState;
   reason?: FeasibilityReason;
+  model?: string | null;
 }
 
 export const FEASIBLE: FeasibilityVerdict = { state: 'ok' };
-/** Offline, telemetry in flight, an evaluation that could not cover everything. Never blocks. */
+/** Not a refusal, but not permission to print either. Queuing requires explicit consent. */
 export const UNKNOWN: FeasibilityVerdict = { state: 'unknown' };
 
 /** The full backend assignment is authoritative; a populated UI array is not. */
 export function targetFeasibility(target: PrinterRoutingPreview['targets'][number] | undefined): FeasibilityVerdict {
-  if (!target || target.status === 'unknown') return UNKNOWN;
+  if (!target) return UNKNOWN;
+  const reason = target.reason ? { code: target.reason.code as FeasibilityCode, message: target.reason.message } : undefined;
+  if (target.status === 'unknown') return reason ? { state: 'unknown', reason } : UNKNOWN;
   if (target.status === 'compatible') return FEASIBLE;
   return {
     state: target.reason?.code === 'model_mismatch' ? 'blocked_target' : 'blocked_now',
-    reason: target.reason ? { code: target.reason.code as FeasibilityCode, message: target.reason.message } : undefined,
+    reason,
   };
 }
 
 /**
- * Worst wins, and "worst" is: a target that is wrong > a plate that cannot print
- * now > not knowing > fine. A submission writes one row per (plate, printer),
+ * Worst wins: wrong target > absent target > cannot print now > unknown > fine.
+ * A submission writes one row per (plate, printer),
  * so one pair that cannot print is a row that will sit there — and an unknown
  * beside a proven refusal does not rescue it.
  */
-const SEVERITY: Record<FeasibilityState, number> = { ok: 0, unknown: 1, blocked_now: 2, blocked_target: 3 };
+const SEVERITY: Record<FeasibilityState, number> = { ok: 0, unknown: 1, blocked_now: 2, no_target: 3, blocked_target: 4 };
 
 export function worstVerdict(a: FeasibilityVerdict, b: FeasibilityVerdict): FeasibilityVerdict {
   return SEVERITY[b.state] > SEVERITY[a.state] ? b : a;
 }
 
 
-/** The refusal a group of printers agreed on most often, for the one line beside the button. */
-function previewReason(groups: RoutingPreview['plates'][number]['groups']): FeasibilityReason | undefined {
+/** Most frequent reported reason, optionally including incomplete evaluations. */
+function previewReason(groups: RoutingPreview['plates'][number]['groups'], includeUnknown = false): FeasibilityReason | undefined {
   const tally = new Map<string, { message: string; count: number }>();
   for (const group of groups) {
-    if (group.incompatible <= 0) continue;
+    if (group.incompatible <= 0 && !(includeUnknown && group.unknown > 0)) continue;
     for (const reason of group.reasons) {
       const seen = tally.get(reason.code);
       if (seen) seen.count += reason.count;
@@ -84,7 +87,8 @@ function previewReason(groups: RoutingPreview['plates'][number]['groups']): Feas
 }
 
 /**
- * Auto mode, from the routing preview — three-valued on purpose (spec Д6).
+ * Auto mode, from the routing preview. Preserve uncertainty separately from
+ * proven refusal and from the absence of any active target.
  *
  * ⚠️ **Zero compatible is not proof of incompatibility.** With every printer
  * offline the compatible counter is zero too, and the honest answer is "we do
@@ -92,7 +96,8 @@ function previewReason(groups: RoutingPreview['plates'][number]['groups']): Feas
  * a printer whose snapshot failed is SKIPPED rather than counted as unknown,
  * and the response says so once, at the top, with `advisory_unavailable`.
  * Hence the fourth conjunct — without it, one incompatible printer beside one
- * skipped printer would block.
+ * skipped printer would be falsely classified as a proven refusal. Both states
+ * require explicit consent to queue, but their explanations must differ.
  */
 export function autoFeasibility(preview: RoutingPreview | undefined): FeasibilityVerdict {
   if (!preview) return UNKNOWN;
@@ -127,10 +132,15 @@ function platePreviewVerdict(
   if (incompatible > 0 && compatible === 0 && unknown === 0 && !advisoryUnavailable) {
     return { state: 'blocked_now', reason: previewReason(plate.groups) };
   }
-  if (advisoryUnavailable || unknown > 0) return UNKNOWN;
   // Zero READY with something compatible is an ordinary busy farm — the job
-  // waits, which is what a queue is for.
+  // waits, which is what a queue is for. Other unevaluated printers do not
+  // invalidate an already confirmed assignment for this plate.
   if (compatible > 0) return FEASIBLE;
-  // Nothing evaluated at all: no printer of this model, nothing to conclude.
+  if (advisoryUnavailable || unknown > 0) {
+    return { state: 'unknown', reason: previewReason(plate.groups, true) };
+  }
+  // With a complete preview, no groups means no active target in the chosen
+  // model/location scope — not missing telemetry from an existing target.
+  if (plate.groups.length === 0) return { state: 'no_target', model: plate.model };
   return UNKNOWN;
 }

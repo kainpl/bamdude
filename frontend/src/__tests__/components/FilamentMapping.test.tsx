@@ -226,8 +226,9 @@ describe('FilamentMapping — FTS routing', () => {
         defaultExpanded
       />,
     );
-    await waitFor(() => expect(screen.getAllByText(/Type not found/i)).not.toHaveLength(0));
-    expect(screen.getByTitle(/Filament type not loaded/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText(/filament variant does not match/i)).toHaveLength(2));
+    expect(screen.getByTitle(/filament variant does not match/i)).toBeInTheDocument();
+    expect(screen.queryByText(/type not found/i)).not.toBeInTheDocument();
   });
 
   it('offers cross-extruder slots when FTS is null (#1722)', async () => {

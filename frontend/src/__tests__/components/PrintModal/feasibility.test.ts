@@ -62,6 +62,11 @@ describe('targetFeasibility uses the backend verdict', () => {
     expect(targetFeasibility({ printer_id: 1, plate_id: 1, status: 'incompatible', mapping: null,
       reason: { code: 'model_mismatch', message: 'Wrong model' } }).state).toBe('blocked_target');
   });
+  it('preserves a partial profile refusal without upgrading unknown to incompatible', () => {
+    expect(targetFeasibility({ printer_id: 1, plate_id: 1, status: 'unknown', mapping: null,
+      reason: { code: 'variant_mismatch', message: 'PETG P8e36324 differs from PETG GFG99.' } }))
+      .toEqual({ state: 'unknown', reason: { code: 'variant_mismatch', message: 'PETG P8e36324 differs from PETG GFG99.' } });
+  });
 });
 
 describe('autoFeasibility reads the preview three-valued', () => {
@@ -131,6 +136,28 @@ describe('autoFeasibility reads the preview three-valued', () => {
     // Zero READY with something compatible is an ordinary busy farm: the job
     // waits, which is what a queue is for.
     expect(autoFeasibility(preview([group({ compatible: 2, total: 2, ready: 0 })])).state).toBe('ok');
+  });
+
+  it('a confirmed candidate is enough even if another printer is unknown or skipped', () => {
+    expect(autoFeasibility(preview([group({ compatible: 1, unknown: 1, total: 2 })],
+      { advisoryUnavailable: true })).state).toBe('ok');
+  });
+
+  it('distinguishes an absent model from failed telemetry', () => {
+    expect(autoFeasibility(preview([]))).toEqual({ state: 'no_target', model: 'X1C' });
+    expect(autoFeasibility(preview([], { advisoryUnavailable: true })).state).toBe('unknown');
+  });
+
+  it('checks every plate: a missing target is not rescued by another compatible plate', () => {
+    const ready = preview([group({ compatible: 1 })]);
+    ready.plates.push({ ...preview([]).plates[0], requested_plate_id: 2, plate_id: 2, model: 'P2S' });
+    expect(autoFeasibility(ready)).toEqual({ state: 'no_target', model: 'P2S' });
+  });
+
+  it('keeps the partial reason when all known PETG profiles differ but telemetry is incomplete', () => {
+    expect(autoFeasibility(preview([group({ unknown: 1,
+      reasons: [{ code: 'variant_mismatch', message: 'Different PETG profiles.', count: 1 }] })])))
+      .toEqual({ state: 'unknown', reason: { code: 'variant_mismatch', message: 'Different PETG profiles.' } });
   });
 
   it('⚠️ answers unknown, not ok, when no plate could be evaluated', () => {

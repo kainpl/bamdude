@@ -77,6 +77,17 @@ def test_single_nozzle_does_not_mix_ams_and_external():
     assert result.status == "incompatible"
 
 
+@pytest.mark.parametrize("incomplete,expected", [(False, "incompatible"), (True, "unknown")])
+def test_petg_profile_refusal_retains_uncertainty_when_feed_is_incomplete(incomplete, expected):
+    """A partial reason is not a complete verdict: the dialog must show both."""
+    req = requirements({"type": "PETG", "tray_info_idx": "P8e36324"}, model="P1S")
+    state = snapshot(feed(0, kind="ams", material="PETG", variant="GFG99"), model="P1S", incomplete=incomplete)
+    result = resolve_filament_routing(req, RoutingPolicy(allow_base_material_match=False), state)
+    assert result.status == expected
+    assert result.reason == "variant_mismatch"
+    assert result.plan is None
+
+
 @pytest.mark.parametrize("model", sorted(DUAL_NOZZLE_MODELS))
 @pytest.mark.parametrize("reverse", [True, False])
 def test_all_dual_models_keep_mixed_bindings(model, reverse):
