@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
+from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 from backend.app.services.part_names import tally_objects
 
 logger = logging.getLogger(__name__)
@@ -127,16 +128,25 @@ async def refresh_archive_parts(archive_id: int) -> None:
 
     try:
         async with async_session() as db:
-            archive = (await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))).scalar_one_or_none()
-            if archive is None or not archive.file_path:
+            # Read the file before the short DB critical section. The archive
+            # is re-read under the shared fact guard immediately before rows
+            # are replaced, so a concurrent delete/assessment cannot be lost.
+            initial = await db.get(PrintArchive, archive_id)
+            if initial is None or not initial.file_path:
                 return
-            path = Path(archive.file_path)
+            path = Path(initial.file_path)
             if not path.is_absolute():
-                path = settings.base_dir / archive.file_path
+                path = settings.base_dir / initial.file_path
             if not path.is_file():
                 return
-            await seed_archive_parts(db, archive, path.read_bytes())
-            await db.commit()
+            data = path.read_bytes()
+            await db.rollback()
+            async with archive_write_scope(db, archive_id):
+                archive = await load_active_archive_for_write(db, archive_id)
+                if archive is None:
+                    return
+                await seed_archive_parts(db, archive, data)
+                await db.commit()
     except Exception as e:  # noqa: BLE001
         logger.warning("refresh_archive_parts failed for archive %s: %s", archive_id, e)
 

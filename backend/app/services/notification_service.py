@@ -1325,6 +1325,7 @@ class NotificationService:
             from sqlalchemy import select
 
             from backend.app.core.database import async_session
+            from backend.app.models.printer import Printer
             from backend.app.models.telegram_chat import TelegramChat
 
             async with async_session() as db:
@@ -1355,18 +1356,31 @@ class NotificationService:
                             from backend.app.services.plate_hold import waiting_archive
 
                             held_archive = await waiting_archive(db, printer_id)
+                            gate_token = (
+                                (await db.get(Printer, printer_id)).awaiting_plate_clear_token
+                                if held_archive is not None
+                                else None
+                            )
                             answers = []
                             if held_archive is not None:
                                 answers.append(
                                     InlineKeyboardButton(
                                         text=f"\U0001f501 {t(lang, NS, 'printers.btn_repeat_print')}",
-                                        callback_data=f"action:repeat_print:{printer_id}:{held_archive.id}",
+                                        callback_data=(
+                                            f"action:repeat_print:{printer_id}:{held_archive.id}:{gate_token}"
+                                            if gate_token
+                                            else f"action:repeat_print:{printer_id}:{held_archive.id}"
+                                        ),
                                     )
                                 )
                                 answers.append(
                                     InlineKeyboardButton(
                                         text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
-                                        callback_data=f"action:clear_plate:{printer_id}:{held_archive.id}",
+                                        callback_data=(
+                                            f"action:clear_plate:{printer_id}:{held_archive.id}:{gate_token}"
+                                            if gate_token
+                                            else f"action:clear_plate:{printer_id}:{held_archive.id}"
+                                        ),
                                     )
                                 )
                                 buttons.append(answers)

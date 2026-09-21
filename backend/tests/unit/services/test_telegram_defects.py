@@ -16,6 +16,17 @@ pytestmark = pytest.mark.unit
 MOD = "backend.app.services.telegram_handlers.defects"
 
 
+@pytest.fixture(autouse=True)
+def isolated_draft_registry():
+    from backend.app.services.telegram_handlers.defects import _drafts, _reply_prompts
+
+    _drafts.clear()
+    _reply_prompts.clear()
+    yield
+    _drafts.clear()
+    _reply_prompts.clear()
+
+
 class _State:
     def __init__(self) -> None:
         self.data: dict = {}
@@ -63,16 +74,31 @@ async def _print(db, parts: dict[str, int], *, quantity: int | None = None) -> P
     return archive
 
 
-def _callback(data: str, *, user_id: int = 7):
+def _callback(data: str, *, user_id: int = 7, message_id: int | None = None):
     callback = MagicMock()
     callback.data = data
     callback.from_user = MagicMock(id=user_id)
     callback.answer = AsyncMock()
     callback.message = MagicMock()
     callback.message.chat = MagicMock(id=4242)
+    callback.message.message_id = message_id
     callback.message.answer = AsyncMock(return_value=MagicMock(message_id=99))
     callback.message.edit_text = AsyncMock()
     return callback
+
+
+async def test_completion_prompt_edits_a_photo_caption_not_text():
+    from backend.app.services.telegram_handlers.defects import _replace_prompt
+
+    message = MagicMock()
+    message.photo = [MagicMock()]
+    message.edit_caption = AsyncMock()
+    message.edit_text = AsyncMock()
+
+    await _replace_prompt(message, "saved")
+
+    message.edit_caption.assert_awaited_once_with(caption="saved")
+    message.edit_text.assert_not_awaited()
 
 
 def _markup(callback):
@@ -174,6 +200,119 @@ async def test_a_draft_belongs_to_the_operator_who_opened_it(patched_session, db
         await db_session.scalar(select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive.id))
         is None
     )
+
+
+async def test_cancel_discards_only_its_draft_without_writing(patched_session, db_session):
+    from backend.app.services.telegram_handlers.defects import cb_defects_cancel, cb_defects_start
+
+    archive = await _print(db_session, {"lid": 2})
+    start = _callback(f"action:defects:{archive.id}")
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await cb_defects_start(start, _State())
+    cancel = _callback(_button(_markup(start), "defc:"))
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await cb_defects_cancel(cancel, _State())
+
+    assert (
+        await db_session.scalar(select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive.id))
+        is None
+    )
+    assert (await db_session.get(PrintArchive, archive.id)).defective_count == 0
+
+
+async def test_reopening_the_same_card_reuses_its_live_operator_draft(patched_session, db_session):
+    from backend.app.services.telegram_handlers.defects import _drafts, cb_defects_start
+
+    archive = await _print(db_session, {"lid": 2})
+    first, second = _callback(f"action:defects:{archive.id}"), _callback(f"action:defects:{archive.id}")
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await cb_defects_start(first, _State())
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await cb_defects_start(second, _State())
+
+    assert len([draft for draft in _drafts.values() if draft.archive_id == archive.id]) == 1
+
+
+async def test_one_group_card_is_leased_to_its_first_operator(patched_session, db_session):
+    from backend.app.services.telegram_handlers.defects import _drafts, cb_defects_start
+
+    archive = await _print(db_session, {"lid": 2})
+    first = _callback(f"action:defects:{archive.id}", user_id=7, message_id=77)
+    second = _callback(f"action:defects:{archive.id}", user_id=8, message_id=77)
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await cb_defects_start(first, _State())
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await cb_defects_start(second, _State())
+
+    assert second.answer.await_args.kwargs["show_alert"] is True
+    assert len([draft for draft in _drafts.values() if draft.archive_id == archive.id]) == 1
+
+
+async def test_changed_print_snapshot_refuses_a_stale_draft_final(patched_session, db_session):
+    from backend.app.services.telegram_handlers.defects import cb_defects_start, cb_defects_value
+
+    archive = await _print(db_session, {"lid": 2})
+    start = _callback(f"action:defects:{archive.id}")
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await cb_defects_start(start, _State())
+
+    archive.quantity = 3
+    await db_session.commit()
+    final = _callback(_button(_markup(start), "defv:"))
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await cb_defects_value(final, _State())
+
+    assert (
+        await db_session.scalar(select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive.id))
+        is None
+    )
+    assert (await db_session.get(PrintArchive, archive.id)).defective_count == 0
+
+
+async def test_reopened_card_after_a_restart_shows_the_saved_receipt(patched_session, db_session):
+    from backend.app.services.telegram_handlers.defects import _drafts, cb_defects_start
+
+    archive = await _print(db_session, {"lid": 2})
+    db_session.add(
+        PrintCompletionReceipt(
+            archive_id=archive.id,
+            assessment={"defective_count": 1, "parts": [{"id": 1, "defective": 1}], "ledger_refused_parts": []},
+        )
+    )
+    await db_session.commit()
+    callback = _callback(f"action:defects:{archive.id}")
+    p1, p2, p3 = _allowed()
+    with p1, p2, p3:
+        await cb_defects_start(callback, _State())
+
+    assert callback.message.answer.awaited
+    assert not _drafts
+
+
+async def test_provider_stop_cleans_only_that_bots_completion_drafts(patched_session, db_session):
+    from backend.app.services.telegram_handlers.defects import _drafts, _new, clear_completion_drafts
+
+    archive = await _print(db_session, {"lid": 2})
+    rows = (
+        (await db_session.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id == archive.id)))
+        .scalars()
+        .all()
+    )
+    _new(archive, rows, (11, 4242, 7))
+    _new(archive, rows, (12, 4242, 8))
+
+    clear_completion_drafts({11})
+
+    assert len(_drafts) == 1
+    assert next(iter(_drafts.values())).owner == (12, 4242, 8)
 
 
 async def test_a_permission_revoked_after_opening_refuses_the_next_draft_step(patched_session, db_session):

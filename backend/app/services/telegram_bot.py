@@ -418,6 +418,13 @@ async def _stop_locked() -> None:
     _bots.clear()
     _bot_ids.clear()
 
+    # Completion drafts are bound to a provider+chat+operator. A stopped bot
+    # cannot safely resume its ForceReply prompts after a restart, so remove
+    # their addresses before another bot/session accepts updates.
+    from backend.app.services.telegram_handlers.defects import clear_completion_drafts
+
+    clear_completion_drafts(set(bots))
+
     if task is not None and not task.done():
         task.cancel()
         try:

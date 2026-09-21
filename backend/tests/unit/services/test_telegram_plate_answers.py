@@ -60,6 +60,32 @@ async def test_completion_buttons_answer_the_named_run(handler_name, callback_da
     assert answer_run.await_args.kwargs["action"] == action
 
 
+@pytest.mark.parametrize(
+    ("handler_name", "callback_data"),
+    [
+        ("cb_clear_plate", "action:clear_plate:5:77:gate-abc"),
+        ("cb_repeat_print", "action:repeat_print:5:77:gate-abc"),
+    ],
+)
+async def test_completion_button_passes_its_gate_generation(handler_name, callback_data):
+    from backend.app.services.telegram_handlers import actions
+
+    callback = _callback(callback_data)
+    answer_run = AsyncMock()
+    p1, p2, p3, p4, p5 = _allowed()
+    with (
+        p1,
+        p2,
+        p3,
+        p4,
+        p5,
+        patch("backend.app.services.plate_answers.answer_plate_run", answer_run),
+    ):
+        await getattr(actions, handler_name)(callback)
+
+    assert answer_run.await_args.kwargs["expected_gate_token"] == "gate-abc"
+
+
 @pytest.mark.parametrize("handler_name", ["cb_clear_plate", "cb_repeat_print"])
 async def test_legacy_printer_wide_button_is_refused(handler_name):
     from backend.app.services.telegram_handlers import actions

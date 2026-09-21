@@ -423,3 +423,13 @@ class TestCyrillicSearch:
         assert result["forced_collation"] in ("pg_c_utf8", "und-x-icu"), result
         assert result["forced_products"] == result["products"], result
         assert result["forced_archives"] == result["archives"], result
+
+
+class TestArchiveWriteScope:
+    """The cross-process half of archive_write_scope needs a real server."""
+
+    def test_one_archive_writer_waits_until_the_other_commits(self, tmp_path_factory):
+        url = _pg_url()
+        _wipe(url)
+        result = _run("archive_write_lock", tmp_path_factory.mktemp("pg_archive_write_lock"), url)
+        assert result == {"blocked_before_commit": True, "second_entered": True}

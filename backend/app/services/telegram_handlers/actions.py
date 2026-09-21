@@ -220,10 +220,11 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
         return
 
     parts = callback.data.split(":")
-    if len(parts) != 4:
+    if len(parts) not in (4, 5):
         await callback.answer(t(lang, NS, "printers.plate_action_stale"), show_alert=True)
         return
     printer_id, archive_id = int(parts[2]), int(parts[3])
+    gate_token = parts[4] if len(parts) == 5 else None
     if await deny_out_of_scope(callback, tg_chat, printer_id):
         return
 
@@ -233,7 +234,13 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
         from backend.app.services.plate_hold import StalePlateAnswer
 
         async with async_session() as _db:
-            await answer_plate_run(_db, printer_id=printer_id, expected_archive_id=archive_id, action="clear")
+            await answer_plate_run(
+                _db,
+                printer_id=printer_id,
+                expected_archive_id=archive_id,
+                expected_gate_token=gate_token,
+                action="clear",
+            )
         await callback.answer(f"\u2705 {t(lang, NS, 'printers.clear_plate_ok')}")
     except StalePlateAnswer:
         await callback.answer(t(lang, NS, "printers.plate_action_stale"), show_alert=True)
@@ -261,10 +268,11 @@ async def cb_repeat_print(callback: CallbackQuery, tg_chat: TelegramChat | None 
         return
 
     parts = callback.data.split(":")
-    if len(parts) != 4:
+    if len(parts) not in (4, 5):
         await callback.answer(t(lang, NS, "printers.plate_action_stale"), show_alert=True)
         return
     printer_id, archive_id = int(parts[2]), int(parts[3])
+    gate_token = parts[4] if len(parts) == 5 else None
     if await deny_out_of_scope(callback, tg_chat, printer_id):
         return
 
@@ -274,7 +282,13 @@ async def cb_repeat_print(callback: CallbackQuery, tg_chat: TelegramChat | None 
 
     try:
         async with async_session() as _db:
-            await answer_plate_run(_db, printer_id=printer_id, expected_archive_id=archive_id, action="repeat")
+            await answer_plate_run(
+                _db,
+                printer_id=printer_id,
+                expected_archive_id=archive_id,
+                expected_gate_token=gate_token,
+                action="repeat",
+            )
     except RepeatNotPossible as e:
         # Nothing to send again — said plainly rather than queued and failed.
         await callback.answer(str(e), show_alert=True)

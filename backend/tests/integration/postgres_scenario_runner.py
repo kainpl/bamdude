@@ -13,6 +13,7 @@ Modes:
     product_roundtrip  export a product to a ZIP and import it back
     cyrillic_search    upper-case Cyrillic finds its lower-case row, naturally
                        and through the forced collated SQL
+    archive_write_lock PostgreSQL holds the per-archive write guard until commit
 
 Usage: python -m backend.tests.integration.postgres_scenario_runner <mode>
 """
@@ -369,6 +370,44 @@ async def _cyrillic_search() -> dict:
     }
 
 
+async def _archive_write_lock() -> dict:
+    """Measure the advisory lock against two real PostgreSQL sessions."""
+    from backend.app.core.database import async_session
+    from backend.app.services.archive_write_scope import archive_write_scope
+
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    second_attempted = asyncio.Event()
+    second_entered = asyncio.Event()
+
+    async def first_writer() -> None:
+        async with async_session() as db, archive_write_scope(db, 91):
+            first_entered.set()
+            await release_first.wait()
+            await db.commit()
+
+    async def second_writer() -> None:
+        await first_entered.wait()
+        second_attempted.set()
+        async with async_session() as db, archive_write_scope(db, 91):
+            second_entered.set()
+            await db.commit()
+
+    first = asyncio.create_task(first_writer())
+    await first_entered.wait()
+    second = asyncio.create_task(second_writer())
+    await second_attempted.wait()
+    try:
+        await asyncio.wait_for(second_entered.wait(), timeout=0.2)
+    except TimeoutError:
+        blocked_before_commit = True
+    else:
+        blocked_before_commit = False
+    release_first.set()
+    await asyncio.gather(first, second)
+    return {"blocked_before_commit": blocked_before_commit, "second_entered": second_entered.is_set()}
+
+
 async def _main(mode: str) -> dict:
     # One event loop for the whole run. The engine is a module-level singleton
     # holding connections bound to whichever loop created them, so a second
@@ -381,6 +420,8 @@ async def _main(mode: str) -> dict:
         return await _product_roundtrip()
     if mode == "cyrillic_search":
         return await _cyrillic_search()
+    if mode == "archive_write_lock":
+        return await _archive_write_lock()
     return await _report()
 
 

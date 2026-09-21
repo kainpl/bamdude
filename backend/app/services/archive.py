@@ -3094,6 +3094,13 @@ class ArchiveService:
         return {"materials": materials, "colors": colors, "tags": tags}
 
     async def delete_archive(self, archive_id: int) -> bool:
+        """Hard-delete one archive under the shared archive-facts writer guard."""
+        from backend.app.services.archive_write_scope import archive_write_scope
+
+        async with archive_write_scope(self.db, archive_id):
+            return await self._delete_archive_locked(archive_id)
+
+    async def _delete_archive_locked(self, archive_id: int) -> bool:
         """Hard-delete an archive: its row, and its files on disk.
 
         ⚠️ **``include_trashed=True`` is the whole of this function working at

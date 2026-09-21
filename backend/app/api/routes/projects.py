@@ -91,6 +91,7 @@ from backend.app.services import (
     queue_rebalance,
 )
 from backend.app.services.archive_defects import DefectsWrite, record_defects
+from backend.app.services.archive_write_scope import archive_write_scope
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.filament_intake import require_source_requirements
 from backend.app.services.filament_requirements import PrintRequirementsCache
@@ -1028,13 +1029,17 @@ async def record_order_print_defects(
     ``archives:update_all`` for a print somebody else started. The writer is the
     same one the archive editor uses (``services/archive_defects``).
     """
-    archive = await _order_print(db, project_id, archive_id)
-    result = await record_defects(
-        db,
-        archive,
-        DefectsWrite(parts=tuple((p.id, p.defective) for p in data.parts or ()), flat=data.defective_count),
-        actor_id=current_user.id if current_user else None,
-    )
+    # Enter before _order_print's authoritative read.  This is the third
+    # public writer of archive defect facts, alongside the archive editor and
+    # the completion actions.
+    async with archive_write_scope(db, archive_id):
+        archive = await _order_print(db, project_id, archive_id)
+        result = await record_defects(
+            db,
+            archive,
+            DefectsWrite(parts=tuple((p.id, p.defective) for p in data.parts or ()), flat=data.defective_count),
+            actor_id=current_user.id if current_user else None,
+        )
     # No ledger-refusal report here, and none is possible: a print reachable
     # through this route is FILED under an order (``_order_print`` requires
     # ``project_id == project_id``), and ``adjust_unfiled_print`` returns an

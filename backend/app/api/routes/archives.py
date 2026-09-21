@@ -39,6 +39,7 @@ from backend.app.schemas.project import StockMovedOut
 from backend.app.services import part_stock
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_defects import DefectsWrite, record_defects
+from backend.app.services.archive_write_scope import archive_write_scope
 from backend.app.services.design_settings import overrides_from_config
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.archive_paths import photos_dir_for
@@ -1030,6 +1031,17 @@ async def update_archive(
         )
     ),
 ):
+    """Serialize archive facts before the editor reads their current values."""
+    async with archive_write_scope(db, archive_id):
+        return await _update_archive_locked(archive_id, update_data, db, auth_result)
+
+
+async def _update_archive_locked(
+    archive_id: int,
+    update_data: ArchiveUpdate,
+    db: AsyncSession,
+    auth_result: tuple[User | None, bool],
+):
     """Update archive metadata (tags, notes, cost, is_favorite, project_id)."""
     from sqlalchemy.orm import selectinload
 
@@ -1039,6 +1051,8 @@ async def update_archive(
         select(PrintArchive)
         .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
         .where(PrintArchive.id == archive_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     archive = result.scalar_one_or_none()
     if not archive:
@@ -1371,6 +1385,16 @@ async def delete_archive(
         )
     ),
 ):
+    """Trash an archive only after serializing its mutable archive facts."""
+    async with archive_write_scope(db, archive_id):
+        return await _delete_archive_locked(archive_id, db, auth_result)
+
+
+async def _delete_archive_locked(
+    archive_id: int,
+    db: AsyncSession,
+    auth_result: tuple[User | None, bool],
+):
     """Soft-delete an archive (moves to the archive trash bin).
 
     Stamps ``deleted_at`` and returns ``trashed=True``. Sweeper hard-deletes
@@ -1385,7 +1409,12 @@ async def delete_archive(
     user, can_modify_all = auth_result
 
     # Only operate on active archives — re-deleting a trashed row is a no-op.
-    result = await db.execute(PrintArchive.active().where(PrintArchive.id == archive_id))
+    result = await db.execute(
+        PrintArchive.active()
+        .where(PrintArchive.id == archive_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     archive = result.scalar_one_or_none()
     if not archive:
         raise HTTPException(404, "Archive not found")

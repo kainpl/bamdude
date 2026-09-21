@@ -574,60 +574,69 @@ async def _record_skipped_as_defective(printer_id: int, skipped: list) -> None:
 
     from backend.app.core.database import async_session
     from backend.app.models.archive import PrintArchive
+    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 
     try:
         async with async_session() as db:
-            archive = (
-                (
-                    await db.execute(
-                        select(PrintArchive)
-                        .where(PrintArchive.printer_id == printer_id)
-                        .where(PrintArchive.status == "printing")
-                        .order_by(PrintArchive.id.desc())
-                        .limit(1)
-                    )
-                )
-                .scalars()
-                .first()
+            # This first lookup discovers an id only. The fresh archive/parts
+            # read below happens under its shared archive-facts writer guard.
+            # SQLite has to reserve the writer before even that discovery so a
+            # completion submission cannot read the same old part totals.
+            if db.get_bind().dialect.name == "sqlite" and not db.in_transaction():
+                from sqlalchemy import text
+
+                await db.execute(text("BEGIN IMMEDIATE"))
+            archive_id = await db.scalar(
+                select(PrintArchive.id)
+                .where(PrintArchive.printer_id == printer_id)
+                .where(PrintArchive.status == "printing")
+                .order_by(PrintArchive.id.desc())
+                .limit(1)
             )
-            if archive is None:
+            if archive_id is None:
                 logger.debug("No running archive for printer %s — skipped objects not recorded", printer_id)
                 return
 
-            from backend.app.models.archive_part import PrintArchivePart
+            async with archive_write_scope(db, archive_id):
+                archive = await load_active_archive_for_write(db, archive_id)
+                if archive is None or archive.printer_id != printer_id or archive.status != "printing":
+                    logger.debug("Running archive changed before skip write for printer %s", printer_id)
+                    return
 
-            rows = (
-                (await db.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id == archive.id)))
-                .scalars()
-                .all()
-            )
-            id_rows = [r for r in rows if r.identify_ids]
-            if id_rows:
-                # Per-part: intersect the (total, not delta) skipped list with
-                # each row's instance ids. max() keeps a hand-raised number.
-                skipped_set = set(skipped)
-                for row in id_rows:
-                    hit = len(skipped_set & set(row.identify_ids))
-                    if hit > (row.defective or 0):
-                        row.defective = hit
-                total = sum(r.defective or 0 for r in rows)
-                new_count = max(archive.defective_count or 0, total)
-            else:
-                # Legacy archives without part rows: count-only, as before.
-                new_count = max(archive.defective_count or 0, len(skipped))
+                from backend.app.models.archive_part import PrintArchivePart
 
-            if new_count == archive.defective_count and not id_rows:
-                return
+                rows = (
+                    (await db.execute(select(PrintArchivePart).where(PrintArchivePart.archive_id == archive.id)))
+                    .scalars()
+                    .all()
+                )
+                id_rows = [r for r in rows if r.identify_ids]
+                if id_rows:
+                    # Per-part: intersect the (total, not delta) skipped list with
+                    # each row's instance ids. max() keeps a hand-raised number.
+                    skipped_set = set(skipped)
+                    for row in id_rows:
+                        hit = len(skipped_set & set(row.identify_ids))
+                        if hit > (row.defective or 0):
+                            row.defective = hit
+                    total = sum(r.defective or 0 for r in rows)
+                    new_count = max(archive.defective_count or 0, total)
+                else:
+                    # Legacy archives without part rows: count-only, as before.
+                    new_count = max(archive.defective_count or 0, len(skipped))
 
-            archive.defective_count = new_count
-            await db.commit()
-            logger.info(
-                "Archive %s: defective parts raised to %d from %d skipped object(s) on printer %s",
-                archive.id,
-                new_count,
-                len(skipped),
-                printer_id,
-            )
+                if new_count == archive.defective_count and not id_rows:
+                    return
+
+                archive.defective_count = new_count
+                await db.commit()
+                logger.info(
+                    "Archive %s: defective parts raised to %d from %d skipped object(s) on printer %s",
+                    archive.id,
+                    new_count,
+                    len(skipped),
+                    printer_id,
+                )
     except Exception as e:  # noqa: BLE001 — a counter must never break the MQTT path
         logger.warning("Failed to record skipped objects as defective for printer %s: %s", printer_id, e)
 

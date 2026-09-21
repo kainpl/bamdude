@@ -2,23 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from aiogram import F, Router
+from aiogram.filters import Filter
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from sqlalchemy import select
 
 from backend.app.i18n import escape_md, get_language, t
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
+from backend.app.models.print_completion_receipt import PrintCompletionReceipt
 from backend.app.models.printer import Printer
 from backend.app.services.archive_defects import DefectsWrite
 from backend.app.services.archive_parts import load_rows
-from backend.app.services.plate_answers import record_completion_assessment
+from backend.app.services.plate_answers import (
+    InvalidPlateAssessment,
+    completion_assessment_snapshot,
+    record_completion_assessment,
+)
+from backend.app.services.plate_hold import StalePlateAnswer
 from backend.app.services.telegram_handlers.common import NS, chat_allows_printer, has_perm
 
 if TYPE_CHECKING:
@@ -27,11 +35,9 @@ if TYPE_CHECKING:
 router = Router()
 MAX_BUTTONS = 5
 _TTL = 30 * 60
+_MAX_DRAFTS = 128
+_MAX_DRAFTS_PER_OWNER = 8
 Owner = tuple[int, int, int]
-
-
-class DefectsState(StatesGroup):
-    waiting_for_count = State()
 
 
 @dataclass
@@ -48,9 +54,35 @@ class _Draft:
     revision: int
     expires_at: float
     source_message_ids: set[int]
+    snapshot: tuple
+    reply_prompt_ids: set[int] = field(default_factory=set)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 _drafts: dict[str, _Draft] = {}
+_reply_prompts: dict[tuple[Owner, int], tuple[str, int]] = {}
+
+
+def _drop(draft: _Draft) -> None:
+    """Remove every address of one draft; never touch a different operator's."""
+    _drafts.pop(draft.token, None)
+    for key, value in list(_reply_prompts.items()):
+        if value[0] == draft.token:
+            _reply_prompts.pop(key, None)
+
+
+def _prune() -> None:
+    now = time.monotonic()
+    for draft in list(_drafts.values()):
+        if draft.expires_at <= now:
+            _drop(draft)
+
+
+def clear_completion_drafts(provider_ids: set[int] | None = None) -> None:
+    """Forget drafts for stopped bots (or every draft during process shutdown)."""
+    for draft in list(_drafts.values()):
+        if provider_ids is None or (draft.owner is not None and draft.owner[0] in provider_ids):
+            _drop(draft)
 
 
 def _owner(
@@ -74,11 +106,17 @@ def _message_id(message: Message | None) -> int | None:
     return value if isinstance(value, int) else None
 
 
-def _new(archive: PrintArchive, rows: list[PrintArchivePart], owner: Owner | None) -> _Draft:
+def _new(archive: PrintArchive, rows: list[PrintArchivePart], owner: Owner | None) -> _Draft | None:
+    _prune()
+    if owner is not None:
+        existing = next((d for d in _drafts.values() if d.owner == owner and d.archive_id == archive.id), None)
+        if existing is not None:
+            return existing
+        if sum(d.owner == owner for d in _drafts.values()) >= _MAX_DRAFTS_PER_OWNER:
+            return None
+    if len(_drafts) >= _MAX_DRAFTS:
+        return None
     now = time.monotonic()
-    for token, old in list(_drafts.items()):
-        if old.expires_at <= now:
-            _drafts.pop(token, None)
     token = secrets.token_urlsafe(6)
     draft = _Draft(
         token,
@@ -93,9 +131,23 @@ def _new(archive: PrintArchive, rows: list[PrintArchivePart], owner: Owner | Non
         0,
         now + _TTL,
         set(),
+        completion_assessment_snapshot(archive, rows),
     )
     _drafts[token] = draft
     return draft
+
+
+def _leased_to_another_operator(archive_id: int, source_message_id: int | None, owner: Owner | None) -> bool:
+    """One completion card in a group has one live operator lease."""
+    if source_message_id is None:
+        return False
+    return any(
+        draft.archive_id == archive_id
+        and source_message_id in draft.source_message_ids
+        and draft.owner is not None
+        and draft.owner != owner
+        for draft in _drafts.values()
+    )
 
 
 def _get(
@@ -109,7 +161,7 @@ def _get(
     if draft is None:
         return None
     if draft.expires_at <= time.monotonic():
-        _drafts.pop(token, None)
+        _drop(draft)
         return None
     if (
         (draft.owner is not None and draft.owner != owner)
@@ -122,6 +174,19 @@ def _get(
     ):
         return None
     return draft
+
+
+class CompletionReply(Filter):
+    """Match only replies to a live, addressed completion prompt.
+
+    This replaces the global current FSM state: an unrelated numeric wizard in
+    the same chat never sees a completion reply, and opening B cannot steal A.
+    """
+
+    async def __call__(self, message: Message, tg_chat: TelegramChat | None = None) -> bool:
+        prompt_id = _message_id(getattr(message, "reply_to_message", None))
+        owner = _owner(message, tg_chat)
+        return isinstance(prompt_id, int) and owner is not None and (owner, prompt_id) in _reply_prompts
 
 
 async def _load(db, archive_id: int) -> tuple[PrintArchive | None, list[PrintArchivePart]]:
@@ -179,7 +244,17 @@ def _keyboard(draft: _Draft, row: PrintArchivePart | None, archive: PrintArchive
             callback_data=f"defn:{draft.token}:{draft.revision}:{row_id}",
         )
     )
-    return InlineKeyboardMarkup(inline_keyboard=[numbers, extra])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            numbers,
+            extra,
+            [
+                InlineKeyboardButton(
+                    text=f"✖ {t(lang, NS, 'defects.btn_cancel')}", callback_data=f"defc:{draft.token}:{draft.revision}"
+                )
+            ],
+        ]
+    )
 
 
 async def _ask(message: Message, lang: str, archive: PrintArchive, draft: _Draft) -> None:
@@ -187,6 +262,14 @@ async def _ask(message: Message, lang: str, archive: PrintArchive, draft: _Draft
     prompt = await message.answer(await _prompt(lang, archive, row), reply_markup=_keyboard(draft, row, archive, lang))
     if isinstance(getattr(prompt, "message_id", None), int):
         draft.source_message_ids.add(prompt.message_id)
+
+
+async def _replace_prompt(message: Message, text: str) -> None:
+    """Edit a completion card without treating a photo as a text message."""
+    if isinstance(getattr(message, "photo", None), (list, tuple)) and getattr(message, "photo", None):
+        await message.edit_caption(caption=text)
+    else:
+        await message.edit_text(text)
 
 
 async def _allow(
@@ -212,25 +295,34 @@ async def _finish(message: Message, lang: str, draft: _Draft, tg_chat: TelegramC
     from backend.app.core.database import async_session
 
     stale = False
+    archive = None
+    result = None
     async with async_session() as db:
-        archive, rows = await _load(db, draft.archive_id)
-        if archive is None or [row.id for row in rows] != [row.id for row in draft.rows]:
-            stale = True
-        else:
-            write = DefectsWrite(parts=tuple(draft.values.items())) if rows else DefectsWrite(flat=draft.flat)
-            result = await record_completion_assessment(db, archive, write, actor_id=_actor(tg_chat))
+        # Do not preview in this session: record_completion_assessment must be
+        # the first authoritative DB read so SQLite obtains BEGIN IMMEDIATE
+        # before a competing writer can create a stale snapshot.
+        write = DefectsWrite(parts=tuple(draft.values.items())) if draft.rows else DefectsWrite(flat=draft.flat)
+        try:
+            result = await record_completion_assessment(
+                db, draft.archive_id, write, actor_id=_actor(tg_chat), expected_snapshot=draft.snapshot
+            )
             await db.commit()
-    _drafts.pop(draft.token, None)
-    if stale:
-        await message.edit_text(escape_md(t(lang, NS, "defects.stale_prompt")))
+            archive = await db.get(PrintArchive, draft.archive_id)
+        except (InvalidPlateAssessment, StalePlateAnswer):
+            await db.rollback()
+            stale = True
+    _drop(draft)
+    if stale or archive is None or result is None:
+        await _replace_prompt(message, escape_md(t(lang, NS, "defects.stale_prompt")))
         return
     tail = (
         ""
         if not result.ledger_refused
         else "\n" + escape_md(t(lang, NS, "defects.ledger_refused", count=len(result.ledger_refused)))
     )
-    await message.edit_text(
-        f"{await _context(lang, archive)}\n{escape_md(t(lang, NS, 'defects.done', defective=result.defective_count, quantity=archive.quantity or 0))}{tail}"
+    await _replace_prompt(
+        message,
+        f"{await _context(lang, archive)}\n{escape_md(t(lang, NS, 'defects.done', defective=result.defective_count, quantity=archive.quantity or 0))}{tail}",
     )
 
 
@@ -245,7 +337,9 @@ async def start_defects_prompt(message: Message, archive_id: int, tg_chat: Teleg
         return
     if not has_perm(tg_chat, "printers:clear_plate") or not chat_allows_printer(tg_chat, archive.printer_id):
         return
-    await _ask(message, lang, archive, _new(archive, rows, None))
+    draft = _new(archive, rows, None)
+    if draft is not None:
+        await _ask(message, lang, archive, draft)
 
 
 @router.callback_query(F.data.startswith("action:defects:"))
@@ -260,11 +354,31 @@ async def cb_defects_start(callback: CallbackQuery, state: FSMContext, tg_chat: 
         return
     async with async_session() as db:
         archive, rows = await _load(db, archive_id)
+        receipt = await db.scalar(select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive_id))
     if not await _allow(callback, tg_chat, archive, lang):
         return
+    if receipt is not None and receipt.assessment is not None:
+        assessment = receipt.assessment
+        await callback.answer()
+        await callback.message.answer(
+            f"{await _context(lang, archive)}\n"
+            f"{escape_md(t(lang, NS, 'defects.done', defective=assessment.get('defective_count', 0), quantity=archive.quantity or 0))}"
+        )
+        return
     await state.clear()
+    owner = _owner(callback.message, tg_chat, callback)
+    source_message_id = _message_id(callback.message)
+    if _leased_to_another_operator(archive.id, source_message_id, owner):
+        await callback.answer(t(lang, NS, "defects.busy"), show_alert=True)
+        return
     await callback.answer()
-    await _ask(callback.message, lang, archive, _new(archive, rows, _owner(callback.message, tg_chat, callback)))
+    draft = _new(archive, rows, owner)
+    if draft is None:
+        await callback.message.answer(escape_md(t(lang, NS, "defects.too_many")))
+        return
+    if source_message_id is not None:
+        draft.source_message_ids.add(source_message_id)
+    await _ask(callback.message, lang, archive, draft)
 
 
 async def _session(callback: CallbackQuery, tg_chat: TelegramChat | None, kind: str) -> tuple[str, _Draft] | None:
@@ -281,7 +395,7 @@ async def _session(callback: CallbackQuery, tg_chat: TelegramChat | None, kind: 
             source_message_id=_message_id(callback.message),
             revision=revision,
         )
-        if len(parts) >= 4 and parts[0] == kind and revision is not None
+        if len(parts) >= (3 if kind == "defc" else 4) and parts[0] == kind and revision is not None
         else None
     )
     if draft is None:
@@ -308,35 +422,35 @@ async def cb_defects_value(callback: CallbackQuery, state: FSMContext, tg_chat: 
     except ValueError:
         await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
         return
-    row = next((item for item in draft.rows if item.id == row_id), None)
-    maximum = row.quantity if row is not None else draft.quantity
-    if (row is None and (draft.rows or row_id != 0)) or not 0 <= value <= maximum:
-        await callback.answer(t(lang, NS, "defects.invalid", max=maximum), show_alert=True)
-        return
-    if row is not None:
-        draft.values[row.id] = value
-        cursor = draft.rows.index(row) + 1
-    else:
-        draft.flat = value
-        cursor = 1
-    draft.cursor, draft.revision, draft.expires_at = (
-        cursor,
-        draft.revision + 1,
-        time.monotonic() + _TTL,
-    )
-    await state.clear()
-    if draft.cursor < len(draft.rows):
-        from backend.app.core.database import async_session
+    async with draft.lock:
+        row = next((item for item in draft.rows if item.id == row_id), None)
+        maximum = row.quantity if row is not None else draft.quantity
+        if (row is None and (draft.rows or row_id != 0)) or not 0 <= value <= maximum:
+            await callback.answer(t(lang, NS, "defects.invalid", max=maximum), show_alert=True)
+            return
+        if row is not None:
+            draft.values[row.id] = value
+            cursor = draft.rows.index(row) + 1
+        else:
+            draft.flat = value
+            cursor = 1
+        draft.cursor, draft.revision, draft.expires_at = cursor, draft.revision + 1, time.monotonic() + _TTL
+        await state.clear()
+        if draft.cursor < len(draft.rows):
+            from backend.app.core.database import async_session
 
-        async with async_session() as db:
-            archive, _ = await _load(db, draft.archive_id)
-        if archive is not None:
-            await callback.message.edit_text(
-                escape_md(t(lang, NS, "defects.recorded_part", name=row.name, defective=value, quantity=row.quantity))
-            )
-            await _ask(callback.message, lang, archive, draft)
-    else:
-        await _finish(callback.message, lang, draft, tg_chat)
+            async with async_session() as db:
+                archive, _ = await _load(db, draft.archive_id)
+            if archive is not None:
+                await _replace_prompt(
+                    callback.message,
+                    escape_md(
+                        t(lang, NS, "defects.recorded_part", name=row.name, defective=value, quantity=row.quantity)
+                    ),
+                )
+                await _ask(callback.message, lang, archive, draft)
+        else:
+            await _finish(callback.message, lang, draft, tg_chat)
     await callback.answer()
 
 
@@ -351,18 +465,19 @@ async def cb_defects_none(callback: CallbackQuery, state: FSMContext, tg_chat: T
     except ValueError:
         await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
         return
-    index = next((i for i, row in enumerate(draft.rows) if row.id == row_id), None)
-    if not draft.rows and row_id == 0:
-        draft.flat = 0
-    elif index is None:
-        await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
-        return
-    else:
-        for row in draft.rows[index:]:
-            draft.values[row.id] = 0
-    draft.revision += 1
-    await state.clear()
-    await _finish(callback.message, lang, draft, tg_chat)
+    async with draft.lock:
+        index = next((i for i, row in enumerate(draft.rows) if row.id == row_id), None)
+        if not draft.rows and row_id == 0:
+            draft.flat = 0
+        elif index is None:
+            await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
+            return
+        else:
+            for row in draft.rows[index:]:
+                draft.values[row.id] = 0
+        draft.revision += 1
+        await state.clear()
+        await _finish(callback.message, lang, draft, tg_chat)
     await callback.answer()
 
 
@@ -382,59 +497,79 @@ async def cb_defects_other(callback: CallbackQuery, state: FSMContext, tg_chat: 
         await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
         return
     maximum = row.quantity if row is not None else draft.quantity
-    prompt = await callback.message.answer(
-        escape_md(t(lang, NS, "defects.enter_count", max=maximum)),
-        reply_markup=ForceReply(force_reply=True, input_field_placeholder=t(lang, NS, "defects.reply_placeholder")),
-    )
-    draft.revision += 1
-    draft.expires_at = time.monotonic() + _TTL
-    await state.set_state(DefectsState.waiting_for_count)
-    data = {"draft_token": draft.token, "row_id": row_id, "revision": draft.revision}
-    if isinstance(getattr(prompt, "message_id", None), int):
-        data["prompt_message_id"] = prompt.message_id
-    await state.update_data(**data)
+    async with draft.lock:
+        prompt = await callback.message.answer(
+            escape_md(t(lang, NS, "defects.enter_count", max=maximum)),
+            reply_markup=ForceReply(force_reply=True, input_field_placeholder=t(lang, NS, "defects.reply_placeholder")),
+        )
+        draft.revision += 1
+        draft.expires_at = time.monotonic() + _TTL
+        owner = _owner(callback.message, tg_chat, callback)
+        prompt_id = _message_id(prompt)
+        if owner is not None and prompt_id is not None:
+            draft.reply_prompt_ids.add(prompt_id)
+            _reply_prompts[(owner, prompt_id)] = (draft.token, draft.revision)
+        # Keep the old state clear: completion replies are routed by the
+        # addressed prompt registry, never by the chat's current FSM wizard.
+        await state.clear()
     await callback.answer()
 
 
-@router.message(DefectsState.waiting_for_count)
+@router.message(CompletionReply())
 async def msg_defects_count(message: Message, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
-    lang, data = await get_language(), await state.get_data()
-    draft = _get(
-        str(data.get("draft_token") or ""),
-        _owner(message, tg_chat),
-        revision=data.get("revision") if isinstance(data.get("revision"), int) else None,
-    )
-    reply_id = getattr(getattr(message, "reply_to_message", None), "message_id", None)
-    row = next((item for item in (draft.rows if draft else []) if item.id == data.get("row_id")), None)
+    lang = await get_language()
+    owner = _owner(message, tg_chat)
+    reply_id = _message_id(getattr(message, "reply_to_message", None))
+    address = _reply_prompts.get((owner, reply_id)) if owner is not None and reply_id is not None else None
+    draft = _get(address[0], owner, revision=address[1]) if address is not None else None
+    row_id = None
+    if draft is not None:
+        # A reply prompt is opened for the currently rendered row; its revision
+        # makes a late answer stale if the inline flow advanced meanwhile.
+        row_id = draft.rows[draft.cursor].id if draft.rows and draft.cursor < len(draft.rows) else 0
+    row = next((item for item in (draft.rows if draft else []) if item.id == row_id), None)
     maximum = row.quantity if row is not None else (draft.quantity if draft else 0)
     text = (message.text or "").strip()
-    if draft is None or (data.get("prompt_message_id") is not None and reply_id != data["prompt_message_id"]):
+    if draft is None:
         await state.clear()
         await message.answer(escape_md(t(lang, NS, "defects.stale_prompt")))
         return
     if (draft.rows and row is None) or not text.isdecimal() or int(text) > maximum:
         await message.answer(escape_md(t(lang, NS, "defects.invalid", max=maximum)))
         return
-    if row is not None:
-        draft.values[row.id] = int(text)
-        cursor = draft.rows.index(row) + 1
-    else:
-        draft.flat = int(text)
-        cursor = 1
-    draft.cursor, draft.expires_at = (
-        cursor,
-        time.monotonic() + _TTL,
-    )
-    await state.clear()
-    if draft.cursor < len(draft.rows):
-        from backend.app.core.database import async_session
+    async with draft.lock:
+        if row is not None:
+            draft.values[row.id] = int(text)
+            cursor = draft.rows.index(row) + 1
+        else:
+            draft.flat = int(text)
+            cursor = 1
+        draft.cursor, draft.revision, draft.expires_at = cursor, draft.revision + 1, time.monotonic() + _TTL
+        if owner is not None and reply_id is not None:
+            _reply_prompts.pop((owner, reply_id), None)
+        await state.clear()
+        if draft.cursor < len(draft.rows):
+            from backend.app.core.database import async_session
 
-        async with async_session() as db:
-            archive, _ = await _load(db, draft.archive_id)
-        if archive is not None:
-            await _ask(message, lang, archive, draft)
-            return
-    await _finish(message, lang, draft, tg_chat)
+            async with async_session() as db:
+                archive, _ = await _load(db, draft.archive_id)
+            if archive is not None:
+                await _ask(message, lang, archive, draft)
+                return
+        await _finish(message, lang, draft, tg_chat)
+
+
+@router.callback_query(F.data.startswith("defc:"))
+async def cb_defects_cancel(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
+    found = await _session(callback, tg_chat, "defc")
+    if found is None:
+        return
+    lang, draft = found
+    async with draft.lock:
+        _drop(draft)
+        await state.clear()
+    await _replace_prompt(callback.message, escape_md(t(lang, NS, "defects.cancelled")))
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("defects:"))

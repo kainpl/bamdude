@@ -8,13 +8,14 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_completion_receipt import PrintCompletionReceipt
 from backend.app.models.printer import Printer
 from backend.app.services.archive_defects import DefectsResult, DefectsWrite, record_defects
 from backend.app.services.archive_parts import load_rows
+from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 from backend.app.services.plate_hold import (
     StalePlateAnswer,
     answer_by_clearing,
@@ -50,8 +51,32 @@ def _assessment_payload(result: DefectsResult) -> dict:
     }
 
 
+def completion_assessment_snapshot(archive: PrintArchive, rows) -> tuple:
+    """The archive facts a completion form is allowed to decide from.
+
+    This intentionally includes attribution and the existing grade as well as
+    part ids/quantities.  A Telegram form is a complete snapshot, not the
+    archive editor's forgiving PATCH: if any of these facts moved while an
+    operator was answering, they reopen against the current plate.
+    """
+    return (
+        archive.status,
+        int(archive.quantity or 0),
+        archive.library_file_id,
+        archive.project_id,
+        archive.project_line_id,
+        int(archive.defective_count or 0),
+        tuple((row.id, int(row.quantity or 0), int(row.defective or 0)) for row in rows),
+    )
+
+
 async def record_completion_assessment(
-    db, archive: PrintArchive, write: DefectsWrite, *, actor_id: int | None = None
+    db,
+    archive: PrintArchive | int,
+    write: DefectsWrite,
+    *,
+    actor_id: int | None = None,
+    expected_snapshot: tuple | None = None,
 ) -> DefectsResult:
     """Persist a complete Telegram assessment without answering the plate gate.
 
@@ -59,18 +84,28 @@ async def record_completion_assessment(
     first, later, or never; recording zero just because a plate was cleared
     would falsify the print history.
     """
-    result = await record_defects(db, archive, write, actor_id=actor_id)
-    receipt = await db.scalar(select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive.id))
-    if receipt is None:
-        receipt = PrintCompletionReceipt(archive_id=archive.id)
-        db.add(receipt)
-    receipt.assessment = _assessment_payload(result)
-    receipt.assessment_at = datetime.now(timezone.utc)
-    receipt.assessment_actor_id = actor_id
-    return result
+    archive_id = archive if isinstance(archive, int) else archive.id
+    async with archive_write_scope(db, archive_id):
+        current = await load_active_archive_for_write(db, archive_id)
+        if current is None:
+            raise StalePlateAnswer("This print is no longer available for assessment")
+        await _validate_completion_assessment(db, current, write, expected_snapshot=expected_snapshot)
+        result = await record_defects(db, current, write, actor_id=actor_id)
+        receipt = await db.scalar(
+            select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == current.id).with_for_update()
+        )
+        if receipt is None:
+            receipt = PrintCompletionReceipt(archive_id=current.id)
+            db.add(receipt)
+        receipt.assessment = _assessment_payload(result)
+        receipt.assessment_at = datetime.now(timezone.utc)
+        receipt.assessment_actor_id = actor_id
+        return result
 
 
-async def _validate_completion_assessment(db, archive: PrintArchive, write: DefectsWrite) -> None:
+async def _validate_completion_assessment(
+    db, archive: PrintArchive, write: DefectsWrite, *, expected_snapshot: tuple | None = None
+) -> None:
     """Completion submissions are snapshots, unlike the archive editor's PATCH.
 
     A stale callback must never silently ignore one of its part rows and then
@@ -79,9 +114,13 @@ async def _validate_completion_assessment(db, archive: PrintArchive, write: Defe
     refresh; every new, owned completion card sends the complete snapshot.
     """
     rows = await load_rows(db, archive.id)
+    if expected_snapshot is not None and completion_assessment_snapshot(archive, rows) != expected_snapshot:
+        raise InvalidPlateAssessment("The print changed while this completion assessment was open")
     if not rows:
         if write.parts:
             raise InvalidPlateAssessment("This print has no part rows to assess")
+        if write.flat is None or write.flat < 0 or write.flat > int(archive.quantity or 0):
+            raise InvalidPlateAssessment("A completion assessment is outside the current printed quantity")
         return
     submitted_ids = [part_id for part_id, _value in write.parts]
     expected_ids = {row.id for row in rows}
@@ -89,6 +128,11 @@ async def _validate_completion_assessment(db, archive: PrintArchive, write: Defe
         raise InvalidPlateAssessment("Each printed part may be assessed only once")
     if set(submitted_ids) != expected_ids:
         raise InvalidPlateAssessment("The completion assessment no longer matches this print's parts")
+    quantities = {row.id: int(row.quantity or 0) for row in rows}
+    if any(value < 0 or value > quantities[part_id] for part_id, value in write.parts):
+        raise InvalidPlateAssessment("A completion assessment is outside the current printed quantity")
+    if write.flat is not None:
+        raise InvalidPlateAssessment("A multipart completion assessment cannot carry a flat defect count")
 
 
 async def answer_plate_run(
@@ -112,18 +156,30 @@ async def answer_plate_run(
 
     from backend.app.services.printer_manager import printer_manager
 
-    async with _printer_locks[printer_id]:
-        # Receipt lookup comes first: a client retry after a successful commit
-        # receives its original result instead of treating a now-empty hold as
-        # an error.  An opposite button is deliberately never a fallback.
+    async with _printer_locks[printer_id], AsyncExitStack() as write_scopes:
+        # SQLite must become the writer before receipt/gate/row reads.  When an
+        # expected archive is present its archive scope does this; legacy calls
+        # have no archive identity to lock, so take the short DB-wide writer
+        # first.  PostgreSQL row/advisory guards below provide the equivalent.
+        archive_guarded = False
+        if expected_archive_id is not None:
+            await write_scopes.enter_async_context(archive_write_scope(db, expected_archive_id))
+            archive_guarded = True
+        elif db.get_bind().dialect.name == "sqlite" and not db.in_transaction():
+            await db.execute(text("BEGIN IMMEDIATE"))
+
+        # Receipt lookup happens only inside the same write transaction as the
+        # gate mutation. A retry cannot observe half of a previous answer.
         if expected_archive_id is not None:
             receipt = await db.scalar(
-                select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == expected_archive_id)
+                select(PrintCompletionReceipt)
+                .where(PrintCompletionReceipt.archive_id == expected_archive_id)
+                .with_for_update()
             )
             if receipt is not None and receipt.plate_action is not None:
                 if receipt.plate_action != action:
                     raise PlateAnswerAlreadyHandled("This completed print was already answered differently")
-                archive = await db.get(PrintArchive, expected_archive_id)
+                archive = await load_active_archive_for_write(db, expected_archive_id)
                 return PlateAnswerResult(
                     archive=archive,
                     action=action,
@@ -132,10 +188,12 @@ async def answer_plate_run(
                 )
 
         # PostgreSQL locks the durable gate as well as this process's normal
-        # one-printer operation.  SQLite has one writer and the local lock
-        # closes the read-to-write window used by its supported deployment.
+        # one-printer operation. SQLite already owns the writer at this point.
         printer = await db.scalar(select(Printer).where(Printer.id == printer_id).with_for_update())
         archive = await waiting_archive(db, printer_id)
+        if archive is not None and not archive_guarded:
+            await write_scopes.enter_async_context(archive_write_scope(db, archive.id))
+            archive = await load_active_archive_for_write(db, archive.id)
         if expected_archive_id is not None and (archive is None or archive.id != expected_archive_id):
             raise StalePlateAnswer("This completion card is no longer current for this printer")
         if printer is not None and printer.awaiting_plate_clear_archive_id is not None:
