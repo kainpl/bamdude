@@ -48,34 +48,32 @@ def _coerce_telegram_provider_fields(provider: NotificationProvider) -> None:
     provider.printer_ids = None
 
 
-async def _restart_bot_if_its_provider_moved(provider_before: tuple[int, str] | None) -> None:
-    """Bounce the poller only when the provider it runs on is no longer the one it read.
+async def _restart_bot_if_the_session_moved(providers_before: list[tuple[int, str]]) -> None:
+    """Bounce the polling session only when the bots it should hold are no longer the ones it read.
 
-    The bot reads ONE thing: ``telegram_bot.current_bot_provider`` — the
-    oldest enabled telegram provider's ``(id, token)``, or ``None`` for "no
-    bot". So the three provider routes ask that reader before they write and
-    again after they commit, and restart on a different answer. That is the
-    whole rule, and it answers every case the same way: a rename, a digest
-    time or any other config key (same pair); a token typed into a disabled
-    provider, into a non-telegram one, or into a second enabled telegram row
-    that is not the oldest (the reader never returns it); creating that
-    second row (the oldest still wins); deleting or disabling the bot's own
-    row (the reader moves to the next, or to ``None``); a retype into or out
-    of telegram. The id is part of the answer because a chat that writes to
-    the running bot is registered under that row (m180): a row swap behind
-    the same token must re-point registration too.
+    The session reads ONE thing: ``telegram_bot.current_bot_providers`` —
+    every enabled telegram provider as ``(id, token)``, oldest first. So the
+    three provider routes ask that reader before they write and again after
+    they commit, and restart on a different answer. That is the whole rule,
+    and it answers every case the same way: a rename, a digest time or any
+    other config key (the same list); a token typed into a disabled provider
+    or into a non-telegram one (the reader never returns either); a new
+    enabled telegram provider, or one deleted, disabled, re-keyed or retyped
+    (the list changed, and the session must gain or lose a bot). The id is
+    part of each entry because a chat that writes to a bot is registered
+    under that row (m180): a row swap behind the same token must re-point
+    registration too.
 
-    Every restart drops a healthy ``getUpdates`` long poll, and before the
-    lifecycle lock it raced the start that replaced it (#50) — which is why
-    the question is asked of the reader rather than of the row: a per-row
-    "did its token or enabled flag change" bounced the bot for edits it could
-    not see whenever an install carried more than one telegram row — nothing
-    stops it from doing so, and the per-printer providers of before m157 left
-    exactly that shape behind.
+    Every restart drops healthy ``getUpdates`` long polls — every bot's, the
+    session being shared — and before the lifecycle lock it raced the start
+    that replaced it (#50). That is why the question is asked of the reader
+    rather than of the edited row: a per-row "did its token or enabled flag
+    change" bounced the bot for edits it could not see, and would now miss
+    the edits of every OTHER provider's bot.
     """
-    from backend.app.services.telegram_bot import current_bot_provider, restart_telegram_bot
+    from backend.app.services.telegram_bot import current_bot_providers, restart_telegram_bot
 
-    if await current_bot_provider() != provider_before:
+    if await current_bot_providers() != providers_before:
         await restart_telegram_bot()
 
 
@@ -205,10 +203,10 @@ async def create_notification_provider(
     _: User | None = RequirePermission(Permission.NOTIFICATIONS_CREATE),
 ):
     """Create a new notification provider."""
-    from backend.app.services.telegram_bot import current_bot_provider
+    from backend.app.services.telegram_bot import current_bot_providers
 
     # Asked BEFORE the write; compared again after the commit (see the helper).
-    bot_provider_before = await current_bot_provider()
+    bot_providers_before = await current_bot_providers()
 
     provider = NotificationProvider(
         name=provider_data.name,
@@ -241,7 +239,7 @@ async def create_notification_provider(
     # A new row is the bot's only if the reader now answers with it — a
     # disabled one, a non-telegram one, or a second enabled telegram row
     # behind an older one changes nothing the poller runs on.
-    await _restart_bot_if_its_provider_moved(bot_provider_before)
+    await _restart_bot_if_the_session_moved(bot_providers_before)
 
     return _provider_to_dict(provider)
 
@@ -513,11 +511,11 @@ async def update_notification_provider(
     if not provider:
         raise HTTPException(status_code=404, detail="Notification provider not found")
 
-    from backend.app.services.telegram_bot import current_bot_provider
+    from backend.app.services.telegram_bot import current_bot_providers
 
     # Read what the bot runs on BEFORE the update touches the row — the
     # comparison after the commit is the whole point (see below).
-    bot_provider_before = await current_bot_provider()
+    bot_providers_before = await current_bot_providers()
 
     # Update only provided fields
     update_dict = update_data.model_dump(exclude_unset=True)
@@ -549,7 +547,7 @@ async def update_notification_provider(
     # row the reader never returns — does not. Restarting for those dropped a
     # healthy long poll on every save and, before the lifecycle lock, raced
     # the start that replaced it.
-    await _restart_bot_if_its_provider_moved(bot_provider_before)
+    await _restart_bot_if_the_session_moved(bot_providers_before)
 
     return _provider_to_dict(provider)
 
@@ -567,10 +565,10 @@ async def delete_notification_provider(
     if not provider:
         raise HTTPException(status_code=404, detail="Notification provider not found")
 
-    from backend.app.services.telegram_bot import current_bot_provider
+    from backend.app.services.telegram_bot import current_bot_providers
 
     name = provider.name
-    bot_provider_before = await current_bot_provider()
+    bot_providers_before = await current_bot_providers()
     # A telegram provider IS a bot, and its chats exist for that bot alone
     # (m180): they go with it. Done here because SQLite never gets
     # ``PRAGMA foreign_keys``; the CASCADE on the column is the PostgreSQL
@@ -591,7 +589,7 @@ async def delete_notification_provider(
     # of it and pick up the next enabled provider's, if any. A row the reader
     # never returned — disabled, not telegram, or a younger enabled one — was
     # never its source, and dropping the poll for it buys nothing.
-    await _restart_bot_if_its_provider_moved(bot_provider_before)
+    await _restart_bot_if_the_session_moved(bot_providers_before)
 
     return {"message": f"Notification provider '{name}' deleted"}
 

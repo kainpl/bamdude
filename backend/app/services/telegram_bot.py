@@ -1,8 +1,9 @@
 """Telegram bot service using aiogram 3.x.
 
 Manages bot lifecycle, polling, and provides send methods for notifications.
-Bot token is read from the oldest ENABLED Telegram notification provider in
-the DB (see ``current_bot_provider``).
+A telegram notification provider IS a bot (its token), and the process runs
+one polling session holding a bot for EVERY enabled provider — see
+``current_bot_providers`` and the registry comment below.
 """
 
 import asyncio
@@ -14,15 +15,32 @@ from aiogram.enums import ParseMode
 
 logger = logging.getLogger(__name__)
 
-# Singleton
-_bot: Bot | None = None
+# The registry: one polling session, one bot per enabled telegram provider.
+#
+# A telegram provider row IS a bot (its token), and Telegram serves one
+# ``getUpdates`` consumer per token — different tokens are independent, so the
+# number of bots a process can run is the number of providers, not one.
+# aiogram polls them the way it was built to: ONE ``Dispatcher`` handed every
+# bot (``start_polling(*bots)`` runs a task per bot), one router tree, and the
+# handler receives the bot the update arrived on (``message.bot``), so replies
+# go back through it without anybody looking a bot up. The FSM keys its state
+# by ``bot_id`` already.
+#
+# Not a dispatcher per bot: the handler modules export module-level ``Router``
+# singletons and aiogram refuses to attach one to two dispatchers, so that
+# shape would mean turning every handler module into a router factory — for
+# the single gain of restarting one bot without touching the others. Not our
+# own ``getUpdates`` loop either: that is offset, backoff, allowed_updates and
+# the startup/shutdown hooks re-implemented. The price of the shared session —
+# any provider save reconnects every bot — is close to nil: Telegram re-serves
+# updates nobody confirmed, so a command from the second the restart takes
+# arrives after it, and a provider save is an operator's action, not a flow.
+_bots: dict[int, Bot] = {}  # provider id -> its bot, oldest provider first
+_bot_ids: dict[int, int] = {}  # Telegram bot account id (from get_me) -> provider id
 _dispatcher: Dispatcher | None = None
 _polling_task: asyncio.Task | None = None
-# The provider row the live poller was built from — the bot a chat that
-# writes to us is registered under (m180). Lives and dies with the three above.
-_bot_provider_id: int | None = None
 
-# One lock over the whole lifecycle, because the singleton above is THREE
+# One lock over the whole lifecycle, because the registry above is FOUR
 # references and every operation rewrites all of them around network awaits —
 # the token read, ``get_me()``, ``set_my_commands()``. Two of those operations
 # overlapping is not hypothetical: saving a notification provider restarts the
@@ -60,55 +78,56 @@ def _detach_sub_routers(dispatcher: Dispatcher) -> None:
     dispatcher.sub_routers.clear()
 
 
-async def _discard_bot_locked(dispatcher: Dispatcher | None, bot: Bot | None) -> None:
-    """Throw a bot pair away and leave the module holding nothing.
+async def _discard_bot_locked(dispatcher: Dispatcher | None, bots: dict[int, Bot] | None) -> None:
+    """Throw a session's bots away and leave the module holding nothing.
 
-    Three paths end here and they need the same three things done: the router
+    Three paths end here and they need the same things done: the router
     singletons detached from the dispatcher that is going away (see
-    ``_detach_sub_routers``), the HTTP session closed, and the module globals
-    cleared. Closing the session is best-effort — one of those paths is a
-    start that just failed on this very bot, and a raise here would strand the
-    globals pointing at the wreck. Assumes ``_lifecycle_lock`` is held.
+    ``_detach_sub_routers``), every bot's HTTP session closed, and the module
+    registry cleared. Closing a session is best-effort — one of those paths is
+    a start that just failed on one of these bots, and a raise here would
+    strand the registry pointing at the wreck. Assumes ``_lifecycle_lock`` is
+    held.
     """
-    global _bot, _dispatcher, _polling_task, _bot_provider_id
+    global _dispatcher, _polling_task
 
     if dispatcher is not None:
         _detach_sub_routers(dispatcher)
-    if bot is not None:
+    for bot in (bots or {}).values():
         try:
             await bot.session.close()
         except Exception:
             logger.warning("Bot session close raised during teardown", exc_info=True)
 
-    _bot = None
+    _bots.clear()
+    _bot_ids.clear()
     _dispatcher = None
     _polling_task = None
-    _bot_provider_id = None
 
 
-def get_bot() -> Bot | None:
-    """Get the active bot instance."""
-    return _bot
+def get_bot(provider_id: int) -> Bot | None:
+    """The live bot of a telegram provider, or ``None`` when it is not running.
+
+    Every send names the provider it speaks for: a chat belongs to one bot
+    (m180) and no other bot can reach it — Telegram answers "chat not found"
+    for a chat that never started that bot.
+    """
+    return _bots.get(provider_id)
 
 
-async def current_bot_provider() -> tuple[int, str] | None:
-    """The provider the poller runs on — ``(id, token)`` of the OLDEST enabled Telegram provider.
+async def current_bot_providers() -> list[tuple[int, str]]:
+    """Every bot that should be running — ``(provider id, token)``, oldest provider first.
 
-    One process runs one poller, whatever the number of Telegram providers —
-    the others still notify, over httpx with their own token
-    (``notification_service._send_telegram``), but only one bot answers
-    commands. Which one is decided here and nowhere else: the enabled
-    telegram row with the smallest id. The ``ORDER BY`` is not decoration —
-    an unordered ``LIMIT 1`` is rowid order on SQLite but, on PostgreSQL, a
-    heap scan whose order an UPDATE can move (the new tuple version lands
-    wherever there is room), so renaming the bot's own row could have handed
-    the poller to another provider on the next restart.
+    One enabled telegram provider, one bot. The ``ORDER BY`` is not
+    decoration: an unordered read is rowid order on SQLite but, on
+    PostgreSQL, a heap scan whose order an UPDATE can move (the new tuple
+    version lands wherever there is room), so a rename could reshuffle the
+    answer between two restarts — and this list is compared against itself
+    across a provider save to decide whether the poller must be rebuilt.
 
-    ``None`` means no bot should run. The id matters as much as the token:
-    a chat that writes to the running bot is registered under this row
-    (``telegram_chats.provider_id``, m180), so the provider routes compare
-    the whole pair before and after a save to decide whether to bounce the
-    poller — a row swap behind the same token must re-point registration.
+    A row whose config is not JSON, or carries no token, is not a bot and is
+    left out rather than raising: the provider routes ask this on every save,
+    and one damaged row must not turn all provider CRUD into a 500.
     """
     from sqlalchemy import select
 
@@ -123,37 +142,74 @@ async def current_bot_provider() -> tuple[int, str] | None:
                 NotificationProvider.enabled == True,  # noqa: E712
             )
             .order_by(NotificationProvider.id)
-            .limit(1)
         )
-        provider = result.scalar_one_or_none()
-
-    if not provider or not provider.config:
-        return None
+        rows = result.scalars().all()
 
     import json
 
-    config = provider.config
-    if isinstance(config, str):
-        try:
-            config = json.loads(config)
-        except ValueError:
-            # A row that arrived some other way than the routes (a restore, a
-            # hand edit): the routes ask this reader on every provider save,
-            # so one bad row must not turn all provider CRUD into a 500.
-            return None
-    token = config.get("bot_token") if isinstance(config, dict) else None
-    return (provider.id, token) if token else None
+    providers: list[tuple[int, str]] = []
+    for provider in rows:
+        config = provider.config
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except ValueError:
+                continue
+        token = config.get("bot_token") if isinstance(config, dict) else None
+        token = token.strip() if isinstance(token, str) else ""
+        if token:
+            providers.append((provider.id, token))
+    return providers
 
 
-def running_bot_provider_id() -> int | None:
-    """The provider row the LIVE poller was built from, or ``None`` when no bot runs.
+def running_bot_provider_ids() -> list[int]:
+    """The providers the LIVE session polls for, oldest first; empty when no bot runs.
 
-    Set beside the poller task and cleared with it, so the auth middleware
-    can register a chat under the bot it actually wrote to without a
-    database round trip — and without guessing from the provider table,
-    which may have changed since the poller started.
+    Read from the registry rather than the provider table: the table may have
+    changed since the session started, and what a chat wrote to is the bot
+    that is actually up.
     """
-    return _bot_provider_id
+    return list(_bots)
+
+
+def provider_id_for_bot(bot_id: int) -> int | None:
+    """Which provider a Telegram bot account id belongs to, or ``None`` if it is not ours.
+
+    The identity an incoming update carries is ``event.bot.id`` — the bot
+    account, not our row — so this is the one place that translates it. Built
+    from ``get_me()`` at start, because nothing stores it: a token can be
+    revoked and reissued for the same bot, and the account id is the
+    firmware-side fact, not ours to persist.
+    """
+    return _bot_ids.get(bot_id)
+
+
+async def _record_provider_error(provider_id: int, error: str) -> None:
+    """Write a start failure onto the provider row, where the operator sees it.
+
+    The same two columns ``NotificationService._update_provider_status``
+    writes on a failed delivery. Written from here directly rather than
+    through the service: the service imports this module, so importing it
+    back would close a cycle. Best-effort — a bot that would not start must
+    not also take the start of the others down.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from sqlalchemy import update
+
+        from backend.app.core.database import async_session
+        from backend.app.models.notification import NotificationProvider
+
+        async with async_session() as db:
+            await db.execute(
+                update(NotificationProvider)
+                .where(NotificationProvider.id == provider_id)
+                .values(last_error=error, last_error_at=datetime.now(timezone.utc))
+            )
+            await db.commit()
+    except Exception:
+        logger.warning("Could not record the start error of provider %s", provider_id, exc_info=True)
 
 
 async def start_telegram_bot() -> None:
@@ -163,11 +219,11 @@ async def start_telegram_bot() -> None:
 
 
 async def _start_locked() -> None:
-    """Build the bot and its poller. Assumes ``_lifecycle_lock`` is held."""
-    global _bot, _dispatcher, _polling_task, _bot_provider_id
+    """Build every enabled provider's bot and the one poller. Assumes ``_lifecycle_lock`` is held."""
+    global _dispatcher, _polling_task
 
     if _polling_task is not None and not _polling_task.done():
-        # Idempotent: a poller is already running, and a second one would
+        # Idempotent: a session is already polling, and a second one would
         # compete with it for the same updates.
         logger.debug("Telegram bot is already polling - start request ignored")
         return
@@ -181,14 +237,13 @@ async def _start_locked() -> None:
         # Clear the wreck first: the same teardown ``_stop_locked`` ends with,
         # minus a poller there is nothing left to cancel.
         logger.debug("Clearing a dead Telegram bot before starting a new one")
-        await _discard_bot_locked(_dispatcher, _bot)
+        await _discard_bot_locked(_dispatcher, dict(_bots))
 
-    provider = await current_bot_provider()
-    if provider is None:
+    providers = await current_bot_providers()
+    if not providers:
         print("[TG-BOT] No Telegram bot token configured - bot not started")
         return
-    provider_id, token = provider
-    print(f"[TG-BOT] Token found: {token[:10]}...")
+    print(f"[TG-BOT] {len(providers)} Telegram bot(s) configured")
 
     # Register handlers
     from backend.app.services.telegram_handlers.actions import router as actions_router
@@ -238,35 +293,60 @@ async def _start_locked() -> None:
     # it claimed. Anywhere earlier and it swallows the bot.
     _dispatcher.include_router(fallback_router)
 
-    _bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
+    # One bot per provider. A token that will not answer takes its own
+    # provider out of the session and nothing else: the others are different
+    # bots with their own quotas, and a farm must not lose its working bot
+    # because somebody pasted a stale token into a second provider.
+    claimed_by: dict[str, int] = {}
+    for provider_id, token in providers:
+        owner = claimed_by.get(token)
+        if owner is not None:
+            # Two enabled rows behind one token are one bot, and Telegram
+            # serves one getUpdates consumer per token — polling it twice is
+            # a 409. m180 deduplicated what was already stored and the routes
+            # refuse a new pair, so this is the backstop for a hand edit or a
+            # restore: the older row polls, the younger says why it does not.
+            message = f"This bot token is already polled by Telegram provider {owner}"
+            logger.error("Telegram provider %s: %s", provider_id, message)
+            await _record_provider_error(provider_id, message)
+            continue
 
-    # Verify token & register commands
-    try:
-        me = await _bot.get_me()
-        print(f"[TG-BOT] Started: @{me.username} ({me.full_name})")
-        logger.info("Telegram bot started: @%s (%s)", me.username, me.full_name)
+        bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
+        try:
+            me = await bot.get_me()
+            print(f"[TG-BOT] Started: @{me.username} ({me.full_name})")
+            logger.info("Telegram bot started: @%s (%s) for provider %s", me.username, me.full_name, provider_id)
+            await _register_commands(bot)
+        except Exception as e:
+            logger.error("Failed to start the Telegram bot of provider %s: %s", provider_id, e)
+            await _record_provider_error(provider_id, str(e))
+            try:
+                await bot.session.close()
+            except Exception:
+                logger.warning("Bot session close raised after a failed start", exc_info=True)
+            continue
 
-        # Register bot commands (menu button in Telegram)
-        await _register_commands()
-    except Exception as e:
-        logger.error("Failed to start Telegram bot: %s", e)
-        # Throw the half-built pair away, routers included: without the detach
-        # the singletons stay bound to this now-orphaned dispatcher and a
-        # follow-up start (e.g. the user fixes the token) raises "Router is
-        # already attached to <Dispatcher>" inside include_router.
-        await _discard_bot_locked(_dispatcher, _bot)
+        claimed_by[token] = provider_id
+        _bots[provider_id] = bot
+        _bot_ids[me.id] = provider_id
+
+    if not _bots:
+        # Not one bot answered. Throw the half-built session away, routers
+        # included: without the detach the singletons stay bound to this
+        # now-orphaned dispatcher and a follow-up start (e.g. the user fixes
+        # the token) raises "Router is already attached" inside include_router.
+        logger.error("No Telegram bot could be started")
+        await _discard_bot_locked(_dispatcher, None)
         return
 
-    # Start polling in background
-    print("[TG-BOT] Starting polling...")
-    # Recorded beside the poller: a chat that writes to this bot is registered
-    # under this row (the auth middleware asks ``running_bot_provider_id``).
-    _bot_provider_id = provider_id
-    _polling_task = asyncio.create_task(_run_polling(_dispatcher, _bot))
+    # One polling session for all of them: aiogram runs a task per bot inside
+    # it and hands each update's handler the bot it arrived on.
+    print(f"[TG-BOT] Starting polling for {len(_bots)} bot(s)...")
+    _polling_task = asyncio.create_task(_run_polling(_dispatcher, list(_bots.values())))
 
 
-async def _register_commands() -> None:
-    """Register bot commands for the Telegram menu button."""
+async def _register_commands(bot: Bot) -> None:
+    """Register bot commands for the Telegram menu button — per bot, they are its own."""
     from aiogram.types import BotCommand
 
     from backend.app.i18n import get_language, t
@@ -283,28 +363,31 @@ async def _register_commands() -> None:
     ]
 
     try:
-        await _bot.set_my_commands(commands)
+        await bot.set_my_commands(commands)
         logger.info("Bot commands registered (%s)", lang)
     except Exception as e:
         logger.warning("Failed to register bot commands: %s", e)
 
 
-async def _run_polling(dispatcher: Dispatcher, bot: Bot) -> None:
-    """Run dispatcher polling (background task).
+async def _run_polling(dispatcher: Dispatcher, bots: list[Bot]) -> None:
+    """Run the one polling session (background task).
 
-    Takes the pair it polls with as arguments instead of reading the module
-    globals: the task outlives the call that created it, and by the time it
-    first runs those globals can already belong to a newer bot — or be ``None``
-    because a stop is under way. It polls what it was handed.
+    Takes what it polls with as arguments instead of reading the module
+    registry: the task outlives the call that created it, and by the time it
+    first runs the registry can already belong to a newer session — or be
+    empty because a stop is under way. It polls what it was handed.
 
-    Two things end it: cancelling the task, and ``dispatcher.stop_polling()``,
-    which makes ``start_polling`` return. ``_stop_locked`` does both — the
-    cancel first, which is why the ``stop_polling()`` after it usually reports
-    "Polling is not started", and why that answer is tolerated there.
+    ``start_polling`` runs a long-poll task per bot inside this one task and
+    dispatches every update through the same router tree, handing the handler
+    the bot it arrived on. Two things end it: cancelling this task, and
+    ``dispatcher.stop_polling()``, which ends every bot of the session at
+    once. ``_stop_locked`` does both — the cancel first, which is why the
+    ``stop_polling()`` after it usually reports "Polling is not started", and
+    why that answer is tolerated there.
     """
     try:
         print("[TG-BOT] Polling started")
-        await dispatcher.start_polling(bot, handle_signals=False)
+        await dispatcher.start_polling(*bots, handle_signals=False)
     except asyncio.CancelledError:
         print("[TG-BOT] Polling cancelled")
     except Exception as e:
@@ -319,20 +402,21 @@ async def stop_telegram_bot() -> None:
 
 
 async def _stop_locked() -> None:
-    """Tear the bot down. Assumes ``_lifecycle_lock`` is held.
+    """Tear the session down. Assumes ``_lifecycle_lock`` is held.
 
-    Detaches the three module references BEFORE the first await and works on
-    the local copies from there on. Everything below can yield, and whoever
-    looks at this module while we are yielding must see "there is no bot", not
-    a half-dismantled one — and must never be handed back a Bot we are in the
+    Detaches the module's references BEFORE the first await and works on the
+    local copies from there on. Everything below can yield, and whoever looks
+    at this module while we are yielding must see "there is no bot", not a
+    half-dismantled one — and must never be handed back a Bot we are in the
     middle of closing.
     """
-    global _bot, _dispatcher, _polling_task
+    global _dispatcher, _polling_task
 
-    task, dispatcher, bot = _polling_task, _dispatcher, _bot
+    task, dispatcher, bots = _polling_task, _dispatcher, dict(_bots)
     _polling_task = None
     _dispatcher = None
-    _bot = None
+    _bots.clear()
+    _bot_ids.clear()
 
     if task is not None and not task.done():
         task.cancel()
@@ -368,7 +452,7 @@ async def _stop_locked() -> None:
     # poller task (``start_polling`` awaits ``emit_shutdown`` in its own
     # ``finally``), and that task was awaited above, so nothing is still
     # walking the routers we are about to unhook.
-    await _discard_bot_locked(dispatcher, bot)
+    await _discard_bot_locked(dispatcher, bots)
 
     logger.info("Telegram bot stopped")
 
@@ -387,14 +471,14 @@ async def stop_telegram_bot_bounded(timeout: float = 15.0) -> None:
     in place, so the task left behind is the one ``_stop_locked`` was waiting
     on — the long poll that would not die. It dies with the process.
 
-    ⚠️ ``_stop_locked`` clears the module globals before its first await, so
-    after a timed-out stop the module already holds nothing while that poller
-    is still alive — and the cancel re-raise skips ``_discard_bot_locked``, so
-    the handler routers stay attached to the abandoned dispatcher. A later
+    ⚠️ ``_stop_locked`` clears the registry before its first await, so after a
+    timed-out stop the module already holds nothing while that poller is still
+    alive — and the cancel re-raise skips ``_discard_bot_locked``, so the
+    handler routers stay attached to the abandoned dispatcher. A later
     ``start`` would therefore see a clean slate, crash in ``include_router``
     ("Router is already attached"), and had it got past that, build a SECOND
-    poller beside the live one — two of them competing for the same updates,
-    which is #50 again. Unreachable today because the only caller is the
+    session beside the live one — two pollers per token competing for the same
+    updates, which is #50 again. Unreachable today because the only caller is the
     lifespan handler at process exit; a second caller has to be a decision,
     not an accident.
     """
@@ -418,27 +502,33 @@ async def restart_telegram_bot() -> None:
         await _start_locked()
 
 
-async def send_message(chat_id: str | int, text: str, **kwargs) -> bool:
-    """Send a text message via the bot."""
-    if not _bot:
+async def send_message(provider_id: int, chat_id: str | int, text: str, **kwargs) -> bool:
+    """Send a text message as the bot of ``provider_id``.
+
+    ``False`` when that provider's bot is not running — the caller then has
+    the direct HTTP route, which needs no poller.
+    """
+    bot = _bots.get(provider_id)
+    if bot is None:
         return False
     try:
-        await _bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        await bot.send_message(chat_id=chat_id, text=text, **kwargs)
         return True
     except Exception as e:
         logger.error("Failed to send Telegram message: %s", e)
         return False
 
 
-async def send_photo(chat_id: str | int, photo: bytes, caption: str | None = None, **kwargs) -> bool:
-    """Send a photo via the bot."""
-    if not _bot:
+async def send_photo(provider_id: int, chat_id: str | int, photo: bytes, caption: str | None = None, **kwargs) -> bool:
+    """Send a photo as the bot of ``provider_id`` (``False`` when it is not running)."""
+    bot = _bots.get(provider_id)
+    if bot is None:
         return False
     try:
         from aiogram.types import BufferedInputFile
 
         file = BufferedInputFile(photo, filename="photo.jpg")
-        await _bot.send_photo(chat_id=chat_id, photo=file, caption=caption, **kwargs)
+        await bot.send_photo(chat_id=chat_id, photo=file, caption=caption, **kwargs)
         return True
     except Exception as e:
         logger.error("Failed to send Telegram photo: %s", e)

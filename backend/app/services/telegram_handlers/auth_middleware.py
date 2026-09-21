@@ -110,9 +110,10 @@ class TelegramAuthMiddleware(BaseMiddleware):
         it started the new bot, so the binding follows it — authorization
         (group, user, scope) is BamDude's and stays. Same bot: nothing to do.
         """
-        from backend.app.services.telegram_bot import running_bot_provider_id
+        from backend.app.services.telegram_bot import running_bot_provider_ids
 
-        provider_id = running_bot_provider_id()
+        running = running_bot_provider_ids()
+        provider_id = running[0] if running else None
         if provider_id is None or tg_chat.provider_id == provider_id:
             return
         logger.info(
@@ -141,9 +142,10 @@ class TelegramAuthMiddleware(BaseMiddleware):
         # The chat wrote to THIS bot, so it belongs to the provider row the
         # poller was built from (m180) — never to "the first telegram
         # provider", which may be another row by now.
-        from backend.app.services.telegram_bot import running_bot_provider_id
+        from backend.app.services.telegram_bot import running_bot_provider_ids
 
-        provider_id = running_bot_provider_id()
+        running = running_bot_provider_ids()
+        provider_id = running[0] if running else None
         if provider_id is None:
             logger.error("Cannot register Telegram chat %s: no running bot to bind it to", chat_id)
             return None

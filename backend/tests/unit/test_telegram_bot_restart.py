@@ -8,7 +8,7 @@ router whose ``_parent_router`` still points at an earlier dispatcher.
 
 ``stop_telegram_bot`` handles this on the happy path — it walks
 ``_dispatcher.sub_routers`` and clears ``_parent_router`` on each. But the
-error branch of the original ``start_telegram_bot`` only nulled ``_bot`` /
+error branch of the original ``start_telegram_bot`` only nulled its bot and
 ``_dispatcher`` and returned. The routers it had just attached stayed bound
 to the now-orphaned dispatcher, and the *next* start attempt exploded inside
 ``include_router`` with ``"Router is already attached to ..."``. Today the
@@ -39,10 +39,11 @@ async def test_start_failure_detaches_routers_so_next_start_succeeds(monkeypatch
     from backend.app.services import telegram_bot as tb
 
     # Token-fetch always returns a non-empty string so we hit the Bot/Dispatcher path.
-    monkeypatch.setattr(tb, "current_bot_provider", AsyncMock(return_value=(1, "123:AAfake")))
+    monkeypatch.setattr(tb, "current_bot_providers", AsyncMock(return_value=[(1, "123:AAfake")]))
 
     # Force the global state to a known starting point (clean test).
-    tb._bot = None
+    tb._bots.clear()
+    tb._bot_ids.clear()
     tb._dispatcher = None
     tb._polling_task = None
 
@@ -74,7 +75,7 @@ async def test_start_failure_detaches_routers_so_next_start_succeeds(monkeypatch
     with patch.object(tb, "Bot", side_effect=_bot_factory):
         # Suppress real polling — return a no-op task so we don't actually hit
         # Telegram. ``*_args`` because ``_run_polling`` is handed the dispatcher
-        # and the bot it should poll with (see the lifecycle tests below).
+        # and the bots it should poll with (see the lifecycle tests below).
         async def _noop(*_args):
             return None
 
@@ -82,8 +83,8 @@ async def test_start_failure_detaches_routers_so_next_start_succeeds(monkeypatch
             # First start: simulates the user pasting a bad token.
             await tb.start_telegram_bot()
 
-            # The bot/dispatcher globals are cleared (the except branch ran).
-            assert tb._bot is None, "Bot global should be cleared after start failure"
+            # The registry and the dispatcher are cleared (the except branch ran).
+            assert tb._bots == {}, "the registry should be empty after a start failure"
             assert tb._dispatcher is None, "Dispatcher global should be cleared after start failure"
 
             # THE BUG: the router singletons are still attached to the orphaned
@@ -98,14 +99,15 @@ async def test_start_failure_detaches_routers_so_next_start_succeeds(monkeypatch
             await tb.start_telegram_bot()
 
             # After the second start, polling task should be set and bot should be live.
-            assert tb._bot is not None, "Second start with valid token must succeed"
+            assert tb._bots, "Second start with valid token must succeed"
             assert tb._dispatcher is not None, "Dispatcher must be re-initialized on retry"
 
     # Cleanup so other tests don't see leaked state.
     if tb._dispatcher:
         for sub in list(tb._dispatcher.sub_routers):
             sub._parent_router = None  # noqa: SLF001
-    tb._bot = None
+    tb._bots.clear()
+    tb._bot_ids.clear()
     tb._dispatcher = None
     tb._polling_task = None
 
@@ -117,9 +119,10 @@ async def test_restart_with_token_change_clean_path(monkeypatch):
 
     from backend.app.services import telegram_bot as tb
 
-    monkeypatch.setattr(tb, "current_bot_provider", AsyncMock(return_value=(1, "123:AAvalid")))
+    monkeypatch.setattr(tb, "current_bot_providers", AsyncMock(return_value=[(1, "123:AAvalid")]))
 
-    tb._bot = None
+    tb._bots.clear()
+    tb._bot_ids.clear()
     tb._dispatcher = None
     tb._polling_task = None
 
@@ -141,18 +144,19 @@ async def test_restart_with_token_change_clean_path(monkeypatch):
 
         with patch.object(tb, "_run_polling", _noop):
             await tb.start_telegram_bot()
-            first_bot = tb._bot
+            first_bot = tb._bots[1]
             assert first_bot is not None
 
             await tb.restart_telegram_bot()
-            second_bot = tb._bot
+            second_bot = tb._bots[1]
             assert second_bot is not None
             assert second_bot is not first_bot, "restart should produce a fresh Bot instance"
 
     if tb._dispatcher:
         for sub in list(tb._dispatcher.sub_routers):
             sub._parent_router = None  # noqa: SLF001
-    tb._bot = None
+    tb._bots.clear()
+    tb._bot_ids.clear()
     tb._dispatcher = None
     tb._polling_task = None
 
@@ -160,7 +164,7 @@ async def test_restart_with_token_change_clean_path(monkeypatch):
 # ---------------------------------------------------------------------------
 # Lifecycle races (#50): one poller per process, under any interleaving.
 #
-# The module keeps three references and rewrites them around network awaits,
+# The module keeps a registry and rewrites it around network awaits,
 # so two overlapping restarts could each create a polling task while only the
 # last one stayed referenced. The orphan kept long-polling ``getUpdates`` —
 # two pollers fighting over the same updates, and a shutdown with nothing to
@@ -185,6 +189,11 @@ class _TelegramHarness:
         self.bots: list[MagicMock] = []
         self.dispatchers: list = []
         self.pollers: list[asyncio.Task] = []
+        # The bots each polling session was handed, one list per session —
+        # a session now holds every enabled provider's bot, not one.
+        self.polled: list[tuple] = []
+        # Tokens whose ``get_me`` raises: a bot that will not answer.
+        self.bad_tokens: set[str] = set()
         # Never set while a test body runs: the fake pollers stay alive so the
         # test can count them. Released in teardown.
         self.release = asyncio.Event()
@@ -195,12 +204,18 @@ class _TelegramHarness:
     def make_bot(self, *args, **kwargs):
         import aiogram
 
+        token = kwargs.get("token", "")
         bot = MagicMock(spec=aiogram.Bot)
         bot.session = MagicMock()
         bot.session.close = AsyncMock()
         bot.set_my_commands = AsyncMock()
+        bot.send_message = AsyncMock()
+        bot.token = token
         me = MagicMock()
-        me.username = "bamdude_test_bot"
+        # Distinct per bot, the way Telegram's own account ids are: the module
+        # maps them back to provider ids so an update can name its bot.
+        me.id = 1000 + len(self.bots)
+        me.username = f"bamdude_test_bot_{me.id}"
         me.full_name = "BamDude Test"
 
         async def _get_me():
@@ -208,9 +223,12 @@ class _TelegramHarness:
                 await self.get_me_gate.wait()
             else:
                 await asyncio.sleep(0)
+            if token in self.bad_tokens:
+                raise RuntimeError("Unauthorized: invalid token")
             return me
 
         bot.get_me = _get_me
+        bot.me_id = me.id
         self.bots.append(bot)
         return bot
 
@@ -219,14 +237,16 @@ class _TelegramHarness:
         self.dispatchers.append(dispatcher)
         return dispatcher
 
-    async def run_polling(self, *_args):
+    async def run_polling(self, *args):
         """Stand-in for ``_run_polling`` that lives until it is cancelled.
 
-        Takes ``*_args`` so the very same test runs against both the old
-        zero-argument call site and the new ``(dispatcher, bot)`` one — which
-        is what lets it show RED before the fix and GREEN after.
+        Takes ``*args`` so the very same test runs against every shape of the
+        call site this module has had — which is what lets a test show RED
+        before a change and GREEN after. The bots of each session are recorded
+        so a test can assert the session holds all of them.
         """
         self.pollers.append(asyncio.current_task())
+        self.polled.append(tuple(args[1]) if len(args) > 1 else ())
         await self.release.wait()
 
     @property
@@ -253,12 +273,13 @@ async def tg(monkeypatch):
     # "bound to a different event loop" in the next test. The app has exactly
     # one loop, which is why the module can keep one lock for its lifetime.
     monkeypatch.setattr(tb, "_lifecycle_lock", asyncio.Lock())
-    monkeypatch.setattr(tb, "current_bot_provider", AsyncMock(return_value=(1, "123:AAfake")))
+    monkeypatch.setattr(tb, "current_bot_providers", AsyncMock(return_value=[(1, "123:AAfake")]))
     monkeypatch.setattr(tb, "Bot", harness.make_bot)
     monkeypatch.setattr(tb, "Dispatcher", harness.make_dispatcher)
     monkeypatch.setattr(tb, "_run_polling", harness.run_polling)
 
-    tb._bot = None
+    tb._bots.clear()
+    tb._bot_ids.clear()
     tb._dispatcher = None
     tb._polling_task = None
 
@@ -278,7 +299,8 @@ async def tg(monkeypatch):
         await asyncio.wait(pending, timeout=1)
     for dispatcher in harness.dispatchers:
         tb._detach_sub_routers(dispatcher)
-    tb._bot = None
+    tb._bots.clear()
+    tb._bot_ids.clear()
     tb._dispatcher = None
     tb._polling_task = None
 
@@ -306,7 +328,7 @@ async def test_concurrent_restarts_leave_exactly_one_poller(tg):
         "each orphan keeps long-polling getUpdates and nothing can cancel it"
     )
     assert tb._polling_task is alive[0], "the module must reference the poller that is actually running"
-    assert tb._bot is not None
+    assert tb._bots
     assert tb._dispatcher is not None
     for task in tg.pollers:
         assert task.done() or task is tb._polling_task, "a poller that nothing references is an orphan"
@@ -322,7 +344,7 @@ async def test_concurrent_restarts_leave_exactly_one_poller(tg):
         "halves, or a start slipping in between somebody else's stop and start does one of them "
         "for them"
     )
-    assert tb._bot is tg.bots[-1], "the module must hold the bot the last restart built"
+    assert tb._bots.get(1) is tg.bots[-1], "the module must hold the bot the last restart built"
 
 
 async def test_concurrent_starts_build_one_bot_and_one_poller(tg):
@@ -374,7 +396,7 @@ async def test_a_poller_that_died_on_its_own_is_cleared_before_the_next_start(tg
     alive = tg.alive_pollers
     assert len(alive) == 1, f"expected exactly one live poller after the restart, found {len(alive)}"
     assert tb._polling_task is alive[0]
-    assert tb._bot is tg.bots[-1]
+    assert tb._bots.get(1) is tg.bots[-1]
 
 
 async def test_stop_racing_a_start_leaves_no_orphan(tg):
@@ -401,11 +423,11 @@ async def test_stop_racing_a_start_leaves_no_orphan(tg):
     assert len(alive) <= 1, f"{len(alive)} pollers alive after a stop raced a start"
     if alive:
         assert tb._polling_task is alive[0]
-        assert tb._bot is not None, "a poller is running for a bot the module has already dropped"
+        assert tb._bots, "a poller is running for a bot the module has already dropped"
         assert tb._dispatcher is not None
     else:
         assert tb._polling_task is None
-        assert tb._bot is None
+        assert tb._bots == {}
     for task in tg.pollers:
         assert task.done() or task is tb._polling_task
 
@@ -457,3 +479,111 @@ async def test_bounded_stop_logs_instead_of_hanging(tg, caplog):
     assert any("did not stop" in record.getMessage() for record in caplog.records), (
         f"the abandoned stop must be logged, got: {caplog.text!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Several bots in one session.
+#
+# A telegram provider row IS a bot (its token), and Telegram serves one
+# getUpdates consumer per token — different tokens are independent. So the
+# process runs ONE polling session holding a bot per enabled provider, and a
+# token that will not answer costs its own provider a bot and nothing else.
+# ---------------------------------------------------------------------------
+
+
+def _providers(*rows):
+    """The reader's answer: ``(provider id, token)``, oldest provider first."""
+    return AsyncMock(return_value=list(rows))
+
+
+async def test_every_enabled_provider_gets_its_own_bot_in_one_session(tg, monkeypatch):
+    tb = tg.tb
+    monkeypatch.setattr(tb, "current_bot_providers", _providers((1, "111:A"), (2, "222:B"), (3, "333:C")))
+
+    await tb.start_telegram_bot()
+    await _settle()
+
+    assert len(tg.alive_pollers) == 1, "one session, not one per bot"
+    assert len(tg.bots) == 3
+    assert list(tb._bots) == [1, 2, 3], "keyed by provider, oldest first"
+    assert tg.polled[-1] == tuple(tg.bots), "the session was handed every bot"
+    # An update names its bot by the Telegram account id; the module maps it back.
+    assert {bot.me_id: tb.provider_id_for_bot(bot.me_id) for bot in tg.bots} == {
+        tg.bots[0].me_id: 1,
+        tg.bots[1].me_id: 2,
+        tg.bots[2].me_id: 3,
+    }
+    assert tb.running_bot_provider_ids() == [1, 2, 3]
+
+
+async def test_a_token_that_will_not_answer_takes_only_its_own_provider_out(tg, monkeypatch):
+    """A stale token pasted into one provider must not cost the farm its working bot."""
+    tb = tg.tb
+    monkeypatch.setattr(tb, "current_bot_providers", _providers((1, "111:A"), (2, "222:BAD"), (3, "333:C")))
+    recorded = AsyncMock()
+    monkeypatch.setattr(tb, "_record_provider_error", recorded)
+    tg.bad_tokens.add("222:BAD")
+
+    await tb.start_telegram_bot()
+    await _settle()
+
+    assert list(tb._bots) == [1, 3]
+    assert len(tg.alive_pollers) == 1
+    assert tg.polled[-1] == (tg.bots[0], tg.bots[2])
+    assert recorded.await_args.args[0] == 2, "the failure is written where the operator sees it"
+    tg.bots[1].session.close.assert_awaited(), "the bot that never started does not keep a session"
+
+
+async def test_two_providers_behind_one_token_start_one_bot(tg, monkeypatch):
+    """The backstop: one token is one bot, and polling it twice is a 409 from Telegram."""
+    tb = tg.tb
+    monkeypatch.setattr(tb, "current_bot_providers", _providers((1, "111:SAME"), (2, "111:SAME"), (3, "333:C")))
+    recorded = AsyncMock()
+    monkeypatch.setattr(tb, "_record_provider_error", recorded)
+
+    await tb.start_telegram_bot()
+    await _settle()
+
+    assert list(tb._bots) == [1, 3], "the older row polls the shared token"
+    assert recorded.await_args.args[0] == 2
+    assert "already polled" in recorded.await_args.args[1]
+
+
+async def test_no_bot_at_all_starts_no_session(tg, monkeypatch):
+    tb = tg.tb
+    monkeypatch.setattr(tb, "current_bot_providers", _providers((1, "111:BAD"), (2, "222:BAD2")))
+    monkeypatch.setattr(tb, "_record_provider_error", AsyncMock())
+    tg.bad_tokens.update({"111:BAD", "222:BAD2"})
+
+    await tb.start_telegram_bot()
+    await _settle()
+
+    assert tb._bots == {} and tb._bot_ids == {}
+    assert tg.alive_pollers == []
+    assert tb._dispatcher is None, "the routers are detached, so the next start can attach them"
+
+
+async def test_a_send_goes_through_the_bot_of_the_provider_it_names(tg, monkeypatch):
+    tb = tg.tb
+    monkeypatch.setattr(tb, "current_bot_providers", _providers((1, "111:A"), (2, "222:B")))
+
+    await tb.start_telegram_bot()
+    await _settle()
+
+    assert await tb.send_message(2, 4242, "hi") is True
+    tg.bots[1].send_message.assert_awaited_once()
+    tg.bots[0].send_message.assert_not_awaited()
+    assert await tb.send_message(99, 4242, "hi") is False, "a provider with no live bot cannot send"
+
+
+async def test_stopping_closes_every_bot_of_the_session(tg, monkeypatch):
+    tb = tg.tb
+    monkeypatch.setattr(tb, "current_bot_providers", _providers((1, "111:A"), (2, "222:B")))
+
+    await tb.start_telegram_bot()
+    await _settle()
+    await tb.stop_telegram_bot()
+
+    for bot in tg.bots:
+        bot.session.close.assert_awaited()
+    assert tb._bots == {} and tb._bot_ids == {}

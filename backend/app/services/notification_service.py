@@ -558,6 +558,7 @@ class NotificationService:
                 event_type=event_type,
                 printer_id=printer_id,
                 extra_data=extra_data,
+                provider_id=provider_id,
             )
             if ok:
                 sent += 1
@@ -621,7 +622,7 @@ class NotificationService:
         sent = 0
         errors: list[str] = []
         for chat in chats:
-            ok, err = await self._send_telegram(config, full, chat_id=str(chat.chat_id))
+            ok, err = await self._send_telegram(config, full, chat_id=str(chat.chat_id), provider_id=provider_id)
             if ok:
                 sent += 1
             else:
@@ -677,8 +678,17 @@ class NotificationService:
         event_type: str = "unknown",
         printer_id: int | None = None,
         extra_data: dict | None = None,
+        provider_id: int | None = None,
     ) -> tuple[bool, str]:
-        """Send notification to a single Telegram chat (aiogram or httpx fallback)."""
+        """Send notification to a single Telegram chat (aiogram or httpx fallback).
+
+        ``provider_id`` names the bot: a chat belongs to one provider (m180),
+        and that provider's bot is the only one that can reach it. When that
+        bot is running its aiogram session carries the message — inline
+        keyboard included — and the direct HTTP route is the fallback for
+        everything else (the bot not running, a token whose bot failed to
+        start, an aiogram send that did not confirm).
+        """
         bot_token = config.get("bot_token", "").strip()
         if not chat_id:
             chat_id = config.get("chat_id", "").strip()
@@ -686,11 +696,11 @@ class NotificationService:
         if not bot_token or not chat_id:
             return False, "Bot token and chat ID are required"
 
-        # Try aiogram bot first (if running and same token)
+        # Try this provider's own aiogram bot first, when it is running
         from backend.app.services.telegram_bot import get_bot, send_message, send_photo
 
-        aiogram_bot = get_bot()
-        if aiogram_bot and aiogram_bot.token == bot_token:
+        aiogram_bot = get_bot(provider_id) if provider_id is not None else None
+        if aiogram_bot is not None:
             try:
                 # Bot uses MarkdownV2 - escape dynamic content, keep bold markers
                 from backend.app.i18n import escape_md
@@ -711,14 +721,16 @@ class NotificationService:
                 )
 
                 if image_data:
-                    ok = await send_photo(chat_id, image_data, caption=md2_message, reply_markup=reply_markup)
+                    ok = await send_photo(
+                        provider_id, chat_id, image_data, caption=md2_message, reply_markup=reply_markup
+                    )
                 else:
-                    ok = await send_message(chat_id, md2_message, reply_markup=reply_markup)
+                    ok = await send_message(provider_id, chat_id, md2_message, reply_markup=reply_markup)
                 if ok:
                     return True, "Message sent successfully"
                 # The helpers swallow their own exception and answer ``False``
-                # — and so does a bot whose session was closed between our
-                # ``get_bot()`` above and the send (a restart in flight). The
+                # — and so does a bot whose session was closed between the
+                # registry lookup above and the send (a restart in flight). The
                 # message is not lost for that: it goes the direct way, on the
                 # provider's own token, exactly as it would had the bot not
                 # been running. The inline keyboard is the one thing the

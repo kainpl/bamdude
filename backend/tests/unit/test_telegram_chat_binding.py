@@ -30,7 +30,7 @@ async def _bot_row(db_session, name: str) -> NotificationProvider:
 @pytest.mark.asyncio
 async def test_registration_binds_the_chat_to_the_running_bot(db_session, monkeypatch):
     bot = await _bot_row(db_session, "Bot A")
-    monkeypatch.setattr(tb, "_bot_provider_id", bot.id)
+    monkeypatch.setattr(tb, "_bots", {bot.id: MagicMock()})
 
     with patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()):
         chat = await TelegramAuthMiddleware._auto_register(db_session, MagicMock(), 4242)
@@ -42,7 +42,7 @@ async def test_registration_binds_the_chat_to_the_running_bot(db_session, monkey
 
 @pytest.mark.asyncio
 async def test_without_a_running_bot_nothing_is_registered(db_session, monkeypatch):
-    monkeypatch.setattr(tb, "_bot_provider_id", None)
+    monkeypatch.setattr(tb, "_bots", {})
 
     chat = await TelegramAuthMiddleware._auto_register(db_session, MagicMock(), 4242)
 
@@ -61,7 +61,7 @@ async def test_a_chat_that_writes_to_another_bot_is_re_bound_to_it(db_session, m
     # Plain ints BEFORE expire_all(): an expired attribute read outside an
     # await is a MissingGreenlet, not a useful failure.
     chat_row_id, new_id = chat.id, new.id
-    monkeypatch.setattr(tb, "_bot_provider_id", new_id)
+    monkeypatch.setattr(tb, "_bots", {new_id: MagicMock()})
     await TelegramAuthMiddleware._rebind_to_running_bot(db_session, chat)
 
     db_session.expire_all()
@@ -76,7 +76,7 @@ async def test_the_same_bot_leaves_the_binding_alone(db_session, monkeypatch):
     await db_session.commit()
     commit = AsyncMock(wraps=db_session.commit)
 
-    monkeypatch.setattr(tb, "_bot_provider_id", bot.id)
+    monkeypatch.setattr(tb, "_bots", {bot.id: MagicMock()})
     monkeypatch.setattr(db_session, "commit", commit)
     await TelegramAuthMiddleware._rebind_to_running_bot(db_session, chat)
 
@@ -91,7 +91,7 @@ async def test_no_running_bot_re_binds_nothing(db_session, monkeypatch):
     db_session.add(chat)
     await db_session.commit()
 
-    monkeypatch.setattr(tb, "_bot_provider_id", None)
+    monkeypatch.setattr(tb, "_bots", {})
     await TelegramAuthMiddleware._rebind_to_running_bot(db_session, chat)
 
     assert chat.provider_id == bot.id
@@ -131,7 +131,7 @@ async def test_a_disabled_chat_writing_to_the_new_bot_is_moved_before_it_is_told
     await db_session.commit()
     new_id = new.id
 
-    monkeypatch.setattr(tb, "_bot_provider_id", new_id)
+    monkeypatch.setattr(tb, "_bots", {new_id: MagicMock()})
     handler = AsyncMock()
     reply = AsyncMock()
     with (
@@ -152,7 +152,7 @@ async def test_a_disabled_chat_writing_to_the_new_bot_is_moved_before_it_is_told
 async def test_with_no_running_bot_an_unknown_chat_is_neither_registered_nor_answered(
     db_session, patched_session, monkeypatch
 ):
-    monkeypatch.setattr(tb, "_bot_provider_id", None)
+    monkeypatch.setattr(tb, "_bots", {})
     handler = AsyncMock()
     reply = AsyncMock()
     with (

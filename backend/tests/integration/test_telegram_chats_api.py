@@ -7,7 +7,7 @@ telegram provider takes its chats with it — in code, because SQLite never
 gets ``PRAGMA foreign_keys``.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -58,7 +58,7 @@ class TestChatBinding:
     ):
         await _bot(notification_provider_factory, "111:AAolder")
         running = await _bot(notification_provider_factory, "222:AArunning")
-        monkeypatch.setattr(tb, "_bot_provider_id", running.id)
+        monkeypatch.setattr(tb, "_bots", {running.id: MagicMock()})
 
         response = await _add_chat(async_client, 101)
 
@@ -69,7 +69,7 @@ class TestChatBinding:
     async def test_with_no_bot_running_the_bot_that_would_run_takes_it(
         self, async_client: AsyncClient, notification_provider_factory, restart_bot, monkeypatch
     ):
-        monkeypatch.setattr(tb, "_bot_provider_id", None)
+        monkeypatch.setattr(tb, "_bots", {})
         off = await _bot(notification_provider_factory, "111:AAoff", enabled=False)
         would_run = await _bot(notification_provider_factory, "222:AAon")
 
@@ -83,7 +83,7 @@ class TestChatBinding:
     async def test_with_no_bot_at_all_there_is_nothing_to_bind_to(
         self, async_client: AsyncClient, notification_provider_factory, monkeypatch
     ):
-        monkeypatch.setattr(tb, "_bot_provider_id", None)
+        monkeypatch.setattr(tb, "_bots", {})
         await notification_provider_factory(provider_type="ntfy")
 
         response = await _add_chat(async_client, 103)

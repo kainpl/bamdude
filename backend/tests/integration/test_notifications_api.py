@@ -1000,54 +1000,62 @@ class TestTelegramProviderRestarts:
         assert restart_bot.await_count == 0
 
     # ------------------------------------------------------------------
-    # More than one telegram row: the OLDEST enabled one is the bot
+    # More than one telegram row: every enabled one is a bot of its own
     # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_the_oldest_enabled_telegram_row_is_the_bot(
+    async def test_the_reader_lists_every_enabled_telegram_row_oldest_first(
         self, async_client: AsyncClient, notification_provider_factory
     ):
-        """``current_bot_provider`` answers with the smallest enabled id, whatever else exists.
+        """``current_bot_providers`` answers with every enabled row, in id order.
 
-        Pins "oldest, not youngest" — reversing the reader's ORDER BY fails
-        it. It cannot pin "ordered at all": on SQLite, where this suite runs,
-        an unordered ``LIMIT 1`` over a table scan is rowid order anyway, so
-        dropping the ORDER BY stays green here. The half of the clause with
-        real value is PostgreSQL, where an UPDATE can move the row — that is
-        the reader's docstring's argument, not this test's.
+        One enabled provider, one bot — the session holds them all — and the
+        order is the one the token-duplicate backstop leans on: the oldest row
+        of a shared token is the one that polls it.
+
+        The order cannot be pinned harder here: on SQLite, where this suite
+        runs, an unordered read over a table scan is rowid order anyway, so
+        dropping the ``ORDER BY`` stays green. The half of that clause with
+        real value is PostgreSQL, where an UPDATE can move the row — the
+        reader's docstring's argument, not this test's.
 
         ``async_client`` is requested for its side effect: it is the fixture
         that points the module-level session factory the reader opens at the
         test database.
         """
-        from backend.app.services.telegram_bot import current_bot_provider
+        from backend.app.services.telegram_bot import current_bot_providers
 
         older = await self._telegram(notification_provider_factory, config={"bot_token": "111:AAolder"})
         younger = await self._telegram(notification_provider_factory, config={"bot_token": "222:AAyounger"})
         assert older.id < younger.id
 
-        assert await current_bot_provider() == (older.id, "111:AAolder")
+        assert await current_bot_providers() == [(older.id, "111:AAolder"), (younger.id, "222:AAyounger")]
 
         with patch("backend.app.services.telegram_bot.restart_telegram_bot", new_callable=AsyncMock):
             assert (
                 await async_client.patch(f"/api/v1/notifications/{older.id}", json={"enabled": False})
             ).status_code == 200
-        assert await current_bot_provider() == (younger.id, "222:AAyounger")
+        assert await current_bot_providers() == [(younger.id, "222:AAyounger")], "a switched-off row is not a bot"
 
         with patch("backend.app.services.telegram_bot.restart_telegram_bot", new_callable=AsyncMock):
             assert (
                 await async_client.patch(f"/api/v1/notifications/{older.id}", json={"enabled": True})
             ).status_code == 200
-        assert await current_bot_provider() == (older.id, "111:AAolder")
+        assert await current_bot_providers() == [(older.id, "111:AAolder"), (younger.id, "222:AAyounger")]
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_a_younger_enabled_telegram_row_never_costs_a_restart(
+    async def test_a_second_enabled_telegram_row_is_a_second_bot_and_costs_a_restart(
         self, async_client: AsyncClient, notification_provider_factory, restart_bot
     ):
-        """Created, re-keyed and deleted behind the bot's row: the reader's answer never moves."""
-        await self._telegram(notification_provider_factory, config={"bot_token": "111:AAbot"})
+        """Created, re-keyed and deleted beside the first: each moves the session's bots.
+
+        Under one bot per process a younger enabled row was invisible — the
+        reader never returned it, so nothing it did was worth a restart. Now
+        it IS a bot, and the session must gain it, re-key it and lose it.
+        """
+        first = await self._telegram(notification_provider_factory, config={"bot_token": "111:AAbot"})
 
         created = await async_client.post(
             "/api/v1/notifications/",
@@ -1060,17 +1068,23 @@ class TestTelegramProviderRestarts:
         )
         assert created.status_code == 200
         second_id = created.json()["id"]
-        assert restart_bot.await_count == 0
+        assert restart_bot.await_count == 1, "the session must pick the new bot up"
 
         response = await async_client.patch(
             f"/api/v1/notifications/{second_id}",
             json={"config": {"bot_token": "333:AAsecond-rekeyed"}},
         )
         assert response.status_code == 200
-        assert restart_bot.await_count == 0
+        assert restart_bot.await_count == 2
 
         assert (await async_client.delete(f"/api/v1/notifications/{second_id}")).status_code == 200
-        assert restart_bot.await_count == 0
+        assert restart_bot.await_count == 3
+
+        # A name, though, is still nothing any bot reads.
+        assert (
+            await async_client.patch(f"/api/v1/notifications/{first.id}", json={"name": "Renamed"})
+        ).status_code == 200
+        assert restart_bot.await_count == 3, "a rename is still not a restart"
 
     @pytest.mark.asyncio
     @pytest.mark.integration

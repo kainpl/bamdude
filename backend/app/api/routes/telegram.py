@@ -69,14 +69,14 @@ async def _provider_for_new_chat(db: AsyncSession, requested: int | None) -> int
             raise HTTPException(400, "Provider is not a Telegram provider")
         return provider.id
 
-    from backend.app.services.telegram_bot import current_bot_provider, running_bot_provider_id
+    from backend.app.services.telegram_bot import current_bot_providers, running_bot_provider_ids
 
-    running = running_bot_provider_id()
-    if running is not None:
-        return running
-    current = await current_bot_provider()
-    if current is not None:
-        return current[0]
+    running = running_bot_provider_ids()
+    if running:
+        return running[0]
+    configured = await current_bot_providers()
+    if configured:
+        return configured[0][0]
     raise HTTPException(409, "No Telegram provider to bind the chat to. Add a Telegram provider first.")
 
 
@@ -330,7 +330,8 @@ async def test_chat(
     from backend.app.services.telegram_bot import send_message
 
     text = escape_md("Test message from BamDude. If you see this, the chat is connected!")
-    ok = await send_message(chat.chat_id, f"\u2705 {text}")
+    # As the chat's own bot: no other bot can reach it (m180).
+    ok = await send_message(chat.provider_id, chat.chat_id, f"\u2705 {text}")
     if not ok:
         raise HTTPException(500, "Failed to send message. Is the bot running?")
 
