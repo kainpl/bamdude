@@ -2,6 +2,7 @@
 
 import asyncio
 import concurrent.futures
+import logging
 import time
 import zipfile
 from dataclasses import asdict
@@ -17,6 +18,7 @@ from backend.app.services.print_file_analysis import (
     discard_print_file_analysis,
     discard_printer_print_file_analysis,
     get_print_file_analysis,
+    get_print_file_analysis_diagnostics,
     notify_print_file_analysis_source_ready,
 )
 
@@ -81,6 +83,38 @@ async def test_concurrent_readers_share_one_analysis(tmp_path):
 
     assert len(calls) == 1
     assert all(result is results[0] for result in results)
+
+
+@pytest.mark.asyncio
+async def test_analysis_diagnostics_record_one_parse_many_readers_and_release(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    path = tmp_path / "job.3mf"
+    path.write_bytes(b"fixture")
+    manager = _Manager()
+    calls = []
+    manager._print_file_analysis_runner = _runner_factory(calls)
+
+    assert await get_print_file_analysis(manager, 7, 42, path, 1) is not None
+    assert await get_print_file_analysis(manager, 7, 42, path, 1) is not None
+
+    diagnostics = get_print_file_analysis_diagnostics(manager)
+    assert diagnostics["requests"] == 2
+    assert diagnostics["cache_misses"] == 1
+    assert diagnostics["cache_hits"] == 1
+    assert diagnostics["parses_started"] == 1
+    assert diagnostics["parses_ready"] == 1
+    assert diagnostics["parse_duration_ms"]["samples"] == 1
+    assert diagnostics["last_parse"]["archive_id"] == 42
+    assert diagnostics["last_parse"]["source_bytes"] == path.stat().st_size
+    assert diagnostics["contexts"][0]["state"] == "ready"
+
+    discard_print_file_analysis(manager, 7, 42)
+    released = get_print_file_analysis_diagnostics(manager)
+    assert released["contexts_released"] == 1
+    assert released["contexts"] == []
+    assert "[3MF ANALYSIS] started printer_id=7 archive_id=42" in caplog.text
+    assert "[3MF ANALYSIS] ready printer_id=7 archive_id=42" in caplog.text
+    assert "[3MF ANALYSIS] released printer_id=7 archive_id=42" in caplog.text
 
 
 @pytest.mark.asyncio

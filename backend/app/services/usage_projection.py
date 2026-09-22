@@ -11,6 +11,8 @@ the class of double-count the whole tracker is built to avoid.
 
 import json
 import logging
+import time
+from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +20,69 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = logging.getLogger(__name__)
 
 _INACTIVE: dict = {"active": False}
+_SUMMARY_INTERVAL_SECONDS = 300.0
+
+
+@dataclass
+class _ProjectionDiagnostics:
+    """Bounded in-process request accounting; access logs retain the detail."""
+
+    started_at: float
+    summary_started_at: float
+    last_summary_at: float
+    requests: int = 0
+    inactive: int = 0
+    waiting_source: int = 0
+    waiting_analysis: int = 0
+    ready: int = 0
+
+
+_projection_diagnostics = _ProjectionDiagnostics(
+    started_at=time.monotonic(),
+    summary_started_at=time.monotonic(),
+    last_summary_at=time.monotonic(),
+)
+
+
+def _record_projection(outcome: str) -> None:
+    """Count an endpoint result and periodically emit one useful summary line."""
+    diagnostics = _projection_diagnostics
+    diagnostics.requests += 1
+    setattr(diagnostics, outcome, getattr(diagnostics, outcome) + 1)
+    now = time.monotonic()
+    if now - diagnostics.last_summary_at < _SUMMARY_INTERVAL_SECONDS:
+        return
+    window_seconds = round(now - diagnostics.summary_started_at, 1)
+    logger.info(
+        "[USAGE PROJECTION] summary window_seconds=%s requests=%s inactive=%s waiting_source=%s "
+        "waiting_analysis=%s ready=%s",
+        window_seconds,
+        diagnostics.requests,
+        diagnostics.inactive,
+        diagnostics.waiting_source,
+        diagnostics.waiting_analysis,
+        diagnostics.ready,
+    )
+    diagnostics.summary_started_at = now
+    diagnostics.last_summary_at = now
+    diagnostics.requests = 0
+    diagnostics.inactive = 0
+    diagnostics.waiting_source = 0
+    diagnostics.waiting_analysis = 0
+    diagnostics.ready = 0
+
+
+def get_usage_projection_diagnostics() -> dict:
+    """Return the current low-volume projection counter window for support."""
+    diagnostics = _projection_diagnostics
+    return {
+        "window_seconds": round(time.monotonic() - diagnostics.summary_started_at, 1),
+        "requests": diagnostics.requests,
+        "inactive": diagnostics.inactive,
+        "waiting_source": diagnostics.waiting_source,
+        "waiting_analysis": diagnostics.waiting_analysis,
+        "ready": diagnostics.ready,
+    }
 
 
 def _slot_consumed_grams(
@@ -58,14 +123,17 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
 
     state = printer_manager.get_status(printer_id)
     if state is None or (getattr(state, "state", "") or "").upper() not in ("RUNNING", "PAUSE"):
+        _record_projection("inactive")
         return _INACTIVE
 
     archive_id = await active_archive_id(db, printer_id)
     if archive_id is None:
+        _record_projection("inactive")
         return _INACTIVE
     archive = (await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))).scalar_one_or_none()
     if archive is None or not archive.file_path:
         # No 3MF yet (external print mid-download) — nothing to project from.
+        _record_projection("waiting_source")
         return {
             "active": True,
             "archive_id": archive_id,
@@ -104,8 +172,10 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
         or (getattr(current_state, "state", "") or "").upper() not in ("RUNNING", "PAUSE")
         or await active_archive_id(db, printer_id) != archive_id
     ):
+        _record_projection("inactive")
         return _INACTIVE
     if analysis is None:
+        _record_projection("waiting_analysis")
         return {
             "active": True,
             "archive_id": archive_id,
@@ -198,6 +268,7 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
                     slot_payload["segments"] = segments
         slots.append(slot_payload)
 
+    _record_projection("ready")
     return {
         "active": True,
         "archive_id": archive_id,

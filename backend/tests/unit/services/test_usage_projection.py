@@ -1,6 +1,7 @@
 """Live usage projection: display-only math from journal + G-code cumulative."""
 
 import asyncio
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -81,6 +82,32 @@ def _patched(usage, layer_usage=None):
 async def test_idle_printer_is_inactive(db_session):
     pm = _pm(state="IDLE")
     assert await compute_usage_projection(db_session, 1, printer_manager=pm) == {"active": False}
+
+
+def test_projection_diagnostics_emit_a_rate_limited_summary(monkeypatch, caplog):
+    from backend.app.services import usage_projection
+
+    caplog.set_level(logging.INFO)
+    diagnostics = usage_projection._ProjectionDiagnostics(started_at=0.0, summary_started_at=0.0, last_summary_at=0.0)
+    monkeypatch.setattr(usage_projection, "_projection_diagnostics", diagnostics)
+    monkeypatch.setattr(usage_projection, "_SUMMARY_INTERVAL_SECONDS", 10.0)
+    monkeypatch.setattr(usage_projection.time, "monotonic", lambda: 11.0)
+
+    usage_projection._record_projection("ready")
+
+    assert "[USAGE PROJECTION] summary window_seconds=11.0 requests=1" in caplog.text
+    assert usage_projection.get_usage_projection_diagnostics()["requests"] == 0
+
+    monkeypatch.setattr(usage_projection.time, "monotonic", lambda: 12.0)
+    usage_projection._record_projection("inactive")
+    assert usage_projection.get_usage_projection_diagnostics() == {
+        "window_seconds": 1.0,
+        "requests": 1,
+        "inactive": 1,
+        "waiting_source": 0,
+        "waiting_analysis": 0,
+        "ready": 0,
+    }
 
 
 @pytest.mark.asyncio

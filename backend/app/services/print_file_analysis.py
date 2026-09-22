@@ -17,6 +17,7 @@ import pickle
 import time
 import zipfile
 from bisect import bisect_right
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -105,6 +106,25 @@ class _Context:
     error: str | None = None
     failed_attempts: int = 0
     retry_at: float | None = None
+    started_at: float | None = None
+    worker: Literal["process", "thread"] | None = None
+
+
+@dataclass
+class _AnalysisDiagnostics:
+    """Small process-local counters for support bundles, not a request log."""
+
+    requests: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    in_flight_waits: int = 0
+    waiter_timeouts: int = 0
+    parses_started: int = 0
+    parses_ready: int = 0
+    parses_failed: int = 0
+    contexts_released: int = 0
+    durations_ms: deque[int] = field(default_factory=lambda: deque(maxlen=128))
+    last_parse: dict[str, int | str] | None = None
 
 
 _executor: ProcessPoolExecutor | None = None
@@ -352,6 +372,87 @@ def _retained_analysis_bytes(printer_manager: PrinterManager) -> int:
     return sum(context.analysis.retained_bytes for context in _all_contexts(printer_manager) if context.analysis)
 
 
+def _diagnostics(printer_manager: PrinterManager) -> _AnalysisDiagnostics:
+    diagnostics = getattr(printer_manager, "_print_file_analysis_diagnostics", None)
+    if not isinstance(diagnostics, _AnalysisDiagnostics):
+        diagnostics = _AnalysisDiagnostics()
+        printer_manager._print_file_analysis_diagnostics = diagnostics
+    return diagnostics
+
+
+def _context_payload(printer_id: int, context: _Context) -> dict[str, int | str | bool]:
+    """Expose only operational state; archive paths never leave the process."""
+    return {
+        "printer_id": printer_id,
+        "archive_id": context.archive_id,
+        "generation": context.generation,
+        "state": context.state,
+        "lifecycle": context.lifecycle,
+        "source_available": context.source is not None,
+        "analysis_ready": context.analysis is not None,
+        "retained_bytes": context.analysis.retained_bytes if context.analysis else 0,
+    }
+
+
+def get_print_file_analysis_diagnostics(printer_manager: PrinterManager) -> dict:
+    """Return bounded process-local analysis telemetry for a support snapshot."""
+    diagnostics = _diagnostics(printer_manager)
+    durations = sorted(diagnostics.durations_ms)
+
+    def percentile(percent: float) -> int | None:
+        if not durations:
+            return None
+        index = max(0, min(len(durations) - 1, int((len(durations) - 1) * percent)))
+        return durations[index]
+
+    active = _contexts(printer_manager)
+    finishing = _finishing_contexts(printer_manager)
+    contexts = [_context_payload(printer_id, context) for printer_id, context in active.items()] + [
+        _context_payload(printer_id, context) for (printer_id, _archive_id), context in finishing.items()
+    ]
+    return {
+        "requests": diagnostics.requests,
+        "cache_hits": diagnostics.cache_hits,
+        "cache_misses": diagnostics.cache_misses,
+        "in_flight_waits": diagnostics.in_flight_waits,
+        "waiter_timeouts": diagnostics.waiter_timeouts,
+        "parses_started": diagnostics.parses_started,
+        "parses_ready": diagnostics.parses_ready,
+        "parses_failed": diagnostics.parses_failed,
+        "contexts_released": diagnostics.contexts_released,
+        "parse_duration_ms": {
+            "samples": len(durations),
+            "last": diagnostics.last_parse.get("duration_ms") if diagnostics.last_parse else None,
+            "p50": percentile(0.50),
+            "p95": percentile(0.95),
+        },
+        "last_parse": diagnostics.last_parse,
+        "contexts": contexts,
+        "retained_bytes": _retained_analysis_bytes(printer_manager),
+    }
+
+
+def _release_context(
+    printer_manager: PrinterManager,
+    printer_id: int,
+    context: _Context,
+    *,
+    reason: str,
+) -> None:
+    """Retire a context and leave one useful, low-volume audit record."""
+    _diagnostics(printer_manager).contexts_released += 1
+    logger.info(
+        "[3MF ANALYSIS] released printer_id=%s archive_id=%s generation=%s reason=%s state=%s analysis_ready=%s",
+        printer_id,
+        context.archive_id,
+        context.generation,
+        reason,
+        context.state,
+        context.analysis is not None,
+    )
+    _retire(context)
+
+
 def _new_context(
     printer_manager: PrinterManager,
     archive_id: int,
@@ -413,7 +514,7 @@ def bind_print_file_analysis(
         if source is None or current.source == source:
             return
     if current is not None:
-        _retire(current)
+        _release_context(printer_manager, printer_id, current, reason="replaced_by_new_archive")
     contexts[printer_id] = _new_context(printer_manager, archive_id, source)
 
 
@@ -438,7 +539,7 @@ def notify_print_file_analysis_source_ready(
     if current is None or current.archive_id != archive_id:
         return False
     if current.source != source:
-        _retire(current)
+        _release_context(printer_manager, printer_id, current, reason="source_replaced")
         contexts[printer_id] = _new_context(printer_manager, archive_id, source)
     elif current.state == "unavailable":
         # A committed attach/retry is authoritative evidence that this source
@@ -505,7 +606,7 @@ def begin_historical_print_file_analysis_finishing(
     if existing is not None:
         if existing.source == source:
             return True
-        _retire(existing)
+        _release_context(printer_manager, printer_id, existing, reason="historical_source_replaced")
         finishing[key] = _new_context(printer_manager, archive_id, source, lifecycle="finishing")
         return True
 
@@ -596,6 +697,8 @@ async def get_print_file_analysis(
     A cancelled or timed-out caller never cancels the shared worker.  A source
     change replaces the context before the old task can publish into it.
     """
+    diagnostics = _diagnostics(printer_manager)
+    diagnostics.requests += 1
     contexts = _contexts(printer_manager)
     finishing = _finishing_contexts(printer_manager)
     active = contexts.get(printer_id)
@@ -623,15 +726,21 @@ async def get_print_file_analysis(
         # Retention/deletion after a completed cold parse cannot invalidate the
         # immutable bytes already held for this live or finishing run.  It only
         # prevents a new parse for a context that has none yet.
+        if context.analysis is not None:
+            diagnostics.cache_hits += 1
+        else:
+            diagnostics.cache_misses += 1
         return context.analysis
     if context.source != source:
         lifecycle = context.lifecycle
-        _retire(context)
+        _release_context(printer_manager, printer_id, context, reason="source_descriptor_changed")
         context = _new_context(printer_manager, archive_id, source, lifecycle=lifecycle)
         registry[registry_key] = context
 
     if context.analysis is not None:
+        diagnostics.cache_hits += 1
         return context.analysis
+    diagnostics.cache_misses += 1
     if context.error is not None:
         retry_at = context.retry_at
         if retry_at is None or time.monotonic() < retry_at:
@@ -652,15 +761,30 @@ async def get_print_file_analysis(
         candidate = getattr(printer_manager, "_print_file_analysis_runner", None)
         runner = candidate if isinstance(candidate, FunctionType) else None
         use_process = getattr(printer_manager, "_uses_print_file_analysis_process", False) is True
+        context.started_at = time.monotonic()
+        context.worker = "process" if use_process else "thread"
+        diagnostics.parses_started += 1
+        logger.info(
+            "[3MF ANALYSIS] started printer_id=%s archive_id=%s generation=%s plate_index=%s source_bytes=%s worker=%s",
+            printer_id,
+            archive_id,
+            context.generation,
+            source[1],
+            source[2],
+            context.worker,
+        )
         context.task = asyncio.create_task(
             _prepare(context, path, runner, use_process), name=f"3mf-analysis-{printer_id}-{archive_id}"
         )
         context.state = "preparing"
+    else:
+        diagnostics.in_flight_waits += 1
 
     try:
         waiter = asyncio.shield(context.task)
         analysis = await (asyncio.wait_for(waiter, timeout) if timeout is not None else waiter)
     except TimeoutError:
+        diagnostics.waiter_timeouts += 1
         return None
     except asyncio.CancelledError:
         if context.lifecycle == "retired":
@@ -675,11 +799,20 @@ async def get_print_file_analysis(
             else:
                 context.retry_at = None
             context.state = "unavailable"
+            diagnostics.parses_failed += 1
+            duration_ms = int((time.monotonic() - context.started_at) * 1000) if context.started_at else None
+            retry_in_seconds = (
+                max(0, round(context.retry_at - time.monotonic(), 1)) if context.retry_at is not None else None
+            )
             logger.warning(
-                "3MF analysis unavailable for printer %s archive %s (attempt %s): %s",
+                "[3MF ANALYSIS] failed printer_id=%s archive_id=%s generation=%s attempt=%s duration_ms=%s "
+                "retry_in_seconds=%s error=%s",
                 printer_id,
                 archive_id,
+                context.generation,
                 context.failed_attempts,
+                duration_ms,
+                retry_in_seconds,
                 exc,
             )
         return None
@@ -693,7 +826,7 @@ async def get_print_file_analysis(
     if current_source != context.source:
         if current_source is not None:
             lifecycle = context.lifecycle
-            _retire(context)
+            _release_context(printer_manager, printer_id, context, reason="source_changed_while_parsing")
             registry[registry_key] = _new_context(printer_manager, archive_id, current_source, lifecycle=lifecycle)
         return None
     retained_after_publish = _retained_analysis_bytes(printer_manager) + analysis.retained_bytes
@@ -705,6 +838,34 @@ async def get_print_file_analysis(
         return None
     context.analysis = analysis
     context.state = "ready"
+    duration_ms = int((time.monotonic() - context.started_at) * 1000) if context.started_at else 0
+    layer_count = len(analysis.layer_usage or {})
+    channel_entries = sum(len(values) for values in (analysis.layer_usage or {}).values())
+    diagnostics.parses_ready += 1
+    diagnostics.durations_ms.append(duration_ms)
+    diagnostics.last_parse = {
+        "printer_id": printer_id,
+        "archive_id": archive_id,
+        "duration_ms": duration_ms,
+        "source_bytes": context.source[2],
+        "layer_count": layer_count,
+        "channel_entries": channel_entries,
+        "retained_bytes": analysis.retained_bytes,
+        "worker": context.worker or "unknown",
+    }
+    logger.info(
+        "[3MF ANALYSIS] ready printer_id=%s archive_id=%s generation=%s duration_ms=%s source_bytes=%s "
+        "layer_count=%s channel_entries=%s retained_bytes=%s worker=%s",
+        printer_id,
+        archive_id,
+        context.generation,
+        duration_ms,
+        context.source[2],
+        layer_count,
+        channel_entries,
+        analysis.retained_bytes,
+        context.worker,
+    )
     return analysis
 
 
@@ -720,17 +881,17 @@ def discard_print_file_analysis(printer_manager: PrinterManager, printer_id: int
         else:
             context = None
     if context is not None:
-        _retire(context)
+        _release_context(printer_manager, printer_id, context, reason="completion_released")
 
 
 def discard_printer_print_file_analysis(printer_manager: PrinterManager, printer_id: int) -> None:
     """Release all transient analysis when the printer itself is deleted."""
     context = _contexts(printer_manager).pop(printer_id, None)
     if context is not None:
-        _retire(context)
+        _release_context(printer_manager, printer_id, context, reason="printer_deleted")
     finishing = _finishing_contexts(printer_manager)
     for key in [key for key in finishing if key[0] == printer_id]:
-        _retire(finishing.pop(key))
+        _release_context(printer_manager, printer_id, finishing.pop(key), reason="printer_deleted")
 
 
 def shutdown_print_file_analysis_workers() -> None:

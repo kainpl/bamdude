@@ -113,12 +113,10 @@ async def _run_log_health() -> Any:
 async def collect_diagnostic_snapshot(db: AsyncSession) -> dict[str, Any]:
     """Return the three-section diagnostic snapshot.
 
-    Always returns a dict with keys ``connection_diagnostics`` (list, one entry
-    per active printer), ``vp_diagnostics`` (list, one entry per enabled VP —
-    empty if none), and ``log_health`` (the ``scan_logs`` result or an error
-    marker). Each list entry carries either ``result`` (success) or ``error``
-    (timeout / exception) so the maintainer can tell at a glance whether a
-    given probe ran.
+    Always returns connection/VP/log-health probes plus bounded runtime
+    counters for filament projection and its shared 3MF analysis. Each probe
+    entry carries either ``result`` (success) or ``error`` (timeout /
+    exception) so the maintainer can tell at a glance whether it ran.
     """
     from backend.app.models.printer import Printer
     from backend.app.models.virtual_printer import VirtualPrinter
@@ -151,6 +149,19 @@ async def collect_diagnostic_snapshot(db: AsyncSession) -> dict[str, Any]:
         "vp_diagnostics": _coerce_list(vp_results),
         "log_health": log_health if not isinstance(log_health, BaseException) else {"error": str(log_health)},
     }
+    try:
+        from backend.app.services.print_file_analysis import get_print_file_analysis_diagnostics
+        from backend.app.services.printer_manager import printer_manager
+        from backend.app.services.usage_projection import get_usage_projection_diagnostics
+
+        snapshot["usage_projection"] = get_usage_projection_diagnostics()
+        snapshot["print_file_analysis"] = get_print_file_analysis_diagnostics(printer_manager)
+    except Exception as e:
+        # A support bundle must remain usable if a future telemetry refactor
+        # breaks; unlike the live parser, this is read-only bookkeeping.
+        logger.warning("Print-analysis diagnostic snapshot failed: %s", e, exc_info=True)
+        snapshot["usage_projection"] = {"error": str(e)}
+        snapshot["print_file_analysis"] = {"error": str(e)}
 
     # Sanitize before returning. The diagnostic schemas embed printer/host IPs
     # (`PrinterDiagnosticResult.ip_address`, network-mode check params, VP
