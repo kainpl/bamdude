@@ -11,7 +11,7 @@ arrives here with a row already — the scheduler's, or the claim a direct print
 took for itself — so "no printing item on this queue" is what external means.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -376,6 +376,23 @@ async def test_terminal_acceptance_is_durable_and_blocks_restart_fallback(
         await db_session.refresh(archive)
         assert archive.extra_data[main._TERMINAL_ACCEPTANCE_KEY]["queue_item_id"] == row.id
         assert await main._completion_conflicts_with_active_queue(printer.id, {"subtask_name": "Repeat me"}) is True
+
+        # Re-arming the same row represents a new physical attempt.  Its new
+        # claim timestamp must replace, rather than be blocked by, A's marker.
+        discard_print_run(main.printer_manager, printer.id, archive.id)
+        row.started_at = (row.started_at or datetime.now(timezone.utc)) + timedelta(seconds=1)
+        archive.status = "printing"
+        await db_session.commit()
+        retry = bind_print_run(
+            main.printer_manager,
+            printer_id=printer.id,
+            archive_id=archive.id,
+            queue_item_id=row.id,
+            claim_started_at=row.started_at,
+        )
+        assert await main._accept_bound_terminal_run(printer.id, retry) == row.id
+        await db_session.refresh(archive)
+        assert archive.extra_data[main._TERMINAL_ACCEPTANCE_KEY]["queue_started_at"] == row.started_at.isoformat()
     finally:
         discard_print_run(main.printer_manager, printer.id, archive.id)
 
