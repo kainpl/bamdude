@@ -3,6 +3,7 @@
 import asyncio
 import time
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,12 @@ class _Manager:
     # Production PrinterManager enables the child process.  The narrow runner
     # seam keeps these deterministic lifecycle tests in-process.
     _uses_print_file_analysis_process = False
+
+    def __init__(self):
+        self.state = SimpleNamespace(print_file_analysis_context=None)
+
+    def get_status(self, printer_id):
+        return self.state
 
 
 def _runner_factory(calls, delay=0.0):
@@ -75,7 +82,7 @@ async def test_new_archive_replaces_old_context_and_discard_is_archive_scoped(tm
     discard_print_file_analysis(manager, 7, 42)
 
     assert first is not second
-    assert manager._print_file_analysis_contexts[7].archive_id == 43
+    assert manager.state.print_file_analysis_context.archive_id == 43
     assert len(calls) == 2
 
 

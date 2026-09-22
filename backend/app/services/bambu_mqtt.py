@@ -1171,6 +1171,12 @@ class PrinterState:
     raw_data: dict = field(default_factory=dict)
     gcode_file: str | None = None
     subtask_id: str | None = None
+    # Server-only immutable analysis for the print currently represented by
+    # this state.  It is deliberately opaque to MQTT/API serialization: the
+    # 3MF parser owns its lifecycle and validates archive/source identity
+    # before reuse.  Keeping it here makes every browser and accounting path
+    # share the active print's one table, rather than each owning a cache.
+    print_file_analysis_context: object | None = field(default=None, repr=False)
     # Scheme+path of the ``project_file`` dispatch that started the print now
     # running: ``ftp://<name>`` is the card, ``brtc://emmc/<name>`` is internal
     # storage. Cleared when the print ends — see ``_handle_project_file_command``.
@@ -2164,6 +2170,11 @@ class BambuMQTTClient:
         self._finish_photo_captured = prior._finish_photo_captured
         self._last_valid_progress = prior._last_valid_progress
         self._last_valid_layer_num = prior._last_valid_layer_num
+        # The replacement client represents the same physical print until an
+        # incoming status says otherwise.  Keep its server-only analysis with
+        # that print; get_print_file_analysis verifies the archive and bytes
+        # before it can ever serve a later job.
+        self.state.print_file_analysis_context = prior.state.print_file_analysis_context
         # Re-arm the connect-edge reconcile sweep on every client recreation
         # (#1542 follow-up): a print that finished during a disconnect window —
         # or a firmware ghost-replay that reran the file under a new subtask —
