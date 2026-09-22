@@ -58,6 +58,22 @@ class PrintRunBinding:
         return not any(actual and expected and actual != expected for expected in expected_values)
 
 
+@dataclass(frozen=True, slots=True)
+class PendingTerminal:
+    """One terminal envelope that arrived during a matching start callback."""
+
+    sequence: int
+    data: dict
+
+
+@dataclass(frozen=True, slots=True)
+class PrintStartResolution:
+    """Identity evidence available while archive persistence is still running."""
+
+    sequence: int
+    subtask_id: str
+
+
 def _normalise_subtask_id(value: object) -> str | None:
     text = str(value or "").strip()
     return text or None if text != "0" else None
@@ -79,6 +95,92 @@ def _finishing(manager: PrinterManager) -> dict[tuple[int, int], PrintRunBinding
         bindings = {}
         manager._print_run_finishing_bindings = bindings
     return bindings
+
+
+def _start_resolutions(manager: PrinterManager) -> dict[int, PrintStartResolution]:
+    resolutions = getattr(manager, "_print_start_resolutions", None)
+    if resolutions is None:
+        resolutions = {}
+        manager._print_start_resolutions = resolutions
+    return resolutions
+
+
+def _pending_terminals(manager: PrinterManager) -> dict[int, dict[int, PendingTerminal]]:
+    pending = getattr(manager, "_pending_print_terminals", None)
+    if pending is None:
+        pending = {}
+        manager._pending_print_terminals = pending
+    return pending
+
+
+def begin_print_start_resolution(manager: PrinterManager, printer_id: int, data: dict) -> int | None:
+    """Mark a start that can safely buffer only its own ID-bearing terminal."""
+
+    subtask_id = _normalise_subtask_id(data.get("subtask_id"))
+    if subtask_id is None:
+        return None
+    sequence = getattr(manager, "_print_start_resolution_sequence", 0) + 1
+    manager._print_start_resolution_sequence = sequence
+    _start_resolutions(manager)[printer_id] = PrintStartResolution(sequence=sequence, subtask_id=subtask_id)
+    return sequence
+
+
+def end_print_start_resolution(manager: PrinterManager, printer_id: int, sequence: int | None) -> None:
+    """Remove only this start; a newer overlapping callback survives."""
+
+    resolution = _start_resolutions(manager).get(printer_id)
+    if resolution is not None and resolution.sequence == sequence:
+        _start_resolutions(manager).pop(printer_id, None)
+
+
+def defer_matching_terminal_during_start(
+    manager: PrinterManager, printer_id: int, data: dict
+) -> PendingTerminal | None:
+    """Save one terminal only when both callbacks name the same firmware run.
+
+    Name-only terminals keep the legacy path: a printable name is not strong
+    enough evidence to attach an old A terminal to a new B start.
+    """
+
+    resolution = _start_resolutions(manager).get(printer_id)
+    terminal_id = _normalise_subtask_id(data.get("subtask_id"))
+    if resolution is None or terminal_id != resolution.subtask_id:
+        return None
+    pending_by_sequence = _pending_terminals(manager).setdefault(printer_id, {})
+    current = pending_by_sequence.get(resolution.sequence)
+    if current is not None:
+        return current
+    pending = PendingTerminal(sequence=resolution.sequence, data=dict(data))
+    pending_by_sequence[resolution.sequence] = pending
+    return pending
+
+
+def take_pending_terminal(
+    manager: PrinterManager,
+    printer_id: int,
+    sequence: int | None = None,
+    subtask_id: object | None = None,
+) -> PendingTerminal | None:
+    """Consume a buffered terminal only for its original start identity."""
+
+    pending_by_sequence = _pending_terminals(manager).get(printer_id)
+    if not pending_by_sequence or (sequence is None and subtask_id is None):
+        return None
+    actual_id = _normalise_subtask_id(subtask_id)
+    candidates = (
+        ((sequence, pending_by_sequence.get(sequence)),) if sequence is not None else tuple(pending_by_sequence.items())
+    )
+    for candidate_sequence, pending in candidates:
+        if pending is None:
+            continue
+        expected_id = _normalise_subtask_id(pending.data.get("subtask_id"))
+        if subtask_id is not None and actual_id != expected_id:
+            continue
+        pending_by_sequence.pop(candidate_sequence)
+        if not pending_by_sequence:
+            _pending_terminals(manager).pop(printer_id, None)
+        return pending
+    return None
 
 
 def bind_print_run(

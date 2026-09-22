@@ -3326,19 +3326,36 @@ def _bind_print_file_analysis_context(printer_id: int, archive) -> None:
     printer card or final accounting needs it.
     """
     from backend.app.services.print_file_analysis import bind_print_file_analysis
-    from backend.app.services.print_run_binding import bind_print_run
+    from backend.app.services.print_run_binding import bind_print_run, take_pending_terminal
 
     # This is the one lifecycle choke point shared by own, external, adopted
     # and recovered starts.  The archive is already authoritative here; retain
     # that direct address alongside the analysis child context instead of
     # asking a later terminal event to rediscover it from a filename.
-    bind_print_run(
+    bound = bind_print_run(
         printer_manager,
         printer_id=printer_id,
         archive_id=archive.id,
         observed_subtask_id=getattr(archive, "subtask_id", None),
         client_generation=printer_manager.current_client_generation(printer_id),
     )
+
+    pending = take_pending_terminal(
+        printer_manager,
+        printer_id,
+        subtask_id=getattr(archive, "subtask_id", None),
+    )
+    if pending is not None:
+        logging.getLogger(__name__).info(
+            "Replaying terminal buffered during start for printer %s archive %s sequence %s",
+            printer_id,
+            bound.archive_id,
+            pending.sequence,
+        )
+        spawn_background_task(
+            on_print_complete(printer_id, pending.data),
+            name=f"replay-pending-terminal-{printer_id}-{bound.archive_id}",
+        )
 
     relative_path = getattr(archive, "file_path", None)
     source = app_settings.base_dir / relative_path if relative_path else None
@@ -3349,6 +3366,26 @@ def _bind_print_file_analysis_context(printer_id: int, archive) -> None:
         source,
         getattr(archive, "plate_index", None),
     )
+
+
+_PENDING_TERMINAL_TIMEOUT_SECONDS = 45
+
+
+async def _replay_expired_pending_terminal(printer_id: int, sequence: int) -> None:
+    """Bounded escape from a start that never reaches an archive binding."""
+
+    await asyncio.sleep(_PENDING_TERMINAL_TIMEOUT_SECONDS)
+    from backend.app.services.print_run_binding import take_pending_terminal
+
+    pending = take_pending_terminal(printer_manager, printer_id, sequence)
+    if pending is None:
+        return
+    logging.getLogger(__name__).warning(
+        "Pending terminal for printer %s start sequence %s expired before archive binding; using legacy resolution",
+        printer_id,
+        sequence,
+    )
+    await on_print_complete(printer_id, {**pending.data, "_bamdude_pending_terminal_timeout": True})
 
 
 def _notify_print_file_analysis_source_ready(printer_id: int, archive) -> None:
@@ -3657,6 +3694,18 @@ async def _find_live_hash_twin(db, printer_id: int, exclude_id: int, content_has
 
 
 async def on_print_start(printer_id: int, data: dict):
+    """Own the short start-resolution window around archive persistence."""
+
+    from backend.app.services.print_run_binding import begin_print_start_resolution, end_print_start_resolution
+
+    sequence = begin_print_start_resolution(printer_manager, printer_id, data)
+    try:
+        await _on_print_start_impl(printer_id, data)
+    finally:
+        end_print_start_resolution(printer_manager, printer_id, sequence)
+
+
+async def _on_print_start_impl(printer_id: int, data: dict):
     """Handle print start - archive the 3MF file immediately."""
     logger = logging.getLogger(__name__)
 
@@ -6304,7 +6353,11 @@ async def _on_print_complete_impl(
     # captured at the common authoritative archive lifecycle point, so an
     # ID-only terminal event can finish its own run.  A positive contradictory
     # device ID is still foreign even when an old binding happens to exist.
-    from backend.app.services.print_run_binding import current_print_run, finishing_print_runs
+    from backend.app.services.print_run_binding import (
+        current_print_run,
+        defer_matching_terminal_during_start,
+        finishing_print_runs,
+    )
 
     bound_run = current_print_run(printer_manager, printer_id)
     event_client_generation = data.get("_bamdude_client_generation")
@@ -6347,6 +6400,19 @@ async def _on_print_complete_impl(
                     printer_id,
                 )
             return
+        if not data.get("_bamdude_pending_terminal_timeout"):
+            pending = defer_matching_terminal_during_start(printer_manager, printer_id, data)
+            if pending is not None:
+                logger.info(
+                    "Buffering terminal for printer %s until matching start sequence %s binds an archive",
+                    printer_id,
+                    pending.sequence,
+                )
+                spawn_background_task(
+                    _replay_expired_pending_terminal(printer_id, pending.sequence),
+                    name=f"pending-terminal-timeout-{printer_id}-{pending.sequence}",
+                )
+                return
     # Legacy/adopted events that have not acquired a binding retain the
     # conservative old guard and its name-based recovery behavior.
     if bound_run is None and await _completion_conflicts_with_active_queue(printer_id, data):
