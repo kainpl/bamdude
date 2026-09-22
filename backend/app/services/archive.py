@@ -2695,6 +2695,7 @@ class ArchiveService:
         """
         created_archive_dir: Path | None = None
         published_file_path: str | None = None
+        file_reference_scope = None
         committed = False
         try:
             from backend.app.services.archive_write_scope import load_active_archive_for_write
@@ -2780,6 +2781,10 @@ class ArchiveService:
             existing_archive = existing_with_file.scalar_one_or_none()
 
             if existing_archive and existing_archive.file_path:
+                from backend.app.services.archive_write_scope import archive_file_reference_scope
+
+                file_reference_scope = archive_file_reference_scope(self.db, existing_archive.file_path)
+                await file_reference_scope.__aenter__()
                 # Reuse existing on-disk file. ``delete_archive`` ref-counts
                 # shared paths so the file stays as long as any row refs it.
                 dest_file = settings.base_dir / existing_archive.file_path
@@ -3093,6 +3098,9 @@ class ArchiveService:
                             durable_reference,
                         )
             return False
+        finally:
+            if file_reference_scope is not None:
+                await file_reference_scope.__aexit__(None, None, None)
 
     async def mark_3mf_unavailable(self, archive_id: int) -> bool:
         """Record a real 3MF recovery failure without overwriting a success.
@@ -3550,9 +3558,12 @@ class ArchiveService:
                 f"file_path is empty or invalid: '{archive.file_path}'"
             )
 
-        # Check if other archives share the same file (deduplication)
-        shared = False
-        if archive.file_path:
+        from backend.app.services.archive_write_scope import archive_file_reference_scope
+
+        async def _delete_with_fresh_file_refcount() -> bool:
+            # This is the same scope an attach enters after it finds a donor.
+            # It closes the gap where delete counted one donor, attach adopted
+            # its path, then delete removed the sole physical directory.
             shared_result = await self.db.execute(
                 select(func.count(PrintArchive.id)).where(
                     PrintArchive.file_path == archive.file_path,
@@ -3560,11 +3571,18 @@ class ArchiveService:
                 )
             )
             shared = (shared_result.scalar() or 0) > 0
+            await self.db.delete(archive)
+            await self.db.commit()
+            return shared
 
-        # Delete database record FIRST - if the commit fails (e.g. database locked
-        # during concurrent bulk deletes), the files stay on disk and nothing is lost.
-        await self.db.delete(archive)
-        await self.db.commit()
+        if archive.file_path:
+            async with archive_file_reference_scope(self.db, archive.file_path):
+                shared = await _delete_with_fresh_file_refcount()
+        else:
+            # No bytes are named, hence no attach donor can share this row.
+            await self.db.delete(archive)
+            await self.db.commit()
+            shared = False
 
         # Only delete files AFTER the DB commit succeeds and no other archives reference them
         if dir_to_delete and not shared:

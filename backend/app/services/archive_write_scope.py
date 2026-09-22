@@ -10,6 +10,7 @@ MQTT and Telegram I/O outside the scope.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections import defaultdict
 from contextlib import asynccontextmanager
 
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.archive import PrintArchive
 
 _archive_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+_archive_file_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 @asynccontextmanager
@@ -50,6 +52,23 @@ async def archive_write_scope(db: AsyncSession, archive_id: int):
             # cannot distinguish those portably, so the public writers all
             # enter before reading and tests pin that discipline.
             pass
+        yield
+
+
+@asynccontextmanager
+async def archive_file_reference_scope(db: AsyncSession, file_path: str):
+    """Serialize attach reuse with deletion's final shared-file refcount.
+
+    Callers already own their archive scope, so the lock order is always
+    archive-id then file-path.  SQLite's enclosing writer transaction is the
+    cross-process guard; PostgreSQL needs a stable advisory key for rows that
+    share bytes but not an archive id.
+    """
+
+    async with _archive_file_locks[file_path]:
+        if db.get_bind().dialect.name == "postgresql":
+            lock_key = int.from_bytes(hashlib.sha256(file_path.encode()).digest()[:8], "big", signed=True)
+            await db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
         yield
 
 
