@@ -1816,7 +1816,7 @@ class BackgroundDispatchService:
 
     async def _run_reprint_archive(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print, withdraw_expected_print
-        from backend.app.services.print_run_binding import bind_print_run, discard_print_run
+        from backend.app.services.print_run_binding import bind_prepared_print_run, discard_print_run
 
         job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False, "deferred": False}
 
@@ -2176,13 +2176,7 @@ class BackgroundDispatchService:
                     on_heating=lambda: self._set_active_message(job, "Preheating...", phase="heating"),
                 )
 
-                register_expected_print(
-                    job.printer_id,
-                    remote_filename,
-                    archive.id,
-                    ams_mapping=job.options.get("ams_mapping"),
-                )
-                bind_print_run(
+                prepared_run = bind_prepared_print_run(
                     printer_manager,
                     printer_id=job.printer_id,
                     archive_id=archive.id,
@@ -2190,7 +2184,19 @@ class BackgroundDispatchService:
                     claim_started_at=job.claim_started_at,
                     expected_submission_id=submission_id,
                     client_generation=printer_manager.current_client_generation(job.printer_id),
-                    origin="dispatch",
+                )
+                if prepared_run is None:
+                    # An external/other current run acquired the printer while
+                    # A was uploading or preheating.  The deferred path aborts
+                    # only A's execution archive and CAS-releases only A's
+                    # claim; B's manager binding survives untouched.
+                    job.foreign_claim = True
+                    raise RoutingDeferred("dispatch_claim_changed")
+                register_expected_print(
+                    job.printer_id,
+                    remote_filename,
+                    archive.id,
+                    ams_mapping=job.options.get("ams_mapping"),
                 )
                 # Withdrawn in the ``finally`` unless the print command actually
                 # goes out — everything between here and ``start_print`` can still
@@ -2482,7 +2488,7 @@ class BackgroundDispatchService:
 
     async def _run_print_library_file(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print, withdraw_expected_print
-        from backend.app.services.print_run_binding import bind_print_run, discard_print_run
+        from backend.app.services.print_run_binding import bind_prepared_print_run, discard_print_run
 
         # Seeded in case any early branch raises — keeps the outcome shape
         # consistent for queue-item callers awaiting completion_event.
@@ -2857,13 +2863,7 @@ class BackgroundDispatchService:
                     on_heating=lambda: self._set_active_message(job, "Preheating...", phase="heating"),
                 )
 
-                register_expected_print(
-                    job.printer_id,
-                    remote_filename,
-                    archive.id,
-                    ams_mapping=job.options.get("ams_mapping"),
-                )
-                bind_print_run(
+                prepared_run = bind_prepared_print_run(
                     printer_manager,
                     printer_id=job.printer_id,
                     archive_id=archive.id,
@@ -2871,7 +2871,17 @@ class BackgroundDispatchService:
                     claim_started_at=job.claim_started_at,
                     expected_submission_id=submission_id,
                     client_generation=printer_manager.current_client_generation(job.printer_id),
-                    origin="dispatch",
+                )
+                if prepared_run is None:
+                    # See the reprint branch: B won while A prepared, so A
+                    # defers without rewriting B's run address or queue claim.
+                    job.foreign_claim = True
+                    raise RoutingDeferred("dispatch_claim_changed")
+                register_expected_print(
+                    job.printer_id,
+                    remote_filename,
+                    archive.id,
+                    ams_mapping=job.options.get("ams_mapping"),
                 )
                 # Withdrawn in the ``finally`` unless the print command actually
                 # goes out — everything between here and ``start_print`` can still

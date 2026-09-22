@@ -130,6 +130,39 @@ def bind_print_run(
     return bound
 
 
+def bind_prepared_print_run(
+    manager: PrinterManager,
+    *,
+    printer_id: int,
+    archive_id: int,
+    queue_item_id: int | None = None,
+    claim_started_at: datetime | None = None,
+    expected_submission_id: str | None = None,
+    client_generation: int | None = None,
+) -> PrintRunBinding | None:
+    """Bind an owned pre-publish attempt without displacing an observed run.
+
+    A queued dispatch can spend time uploading/preheating while an operator
+    starts another print from the screen.  The later prepared attempt has no
+    authority to replace that physical run merely because it reached publish
+    next.  ``None`` is the caller's signal to defer its own claim.
+    """
+
+    current = _current(manager).get(printer_id)
+    if current is not None and current.archive_id != archive_id:
+        return None
+    return bind_print_run(
+        manager,
+        printer_id=printer_id,
+        archive_id=archive_id,
+        queue_item_id=queue_item_id,
+        claim_started_at=claim_started_at,
+        expected_submission_id=expected_submission_id,
+        client_generation=client_generation,
+        origin="dispatch",
+    )
+
+
 def current_print_run(manager: PrinterManager, printer_id: int) -> PrintRunBinding | None:
     """Return the current binding only; never infer it from a filename."""
 

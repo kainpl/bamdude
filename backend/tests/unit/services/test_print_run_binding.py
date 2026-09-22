@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from backend.app.services.print_run_binding import (
     begin_print_run_finishing,
+    bind_prepared_print_run,
     bind_print_run,
     current_print_run,
     discard_print_run,
@@ -65,6 +66,22 @@ def test_finishing_a_cannot_discard_new_current_b():
 
     assert finishing_a is not None
     assert current_print_run(manager, 7) == bound_b
+
+
+def test_prepared_a_cannot_replace_observed_b():
+    manager = PrinterManager()
+    observed_b = bind_print_run(manager, printer_id=7, archive_id=42, observed_subtask_id="92")
+
+    prepared_a = bind_prepared_print_run(
+        manager,
+        printer_id=7,
+        archive_id=41,
+        queue_item_id=13,
+        expected_submission_id="91",
+    )
+
+    assert prepared_a is None
+    assert current_print_run(manager, 7) == observed_b
 
 
 def test_repeated_filename_is_not_part_of_run_identity():
