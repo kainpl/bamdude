@@ -5,16 +5,24 @@ directory and a free port; nothing touches the developer's DATA_DIR. Skipped
 when the wheel is not installed.
 """
 
+import asyncio
 import os
 import socket
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.core.config import settings
+from backend.app.core.database import Base, import_all_models
+from backend.app.models.archive import PrintArchive
+from backend.app.models.printer import Printer
 from backend.app.services import embedded_postgres as ep
+from backend.app.services.archive import ArchiveService
 
 pytest.importorskip("embedded_postgres")
 
@@ -92,6 +100,85 @@ async def test_start_refuses_a_data_directory_of_another_major(live_settings, mo
     (pgdata / "PG_VERSION").write_text("9\n", encoding="utf-8")
     with pytest.raises(ep.EmbeddedPostgresError):
         await ep.start()
+
+
+async def test_archive_attach_rollback_and_retry_use_the_native_windows_postgres(live_settings, tmp_path, monkeypatch):
+    """A smoke start is insufficient: exercise the actual archive transaction."""
+    await ep.start()
+    password = quote(ep._password(), safe="")
+    url = f"postgresql+asyncpg://{ep.PG_USER}:{password}@{ep.PG_HOST}:{settings.embedded_pg_port}/{ep.PG_DATABASE}"
+    engine = create_async_engine(url)
+    try:
+        import_all_models()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        monkeypatch.setattr(settings, "base_dir", tmp_path)
+        monkeypatch.setattr(settings, "archive_dir", tmp_path / "archive")
+        src = tmp_path / "recovered.gcode.3mf"
+        with zipfile.ZipFile(src, "w") as zf:
+            zf.writestr("Metadata/slice_info.config", "<config><plate /></config>")
+
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as db:
+            printer = Printer(
+                name="embedded-attach",
+                ip_address="127.0.0.1",
+                access_code="00000000",
+                serial_number="EMBEDATTACH1",
+                model="P1S",
+            )
+            db.add(printer)
+            await db.commit()
+            printer_id = printer.id
+            archive = PrintArchive(
+                printer_id=printer_id,
+                filename="recovered.gcode.3mf",
+                file_path="",
+                file_size=0,
+                print_name="Recovered",
+                status="printing",
+            )
+            db.add(archive)
+            await db.commit()
+            archive_id = archive.id
+            service = ArchiveService(db)
+
+            assert not await service.attach_3mf_to_archive(archive_id, src, "../escape.gcode.3mf")
+            assert await service.mark_3mf_unavailable(archive_id)
+            assert await service.attach_3mf_to_archive(archive_id, src, "recovered.gcode.3mf")
+            recovered = await db.get(PrintArchive, archive_id)
+            assert recovered is not None and recovered.file_path
+            assert (recovered.extra_data or {}).get("no_3mf_available") is None
+
+            concurrent = PrintArchive(
+                printer_id=printer_id,
+                filename="concurrent.gcode.3mf",
+                file_path="",
+                file_size=0,
+                print_name="Concurrent",
+                status="printing",
+            )
+            db.add(concurrent)
+            await db.commit()
+            concurrent_id = concurrent.id
+
+        async def attach_once():
+            async with maker() as concurrent_db:
+                return await ArchiveService(concurrent_db).attach_3mf_to_archive(
+                    concurrent_id, src, "concurrent.gcode.3mf"
+                )
+
+        assert await asyncio.gather(attach_once(), attach_once()) == [True, True]
+        async with maker() as db:
+            concurrent = await db.get(PrintArchive, concurrent_id)
+            assert concurrent is not None and concurrent.file_path
+        # The first call reused the existing chain's file; the second call must
+        # not cut another directory or copy over it after waiting on the guard.
+        assert len(list((tmp_path / "archive").rglob("*.3mf"))) == 1
+    finally:
+        await engine.dispose()
+        await ep.stop()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a console's Ctrl+C is a Windows matter; pg_ctl setsid()s on Unix")

@@ -13,7 +13,8 @@ this path.
 
 import pytest
 
-from backend.app.services.archive import resolve_display_stem
+from backend.app.services.archive import archive_storage_stem, create_archive_directory, resolve_display_stem
+from backend.app.utils.safe_path import safe_join_under
 
 
 @pytest.mark.parametrize(
@@ -48,3 +49,21 @@ from backend.app.services.archive import resolve_display_stem
 )
 def test_resolve_display_stem(filename: str, expected: str) -> None:
     assert resolve_display_stem(filename) == expected
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "Корпус нічної камери -0.2.stl_1 + Корпус нічної камери -0.2.s....gcode.3mf",
+        "Povorotka_GSC_Repiter v1.1.stl_8 + Povorotka_GSC_Repiter v1.1.stl_8 + Povorotka_GSC_Repiter v1.1.....gcode.3mf",
+    ],
+)
+def test_storage_directory_removes_only_windows_normalized_suffixes(tmp_path, filename: str) -> None:
+    """Exact farm names must not turn a legal child into a traversal veto."""
+    display_stem = resolve_display_stem(filename)
+    assert display_stem.endswith(".")
+    archive_dir = create_archive_directory(tmp_path, display_stem, timestamp="20260922_200000")
+
+    assert archive_storage_stem(display_stem) == display_stem.rstrip(" .")
+    assert not archive_dir.name.endswith((".", " "))
+    assert safe_join_under(archive_dir, filename, http=False).is_relative_to(archive_dir)

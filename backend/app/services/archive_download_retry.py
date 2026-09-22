@@ -203,6 +203,8 @@ class ArchiveDownloadRetryService:
         download_result = await try_download_3mf(printer, subtask_name, filename, temp_dir)
         if not download_result:
             logger.info("Archive retry: archive %s — download failed", archive_id)
+            async with async_session() as marker_db:
+                await ArchiveService(marker_db).mark_3mf_unavailable(archive_id)
             return "failed"
 
         temp_path, downloaded_filename = download_result
@@ -241,6 +243,7 @@ class ArchiveDownloadRetryService:
                 return "recovered"
             else:
                 logger.warning("Archive retry: attach failed for archive %s", archive_id)
+                await service.mark_3mf_unavailable(archive_id)
                 return "failed"
         finally:
             try:

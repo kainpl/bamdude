@@ -7,6 +7,7 @@ import re
 import shutil
 import zipfile
 from datetime import date, datetime, time, timedelta, timezone
+from itertools import count
 from pathlib import Path
 
 from defusedxml import ElementTree as ET
@@ -70,6 +71,36 @@ def resolve_display_stem(filename: str) -> str:
         if lower.endswith(suffix):
             return name[: -len(suffix)]
     return Path(name).stem
+
+
+def archive_storage_stem(display_stem: str) -> str:
+    """Return a filesystem-safe directory component without changing its label.
+
+    Windows silently removes trailing spaces and dots from a directory name.
+    If we create such a directory from the display stem, a later ``resolve``
+    can describe parent and child with incompatible path representations and
+    make ``safe_join_under`` reject an otherwise legal filename.  The archive
+    keeps the original filename and display name; this is only its directory
+    component.
+    """
+    return display_stem.rstrip(" .") or "print"
+
+
+def create_archive_directory(parent: Path, display_stem: str, *, timestamp: str | None = None) -> Path:
+    """Create one unique archive directory and return its canonical path.
+
+    ``mkdir`` is the collision gate.  An ``exists`` check alone is racy when
+    two recovery paths land in the same second.
+    """
+    base_name = f"{timestamp or datetime.now().strftime('%Y%m%d_%H%M%S')}_{archive_storage_stem(display_stem)}"
+    for suffix in count(1):
+        name = base_name if suffix == 1 else f"{base_name}_{suffix}"
+        candidate = parent / name  # SEC-PATH-OK: component is timestamp + path-stripped normalized display stem
+        try:
+            candidate.mkdir(parents=True)
+            return candidate.resolve()
+        except FileExistsError:
+            continue
 
 
 def peek_plate_index_in_3mf(file_path: Path) -> int | None:
@@ -2195,20 +2226,7 @@ class ArchiveService:
             # could land in an existing dir and overwrite it. In practice the
             # printer can't run two prints at once, but the suffix loop costs
             # nothing and removes the silent-overwrite footgun.
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            base_archive_name = f"{timestamp}_{display_stem}"
-            archive_name = base_archive_name
-            archive_dir = (
-                settings.archive_dir / printer_folder / archive_name
-            )  # SEC-PATH-OK: printer_folder=str(printer_id); archive_name is timestamp + path-stripped display stem (no separators)
-            suffix = 2
-            while archive_dir.exists():
-                archive_name = f"{base_archive_name}_{suffix}"
-                archive_dir = (
-                    settings.archive_dir / printer_folder / archive_name
-                )  # SEC-PATH-OK: printer_folder=str(printer_id); archive_name is timestamp + path-stripped display stem (no separators)
-                suffix += 1
-            archive_dir.mkdir(parents=True)
+            archive_dir = create_archive_directory(settings.archive_dir / printer_folder, display_stem)
             # The human name when the caller has one (a captured source's own name
             # is its hash — see ``stored_filename``), containment-checked exactly
             # as ``attach_3mf_to_archive`` does it: the string reaches here from a
@@ -2432,6 +2450,23 @@ class ArchiveService:
         source_file: Path,
         original_filename: str | None = None,
     ) -> bool:
+        """Attach under the same archive-specific writer guard as other facts.
+
+        Recovery callers already finish their start publication before this
+        method.  Serialising attach with completion, defects and deletion
+        prevents a stale attach snapshot from overwriting those facts.
+        """
+        from backend.app.services.archive_write_scope import archive_write_scope
+
+        async with archive_write_scope(self.db, archive_id):
+            return await self._attach_3mf_to_archive_locked(archive_id, source_file, original_filename)
+
+    async def _attach_3mf_to_archive_locked(
+        self,
+        archive_id: int,
+        source_file: Path,
+        original_filename: str | None = None,
+    ) -> bool:
         """Fill in an empty/fallback archive with a 3MF that was recovered
         later (e.g. by the background download-retry service).
 
@@ -2449,13 +2484,27 @@ class ArchiveService:
 
         Returns True on success, False on parse/copy failure.
         """
-        result = await self.db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
-        archive = result.scalar_one_or_none()
-        if archive is None:
-            return False
-
+        created_archive_dir: Path | None = None
+        committed = False
         try:
+            from backend.app.services.archive_write_scope import load_active_archive_for_write
+
+            archive = await load_active_archive_for_write(self.db, archive_id)
+            if archive is None:
+                await self.db.rollback()
+                return False
             content_hash = self.compute_file_hash(source_file)
+            if archive.file_path and archive.content_hash == content_hash:
+                # A retry that crossed a successful attach must be a no-op,
+                # but a later correction may deliberately change the archive's
+                # plate while keeping the same 3MF bytes.  ``_attached_plate``
+                # records which plate produced the currently stored metadata;
+                # legacy rows have no proof and therefore take the safe
+                # re-attach path.
+                attached_plate = (archive.extra_data or {}).get("_attached_plate_index")
+                if attached_plate == archive.plate_index:
+                    await self.db.commit()
+                    return True
 
             # Inherit chain root from any existing archive with matching
             # content/source hash — mirrors archive_print's chain_lookup.
@@ -2521,20 +2570,8 @@ class ArchiveService:
                 # No existing copy — create a fresh archive_dir and copy
                 # from the temp source. Suffix loop guards the
                 # theoretical-only same-second collision.
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                base_archive_name = f"{timestamp}_{display_stem}"
-                archive_name = base_archive_name
-                archive_dir = (
-                    settings.archive_dir / printer_folder / archive_name
-                )  # SEC-PATH-OK: printer_folder=str(printer_id); archive_name is timestamp + path-stripped display stem (no separators)
-                suffix = 2
-                while archive_dir.exists():
-                    archive_name = f"{base_archive_name}_{suffix}"
-                    archive_dir = (
-                        settings.archive_dir / printer_folder / archive_name
-                    )  # SEC-PATH-OK: printer_folder=str(printer_id); archive_name is timestamp + path-stripped display stem (no separators)
-                    suffix += 1
-                archive_dir.mkdir(parents=True)
+                archive_dir = create_archive_directory(settings.archive_dir / printer_folder, display_stem)
+                created_archive_dir = archive_dir
                 # Prefer the clean original_filename (e.g. "Swapmod_STL.gcode.3mf")
                 # over the potentially-prefixed temp source_file name (e.g.
                 # "cover_1_Swapmod_STL.gcode.3mf" when it came from the cover
@@ -2550,19 +2587,7 @@ class ArchiveService:
                     and zipfile.is_zipfile(source_file)
                     and not zipfile.is_zipfile(dest_file)
                 ):
-                    logger.error(
-                        "attach_3mf_to_archive: copy corrupted 3MF for archive %s — refusing to attach",
-                        archive_id,
-                    )
-                    try:
-                        dest_file.unlink()
-                    except OSError:
-                        pass
-                    try:
-                        archive_dir.rmdir()
-                    except OSError:
-                        pass
-                    return False
+                    raise ValueError("copied 3MF is not a valid ZIP")
                 thumbnail_reuse = None
 
             # Parse 3MF metadata (reuse the same parser as archive_print).
@@ -2631,6 +2656,12 @@ class ArchiveService:
             # path has to as well or VP-recreate loses the plate.
             if archive.plate_index is not None:
                 merged_extra["plate_id"] = archive.plate_index
+            # This is deliberately distinct from ``plate_id``.  The latter is
+            # the current print's selected plate; this one proves which plate
+            # the attached metadata/file snapshot describes, so a later
+            # correction with the same bytes can re-attach instead of being
+            # mistaken for a duplicate retry.
+            merged_extra["_attached_plate_index"] = archive.plate_index
 
             archive.filename = original_filename or source_file.name
             archive.file_path = str(dest_file.relative_to(settings.base_dir))
@@ -2769,11 +2800,51 @@ class ArchiveService:
                 await part_stock.credit_if_unfiled(self.db, archive)
 
             await self.db.commit()
-            await self.db.refresh(archive)
+            committed = True
+            try:
+                await self.db.refresh(archive)
+            except Exception:
+                # The durable attach has succeeded.  A later refresh may fail
+                # because a concurrent reader or connection went away; it must
+                # not be reported as a failed recovery or remove its file.
+                logger.exception("attach_3mf_to_archive committed but refresh failed for archive %s", archive_id)
             return True
         except Exception as e:
             logger.exception("attach_3mf_to_archive failed for archive %s: %s", archive_id, e)
+            if not committed:
+                await self.db.rollback()
+                if created_archive_dir is not None:
+                    try:
+                        # This directory was created by this invocation only;
+                        # never use a guessed stem or a reused donor path here.
+                        shutil.rmtree(created_archive_dir)
+                    except OSError:
+                        logger.warning(
+                            "attach_3mf_to_archive could not clean its staging directory for archive %s",
+                            archive_id,
+                        )
+            return False
+
+    async def mark_3mf_unavailable(self, archive_id: int) -> bool:
+        """Record a real 3MF recovery failure without overwriting a success.
+
+        An empty ``file_path`` while FTP is still in flight is not a failure.
+        Call this only after a download/attach attempt ended unsuccessfully.
+        """
+        from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+
+        try:
+            async with archive_write_scope(self.db, archive_id):
+                archive = await load_active_archive_for_write(self.db, archive_id)
+                if archive is None or archive.file_path:
+                    await self.db.rollback()
+                    return False
+                archive.extra_data = {**(archive.extra_data or {}), "no_3mf_available": True}
+                await self.db.commit()
+                return True
+        except Exception:
             await self.db.rollback()
+            logger.exception("Could not record 3MF recovery failure for archive %s", archive_id)
             return False
 
     async def get_archive(self, archive_id: int, *, include_trashed: bool = False) -> PrintArchive | None:

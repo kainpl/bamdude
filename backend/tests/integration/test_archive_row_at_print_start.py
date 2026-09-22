@@ -259,6 +259,30 @@ class TestTheRowComesFirst:
         assert (rows[0].extra_data or {}).get("no_3mf_available") is True
         assert (rows[0].extra_data or {}).get("_print_data", {}).get("subtask_name") == "Plate_3"
 
+    async def test_a_failed_attach_rolls_back_without_breaking_start_lifecycle(
+        self, db_session, test_engine, tmp_path, monkeypatch, printer_factory
+    ):
+        """The failure branch must reload before touching an expired archive row."""
+        printer = await _prepare_printer(printer_factory)
+        rec = _Recorder()
+        src = tmp_path / "Plate_3.gcode.3mf"
+        _write_3mf(src)
+
+        rows = await _drive_print_start(
+            db_session=db_session,
+            test_engine=test_engine,
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            printer=printer,
+            # This reaches the real safe_join_under failure and its rollback.
+            download_result=(src, "../escape.gcode.3mf"),
+            recorder=rec,
+        )
+
+        assert len(rows) == 1
+        assert rows[0].file_path == ""
+        assert (rows[0].extra_data or {}).get("no_3mf_available") is True
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration

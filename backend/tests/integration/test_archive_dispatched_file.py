@@ -202,3 +202,36 @@ async def test_archive_print_dispatched_file_dedup_shares_on_disk_copy(
         "  a2 sits in its own directory (so the lookup returned nothing): "
         f"{Path(a2.file_path or '').parent != Path(a1.file_path or '').parent}"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "Корпус нічної камери -0.2.stl_1 + Корпус нічної камери -0.2.s....gcode.3mf",
+        "Povorotka_GSC_Repiter v1.1.stl_8 + Povorotka_GSC_Repiter v1.1.stl_8 + Povorotka_GSC_Repiter v1.1.....gcode.3mf",
+    ],
+)
+async def test_archive_print_accepts_farm_filenames_with_trailing_dot_stems(
+    db_session, tmp_path, monkeypatch, printer_factory, filename
+):
+    """Archive creation shares attach's storage-name fix, not merely its helper."""
+    from backend.app.core.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+    monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive")
+    src = tmp_path / "source.3mf"
+    _write_zip(src, b"<config name='farm-name' />")
+    printer = await printer_factory()
+
+    archive = await ArchiveService(db_session).archive_print(
+        printer_id=printer.id,
+        source_file=src,
+        original_filename=filename,
+        print_data={"status": "printing"},
+    )
+
+    assert archive is not None
+    assert archive.filename == filename
+    assert (tmp_path / archive.file_path).is_file()

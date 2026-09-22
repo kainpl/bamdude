@@ -2,6 +2,16 @@
 
 ### Fixed
 
+- **A failed late 3MF attachment now remains safely retryable.** Archive storage
+  names no longer inherit a terminal dot or space that Windows silently changes,
+  so a valid recovered file is not mistaken for a path escape.  A failed copy or
+  parse rolls back its database write, removes only the directory it just made,
+  and records the unavailable source without touching a file another recovery
+  has already attached.  The normal print-start, adopted-print and background
+  retry paths now use the same recovery result; a rollback also reloads the
+  archive by its saved id before reading it, avoiding an async ORM
+  `MissingGreenlet` error that could mask the original attach failure.
+
 - **One printer now admits one active start, across every queue path.** Print now and Reprint take a final shared queue claim before their file is sent, so they cannot slip past a queue item that is already preparing or printing; they also stop at a paused or error queue instead of silently bypassing an operator's recovery decision. Auto-Queue sees both halves of a live claim — even an older damaged header/item pair — and retries another eligible printer when it loses a candidate in the race. A printer start observed from Bambu Studio or its screen no longer steals the newest old claim: a distinct archive stays distinct, both records remain visible, and the queue pauses for review.
 
 - **Old stuck queue rows are repaired without printing them again.** On the first fresh printer status after a restart or reconnect, BamDude can reconcile a still-printing queue row with its linked, already-finished archive, preserving success, failure or cancellation. It skips active/offline printers and ambiguous links, never replays accounting, notifications or macros, and pauses repaired queues for an operator to inspect the printer and plate. Startup recovery no longer returns an archive-linked row to pending just because no archive is still printing.

@@ -435,6 +435,24 @@ class TestArchiveWriteScope:
         assert result == {"blocked_before_commit": True, "second_entered": True}
 
 
+class TestArchiveAttachRecovery:
+    """Attach failure/retry is a real PostgreSQL transaction, not mocked SQL."""
+
+    def test_rollback_marker_and_parallel_retry_keep_one_file(self, tmp_path_factory):
+        url = _pg_url()
+        _wipe(url)
+        result = _run("archive_attach_recovery", tmp_path_factory.mktemp("pg_archive_attach_recovery"), url)
+        assert result == {
+            "failed": True,
+            "marked": True,
+            "recovered": True,
+            "marker_cleared": True,
+            "concurrent": [True, True],
+            "concurrent_has_file": True,
+            "archive_files": 1,
+        }
+
+
 class TestPrinterLaneAdmission:
     """The shared queue guard must work across real PostgreSQL sessions."""
 

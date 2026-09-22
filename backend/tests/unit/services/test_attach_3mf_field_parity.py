@@ -113,3 +113,69 @@ class TestFieldParity:
         archive = await _attach(db_session, tmp_path, monkeypatch, printer, plate_index=5)
 
         assert (archive.extra_data or {}).get("plate_id") == 5
+
+    async def test_plate_correction_with_the_same_file_is_not_a_duplicate_retry(
+        self, db_session, tmp_path, monkeypatch, printer_factory
+    ):
+        """A later live plate correction must re-read the same 3MF's plate."""
+        printer = await printer_factory()
+        archive = await _attach(db_session, tmp_path, monkeypatch, printer, plate_index=2)
+        archive_id = archive.id
+        archive.plate_index = 5
+        await db_session.commit()
+
+        source = tmp_path / "src.gcode.3mf"
+        assert await ArchiveService(db_session).attach_3mf_to_archive(archive_id, source, "Plate.gcode.3mf")
+        corrected = await db_session.get(PrintArchive, archive_id)
+
+        assert corrected is not None
+        assert corrected.print_time_seconds == 7200
+        assert corrected.filament_used_grams == pytest.approx(99.0)
+        assert (corrected.extra_data or {}).get("_attached_plate_index") == 5
+
+    async def test_failed_path_attach_can_be_marked_and_retried(
+        self, db_session, tmp_path, monkeypatch, printer_factory
+    ):
+        """A rollback expires ORM rows; caller recovery uses scalar ID + reload."""
+        from backend.app.core.config import settings as app_settings
+
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive")
+        (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
+        printer = await printer_factory()
+        archive = PrintArchive(
+            printer_id=printer.id,
+            filename="recovered.gcode.3mf",
+            file_path="",
+            file_size=0,
+            print_name="Recovered",
+            status="printing",
+        )
+        db_session.add(archive)
+        await db_session.commit()
+        archive_id = archive.id
+        src = _multi_plate_3mf(tmp_path / "recovered.gcode.3mf")
+        service = ArchiveService(db_session)
+
+        assert not await service.attach_3mf_to_archive(archive_id, src, "../escape.gcode.3mf")
+        # ``get`` is awaited before any ORM field is accessed: this is the
+        # same boundary on_print_start crosses after a rollback.
+        assert await service.mark_3mf_unavailable(archive_id)
+        recovered = await db_session.get(PrintArchive, archive_id)
+        assert recovered is not None
+        assert recovered.file_path == ""
+        assert (recovered.extra_data or {}).get("no_3mf_available") is True
+
+        assert await service.attach_3mf_to_archive(archive_id, src, "recovered.gcode.3mf")
+        recovered = await db_session.get(PrintArchive, archive_id)
+        assert recovered is not None
+        first_file_path = recovered.file_path
+        assert first_file_path
+        assert (recovered.extra_data or {}).get("no_3mf_available") is None
+        assert await service.attach_3mf_to_archive(archive_id, src, "recovered.gcode.3mf")
+        recovered = await db_session.get(PrintArchive, archive_id)
+        assert recovered is not None and recovered.file_path == first_file_path
+        assert not await service.mark_3mf_unavailable(archive_id)
+        recovered = await db_session.get(PrintArchive, archive_id)
+        assert recovered is not None
+        assert (recovered.extra_data or {}).get("no_3mf_available") is None

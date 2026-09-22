@@ -4753,11 +4753,13 @@ async def on_print_start(printer_id: int, data: dict):
                     # made and failed, which is what Archives renders as "3MF
                     # unavailable" and what the four retry triggers key on.
                     logger.warning("Could not find 3MF file for print: %s", filename or subtask_name)
-                    archive.extra_data = {**(archive.extra_data or {}), "no_3mf_available": True}
-                    await db.commit()
+                    archive_id = archive.id
+                    await ArchiveService(db).mark_3mf_unavailable(archive_id)
+                    archive = await db.get(PrintArchive, archive_id)
                 else:
                     service = ArchiveService(db)
-                    attached = await service.attach_3mf_to_archive(archive.id, temp_path, downloaded_filename)
+                    archive_id = archive.id
+                    attached = await service.attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)
                     if attached:
                         logger.info(
                             "Attached 3MF %s to archive %s (%s bytes)",
@@ -4834,10 +4836,13 @@ async def on_print_start(printer_id: int, data: dict):
                         # whatever ``expire_on_commit`` says. Reading
                         # ``archive.extra_data`` without this refresh would be
                         # a lazy load with no greenlet to run it in.
-                        logger.warning("Failed to attach 3MF %s to archive %s", downloaded_filename, archive.id)
-                        await db.refresh(archive)
-                        archive.extra_data = {**(archive.extra_data or {}), "no_3mf_available": True}
-                        await db.commit()
+                        # ``attach_3mf_to_archive`` rolls its session back on
+                        # a pre-commit failure, expiring every ORM attribute.
+                        # Keep the scalar ID, then reload before *any* archive
+                        # access (including logging) to avoid MissingGreenlet.
+                        logger.warning("Failed to attach 3MF %s to archive %s", downloaded_filename, archive_id)
+                        await service.mark_3mf_unavailable(archive_id)
+                        archive = await db.get(PrintArchive, archive_id)
             finally:
                 if temp_path and temp_path.exists():
                     temp_path.unlink()
@@ -5670,7 +5675,10 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                             _active_prints[(printer_id, subtask_name)] = twin.id
                         _bind_print_file_analysis_context(printer_id, twin)
                         return
-                    ok = await ArchiveService(db).attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)
+                    service = ArchiveService(db)
+                    ok = await service.attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)
+                    if not ok:
+                        await service.mark_3mf_unavailable(archive_id)
                     refreshed = await db.get(PrintArchive, archive_id)
                     if ok:
                         logger.info("[ADOPT] Attached %s to adopted archive %s", downloaded_filename, archive_id)

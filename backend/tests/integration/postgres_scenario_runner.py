@@ -14,6 +14,7 @@ Modes:
     cyrillic_search    upper-case Cyrillic finds its lower-case row, naturally
                        and through the forced collated SQL
     archive_write_lock PostgreSQL holds the per-archive write guard until commit
+    archive_attach_recovery failed attach rolls back safely; retry and two sessions keep one file
     printer_lane_admission PostgreSQL serializes two direct-start admissions for
                            one printer and rejects the loser after the commit
     analysis_wait_release a cold usage projection releases its DB transaction
@@ -25,6 +26,8 @@ Usage: python -m backend.tests.integration.postgres_scenario_runner <mode>
 import asyncio
 import json
 import sys
+import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 
 
@@ -584,6 +587,76 @@ async def _analysis_wait_release() -> dict:
     }
 
 
+async def _archive_attach_recovery() -> dict:
+    """Exercise attach rollback, retry and two-session idempotency on real PG."""
+    from backend.app.core.config import settings
+    from backend.app.core.database import async_session
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.printer import Printer
+    from backend.app.services.archive import ArchiveService
+
+    source = Path(settings.data_dir) / "attach-recovery.gcode.3mf"
+    with zipfile.ZipFile(source, "w") as zf:
+        zf.writestr("Metadata/slice_info.config", "<config><plate /></config>")
+
+    async with async_session() as db:
+        printer = Printer(
+            name="pg-attach-recovery",
+            ip_address="10.0.0.88",
+            access_code="00000000",
+            serial_number="PGATTACH1",
+            model="P1S",
+        )
+        db.add(printer)
+        await db.commit()
+        printer_id = printer.id
+        archive = PrintArchive(
+            printer_id=printer_id,
+            filename="attach-recovery.gcode.3mf",
+            file_path="",
+            file_size=0,
+            print_name="Attach recovery",
+            status="printing",
+        )
+        db.add(archive)
+        await db.commit()
+        archive_id = archive.id
+        service = ArchiveService(db)
+        failed = not await service.attach_3mf_to_archive(archive_id, source, "../escape.gcode.3mf")
+        marked = await service.mark_3mf_unavailable(archive_id)
+        recovered = await service.attach_3mf_to_archive(archive_id, source, "attach-recovery.gcode.3mf")
+
+        concurrent = PrintArchive(
+            printer_id=printer_id,
+            filename="concurrent.gcode.3mf",
+            file_path="",
+            file_size=0,
+            print_name="Concurrent",
+            status="printing",
+        )
+        db.add(concurrent)
+        await db.commit()
+        concurrent_id = concurrent.id
+
+    async def attach_once() -> bool:
+        async with async_session() as db:
+            return await ArchiveService(db).attach_3mf_to_archive(concurrent_id, source, "concurrent.gcode.3mf")
+
+    concurrent_results = await asyncio.gather(attach_once(), attach_once())
+    async with async_session() as db:
+        row = await db.get(PrintArchive, archive_id)
+        concurrent_row = await db.get(PrintArchive, concurrent_id)
+        return {
+            "failed": failed,
+            "marked": marked,
+            "recovered": recovered,
+            "marker_cleared": row is not None and not (row.extra_data or {}).get("no_3mf_available"),
+            "concurrent": concurrent_results,
+            "concurrent_has_file": concurrent_row is not None and bool(concurrent_row.file_path),
+            "archive_files": len(list(settings.archive_dir.rglob("*.3mf"))),
+        }
+
+
 async def _main(mode: str) -> dict:
     # One event loop for the whole run. The engine is a module-level singleton
     # holding connections bound to whichever loop created them, so a second
@@ -602,6 +675,8 @@ async def _main(mode: str) -> dict:
         return await _printer_lane_admission()
     if mode == "analysis_wait_release":
         return await _analysis_wait_release()
+    if mode == "archive_attach_recovery":
+        return await _archive_attach_recovery()
     return await _report()
 
 
