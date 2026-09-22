@@ -123,6 +123,48 @@ class TestFieldParity:
         assert target.file_path != donor.file_path
         assert (tmp_path / target.file_path).is_file()
 
+    async def test_lost_commit_ack_preserves_bytes_that_the_database_committed(
+        self, db_session, tmp_path, monkeypatch, printer_factory
+    ):
+        """An acknowledged-then-raised commit is not permission to unlink."""
+
+        from backend.app.core.config import settings as app_settings
+
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive")
+        (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
+        printer = await printer_factory()
+        archive = PrintArchive(
+            printer_id=printer.id,
+            filename="ambiguous.gcode.3mf",
+            file_path="",
+            file_size=0,
+            print_name="Ambiguous commit",
+            status="printing",
+        )
+        db_session.add(archive)
+        await db_session.commit()
+        archive_id = archive.id
+        source = _multi_plate_3mf(tmp_path / "ambiguous.gcode.3mf")
+        real_commit = db_session.commit
+        commit_count = 0
+
+        async def commit_then_lose_ack():
+            nonlocal commit_count
+            commit_count += 1
+            await real_commit()
+            if commit_count == 2:
+                raise ConnectionError("commit acknowledgement lost")
+
+        monkeypatch.setattr(db_session, "commit", commit_then_lose_ack)
+
+        assert not await ArchiveService(db_session).attach_3mf_to_archive(archive_id, source, archive.filename)
+        db_session.expire_all()
+        durable = await db_session.get(PrintArchive, archive_id)
+
+        assert durable is not None and durable.file_path
+        assert (tmp_path / durable.file_path).is_file()
+
     async def test_cancelled_prepare_eventually_removes_its_private_staging_tree(
         self, db_session, tmp_path, monkeypatch, printer_factory
     ):

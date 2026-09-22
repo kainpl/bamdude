@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from defusedxml import ElementTree as ET
 from sqlalchemy import and_, func, or_, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.core.config import settings
 from backend.app.core.tasks import spawn_background_task
@@ -121,6 +121,38 @@ def _prepare_archive_attach_file(
 def _discard_prepared_archive_attach(prepared: _PreparedArchiveAttach) -> None:
     """Remove only this invocation's staging directory."""
     shutil.rmtree(prepared.stage_dir, ignore_errors=True)
+
+
+async def _attach_output_is_durably_referenced(
+    db: AsyncSession,
+    archive_id: int,
+    file_path: str | None,
+) -> bool | None:
+    """Check a possibly ambiguous attach commit through a fresh connection.
+
+    ``None`` means the outcome could not be checked.  Cleanup must preserve
+    the output in that case: deleting a file after a commit that reached the
+    database but whose acknowledgement was lost is worse than one diagnosable
+    orphan directory.
+    """
+
+    if not file_path or db.bind is None:
+        return None
+    try:
+        verifier = async_sessionmaker(db.bind, expire_on_commit=False)
+        async with verifier() as verify_db:
+            return (
+                await verify_db.scalar(
+                    select(PrintArchive.id).where(
+                        PrintArchive.id == archive_id,
+                        PrintArchive.file_path == file_path,
+                        PrintArchive.deleted_at.is_(None),
+                    )
+                )
+            ) is not None
+    except Exception:  # noqa: BLE001 - uncertainty intentionally preserves bytes
+        logger.exception("attach_3mf_to_archive could not verify ambiguous commit for archive %s", archive_id)
+        return None
 
 
 def _copy_and_fsync(src: Path, dst: Path, chunk_size: int = 1024 * 1024) -> None:
@@ -2662,6 +2694,7 @@ class ArchiveService:
         Returns True on success, False on parse/copy failure.
         """
         created_archive_dir: Path | None = None
+        published_file_path: str | None = None
         committed = False
         try:
             from backend.app.services.archive_write_scope import load_active_archive_for_write
@@ -2881,6 +2914,7 @@ class ArchiveService:
 
             archive.filename = original_filename or source_file.name
             archive.file_path = str(dest_file.relative_to(settings.base_dir))
+            published_file_path = archive.file_path
             archive.file_size = dest_file.stat().st_size
             archive.content_hash = content_hash
             archive.thumbnail_path = thumbnail_path
@@ -3037,14 +3071,26 @@ class ArchiveService:
             if not committed:
                 await self.db.rollback()
                 if created_archive_dir is not None:
-                    try:
-                        # This directory was created by this invocation only;
-                        # never use a guessed stem or a reused donor path here.
-                        shutil.rmtree(created_archive_dir)
-                    except OSError:
-                        logger.warning(
-                            "attach_3mf_to_archive could not clean its staging directory for archive %s",
+                    durable_reference = await _attach_output_is_durably_referenced(
+                        self.db,
+                        archive_id,
+                        published_file_path,
+                    )
+                    if durable_reference is False:
+                        try:
+                            # This directory was created by this invocation only;
+                            # never use a guessed stem or a reused donor path here.
+                            shutil.rmtree(created_archive_dir)
+                        except OSError:
+                            logger.warning(
+                                "attach_3mf_to_archive could not clean its staging directory for archive %s",
+                                archive_id,
+                            )
+                    else:
+                        logger.error(
+                            "attach_3mf_to_archive preserved output for archive %s after ambiguous commit (referenced=%s)",
                             archive_id,
+                            durable_reference,
                         )
             return False
 
