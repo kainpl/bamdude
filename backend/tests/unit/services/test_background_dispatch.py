@@ -10,7 +10,17 @@ from backend.app.services.background_dispatch import (
     BackgroundDispatchService,
     DispatchEnqueueRejected,
     PrintDispatchJob,
+    _ensure_submission_id,
 )
+
+
+def test_submission_id_is_created_once_and_kept_for_the_attempt():
+    job = SimpleNamespace(submission_id=None)
+
+    first = _ensure_submission_id(job)
+
+    assert first == job.submission_id == _ensure_submission_id(job)
+    assert 0 < int(first) < 2_147_483_647
 
 
 @pytest.fixture

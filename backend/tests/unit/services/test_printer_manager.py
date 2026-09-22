@@ -442,6 +442,13 @@ class TestPrinterManager:
         result = manager.start_print(999, "test.gcode")
         assert result is False
 
+    def test_start_print_forwards_explicit_submission_id(self, manager, mock_client):
+        mock_client.start_print.return_value = True
+        manager._clients[1] = mock_client
+
+        assert manager.start_print(1, "test.gcode", submission_id="914") is True
+        assert mock_client.start_print.call_args.kwargs["submission_id"] == "914"
+
     def test_start_print_logs_print_command_with_caller(self, manager, mock_client, caplog):
         """Verify start_print logs PRINT COMMAND with caller info (#374)."""
         mock_client.start_print.return_value = True

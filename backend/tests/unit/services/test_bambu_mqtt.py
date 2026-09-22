@@ -3753,6 +3753,12 @@ class TestStartPrintAmsMapping:
             {"ams_id": 2, "slot_id": 3},
         ]
 
+    def test_explicit_submission_id_is_preserved_on_the_wire(self, mqtt_client):
+        mqtt_client.start_print("test.3mf", submission_id="914")
+
+        cmd = self._get_published_command(mqtt_client)
+        assert (cmd["project_id"], cmd["subtask_id"], cmd["task_id"]) == ("914", "914", "914")
+
     def test_unmapped_slots(self, mqtt_client):
         """Unmapped slots (-1) produce -1 in flat and 0xFF/0xFF in mapping2."""
         mqtt_client.start_print("test.3mf", ams_mapping=[-1, -1])

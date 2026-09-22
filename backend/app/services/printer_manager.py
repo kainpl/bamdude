@@ -1366,6 +1366,7 @@ class PrinterManager:
         storage: str = "external",
         file_md5: str = "",
         timelapse_storage: str | None = None,
+        submission_id: str | None = None,
         routing_guard=None,
     ) -> bool:
         """Start a print on a connected printer.
@@ -1406,6 +1407,7 @@ class PrinterManager:
                 storage=storage,
                 file_md5=file_md5,
                 timelapse_storage=timelapse_storage,
+                **({"submission_id": submission_id} if submission_id is not None else {}),
                 **({"routing_guard": routing_guard} if routing_guard is not None else {}),
             )
         return False

@@ -34,6 +34,10 @@ class PrintRunBinding:
     archive_id: int
     queue_item_id: int | None = None
     claim_started_at: datetime | None = None
+    # The value BamDude put on the outbound ``project_file`` command.  It is
+    # an intent, not an observation: ``observed_subtask_id`` remains the value
+    # the printer later echoed back.
+    expected_submission_id: str | None = None
     observed_subtask_id: str | None = None
     client_generation: int | None = None
     origin: str = "observed"
@@ -47,8 +51,11 @@ class PrintRunBinding:
         """
 
         actual = _normalise_subtask_id(value)
-        expected = _normalise_subtask_id(self.observed_subtask_id)
-        return not (actual and expected and actual != expected)
+        expected_values = (
+            _normalise_subtask_id(self.expected_submission_id),
+            _normalise_subtask_id(self.observed_subtask_id),
+        )
+        return not any(actual and expected and actual != expected for expected in expected_values)
 
 
 def _normalise_subtask_id(value: object) -> str | None:
@@ -81,6 +88,7 @@ def bind_print_run(
     archive_id: int,
     queue_item_id: int | None = None,
     claim_started_at: datetime | None = None,
+    expected_submission_id: str | None = None,
     observed_subtask_id: str | None = None,
     client_generation: int | None = None,
     origin: str = "observed",
@@ -98,6 +106,7 @@ def bind_print_run(
             current,
             queue_item_id=queue_item_id if queue_item_id is not None else current.queue_item_id,
             claim_started_at=claim_started_at if claim_started_at is not None else current.claim_started_at,
+            expected_submission_id=(_normalise_subtask_id(expected_submission_id) or current.expected_submission_id),
             observed_subtask_id=_normalise_subtask_id(observed_subtask_id) or current.observed_subtask_id,
             client_generation=client_generation if client_generation is not None else current.client_generation,
             origin=origin if current.origin == "observed" and origin != "observed" else current.origin,
@@ -111,6 +120,7 @@ def bind_print_run(
         archive_id=archive_id,
         queue_item_id=queue_item_id,
         claim_started_at=claim_started_at,
+        expected_submission_id=_normalise_subtask_id(expected_submission_id),
         observed_subtask_id=_normalise_subtask_id(observed_subtask_id),
         client_generation=client_generation,
         origin=origin,

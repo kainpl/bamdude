@@ -31,6 +31,30 @@ def test_same_archive_enriches_binding_without_new_sequence():
     assert not enriched.matches_device_subtask("74")
 
 
+def test_dispatch_intent_stays_distinct_from_printer_observation():
+    manager = PrinterManager()
+    bound = bind_print_run(
+        manager,
+        printer_id=7,
+        archive_id=41,
+        expected_submission_id="73",
+        origin="dispatch",
+    )
+    observed = bind_print_run(
+        manager,
+        printer_id=7,
+        archive_id=41,
+        observed_subtask_id="73",
+    )
+
+    assert bound.expected_submission_id == "73"
+    assert bound.observed_subtask_id is None
+    assert observed.expected_submission_id == "73"
+    assert observed.observed_subtask_id == "73"
+    assert observed.matches_device_subtask("73")
+    assert not observed.matches_device_subtask("74")
+
+
 def test_finishing_a_cannot_discard_new_current_b():
     manager = PrinterManager()
     bind_print_run(manager, printer_id=7, archive_id=41)

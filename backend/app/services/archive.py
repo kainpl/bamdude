@@ -2175,6 +2175,7 @@ class ArchiveService:
         stored_filename: str | None = None,
         is_calibration: bool = False,
         calibration_session_id: int | None = None,
+        dispatch_intent: dict[str, object] | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -2220,6 +2221,9 @@ class ArchiveService:
                 in its metadata. Used by virtual-printer flows so users who rename
                 a job in BambuStudio's "send to printer" dialog see that name
                 instead of the creator-baked title (#1152, audit B.14).
+            dispatch_intent: BamDude's versioned, pre-publish identity for an
+                owned dispatch.  It is intentionally distinct from the
+                printer-observed ``subtask_id`` column.
         """
         # Verify printer exists if specified
         if printer_id is not None:
@@ -2434,6 +2438,13 @@ class ArchiveService:
         # Merge with print data from MQTT
         if print_data:
             metadata["_print_data"] = print_data
+
+        # The submitted wire identity is durable evidence of what BamDude
+        # intended to start, not an echo from the printer.  Keeping it in a
+        # private versioned namespace means later 3MF attach metadata merges
+        # preserve it without conflating it with ``PrintArchive.subtask_id``.
+        if dispatch_intent:
+            metadata["dispatch_intent"] = dict(dispatch_intent)
 
         # Persist swap-macro intent in the same INSERT as the rest of
         # metadata. ``on_print_complete`` reads this when its in-memory

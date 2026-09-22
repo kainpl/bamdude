@@ -56,6 +56,30 @@ async def test_archive_print_persists_source_hash_and_patches(db_session, printe
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_archive_print_persists_dispatch_intent_separately_from_observed_subtask(
+    db_session, printer_factory, tmp_path
+):
+    printer = await printer_factory()
+    src = _make_tempfile(tmp_path, "dispatch-intent.3mf", b"intent-bytes")
+
+    archive = await ArchiveService(db_session).archive_print(
+        printer_id=printer.id,
+        source_file=src,
+        print_data={"status": "printing"},
+        dispatch_intent={"version": 1, "submission_id": "914", "remote_filename": "dispatch-intent.3mf"},
+    )
+
+    assert archive is not None
+    assert archive.subtask_id is None
+    assert (archive.extra_data or {})["dispatch_intent"] == {
+        "version": 1,
+        "submission_id": "914",
+        "remote_filename": "dispatch-intent.3mf",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_coalesce_dedup_across_different_content_hashes(db_session, printer_factory, tmp_path):
     """Two patched archives with same source dedup via COALESCE even when
     content_hash differs between them (e.g. different patch set or repeat)."""

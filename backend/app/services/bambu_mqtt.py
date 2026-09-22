@@ -7417,6 +7417,7 @@ class BambuMQTTClient:
         storage: str = "external",
         file_md5: str = "",
         timelapse_storage: str | None = None,
+        submission_id: str | None = None,
         routing_guard=None,
     ):
         """Start a print job on the printer.
@@ -7633,7 +7634,16 @@ class BambuMQTTClient:
             # as a continuation of the last FAILED job and never leaves IDLE (#1042).
             # Modulo keeps uniqueness within a ~24-day wrap window; `or 1` guards
             # the (astronomically unlikely) zero case since task_id=0 is rejected.
-            submission_id = str(int(time.time() * 1000) % 2_147_483_647 or 1)
+            if submission_id is None:
+                submission_id = str(int(time.time() * 1000) % 2_147_483_647 or 1)
+            else:
+                try:
+                    submission_id_value = int(submission_id)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("submission_id must be a positive signed-int32 integer") from exc
+                if not 0 < submission_id_value < 2_147_483_647:
+                    raise ValueError("submission_id must be a positive signed-int32 integer")
+                submission_id = str(submission_id_value)
 
             # Tri-state calibration (off/auto/on) → wire values. Accepts the
             # legacy bool from every existing caller (byte-identical: off/on map

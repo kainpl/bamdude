@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import secrets
 import time
 import zipfile
 from collections import deque
@@ -51,6 +52,32 @@ from backend.app.services.source_io import SourceUnavailable, require_source_fil
 from backend.app.utils.filename import derive_remote_filename
 
 logger = logging.getLogger(__name__)
+
+# Firmware accepts positive signed-int32 task identity fields only.  This is
+# deliberately generated at the dispatch boundary, rather than inside MQTT,
+# because the execution archive and the manager-owned run binding must know
+# the exact value before the command is published.
+_MAX_FIRMWARE_SUBMISSION_ID = 2_147_483_646
+
+
+def _ensure_submission_id(job: PrintDispatchJob) -> str:
+    """Return this attempt's stable firmware-safe project/subtask/task ID."""
+
+    if job.submission_id is None:
+        job.submission_id = str(secrets.randbelow(_MAX_FIRMWARE_SUBMISSION_ID) + 1)
+    return job.submission_id
+
+
+def _dispatch_intent(job: PrintDispatchJob, remote_filename: str, submission_id: str) -> dict[str, object]:
+    """Small durable intent kept apart from printer-observed archive fields."""
+
+    return {
+        "version": 1,
+        "submission_id": submission_id,
+        "dispatch_job_id": job.id,
+        "remote_filename": remote_filename,
+    }
+
 
 # Bambu firmware states that mean the project_file has actually been accepted
 # and the printer is now processing / running / paused mid-print. Used by the
@@ -607,6 +634,9 @@ class PrintDispatchJob:
     original_archive_id: int | None = None
     original_library_file_id: int | None = None
     execution_archive_id: int | None = None
+    # Generated once at the execution boundary and threaded unchanged to the
+    # archive intent, run binding and Bambu ``project_file`` payload.
+    submission_id: str | None = None
     routing_intent: str | None = None
     foreign_claim: bool = False
 
@@ -1786,6 +1816,7 @@ class BackgroundDispatchService:
 
     async def _run_reprint_archive(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print, withdraw_expected_print
+        from backend.app.services.print_run_binding import bind_print_run, discard_print_run
 
         job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False, "deferred": False}
 
@@ -1815,6 +1846,8 @@ class BackgroundDispatchService:
             # a payload this version cannot read refuses here instead of naming
             # the print after a hash. See ``source_display_filename``.
             archive_filename = source_archive.filename if source_archive else source_display_filename(job.source)
+            submission_id = _ensure_submission_id(job)
+            remote_filename = derive_remote_filename(archive_filename)
 
             if not printer_manager.is_connected(job.printer_id):
                 raise RuntimeError("Printer is not connected")
@@ -1931,6 +1964,7 @@ class BackgroundDispatchService:
                     created_by_id=job.requested_by_user_id,
                     plate_index=job.options.get("plate_id"),
                     print_data={"status": "printing"},
+                    dispatch_intent=_dispatch_intent(job, remote_filename, submission_id),
                     swap_macro_events_pending=swap_pending,
                     selected_macro_ids=selected_macros,
                 )
@@ -1982,7 +2016,6 @@ class BackgroundDispatchService:
             finally:
                 self._startup_lock.release()
 
-            remote_filename = derive_remote_filename(archive_filename)
             remote_path = f"/{remote_filename}"
 
             # Which medium this print goes to. Decided once, here, and carried
@@ -2149,6 +2182,16 @@ class BackgroundDispatchService:
                     archive.id,
                     ams_mapping=job.options.get("ams_mapping"),
                 )
+                bind_print_run(
+                    printer_manager,
+                    printer_id=job.printer_id,
+                    archive_id=archive.id,
+                    queue_item_id=job.queue_item_id,
+                    claim_started_at=job.claim_started_at,
+                    expected_submission_id=submission_id,
+                    client_generation=printer_manager.current_client_generation(job.printer_id),
+                    origin="dispatch",
+                )
                 # Withdrawn in the ``finally`` unless the print command actually
                 # goes out — everything between here and ``start_print`` can still
                 # fail, and a leftover entry adopts the next print of this file
@@ -2233,6 +2276,7 @@ class BackgroundDispatchService:
                     # here from where it was made rather than re-derived.
                     storage=storage,
                     file_md5=file_md5,
+                    submission_id=submission_id,
                     # ⚠️ Unrelated to ``storage`` above, which is where the FILE
                     # came from. A print read off the card can record to eMMC
                     # and the other way round.
@@ -2376,6 +2420,8 @@ class BackgroundDispatchService:
                 # start_print returning False all land here.
                 if _unconfirmed_expected_print is not None:
                     withdraw_expected_print(*_unconfirmed_expected_print, expected_archive_id=job.execution_archive_id)
+                    if job.execution_archive_id is not None:
+                        discard_print_run(printer_manager, job.printer_id, job.execution_archive_id)
                     _unconfirmed_expected_print = None
                 # Same "every exit path" argument: a dispatch that dies after
                 # preheat ran left the machine heating for a print that was
@@ -2436,6 +2482,7 @@ class BackgroundDispatchService:
 
     async def _run_print_library_file(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print, withdraw_expected_print
+        from backend.app.services.print_run_binding import bind_print_run, discard_print_run
 
         # Seeded in case any early branch raises — keeps the outcome shape
         # consistent for queue-item callers awaiting completion_event.
@@ -2458,6 +2505,8 @@ class BackgroundDispatchService:
             # ``_is_sliced_file`` below would otherwise reject as "not a sliced
             # file", blaming a 3MF that is perfectly good.
             library_filename = lib_file.filename if lib_file else source_display_filename(job.source)
+            submission_id = _ensure_submission_id(job)
+            remote_filename = derive_remote_filename(library_filename)
             if not self._is_sliced_file(library_filename):
                 raise RuntimeError("Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
 
@@ -2579,6 +2628,7 @@ class BackgroundDispatchService:
                     # "archived" label during the FTP/MQTT window (#876 follow-up).
                     # Error paths below flip it to "failed" before the txn commits.
                     print_data={"status": "printing"},
+                    dispatch_intent=_dispatch_intent(job, remote_filename, submission_id),
                     # Persist swap intent in the same INSERT (post-start_print
                     # UPDATE raced the runtime-tracker on SQLite's single
                     # writer and timed out). The marker is only meaningful for
@@ -2647,7 +2697,6 @@ class BackgroundDispatchService:
             finally:
                 self._startup_lock.release()
 
-            remote_filename = derive_remote_filename(library_filename)
             remote_path = f"/{remote_filename}"
 
             # Which medium this print goes to. Decided once, here, and carried
@@ -2814,6 +2863,16 @@ class BackgroundDispatchService:
                     archive.id,
                     ams_mapping=job.options.get("ams_mapping"),
                 )
+                bind_print_run(
+                    printer_manager,
+                    printer_id=job.printer_id,
+                    archive_id=archive.id,
+                    queue_item_id=job.queue_item_id,
+                    claim_started_at=job.claim_started_at,
+                    expected_submission_id=submission_id,
+                    client_generation=printer_manager.current_client_generation(job.printer_id),
+                    origin="dispatch",
+                )
                 # Withdrawn in the ``finally`` unless the print command actually
                 # goes out — everything between here and ``start_print`` can still
                 # fail, and a leftover entry adopts the next print of this file
@@ -2898,6 +2957,7 @@ class BackgroundDispatchService:
                     # here from where it was made rather than re-derived.
                     storage=storage,
                     file_md5=file_md5,
+                    submission_id=submission_id,
                     # ⚠️ Unrelated to ``storage`` above, which is where the FILE
                     # came from. A print read off the card can record to eMMC
                     # and the other way round.
@@ -3107,6 +3167,8 @@ class BackgroundDispatchService:
                 # start_print returning False all land here.
                 if _unconfirmed_expected_print is not None:
                     withdraw_expected_print(*_unconfirmed_expected_print, expected_archive_id=job.execution_archive_id)
+                    if job.execution_archive_id is not None:
+                        discard_print_run(printer_manager, job.printer_id, job.execution_archive_id)
                     _unconfirmed_expected_print = None
                 # Same "every exit path" argument: a dispatch that dies after
                 # preheat ran left the machine heating for a print that was
