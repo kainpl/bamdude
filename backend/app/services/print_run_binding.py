@@ -81,7 +81,7 @@ def _normalise_subtask_id(value: object) -> str | None:
 
 def _current(manager: PrinterManager) -> dict[int, PrintRunBinding]:
     bindings = getattr(manager, "_print_run_bindings", None)
-    if bindings is None:
+    if not isinstance(bindings, dict):
         # Small test/service doubles predate the runtime binding.  Keeping the
         # registry lazy also makes this helper safe during staged startup.
         bindings = {}
@@ -91,7 +91,7 @@ def _current(manager: PrinterManager) -> dict[int, PrintRunBinding]:
 
 def _finishing(manager: PrinterManager) -> dict[tuple[int, int], PrintRunBinding]:
     bindings = getattr(manager, "_print_run_finishing_bindings", None)
-    if bindings is None:
+    if not isinstance(bindings, dict):
         bindings = {}
         manager._print_run_finishing_bindings = bindings
     return bindings
@@ -99,7 +99,7 @@ def _finishing(manager: PrinterManager) -> dict[tuple[int, int], PrintRunBinding
 
 def _start_resolutions(manager: PrinterManager) -> dict[int, PrintStartResolution]:
     resolutions = getattr(manager, "_print_start_resolutions", None)
-    if resolutions is None:
+    if not isinstance(resolutions, dict):
         resolutions = {}
         manager._print_start_resolutions = resolutions
     return resolutions
@@ -107,7 +107,7 @@ def _start_resolutions(manager: PrinterManager) -> dict[int, PrintStartResolutio
 
 def _pending_terminals(manager: PrinterManager) -> dict[int, dict[int, PendingTerminal]]:
     pending = getattr(manager, "_pending_print_terminals", None)
-    if pending is None:
+    if not isinstance(pending, dict):
         pending = {}
         manager._pending_print_terminals = pending
     return pending
