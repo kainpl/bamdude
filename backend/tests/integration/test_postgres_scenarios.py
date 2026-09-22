@@ -434,6 +434,17 @@ class TestArchiveWriteScope:
         result = _run("archive_write_lock", tmp_path_factory.mktemp("pg_archive_write_lock"), url)
         assert result == {"blocked_before_commit": True, "second_entered": True}
 
+    def test_shared_file_reference_scope_blocks_another_app_process(self, tmp_path_factory):
+        """Attach donor reuse and delete share this PG-only cross-process fence."""
+        url = _pg_url()
+        _wipe(url)
+        result = _run(
+            "archive_file_reference_process_lock",
+            tmp_path_factory.mktemp("pg_archive_file_reference_process_lock"),
+            url,
+        )
+        assert result == {"blocked_before_release": True, "probe_entered_after_release": True}
+
 
 class TestArchiveAttachRecovery:
     """Attach failure/retry is a real PostgreSQL transaction, not mocked SQL."""

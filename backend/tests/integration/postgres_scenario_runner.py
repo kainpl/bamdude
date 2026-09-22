@@ -14,6 +14,8 @@ Modes:
     cyrillic_search    upper-case Cyrillic finds its lower-case row, naturally
                        and through the forced collated SQL
     archive_write_lock PostgreSQL holds the per-archive write guard until commit
+    archive_file_reference_process_lock independent app processes serialize a
+                       shared archive file reference until the holder releases it
     archive_attach_recovery failed attach rolls back safely; retry and two sessions keep one file
     printer_lane_admission PostgreSQL serializes two direct-start admissions for
                            one printer and rejects the loser after the commit
@@ -25,6 +27,8 @@ Usage: python -m backend.tests.integration.postgres_scenario_runner <mode>
 
 import asyncio
 import json
+import os
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -416,6 +420,69 @@ async def _archive_write_lock() -> dict:
     return {"blocked_before_commit": blocked_before_commit, "second_entered": second_entered.is_set()}
 
 
+async def _archive_file_reference_process_lock() -> dict:
+    """Prove the shared-file guard crosses interpreter/process boundaries."""
+
+    marker_dir = Path(os.environ["DATA_DIR"]) / "file-reference-barrier"
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    file_path = "archive/shared-donor.gcode.3mf"
+    repo_root = Path(__file__).resolve().parents[3]
+    worker = "backend.tests.integration.postgres_file_scope_worker"
+    env = os.environ.copy()
+    holder = subprocess.Popen(
+        [sys.executable, "-m", worker, "hold", str(marker_dir), file_path],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    probe = None
+    try:
+        for _ in range(200):
+            if (marker_dir / "holder-ready").exists():
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise RuntimeError("file-reference holder did not acquire its PostgreSQL lock")
+
+        probe = subprocess.Popen(
+            [sys.executable, "-m", worker, "probe", str(marker_dir), file_path],
+            cwd=repo_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(200):
+            if (marker_dir / "probe-attempted").exists():
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise RuntimeError("file-reference probe did not reach the PostgreSQL lock")
+
+        await asyncio.sleep(0.25)
+        blocked_before_release = not (marker_dir / "probe-entered").exists()
+        (marker_dir / "release-holder").write_text("release", encoding="utf-8")
+        holder_out, holder_err = await asyncio.to_thread(holder.communicate, timeout=60)
+        probe_out, probe_err = await asyncio.to_thread(probe.communicate, timeout=60)
+        if holder.returncode or probe.returncode:
+            raise RuntimeError(
+                "file-reference workers failed: "
+                f"holder={holder.returncode} {holder_out[-1000:]} {holder_err[-1000:]}; "
+                f"probe={probe.returncode} {probe_out[-1000:]} {probe_err[-1000:]}"
+            )
+        return {
+            "blocked_before_release": blocked_before_release,
+            "probe_entered_after_release": (marker_dir / "probe-entered").exists(),
+        }
+    finally:
+        for process in (holder, probe):
+            if process is not None and process.poll() is None:
+                process.kill()
+                await asyncio.to_thread(process.communicate, timeout=30)
+
+
 async def _printer_lane_admission() -> dict:
     """Measure the shared printer-lane guard with two real PG sessions.
 
@@ -671,6 +738,8 @@ async def _main(mode: str) -> dict:
         return await _cyrillic_search()
     if mode == "archive_write_lock":
         return await _archive_write_lock()
+    if mode == "archive_file_reference_process_lock":
+        return await _archive_file_reference_process_lock()
     if mode == "printer_lane_admission":
         return await _printer_lane_admission()
     if mode == "analysis_wait_release":
