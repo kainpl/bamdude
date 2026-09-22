@@ -4059,9 +4059,33 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         # papers over the symptom (it wipes _active_prints, so the next
         # on_print_start takes the full path and loads objects), but the
         # underlying state was being silently lost.
-        for key in expected_keys:
-            active_archive_id = _active_prints.get(key)
-            if active_archive_id:
+        # The manager-owned binding is the authoritative in-process address.
+        # Filename aliases exist only for restart/legacy recovery: a stale A
+        # alias must not hide an observed B that carries a contradictory
+        # firmware subtask ID.
+        from backend.app.services.print_run_binding import current_print_run
+
+        bound_run = current_print_run(printer_manager, printer_id)
+        if bound_run is not None and bound_run.matches_device_subtask(subtask_id):
+            from backend.app.models.archive import PrintArchive
+
+            bound_archive = await db.get(PrintArchive, bound_run.archive_id)
+            if bound_archive is not None and bound_archive.status == "printing":
+                logger.info(
+                    "[CALLBACK] Duplicate print_start for printer %s via run binding archive %s — "
+                    "re-loading objects into fresh client state",
+                    printer_id,
+                    bound_archive.id,
+                )
+                _bind_print_file_analysis_context(printer_id, bound_archive)
+                _load_objects_from_archive(bound_archive, printer_id, logger, is_retrigger=True)
+                return
+
+        if bound_run is None or bound_run.matches_device_subtask(subtask_id):
+            for key in expected_keys:
+                active_archive_id = _active_prints.get(key)
+                if not active_archive_id:
+                    continue
                 logger.info(
                     "[CALLBACK] Duplicate print_start for printer %s (active archive %s via key %s) — skipping (re-loading objects into fresh client state)",
                     printer_id,
@@ -4080,6 +4104,14 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 except Exception as e:
                     logger.debug("[CALLBACK] re-load printable_objects failed: %s", e)
                 return
+        elif subtask_id:
+            logger.info(
+                "[CALLBACK] print_start for printer %s has subtask %s conflicting with current archive %s; "
+                "ignoring filename aliases and resolving the observed run",
+                printer_id,
+                subtask_id,
+                bound_run.archive_id,
+            )
 
         # Cleanup pass: close stale 'printing' rows that can't be the live print.
         # Runs before _expected_prints lookup so leftover rows from a previous
