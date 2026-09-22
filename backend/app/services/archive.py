@@ -2750,9 +2750,21 @@ class ArchiveService:
                 # Reuse existing on-disk file. ``delete_archive`` ref-counts
                 # shared paths so the file stays as long as any row refs it.
                 dest_file = settings.base_dir / existing_archive.file_path
-                archive_dir = dest_file.parent
-                thumbnail_reuse = existing_archive.thumbnail_path
-            else:
+                if dest_file.is_file():
+                    archive_dir = dest_file.parent
+                    thumbnail_reuse = existing_archive.thumbnail_path
+                else:
+                    # A stale DB reference is not a reusable donor. Publishing
+                    # that path would report a successful recovery while the
+                    # new archive still has no bytes; make a new durable copy
+                    # from this invocation's prepared source instead.
+                    logger.warning(
+                        "attach_3mf_to_archive donor archive %s names missing file %s; copying fresh bytes",
+                        existing_archive.id,
+                        existing_archive.file_path,
+                    )
+                    existing_archive = None
+            if existing_archive is None:
                 # No existing copy — create a fresh archive_dir and copy
                 # from the temp source. Suffix loop guards the
                 # theoretical-only same-second collision.

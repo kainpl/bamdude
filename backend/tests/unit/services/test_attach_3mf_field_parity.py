@@ -83,6 +83,46 @@ async def _attach(db_session, tmp_path, monkeypatch, printer, *, plate_index: in
 @pytest.mark.asyncio
 @pytest.mark.integration
 class TestFieldParity:
+    async def test_missing_donor_bytes_are_not_reused_as_a_successful_attach(
+        self, db_session, tmp_path, monkeypatch, printer_factory
+    ):
+        """A stale file_path must not leave the newly attached row byte-less."""
+
+        from backend.app.core.config import settings as app_settings
+
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive")
+        (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
+        printer = await printer_factory()
+        source = _multi_plate_3mf(tmp_path / "recovered.gcode.3mf")
+        content_hash = ArchiveService.compute_file_hash(source)
+        donor = PrintArchive(
+            printer_id=printer.id,
+            filename="missing.gcode.3mf",
+            file_path="archive/missing/missing.gcode.3mf",
+            file_size=1,
+            print_name="Missing donor",
+            status="completed",
+            content_hash=content_hash,
+            source_content_hash=content_hash,
+        )
+        target = PrintArchive(
+            printer_id=printer.id,
+            filename="recovered.gcode.3mf",
+            file_path="",
+            file_size=0,
+            print_name="Recovered",
+            status="printing",
+        )
+        db_session.add_all([donor, target])
+        await db_session.commit()
+
+        assert await ArchiveService(db_session).attach_3mf_to_archive(target.id, source, target.filename)
+        await db_session.refresh(target)
+
+        assert target.file_path != donor.file_path
+        assert (tmp_path / target.file_path).is_file()
+
     async def test_cancelled_prepare_eventually_removes_its_private_staging_tree(
         self, db_session, tmp_path, monkeypatch, printer_factory
     ):
