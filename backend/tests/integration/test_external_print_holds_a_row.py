@@ -348,6 +348,38 @@ async def test_bound_completion_addresses_its_archive_not_a_same_named_newer_row
     assert unresolved is False
 
 
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_terminal_acceptance_is_durable_and_blocks_restart_fallback(
+    db_session, printer_factory, main_db, archive_factory
+):
+    """A terminal accepted before long effects cannot replay after a restart."""
+
+    from backend.app import main
+    from backend.app.services.print_run_binding import bind_print_run, discard_print_run
+
+    printer, queue = await _queue(db_session, printer_factory)
+    archive = await archive_factory(printer.id, status="printing", print_name="Repeat me")
+    await mark_queue_printing_for_printer(printer.id, archive_id=archive.id)
+    row = (await _printing_rows(db_session, queue.id))[0]
+    binding = bind_print_run(
+        main.printer_manager,
+        printer_id=printer.id,
+        archive_id=archive.id,
+        queue_item_id=row.id,
+        claim_started_at=row.started_at,
+    )
+
+    try:
+        assert await main._accept_bound_terminal_run(printer.id, binding) == row.id
+        assert await main._accept_bound_terminal_run(printer.id, binding) is None
+        await db_session.refresh(archive)
+        assert archive.extra_data[main._TERMINAL_ACCEPTANCE_KEY]["queue_item_id"] == row.id
+        assert await main._completion_conflicts_with_active_queue(printer.id, {"subtask_name": "Repeat me"}) is True
+    finally:
+        discard_print_run(main.printer_manager, printer.id, archive.id)
+
+
 class TestTheRowCarriesWhatThePrinterToldUs:
     """⚠️ Reported from a farm: repeating a print picked up from BambuStudio went
     out with no AMS mapping.

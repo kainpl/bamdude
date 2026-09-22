@@ -6099,19 +6099,82 @@ async def _bound_printing_item(db, printer_id: int, binding):
     return matches[0] if len(matches) == 1 else None, bool(rows and len(matches) != 1)
 
 
-async def _accept_bound_terminal_run(printer_id: int, binding) -> int | None:
-    """Freeze a known terminal run before any printer-wide completion effect."""
+_TERMINAL_ACCEPTANCE_KEY = "bamdude_terminal_acceptance"
 
-    async with async_session() as db:
+
+def _terminal_acceptance_payload(queue_item) -> dict[str, object]:
+    """A durable address for this queue attempt, not its printable name."""
+
+    return {
+        "version": 1,
+        "queue_item_id": queue_item.id,
+        # A repeated queue item is a new physical run once its claim timestamp
+        # changes. ISO text stays portable through SQLite's timezone handling.
+        "queue_started_at": queue_item.started_at.isoformat() if queue_item.started_at is not None else None,
+    }
+
+
+def _terminal_acceptance_matches(queue_item, archive) -> bool:
+    """Whether this exact queue attempt already owns terminal processing."""
+
+    extra = archive.extra_data if isinstance(archive.extra_data, dict) else {}
+    marker = extra.get(_TERMINAL_ACCEPTANCE_KEY)
+    return isinstance(marker, dict) and marker == _terminal_acceptance_payload(queue_item)
+
+
+async def _accept_bound_terminal_run(printer_id: int, binding) -> int | None:
+    """Durably claim a known terminal run before any printer-wide effect.
+
+    The archive guard serializes two terminal callbacks across processes.  The
+    marker is scoped to the queue attempt's ``started_at`` rather than the
+    filename (or archive alone), so re-arming the same queue row remains a new
+    run while a retry/restart cannot replay a finishing run's effects.
+    """
+
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+
+    async with async_session() as db, archive_write_scope(db, binding.archive_id):
+        # Archive → queue is the established write order.  ``archive_write_scope``
+        # acquires SQLite's writer before the read and PG's advisory+row locks.
+        archive = await load_active_archive_for_write(db, binding.archive_id)
         queue_item, unresolved = await _bound_printing_item(db, printer_id, binding)
-    if queue_item is None:
-        logging.getLogger(__name__).warning(
-            "Bound terminal archive %s on printer %s is unresolved (ambiguous=%s); preserving current run",
-            binding.archive_id,
-            printer_id,
-            unresolved,
+        if archive is None or queue_item is None or archive.status != "printing":
+            logging.getLogger(__name__).warning(
+                "Bound terminal archive %s on printer %s is unresolved (archive=%s ambiguous=%s); preserving current run",
+                binding.archive_id,
+                printer_id,
+                archive is not None,
+                unresolved,
+            )
+            return None
+        # Lock the addressed row after the archive; a reused row cannot
+        # change identity while this short acceptance transaction commits.
+        queue_item = await db.scalar(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.id == queue_item.id, PrintQueueItem.status == "printing")
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
-        return None
+        if queue_item is None or queue_item.archive_id != binding.archive_id:
+            logging.getLogger(__name__).warning(
+                "Bound terminal archive %s on printer %s lost its addressed queue row; preserving current run",
+                binding.archive_id,
+                printer_id,
+            )
+            return None
+        if _terminal_acceptance_matches(queue_item, archive):
+            logging.getLogger(__name__).info(
+                "Ignoring already accepted terminal for archive %s queue item %s",
+                binding.archive_id,
+                queue_item.id,
+            )
+            return None
+
+        extra = dict(archive.extra_data or {})
+        extra[_TERMINAL_ACCEPTANCE_KEY] = _terminal_acceptance_payload(queue_item)
+        archive.extra_data = extra
+        await db.commit()
 
     from backend.app.services.print_run_binding import begin_print_run_finishing, current_print_run
 
@@ -6138,6 +6201,16 @@ async def _completion_conflicts_with_active_queue(printer_id: int, data: dict) -
             return False
         matching = [row for row in rows if await _completion_belongs_to_item(db, row, data)]
         if len(matching) == 1:
+            from backend.app.models.archive import PrintArchive
+
+            archive = await db.get(PrintArchive, matching[0].archive_id) if matching[0].archive_id else None
+            if archive is not None and _terminal_acceptance_matches(matching[0], archive):
+                logging.getLogger(__name__).info(
+                    "Ignoring terminal already accepted for archive %s queue item %s",
+                    archive.id,
+                    matching[0].id,
+                )
+                return True
             return False
         # Legacy terminal deltas can be identity-free.  Preserve their existing
         # fallback: we cannot prove them foreign.  Once a name or non-zero ID
