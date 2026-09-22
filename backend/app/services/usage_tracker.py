@@ -1431,6 +1431,9 @@ async def on_print_complete(
         print_name = (
             (session.print_name if session else None) or data.get("subtask_name", "") or data.get("filename", "unknown")
         )
+        # Everything above is a read/snapshot. The analysis worker may take
+        # seconds, therefore the completion transaction starts only after it.
+        await db.commit()
         threemf_results = await _track_from_3mf(
             printer_id,
             archive_id,
@@ -1671,7 +1674,7 @@ async def _track_from_3mf(
     from backend.app.core.config import settings as app_settings
     from backend.app.models.archive import PrintArchive
     from backend.app.models.print_queue import PrintQueueItem
-    from backend.app.utils.threemf_tools import extract_filament_usage_from_3mf
+    from backend.app.services.print_file_analysis import get_print_file_analysis
 
     result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
     archive = result.scalar_one_or_none()
@@ -1679,10 +1682,15 @@ async def _track_from_3mf(
         logger.info("[UsageTracker] 3MF: archive %s has no file_path, skipping", archive_id)
         return []
 
+    archive_plate_index = archive.plate_index
     file_path = app_settings.base_dir / archive.file_path
     if not file_path.exists():
         logger.info("[UsageTracker] 3MF: file not found: %s", file_path)
         return []
+
+    # Archive identity/path are now scalar snapshots. Release the read
+    # transaction before waiting for the shared CPU worker.
+    await db.commit()
 
     # Scope the extract to the dispatched plate (#1697). ``archive.plate_index``
     # is our authoritative "which plate ran" record — set by the dispatcher for
@@ -1690,7 +1698,17 @@ async def _track_from_3mf(
     # expects. Without it a single-plate job from a multi-plate 3MF debits the
     # spool for every plate's filament. None (external/screen prints where we
     # can't know the plate) → whole-file sum, unchanged.
-    filament_usage = extract_filament_usage_from_3mf(file_path, archive.plate_index)
+    analysis = await get_print_file_analysis(
+        printer_manager,
+        printer_id,
+        archive_id,
+        file_path,
+        archive_plate_index,
+    )
+    if analysis is None:
+        logger.info("[UsageTracker] 3MF analysis unavailable for archive %s", archive_id)
+        return []
+    filament_usage = analysis.filament_usage
     if not filament_usage:
         logger.info("[UsageTracker] 3MF: no filament usage data in %s", file_path)
         return []
@@ -1863,12 +1881,7 @@ async def _track_from_3mf(
             logger.info("[UsageTracker] 3MF: using last_layer_num=%d (firmware reset current to 0)", last_layer_num)
         if current_layer > 0:
             try:
-                from backend.app.utils.threemf_tools import (
-                    extract_filament_properties_from_3mf,
-                    extract_layer_filament_usage_from_3mf,
-                )
-
-                layer_usage = extract_layer_filament_usage_from_3mf(file_path, archive.plate_index)
+                layer_usage = analysis.layer_usage
                 if layer_usage:
                     # Progress fraction of the slot's own gcode timeline x the
                     # slicer estimate — NOT absolute gcode grams. Flush/purge on
@@ -1913,19 +1926,8 @@ async def _track_from_3mf(
                 continue
 
             # Extract per-layer gcode for segment splitting
-            split_layer_usage = None
-            split_props: dict = {}
-            try:
-                from backend.app.utils.threemf_tools import (
-                    extract_filament_properties_from_3mf,
-                    extract_layer_filament_usage_from_3mf,
-                )
-
-                split_layer_usage = extract_layer_filament_usage_from_3mf(file_path, archive.plate_index)
-                filament_props = extract_filament_properties_from_3mf(file_path)
-                split_props = filament_props.get(slot_id, {})
-            except Exception:
-                pass  # Fall back to linear splitting
+            split_layer_usage = analysis.layer_usage
+            split_props = analysis.filament_properties.get(slot_id, {})
 
             from backend.app.utils.tray_split import compute_tray_split_grams
 
@@ -2158,18 +2160,8 @@ async def _track_from_3mf(
             if total_weight <= 0:
                 continue
 
-            seg_layer_usage = None
-            seg_props: dict = {}
-            try:
-                from backend.app.utils.threemf_tools import (
-                    extract_filament_properties_from_3mf,
-                    extract_layer_filament_usage_from_3mf,
-                )
-
-                seg_layer_usage = extract_layer_filament_usage_from_3mf(file_path, archive.plate_index)
-                seg_props = extract_filament_properties_from_3mf(file_path).get(slot_id, {})
-            except Exception:
-                pass  # linear fallback inside the helper
+            seg_layer_usage = analysis.layer_usage
+            seg_props = analysis.filament_properties.get(slot_id, {})
 
             from backend.app.utils.tray_split import compute_layer_segment_grams
 

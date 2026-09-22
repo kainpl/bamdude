@@ -46,6 +46,23 @@ def _pm(state="RUNNING", layer=100, total=200, mapping=None):
     s.raw_data = {"mapping": mapping} if mapping is not None else {}
     pm = MagicMock()
     pm.get_status.return_value = s
+
+    # Keep projection-math tests in-process; production uses the bounded child
+    # worker and has separate lifecycle coverage.
+    def analysis_runner(path, plate_id):
+        from pathlib import Path
+
+        from backend.app.services.print_file_analysis import PrintFileAnalysis
+        from backend.app.utils import threemf_tools
+
+        file_path = Path(path)
+        return PrintFileAnalysis(
+            filament_usage=threemf_tools.extract_filament_usage_from_3mf(file_path, plate_id) or [],
+            layer_usage=threemf_tools.extract_layer_filament_usage_from_3mf(file_path, plate_id),
+            filament_properties=threemf_tools.extract_filament_properties_from_3mf(file_path) or {},
+        )
+
+    pm._print_file_analysis_runner = analysis_runner
     return pm
 
 

@@ -296,11 +296,7 @@ async def store_print_data(
     from backend.app.api.routes.settings import get_setting
     from backend.app.models.active_print_spoolman import ActivePrintSpoolman
     from backend.app.models.print_queue import PrintQueueItem
-    from backend.app.utils.threemf_tools import (
-        extract_filament_properties_from_3mf,
-        extract_filament_usage_from_3mf,
-        extract_layer_filament_usage_from_3mf,
-    )
+    from backend.app.services.print_file_analysis import get_print_file_analysis
 
     # Check if Spoolman is enabled
     spoolman_enabled = await get_setting(db, "spoolman_enabled")
@@ -351,21 +347,26 @@ async def store_print_data(
         effective_plate_id = (
             plate_id if plate_id is not None else (queue_item.plate_id if queue_item is not None else None)
         )
-        # Extract per-filament usage from 3MF, scoped to the dispatched plate so a
-        # single-plate job from a multi-plate file doesn't debit every plate (#1697).
-        filament_usage = extract_filament_usage_from_3mf(full_path, effective_plate_id) or None
-
-        # Parse G-code for per-layer filament usage (for accurate partial usage tracking)
-        # Same plate the whole-print figure above is scoped to — the per-layer
-        # numbers were measured against whichever plate the ZIP stored first.
-        layer_usage = extract_layer_filament_usage_from_3mf(full_path, effective_plate_id)
-        if layer_usage:
-            # Convert int keys to string for JSON serialization
-            layer_usage_json = {str(k): v for k, v in layer_usage.items()}
-            logger.debug("[SPOOLMAN] Parsed %s layers from G-code", len(layer_usage))
-
-        # Extract filament properties (density, diameter) for mm -> grams conversion
-        filament_properties = extract_filament_properties_from_3mf(full_path)
+        # The live snapshot and queue lookup are complete. Do not reserve a
+        # pooled connection while the child parses a large archive.
+        await db.commit()
+        analysis = await get_print_file_analysis(
+            printer_manager,
+            printer_id,
+            archive_id,
+            full_path,
+            effective_plate_id,
+        )
+        if analysis is not None:
+            # The same plate-scoped immutable analysis serves the live card,
+            # internal inventory and this durable Spoolman start snapshot.
+            filament_usage = analysis.filament_usage or None
+            layer_usage = analysis.layer_usage
+            if layer_usage:
+                # Convert int keys to string for JSON serialization
+                layer_usage_json = {str(k): v for k, v in layer_usage.items()}
+                logger.debug("[SPOOLMAN] Parsed %s layers from G-code", len(layer_usage))
+            filament_properties = analysis.filament_properties
     else:
         # No 3MF on disk — common for "Untitled" prints whose .gcode.3mf was
         # never on the printer's FTP (A6/A7 fallback). Logged at debug since the

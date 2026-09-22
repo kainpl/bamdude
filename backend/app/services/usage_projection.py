@@ -26,7 +26,6 @@ def _slot_consumed_grams(
     current_layer: int,
     total_layers: int,
     layer_usage: dict | None,
-    props: dict,
 ) -> float:
     """Consumed-so-far for one slot, capped at the slicer estimate."""
     from backend.app.utils import threemf_tools
@@ -50,9 +49,9 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
     from backend.app.core.config import settings as app_settings
     from backend.app.models.archive import PrintArchive
     from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.services.print_file_analysis import get_print_file_analysis
     from backend.app.services.print_usage_journal import active_archive_id, load_events
     from backend.app.services.usage_tracker import _decode_mqtt_mapping, journal_boundaries_for_tray
-    from backend.app.utils import threemf_tools
 
     if printer_manager is None:
         from backend.app.services.printer_manager import printer_manager as _pm
@@ -89,12 +88,36 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
             "slots": [],
         }
 
-    filament_usage = threemf_tools.extract_filament_usage_from_3mf(file_path, archive.plate_index)
-    layer_usage = threemf_tools.extract_layer_filament_usage_from_3mf(file_path, archive.plate_index)
-    filament_props = threemf_tools.extract_filament_properties_from_3mf(file_path)
-
     current_layer = getattr(state, "layer_num", 0) or 0
     total_layers = getattr(state, "total_layers", 0) or 0
+
+    # The worker can spend seconds on a large archive. The read-only archive
+    # lookup above is complete, so return this request's DB connection before
+    # waiting; journal and mapping reads below open a short fresh transaction.
+    await db.commit()
+
+    # The card may be open in many browsers.  They all await one child-process
+    # analysis, but a display poll must not wait long enough to make the UI
+    # feel stuck.  The next regular poll sees the completed shared result.
+    analysis = await get_print_file_analysis(
+        printer_manager,
+        printer_id,
+        archive_id,
+        file_path,
+        archive.plate_index,
+        timeout=1.0,
+    )
+    if analysis is None:
+        return {
+            "active": True,
+            "archive_id": archive_id,
+            "print_name": archive.print_name,
+            "layer_num": current_layer,
+            "total_layers": total_layers,
+            "slots": [],
+        }
+    filament_usage = analysis.filament_usage
+    layer_usage = analysis.layer_usage
 
     events = await load_events(db, printer_id, archive_id)
 
@@ -129,8 +152,7 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
         estimate_g = float(usage.get("used_g", 0) or 0)
         if slot_id <= 0 or estimate_g <= 0:
             continue
-        props = filament_props.get(slot_id, {})
-        consumed = _slot_consumed_grams(slot_id, estimate_g, current_layer, total_layers, layer_usage, props)
+        consumed = _slot_consumed_grams(slot_id, estimate_g, current_layer, total_layers, layer_usage)
 
         slot_payload: dict = {
             "slot_id": slot_id,
@@ -156,9 +178,9 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
                         seg_consumed = 0.0
                     else:
                         seg_consumed = round(
-                            _slot_consumed_grams(slot_id, estimate_g, end_layer, total_layers, layer_usage, props)
+                            _slot_consumed_grams(slot_id, estimate_g, end_layer, total_layers, layer_usage)
                             - _slot_consumed_grams(
-                                slot_id, estimate_g, min(start_layer, current_layer), total_layers, layer_usage, props
+                                slot_id, estimate_g, min(start_layer, current_layer), total_layers, layer_usage
                             ),
                             1,
                         )

@@ -16,6 +16,18 @@ from backend.app.services.spoolman_tracking import (
 )
 
 
+def _analysis_runner(path, plate_id):
+    """In-process seam for tests that mock the legacy 3MF extractors."""
+    from backend.app.services.print_file_analysis import PrintFileAnalysis
+    from backend.app.utils import threemf_tools
+
+    return PrintFileAnalysis(
+        filament_usage=threemf_tools.extract_filament_usage_from_3mf(path, plate_id) or [],
+        layer_usage=threemf_tools.extract_layer_filament_usage_from_3mf(path, plate_id),
+        filament_properties=threemf_tools.extract_filament_properties_from_3mf(path) or {},
+    )
+
+
 class TestResolveSpoolTag:
     """Tests for _resolve_spool_tag()."""
 
@@ -187,6 +199,7 @@ class TestStorePrintData:
         db.commit = AsyncMock()
 
         printer_manager = MagicMock()
+        printer_manager._print_file_analysis_runner = _analysis_runner
         printer_manager.get_status.return_value = SimpleNamespace(
             raw_data={"ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA"}, {"id": 1, "tray_type": "PLA"}]}]}
         )
@@ -238,6 +251,7 @@ class TestStorePrintData:
         db.commit = AsyncMock()
 
         printer_manager = MagicMock()
+        printer_manager._print_file_analysis_runner = _analysis_runner
         printer_manager.get_status.return_value = SimpleNamespace(
             raw_data={"ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA"}]}]}
         )
@@ -291,6 +305,7 @@ class TestStorePrintData:
             db.commit = AsyncMock()
 
             printer_manager = MagicMock()
+            printer_manager._print_file_analysis_runner = _analysis_runner
             printer_manager.get_status.return_value = SimpleNamespace(
                 raw_data={"ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA"}]}]}
             )

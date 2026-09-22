@@ -7588,6 +7588,15 @@ async def on_print_complete(printer_id: int, data: dict):
         except Exception as e:
             logger.debug("[SPOOLMAN] Cleanup failed: %s", e)
 
+    # The shared immutable 3MF table is useful through both internal and
+    # Spoolman completion paths above.  Release it only after both have had a
+    # chance to consume it; compare by archive inside the helper so a very fast
+    # following print cannot lose its own context.
+    if archive_id:
+        from backend.app.services.print_file_analysis import discard_print_file_analysis
+
+        discard_print_file_analysis(printer_manager, printer_id, archive_id)
+
     # Run slow operations as background tasks to avoid blocking the event loop
     # These operations can take 5-10+ seconds and would freeze the UI if awaited
 
@@ -9910,6 +9919,9 @@ async def lifespan(app: FastAPI):
 
     cancel_running_scans()
     printer_manager.disconnect_all()
+    from backend.app.services.print_file_analysis import shutdown_print_file_analysis_workers
+
+    shutdown_print_file_analysis_workers()
     await close_spoolman_client()
 
     # Stop all virtual printer services
