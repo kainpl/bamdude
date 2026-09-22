@@ -3326,6 +3326,18 @@ def _bind_print_file_analysis_context(printer_id: int, archive) -> None:
     printer card or final accounting needs it.
     """
     from backend.app.services.print_file_analysis import bind_print_file_analysis
+    from backend.app.services.print_run_binding import bind_print_run
+
+    # This is the one lifecycle choke point shared by own, external, adopted
+    # and recovered starts.  The archive is already authoritative here; retain
+    # that direct address alongside the analysis child context instead of
+    # asking a later terminal event to rediscover it from a filename.
+    bind_print_run(
+        printer_manager,
+        printer_id=printer_id,
+        archive_id=archive.id,
+        observed_subtask_id=getattr(archive, "subtask_id", None),
+    )
 
     relative_path = getattr(archive, "file_path", None)
     source = app_settings.base_dir / relative_path if relative_path else None

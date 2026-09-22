@@ -659,6 +659,12 @@ class PrinterManager:
         self._print_file_analysis_contexts: dict[int, object] = {}
         self._print_file_analysis_finishing_contexts: dict[tuple[int, int], object] = {}
         self._print_file_analysis_generation = 0
+        # Physical run identity is deliberately separate from file-analysis
+        # source revisions.  It is server-only and is addressed by execution
+        # archive id, never a printable filename.
+        self._print_run_bindings: dict[int, object] = {}
+        self._print_run_finishing_bindings: dict[tuple[int, int], object] = {}
+        self._print_run_binding_sequence = 0
         self._uses_print_file_analysis_process = True
         self._models: dict[int, str | None] = {}  # Cache printer models for feature detection
         self._connected_at: dict[int, float] = {}  # Unix timestamp of last connection
