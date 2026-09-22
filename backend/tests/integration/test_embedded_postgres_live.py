@@ -6,6 +6,7 @@ when the wheel is not installed.
 """
 
 import asyncio
+import json
 import os
 import socket
 import subprocess
@@ -29,6 +30,7 @@ pytest.importorskip("embedded_postgres")
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+SCENARIO_RUNNER = "backend.tests.integration.postgres_scenario_runner"
 
 
 def _free_port() -> int:
@@ -178,6 +180,34 @@ async def test_archive_attach_rollback_and_retry_use_the_native_windows_postgres
         assert len(list((tmp_path / "archive").rglob("*.3mf"))) == 1
     finally:
         await engine.dispose()
+        await ep.stop()
+
+
+async def test_archive_file_reference_scope_blocks_an_independent_process(live_settings, tmp_path):
+    """The donor/delete file guard must survive a second app interpreter."""
+
+    await ep.start()
+    password = quote(ep._password(), safe="")
+    url = f"postgresql+asyncpg://{ep.PG_USER}:{password}@{ep.PG_HOST}:{settings.embedded_pg_port}/{ep.PG_DATABASE}"
+    env = {**os.environ, "DATABASE_URL": url, "DATA_DIR": str(tmp_path / "scenario-data"), "PYTHONPATH": str(REPO_ROOT)}
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, "-m", SCENARIO_RUNNER, "archive_file_reference_process_lock"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        report = result.stdout + result.stderr
+        assert result.returncode == 0, report
+        assert json.loads(result.stdout.strip().splitlines()[-1]) == {
+            "blocked_before_release": True,
+            "probe_entered_after_release": True,
+        }
+    finally:
         await ep.stop()
 
 
