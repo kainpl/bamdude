@@ -48,7 +48,8 @@ async def build_virtual_current_print(
       * Printer isn't connected or state isn't one of the active states.
       * A real ``PrintQueueItem`` with ``status='printing'`` already
         exists for this printer's queue — the real one wins.
-      * No archive is tracked in ``_active_prints`` for this printer.
+      * Neither the manager-owned live binding nor legacy ``_active_prints``
+        aliases identify an archive for this printer.
     """
     state = printer_manager.get_status(printer_id)
     if state is None or not state.connected:
@@ -95,14 +96,23 @@ async def build_virtual_current_print(
             )
         return None
 
-    # Look up the active archive for this printer.
+    # The manager-owned binding is the live identity.  Filename aliases are
+    # retained only for recovery of pre-binding/legacy callbacks; choosing the
+    # first alias here would make the virtual UI show A while B is the actual
+    # run on a repeated filename.
+    from backend.app.services.print_run_binding import current_print_run
+
+    bound_run = current_print_run(printer_manager, printer_id)
+    archive_id = bound_run.archive_id if bound_run is not None else None
+
+    # Look up a legacy active archive only when no binding exists yet.
     from backend.app.main import _active_prints  # lazy to avoid cycle
 
-    archive_id: int | None = None
-    for (pid, _fname), aid in _active_prints.items():
-        if pid == printer_id:
-            archive_id = aid
-            break
+    if archive_id is None:
+        for (pid, _fname), aid in _active_prints.items():
+            if pid == printer_id:
+                archive_id = aid
+                break
 
     if archive_id is None:
         return None
