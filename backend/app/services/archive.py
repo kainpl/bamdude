@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -6,9 +7,11 @@ import os
 import re
 import shutil
 import zipfile
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from itertools import count
 from pathlib import Path
+from uuid import uuid4
 
 from defusedxml import ElementTree as ET
 from sqlalchemy import and_, func, or_, select, update
@@ -24,6 +27,100 @@ from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _PreparedArchiveAttach:
+    """Filesystem facts prepared before the archive writer is entered.
+
+    The staging directory lives under the target printer's archive root, so a
+    successful publication can atomically rename the copied 3MF into its final
+    directory. No ORM object crosses this boundary: the row is reloaded under
+    the short writer guard immediately before publication.
+    """
+
+    stage_dir: Path
+    staged_file: Path
+    content_hash: str
+    dest_name: str
+    display_stem: str
+    requested_plate_index: int | None
+    parser_plate_index: int | None
+    metadata: dict
+    plates_payload: list | None
+    printable_objects: dict | None
+
+
+class _AttachPreparationStale(RuntimeError):
+    """The row's selected plate changed after the off-lock preparation."""
+
+
+def _prepare_archive_attach_file(
+    source_file: Path,
+    original_filename: str | None,
+    archive_root: Path,
+    printer_folder: str,
+    plate_index: int | None,
+) -> _PreparedArchiveAttach:
+    """Copy and inspect a recovered 3MF without holding a DB writer.
+
+    This runs in a worker thread. The source may be large and ZIP parsing is
+    CPU/blocking I/O; keeping both outside ``archive_write_scope`` prevents an
+    attach retry from stalling unrelated API/MQTT work or SQLite's sole writer.
+    """
+    dest_name = original_filename or source_file.name
+    display_stem = resolve_display_stem(dest_name)
+    stage_dir = archive_root / printer_folder / ".attach-staging" / uuid4().hex
+    staged_file: Path | None = None
+    try:
+        stage_dir.mkdir(parents=True)
+        staged_file = safe_join_under(stage_dir, dest_name, http=False)
+        _copy_and_fsync(source_file, staged_file)
+        if (
+            source_file.suffix.lower() == ".3mf"
+            and zipfile.is_zipfile(source_file)
+            and not zipfile.is_zipfile(staged_file)
+        ):
+            raise ValueError("copied 3MF is not a valid ZIP")
+
+        parser = ThreeMFParser(staged_file, plate_number=plate_index)
+        metadata = parser.parse()
+        try:
+            with zipfile.ZipFile(staged_file, "r") as zfh:
+                plates_payload = parse_plates_from_3mf(zfh)
+        except Exception as exc:  # noqa: BLE001 - per-plate data is optional
+            logger.debug("attach preparation: per-plate parse failed: %s", exc)
+            plates_payload = None
+
+        try:
+            printable_objects = extract_printable_objects_from_3mf(staged_file.read_bytes(), plate_number=plate_index)
+        except Exception as exc:  # noqa: BLE001 - part ledger is best effort
+            logger.warning("attach preparation: printable-object parse failed for %s: %s", staged_file, exc)
+            printable_objects = None
+
+        return _PreparedArchiveAttach(
+            stage_dir=stage_dir,
+            staged_file=staged_file,
+            # Hash the fsync'd staging copy, not a mutable FTP-temp source:
+            # publication's DB identity must describe the exact bytes about to
+            # be renamed into the archive.
+            content_hash=ArchiveService.compute_file_hash(staged_file),
+            dest_name=dest_name,
+            display_stem=display_stem,
+            requested_plate_index=plate_index,
+            parser_plate_index=parser.plate_number,
+            metadata=metadata,
+            plates_payload=plates_payload,
+            printable_objects=printable_objects if isinstance(printable_objects, dict) else None,
+        )
+    except BaseException:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        raise
+
+
+def _discard_prepared_archive_attach(prepared: _PreparedArchiveAttach) -> None:
+    """Remove only this invocation's staging directory."""
+    shutil.rmtree(prepared.stage_dir, ignore_errors=True)
 
 
 def _copy_and_fsync(src: Path, dst: Path, chunk_size: int = 1024 * 1024) -> None:
@@ -2450,22 +2547,91 @@ class ArchiveService:
         source_file: Path,
         original_filename: str | None = None,
     ) -> bool:
-        """Attach under the same archive-specific writer guard as other facts.
+        """Prepare a recovered 3MF off-loop, then publish it under a short guard.
 
         Recovery callers already finish their start publication before this
-        method.  Serialising attach with completion, defects and deletion
-        prevents a stale attach snapshot from overwriting those facts.
+        method. The authoritative row is read again just before publication;
+        preparation never carries a live ORM object across the wait.
         """
-        from backend.app.services.archive_write_scope import archive_write_scope
+        from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 
-        async with archive_write_scope(self.db, archive_id):
-            return await self._attach_3mf_to_archive_locked(archive_id, source_file, original_filename)
+        # A live plate correction between snapshot and publication needs a
+        # fresh off-lock parse. One retry covers the real correction race; a
+        # continuously changing row is left untouched rather than publishing
+        # metadata for an indeterminate plate.
+        for attempt in range(2):
+            prepared: _PreparedArchiveAttach | None = None
+            try:
+                # Snapshot only the filesystem inputs needed for preparation.
+                # This deliberately opens/releases the writer before hashing,
+                # copying and parsing a potentially huge G-code container.
+                async with archive_write_scope(self.db, archive_id):
+                    archive = await load_active_archive_for_write(self.db, archive_id)
+                    if archive is None:
+                        await self.db.rollback()
+                        return False
+                    printer_folder = str(archive.printer_id) if archive.printer_id is not None else "unassigned"
+                    plate_index = archive.plate_index
+                    await self.db.commit()
+
+                prepare_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        _prepare_archive_attach_file,
+                        source_file,
+                        original_filename,
+                        settings.archive_dir,
+                        printer_folder,
+                        plate_index,
+                    )
+                )
+                try:
+                    # Cancelling the coroutine cannot synchronously stop a
+                    # filesystem thread. Shield it, then arrange exact staging
+                    # cleanup when the worker reaches its natural boundary.
+                    prepared = await asyncio.shield(prepare_task)
+                except asyncio.CancelledError:
+
+                    def _discard_after_prepare(task: asyncio.Task[_PreparedArchiveAttach]) -> None:
+                        try:
+                            late_prepared = task.result()
+                        except BaseException:
+                            return
+                        asyncio.create_task(asyncio.to_thread(_discard_prepared_archive_attach, late_prepared))
+
+                    prepare_task.add_done_callback(_discard_after_prepare)
+                    raise
+                async with archive_write_scope(self.db, archive_id):
+                    return await self._attach_3mf_to_archive_locked(
+                        archive_id,
+                        source_file,
+                        original_filename,
+                        prepared=prepared,
+                    )
+            except _AttachPreparationStale:
+                await self.db.rollback()
+                logger.info("attach preparation became stale for archive %s (retry %s/2)", archive_id, attempt + 1)
+            except asyncio.CancelledError:
+                # Cancellation is not an attach failure. Roll back only our
+                # open DB work, discard our private staging tree and let the
+                # caller decide whether/when to retry.
+                await self.db.rollback()
+                raise
+            except Exception as exc:  # noqa: BLE001 - public attach keeps its bool contract
+                await self.db.rollback()
+                logger.exception("attach_3mf_to_archive preparation failed for archive %s: %s", archive_id, exc)
+                return False
+            finally:
+                if prepared is not None:
+                    await asyncio.to_thread(_discard_prepared_archive_attach, prepared)
+        return False
 
     async def _attach_3mf_to_archive_locked(
         self,
         archive_id: int,
         source_file: Path,
         original_filename: str | None = None,
+        *,
+        prepared: _PreparedArchiveAttach | None = None,
     ) -> bool:
         """Fill in an empty/fallback archive with a 3MF that was recovered
         later (e.g. by the background download-retry service).
@@ -2493,7 +2659,12 @@ class ArchiveService:
             if archive is None:
                 await self.db.rollback()
                 return False
-            content_hash = self.compute_file_hash(source_file)
+            if prepared is not None and archive.plate_index != prepared.requested_plate_index:
+                # Do not attach old-plate metadata just because the bytes are
+                # unchanged. The public wrapper releases this short guard,
+                # re-prepares for the fresh plate and tries once more.
+                raise _AttachPreparationStale()
+            content_hash = prepared.content_hash if prepared is not None else self.compute_file_hash(source_file)
             if archive.file_path and archive.content_hash == content_hash:
                 # A retry that crossed a successful attach must be a no-op,
                 # but a later correction may deliberately change the archive's
@@ -2532,8 +2703,12 @@ class ArchiveService:
                 archive.source_content_hash = chain_hash or content_hash
 
             printer_folder = str(archive.printer_id) if archive.printer_id is not None else "unassigned"
-            display_stem = resolve_display_stem(original_filename if original_filename else source_file.name)
-            dest_name = original_filename or source_file.name
+            display_stem = (
+                prepared.display_stem
+                if prepared is not None
+                else resolve_display_stem(original_filename if original_filename else source_file.name)
+            )
+            dest_name = prepared.dest_name if prepared is not None else original_filename or source_file.name
 
             # Reuse the chain's on-disk file when one exists. Match on the
             # chain-root hash (``effective_hash = COALESCE(source_content_hash,
@@ -2579,15 +2754,22 @@ class ArchiveService:
                 # dest_name can originate from a printer FTP listing / MQTT
                 # subtask name (not a request), so containment-check the join.
                 dest_file = safe_join_under(archive_dir, dest_name, http=False)
-                # Same fsync'd loop as archive_print (#1032).
-                _copy_and_fsync(source_file, dest_file)
-
-                if (
-                    source_file.suffix.lower() == ".3mf"
-                    and zipfile.is_zipfile(source_file)
-                    and not zipfile.is_zipfile(dest_file)
-                ):
-                    raise ValueError("copied 3MF is not a valid ZIP")
+                if prepared is not None:
+                    # The fsync'd copy and ZIP validation happened outside the
+                    # writer. Both paths are under archive_dir, so rename is a
+                    # small same-filesystem publication step rather than a
+                    # second large copy while SQLite is exclusively locked.
+                    os.replace(prepared.staged_file, dest_file)
+                else:
+                    # Compatibility path for private/direct callers that have
+                    # not yet been moved through the preparation wrapper.
+                    _copy_and_fsync(source_file, dest_file)
+                    if (
+                        source_file.suffix.lower() == ".3mf"
+                        and zipfile.is_zipfile(source_file)
+                        and not zipfile.is_zipfile(dest_file)
+                    ):
+                        raise ValueError("copied 3MF is not a valid ZIP")
                 thumbnail_reuse = None
 
             # Parse 3MF metadata (reuse the same parser as archive_print).
@@ -2597,8 +2779,13 @@ class ArchiveService:
             # container. None for legacy/external rows where the index
             # is unknown — parser falls back to slice_info's first
             # plate, matching pre-m038 behaviour.
-            parser = ThreeMFParser(dest_file, plate_number=archive.plate_index)
-            metadata = parser.parse()
+            if prepared is not None:
+                metadata = dict(prepared.metadata)
+                parser_plate_number = prepared.parser_plate_index
+            else:
+                parser = ThreeMFParser(dest_file, plate_number=archive.plate_index)
+                metadata = parser.parse()
+                parser_plate_number = parser.plate_number
 
             # A row can legitimately arrive here without a plate index: nothing
             # in ``Metadata/plate_N.gcode`` to parse for a single-plate export.
@@ -2610,18 +2797,24 @@ class ArchiveService:
             # ⚠️ Backfill only. A value already on the row came from the live
             # MQTT state — what the printer is actually running — and the
             # container, which holds several plates, cannot overrule that.
-            if archive.plate_index is None and parser.plate_number is not None:
-                archive.plate_index = parser.plate_number
+            if archive.plate_index is None and parser_plate_number is not None:
+                archive.plate_index = parser_plate_number
 
             # Per-plate cache populated alongside the rest of the metadata.
-            try:
-                with zipfile.ZipFile(dest_file, "r") as _zfh:
-                    plates_payload = parse_plates_from_3mf(_zfh)
+            if prepared is not None:
+                plates_payload = prepared.plates_payload
                 if plates_payload:
                     metadata["plates"] = plates_payload
                     metadata["is_multi_plate"] = len(plates_payload) > 1
-            except Exception as _pe:
-                logger.debug("attach_3mf_to_archive: per-plate parse failed (non-critical): %s", _pe)
+            else:
+                try:
+                    with zipfile.ZipFile(dest_file, "r") as _zfh:
+                        plates_payload = parse_plates_from_3mf(_zfh)
+                    if plates_payload:
+                        metadata["plates"] = plates_payload
+                        metadata["is_multi_plate"] = len(plates_payload) > 1
+                except Exception as _pe:
+                    logger.debug("attach_3mf_to_archive: per-plate parse failed (non-critical): %s", _pe)
 
             thumbnail_path = None
             if thumbnail_reuse:
@@ -2769,7 +2962,12 @@ class ArchiveService:
             # the freshly attached 3MF. Pass the Path — this whole method is
             # wrapped in a try/except that returns False on any failure, so
             # a read error here would otherwise fail the entire attach.
-            await seed_archive_parts(self.db, archive, source_file)
+            await seed_archive_parts(
+                self.db,
+                archive,
+                source_file if prepared is None else None,
+                printable_objects=prepared.printable_objects if prepared is not None else None,
+            )
 
             # ⚠️ The free-stock credit runs HERE too (Ruling 27), not only in
             # the completion hook. An external print reaches ``completed``
@@ -2809,6 +3007,8 @@ class ArchiveService:
                 # not be reported as a failed recovery or remove its file.
                 logger.exception("attach_3mf_to_archive committed but refresh failed for archive %s", archive_id)
             return True
+        except _AttachPreparationStale:
+            raise
         except Exception as e:
             logger.exception("attach_3mf_to_archive failed for archive %s: %s", archive_id, e)
             if not committed:

@@ -21,10 +21,13 @@ knows what it contains. Where they disagree the live state is right.
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import zipfile
 from pathlib import Path
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.models.archive import PrintArchive
 from backend.app.services.archive import ArchiveService
@@ -80,6 +83,118 @@ async def _attach(db_session, tmp_path, monkeypatch, printer, *, plate_index: in
 @pytest.mark.asyncio
 @pytest.mark.integration
 class TestFieldParity:
+    async def test_cancelled_prepare_eventually_removes_its_private_staging_tree(
+        self, db_session, tmp_path, monkeypatch, printer_factory
+    ):
+        """Cancelling the request must not leave a large recovered 3MF behind."""
+        from backend.app.core.config import settings as app_settings
+        from backend.app.services.archive import _prepare_archive_attach_file
+
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive")
+        (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
+        printer = await printer_factory()
+        archive = PrintArchive(
+            printer_id=printer.id,
+            filename="cancel.gcode.3mf",
+            file_path="",
+            file_size=0,
+            print_name="Cancel",
+            status="printing",
+        )
+        db_session.add(archive)
+        await db_session.commit()
+        source = _multi_plate_3mf(tmp_path / "cancel.gcode.3mf")
+
+        loop = asyncio.get_running_loop()
+        prepare_started = asyncio.Event()
+        release_prepare = threading.Event()
+
+        def slow_prepare(*args, **kwargs):
+            loop.call_soon_threadsafe(prepare_started.set)
+            release_prepare.wait(timeout=5)
+            return _prepare_archive_attach_file(*args, **kwargs)
+
+        monkeypatch.setattr("backend.app.services.archive._prepare_archive_attach_file", slow_prepare)
+        task = asyncio.create_task(ArchiveService(db_session).attach_3mf_to_archive(archive.id, source))
+        await asyncio.wait_for(prepare_started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        release_prepare.set()
+        staging = tmp_path / "archive" / str(printer.id) / ".attach-staging"
+        for _ in range(20):
+            if not staging.exists() or not any(staging.iterdir()):
+                break
+            await asyncio.sleep(0.05)
+        assert not staging.exists() or not any(staging.iterdir())
+
+    async def test_slow_prepare_does_not_hold_sqlite_archive_writer(
+        self, db_session, test_engine, tmp_path, monkeypatch, printer_factory
+    ):
+        """Hash/copy/parse runs before the short publication transaction.
+
+        This is deliberately a barrier test, not a timing assertion: while a
+        large recovered 3MF is being prepared, an unrelated archive writer
+        must acquire SQLite's sole writer. The old method held BEGIN IMMEDIATE
+        around all three operations and deadlocked this exact shape.
+        """
+        from backend.app.core.config import settings as app_settings
+        from backend.app.services.archive import _prepare_archive_attach_file
+        from backend.app.services.archive_write_scope import archive_write_scope
+
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive")
+        (tmp_path / "archive").mkdir(parents=True, exist_ok=True)
+        printer = await printer_factory()
+        first = PrintArchive(
+            printer_id=printer.id,
+            filename="slow.gcode.3mf",
+            file_path="",
+            file_size=0,
+            print_name="Slow",
+            status="printing",
+        )
+        second = PrintArchive(
+            printer_id=printer.id,
+            filename="other.gcode.3mf",
+            file_path="",
+            file_size=0,
+            print_name="Other",
+            status="printing",
+        )
+        db_session.add_all([first, second])
+        await db_session.commit()
+        source = _multi_plate_3mf(tmp_path / "slow.gcode.3mf")
+
+        loop = asyncio.get_running_loop()
+        prepare_started = asyncio.Event()
+        release_prepare = threading.Event()
+
+        def slow_prepare(*args, **kwargs):
+            loop.call_soon_threadsafe(prepare_started.set)
+            release_prepare.wait(timeout=5)
+            return _prepare_archive_attach_file(*args, **kwargs)
+
+        monkeypatch.setattr("backend.app.services.archive._prepare_archive_attach_file", slow_prepare)
+        attach_task = asyncio.create_task(ArchiveService(db_session).attach_3mf_to_archive(first.id, source))
+        await asyncio.wait_for(prepare_started.wait(), timeout=1)
+
+        maker = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        other_entered = asyncio.Event()
+
+        async def write_other_archive():
+            async with maker() as other_db, archive_write_scope(other_db, second.id):
+                other_entered.set()
+                await other_db.commit()
+
+        writer = asyncio.create_task(write_other_archive())
+        await asyncio.wait_for(other_entered.wait(), timeout=0.5)
+        release_prepare.set()
+        await writer
+        assert await attach_task
+
     async def test_bed_type_is_written(self, db_session, tmp_path, monkeypatch, printer_factory):
         printer = await printer_factory()
         archive = await _attach(db_session, tmp_path, monkeypatch, printer, plate_index=2)

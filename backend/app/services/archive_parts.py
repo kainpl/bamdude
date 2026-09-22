@@ -45,7 +45,13 @@ async def load_rows(db: AsyncSession, archive_id: int) -> list[PrintArchivePart]
     )
 
 
-async def seed_archive_parts(db: AsyncSession, archive: PrintArchive, data: bytes | Path) -> None:
+async def seed_archive_parts(
+    db: AsyncSession,
+    archive: PrintArchive,
+    data: bytes | Path | None = None,
+    *,
+    printable_objects: dict | None = None,
+) -> None:
     """(Re)build the archive's part rows from 3MF bytes.
 
     Replace, not merge — the plate may have changed (plate-corrected
@@ -59,14 +65,21 @@ async def seed_archive_parts(db: AsyncSession, archive: PrintArchive, data: byte
     cleanup, …) is swallowed here rather than raised at the call site —
     where it would fail the caller's own operation (print dispatch, 3MF
     attach), violating the never-fail contract above.
+    ``printable_objects`` is the equivalent parse result prepared before a
+    short archive writer scope. It avoids reopening and reparsing a large 3MF
+    while SQLite's writer lock is held; callers that do not prepare retain the
+    established ``data`` path.
     """
     try:
-        from backend.app.services.archive import extract_printable_objects_from_3mf
+        objects = printable_objects
+        if objects is None:
+            if data is None:
+                return
+            from backend.app.services.archive import extract_printable_objects_from_3mf
 
-        if isinstance(data, Path):
-            data = data.read_bytes()
-
-        objects = extract_printable_objects_from_3mf(data, plate_number=archive.plate_index)
+            if isinstance(data, Path):
+                data = data.read_bytes()
+            objects = extract_printable_objects_from_3mf(data, plate_number=archive.plate_index)
         if not isinstance(objects, dict) or not objects:
             return
 
