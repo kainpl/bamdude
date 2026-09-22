@@ -4,11 +4,13 @@ import asyncio
 import concurrent.futures
 import time
 import zipfile
+from dataclasses import asdict
 
 import pytest
 
 from backend.app.services.print_file_analysis import (
     PrintFileAnalysis,
+    begin_historical_print_file_analysis_finishing,
     begin_print_file_analysis_finishing,
     bind_print_file_analysis,
     discard_print_file_analysis,
@@ -205,6 +207,26 @@ async def test_finishing_context_keeps_old_completion_from_replacing_new_print(t
 
 
 @pytest.mark.asyncio
+async def test_historical_finishing_context_never_replaces_the_current_print(tmp_path):
+    path = tmp_path / "old.3mf"
+    path.write_bytes(b"fixture")
+    manager = _Manager()
+    calls = []
+    manager._print_file_analysis_runner = _runner_factory(calls)
+
+    bind_print_file_analysis(manager, 7, 43, path, 1)
+    assert begin_historical_print_file_analysis_finishing(manager, 7, 42, path, 1)
+
+    old = await get_print_file_analysis(manager, 7, 42, path, 1)
+    assert old is not None
+    assert manager._print_file_analysis_contexts[7].archive_id == 43
+    assert (7, 42) in manager._print_file_analysis_finishing_contexts
+
+    discard_print_file_analysis(manager, 7, 42)
+    assert manager._print_file_analysis_contexts[7].archive_id == 43
+
+
+@pytest.mark.asyncio
 async def test_releasing_finishing_context_cancels_its_unneeded_waiter(tmp_path):
     path = tmp_path / "job.3mf"
     path.write_bytes(b"fixture")
@@ -265,6 +287,17 @@ async def test_deadline_marks_context_unavailable_without_leaving_preparing(tmp_
     assert "deadline" in manager._print_file_analysis_contexts[7].error
 
 
+@pytest.mark.asyncio
+async def test_child_rss_watch_reports_the_crossed_budget_without_blocking(monkeypatch):
+    from backend.app.services import print_file_analysis
+
+    monkeypatch.setattr(print_file_analysis, "_CHILD_RSS_POLL_SECONDS", 0.001)
+    monkeypatch.setattr(print_file_analysis, "_MAX_CHILD_RSS_BYTES", 100)
+    monkeypatch.setattr(print_file_analysis, "_pool_child_rss_bytes", lambda pool: 101)
+
+    assert await print_file_analysis._watch_child_rss(object()) is True
+
+
 def test_parser_rejects_an_oversized_gcode_member_before_extracting(tmp_path, monkeypatch):
     from backend.app.services import print_file_analysis
 
@@ -288,6 +321,34 @@ def test_analysis_progress_index_matches_the_last_layer_at_or_before_target():
     assert analysis.progress_fraction(0, 1) is None
     assert analysis.progress_fraction(0, 8) == pytest.approx(0.5)
     assert analysis.progress_fraction(0, 99) == pytest.approx(1.0)
+
+
+def test_metadata_totals_survive_an_unavailable_layer_timeline(tmp_path, monkeypatch):
+    from backend.app.services import print_file_analysis
+    from backend.app.utils import threemf_tools
+
+    path = tmp_path / "job.3mf"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "Metadata/slice_info.config",
+            '<config><plate><metadata key="index" value="5"/>'
+            '<metadata key="prediction" value="900"/>'
+            '<metadata key="weight" value="12.5"/></plate></config>',
+        )
+        archive.writestr("Metadata/plate_5.gcode", "M73 L1\n")
+    monkeypatch.setattr(threemf_tools, "extract_filament_usage_from_3mf", lambda path, plate: [{"used_g": 12.5}])
+    monkeypatch.setattr(threemf_tools, "extract_filament_properties_from_3mf", lambda path: {})
+
+    def broken_timeline(path, plate):
+        raise ValueError("M82 timeline unavailable")
+
+    monkeypatch.setattr(threemf_tools, "extract_layer_filament_usage_from_3mf", broken_timeline)
+
+    analysis = print_file_analysis._parse_3mf(str(path), 5)
+
+    assert analysis.slicer_estimates == {"print_time_seconds": 900, "filament_used_grams": 12.5}
+    assert analysis.layer_usage is None
+    assert analysis.timeline_error == "M82 timeline unavailable"
 
 
 @pytest.mark.asyncio
@@ -337,6 +398,43 @@ def test_deleting_a_printer_releases_current_and_finishing_contexts(tmp_path):
     assert not manager._print_file_analysis_finishing_contexts
 
 
+def test_analysis_context_never_enters_printer_state_serialization(tmp_path):
+    from backend.app.services.bambu_mqtt import PrinterState
+
+    path = tmp_path / "job.3mf"
+    path.write_bytes(b"fixture")
+    manager = _Manager()
+    bind_print_file_analysis(manager, 7, 42, path, None)
+
+    state = PrinterState()
+    assert "_print_file_analysis_contexts" in manager.__dict__
+    assert "analysis" not in state.__dict__
+    assert "analysis" not in asdict(state)
+
+
+@pytest.mark.asyncio
+async def test_completion_wrapper_releases_its_context_after_an_unexpected_error(tmp_path, monkeypatch):
+    from backend.app import main
+
+    path = tmp_path / "job.3mf"
+    path.write_bytes(b"fixture")
+    manager = _Manager()
+    bind_print_file_analysis(manager, 7, 42, path, None)
+    assert begin_print_file_analysis_finishing(manager, 7, 42)
+    monkeypatch.setattr(main, "printer_manager", manager)
+
+    async def broken_impl(printer_id, data, completion):
+        completion["archive_id"] = 42
+        raise RuntimeError("late completion failure")
+
+    monkeypatch.setattr(main, "_on_print_complete_impl", broken_impl)
+    with pytest.raises(RuntimeError, match="late completion failure"):
+        await main.on_print_complete(7, {})
+
+    assert not manager._print_file_analysis_contexts
+    assert not manager._print_file_analysis_finishing_contexts
+
+
 @pytest.mark.asyncio
 async def test_real_printer_manager_uses_the_child_executor(tmp_path):
     """The production manager selects the process path, not the test seam."""
@@ -356,4 +454,5 @@ async def test_real_printer_manager_uses_the_child_executor(tmp_path):
     assert result is not None
     assert result.filament_usage[0]["used_g"] == 12.5
     assert print_file_analysis._executor is not None
+    assert print_file_analysis._executor._mp_context.get_start_method() == "spawn"
     print_file_analysis.shutdown_print_file_analysis_workers()

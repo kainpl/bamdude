@@ -1329,6 +1329,9 @@ async def on_print_complete(
     archive_id: int | None = None,
     ams_mapping: list[int] | None = None,
     expected_print_name: str | None = None,
+    file_analysis=None,
+    analysis_attempted: bool = False,
+    archive_snapshot=None,
 ) -> list[dict]:
     """Compute consumption deltas and update spool weight_used/last_used.
 
@@ -1451,6 +1454,9 @@ async def on_print_complete(
             print_started_at=effective_started_at,
             journal_events=journal_events,
             runout_purge_grams=runout_purge_grams,
+            file_analysis=file_analysis,
+            analysis_attempted=analysis_attempted,
+            archive_snapshot=archive_snapshot,
         )
         results.extend(threemf_results)
 
@@ -1655,6 +1661,9 @@ async def _track_from_3mf(
     print_started_at: datetime | None = None,
     journal_events: list | None = None,
     runout_purge_grams: float = 0.0,
+    file_analysis=None,
+    analysis_attempted: bool = False,
+    archive_snapshot=None,
 ) -> list[dict]:
     """Track usage from 3MF per-filament slicer data (primary path).
 
@@ -1676,8 +1685,10 @@ async def _track_from_3mf(
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.services.print_file_analysis import get_print_file_analysis
 
-    result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
-    archive = result.scalar_one_or_none()
+    archive = archive_snapshot
+    if archive is None:
+        result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+        archive = result.scalar_one_or_none()
     if not archive or not archive.file_path:
         logger.info("[UsageTracker] 3MF: archive %s has no file_path, skipping", archive_id)
         return []
@@ -1685,23 +1696,26 @@ async def _track_from_3mf(
     archive_plate_index = archive.plate_index
     file_path = app_settings.base_dir / archive.file_path
 
-    # Archive identity/path are now scalar snapshots. Release the read
-    # transaction before waiting for the shared CPU worker.
-    await db.commit()
-
     # Scope the extract to the dispatched plate (#1697). ``archive.plate_index``
     # is our authoritative "which plate ran" record — set by the dispatcher for
     # queue and direct prints alike, in the same 1-based convention the parser
     # expects. Without it a single-plate job from a multi-plate 3MF debits the
     # spool for every plate's filament. None (external/screen prints where we
     # can't know the plate) → whole-file sum, unchanged.
-    analysis = await get_print_file_analysis(
-        printer_manager,
-        printer_id,
-        archive_id,
-        file_path,
-        archive_plate_index,
-    )
+    if analysis_attempted:
+        analysis = file_analysis
+    else:
+        # Normal completion owns its short-lived session.  The historical
+        # reconcile caller supplies its already-acquired finishing analysis so
+        # this helper never commits or waits through that caller's transaction.
+        await db.commit()
+        analysis = await get_print_file_analysis(
+            printer_manager,
+            printer_id,
+            archive_id,
+            file_path,
+            archive_plate_index,
+        )
     if analysis is None:
         logger.info("[UsageTracker] 3MF analysis unavailable for archive %s", archive_id)
         return []

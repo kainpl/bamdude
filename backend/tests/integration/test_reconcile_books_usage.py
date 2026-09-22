@@ -47,6 +47,8 @@ async def test_a_completed_close_books_usage(db_session, printer_factory):
     kwargs = mock_book.await_args.kwargs
     assert kwargs["archive_id"] == archive.id
     assert kwargs["expected_print_name"] == "Overnight_Job"
+    assert kwargs["analysis_attempted"] is True
+    assert kwargs["archive_snapshot"] is archive
 
 
 @pytest.mark.asyncio

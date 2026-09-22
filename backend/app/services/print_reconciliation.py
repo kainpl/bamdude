@@ -259,25 +259,15 @@ def _classify(live_state: str, *, file_match: bool, subtask_stale: bool = False)
     return "completed"
 
 
-def _slicer_estimates(file_path: str, plate_index: int | None = None) -> dict:
-    """Best-effort slicer estimates from a 3MF, for a recovered print.
+def _archive_file_path(file_path: str) -> Path | None:
+    """Resolve an archive file safely without opening or parsing it.
 
-    Returns ``{"print_time_seconds": int, "filament_used_grams": float}``
-    with only the keys it could read. Any failure (no file, not a 3MF,
-    parse error) returns ``{}`` — the MQTT completion event that would
-    have carried the real figures is gone, so estimates are a courtesy,
-    never a hard requirement.
-
-    ``file_path`` is a ``PrintArchive.file_path``, i.e. relative to
-    ``settings.base_dir`` (see ``archive.py`` where it is written as
-    ``dest_file.relative_to(settings.base_dir)``); it is resolved the same way
-    every other reader does. ``plate_index`` scopes the parse to the plate that
-    was actually printed — without it a multi-plate container falls through to
-    ``root.find(".//plate")`` and reports plate 1's weight and time for a print
-    of plate 5.
+    Reconciliation may run on a reconnect path.  The caller hands the result
+    to the shared process-worker analysis, rather than parsing the 3MF on the
+    server event loop.
     """
     if not file_path:
-        return {}
+        return None
     resolved = Path(file_path)
     if not resolved.is_absolute():
         # The value comes from our own writer, but it is still a DB string —
@@ -287,25 +277,10 @@ def _slicer_estimates(file_path: str, plate_index: int | None = None) -> dict:
             resolved = safe_join_under(settings.base_dir, file_path, http=False)
         except PathTraversalError as exc:
             logger.warning("reconcile: refusing unsafe archive path %r — %s", file_path, exc)
-            return {}
+            return None
     if not resolved.is_file():
-        return {}
-    try:
-        from backend.app.services.archive import ThreeMFParser
-
-        meta = ThreeMFParser(resolved, plate_number=plate_index).parse()
-        out: dict = {}
-        if isinstance(meta, dict):
-            pts = meta.get("print_time_seconds")
-            fug = meta.get("filament_used_grams")
-            if isinstance(pts, (int, float)) and pts > 0:
-                out["print_time_seconds"] = int(pts)
-            if isinstance(fug, (int, float)) and fug > 0:
-                out["filament_used_grams"] = float(fug)
-        return out
-    except Exception as exc:  # noqa: BLE001 — best-effort, never fatal
-        logger.debug("reconcile: slicer-estimate parse failed for %s — %s", file_path, exc)
-        return {}
+        return None
+    return resolved
 
 
 async def _reconcile_complete_archive(
@@ -334,140 +309,112 @@ async def _reconcile_complete_archive(
     Returns the archive id. The caller commits.
     """
     from backend.app.main import _bump_library_file_usage
+    from backend.app.services.print_file_analysis import (
+        begin_historical_print_file_analysis_finishing,
+        discard_print_file_analysis,
+        get_print_file_analysis,
+    )
+    from backend.app.services.printer_manager import printer_manager
     from backend.app.services.queue_counters import set_queue_error, set_queue_idle, update_queue_counters
 
-    now = datetime.now(timezone.utc)
-    archive.status = status
-    if status == "failed" and not archive.failure_reason:
-        # Not a user action and not an HMS-classified fault — record why the row
-        # was closed, and that its end time is a reconstruction (#2592).
-        archive.failure_reason = "Stale - reconciled after reconnect, end time unknown"
+    analysis = None
+    analysis_leased = False
+    path = _archive_file_path(archive.file_path or "")
+    if archive.printer_id is not None and path is not None:
+        analysis_leased = begin_historical_print_file_analysis_finishing(
+            printer_manager, archive.printer_id, archive.id, path, archive.plate_index
+        )
+    try:
+        if analysis_leased:
+            analysis = await get_print_file_analysis(
+                printer_manager, archive.printer_id, archive.id, path, archive.plate_index
+            )
 
-    # Best-effort telemetry — only fill what is missing.
-    estimates = _slicer_estimates(archive.file_path or "", archive.plate_index)
-    if archive.print_time_seconds is None and "print_time_seconds" in estimates:
-        archive.print_time_seconds = estimates["print_time_seconds"]
-    if archive.filament_used_grams is None and "filament_used_grams" in estimates:
-        archive.filament_used_grams = estimates["filament_used_grams"]
+        now = datetime.now(timezone.utc)
+        archive.status = status
+        if status == "failed" and not archive.failure_reason:
+            archive.failure_reason = "Stale - reconciled after reconnect, end time unknown"
 
-    # NOT ``now``: the reconnect moment is not the print's end time, and the gap
-    # would be banked as print time by the actual_time_seconds hook and by the
-    # /archives/stats total (#2592). Computed AFTER the estimate fill above, so a
-    # fallback archive that just learned its print_time_seconds gets the better
-    # bound.
-    archive.completed_at = _recovered_completed_at(archive.started_at, archive.print_time_seconds, now)
+        estimates = analysis.slicer_estimates if analysis is not None else {}
+        if archive.print_time_seconds is None and "print_time_seconds" in estimates:
+            archive.print_time_seconds = int(estimates["print_time_seconds"])
+        if archive.filament_used_grams is None and "filament_used_grams" in estimates:
+            archive.filament_used_grams = float(estimates["filament_used_grams"])
+        archive.completed_at = _recovered_completed_at(archive.started_at, archive.print_time_seconds, now)
 
-    # A finished print books its filament exactly like a supervised one —
-    # measured hole 2026-08-29: six overnight prints closed by this sweep left
-    # ~1.77 kg unbooked. Completed only: a reconciled "failed" carries no layer
-    # information, and booking the full estimate for a partial print would be
-    # worse than the gap it fills. The persisted print-start session survives
-    # the outage (that is what it is for), so the dispatched mapping is intact;
-    # ``expected_print_name`` keeps a session belonging to a DIFFERENT print
-    # from lending its mapping. Skipped when the archive already has history —
-    # a re-entered sweep must not double-book. Best-effort: a booking failure
-    # must never break the sweep.
-    if status == "completed" and archive.printer_id is not None:
-        try:
-            from sqlalchemy import func as _func
+        if status == "completed" and archive.printer_id is not None:
+            try:
+                from sqlalchemy import func as _func
 
-            from backend.app.models.spool_usage_history import SpoolUsageHistory
-            from backend.app.services import usage_tracker
-            from backend.app.services.printer_manager import printer_manager as _pm
+                from backend.app.models.spool_usage_history import SpoolUsageHistory
+                from backend.app.services import usage_tracker
 
-            already_booked = (
-                await db.execute(
-                    select(_func.count(SpoolUsageHistory.id)).where(SpoolUsageHistory.archive_id == archive.id)
-                )
-            ).scalar()
-            if not already_booked:
-                persisted_name = await usage_tracker.get_persisted_print_name(db, archive.printer_id)
-                await usage_tracker.on_print_complete(
-                    archive.printer_id,
-                    {"status": "completed"},
-                    _pm,
-                    db,
-                    archive_id=archive.id,
-                    expected_print_name=archive.print_name,
-                )
-                # Drop the start row only when it belonged to THIS print — a
-                # row for the printer's next job must survive untouched.
-                if persisted_name and archive.print_name and persisted_name == archive.print_name:
-                    await usage_tracker.clear_persisted_session(db, archive.printer_id)
-        except Exception:
-            logger.exception("reconcile: usage booking failed for archive %s", archive.id)
+                already_booked = (
+                    await db.execute(
+                        select(_func.count(SpoolUsageHistory.id)).where(SpoolUsageHistory.archive_id == archive.id)
+                    )
+                ).scalar()
+                if not already_booked:
+                    persisted_name = await usage_tracker.get_persisted_print_name(db, archive.printer_id)
+                    await usage_tracker.on_print_complete(
+                        archive.printer_id,
+                        {"status": "completed"},
+                        printer_manager,
+                        db,
+                        archive_id=archive.id,
+                        expected_print_name=archive.print_name,
+                        file_analysis=analysis,
+                        # Reconcile owns an outer transaction.  Its isolated
+                        # finishing acquire above is the only allowed analysis
+                        # attempt; a no-source/unavailable result falls through
+                        # to existing accounting fallback without a hidden
+                        # caller-session commit here.
+                        analysis_attempted=True,
+                        archive_snapshot=archive,
+                    )
+                    if persisted_name and archive.print_name and persisted_name == archive.print_name:
+                        await usage_tracker.clear_persisted_session(db, archive.printer_id)
+            except Exception:
+                logger.exception("reconcile: usage booking failed for archive %s", archive.id)
 
-    # Audit flags — reassign the dict so SQLAlchemy flags the JSON column dirty.
-    extra = dict(archive.extra_data or {})
-    extra["recovered_by_startup_sweep"] = True
-    if uncertain:
-        extra["recovered_outcome_uncertain"] = True
-    archive.extra_data = extra
+        extra = dict(archive.extra_data or {})
+        extra["recovered_by_startup_sweep"] = True
+        if uncertain:
+            extra["recovered_outcome_uncertain"] = True
+        archive.extra_data = extra
+        swap_owed = status == "completed" and "swap_mode_change_table" in (extra.get("swap_macro_events_pending") or [])
 
-    # A swap printer's completion normally runs ``swap_mode_change_table``
-    # INSIDE the live handler, holding the queue claim until the table has
-    # physically moved. A print that ended while the process was down never
-    # got that — the pending checklist on the archive still says so — and a
-    # swap printer usually has ``require_plate_clear=False``, so the armed
-    # plate gate below would not hold it either: measured 2026-08-29, four
-    # minis were dispatched onto un-swapped tables a minute after the sweep.
-    # So while the swap is owed, the queue claim is NOT released and the gate
-    # is NOT armed; ``_resolve_pending_swaps`` (spawned after the caller
-    # commits) settles it — runs the macro, or pauses the queue with a reason.
-    swap_owed = status == "completed" and "swap_mode_change_table" in (extra.get("swap_macro_events_pending") or [])
+        if status == "completed":
+            await _bump_library_file_usage(db, archive.library_file_id)
 
-    # Successes only, matching the live handler: a file attempted three times
-    # and failed three times has a print_count of 0.
-    if status == "completed":
-        await _bump_library_file_usage(db, archive.library_file_id)
+        item = (
+            await db.execute(select(PrintQueueItem).where(PrintQueueItem.archive_id == archive.id))
+        ).scalar_one_or_none()
+        if item is not None:
+            item.status = status
+            item.completed_at = now
+            if status == "failed":
+                await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+            elif not swap_owed:
+                await set_queue_idle(db, item.queue_id)
+            await update_queue_counters(db, item.queue_id)
+            from backend.app.services.plate_hold import clean_up_finished_row
 
-    # Advance the linked queue item, if any.
-    item = (
-        await db.execute(select(PrintQueueItem).where(PrintQueueItem.archive_id == archive.id))
-    ).scalar_one_or_none()
-    if item is not None:
-        item.status = status
-        item.completed_at = now
-        if status == "failed":
-            await set_queue_error(db, item.queue_id, failed_item_id=item.id)
-        elif not swap_owed:
-            await set_queue_idle(db, item.queue_id)
-        await update_queue_counters(db, item.queue_id)
+            await clean_up_finished_row(db, item, queue_status=status, plate_auto_cleared=False)
 
-        # ⚠️ Finishing a row is not the same as tidying it, and this path used
-        # to do only the first half. ``on_print_complete`` selects rows still in
-        # ``printing``, so once this has advanced one the live handler finds
-        # nothing and skips its whole block — auto-clean included. The row was
-        # then completed by one path and cleaned by neither. Reported from a
-        # farm: a swap printer left a finished row sitting in its queue.
-        #
-        # ⚠️ ``plate_auto_cleared=False``, deliberately: a recovered print's
-        # plate is physically still on the bed, which is the same reason the
-        # gate is armed a few lines below. A printer that confirms its plate
-        # therefore keeps the row and is asked about it, exactly as after a
-        # supervised print.
-        from backend.app.services.plate_hold import clean_up_finished_row
+        if archive.printer_id is not None and not swap_owed:
+            await printer_manager.arm_awaiting_plate_clear(archive.printer_id, archive.id)
 
-        await clean_up_finished_row(db, item, queue_status=status, plate_auto_cleared=False)
-
-    # Arm the plate-clear gate — the recovered print's plate is physically
-    # still on the bed after an unsupervised gap, so the next job must wait
-    # for the operator's clear-plate confirmation. Except while a swap is
-    # owed: there the held queue claim is the block, and the swap resolution
-    # decides whether the plate ends up clear (macro ran) or the operator is
-    # asked (queue paused with a reason).
-    if archive.printer_id is not None and not swap_owed:
-        from backend.app.services.printer_manager import printer_manager
-
-        await printer_manager.arm_awaiting_plate_clear(archive.printer_id, archive.id)
-
-    logger.info(
-        "reconcile: closed archive %s as %s%s",
-        archive.id,
-        status,
-        " (outcome uncertain)" if uncertain else "",
-    )
-    return archive.id
+        logger.info(
+            "reconcile: closed archive %s as %s%s",
+            archive.id,
+            status,
+            " (outcome uncertain)" if uncertain else "",
+        )
+        return archive.id
+    finally:
+        if analysis_leased:
+            discard_print_file_analysis(printer_manager, archive.printer_id, archive.id)
 
 
 def _recovered_completed_at(

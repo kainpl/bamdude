@@ -6064,8 +6064,12 @@ async def _credit_free_stock(archive_id: int | None) -> None:
         logger.warning("[STOCK] free-stock credit failed for archive %s: %s", archive_id, e, exc_info=True)
 
 
-async def on_print_complete(printer_id: int, data: dict):
-    """Handle print completion - update the archive status."""
+async def _on_print_complete_impl(
+    printer_id: int,
+    data: dict,
+    analysis_completion: dict[str, int | None],
+) -> None:
+    """Complete one print; the public wrapper owns final analysis release."""
     import time
 
     logger = logging.getLogger(__name__)
@@ -6240,6 +6244,10 @@ async def on_print_complete(printer_id: int, data: dict):
     if archive_id:
         from backend.app.services.print_file_analysis import begin_print_file_analysis_finishing
 
+        # Publish the archive identity before any later awaited side effect.
+        # The public wrapper releases this exact finishing context in ``finally``
+        # if an unexpected exception aborts the remainder of this long callback.
+        analysis_completion["archive_id"] = archive_id
         begin_print_file_analysis_finishing(printer_manager, printer_id, archive_id)
 
     # Local flag — set True by any swap path (swap_compatible archive or
@@ -7644,15 +7652,6 @@ async def on_print_complete(printer_id: int, data: dict):
         except Exception as e:
             logger.debug("[SPOOLMAN] Cleanup failed: %s", e)
 
-    # The shared immutable 3MF table is useful through both internal and
-    # Spoolman completion paths above.  Release it only after both have had a
-    # chance to consume it; compare by archive inside the helper so a very fast
-    # following print cannot lose its own context.
-    if archive_id:
-        from backend.app.services.print_file_analysis import discard_print_file_analysis
-
-        discard_print_file_analysis(printer_manager, printer_id, archive_id)
-
     # Run slow operations as background tasks to avoid blocking the event loop
     # These operations can take 5-10+ seconds and would freeze the UI if awaited
 
@@ -8137,6 +8136,27 @@ _ams_cleanup_counter = 0  # Track recordings to trigger periodic cleanup
 # Track alarm cooldowns (printer_id:ams_id:type -> last_alarm_time)
 _ams_alarm_cooldown: dict[str, datetime] = {}
 AMS_ALARM_COOLDOWN_MINUTES = 60  # Don't send same alarm more than once per hour
+
+
+async def on_print_complete(printer_id: int, data: dict) -> None:
+    """Run completion work and always release only its own analysis context.
+
+    ``_on_print_complete_impl`` is intentionally large because it coordinates
+    the existing archive, queue, swap, inventory and notification workflows.
+    Keeping the archive id in this tiny wrapper gives the file-analysis lease a
+    real ``finally`` boundary without broadening any of those workflows.  A
+    rapid next print owns a different archive id, so archive-scoped release
+    cannot discard its current context.
+    """
+    analysis_completion: dict[str, int | None] = {"archive_id": None}
+    try:
+        await _on_print_complete_impl(printer_id, data, analysis_completion)
+    finally:
+        archive_id = analysis_completion["archive_id"]
+        if archive_id is not None:
+            from backend.app.services.print_file_analysis import discard_print_file_analysis
+
+            discard_print_file_analysis(printer_manager, printer_id, archive_id)
 
 
 def _ams_has_filament(ams_data: dict) -> bool:

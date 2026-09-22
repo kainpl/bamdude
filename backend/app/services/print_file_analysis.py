@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import multiprocessing as mp
 import os
 import pickle
 import time
@@ -22,6 +23,9 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import FunctionType
 from typing import TYPE_CHECKING, Literal
+from xml.etree import ElementTree
+
+import psutil
 
 if TYPE_CHECKING:
     from backend.app.services.printer_manager import PrinterManager
@@ -37,6 +41,8 @@ _MAX_LAYER_CHANNEL_ENTRIES = 1_000_000
 _MAX_ANALYSIS_BYTES = 32 * 1024 * 1024
 _MAX_RETAINED_ANALYSIS_BYTES = 256 * 1024 * 1024
 _ANALYSIS_DEADLINE_SECONDS = 180.0
+_MAX_CHILD_RSS_BYTES = 1024 * 1024 * 1024
+_CHILD_RSS_POLL_SECONDS = 0.25
 
 
 class AnalysisResourceError(RuntimeError):
@@ -55,6 +61,8 @@ class PrintFileAnalysis:
     filament_usage: list[dict]
     layer_usage: dict[int, dict[int, float]] | None
     filament_properties: dict[int, dict]
+    slicer_estimates: dict[str, int | float] = field(default_factory=dict)
+    timeline_error: str | None = None
     retained_bytes: int = 0
     layer_numbers: tuple[int, ...] = ()
     final_mm_by_filament: dict[int, float] = field(default_factory=dict)
@@ -107,7 +115,7 @@ def _analysis_executor() -> ProcessPoolExecutor:
     if _executor is None:
         # ``spawn`` is the portable baseline (including Windows embedded
         # Python); no fork-only state can leak from the web server to a worker.
-        _executor = ProcessPoolExecutor(max_workers=1)
+        _executor = ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn"))
     return _executor
 
 
@@ -135,6 +143,32 @@ async def _abandon_timed_out_executor(pool: ProcessPoolExecutor) -> None:
     await asyncio.to_thread(terminate_and_reap)
 
 
+def _pool_child_rss_bytes(pool: ProcessPoolExecutor) -> int:
+    """Return the largest live parser-child RSS, best-effort and portable."""
+    largest = 0
+    for process in tuple(getattr(pool, "_processes", {}).values()):
+        pid = getattr(process, "pid", None)
+        if not pid:
+            continue
+        try:
+            largest = max(largest, psutil.Process(pid).memory_info().rss)
+        except (psutil.Error, OSError):
+            # A child can exit between ProcessPool bookkeeping and this sample.
+            continue
+    return largest
+
+
+async def _watch_child_rss(pool: ProcessPoolExecutor) -> bool:
+    """Wait until the parser child crosses its RSS budget or the caller cancels."""
+    while True:
+        await asyncio.sleep(_CHILD_RSS_POLL_SECONDS)
+        # psutil can block in native code on Windows; never sample it on the
+        # event loop that serves API/MQTT work.
+        rss = await asyncio.to_thread(_pool_child_rss_bytes, pool)
+        if rss > _MAX_CHILD_RSS_BYTES:
+            return True
+
+
 def _parse_3mf(path_text: str, plate_id: int | None) -> PrintFileAnalysis:
     """Child-process entry point. Keep imports inside the child boundary."""
     from backend.app.utils.threemf_tools import (
@@ -149,10 +183,35 @@ def _parse_3mf(path_text: str, plate_id: int | None) -> PrintFileAnalysis:
     # extractor below; do not turn that math fixture into a ZipFile contract.
     if path.is_file():
         _validate_gcode_size(path, plate_id)
+    # Metadata totals are independently useful when the optional per-layer
+    # timeline cannot be extracted.  Read only slice_info here: ThreeMFParser
+    # also reads thumbnails and objects, neither of which belongs in a filament
+    # analysis worker or its memory budget.
+    slicer_estimates = _slicer_estimates_from_slice_info(path, plate_id)
+
+    try:
+        filament_usage = extract_filament_usage_from_3mf(path, plate_id) or []
+    except Exception as exc:  # noqa: BLE001 - degraded data is still useful
+        logger.warning("3MF filament totals unavailable for %s: %s", path, exc)
+        filament_usage = []
+    try:
+        layer_usage = extract_layer_filament_usage_from_3mf(path, plate_id)
+        timeline_error = None
+    except Exception as exc:  # noqa: BLE001 - preserve metadata/totals
+        logger.warning("3MF layer timeline unavailable for %s: %s", path, exc)
+        layer_usage = None
+        timeline_error = str(exc)
+    try:
+        filament_properties = extract_filament_properties_from_3mf(path) or {}
+    except Exception as exc:  # noqa: BLE001 - properties are accounting aid
+        logger.warning("3MF filament properties unavailable for %s: %s", path, exc)
+        filament_properties = {}
     analysis = PrintFileAnalysis(
-        filament_usage=extract_filament_usage_from_3mf(path, plate_id) or [],
-        layer_usage=extract_layer_filament_usage_from_3mf(path, plate_id),
-        filament_properties=extract_filament_properties_from_3mf(path) or {},
+        filament_usage=filament_usage,
+        layer_usage=layer_usage,
+        filament_properties=filament_properties,
+        slicer_estimates=slicer_estimates,
+        timeline_error=timeline_error,
     )
     entries = sum(len(values) for values in (analysis.layer_usage or {}).values())
     if entries > _MAX_LAYER_CHANNEL_ENTRIES:
@@ -161,6 +220,46 @@ def _parse_3mf(path_text: str, plate_id: int | None) -> PrintFileAnalysis:
     if retained_bytes > _MAX_ANALYSIS_BYTES:
         raise AnalysisResourceError(f"analysis result is {retained_bytes} bytes (limit {_MAX_ANALYSIS_BYTES})")
     return replace(analysis, retained_bytes=retained_bytes)
+
+
+def _slicer_estimates_from_slice_info(path: Path, plate_id: int | None) -> dict[str, int | float]:
+    """Read just the printed plate's time/weight, never its thumbnail/object data."""
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            try:
+                raw = archive.read("Metadata/slice_info.config")
+            except KeyError:
+                return {}
+        root = ElementTree.fromstring(raw)
+    except (OSError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
+        logger.debug("3MF slicer estimates unavailable for %s: %s", path, exc)
+        return {}
+
+    plate = None
+    if plate_id is not None:
+        for candidate in root.findall(".//plate"):
+            for metadata in candidate.findall("metadata"):
+                if metadata.get("key") == "index" and metadata.get("value") == str(plate_id):
+                    plate = candidate
+                    break
+            if plate is not None:
+                break
+    if plate is None:
+        plate = root.find(".//plate")
+    if plate is None:
+        return {}
+
+    estimates: dict[str, int | float] = {}
+    for metadata in plate.findall("metadata"):
+        key, value = metadata.get("key"), metadata.get("value")
+        try:
+            if key == "prediction" and value is not None and int(value) > 0:
+                estimates["print_time_seconds"] = int(value)
+            elif key == "weight" and value is not None and float(value) > 0:
+                estimates["filament_used_grams"] = float(value)
+        except ValueError:
+            continue
+    return estimates
 
 
 def _validate_gcode_size(path: Path, plate_id: int | None) -> None:
@@ -348,6 +447,44 @@ def begin_print_file_analysis_finishing(
     return True
 
 
+def begin_historical_print_file_analysis_finishing(
+    printer_manager: PrinterManager,
+    printer_id: int,
+    archive_id: int,
+    path: Path,
+    plate_id: int | None,
+) -> bool:
+    """Lease an isolated completion context for a recovered old archive.
+
+    Startup reconciliation can close an archive after the printer has already
+    begun another print.  Its analysis must therefore live in the finishing
+    registry keyed by the old archive, never in the one current context keyed
+    only by printer.  The caller must release this lease with
+    :func:`discard_print_file_analysis` in ``finally``.
+    """
+    source = _source(path, plate_id)
+    if source is None:
+        return False
+    key = (printer_id, archive_id)
+    finishing = _finishing_contexts(printer_manager)
+    existing = finishing.get(key)
+    if existing is not None:
+        if existing.source == source:
+            return True
+        _retire(existing)
+        finishing[key] = _new_context(printer_manager, archive_id, source, lifecycle="finishing")
+        return True
+
+    active = _contexts(printer_manager).get(printer_id)
+    if active is not None and active.archive_id == archive_id:
+        return begin_print_file_analysis_finishing(printer_manager, printer_id, archive_id)
+
+    # An active context for another archive is the normal rapid-next-print
+    # case.  It deliberately remains untouched.
+    finishing[key] = _new_context(printer_manager, archive_id, source, lifecycle="finishing")
+    return True
+
+
 async def _prepare(
     context: _Context,
     path: Path,
@@ -374,11 +511,27 @@ async def _prepare(
             raise AnalysisResourceError("analysis exceeded its deadline") from exc
     pool = _analysis_executor()
     awaitable = loop.run_in_executor(pool, _parse_3mf, os.fspath(path), source[1])
+    rss_watch = asyncio.create_task(_watch_child_rss(pool), name="3mf-analysis-rss-watch")
     try:
-        return await asyncio.wait_for(awaitable, timeout=_ANALYSIS_DEADLINE_SECONDS)
-    except TimeoutError as exc:
+        done, _ = await asyncio.wait(
+            (awaitable, rss_watch), timeout=_ANALYSIS_DEADLINE_SECONDS, return_when=asyncio.FIRST_COMPLETED
+        )
+        if not done:
+            await _abandon_timed_out_executor(pool)
+            raise AnalysisResourceError("analysis exceeded its deadline")
+        if rss_watch in done and rss_watch.result():
+            await _abandon_timed_out_executor(pool)
+            raise AnalysisResourceError("analysis exceeded child RSS budget")
+        return awaitable.result()
+    except TimeoutError as exc:  # defensive: executor future may surface its own timeout
         await _abandon_timed_out_executor(pool)
         raise AnalysisResourceError("analysis exceeded its deadline") from exc
+    finally:
+        rss_watch.cancel()
+        try:
+            await rss_watch
+        except asyncio.CancelledError:
+            pass
 
 
 async def get_print_file_analysis(

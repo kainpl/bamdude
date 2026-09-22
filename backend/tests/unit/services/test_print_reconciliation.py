@@ -12,12 +12,12 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.print_reconciliation import (
+    _archive_file_path,
     _classify,
     _file_matches,
     _name_matches_subtask,
     _reconcile,
     _reconcile_complete_archive,
-    _slicer_estimates,
     _subtask_norm,
     _subtask_stale,
 )
@@ -175,22 +175,22 @@ def test_one_space_no_longer_closes_a_running_print():
     assert _name_matches_subtask(b, live_subtask) is False
 
 
-# ---------- _slicer_estimates (pure, best-effort) ----------
+# ---------- archive source resolution (pure, no parse) ----------
 
 
-def test_slicer_estimates_missing_file_returns_empty():
-    assert _slicer_estimates("") == {}
-    assert _slicer_estimates("/no/such/file.3mf") == {}
+def test_archive_file_path_missing_file_returns_none():
+    assert _archive_file_path("") is None
+    assert _archive_file_path("/no/such/file.3mf") is None
 
 
-def test_slicer_estimates_unreadable_file_returns_empty(tmp_path):
-    # A non-3MF file must not raise — best-effort means best-effort.
+def test_archive_file_path_accepts_existing_file_without_parsing(tmp_path):
+    # This helper must not parse: the process worker owns all archive reads.
     junk = tmp_path / "not.3mf"
     junk.write_bytes(b"not a zip")
-    assert _slicer_estimates(str(junk)) == {}
+    assert _archive_file_path(str(junk)) == junk
 
 
-def test_slicer_estimates_resolves_relative_path_against_base_dir(tmp_path, monkeypatch):
+def test_archive_file_path_resolves_relative_path_against_base_dir(tmp_path, monkeypatch):
     """``PrintArchive.file_path`` is stored relative to ``settings.base_dir``, so
     the raw string must never be handed to the filesystem as-is — it would
     resolve against the process CWD and the estimate would silently never fire.
@@ -202,46 +202,14 @@ def test_slicer_estimates_resolves_relative_path_against_base_dir(tmp_path, monk
     target.write_bytes(b"not a zip")  # existence is what we're pinning
     monkeypatch.setattr(mod.settings, "base_dir", tmp_path)
 
-    seen = {}
-
-    class _Parser:
-        def __init__(self, file_path, plate_number=None):
-            seen["path"] = file_path
-            seen["plate"] = plate_number
-
-        def parse(self):
-            return {"print_time_seconds": 900, "filament_used_grams": 12.5}
-
-    monkeypatch.setattr("backend.app.services.archive.ThreeMFParser", _Parser)
-
-    out = _slicer_estimates("20250101_000000_widget/widget.gcode.3mf")
-
-    assert out == {"print_time_seconds": 900, "filament_used_grams": 12.5}
-    assert seen["path"] == target
+    assert _archive_file_path("20250101_000000_widget/widget.gcode.3mf") == target
 
 
-def test_slicer_estimates_scopes_the_parse_to_the_printed_plate(tmp_path, monkeypatch):
-    """Without a plate number the parser falls back to the first ``<plate>``, so
-    a recovered print of plate 5 would inherit plate 1's weight and time."""
+def test_archive_file_path_refuses_relative_traversal(tmp_path, monkeypatch):
     from backend.app.services import print_reconciliation as mod
 
-    target = tmp_path / "multi.gcode.3mf"
-    target.write_bytes(b"not a zip")
     monkeypatch.setattr(mod.settings, "base_dir", tmp_path)
-
-    seen = {}
-
-    class _Parser:
-        def __init__(self, file_path, plate_number=None):
-            seen["plate"] = plate_number
-
-        def parse(self):
-            return {}
-
-    monkeypatch.setattr("backend.app.services.archive.ThreeMFParser", _Parser)
-
-    _slicer_estimates("multi.gcode.3mf", 5)
-    assert seen["plate"] == 5
+    assert _archive_file_path("../outside.3mf") is None
 
 
 # ---------- _reconcile_complete_archive (DB) ----------
