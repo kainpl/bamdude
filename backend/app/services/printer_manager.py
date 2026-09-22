@@ -657,6 +657,8 @@ class PrinterManager:
         # Server-only, immutable per-print 3MF analysis.  Kept outside MQTT
         # state so reconnecting a client cannot discard a warm table.
         self._print_file_analysis_contexts: dict[int, object] = {}
+        self._print_file_analysis_finishing_contexts: dict[tuple[int, int], object] = {}
+        self._print_file_analysis_generation = 0
         self._uses_print_file_analysis_process = True
         self._models: dict[int, str | None] = {}  # Cache printer models for feature detection
         self._connected_at: dict[int, float] = {}  # Unix timestamp of last connection

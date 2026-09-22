@@ -223,8 +223,18 @@ class ArchiveDownloadRetryService:
                     ).scalar_one_or_none()
                     if refreshed is not None and archive.printer_id is not None:
                         from backend.app.services.archive import load_objects_from_archive_into_state
+                        from backend.app.services.print_file_analysis import notify_print_file_analysis_source_ready
+                        from backend.app.services.printer_manager import printer_manager
 
                         load_objects_from_archive_into_state(refreshed, archive.printer_id)
+                        if refreshed.file_path:
+                            notify_print_file_analysis_source_ready(
+                                printer_manager,
+                                archive.printer_id,
+                                archive_id,
+                                settings.base_dir / refreshed.file_path,
+                                refreshed.plate_index,
+                            )
             if ok:
                 logger.info("Archive retry: recovered 3MF for archive %s", archive_id)
                 await ws_manager.send_archive_updated({"id": archive_id, "recovered_3mf": True})

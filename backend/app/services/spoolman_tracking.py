@@ -330,7 +330,11 @@ async def store_print_data(
     # file_path="" and ``base_dir / ""`` is base_dir itself — a directory that
     # ``.exists()`` returns True for. Without the guard the no-3MF case would
     # try to parse a directory as a 3MF.
-    threemf_available = bool(file_path) and full_path.exists()
+    # A ready live/finishing context remains readable even after retention
+    # removed the archive file.  ``get_print_file_analysis`` decides whether a
+    # cold parse is possible; this guard only excludes the genuine no-path
+    # fallback archive.
+    threemf_available = bool(file_path)
     queue_item = None
     if threemf_available:
         # Resolve the printing queue item once (#1697) — reused for both the

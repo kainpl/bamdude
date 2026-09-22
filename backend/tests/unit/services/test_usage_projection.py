@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy import update
 
 from backend.app.core.config import settings as app_settings
 from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_SPOOL_LOADED, KIND_PAUSE, PrintUsageEvent
@@ -154,6 +155,27 @@ async def test_running_print_with_no_3mf_projects_nothing_but_stays_active(db_se
     result = await compute_usage_projection(db_session, printer.id, printer_manager=_pm())
     assert result["active"] is True
     assert result["slots"] == []
+
+
+@pytest.mark.asyncio
+async def test_projection_drops_a_snapshot_that_finished_while_analysis_waited(db_session, tmp_path, monkeypatch):
+    """A slow cold parse must not publish the preceding print after completion."""
+    from backend.app.models.archive import PrintArchive
+    from backend.app.services import print_file_analysis
+    from backend.app.services.print_file_analysis import PrintFileAnalysis
+
+    monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+    printer = await _printer(db_session)
+    archive = await _archive(db_session, printer, tmp_path)
+
+    async def finish_while_waiting(*args, **kwargs):
+        await db_session.execute(update(PrintArchive).where(PrintArchive.id == archive.id).values(status="completed"))
+        await db_session.commit()
+        return PrintFileAnalysis([], None, {})
+
+    monkeypatch.setattr(print_file_analysis, "get_print_file_analysis", finish_while_waiting)
+
+    assert await compute_usage_projection(db_session, printer.id, printer_manager=_pm()) == {"active": False}
 
 
 @pytest.mark.asyncio

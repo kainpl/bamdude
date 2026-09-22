@@ -1684,9 +1684,6 @@ async def _track_from_3mf(
 
     archive_plate_index = archive.plate_index
     file_path = app_settings.base_dir / archive.file_path
-    if not file_path.exists():
-        logger.info("[UsageTracker] 3MF: file not found: %s", file_path)
-        return []
 
     # Archive identity/path are now scalar snapshots. Release the read
     # transaction before waiting for the shared CPU worker.

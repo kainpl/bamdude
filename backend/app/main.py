@@ -3295,6 +3295,42 @@ def _load_objects_from_archive(archive, printer_id: int, logger, *, is_retrigger
     load_objects_from_archive_into_state(archive, printer_id, is_retrigger=is_retrigger)
 
 
+def _bind_print_file_analysis_context(printer_id: int, archive) -> None:
+    """Bind one manager-owned analysis context to the print archive.
+
+    This is intentionally only lifecycle wiring.  A bind or a later 3MF
+    arrival does not parse G-code; the shared analysis remains lazy until the
+    printer card or final accounting needs it.
+    """
+    from backend.app.services.print_file_analysis import bind_print_file_analysis
+
+    relative_path = getattr(archive, "file_path", None)
+    source = app_settings.base_dir / relative_path if relative_path else None
+    bind_print_file_analysis(
+        printer_manager,
+        printer_id,
+        archive.id,
+        source,
+        getattr(archive, "plate_index", None),
+    )
+
+
+def _notify_print_file_analysis_source_ready(printer_id: int, archive) -> None:
+    """Tell the bound live print that an attached archive file is available."""
+    relative_path = getattr(archive, "file_path", None)
+    if not relative_path:
+        return
+    from backend.app.services.print_file_analysis import notify_print_file_analysis_source_ready
+
+    notify_print_file_analysis_source_ready(
+        printer_manager,
+        printer_id,
+        archive.id,
+        app_settings.base_dir / relative_path,
+        getattr(archive, "plate_index", None),
+    )
+
+
 def _archive_matches_check_name(row, check_name: str) -> bool:
     """Whether a ``PrintArchive`` row should be considered "the same print" as
     the on_print_start event identified by ``check_name``.
@@ -3926,6 +3962,7 @@ async def on_print_start(printer_id: int, data: dict):
                         await db.execute(select(PrintArchive).where(PrintArchive.id == active_archive_id))
                     ).scalar_one_or_none()
                     if _arc is not None:
+                        _bind_print_file_analysis_context(printer_id, _arc)
                         _load_objects_from_archive(_arc, printer_id, logger, is_retrigger=True)
                 except Exception as e:
                     logger.debug("[CALLBACK] re-load printable_objects failed: %s", e)
@@ -4017,6 +4054,8 @@ async def on_print_start(printer_id: int, data: dict):
                 if archive.printer_id != printer_id:
                     archive.printer_id = printer_id
                 await db.commit()
+
+                _bind_print_file_analysis_context(printer_id, archive)
 
                 # Track as active print
                 _active_prints[(printer_id, archive.filename)] = archive.id
@@ -4282,6 +4321,7 @@ async def on_print_start(printer_id: int, data: dict):
             # Also set up energy tracking if not already tracked (#941: persisted column)
             if existing_archive.energy_start_kwh is None:
                 await _record_energy_start(existing_archive, printer_id, db, context="existing-printing")
+            _bind_print_file_analysis_context(printer_id, existing_archive)
             # Send notification with archive data (existing archive)
             if not notification_sent:
                 archive_data = {
@@ -4358,6 +4398,7 @@ async def on_print_start(printer_id: int, data: dict):
         await db.commit()
         await db.refresh(archive)
         logger.info("Created archive %s for %s at print start (3MF to follow)", archive.id, print_name)
+        _bind_print_file_analysis_context(printer_id, archive)
 
         # Prefer the colours of the built-in-inventory spools loaded on the
         # used slots over the raw MQTT tray colours. Applied again after the
@@ -4679,6 +4720,7 @@ async def on_print_start(printer_id: int, data: dict):
                                 "created_by_id": hash_match.created_by_id,
                             }
                             await _send_print_start_notification(printer_id, data, archive_data, logger)
+                        _bind_print_file_analysis_context(printer_id, hash_match)
                         _load_objects_from_archive(hash_match, printer_id, logger)
                         return  # temp file removed by the finally below
 
@@ -4709,6 +4751,7 @@ async def on_print_start(printer_id: int, data: dict):
                             db, archive, printer_id, _get_start_ams_mapping(data, archive.id)
                         )
                         await db.commit()
+                        _notify_print_file_analysis_source_ready(printer_id, archive)
 
                         await ws_manager.send_archive_updated({"id": archive.id, "recovered_3mf": True})
 
@@ -5392,6 +5435,7 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
             await db.commit()
             await db.refresh(archive)
             archive_id = archive.id
+            _bind_print_file_analysis_context(printer_id, archive)
             logger.info(
                 "[ADOPT] Adopted the print already running on printer %s as archive %s (%s) — start unknown, 3MF to follow",
                 printer_id,
@@ -5601,6 +5645,7 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                         if subtask_name:
                             _active_prints[(printer_id, f"{subtask_name}.3mf")] = twin.id
                             _active_prints[(printer_id, subtask_name)] = twin.id
+                        _bind_print_file_analysis_context(printer_id, twin)
                         return
                     ok = await ArchiveService(db).attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)
                     refreshed = await db.get(PrintArchive, archive_id)
@@ -5622,6 +5667,7 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                             # spool outranks those.
                             await apply_loaded_spool_colors(db, refreshed, printer_id, ams_mapping)
                             await db.commit()
+                            _notify_print_file_analysis_source_ready(printer_id, refreshed)
                             load_objects_from_archive_into_state(refreshed, printer_id)
                         await ws_manager.send_archive_updated({"id": archive_id, "recovered_3mf": True})
                     else:
@@ -6185,6 +6231,16 @@ async def on_print_complete(printer_id: int, data: dict):
                 archive = result.scalar_one_or_none()
                 if archive:
                     archive_id = archive.id
+
+    # Move the run before any of the lengthy completion side effects below.
+    # Otherwise a rapid next start could replace its current context while this
+    # callback is still changing tables, updating queue rows or sending notices.
+    # A stale/duplicate completion deliberately gets no new context from this
+    # printer-id-only path.
+    if archive_id:
+        from backend.app.services.print_file_analysis import begin_print_file_analysis_finishing
+
+        begin_print_file_analysis_finishing(printer_manager, printer_id, archive_id)
 
     # Local flag — set True by any swap path (swap_compatible archive or
     # runtime change_table macro) that physically clears the plate. Used at

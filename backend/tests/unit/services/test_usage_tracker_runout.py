@@ -5,6 +5,7 @@ completion path splits each slot at ITS tray's boundaries, charges frozen
 spools, and only then closes unambiguous runouts out to exactly label_weight.
 """
 
+import zipfile
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -49,12 +50,17 @@ async def _make_archive(db_session, printer, tmp_path):
     from backend.app.models.archive import PrintArchive
 
     (tmp_path / "archives").mkdir(exist_ok=True)
-    (tmp_path / "archives" / "test.3mf").write_bytes(b"stub")
+    # The accounting extractor is mocked below, but its shared-analysis
+    # boundary now validates that the source is a real 3MF before any worker
+    # can inflate it. Keep this fixture a minimal valid container rather than
+    # relying on an invalid-byte shortcut.
+    with zipfile.ZipFile(tmp_path / "archives" / "test.3mf", "w") as container:
+        container.writestr("Metadata/plate_1.gcode", "M73 L1\n")
     a = PrintArchive(
         printer_id=printer.id,
         filename="test.3mf",
         file_path="archives/test.3mf",
-        file_size=4,
+        file_size=(tmp_path / "archives" / "test.3mf").stat().st_size,
         print_name="test_print",
         status="printing",
         filament_used_grams=300.0,

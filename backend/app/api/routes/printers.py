@@ -828,6 +828,9 @@ async def delete_printer(
         raise HTTPException(404, "Printer not found")
 
     printer_manager.disconnect_printer(printer_id)
+    from backend.app.services.print_file_analysis import discard_printer_print_file_analysis
+
+    discard_printer_print_file_analysis(printer_manager, printer_id)
 
     if delete_archives:
         # ⚠️ One at a time through ``ArchiveService``, not a bulk DELETE. The
