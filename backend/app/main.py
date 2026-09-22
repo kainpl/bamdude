@@ -6547,6 +6547,20 @@ async def _on_print_complete_impl(
         # Resolve/freeze the exact durable queue row before WS, user cleanup,
         # relay or macros. A missing row never authorizes another row's finish.
         data = _normalise_user_stopped_terminal(printer_id, archive_id, data)
+        terminal_outcome = _normalise_terminal_outcome(data)
+        if terminal_outcome is None:
+            logger.warning(
+                "Ignoring bound terminal with unknown outcome for archive %s on printer %s: %r",
+                archive_id,
+                printer_id,
+                data.get("status"),
+            )
+            return
+        # The queue has never represented ``aborted``; all consumers of an
+        # addressed run must see the same normalized terminal outcome as the
+        # atomic archive/item commit below.  Keeping the raw MQTT spelling for
+        # the later archive service would silently split that pair again.
+        data = {**data, "status": terminal_outcome}
         accepted_queue_item_id = await _accept_bound_terminal_run(printer_id, bound_run, data)
         if accepted_queue_item_id is None:
             return
