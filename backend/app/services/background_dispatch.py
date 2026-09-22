@@ -2374,6 +2374,7 @@ class BackgroundDispatchService:
                         job.printer_id,
                         job.requested_by_user_id,
                         job.requested_by_username,
+                        archive_id=archive.id,
                     )
 
                 job.outcome = {
@@ -3059,6 +3060,7 @@ class BackgroundDispatchService:
                         job.printer_id,
                         job.requested_by_user_id,
                         job.requested_by_username,
+                        archive_id=archive.id,
                     )
 
                 # Direct-Print flow only: archive_print copies the 3MF, so

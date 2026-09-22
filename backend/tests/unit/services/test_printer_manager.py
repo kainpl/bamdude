@@ -787,6 +787,16 @@ class TestPrinterManager:
         # Should not raise
         manager.clear_current_print_user(999)
 
+    def test_archive_scoped_user_clear_preserves_a_newer_run(self, manager):
+        manager.set_current_print_user(1, 42, "old", archive_id=11)
+        manager.set_current_print_user(1, 99, "new", archive_id=12)
+
+        cleared = manager.clear_current_print_user(1, archive_id=11)
+
+        assert not cleared
+        assert manager.get_current_print_user(1, archive_id=11) is None
+        assert manager.get_current_print_user(1, archive_id=12)["user_id"] == 99
+
     def test_set_current_print_user_overwrites_existing(self, manager):
         """Verify setting user overwrites existing value."""
         manager.set_current_print_user(1, 42, "user1")

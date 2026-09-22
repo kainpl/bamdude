@@ -510,10 +510,10 @@ _timelapse_baselines: dict[int, set[str]] = {}
 # Track active bed cooldown monitoring tasks: {printer_id: asyncio.Task}
 _bed_cooldown_tasks: dict[int, asyncio.Task] = {}
 
-# Track printers where the user explicitly stopped the print from the queue UI.
-# When on_print_complete fires with status "failed" for these printers we treat it
-# as "cancelled" (stopped by user) so the correct notification email is sent.
-_user_stopped_printers: set[int] = set()
+# Track an explicit queue-UI stop by its execution archive when the manager has
+# one.  A bare printer-id flag used to let terminal A reclassify a later B as
+# ``cancelled`` after a rapid restart on the same printer.
+_user_stopped_printers: dict[int, int | None] = {}
 
 
 # HMS short-code → human-readable failure reason. Used by on_print_complete when
@@ -1408,8 +1408,15 @@ def mark_printer_stopped_by_user(printer_id: int) -> None:
     reclassify it as 'cancelled' so the correct 'print stopped' notification is sent
     rather than a 'print failed' notification.
     """
-    _user_stopped_printers.add(printer_id)
-    logging.getLogger(__name__).info("Marked printer %s as user-stopped from queue", printer_id)
+    from backend.app.services.print_run_binding import current_print_run
+
+    run = current_print_run(printer_manager, printer_id)
+    _user_stopped_printers[printer_id] = run.archive_id if run is not None else None
+    logging.getLogger(__name__).info(
+        "Marked printer %s as user-stopped from queue (archive=%s)",
+        printer_id,
+        _user_stopped_printers[printer_id],
+    )
 
 
 _last_status_broadcast: dict[int, str] = {}
@@ -3713,7 +3720,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
     logger.info("[CALLBACK] on_print_start called for printer %s, data keys: %s", printer_id, list(data.keys()))
 
     # Clear any stale user-stopped flag from previous print cycles
-    _user_stopped_printers.discard(printer_id)
+    _user_stopped_printers.pop(printer_id, None)
 
     # A print starting on this bed answers the previous print's question: the
     # part is off, or the operator decided it is. Left standing, the gate from
@@ -6500,24 +6507,31 @@ async def _on_print_complete_impl(
     except Exception as e:
         logger.warning("[CALLBACK] WebSocket send_print_complete failed: %s", e)
 
-    # Capture user info before clearing (needed for print log entry)
-    _print_user_info = printer_manager.get_current_print_user(printer_id)
+    # Capture user info before clearing (needed for print log entry).  A known
+    # bound A must never read/clear B's attribution after a fast next start.
+    _print_user_info = printer_manager.get_current_print_user(printer_id, archive_id=archive_id)
 
     # Clear current print user tracking (Issue #206)
-    printer_manager.clear_current_print_user(printer_id)
+    printer_manager.clear_current_print_user(printer_id, archive_id=archive_id)
 
     # If the user explicitly stopped this print from the queue UI the printer will
     # report "failed" or "aborted" via MQTT.  Override that to "cancelled" so the
     # correct "print stopped" notification/email is sent instead of a failure alert.
     _raw_status = data.get("status", "completed")
-    if printer_id in _user_stopped_printers and _raw_status in ("failed", "aborted"):
+    stopped_archive_id = _user_stopped_printers.get(printer_id)
+    if (
+        printer_id in _user_stopped_printers
+        and (stopped_archive_id is None or stopped_archive_id == archive_id)
+        and _raw_status in ("failed", "aborted")
+    ):
         logger.info(
             "[CALLBACK] Overriding status '%s' -> 'cancelled' for printer %s (print was stopped from queue by user)",
             _raw_status,
             printer_id,
         )
         data = {**data, "status": "cancelled"}
-    _user_stopped_printers.discard(printer_id)
+    if stopped_archive_id is None or stopped_archive_id == archive_id:
+        _user_stopped_printers.pop(printer_id, None)
 
     # MQTT relay - publish print complete
     try:

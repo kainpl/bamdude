@@ -725,17 +725,43 @@ class PrinterManager:
         if info is not None:
             info.name = name
 
-    def set_current_print_user(self, printer_id: int, user_id: int, username: str):
-        """Track who started the current print (Issue #206)."""
-        self._current_print_user[printer_id] = {"user_id": user_id, "username": username}
+    def set_current_print_user(
+        self, printer_id: int, user_id: int, username: str, *, archive_id: int | None = None
+    ) -> None:
+        """Track a dispatch user's attribution for one execution archive.
 
-    def get_current_print_user(self, printer_id: int) -> dict | None:
-        """Get the user who started the current print (Issue #206)."""
-        return self._current_print_user.get(printer_id)
+        Older callers without an execution archive remain supported for
+        external/legacy starts.  A completion handler that *does* know its
+        archive must use the guarded readers below: a late A completion may
+        never consume B's user attribution merely because both used the same
+        printer.
+        """
+        self._current_print_user[printer_id] = {
+            "user_id": user_id,
+            "username": username,
+            "archive_id": archive_id,
+        }
 
-    def clear_current_print_user(self, printer_id: int):
-        """Clear the current print user when print completes (Issue #206)."""
+    def get_current_print_user(self, printer_id: int, *, archive_id: int | None = None) -> dict | None:
+        """Get the user for this printer, optionally only for one run."""
+        user = self._current_print_user.get(printer_id)
+        if user is None or archive_id is None:
+            return user
+        # A legacy record without an address may still belong to this run; it
+        # must not, however, be mistaken for a positively addressed new run.
+        if user.get("archive_id") not in (None, archive_id):
+            return None
+        return user
+
+    def clear_current_print_user(self, printer_id: int, *, archive_id: int | None = None) -> bool:
+        """Clear user attribution, never clearing another execution archive."""
+        user = self._current_print_user.get(printer_id)
+        if user is None:
+            return False
+        if archive_id is not None and user.get("archive_id") not in (None, archive_id):
+            return False
         self._current_print_user.pop(printer_id, None)
+        return True
 
     def is_awaiting_plate_clear(self, printer_id: int) -> bool:
         """Returns True when the printer's queue is blocked on user plate-clear confirmation."""
