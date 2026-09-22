@@ -19,6 +19,7 @@ import zipfile
 from bisect import bisect_right
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import FunctionType
@@ -107,6 +108,8 @@ class _Context:
 
 
 _executor: ProcessPoolExecutor | None = None
+_process_gate_loop: asyncio.AbstractEventLoop | None = None
+_process_gate: asyncio.Lock | None = None
 
 
 def _analysis_executor() -> ProcessPoolExecutor:
@@ -117,6 +120,25 @@ def _analysis_executor() -> ProcessPoolExecutor:
         # Python); no fork-only state can leak from the web server to a worker.
         _executor = ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn"))
     return _executor
+
+
+def _analysis_process_gate() -> asyncio.Lock:
+    """Return the one app-loop gate for work submitted to the parser child.
+
+    ``ProcessPoolExecutor(max_workers=1)`` serializes execution but not
+    ownership: it can hold an old retired job and a newer job in its internal
+    queue.  The explicit gate makes the current submitter the only possible
+    child owner, so cancellation can terminate/reap it without killing an
+    unrelated print that happened to be queued behind it.  Test event loops
+    are short-lived; recreating their gate is intentional and does not change
+    the production single-event-loop invariant.
+    """
+    global _process_gate, _process_gate_loop
+    loop = asyncio.get_running_loop()
+    if _process_gate is None or _process_gate_loop is not loop:
+        _process_gate_loop = loop
+        _process_gate = asyncio.Lock()
+    return _process_gate
 
 
 async def _abandon_timed_out_executor(pool: ProcessPoolExecutor) -> None:
@@ -141,6 +163,18 @@ async def _abandon_timed_out_executor(pool: ProcessPoolExecutor) -> None:
             process.join(timeout=5)
 
     await asyncio.to_thread(terminate_and_reap)
+
+
+async def _abandon_executor_future(pool: ProcessPoolExecutor, future) -> None:
+    """Retire a wedged pool and consume its terminal Future outcome.
+
+    Killing a process turns its outstanding executor future into
+    ``BrokenProcessPool`` asynchronously.  Leaving that future unobserved
+    produces an event-loop warning even though the caller already received the
+    intended resource failure.
+    """
+    await _abandon_timed_out_executor(pool)
+    await asyncio.gather(future, return_exceptions=True)
 
 
 def _pool_child_rss_bytes(pool: ProcessPoolExecutor) -> int:
@@ -509,29 +543,43 @@ async def _prepare(
             return await asyncio.wait_for(awaitable, timeout=_ANALYSIS_DEADLINE_SECONDS)
         except TimeoutError as exc:
             raise AnalysisResourceError("analysis exceeded its deadline") from exc
-    pool = _analysis_executor()
-    awaitable = loop.run_in_executor(pool, _parse_3mf, os.fspath(path), source[1])
-    rss_watch = asyncio.create_task(_watch_child_rss(pool), name="3mf-analysis-rss-watch")
-    try:
-        done, _ = await asyncio.wait(
-            (awaitable, rss_watch), timeout=_ANALYSIS_DEADLINE_SECONDS, return_when=asyncio.FIRST_COMPLETED
-        )
-        if not done:
-            await _abandon_timed_out_executor(pool)
-            raise AnalysisResourceError("analysis exceeded its deadline")
-        if rss_watch in done and rss_watch.result():
-            await _abandon_timed_out_executor(pool)
-            raise AnalysisResourceError("analysis exceeded child RSS budget")
-        return awaitable.result()
-    except TimeoutError as exc:  # defensive: executor future may surface its own timeout
-        await _abandon_timed_out_executor(pool)
-        raise AnalysisResourceError("analysis exceeded its deadline") from exc
-    finally:
-        rss_watch.cancel()
+    async with _analysis_process_gate():
+        pool = _analysis_executor()
+        awaitable = loop.run_in_executor(pool, _parse_3mf, os.fspath(path), source[1])
+        rss_watch = asyncio.create_task(_watch_child_rss(pool), name="3mf-analysis-rss-watch")
         try:
-            await rss_watch
+            done, _ = await asyncio.wait(
+                (awaitable, rss_watch), timeout=_ANALYSIS_DEADLINE_SECONDS, return_when=asyncio.FIRST_COMPLETED
+            )
+            if not done:
+                await _abandon_executor_future(pool, awaitable)
+                raise AnalysisResourceError("analysis exceeded its deadline")
+            if rss_watch in done and rss_watch.result():
+                await _abandon_executor_future(pool, awaitable)
+                raise AnalysisResourceError("analysis exceeded child RSS budget")
+            return awaitable.result()
+        except BrokenProcessPool as exc:
+            # A child can die from an OS kill/OOM or a native ZIP/parser crash.
+            # A broken executor is permanently unusable, so keeping it would make
+            # every bounded retry fail without ever starting a replacement child.
+            await _abandon_timed_out_executor(pool)
+            raise AnalysisResourceError("analysis worker crashed") from exc
+        except TimeoutError as exc:  # defensive: executor future may surface its own timeout
+            await _abandon_executor_future(pool, awaitable)
+            raise AnalysisResourceError("analysis exceeded its deadline") from exc
         except asyncio.CancelledError:
-            pass
+            # This task owns the gate, hence no other context can be executing
+            # or queued in this one-worker pool.  Retiring a print must reclaim
+            # its child rather than leave CPU/RSS occupied until a huge G-code
+            # parse happens to end.
+            await _abandon_executor_future(pool, awaitable)
+            raise
+        finally:
+            rss_watch.cancel()
+            try:
+                await rss_watch
+            except asyncio.CancelledError:
+                pass
 
 
 async def get_print_file_analysis(

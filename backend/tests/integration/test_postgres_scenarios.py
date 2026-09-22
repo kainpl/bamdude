@@ -433,3 +433,17 @@ class TestArchiveWriteScope:
         _wipe(url)
         result = _run("archive_write_lock", tmp_path_factory.mktemp("pg_archive_write_lock"), url)
         assert result == {"blocked_before_commit": True, "second_entered": True}
+
+
+class TestPrintAnalysisConnectionRelease:
+    """The cache wait must not hold a PostgreSQL transaction or pool checkout."""
+
+    def test_a_cold_projection_releases_its_transaction_before_waiting(self, tmp_path_factory):
+        url = _pg_url()
+        _wipe(url)
+        result = _run("analysis_wait_release", tmp_path_factory.mktemp("pg_analysis_wait"), url)
+        assert result == {
+            "reader_transaction_open_while_waiting": False,
+            "writer_completed": True,
+            "projection_active": True,
+        }

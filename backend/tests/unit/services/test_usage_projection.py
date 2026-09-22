@@ -1,9 +1,11 @@
 """Live usage projection: display-only math from journal + G-code cumulative."""
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.app.core.config import settings as app_settings
 from backend.app.models.print_usage_event import EVENT_RUNOUT, EVENT_SPOOL_LOADED, KIND_PAUSE, PrintUsageEvent
@@ -176,6 +178,83 @@ async def test_projection_drops_a_snapshot_that_finished_while_analysis_waited(d
     monkeypatch.setattr(print_file_analysis, "get_print_file_analysis", finish_while_waiting)
 
     assert await compute_usage_projection(db_session, printer.id, printer_manager=_pm()) == {"active": False}
+
+
+@pytest.mark.asyncio
+async def test_projection_releases_its_read_transaction_before_waiting_for_analysis(db_session, tmp_path, monkeypatch):
+    """A long shared parse may wait, but it must not retain this request's transaction."""
+    from backend.app.services import print_file_analysis
+    from backend.app.services.print_file_analysis import PrintFileAnalysis
+
+    monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+    printer = await _printer(db_session)
+    await _archive(db_session, printer, tmp_path)
+    observed_transaction = None
+
+    async def inspect_wait(*args, **kwargs):
+        nonlocal observed_transaction
+        observed_transaction = db_session.in_transaction()
+        return PrintFileAnalysis([], None, {})
+
+    monkeypatch.setattr(print_file_analysis, "get_print_file_analysis", inspect_wait)
+
+    result = await compute_usage_projection(db_session, printer.id, printer_manager=_pm())
+
+    assert observed_transaction is False
+    assert result["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_projection_wait_does_not_block_a_real_file_sqlite_writer(tmp_path, monkeypatch):
+    """Separate SQLite connections can write while the shared parser is held.
+
+    The normal test engine deliberately uses one in-memory StaticPool, so a
+    second session cannot demonstrate lock ownership there.  This file-backed
+    engine is intentionally local to the test and exercises the real SQLite
+    transaction boundary without borrowing application globals.
+    """
+    from backend.app.core.database import Base, import_all_models
+    from backend.app.models.printer import Printer
+    from backend.app.services import print_file_analysis
+    from backend.app.services.print_file_analysis import PrintFileAnalysis
+
+    monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{(tmp_path / 'projection-contention.sqlite').as_posix()}")
+    sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def held_analysis(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return PrintFileAnalysis([], None, {})
+
+    monkeypatch.setattr(print_file_analysis, "get_print_file_analysis", held_analysis)
+    import_all_models()
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with sessions() as seed:
+            printer = await _printer(seed)
+            await _archive(seed, printer, tmp_path)
+            printer_id = printer.id
+
+        async with sessions() as reader:
+            projection = asyncio.create_task(compute_usage_projection(reader, printer_id, printer_manager=_pm()))
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            assert reader.in_transaction() is False
+
+            async with sessions() as writer:
+                await asyncio.wait_for(
+                    writer.execute(update(Printer).where(Printer.id == printer_id).values(name="writer-progressed")),
+                    timeout=1,
+                )
+                await asyncio.wait_for(writer.commit(), timeout=1)
+
+            release.set()
+            assert (await projection)["active"] is True
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

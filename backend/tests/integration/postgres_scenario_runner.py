@@ -14,6 +14,8 @@ Modes:
     cyrillic_search    upper-case Cyrillic finds its lower-case row, naturally
                        and through the forced collated SQL
     archive_write_lock PostgreSQL holds the per-archive write guard until commit
+    analysis_wait_release a cold usage projection releases its DB transaction
+                          before waiting for shared file analysis
 
 Usage: python -m backend.tests.integration.postgres_scenario_runner <mode>
 """
@@ -21,6 +23,7 @@ Usage: python -m backend.tests.integration.postgres_scenario_runner <mode>
 import asyncio
 import json
 import sys
+from types import SimpleNamespace
 
 
 async def _init() -> None:
@@ -408,6 +411,81 @@ async def _archive_write_lock() -> dict:
     return {"blocked_before_commit": blocked_before_commit, "second_entered": second_entered.is_set()}
 
 
+async def _analysis_wait_release() -> dict:
+    """Prove the projection worker wait does not retain a PG transaction.
+
+    This is deliberately an integration probe, not an inspection of whether
+    the code calls ``commit``: a second session writes while the first is held
+    at the cache await.  It catches the regression where a large parse retained
+    a pooled connection/transaction through every browser poll.
+    """
+    from sqlalchemy import update
+
+    from backend.app.core.database import async_session
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.printer import Printer
+    from backend.app.services import print_file_analysis
+    from backend.app.services.print_file_analysis import PrintFileAnalysis
+    from backend.app.services.usage_projection import compute_usage_projection
+
+    async with async_session() as setup:
+        printer = Printer(
+            name="analysis-printer",
+            ip_address="10.0.0.9",
+            access_code="00000000",
+            serial_number="ANALYSIS1",
+            model="X1C",
+        )
+        setup.add(printer)
+        await setup.flush()
+        archive = PrintArchive(
+            printer_id=printer.id,
+            filename="analysis.gcode.3mf",
+            file_path="archives/analysis.gcode.3mf",
+            file_size=1,
+            print_name="analysis",
+            status="printing",
+        )
+        setup.add(archive)
+        await setup.commit()
+        printer_id = printer.id
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    reader_transaction_open: bool | None = None
+
+    class _Manager:
+        def get_status(self, _printer_id):
+            return SimpleNamespace(state="RUNNING", layer_num=1, total_layers=1, raw_data={})
+
+    async def held_analysis(*_args, **_kwargs):
+        nonlocal reader_transaction_open
+        reader_transaction_open = reader.in_transaction()
+        entered.set()
+        await release.wait()
+        return PrintFileAnalysis([{"slot_id": 1, "used_g": 1.0}], None, {})
+
+    original = print_file_analysis.get_print_file_analysis
+    print_file_analysis.get_print_file_analysis = held_analysis
+    try:
+        async with async_session() as reader:
+            projection = asyncio.create_task(compute_usage_projection(reader, printer_id, printer_manager=_Manager()))
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            async with async_session() as writer:
+                await writer.execute(update(Printer).where(Printer.id == printer_id).values(name="analysis-writer"))
+                await asyncio.wait_for(writer.commit(), timeout=5)
+            release.set()
+            result = await asyncio.wait_for(projection, timeout=5)
+    finally:
+        print_file_analysis.get_print_file_analysis = original
+
+    return {
+        "reader_transaction_open_while_waiting": reader_transaction_open,
+        "writer_completed": True,
+        "projection_active": result["active"],
+    }
+
+
 async def _main(mode: str) -> dict:
     # One event loop for the whole run. The engine is a module-level singleton
     # holding connections bound to whichever loop created them, so a second
@@ -422,6 +500,8 @@ async def _main(mode: str) -> dict:
         return await _cyrillic_search()
     if mode == "archive_write_lock":
         return await _archive_write_lock()
+    if mode == "analysis_wait_release":
+        return await _analysis_wait_release()
     return await _report()
 
 
