@@ -105,6 +105,23 @@ async def test_skips_pre_capture_when_timelapse_active(monkeypatch):
     grab.assert_not_awaited()
 
 
+async def test_foreign_finish_edge_does_not_capture_for_the_active_run(monkeypatch):
+    """A late terminal edge from A must not bank a photo that B will consume."""
+    conflict = AsyncMock(return_value=True)
+    monkeypatch.setattr(main_module, "_completion_conflicts_with_active_queue", conflict)
+    capture = AsyncMock()
+    monkeypatch.setattr("backend.app.services.camera_runtime.capture", capture)
+
+    await on_finish_photo_moment(
+        7,
+        {"trigger": "finish_state", "subtask_name": "Old A", "subtask_id": "101"},
+    )
+
+    conflict.assert_awaited_once()
+    capture.assert_not_awaited()
+    assert 7 not in _stage22_finish_frames
+
+
 @pytest.mark.parametrize("setting, enabled", [(None, False), ("false", False), ("true", True)])
 async def test_settings_response_requires_saved_opt_in(db_session, setting, enabled):
     from backend.app.api.routes.settings import get_settings, set_setting

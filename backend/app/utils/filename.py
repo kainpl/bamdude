@@ -142,3 +142,18 @@ def derive_remote_filename(filename: str) -> str:
         else:
             break
     return f"{stem}.3mf".replace(" ", "_")
+
+
+def subtask_name_from_remote_filename(remote_filename: str) -> str:
+    """Return the ``project_file.subtask_name`` for an uploaded 3MF.
+
+    ``remote_filename`` is the exact name sent in ``file`` and ``url``. Strip
+    only its final container suffix: an internal ``.gcode`` or ``.3mf`` is part
+    of the user's filename and of the identity the printer later echoes.
+    """
+    if not isinstance(remote_filename, str):
+        raise TypeError(f"subtask_name_from_remote_filename requires str, got {type(remote_filename).__name__}")
+    if remote_filename.lower().endswith(".3mf"):
+        stem = remote_filename[:-4]
+        return stem or remote_filename
+    return remote_filename

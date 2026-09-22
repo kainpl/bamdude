@@ -24,6 +24,7 @@ import paho.mqtt.client as mqtt
 
 from backend.app.services.hms_actions import HMSAction, get_actions_for_error_code
 from backend.app.services.printer_feed_snapshot import FeedTelemetry, snapshot_from_state
+from backend.app.utils.filename import subtask_name_from_remote_filename
 from backend.app.utils.printer_models import is_dual_nozzle_model
 from backend.app.utils.timelapse import task_cfg
 
@@ -5002,6 +5003,7 @@ class BambuMQTTClient:
                         "trigger": "last_layer",
                         "filename": self._previous_gcode_file or self.state.gcode_file,
                         "subtask_name": self.state.subtask_name,
+                        "subtask_id": self.state.subtask_id,
                         "timelapse_was_active": self._timelapse_during_print,
                     }
                 )
@@ -5164,6 +5166,7 @@ class BambuMQTTClient:
                             "trigger": "stage_22",
                             "filename": self._previous_gcode_file or self.state.gcode_file,
                             "subtask_name": self.state.subtask_name,
+                            "subtask_id": self.state.subtask_id,
                             "timelapse_was_active": self._timelapse_during_print,
                         }
                     )
@@ -6523,6 +6526,7 @@ class BambuMQTTClient:
                 {
                     "filename": current_file,
                     "subtask_name": self.state.subtask_name,
+                    "subtask_id": self.state.subtask_id,
                     "remaining_time": self.state.remaining_time * 60
                     if self.state.remaining_time > 0
                     else None,  # Convert minutes to seconds
@@ -6553,6 +6557,7 @@ class BambuMQTTClient:
                 {
                     "filename": current_file,
                     "subtask_name": self.state.subtask_name,
+                    "subtask_id": self.state.subtask_id,
                     "remaining_time": self.state.remaining_time * 60 if self.state.remaining_time > 0 else None,
                     "raw_data": data,
                     "ams_mapping": self._captured_ams_mapping,
@@ -6634,6 +6639,7 @@ class BambuMQTTClient:
                         "trigger": "finish_state",
                         "filename": self._previous_gcode_file or current_file,
                         "subtask_name": self.state.subtask_name,
+                        "subtask_id": self.state.subtask_id,
                         "timelapse_was_active": timelapse_was_active,
                     }
                 )
@@ -6659,6 +6665,7 @@ class BambuMQTTClient:
                     "status": status,
                     "filename": self._previous_gcode_file or current_file,
                     "subtask_name": self.state.subtask_name,
+                    "subtask_id": self.state.subtask_id,
                     "raw_data": data,
                     "timelapse_was_active": timelapse_was_active,
                     "hms_errors": hms_errors_data,
@@ -7717,7 +7724,7 @@ class BambuMQTTClient:
                     # always drop it so firmware never wastes cycles on a
                     # calibration their head doesn't support (#1682).
                     "nozzle_offset_cali": nozzle_offset_cali_int,
-                    "subtask_name": filename.replace(".3mf", "").replace(".gcode", ""),
+                    "subtask_name": subtask_name_from_remote_filename(filename),
                     "profile_id": "0",
                     "project_id": submission_id,
                     "subtask_id": submission_id,

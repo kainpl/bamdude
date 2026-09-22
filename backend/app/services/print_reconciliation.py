@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.utils.filename import derive_remote_filename
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,19 @@ def _subtask_norm(name: str) -> str:
     return s.strip().lower().replace(" ", "_")
 
 
-def _name_matches_subtask(archive: PrintArchive, live_subtask_name: str) -> bool:
+def _legacy_dispatched_subtask(filename: str) -> str:
+    """Reconstruct the pre-0.6.1 wire label for one archived filename.
+
+    This is intentionally a compatibility *candidate*, not a normalizer.  The
+    old MQTT sender applied global case-sensitive replacements after deriving
+    the SD-card name.  Replaying it lets a legacy run close itself, while the
+    caller still rejects ambiguity between two rows that yield the same label.
+    """
+    remote = derive_remote_filename(os.path.basename((filename or "").replace("\\", "/")))
+    return remote.replace(".3mf", "").replace(".gcode", "")
+
+
+def _name_matches_subtask_exact(archive: PrintArchive, live_subtask_name: str) -> bool:
     """True when the archive's print identity matches the printer's current
     ``subtask_name`` — a fallback for firmware that hides the real filename.
 
@@ -190,6 +203,28 @@ def _name_matches_subtask(archive: PrintArchive, live_subtask_name: str) -> bool
         _norm_names_match(_subtask_norm(candidate), live)
         for candidate in (archive.print_name, archive.filename)
         if (candidate or "").strip()
+    )
+
+
+def _name_matches_subtask_legacy(archive: PrintArchive, live_subtask_name: str) -> bool:
+    """Whether one archive matches the former, lossy MQTT sender label.
+
+    This must stay separate from the normal matcher: a legacy label can be
+    shared by more than one archived filename, and the reconciliation sweep
+    must leave that collision untouched instead of closing arbitrary runs.
+    """
+    if not (live_subtask_name or "").strip():
+        return False
+    live = _subtask_norm(live_subtask_name)
+    if (archive.filename or "").strip():
+        return _norm_names_match(_subtask_norm(_legacy_dispatched_subtask(archive.filename)), live)
+    return False
+
+
+def _name_matches_subtask(archive: PrintArchive, live_subtask_name: str) -> bool:
+    """True for either the canonical or one legacy subtask representation."""
+    return _name_matches_subtask_exact(archive, live_subtask_name) or _name_matches_subtask_legacy(
+        archive, live_subtask_name
     )
 
 
@@ -240,7 +275,7 @@ def _classify(live_state: str, *, file_match: bool, subtask_stale: bool = False)
     - ``"uncertain"`` — printer moved on to a different/unknown file, or is
       running the same file under a **different** subtask_id (a ghost-replay
       superseded the tracked print), so the real outcome is unknowable; close
-      as completed but flagged.
+      as cancelled, pause the queue, and flag the reason for an operator.
     """
     if not file_match:
         return "uncertain"
@@ -292,8 +327,9 @@ async def _reconcile_complete_archive(
 ) -> int:
     """Close one orphan ``printing`` archive and advance its queue.
 
-    ``status`` is ``"completed"`` or ``"failed"``. ``uncertain`` records
-    that the printer had moved on, so the outcome could not be verified.
+    ``status`` is ``"completed"``, ``"failed"`` or ``"cancelled"``.
+    ``uncertain`` means the printer moved on and the outcome could not be
+    verified; it is closed as cancelled, never as a synthetic success.
     Best-effort slicer estimates fill telemetry fields only when they are
     still ``NULL`` — never overwrites a real value.
 
@@ -315,7 +351,12 @@ async def _reconcile_complete_archive(
         get_print_file_analysis,
     )
     from backend.app.services.printer_manager import printer_manager
-    from backend.app.services.queue_counters import set_queue_error, set_queue_idle, update_queue_counters
+    from backend.app.services.queue_counters import (
+        set_queue_error,
+        set_queue_idle,
+        set_queue_paused,
+        update_queue_counters,
+    )
 
     analysis = None
     analysis_leased = False
@@ -334,6 +375,8 @@ async def _reconcile_complete_archive(
         archive.status = status
         if status == "failed" and not archive.failure_reason:
             archive.failure_reason = "Stale - reconciled after reconnect, end time unknown"
+        elif status == "cancelled" and uncertain and not archive.failure_reason:
+            archive.failure_reason = "Outcome uncertain after reconnect; inspect the printer and plate before resuming"
 
         estimates = analysis.slicer_estimates if analysis is not None else {}
         if archive.print_time_seconds is None and "print_time_seconds" in estimates:
@@ -395,6 +438,8 @@ async def _reconcile_complete_archive(
             item.completed_at = now
             if status == "failed":
                 await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+            elif status == "cancelled":
+                await set_queue_paused(db, item.queue_id, paused_item_id=item.id)
             elif not swap_owed:
                 await set_queue_idle(db, item.queue_id)
             await update_queue_counters(db, item.queue_id)
@@ -543,6 +588,19 @@ async def _reconcile(
     if not orphans:
         return []
 
+    exact_subtask_matches = [archive for archive in orphans if _name_matches_subtask_exact(archive, live_subtask_name)]
+    legacy_subtask_matches = (
+        []
+        if exact_subtask_matches
+        else [archive for archive in orphans if _name_matches_subtask_legacy(archive, live_subtask_name)]
+    )
+    if len(exact_subtask_matches) > 1 or len(legacy_subtask_matches) > 1:
+        logger.warning(
+            "reconcile: subtask %r matches several printing archives on printer %d; leaving those claims untouched",
+            live_subtask_name,
+            printer_id,
+        )
+
     closed = 0
     recovered: list[int] = []
     for archive in orphans:
@@ -564,9 +622,14 @@ async def _reconcile(
         # File-name match (P1S/A1/etc.) OR subtask-name match (H2/X-series report
         # a generic ``/data/Metadata/plate_N.gcode`` that never matches the
         # sliced filename — see :func:`_name_matches_subtask`).
-        file_match = _file_matches(archive.filename or "", live_file) or _name_matches_subtask(
-            archive, live_subtask_name
+        subtask_match = (
+            archive in exact_subtask_matches
+            if len(exact_subtask_matches) == 1
+            else archive in legacy_subtask_matches
+            if len(legacy_subtask_matches) == 1
+            else False
         )
+        file_match = _file_matches(archive.filename or "", live_file) or subtask_match
         action = _classify(
             live_state,
             file_match=file_match,
@@ -577,7 +640,7 @@ async def _reconcile(
         if action == "failed":
             recovered.append(await _reconcile_complete_archive(db, archive, status="failed", uncertain=False))
         elif action == "uncertain":
-            recovered.append(await _reconcile_complete_archive(db, archive, status="completed", uncertain=True))
+            recovered.append(await _reconcile_complete_archive(db, archive, status="cancelled", uncertain=True))
         else:  # completed
             recovered.append(await _reconcile_complete_archive(db, archive, status="completed", uncertain=False))
         closed += 1

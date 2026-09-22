@@ -39,8 +39,8 @@ class _DB:
         return self._archive
 
 
-def _archive(print_name=None, filename=None):
-    return SimpleNamespace(print_name=print_name, filename=filename)
+def _archive(print_name=None, filename=None, subtask_id=None):
+    return SimpleNamespace(print_name=print_name, filename=filename, subtask_id=subtask_id)
 
 
 def _item(archive_id=7):
@@ -94,6 +94,20 @@ class TestItRefusesOnlyOnDisagreement:
         db = _DB(_archive(print_name="", filename=".gcode.3mf"))
 
         assert await _completion_belongs_to_item(db, _item(), {"subtask_name": ".3mf"}) is True
+
+    async def test_legacy_sender_alias_closes_its_own_row(self):
+        db = _DB(_archive(filename="В-2....v- pol 2 короб.gcodeP1S.gcode.3mf"))
+        assert await _completion_belongs_to_item(db, _item(), {"subtask_name": "В-2....v-_pol_2_коробP1S"}) is True
+
+    async def test_different_echoed_subtask_id_refuses_even_when_name_matches(self):
+        db = _DB(_archive(filename="Bracket v3.gcode.3mf", subtask_id="101"))
+        assert (
+            await _completion_belongs_to_item(db, _item(), {"subtask_name": "Bracket_v3", "subtask_id": "202"}) is False
+        )
+
+    async def test_matching_echoed_subtask_id_accepts_without_name(self):
+        db = _DB(_archive(filename="Bracket v3.gcode.3mf", subtask_id="101"))
+        assert await _completion_belongs_to_item(db, _item(), {"subtask_id": "101"}) is True
 
 
 @pytest.mark.asyncio

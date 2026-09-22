@@ -12,6 +12,7 @@ from backend.app.utils.filename import (
     MAX_FILENAME_BYTES,
     InvalidFilenameError,
     derive_remote_filename,
+    subtask_name_from_remote_filename,
     validate_print_filename,
 )
 
@@ -115,6 +116,15 @@ def test_derive_idempotent():
 
 def test_derive_unicode_stem_preserved():
     assert derive_remote_filename("\u30d7\u30ea\u30f3\u30c8.gcode.3mf") == "\u30d7\u30ea\u30f3\u30c8.3mf"
+
+
+def test_subtask_keeps_internal_gcode_fragment():
+    remote = "В-2....v-_pol_2_короб.gcodeP1S.3mf"
+    assert subtask_name_from_remote_filename(remote) == "В-2....v-_pol_2_короб.gcodeP1S"
+
+
+def test_subtask_extension_only_stays_nonempty():
+    assert subtask_name_from_remote_filename(".3mf") == ".3mf"
 
 
 def test_derive_non_string_input_raises_typeerror():

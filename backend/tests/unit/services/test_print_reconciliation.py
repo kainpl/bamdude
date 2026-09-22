@@ -252,8 +252,8 @@ async def test_reconcile_complete_closes_archive_completed(db_session):
 @pytest.mark.asyncio
 async def test_reconcile_complete_uncertain_sets_flag(db_session):
     archive = await _make_archive(db_session)
-    await _reconcile_complete_archive(db_session, archive, status="completed", uncertain=True)
-    assert archive.status == "completed"
+    await _reconcile_complete_archive(db_session, archive, status="cancelled", uncertain=True)
+    assert archive.status == "cancelled"
     assert archive.extra_data["recovered_outcome_uncertain"] is True
 
 
@@ -288,6 +288,24 @@ async def test_reconcile_complete_failed_sets_queue_error(db_session):
 
     assert item.status == "failed"
     assert queue.status == "error"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_uncertain_cancels_and_pauses_queue(db_session):
+    queue = PrinterQueue(printer_id=1, status="printing")
+    db_session.add(queue)
+    await db_session.flush()
+    archive = await _make_archive(db_session)
+    item = PrintQueueItem(queue_id=queue.id, archive_id=archive.id, status="printing")
+    db_session.add(item)
+    await db_session.flush()
+
+    await _reconcile_complete_archive(db_session, archive, status="cancelled", uncertain=True)
+
+    assert archive.status == "cancelled"
+    assert archive.extra_data["recovered_outcome_uncertain"] is True
+    assert item.status == "cancelled"
+    assert queue.status == "paused"
 
 
 @pytest.mark.asyncio
@@ -385,7 +403,7 @@ async def test_reconcile_ghost_replay_new_subtask_closes_uncertain(db_session):
     # stuck at "printing" forever (#1542 follow-up).
     archive = await _make_archive(db_session, filename="widget.3mf", subtask_id="task-1")
     await _reconcile(db_session, printer_id=1, live_state="RUNNING", live_file="widget.3mf", live_subtask_id="task-2")
-    assert archive.status == "completed"
+    assert archive.status == "cancelled"
     assert archive.extra_data["recovered_outcome_uncertain"] is True
 
 
@@ -412,7 +430,7 @@ async def test_reconcile_finished_during_downtime_completes(db_session):
 async def test_reconcile_printer_moved_on_is_uncertain(db_session):
     archive = await _make_archive(db_session, filename="widget.3mf")
     await _reconcile(db_session, printer_id=1, live_state="RUNNING", live_file="other.3mf")
-    assert archive.status == "completed"
+    assert archive.status == "cancelled"
     assert archive.extra_data["recovered_outcome_uncertain"] is True
 
 
@@ -488,7 +506,7 @@ async def test_reconcile_h2x_generic_file_different_subtask_is_uncertain(db_sess
         live_file="/data/Metadata/plate_1.gcode",
         live_subtask_name="different-job",
     )
-    assert archive.status == "completed"
+    assert archive.status == "cancelled"
     assert archive.extra_data["recovered_outcome_uncertain"] is True
 
 

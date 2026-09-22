@@ -5806,6 +5806,16 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
         timelapse_was_active,
     )
 
+    # A delayed end-of-print edge from A can otherwise bank/capture a picture
+    # for B before the terminal callback's own admission gate gets a chance to
+    # run. Old, identity-free firmware data keeps the established best-effort
+    # behaviour; a named or ID-bearing event needs one active queue candidate.
+    has_run_identity = bool(str(data.get("subtask_name") or "").strip()) or bool(
+        str(data.get("subtask_id") or "").strip() not in ("", "0")
+    )
+    if has_run_identity and await _completion_conflicts_with_active_queue(printer_id, data):
+        return
+
     # If a timelapse is actively recording, skip the pre-capture — the
     # post-completion path will extract the last frame from the recorded
     # video, which still provides the best framing (toolhead parked,
@@ -5947,11 +5957,12 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
 async def _completion_belongs_to_item(db, queue_item, data: dict) -> bool:
     """Whether this completion event is the one that closes *queue_item*.
 
-    ⚠️ **Nothing in the MQTT payload identifies a run.** The completion carries
-    a subtask name and no id, and the row is found by printer + ``status
-    ='printing'`` alone — so before this check, *any* completion delivered for a
-    printer closed whichever job was printing on it. The printer's own
-    calibration runs and the tail of a previous job both arrive that way.
+    Modern MQTT callbacks carry the printer's ``subtask_id`` snapshot as well
+    as its name; old firmware and external starts can still be name-only.  The
+    row used to be found by printer + ``status ='printing'`` alone, so *any*
+    completion delivered for a printer closed whichever job was printing on it.
+    The printer's own calibration runs and the tail of a previous job both
+    arrive that way.
 
     The damage is not a wrong row in a list. A job closed like this is marked
     completed while the printer is still working, leaves the queue into history,
@@ -5968,14 +5979,33 @@ async def _completion_belongs_to_item(db, queue_item, data: dict) -> bool:
     two-hour print on restart, and it is the reason this guard can be added
     without repeating that lesson.
     """
-    subtask = (data.get("subtask_name") or "").strip()
+    subtask = str(data.get("subtask_name") or "").strip()
+    subtask_id = str(data.get("subtask_id") or "").strip()
+    if subtask_id == "0":
+        subtask_id = ""
     if not subtask or not queue_item.archive_id:
-        return True
+        # An echoed non-zero ID is sufficient by itself.  A name can be absent
+        # on terminal firmware deltas, but an ID disagreement is still a real
+        # disagreement and must not close the current row.
+        if not (subtask_id and queue_item.archive_id):
+            return True
     from backend.app.models.archive import PrintArchive as _PAMatch
     from backend.app.services.print_reconciliation import _name_matches_subtask
 
     archive = await db.get(_PAMatch, queue_item.archive_id)
-    if archive is None or not (archive.print_name or archive.filename):
+    if archive is None:
+        return True
+    if subtask_id and archive.subtask_id:
+        if archive.subtask_id == subtask_id:
+            return True
+        logging.getLogger(__name__).warning(
+            "Completion subtask_id %r does not match queue item %s archive id %r — leaving the row alone",
+            subtask_id,
+            queue_item.id,
+            archive.subtask_id,
+        )
+        return False
+    if not subtask or not (archive.print_name or archive.filename):
         return True
     if _name_matches_subtask(archive, subtask):
         return True
@@ -6008,6 +6038,38 @@ async def _printing_rows_for_printer(db, printer_id: int) -> list:
         .order_by(PrintQueueItem.started_at.desc().nullslast(), PrintQueueItem.id.desc())
     )
     return list(result.scalars().all())
+
+
+async def _completion_conflicts_with_active_queue(printer_id: int, data: dict) -> bool:
+    """Whether a terminal MQTT event positively belongs to no active queue row.
+
+    This runs before printer-wide completion side effects.  Missing identity is
+    still unverifiable (legacy external firmware) and retains the established
+    fallback; a positive disagreement must not clear users, fire macros, or
+    release a queue header for another run.
+    """
+    async with async_session() as db:
+        rows = await _printing_rows_for_printer(db, printer_id)
+        if not rows:
+            return False
+        matching = [row for row in rows if await _completion_belongs_to_item(db, row, data)]
+        if len(matching) == 1:
+            return False
+        # Legacy terminal deltas can be identity-free.  Preserve their existing
+        # fallback: we cannot prove them foreign.  Once a name or non-zero ID
+        # is present, however, neither zero nor several candidates is safe to
+        # attribute to a printer-wide completion event.
+        subtask_id = str(data.get("subtask_id") or "").strip()
+        has_identity = bool((data.get("subtask_name") or "").strip()) or bool(subtask_id and subtask_id != "0")
+        if not has_identity:
+            return False
+        logging.getLogger(__name__).warning(
+            "Ignoring unbound print completion on printer %s; matching=%s active queue items=%s",
+            printer_id,
+            [row.id for row in matching],
+            [row.id for row in rows],
+        )
+        return True
 
 
 async def _auto_clean_completed_item(db, queue_item, *, queue_status: str, plate_auto_cleared: bool) -> bool:
@@ -6080,6 +6142,13 @@ async def _on_print_complete_impl(
         logger.info("[TIMING] %s: %.3fs elapsed", section, elapsed)
 
     logger.info("[CALLBACK] on_print_complete started for printer %s", printer_id)
+
+    # A delayed terminal event from A must be refused before it can touch
+    # printer-scoped state for B.  The queue update below repeats the binding
+    # selection under its own transaction; this early guard protects macros,
+    # notifications, user-stop attribution and the in-memory print context.
+    if await _completion_conflicts_with_active_queue(printer_id, data):
+        return
 
     try:
         ws_data = {
@@ -6976,9 +7045,21 @@ async def _on_print_complete_impl(
                     printer_id,
                     [(i.id, i.archive_id, i.library_file_id) for i in printing_items],
                 )
-            queue_item = printing_items[0] if printing_items else None
-            if queue_item is not None and not await _completion_belongs_to_item(db, queue_item, data):
+            matching_items = [item for item in printing_items if await _completion_belongs_to_item(db, item, data)]
+            queue_identity_unresolved = False
+            if len(matching_items) == 1:
+                queue_item = matching_items[0]
+            elif len(matching_items) > 1:
                 queue_item = None
+                queue_identity_unresolved = True
+                logger.warning(
+                    "Completion on printer %s matches multiple printing queue items %s — preserving all claims",
+                    printer_id,
+                    [item.id for item in matching_items],
+                )
+            else:
+                queue_item = None
+                queue_identity_unresolved = bool(printing_items)
             if queue_item:
                 queue_status = data.get("status", "completed")
                 # MQTT sends "aborted" for cancelled prints; normalise to
@@ -7247,7 +7328,7 @@ async def _on_print_complete_impl(
                             )
                     except Exception:
                         pass  # Don't fail if notification fails
-            else:
+            elif not queue_identity_unresolved:
                 # No queue_item was printing. Still flip queue.status back to
                 # idle/error so the UI's current-print card goes away and
                 # pending items unblock.
@@ -7285,12 +7366,8 @@ async def _on_print_complete_impl(
                         _pq.status,
                     )
 
-                # Direct-dispatch / external prints also count toward
-                # LibraryFile usage when we can trace the archive back to a
-                # library file. Queue-less reprints, direct library prints,
-                # and external prints whose archive got backfilled via
-                # attach_3mf_to_archive all land here. Gated on
-                # status=='completed' to match the queue branch.
+                # Direct-dispatch / external prints also count toward LibraryFile
+                # usage when we can trace the archive back to a library file.
                 direct_status = data.get("status", "completed")
                 if direct_status == "aborted":
                     direct_status = "cancelled"
@@ -7301,6 +7378,12 @@ async def _on_print_complete_impl(
                     if lib_id is not None:
                         await _bump_library_file_usage(db, lib_id)
                         await db.commit()
+
+            else:
+                logger.warning(
+                    "Completion on printer %s did not identify its active queue item; preserving queue state",
+                    printer_id,
+                )
     except Exception as e:
         logging.getLogger(__name__).warning(f"Queue item update failed: {e}")
 

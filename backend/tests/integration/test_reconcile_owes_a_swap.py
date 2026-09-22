@@ -188,6 +188,8 @@ def test_the_live_failure_path_actually_pauses():
 
     from backend.app import main as main_mod
 
-    source = inspect.getsource(main_mod.on_print_complete)
+    # The public callback owns analysis cleanup; the queue mutation lives in
+    # its implementation function. Pin the actual branch, not the wrapper.
+    source = inspect.getsource(main_mod._on_print_complete_impl)
     failure_branch = source[source.index("change_table macro failed") :]
     assert "set_queue_paused" in failure_branch[:2000]

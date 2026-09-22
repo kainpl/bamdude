@@ -262,6 +262,34 @@ class TestTheRowSurvivesItsOwnCompletion:
         assert await _completion_belongs_to_item(db_session, row, {"subtask_name": "Something else"}) is False
 
 
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_identified_completion_with_two_matching_rows_has_no_printer_wide_side_effects(
+    db_session, printer_factory, main_db, archive_factory
+):
+    """A stale duplicate must not let one terminal delta clear the whole printer.
+
+    The normal one-row invariant means this is a recovery edge, but choosing the
+    newest item would close an arbitrary run and still fire its macros/relay.
+    An identified event therefore needs exactly one candidate before the main
+    completion path is allowed to touch printer-wide state.
+    """
+    from backend.app.main import _completion_conflicts_with_active_queue
+
+    printer, queue = await _queue(db_session, printer_factory)
+    first = await archive_factory(printer.id, status="printing", print_name="Duplicate print")
+    second = await archive_factory(printer.id, status="printing", print_name="Duplicate print")
+    db_session.add_all(
+        [
+            PrintQueueItem(queue_id=queue.id, archive_id=first.id, status="printing", position=1),
+            PrintQueueItem(queue_id=queue.id, archive_id=second.id, status="printing", position=2),
+        ]
+    )
+    await db_session.commit()
+
+    assert await _completion_conflicts_with_active_queue(printer.id, {"subtask_name": "Duplicate print"}) is True
+
+
 class TestTheRowCarriesWhatThePrinterToldUs:
     """⚠️ Reported from a farm: repeating a print picked up from BambuStudio went
     out with no AMS mapping.

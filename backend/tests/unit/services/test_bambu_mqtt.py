@@ -4897,6 +4897,16 @@ class TestStartPrintRecordsDispatchedPlate:
         assert mqtt_client.state.dispatched_plate_id == 1
         assert mqtt_client.state.dispatched_subtask == "Single"
 
+    def test_subtask_keeps_a_meaningful_internal_gcode_fragment_on_the_wire(self, mqtt_client):
+        """Regression for the farm filename that old global replacements mangled."""
+        filename = "В-2....v-_pol_2_короб.gcodeP1S.3mf"
+
+        mqtt_client.start_print(filename)
+
+        command = json.loads(mqtt_client._client.publish.call_args.args[1])["print"]
+        assert command["subtask_name"] == "В-2....v-_pol_2_короб.gcodeP1S"
+        assert mqtt_client.state.dispatched_subtask == command["subtask_name"]
+
     def test_dispatched_plate_overwritten_by_subsequent_dispatch(self, mqtt_client):
         # Each dispatch replaces the prior record so we can never serve a
         # stale plate from an older print.
@@ -5134,7 +5144,7 @@ class TestPrintRunningObservedCallback:
 
     def test_payload_shape_matches_print_start(self, mqtt_client):
         """The payload shape must mirror on_print_start so main.py's
-        consumer can reuse the same dict fields (filename / subtask_name /
+        consumer can reuse the same dict fields (filename / subtask identity /
         remaining_time / raw_data / ams_mapping). Test pins the keys."""
         running_observed_calls: list[dict] = []
         mqtt_client.on_print_running_observed = lambda data: running_observed_calls.append(data)
@@ -5157,6 +5167,7 @@ class TestPrintRunningObservedCallback:
         assert set(payload.keys()) == {
             "filename",
             "subtask_name",
+            "subtask_id",
             "remaining_time",
             "raw_data",
             "ams_mapping",
