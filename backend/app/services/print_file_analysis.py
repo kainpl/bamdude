@@ -77,22 +77,12 @@ def _parse_3mf(path_text: str, plate_id: int | None) -> PrintFileAnalysis:
     )
 
 
-def _context_holder(printer_manager: PrinterManager, printer_id: int) -> object:
-    """Return the live print-state object that owns this print's table.
-
-    ``PrinterState`` is deliberately the production owner.  A tiny fallback
-    to the supplied manager keeps isolated service tests possible without
-    constructing an MQTT client; production calls always have a state while a
-    print is active.  The context itself still carries archive + byte identity,
-    so neither holder can accidentally lend a prior print's result to a new
-    one.
-    """
-    get_status = getattr(printer_manager, "get_status", None)
-    if callable(get_status):
-        state = get_status(printer_id)
-        if state is not None:
-            return state
-    return printer_manager
+def _contexts(printer_manager: PrinterManager) -> dict[int, _Context]:
+    contexts = getattr(printer_manager, "_print_file_analysis_contexts", None)
+    if not isinstance(contexts, dict):
+        contexts = {}
+        printer_manager._print_file_analysis_contexts = contexts
+    return contexts
 
 
 def _source(path: Path, plate_id: int | None) -> tuple[str, int | None, int, int] | None:
@@ -137,11 +127,11 @@ async def get_print_file_analysis(
     if source is None:
         return None
 
-    holder = _context_holder(printer_manager, printer_id)
-    context = getattr(holder, "print_file_analysis_context", None)
+    contexts = _contexts(printer_manager)
+    context = contexts.get(printer_id)
     if context is None or context.archive_id != archive_id or context.source != source:
         context = _Context(archive_id=archive_id, source=source)
-        holder.print_file_analysis_context = context
+        contexts[printer_id] = context
 
     if context.analysis is not None:
         return context.analysis
@@ -168,14 +158,14 @@ async def get_print_file_analysis(
         return None
 
     # A newer print/source replaced this context while its child was running.
-    if getattr(holder, "print_file_analysis_context", None) is not context:
+    if contexts.get(printer_id) is not context:
         return None
     # A server-owned attach/replacement can race the child.  Never publish the
     # old bytes under the new descriptor; the next call owns a fresh task.
     current_source = _source(path, plate_id)
     if current_source != context.source:
         if current_source is not None:
-            holder.print_file_analysis_context = _Context(archive_id=archive_id, source=current_source)
+            contexts[printer_id] = _Context(archive_id=archive_id, source=current_source)
         return None
     context.analysis = analysis
     return analysis
@@ -183,10 +173,9 @@ async def get_print_file_analysis(
 
 def discard_print_file_analysis(printer_manager: PrinterManager, printer_id: int, archive_id: int) -> None:
     """Release only the context belonging to this completed archive."""
-    holder = _context_holder(printer_manager, printer_id)
-    context = getattr(holder, "print_file_analysis_context", None)
+    context = _contexts(printer_manager).get(printer_id)
     if context is not None and context.archive_id == archive_id:
-        holder.print_file_analysis_context = None
+        _contexts(printer_manager).pop(printer_id, None)
 
 
 def shutdown_print_file_analysis_workers() -> None:
