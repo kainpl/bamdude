@@ -29,10 +29,11 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
@@ -42,6 +43,25 @@ from backend.app.utils.filename import derive_remote_filename
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
+
+# Recovery must not mistake the normal archive→queue completion window for
+# historical damage. A counter also covers overlapping callbacks; no awaits
+# occur when entering/leaving this event-loop-owned scope.
+_live_completions: dict[int, int] = {}
+
+
+@contextmanager
+def defer_queue_repair_during_completion(printer_id: int):
+    _live_completions[printer_id] = _live_completions.get(printer_id, 0) + 1
+    try:
+        yield
+    finally:
+        remaining = _live_completions[printer_id] - 1
+        if remaining:
+            _live_completions[printer_id] = remaining
+        else:
+            _live_completions.pop(printer_id)
+
 
 # Printer gcode_state values that mean a print is still in progress — an
 # orphan archive matching one of these is left untouched (the live status
@@ -600,6 +620,7 @@ async def _reconcile(
             live_subtask_name,
             printer_id,
         )
+        return []
 
     closed = 0
     recovered: list[int] = []
@@ -650,6 +671,150 @@ async def _reconcile(
     return recovered
 
 
+class _RepairSnapshotChanged(Exception):
+    """Abort the short repair transaction when telemetry/dispatch moves on."""
+
+
+def _inactive_repair_snapshot(printer_id: int) -> tuple | None:
+    from backend.app.services.background_dispatch import background_dispatch
+    from backend.app.services.print_scheduler import scheduler
+    from backend.app.services.printer_manager import printer_manager
+
+    state, received_at, stale = printer_manager.peek_status(printer_id)
+    if (
+        state is None
+        or not state.connected
+        or received_at is None
+        or stale
+        or _live_completions.get(printer_id, 0)
+        or state.state not in {"IDLE", "FINISH", "FAILED"}
+        or scheduler.has_dispatch_in_flight(printer_id)
+        or background_dispatch.has_work_for_printer(printer_id)
+    ):
+        return None
+    return (id(state), state.state, state.connection_generation, state.subtask_id, state.subtask_name, state.gcode_file)
+
+
+async def _repair_terminal_queue_items(
+    db: AsyncSession, printer_id: int, live_state: str
+) -> list[tuple[int, int, str]]:
+    """Structural repair only; caller owns a dedicated transaction and its commit.
+
+    A terminal archive is not an instruction to replay completion. Never call
+    accounting, macros, gate/receipt handlers, notifications or row deletion.
+    Leave a repaired queue paused for inspection, without replacing its gate.
+    All printing rows must be unambiguous; an active/unknown neighbour defers
+    the whole queue. No name matching or guessed terminal result is involved.
+    """
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import queue_scope_lock
+
+    snapshot = _inactive_repair_snapshot(printer_id)
+    if snapshot is None or snapshot[1] != live_state:
+        return []
+    queue_id = await db.scalar(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))
+    if queue_id is None:
+        return []
+
+    async with queue_scope_lock(db, queue_id):
+        # Obtain SQLite's writer (and PG's queue row lock) BEFORE reading the
+        # authoritative item/archive/header snapshot. No physical I/O here.
+        await db.execute(
+            update(PrinterQueue)
+            .where(PrinterQueue.id == queue_id)
+            .values(last_activity_at=PrinterQueue.last_activity_at, updated_at=PrinterQueue.updated_at)
+        )
+        queue = await db.get(PrinterQueue, queue_id, populate_existing=True)
+        items = list(
+            (
+                await db.scalars(
+                    select(PrintQueueItem)
+                    .where(PrintQueueItem.queue_id == queue_id, PrintQueueItem.status == "printing")
+                    .order_by(PrintQueueItem.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            ).all()
+        )
+        if not items:
+            return []
+
+        def defer(reason: str) -> list:
+            logger.warning(
+                "reconcile: terminal queue repair deferred printer=%s queue=%s reason=%s", printer_id, queue_id, reason
+            )
+            return []
+
+        if queue.current_item_id is not None and queue.current_item_id not in {item.id for item in items}:
+            return defer("different_current_item")
+        if await db.scalar(
+            select(PrintArchive.id)
+            .where(PrintArchive.printer_id == printer_id, PrintArchive.status == "printing")
+            .limit(1)
+        ):
+            return defer("printing_archive")
+
+        outcomes = {
+            "completed": "completed",
+            "failed": "failed",
+            "cancelled": "cancelled",
+            "aborted": "cancelled",
+            "stopped": "cancelled",
+        }
+        pairs = []
+        seen = set()
+        now = datetime.now(timezone.utc)
+        for item in items:
+            archive = await db.scalar(
+                select(PrintArchive)
+                .where(PrintArchive.id == item.archive_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if archive is None or archive.id in seen:
+                return defer("missing_or_shared_archive")
+            seen.add(archive.id)
+            if archive.printer_id != printer_id or archive.queue_id != queue_id or archive.deleted_at is not None:
+                return defer("archive_ownership")
+            provenance = (item.source_snapshot or {}).get("provenance") or {}
+            if provenance.get("kind") == "archive" and provenance.get("id") == archive.id:
+                return defer("source_archive")
+            if archive.status not in outcomes or (archive.extra_data or {}).get("recovered_outcome_uncertain"):
+                return defer("unproven_outcome")
+            # archive_id can still name the SOURCE of a repeat whose dispatcher
+            # never created its execution archive. That old finish predates the
+            # new claim and must NOT be copied onto the new attempt.
+            if item.started_at is None or archive.completed_at is None:
+                return defer("missing_run_times")
+            claimed = item.started_at.replace(tzinfo=timezone.utc)
+            ended = archive.completed_at.replace(tzinfo=timezone.utc)
+            if ended <= claimed or ended > now:
+                return defer("source_archive_or_invalid_times")
+            if archive.started_at and archive.started_at.replace(tzinfo=timezone.utc) > ended:
+                return defer("invalid_archive_times")
+            pairs.append((item, archive, outcomes[archive.status]))
+
+        if _inactive_repair_snapshot(printer_id) != snapshot:
+            raise _RepairSnapshotChanged
+        for item, archive, outcome in pairs:
+            item.status = outcome
+            item.completed_at = archive.completed_at
+            item.waiting_reason = None
+            if outcome != "completed" and not item.error_message:
+                item.error_message = archive.failure_reason
+        queue.current_item_id = None
+        if queue.status != "error":
+            queue.status = "paused"
+        queue.is_paused = True
+        queue.last_activity_at = now
+        await update_queue_counters(db, queue_id)
+        await db.flush()
+        if _inactive_repair_snapshot(printer_id) != snapshot:
+            raise _RepairSnapshotChanged
+        return [(item.id, archive.id, outcome) for item, archive, outcome in pairs]
+
+
 async def reconcile_printer_prints(
     printer_id: int,
     live_state: str,
@@ -663,9 +828,25 @@ async def reconcile_printer_prints(
 
     recovered: list[int] = []
     try:
+        # Separate transaction: already-terminal archives must never enter the
+        # recovery list below (energy, usage and swaps would be replayed).
+        async with async_session() as db:
+            repaired = await _repair_terminal_queue_items(db, printer_id, live_state)
+            await db.commit()
+        for item_id, archive_id, outcome in repaired:
+            logger.info(
+                "reconcile: repaired terminal queue item printer=%s item=%s archive=%s outcome=%s; queue paused for inspection",
+                printer_id,
+                item_id,
+                archive_id,
+                outcome,
+            )
         async with async_session() as db:
             recovered = await _reconcile(db, printer_id, live_state, live_file, live_subtask_id, live_subtask_name)
             await db.commit()
+    except _RepairSnapshotChanged:
+        logger.info("reconcile: terminal queue repair deferred printer=%s reason=live_snapshot_changed", printer_id)
+        return
     except Exception:  # noqa: BLE001 — a background sweep must never crash the connect path
         logger.exception("reconcile: connect-edge sweep failed for printer %d", printer_id)
 
@@ -884,13 +1065,15 @@ async def release_interrupted_dispatch_claims(db: AsyncSession) -> int:
     m120 refused to repair these rows because "a stale ``printing`` row and a live
     one are the same row". They are not, at startup, given the right evidence —
     but the discriminator has to be evidence and not a heuristic, so a claim is
-    released only when all three hold:
+    released only when all four hold:
 
     1. the queue names the item holding the claim. An external or direct print
        claims with ``current_item_id=None``; its truth lives in MQTT, not in our
        tables, and we have nothing to prove here — left alone.
     2. that item is still ``printing``.
-    3. **the printer has no archive in ``printing``.** This is the load-bearing
+    3. The item has no archive link (including a terminal/source/missing archive).
+       A linked archive is not proof of an interrupted, unpublished dispatch.
+    4. **the printer has no archive in ``printing``.** This is the load-bearing
        one. An archive means the dispatcher got past its own creation, so the
        print may be running; releasing then would double-dispatch onto a busy
        printer, which is the failure the claim exists to prevent.
@@ -921,6 +1104,13 @@ async def release_interrupted_dispatch_claims(db: AsyncSession) -> int:
             await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == queue.current_item_id))
         ).scalar_one_or_none()
         if item is None or item.status != "printing":
+            continue
+
+        # A linked archive may already be terminal while the queue update was
+        # lost. Returning that item to pending would print it a second time.
+        # Even a missing/source archive is ambiguous here: wait for fresh MQTT
+        # reconciliation rather than declaring that nothing was ever sent.
+        if item.archive_id is not None:
             continue
 
         live_archive = (

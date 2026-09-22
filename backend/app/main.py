@@ -8232,14 +8232,17 @@ async def on_print_complete(printer_id: int, data: dict) -> None:
     cannot discard its current context.
     """
     analysis_completion: dict[str, int | None] = {"archive_id": None}
-    try:
-        await _on_print_complete_impl(printer_id, data, analysis_completion)
-    finally:
-        archive_id = analysis_completion["archive_id"]
-        if archive_id is not None:
-            from backend.app.services.print_file_analysis import discard_print_file_analysis
+    from backend.app.services.print_reconciliation import defer_queue_repair_during_completion
 
-            discard_print_file_analysis(printer_manager, printer_id, archive_id)
+    with defer_queue_repair_during_completion(printer_id):
+        try:
+            await _on_print_complete_impl(printer_id, data, analysis_completion)
+        finally:
+            archive_id = analysis_completion["archive_id"]
+            if archive_id is not None:
+                from backend.app.services.print_file_analysis import discard_print_file_analysis
+
+                discard_print_file_analysis(printer_manager, printer_id, archive_id)
 
 
 def _ams_has_filament(ams_data: dict) -> bool:

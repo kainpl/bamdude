@@ -1121,6 +1121,16 @@ class BackgroundDispatchService:
             await discard_staged(staged)
             raise
 
+    def has_work_for_printer(self, printer_id: int) -> bool:
+        """Snapshot of queued/preparing dispatches, including work before MQTT publish.
+
+        Read synchronously on the event loop; this is a recovery veto, not an
+        admission lock. Admission still holds ``_lock`` across its checks.
+        """
+        return any(job.printer_id == printer_id for job in self._queued_jobs) or any(
+            active.job.printer_id == printer_id for active in self._active_jobs.values()
+        )
+
     def _refuse_unless_free(self, printer_id: int, printer_name: str) -> None:
         """Both availability questions, asked under ``_lock``.
 
@@ -1129,10 +1139,7 @@ class BackgroundDispatchService:
         drift. Never call it without the lock: it reads the dispatcher's own
         in-memory job lists.
         """
-        has_pending_for_printer = any(job.printer_id == printer_id for job in self._queued_jobs)
-        has_active_for_printer = any(active.job.printer_id == printer_id for active in self._active_jobs.values())
-
-        if has_pending_for_printer or has_active_for_printer:
+        if self.has_work_for_printer(printer_id):
             raise DispatchEnqueueRejected(f"Printer {printer_name} already has a background dispatch in progress")
 
         if self._printer_is_busy_printing(printer_id):
