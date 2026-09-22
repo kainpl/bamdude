@@ -3365,7 +3365,10 @@ def _bind_print_file_analysis_context(printer_id: int, archive) -> None:
         printer_id=printer_id,
         archive_id=archive.id,
         observed_subtask_id=getattr(archive, "subtask_id", None),
-        client_generation=printer_manager.current_client_generation(printer_id),
+        # Lightweight manager doubles used by integrations before client setup
+        # do not have a generation registry.  ``None`` is the same unknown
+        # evidence a real not-yet-connected printer supplies.
+        client_generation=getattr(printer_manager, "current_client_generation", lambda _printer_id: None)(printer_id),
     )
 
     pending = take_pending_terminal(
@@ -6324,19 +6327,30 @@ async def _record_terminal_effect_stage(
 
     from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 
-    async with async_session() as db, archive_write_scope(db, archive_id):
-        archive = await load_active_archive_for_write(db, archive_id)
-        if archive is None:
-            return
-        extra = dict(archive.extra_data or {})
-        effects = dict(extra.get(_TERMINAL_EFFECTS_KEY) or {})
-        effects[effect] = {
-            "stage": stage,
-            "at": datetime.now(timezone.utc).isoformat(),
-        }
-        extra[_TERMINAL_EFFECTS_KEY] = effects
-        archive.extra_data = extra
-        await db.commit()
+    try:
+        async with async_session() as db, archive_write_scope(db, archive_id):
+            archive = await load_active_archive_for_write(db, archive_id)
+            if archive is None:
+                return
+            extra = dict(archive.extra_data or {})
+            effects = dict(extra.get(_TERMINAL_EFFECTS_KEY) or {})
+            effects[effect] = {
+                "stage": stage,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+            extra[_TERMINAL_EFFECTS_KEY] = effects
+            archive.extra_data = extra
+            await db.commit()
+    except Exception:
+        # The marker narrows post-crash diagnosis; it must never become the
+        # reason an already-accepted terminal action is retried or abandoned.
+        logging.getLogger(__name__).warning(
+            "Could not record terminal effect %s=%s for archive %s",
+            effect,
+            stage,
+            archive_id,
+            exc_info=True,
+        )
 
 
 async def _accept_bound_terminal_run(printer_id: int, binding, data: dict | None = None) -> int | None:
@@ -8407,6 +8421,7 @@ async def _on_print_complete_impl(
 
                 capture_enabled = await get_setting(db, "capture_finish_photo")
                 if capture_enabled is None or capture_enabled.lower() != "true":
+                    await _record_terminal_effect_stage(archive_id, "finish_photo", "skipped")
                     return None
                 if not archive_id:
                     return None
@@ -8417,10 +8432,12 @@ async def _on_print_complete_impl(
                 ).scalar_one_or_none()
 
             if not printer or not archive:
+                await _record_terminal_effect_stage(archive_id, "finish_photo", "skipped")
                 return None
 
             if not _owns_printer_effect():
                 logger.info("[PHOTO-BG] printer %s changed run during lookup", printer_id)
+                await _record_terminal_effect_stage(archive_id, "finish_photo", "skipped")
                 return None
 
             import uuid
@@ -8492,6 +8509,7 @@ async def _on_print_complete_impl(
             if not photo_filename:
                 if not _owns_printer_effect():
                     logger.info("[PHOTO-BG] printer %s changed run before camera capture", printer_id)
+                    await _record_terminal_effect_stage(archive_id, "finish_photo", "skipped")
                     return None
                 # One rule, asked once, before either camera kind (#2707). The
                 # built-in branch below hand-rolls this same check by scanning

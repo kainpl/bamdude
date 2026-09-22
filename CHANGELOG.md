@@ -2,6 +2,15 @@
 
 ### Fixed
 
+- **Repeated or late printer events now stay with the physical print that
+  caused them.** BamDude keeps the known run's archive and queue attempt from
+  observed start through terminal handling, so a delayed completion, finish
+  macro, cleanup, photo or smart-plug action cannot finish or operate the next
+  same-named print on that printer. A restart keeps a conservatively accepted
+  terminal outcome rather than guessing a successful completion, while an
+  archive-file recovery prepares its data outside the writer and preserves a
+  possibly committed file if the database acknowledgement is lost.
+
 - **A failed late 3MF attachment now remains safely retryable.** Archive storage
   names no longer inherit a terminal dot or space that Windows silently changes,
   so a valid recovered file is not mistaken for a path escape.  A failed copy or

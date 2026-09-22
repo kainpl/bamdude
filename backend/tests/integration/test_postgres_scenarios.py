@@ -20,6 +20,8 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,29 @@ pytestmark = pytest.mark.postgres
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RUNNER = "backend.tests.integration.postgres_scenario_runner"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _serialize_shared_postgres_target():
+    """Keep xdist workers from wiping the same declared scratch DB at once.
+
+    Individual scenarios still exercise independent sessions/processes inside
+    their own runner.  This only serializes the test module's deliberate
+    ``_wipe`` calls when a developer supplies one ``TEST_POSTGRES_URL`` to
+    several xdist workers.
+    """
+
+    url = os.environ.get("TEST_POSTGRES_URL")
+    if not url or not os.environ.get("PYTEST_XDIST_WORKER"):
+        yield
+        return
+
+    from filelock import FileLock
+
+    digest = sha256(url.encode("utf-8")).hexdigest()[:16]
+    lock = FileLock(str(Path(tempfile.gettempdir()) / f"bamdude-postgres-scenarios-{digest}.lock"))
+    with lock.acquire(timeout=1_200):
+        yield
 
 
 def _pg_url() -> str:
