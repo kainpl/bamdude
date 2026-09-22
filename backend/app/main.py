@@ -8769,6 +8769,12 @@ async def on_print_complete(printer_id: int, data: dict) -> None:
 
                 discard_print_file_analysis(printer_manager, printer_id, archive_id)
                 discard_print_run(printer_manager, printer_id, archive_id)
+                # Aliases are recovery aids, never a second lifecycle owner.
+                # A failure after bound acceptance used to leave A's names in
+                # RAM until a later callback happened to remove them; exact
+                # archive cleanup cannot touch a same-named B.
+                for key in [key for key, value in _active_prints.items() if value == archive_id]:
+                    _active_prints.pop(key, None)
 
 
 def _ams_has_filament(ams_data: dict) -> bool:
