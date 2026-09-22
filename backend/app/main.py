@@ -6099,6 +6099,31 @@ async def _bound_printing_item(db, printer_id: int, binding):
     return matches[0] if len(matches) == 1 else None, bool(rows and len(matches) != 1)
 
 
+async def _accept_bound_terminal_run(printer_id: int, binding) -> int | None:
+    """Freeze a known terminal run before any printer-wide completion effect."""
+
+    async with async_session() as db:
+        queue_item, unresolved = await _bound_printing_item(db, printer_id, binding)
+    if queue_item is None:
+        logging.getLogger(__name__).warning(
+            "Bound terminal archive %s on printer %s is unresolved (ambiguous=%s); preserving current run",
+            binding.archive_id,
+            printer_id,
+            unresolved,
+        )
+        return None
+
+    from backend.app.services.print_run_binding import begin_print_run_finishing, current_print_run
+
+    # The DB read awaited. A newer B may have replaced A while it ran, so only
+    # the still-current exact binding may enter finishing.
+    if current_print_run(printer_manager, printer_id) != binding:
+        return None
+    if begin_print_run_finishing(printer_manager, printer_id, binding.archive_id) is None:
+        return None
+    return queue_item.id
+
+
 async def _completion_conflicts_with_active_queue(printer_id: int, data: dict) -> bool:
     """Whether a terminal MQTT event positively belongs to no active queue row.
 
@@ -6206,10 +6231,7 @@ async def _on_print_complete_impl(
     # captured at the common authoritative archive lifecycle point, so an
     # ID-only terminal event can finish its own run.  A positive contradictory
     # device ID is still foreign even when an old binding happens to exist.
-    from backend.app.services.print_run_binding import (
-        begin_print_run_finishing,
-        current_print_run,
-    )
+    from backend.app.services.print_run_binding import current_print_run
 
     bound_run = current_print_run(printer_manager, printer_id)
     event_client_generation = data.get("_bamdude_client_generation")
@@ -6236,12 +6258,15 @@ async def _on_print_complete_impl(
     if bound_run is None and await _completion_conflicts_with_active_queue(printer_id, data):
         return
 
+    accepted_queue_item_id: int | None = None
     archive_id = bound_run.archive_id if bound_run is not None else None
     if archive_id is not None:
-        # Freeze A before any awaited effect can observe a newer B.  Both
-        # runtime resources use exact archive-scoped finishing leases.
+        # Resolve/freeze the exact durable queue row before WS, user cleanup,
+        # relay or macros. A missing row never authorizes another row's finish.
+        accepted_queue_item_id = await _accept_bound_terminal_run(printer_id, bound_run)
+        if accepted_queue_item_id is None:
+            return
         analysis_completion["archive_id"] = archive_id
-        begin_print_run_finishing(printer_manager, printer_id, archive_id)
         from backend.app.services.print_file_analysis import begin_print_file_analysis_finishing
 
         begin_print_file_analysis_finishing(printer_manager, printer_id, archive_id)
@@ -7148,13 +7173,20 @@ async def _on_print_complete_impl(
                     [(i.id, i.archive_id, i.library_file_id) for i in printing_items],
                 )
             if bound_run is not None:
-                queue_item, queue_identity_unresolved = await _bound_printing_item(db, printer_id, bound_run)
-                if queue_item is None and queue_identity_unresolved:
+                queue_item = await db.get(PrintQueueItem, accepted_queue_item_id)
+                queue_identity_unresolved = (
+                    queue_item is None
+                    or queue_item.status != "printing"
+                    or queue_item.archive_id != bound_run.archive_id
+                    or (bound_run.queue_item_id is not None and queue_item.id != bound_run.queue_item_id)
+                )
+                if queue_identity_unresolved:
                     logger.warning(
-                        "Bound completion archive %s on printer %s has no unique current queue row; preserving claims",
+                        "Accepted completion archive %s on printer %s lost its addressed queue row; preserving claims",
                         bound_run.archive_id,
                         printer_id,
                     )
+                    queue_item = None
             else:
                 matching_items = [item for item in printing_items if await _completion_belongs_to_item(db, item, data)]
                 queue_identity_unresolved = False
