@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -87,6 +88,8 @@ async def _selected_macro_ids(db, printer_id: int) -> set[int]:
 async def _run_one(
     macro: Macro,
     client: BambuMQTTClient,
+    *,
+    may_run: Callable[[], bool] | None = None,
 ) -> None:
     """Sleep for macro.delay_seconds then dispatch. Never raises."""
     try:
@@ -104,6 +107,14 @@ async def _run_one(
                 "macros are supported for event-driven triggers",
                 macro.name,
             )
+            return
+
+        # A finish macro can be delayed.  By the time its timer elapses a new
+        # print may own the same printer, in which case an action attributed to
+        # the old terminal callback is unsafe.  Start and layer callers omit
+        # this guard; completion supplies its exact run-ownership check.
+        if may_run is not None and not may_run():
+            logger.info("[MACRO-TRIGGER] skipping stale macro '%s'", macro.name)
             return
 
         success, err = dispatch_mqtt_action(client, macro.mqtt_action or "", macro.name, macro.mqtt_action_param)
@@ -124,12 +135,18 @@ async def fire_event_macros(
     printer_id: int,
     session_factory: async_sessionmaker,
     printer_manager_module,
+    *,
+    may_run: Callable[[], bool] | None = None,
 ) -> None:
     """Load matching macros for ``(event, printer)`` and schedule each to run.
 
     Uses ``asyncio.create_task`` so the caller (print-start handler) doesn't
     block on ``delay_seconds`` — the macros run independently.
     """
+    if may_run is not None and not may_run():
+        logger.info("[MACRO-TRIGGER] event=%s printer=%s — stale completion, skipping", event, printer_id)
+        return
+
     client = printer_manager_module.get_client(printer_id)
     if client is None or not client.state or not client.state.connected:
         logger.debug(
@@ -152,6 +169,10 @@ async def fire_event_macros(
         # dispatch macros this print never asked for.
         selected = await _selected_macro_ids(db, printer_id)
 
+    if may_run is not None and not may_run():
+        logger.info("[MACRO-TRIGGER] event=%s printer=%s — ownership changed, skipping", event, printer_id)
+        return
+
     matched = [m for m in find_macros_for_event(event, printer, all_macros) if m.id in selected]
     if not matched:
         return
@@ -164,7 +185,7 @@ async def fire_event_macros(
         [m.name for m in matched],
     )
     for macro in matched:
-        spawn_background_task(_run_one(macro, client), name=f"macro-trigger-{macro.id}")
+        spawn_background_task(_run_one(macro, client, may_run=may_run), name=f"macro-trigger-{macro.id}")
 
 
 async def fire_layer_macros(

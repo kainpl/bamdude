@@ -6233,6 +6233,7 @@ async def _bound_printing_item(db, printer_id: int, binding):
 
 
 _TERMINAL_ACCEPTANCE_KEY = "bamdude_terminal_acceptance"
+_TERMINAL_EFFECTS_KEY = "bamdude_terminal_effects"
 
 
 def _terminal_acceptance_attempt_payload(queue_item) -> dict[str, object]:
@@ -6271,6 +6272,39 @@ def _terminal_acceptance_matches(queue_item, archive) -> bool:
     return isinstance(marker, dict) and all(
         marker.get(key) == value for key, value in _terminal_acceptance_attempt_payload(queue_item).items()
     )
+
+
+async def _record_terminal_effect_stage(
+    archive_id: int | None,
+    effect: str,
+    stage: str,
+) -> None:
+    """Keep a narrow diagnostic record around a non-replay-safe terminal effect.
+
+    Completion recovery deliberately does not replay printer I/O after a
+    process crash.  These records distinguish an action that was never begun
+    from one that was in flight, without turning archive metadata into a
+    general-purpose outbox.  The accepting handler remains the only producer.
+    """
+
+    if archive_id is None:
+        return
+
+    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+
+    async with async_session() as db, archive_write_scope(db, archive_id):
+        archive = await load_active_archive_for_write(db, archive_id)
+        if archive is None:
+            return
+        extra = dict(archive.extra_data or {})
+        effects = dict(extra.get(_TERMINAL_EFFECTS_KEY) or {})
+        effects[effect] = {
+            "stage": stage,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        extra[_TERMINAL_EFFECTS_KEY] = effects
+        archive.extra_data = extra
+        await db.commit()
 
 
 async def _accept_bound_terminal_run(printer_id: int, binding, data: dict | None = None) -> int | None:
@@ -6543,6 +6577,16 @@ async def _on_print_complete_impl(
     accepted_queue_item_id: int | None = None
     archive_id = bound_run.archive_id if bound_run is not None else None
     completion_is_addressed_run = bound_run is not None
+
+    def _owns_printer_effect() -> bool:
+        """Re-check terminal ownership immediately before a printer-wide action."""
+
+        return _completion_may_apply_printer_effect(
+            printer_id,
+            archive_id,
+            is_addressed_run=completion_is_addressed_run,
+        )
+
     if archive_id is not None:
         # Resolve/freeze the exact durable queue row before WS, user cleanup,
         # relay or macros. A missing row never authorizes another row's finish.
@@ -6569,7 +6613,7 @@ async def _on_print_complete_impl(
 
         begin_print_file_analysis_finishing(printer_manager, printer_id, archive_id)
 
-    if _completion_may_apply_printer_effect(printer_id, archive_id, is_addressed_run=completion_is_addressed_run):
+    if _owns_printer_effect():
         try:
             ws_data = {
                 "status": data.get("status"),
@@ -6593,11 +6637,11 @@ async def _on_print_complete_impl(
     _print_user_info = printer_manager.get_current_print_user(printer_id, archive_id=archive_id)
 
     # Clear current print user tracking (Issue #206)
-    if _completion_may_apply_printer_effect(printer_id, archive_id, is_addressed_run=completion_is_addressed_run):
+    if _owns_printer_effect():
         printer_manager.clear_current_print_user(printer_id, archive_id=archive_id)
 
     # MQTT relay - publish print complete
-    if _completion_may_apply_printer_effect(printer_id, archive_id, is_addressed_run=completion_is_addressed_run):
+    if _owns_printer_effect():
         try:
             printer_info = printer_manager.get_printer(printer_id)
             if printer_info:
@@ -6624,12 +6668,21 @@ async def _on_print_complete_impl(
     # Fire any user-defined ``print_finished`` macros (e.g. turn chamber
     # light back on after print). Fire-and-forget so macro delay_seconds
     # doesn't stall completion. Mirrors the ``print_started`` path.
-    if _completion_may_apply_printer_effect(printer_id, archive_id, is_addressed_run=completion_is_addressed_run):
+    if _owns_printer_effect():
         try:
             from backend.app.services.macro_trigger import fire_event_macros
 
-            await fire_event_macros("print_finished", printer_id, async_session, printer_manager)
+            await _record_terminal_effect_stage(archive_id, "finish_macros", "attempted")
+            await fire_event_macros(
+                "print_finished",
+                printer_id,
+                async_session,
+                printer_manager,
+                may_run=_owns_printer_effect,
+            )
+            await _record_terminal_effect_stage(archive_id, "finish_macros", "scheduled")
         except Exception as e:
+            await _record_terminal_effect_stage(archive_id, "finish_macros", "failed")
             logger.warning("print_finished macros failed to schedule: %s", e)
 
     # Build list of possible keys to try (matching how they were registered in on_print_start)
@@ -6837,23 +6890,37 @@ async def _on_print_complete_impl(
     # leave this running into the NEXT print on the same machine, where the
     # names it deletes by would belong to that job instead.
     async def _post_print_printer_cleanup() -> None:
-        if not _completion_may_apply_printer_effect(
-            printer_id, archive_id, is_addressed_run=completion_is_addressed_run
-        ):
+        if not _owns_printer_effect():
             logger.info(
                 "Skipping post-print cleanup for archive %s: a newer run owns printer %s",
                 archive_id,
                 printer_id,
             )
             return
+        await _record_terminal_effect_stage(archive_id, "printer_cleanup", "attempted")
+        if not _owns_printer_effect():
+            await _record_terminal_effect_stage(archive_id, "printer_cleanup", "skipped")
+            logger.info(
+                "Skipping post-print cleanup for archive %s: printer %s has a newer run", archive_id, printer_id
+            )
+            return
         try:
-            await asyncio.wait_for(_cleanup_printer_after_print(), timeout=_POST_PRINT_CLEANUP_BUDGET)
+            cleanup_result = await asyncio.wait_for(_cleanup_printer_after_print(), timeout=_POST_PRINT_CLEANUP_BUDGET)
+            await _record_terminal_effect_stage(
+                archive_id,
+                "printer_cleanup",
+                "skipped" if cleanup_result is False else "finished",
+            )
         except TimeoutError:
+            await _record_terminal_effect_stage(archive_id, "printer_cleanup", "uncertain")
             logger.warning(
                 "Post-print cleanup on printer %s gave up after %ss — files may linger",
                 printer_id,
                 _POST_PRINT_CLEANUP_BUDGET,
             )
+        except Exception:
+            await _record_terminal_effect_stage(archive_id, "printer_cleanup", "failed")
+            raise
 
     async def _cleanup_printer_after_print() -> None:
         try:
@@ -6892,6 +6959,16 @@ async def _on_print_complete_impl(
                             )
 
                 if printer:
+                    # The DB read above may have yielded long enough for a
+                    # direct/external B to begin.  Do not open FTP against a
+                    # printer it now owns merely to clean A's old files.
+                    if not _owns_printer_effect():
+                        logger.info(
+                            "Skipping post-print cleanup for archive %s after lookup: printer %s has a newer run",
+                            archive_id,
+                            printer_id,
+                        )
+                        return False
                     from backend.app.services.bambu_ftp import (
                         DeleteResult,
                         delete_file_async,
@@ -7353,8 +7430,14 @@ async def _on_print_complete_impl(
                         )
                     ):
                         logger.info("[SWAP] Running change_table macro '%s' for printer %s", macro.name, printer_id)
+                        await _record_terminal_effect_stage(archive_id, "swap_change_table", "attempted")
                         _sw_ok, _sw_msg = await printer_manager.execute_macro_and_wait(
                             printer_id, macro.gcode, macro.name
+                        )
+                        await _record_terminal_effect_stage(
+                            archive_id,
+                            "swap_change_table",
+                            "finished" if _sw_ok else "failed",
                         )
                         if _sw_ok:
                             # Table swapped successfully — skip arming the
@@ -8263,11 +8346,18 @@ async def _on_print_complete_impl(
     # These operations can take 5-10+ seconds and would freeze the UI if awaited
 
     async def _background_energy_calculation():
+        if not _owns_printer_effect():
+            logger.info("[ENERGY-BG] skipping stale completion for archive %s", archive_id)
+            return
         await _record_print_energy(archive_id, printer_id)
 
     async def _background_finish_photo() -> str | None:
         """Capture finish photo in background. Returns photo filename if captured."""
         try:
+            if not _owns_printer_effect():
+                logger.info("[PHOTO-BG] skipping stale completion for archive %s", archive_id)
+                return None
+            await _record_terminal_effect_stage(archive_id, "finish_photo", "attempted")
             logger.info("[PHOTO-BG] Starting finish photo capture for archive %s", archive_id)
 
             from backend.app.api.routes.camera import _active_chamber_streams, _active_streams, get_buffered_frame
@@ -8295,6 +8385,10 @@ async def _on_print_complete_impl(
                 ).scalar_one_or_none()
 
             if not printer or not archive:
+                return None
+
+            if not _owns_printer_effect():
+                logger.info("[PHOTO-BG] printer %s changed run during lookup", printer_id)
                 return None
 
             import uuid
@@ -8364,6 +8458,9 @@ async def _on_print_complete_impl(
             # capture. Only runs if neither the timelapse source nor the pre-captured
             # frame above produced a photo.
             if not photo_filename:
+                if not _owns_printer_effect():
+                    logger.info("[PHOTO-BG] printer %s changed run before camera capture", printer_id)
+                    return None
                 # One rule, asked once, before either camera kind (#2707). The
                 # built-in branch below hand-rolls this same check by scanning
                 # the stream registries; the external branch had none at all, so
@@ -8456,9 +8553,12 @@ async def _on_print_complete_impl(
                         arch.photos = photos
                         await db.commit()
                 logger.info("[PHOTO-BG] Saved: %s", photo_filename)
+                await _record_terminal_effect_stage(archive_id, "finish_photo", "finished")
                 return photo_filename
+            await _record_terminal_effect_stage(archive_id, "finish_photo", "skipped")
             return None
         except Exception as e:
+            await _record_terminal_effect_stage(archive_id, "finish_photo", "failed")
             logger.warning("[PHOTO-BG] Failed: %s", e)
             return None
 
@@ -8473,11 +8573,27 @@ async def _on_print_complete_impl(
     async def _background_smart_plug():
         """Handle smart plug automation in background."""
         try:
+            if not _owns_printer_effect():
+                logger.info("[AUTO-OFF-BG] skipping stale completion for archive %s", archive_id)
+                return
+            await _record_terminal_effect_stage(archive_id, "smart_plug", "attempted")
             logger.info("[AUTO-OFF-BG] Starting smart plug automation for printer %s", printer_id)
             async with async_session() as db:
-                await smart_plug_manager.on_print_complete(printer_id, print_status, db)
+                if not _owns_printer_effect():
+                    logger.info("[AUTO-OFF-BG] printer %s changed run during lookup", printer_id)
+                    completed = False
+                else:
+                    await smart_plug_manager.on_print_complete(printer_id, print_status, db)
+                    completed = True
+            await _record_terminal_effect_stage(
+                archive_id,
+                "smart_plug",
+                "finished" if completed else "skipped",
+            )
+            if completed:
                 logger.info("[AUTO-OFF-BG] Completed")
         except Exception as e:
+            await _record_terminal_effect_stage(archive_id, "smart_plug", "failed")
             logger.warning("[AUTO-OFF-BG] Failed: %s", e)
 
     async def _background_notifications(finish_photo_filename: str | None = None):
@@ -8685,6 +8801,9 @@ async def _on_print_complete_impl(
         from backend.app.services.layer_timelapse import cancel_session, on_print_complete as tl_complete
 
         try:
+            if not _owns_printer_effect():
+                logger.info("[LAYER-TL] skipping stale completion for archive %s", archive_id)
+                return
             if print_status == "completed":
                 logger.info("[LAYER-TL] Stitching layer timelapse for printer %s", printer_id)
                 timelapse_path = await tl_complete(printer_id)

@@ -402,6 +402,24 @@ async def test_terminal_acceptance_is_durable_and_blocks_restart_fallback(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_terminal_effect_attempt_is_addressed_to_its_archive(
+    db_session, printer_factory, main_db, archive_factory
+):
+    """Crash recovery can report an in-flight physical action without replaying it."""
+
+    from backend.app import main
+
+    printer, _queue_row = await _queue(db_session, printer_factory)
+    archive = await archive_factory(printer.id, status="printing", print_name="Repeat me")
+
+    await main._record_terminal_effect_stage(archive.id, "swap_change_table", "attempted")
+    await db_session.refresh(archive)
+
+    assert archive.extra_data[main._TERMINAL_EFFECTS_KEY]["swap_change_table"]["stage"] == "attempted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_concurrent_terminal_callbacks_claim_one_attempt_once(
     db_session, printer_factory, archive_factory, monkeypatch, test_engine
 ):

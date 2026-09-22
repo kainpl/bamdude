@@ -209,3 +209,16 @@ class TestOnlyTickedMacrosFire:
         await macro_trigger.fire_layer_macros(printer.id, 50, 49, factory, _manager(_running_client()))
 
         assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_delayed_finish_macro_rechecks_its_run_owner(monkeypatch) -> None:
+    """A delayed finish action from A must not operate B's printer."""
+
+    macro = MagicMock(delay_seconds=0, action_type="mqtt_action", name="finish relay", mqtt_action="pause")
+    dispatch = MagicMock(return_value=(True, None))
+    monkeypatch.setattr(macro_trigger, "dispatch_mqtt_action", dispatch)
+
+    await macro_trigger._run_one(macro, _running_client(), may_run=lambda: False)
+
+    dispatch.assert_not_called()
