@@ -1419,6 +1419,26 @@ def mark_printer_stopped_by_user(printer_id: int) -> None:
     )
 
 
+def _normalise_user_stopped_terminal(printer_id: int, archive_id: int | None, data: dict) -> dict:
+    """Apply a queue-UI stop only to the execution archive it stopped."""
+    stopped_archive_id = _user_stopped_printers.get(printer_id)
+    raw_status = data.get("status", "completed")
+    if (
+        printer_id in _user_stopped_printers
+        and (stopped_archive_id is None or stopped_archive_id == archive_id)
+        and raw_status in ("failed", "aborted")
+    ):
+        logging.getLogger(__name__).info(
+            "[CALLBACK] Overriding status '%s' -> 'cancelled' for printer %s (print was stopped from queue by user)",
+            raw_status,
+            printer_id,
+        )
+        data = {**data, "status": "cancelled"}
+    if stopped_archive_id is None or stopped_archive_id == archive_id:
+        _user_stopped_printers.pop(printer_id, None)
+    return data
+
+
 _last_status_broadcast: dict[int, str] = {}
 # Track printers where we've updated nozzle_count
 _nozzle_count_updated: set[int] = set()
@@ -6215,15 +6235,31 @@ async def _bound_printing_item(db, printer_id: int, binding):
 _TERMINAL_ACCEPTANCE_KEY = "bamdude_terminal_acceptance"
 
 
-def _terminal_acceptance_payload(queue_item) -> dict[str, object]:
+def _terminal_acceptance_attempt_payload(queue_item) -> dict[str, object]:
     """A durable address for this queue attempt, not its printable name."""
 
     return {
-        "version": 1,
         "queue_item_id": queue_item.id,
         # A repeated queue item is a new physical run once its claim timestamp
         # changes. ISO text stays portable through SQLite's timezone handling.
         "queue_started_at": queue_item.started_at.isoformat() if queue_item.started_at is not None else None,
+    }
+
+
+def _normalise_terminal_outcome(data: dict) -> str | None:
+    status = str(data.get("status") or "completed").lower()
+    if status == "aborted":
+        status = "cancelled"
+    return status if status in {"completed", "failed", "cancelled"} else None
+
+
+def _terminal_acceptance_payload(queue_item, outcome: str | None = None) -> dict[str, object]:
+    """Checkpoint payload, including only minimal recovery-safe terminal data."""
+    return {
+        "version": 2,
+        **_terminal_acceptance_attempt_payload(queue_item),
+        "outcome": outcome,
+        "stage": "accepted",
     }
 
 
@@ -6232,10 +6268,12 @@ def _terminal_acceptance_matches(queue_item, archive) -> bool:
 
     extra = archive.extra_data if isinstance(archive.extra_data, dict) else {}
     marker = extra.get(_TERMINAL_ACCEPTANCE_KEY)
-    return isinstance(marker, dict) and marker == _terminal_acceptance_payload(queue_item)
+    return isinstance(marker, dict) and all(
+        marker.get(key) == value for key, value in _terminal_acceptance_attempt_payload(queue_item).items()
+    )
 
 
-async def _accept_bound_terminal_run(printer_id: int, binding) -> int | None:
+async def _accept_bound_terminal_run(printer_id: int, binding, data: dict | None = None) -> int | None:
     """Durably claim a known terminal run before any printer-wide effect.
 
     The archive guard serializes two terminal callbacks across processes.  The
@@ -6285,7 +6323,9 @@ async def _accept_bound_terminal_run(printer_id: int, binding) -> int | None:
             return None
 
         extra = dict(archive.extra_data or {})
-        extra[_TERMINAL_ACCEPTANCE_KEY] = _terminal_acceptance_payload(queue_item)
+        extra[_TERMINAL_ACCEPTANCE_KEY] = _terminal_acceptance_payload(
+            queue_item, _normalise_terminal_outcome(data or {})
+        )
         archive.extra_data = extra
         await db.commit()
 
@@ -6498,7 +6538,8 @@ async def _on_print_complete_impl(
     if archive_id is not None:
         # Resolve/freeze the exact durable queue row before WS, user cleanup,
         # relay or macros. A missing row never authorizes another row's finish.
-        accepted_queue_item_id = await _accept_bound_terminal_run(printer_id, bound_run)
+        data = _normalise_user_stopped_terminal(printer_id, archive_id, data)
+        accepted_queue_item_id = await _accept_bound_terminal_run(printer_id, bound_run, data)
         if accepted_queue_item_id is None:
             return
         analysis_completion["archive_id"] = archive_id
@@ -6532,25 +6573,6 @@ async def _on_print_complete_impl(
     # Clear current print user tracking (Issue #206)
     if _completion_may_apply_printer_effect(printer_id, archive_id):
         printer_manager.clear_current_print_user(printer_id, archive_id=archive_id)
-
-    # If the user explicitly stopped this print from the queue UI the printer will
-    # report "failed" or "aborted" via MQTT.  Override that to "cancelled" so the
-    # correct "print stopped" notification/email is sent instead of a failure alert.
-    _raw_status = data.get("status", "completed")
-    stopped_archive_id = _user_stopped_printers.get(printer_id)
-    if (
-        printer_id in _user_stopped_printers
-        and (stopped_archive_id is None or stopped_archive_id == archive_id)
-        and _raw_status in ("failed", "aborted")
-    ):
-        logger.info(
-            "[CALLBACK] Overriding status '%s' -> 'cancelled' for printer %s (print was stopped from queue by user)",
-            _raw_status,
-            printer_id,
-        )
-        data = {**data, "status": "cancelled"}
-    if stopped_archive_id is None or stopped_archive_id == archive_id:
-        _user_stopped_printers.pop(printer_id, None)
 
     # MQTT relay - publish print complete
     if _completion_may_apply_printer_effect(printer_id, archive_id):

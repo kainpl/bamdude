@@ -18,6 +18,7 @@ from backend.app.services.print_reconciliation import (
     _name_matches_subtask,
     _reconcile,
     _reconcile_complete_archive,
+    _recover_accepted_terminal_checkpoint,
     _subtask_norm,
     _subtask_stale,
 )
@@ -314,6 +315,41 @@ async def test_reconcile_complete_no_queue_item_is_fine(db_session):
     archive = await _make_archive(db_session)
     await _reconcile_complete_archive(db_session, archive, status="completed", uncertain=False)
     assert archive.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_accepted_terminal_recovery_closes_only_structure_and_pauses(db_session):
+    """Restart after acceptance must not replay accounting or physical effects."""
+    from backend.app import main
+
+    queue = PrinterQueue(printer_id=1, status="printing")
+    db_session.add(queue)
+    await db_session.flush()
+    archive = await _make_archive(db_session)
+    started = datetime.now(timezone.utc)
+    item = PrintQueueItem(queue_id=queue.id, archive_id=archive.id, status="printing", started_at=started)
+    db_session.add(item)
+    await db_session.flush()
+    queue.current_item_id = item.id
+    archive.extra_data = {
+        main._TERMINAL_ACCEPTANCE_KEY: {
+            "version": 2,
+            "queue_item_id": item.id,
+            "queue_started_at": started.isoformat(),
+            "outcome": "completed",
+            "stage": "accepted",
+        }
+    }
+    await db_session.flush()
+
+    recovered = await _recover_accepted_terminal_checkpoint(db_session, archive)
+
+    assert recovered == archive.id
+    assert archive.status == "completed"
+    assert item.status == "completed"
+    assert queue.status == "paused"
+    assert archive.extra_data["terminal_effects_uncertain"] is True
+    assert archive.extra_data[main._TERMINAL_ACCEPTANCE_KEY]["stage"] == "recovered_uncertain"
 
 
 # ---------- completed_at is a reconstruction, not the reconnect moment (#2592) ----------

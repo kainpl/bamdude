@@ -372,10 +372,12 @@ async def test_terminal_acceptance_is_durable_and_blocks_restart_fallback(
     )
 
     try:
-        assert await main._accept_bound_terminal_run(printer.id, binding) == row.id
+        assert await main._accept_bound_terminal_run(printer.id, binding, {"status": "aborted"}) == row.id
         assert await main._accept_bound_terminal_run(printer.id, binding) is None
         await db_session.refresh(archive)
         assert archive.extra_data[main._TERMINAL_ACCEPTANCE_KEY]["queue_item_id"] == row.id
+        assert archive.extra_data[main._TERMINAL_ACCEPTANCE_KEY]["outcome"] == "cancelled"
+        assert archive.extra_data[main._TERMINAL_ACCEPTANCE_KEY]["stage"] == "accepted"
         assert await main._completion_conflicts_with_active_queue(printer.id, {"subtask_name": "Repeat me"}) is True
 
         # Re-arming the same row represents a new physical attempt.  Its new

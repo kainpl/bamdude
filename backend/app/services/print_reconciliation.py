@@ -482,6 +482,93 @@ async def _reconcile_complete_archive(
             discard_print_file_analysis(printer_manager, archive.printer_id, archive.id)
 
 
+def _accepted_terminal_checkpoint(archive: PrintArchive) -> dict | None:
+    """Return a v2 terminal checkpoint only when it is safe to interpret."""
+    from backend.app.main import _TERMINAL_ACCEPTANCE_KEY
+
+    extra = archive.extra_data if isinstance(archive.extra_data, dict) else {}
+    marker = extra.get(_TERMINAL_ACCEPTANCE_KEY)
+    if not isinstance(marker, dict) or marker.get("version") != 2 or marker.get("stage") != "accepted":
+        return None
+    if marker.get("outcome") not in {"completed", "failed", "cancelled"}:
+        return None
+    if not isinstance(marker.get("queue_item_id"), int):
+        return None
+    if not isinstance(marker.get("queue_started_at"), str):
+        return None
+    return marker
+
+
+def _checkpoint_started_at_matches(marker_value: str, current: datetime) -> bool:
+    """Compare the attempt token across SQLite's timezone-less round trip."""
+    try:
+        recorded = datetime.fromisoformat(marker_value)
+    except ValueError:
+        return False
+    recorded = recorded if recorded.tzinfo else recorded.replace(tzinfo=timezone.utc)
+    current = current if current.tzinfo else current.replace(tzinfo=timezone.utc)
+    return recorded == current
+
+
+async def _recover_accepted_terminal_checkpoint(db: AsyncSession, archive: PrintArchive) -> int | None:
+    """Close an accepted-but-interrupted terminal without replaying effects.
+
+    A crash after acceptance has no proof whether a macro, physical cleanup,
+    notification or accounting operation happened.  The safe recovery is only
+    structural: close exactly the archived attempt, pause its queue and leave
+    an explicit uncertainty record.  It deliberately does not call the normal
+    completion handler or ``_reconcile_complete_archive``.
+    """
+    from backend.app.main import _TERMINAL_ACCEPTANCE_KEY
+
+    marker = _accepted_terminal_checkpoint(archive)
+    if marker is None:
+        return None
+
+    item = await db.scalar(
+        select(PrintQueueItem)
+        .where(
+            PrintQueueItem.id == marker["queue_item_id"],
+            PrintQueueItem.archive_id == archive.id,
+            PrintQueueItem.status == "printing",
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        item is None
+        or item.started_at is None
+        or not _checkpoint_started_at_matches(marker["queue_started_at"], item.started_at)
+    ):
+        logger.warning(
+            "reconcile: accepted terminal checkpoint for archive %s no longer owns its queue attempt; preserving state",
+            archive.id,
+        )
+        return None
+
+    from backend.app.services.queue_counters import set_queue_paused, update_queue_counters
+
+    now = datetime.now(timezone.utc)
+    archive.status = marker["outcome"]
+    archive.completed_at = _recovered_completed_at(archive.started_at, archive.print_time_seconds, now)
+    extra = dict(archive.extra_data or {})
+    checkpoint = dict(marker)
+    checkpoint["stage"] = "recovered_uncertain"
+    extra[_TERMINAL_ACCEPTANCE_KEY] = checkpoint
+    extra["terminal_effects_uncertain"] = True
+    archive.extra_data = extra
+    item.status = marker["outcome"]
+    item.completed_at = now
+    await set_queue_paused(db, item.queue_id, paused_item_id=item.id, expected_item_id=item.id)
+    await update_queue_counters(db, item.queue_id)
+    logger.warning(
+        "reconcile: structurally closed accepted terminal archive %s as %s; external effects were not replayed",
+        archive.id,
+        marker["outcome"],
+    )
+    return archive.id
+
+
 def _recovered_completed_at(
     started_at: datetime | None,
     print_time_seconds: int | None,
@@ -625,6 +712,26 @@ async def _reconcile(
     closed = 0
     recovered: list[int] = []
     for archive in orphans:
+        # An accepted terminal is stronger evidence than a filename, but it is
+        # not permission to replay an unknown physical effect after restart.
+        # A live active printer still wins: the terminal may have been stale A
+        # while B is already running, so preserve both rows for operator-safe
+        # reconciliation instead of closing by a stale checkpoint.
+        checkpoint = _accepted_terminal_checkpoint(archive)
+        if checkpoint is not None:
+            if (live_state or "").upper() not in {"IDLE", "FINISH", "FAILED"}:
+                logger.warning(
+                    "reconcile: accepted terminal archive %s has active printer state %s; preserving it",
+                    archive.id,
+                    live_state,
+                )
+                continue
+            recovered_archive = await _recover_accepted_terminal_checkpoint(db, archive)
+            if recovered_archive is not None:
+                recovered.append(recovered_archive)
+                closed += 1
+            continue
+
         created = archive.created_at
         if created is not None:
             created = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
