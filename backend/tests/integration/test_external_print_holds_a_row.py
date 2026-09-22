@@ -11,6 +11,7 @@ arrives here with a row already — the scheduler's, or the claim a direct print
 took for itself — so "no printing item on this queue" is what external means.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -393,6 +394,48 @@ async def test_terminal_acceptance_is_durable_and_blocks_restart_fallback(
         assert await main._accept_bound_terminal_run(printer.id, retry) == row.id
         await db_session.refresh(archive)
         assert archive.extra_data[main._TERMINAL_ACCEPTANCE_KEY]["queue_started_at"] == row.started_at.isoformat()
+    finally:
+        discard_print_run(main.printer_manager, printer.id, archive.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_concurrent_terminal_callbacks_claim_one_attempt_once(
+    db_session, printer_factory, archive_factory, monkeypatch, test_engine
+):
+    """Fresh callback sessions may race, but only one owns the terminal marker."""
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from backend.app import main
+    from backend.app.services.print_run_binding import bind_print_run, discard_print_run
+
+    # ``db_session`` is one transaction for fixtures.  Each callback must open
+    # its own session, otherwise the in-memory test harness silently joins one
+    # connection and cannot exercise the acceptance boundary at all.
+    monkeypatch.setattr(
+        main, "async_session", async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    )
+
+    printer, queue = await _queue(db_session, printer_factory)
+    archive = await archive_factory(printer.id, status="printing", print_name="Concurrent print")
+    await mark_queue_printing_for_printer(printer.id, archive_id=archive.id)
+    row = (await _printing_rows(db_session, queue.id))[0]
+    binding = bind_print_run(
+        main.printer_manager,
+        printer_id=printer.id,
+        archive_id=archive.id,
+        queue_item_id=row.id,
+        claim_started_at=row.started_at,
+    )
+
+    try:
+        results = await asyncio.gather(
+            main._accept_bound_terminal_run(printer.id, binding),
+            main._accept_bound_terminal_run(printer.id, binding),
+        )
+        assert results.count(row.id) == 1
+        assert results.count(None) == 1
     finally:
         discard_print_run(main.printer_manager, printer.id, archive.id)
 
