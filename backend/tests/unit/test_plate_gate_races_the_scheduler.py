@@ -30,9 +30,11 @@ class TestTheGateArmsFirst:
         the ordering itself — a call-sequence mock would need the whole queue
         fixture and still measure the same thing.
         """
-        source = inspect.getsource(main_mod.on_print_complete)
+        # The public wrapper owns only the addressed analysis lease; the
+        # completion ordering itself lives in the private implementation.
+        source = inspect.getsource(main_mod._on_print_complete_impl)
         arm = source.index("set_awaiting_plate_clear(printer_id, True)")
-        release = source.index("set_queue_idle(db, queue_item.queue_id)")
+        release = source.index("set_queue_idle(db, queue_item.queue_id, expected_item_id=queue_item.id)")
         assert arm < release, (
             "awaiting_plate_clear must be armed BEFORE set_queue_idle releases "
             "the printer's queue claim — a scheduler tick in the gap dispatches "
@@ -42,7 +44,7 @@ class TestTheGateArmsFirst:
     def test_every_cleanup_surface_consults_the_expected_print_registry(self):
         """The SD delete loop, the move-to-cache loop and both content sweeps
         (card + internal) each ask the registry before acting."""
-        source = inspect.getsource(main_mod.on_print_complete)
+        source = inspect.getsource(main_mod._on_print_complete_impl)
         assert source.count("is_expected_print_file(") == 4
 
 

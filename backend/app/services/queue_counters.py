@@ -25,7 +25,9 @@ async def update_queue_counters(db: AsyncSession, queue_id: int) -> None:
 
     Terminal counters moved to :func:`get_queue_terminal_counts` (archive-backed).
     """
-    result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == queue_id))
+    result = await db.execute(
+        select(PrinterQueue).where(PrinterQueue.id == queue_id).execution_options(populate_existing=True)
+    )
     queue = result.scalar_one_or_none()
     if not queue:
         return
@@ -74,13 +76,25 @@ async def get_queue_terminal_counts(db: AsyncSession, queue_id: int) -> dict[str
     }
 
 
-async def set_queue_error(db: AsyncSession, queue_id: int, failed_item_id: int | None = None) -> None:
-    """Set queue to error status when a print fails."""
-    result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == queue_id))
+async def set_queue_error(
+    db: AsyncSession, queue_id: int, failed_item_id: int | None = None, *, expected_item_id: int | None = None
+) -> None:
+    """Set queue to error, optionally only for its addressed current item."""
+    result = await db.execute(
+        select(PrinterQueue).where(PrinterQueue.id == queue_id).execution_options(populate_existing=True)
+    )
     queue = result.scalar_one_or_none()
     if not queue:
         return
 
+    if expected_item_id is not None and queue.current_item_id != expected_item_id:
+        logger.info(
+            "Leaving queue %d unchanged: completion for item %s no longer owns current item %s",
+            queue_id,
+            expected_item_id,
+            queue.current_item_id,
+        )
+        return
     queue.status = "error"
     queue.current_item_id = None
     queue.last_activity_at = datetime.now(timezone.utc)
@@ -103,7 +117,9 @@ async def set_queue_printing(db: AsyncSession, queue_id: int, item_id: int | Non
     queued item was live. If a caller explicitly wants to clear the
     pointer (terminal transition), use :func:`set_queue_idle` instead.
     """
-    result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == queue_id))
+    result = await db.execute(
+        select(PrinterQueue).where(PrinterQueue.id == queue_id).execution_options(populate_existing=True)
+    )
     queue = result.scalar_one_or_none()
     if not queue:
         return
@@ -114,25 +130,37 @@ async def set_queue_printing(db: AsyncSession, queue_id: int, item_id: int | Non
     queue.last_activity_at = datetime.now(timezone.utc)
 
 
-async def set_queue_paused(db: AsyncSession, queue_id: int, paused_item_id: int | None = None) -> None:
+async def set_queue_paused(
+    db: AsyncSession, queue_id: int, paused_item_id: int | None = None, *, expected_item_id: int | None = None
+) -> None:
     """Pause the queue after a user-initiated cancel.
 
     Different from ``set_queue_error``: cancel is intentional, not a fault.
     Operator can inspect, dequeue/reorder, then resume manually instead of
     having the next pending item auto-dispatched right after their cancel.
     """
-    result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == queue_id))
+    result = await db.execute(
+        select(PrinterQueue).where(PrinterQueue.id == queue_id).execution_options(populate_existing=True)
+    )
     queue = result.scalar_one_or_none()
     if not queue:
         return
 
+    if expected_item_id is not None and queue.current_item_id != expected_item_id:
+        logger.info(
+            "Leaving queue %d unchanged: completion for item %s no longer owns current item %s",
+            queue_id,
+            expected_item_id,
+            queue.current_item_id,
+        )
+        return
     queue.status = "paused"
     queue.current_item_id = None
     queue.last_activity_at = datetime.now(timezone.utc)
     logger.info("Queue %d paused after cancel (item: %s)", queue_id, paused_item_id)
 
 
-async def set_queue_idle(db: AsyncSession, queue_id: int) -> None:
+async def set_queue_idle(db: AsyncSession, queue_id: int, *, expected_item_id: int | None = None) -> None:
     """Release a queue only while its persisted state is ``printing``.
 
     Completion handlers can run after FTP, MQTT, or macro awaits.  Their
@@ -140,9 +168,12 @@ async def set_queue_idle(db: AsyncSession, queue_id: int) -> None:
     read/compare here could turn a concurrent ``paused`` or ``error`` state
     back into ``idle``.  Keep the condition in the database instead.
     """
+    conditions = [PrinterQueue.id == queue_id, PrinterQueue.status == "printing"]
+    if expected_item_id is not None:
+        conditions.append(PrinterQueue.current_item_id == expected_item_id)
     await db.execute(
         update(PrinterQueue)
-        .where(PrinterQueue.id == queue_id, PrinterQueue.status == "printing")
+        .where(*conditions)
         .values(
             status="idle",
             current_item_id=None,

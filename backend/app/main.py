@@ -7480,9 +7480,14 @@ async def _on_print_complete_impl(
                 )
 
                 if queue_status == "failed":
-                    await set_queue_error(db, queue_item.queue_id, failed_item_id=queue_item.id)
+                    await set_queue_error(
+                        db,
+                        queue_item.queue_id,
+                        failed_item_id=queue_item.id,
+                        expected_item_id=queue_item.id,
+                    )
                 elif queue_status == "completed":
-                    await set_queue_idle(db, queue_item.queue_id)
+                    await set_queue_idle(db, queue_item.queue_id, expected_item_id=queue_item.id)
                 else:
                     # Cancelled — pause the queue so the operator inspects
                     # the printer before the next pending item dispatches.
@@ -7500,7 +7505,12 @@ async def _on_print_complete_impl(
                     # ``_cancel_item`` in the scheduler (the scheduler-
                     # internal cancel path always paused the queue;
                     # this aligns the MQTT-runtime path with that).
-                    await set_queue_paused(db, queue_item.queue_id, paused_item_id=queue_item.id)
+                    await set_queue_paused(
+                        db,
+                        queue_item.queue_id,
+                        paused_item_id=queue_item.id,
+                        expected_item_id=queue_item.id,
+                    )
                 await update_queue_counters(db, queue_item.queue_id)
                 await db.commit()
                 logger.info("Updated queue item %s status to %s", queue_item.id, queue_status)

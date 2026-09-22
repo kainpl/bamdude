@@ -143,3 +143,35 @@ async def test_stale_completion_cannot_release_concurrently_paused_queue(db_sess
         assert queue is not None
         assert queue.status == "paused"
         assert queue.current_item_id == 31
+
+
+@pytest.mark.asyncio
+async def test_old_terminal_cannot_release_a_new_printing_item(db_session, test_engine):
+    """A late A completion must not make the queue idle after B claimed it."""
+    db_session.add(
+        Printer(
+            id=4,
+            name="p4",
+            serial_number="TEST-CANCEL-NEW-RUN",
+            ip_address="127.0.0.1",
+            access_code="00000000",
+        )
+    )
+    db_session.add(PrinterQueue(id=4, printer_id=4, status="printing", current_item_id=40))
+    await db_session.commit()
+
+    session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as newer_run:
+        queue = await newer_run.get(PrinterQueue, 4)
+        assert queue is not None
+        queue.current_item_id = 41
+        await newer_run.commit()
+
+    await set_queue_idle(db_session, 4, expected_item_id=40)
+    await db_session.commit()
+
+    async with session_factory() as verify_session:
+        queue = await verify_session.get(PrinterQueue, 4)
+        assert queue is not None
+        assert queue.status == "printing"
+        assert queue.current_item_id == 41
