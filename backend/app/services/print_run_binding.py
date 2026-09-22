@@ -279,6 +279,22 @@ def finishing_print_runs(manager: PrinterManager, printer_id: int) -> tuple[Prin
     )
 
 
+def completion_effects_are_owned(manager: PrinterManager, printer_id: int, archive_id: int) -> bool:
+    """Whether a finishing run may still touch printer-wide resources.
+
+    Archive/accounting writes remain addressed to the finishing run even after
+    B appears.  Printer-wide effects are different: clearing B's macro
+    selection, swapping its table, cleaning its files or powering it off is
+    never a safe completion of A.  A positive current binding *or* a start
+    still waiting to persist is therefore a conservative veto.
+    """
+    if (printer_id, archive_id) not in _finishing(manager):
+        return False
+    if _current(manager).get(printer_id) is not None:
+        return False
+    return printer_id not in _start_resolutions(manager)
+
+
 def begin_print_run_finishing(manager: PrinterManager, printer_id: int, archive_id: int) -> PrintRunBinding | None:
     """Move exactly this run into its finishing lease.
 

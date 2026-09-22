@@ -6300,6 +6300,17 @@ async def _accept_bound_terminal_run(printer_id: int, binding) -> int | None:
     return queue_item.id
 
 
+def _completion_may_apply_printer_effect(printer_id: int, archive_id: int | None) -> bool:
+    """Keep an old finishing run away from the next run's printer resources."""
+    if archive_id is None:
+        # Legacy/no-archive completion has no run-scoped proof.  Preserve its
+        # established best-effort path; addressed runs take the strict branch.
+        return True
+    from backend.app.services.print_run_binding import completion_effects_are_owned
+
+    return completion_effects_are_owned(printer_manager, printer_id, archive_id)
+
+
 async def _completion_conflicts_with_active_queue(printer_id: int, data: dict) -> bool:
     """Whether a terminal MQTT event positively belongs to no active queue row.
 
@@ -6495,24 +6506,32 @@ async def _on_print_complete_impl(
 
         begin_print_file_analysis_finishing(printer_manager, printer_id, archive_id)
 
-    try:
-        ws_data = {
-            "status": data.get("status"),
-            "filename": data.get("filename"),
-            "subtask_name": data.get("subtask_name"),
-            "timelapse_was_active": data.get("timelapse_was_active"),
-        }
-        await ws_manager.send_print_complete(printer_id, ws_data)
-        log_timing("WebSocket send_print_complete")
-    except Exception as e:
-        logger.warning("[CALLBACK] WebSocket send_print_complete failed: %s", e)
+    if _completion_may_apply_printer_effect(printer_id, archive_id):
+        try:
+            ws_data = {
+                "status": data.get("status"),
+                "filename": data.get("filename"),
+                "subtask_name": data.get("subtask_name"),
+                "timelapse_was_active": data.get("timelapse_was_active"),
+            }
+            await ws_manager.send_print_complete(printer_id, ws_data)
+            log_timing("WebSocket send_print_complete")
+        except Exception as e:
+            logger.warning("[CALLBACK] WebSocket send_print_complete failed: %s", e)
+    else:
+        logger.info(
+            "Skipping printer-wide completion event for finishing archive %s; a newer run owns printer %s",
+            archive_id,
+            printer_id,
+        )
 
     # Capture user info before clearing (needed for print log entry).  A known
     # bound A must never read/clear B's attribution after a fast next start.
     _print_user_info = printer_manager.get_current_print_user(printer_id, archive_id=archive_id)
 
     # Clear current print user tracking (Issue #206)
-    printer_manager.clear_current_print_user(printer_id, archive_id=archive_id)
+    if _completion_may_apply_printer_effect(printer_id, archive_id):
+        printer_manager.clear_current_print_user(printer_id, archive_id=archive_id)
 
     # If the user explicitly stopped this print from the queue UI the printer will
     # report "failed" or "aborted" via MQTT.  Override that to "cancelled" so the
@@ -6534,19 +6553,20 @@ async def _on_print_complete_impl(
         _user_stopped_printers.pop(printer_id, None)
 
     # MQTT relay - publish print complete
-    try:
-        printer_info = printer_manager.get_printer(printer_id)
-        if printer_info:
-            await mqtt_relay.on_print_complete(
-                printer_id,
-                printer_info.name,
-                printer_info.serial_number,
-                data.get("filename", ""),
-                data.get("subtask_name", ""),
-                data.get("status", "completed"),
-            )
-    except Exception:
-        pass  # Don't fail print complete callback if MQTT fails
+    if _completion_may_apply_printer_effect(printer_id, archive_id):
+        try:
+            printer_info = printer_manager.get_printer(printer_id)
+            if printer_info:
+                await mqtt_relay.on_print_complete(
+                    printer_id,
+                    printer_info.name,
+                    printer_info.serial_number,
+                    data.get("filename", ""),
+                    data.get("subtask_name", ""),
+                    data.get("status", "completed"),
+                )
+        except Exception:
+            pass  # Don't fail print complete callback if MQTT fails
 
     filename = data.get("filename", "")
     subtask_name = data.get("subtask_name", "")
@@ -6560,12 +6580,13 @@ async def _on_print_complete_impl(
     # Fire any user-defined ``print_finished`` macros (e.g. turn chamber
     # light back on after print). Fire-and-forget so macro delay_seconds
     # doesn't stall completion. Mirrors the ``print_started`` path.
-    try:
-        from backend.app.services.macro_trigger import fire_event_macros
+    if _completion_may_apply_printer_effect(printer_id, archive_id):
+        try:
+            from backend.app.services.macro_trigger import fire_event_macros
 
-        await fire_event_macros("print_finished", printer_id, async_session, printer_manager)
-    except Exception as e:
-        logger.warning("print_finished macros failed to schedule: %s", e)
+            await fire_event_macros("print_finished", printer_id, async_session, printer_manager)
+        except Exception as e:
+            logger.warning("print_finished macros failed to schedule: %s", e)
 
     # Build list of possible keys to try (matching how they were registered in on_print_start)
     possible_keys = []
@@ -6772,6 +6793,13 @@ async def _on_print_complete_impl(
     # leave this running into the NEXT print on the same machine, where the
     # names it deletes by would belong to that job instead.
     async def _post_print_printer_cleanup() -> None:
+        if not _completion_may_apply_printer_effect(printer_id, archive_id):
+            logger.info(
+                "Skipping post-print cleanup for archive %s: a newer run owns printer %s",
+                archive_id,
+                printer_id,
+            )
+            return
         try:
             await asyncio.wait_for(_cleanup_printer_after_print(), timeout=_POST_PRINT_CLEANUP_BUDGET)
         except TimeoutError:
@@ -7206,15 +7234,21 @@ async def _on_print_complete_impl(
     # needs the same protection.
     from backend.app.services.macro_trigger import clear_fired_layer_macros
 
-    clear_fired_layer_macros(printer_id)
+    if _completion_may_apply_printer_effect(printer_id, archive_id):
+        clear_fired_layer_macros(printer_id)
     # Only here, and only this late. The layer-fired guard above also resets on
     # ``progress < 5``, but the selection must not: that point is the START of a
     # print, and clearing there would throw away what dispatch just registered.
     # This also has to sit below ``fire_event_macros("print_finished")`` — clear
     # first and the finish macros would have nothing to match against.
-    clear_macro_selection(printer_id)
+    if _completion_may_apply_printer_effect(printer_id, archive_id):
+        clear_macro_selection(printer_id)
 
-    swap_config = _active_swap_config.pop(printer_id, None)
+    swap_config = (
+        _active_swap_config.pop(printer_id, None)
+        if _completion_may_apply_printer_effect(printer_id, archive_id)
+        else None
+    )
     swap_events: list[str] = list(swap_config.get("swap_macro_events", [])) if swap_config else []
     if not swap_events and archive_id:
         try:
@@ -7265,7 +7299,7 @@ async def _on_print_complete_impl(
                     from backend.app.services.macro_executor import find_swap_macro
 
                     macro = await find_swap_macro(db, "swap_mode_change_table", _sw_printer)
-                    if macro and macro.gcode:
+                    if macro and macro.gcode and _completion_may_apply_printer_effect(printer_id, archive_id):
                         logger.info("[SWAP] Running change_table macro '%s' for printer %s", macro.name, printer_id)
                         _sw_ok, _sw_msg = await printer_manager.execute_macro_and_wait(
                             printer_id, macro.gcode, macro.name
@@ -7345,7 +7379,7 @@ async def _on_print_complete_impl(
     # inputs are final here: ``archive_id`` is resolved at the top, and both
     # ``_plate_auto_cleared_by_swap`` writers (swap_compatible check,
     # change_table macro) run above this line.
-    if archive_id and not _plate_auto_cleared_by_swap:
+    if archive_id and not _plate_auto_cleared_by_swap and _completion_may_apply_printer_effect(printer_id, archive_id):
         try:
             _armed = printer_manager.arm_awaiting_plate_clear(printer_id, archive_id)
             # Old third-party manager adapters (and focused lifecycle tests)
@@ -7359,7 +7393,7 @@ async def _on_print_complete_impl(
                 logger.info("[PLATE] Armed awaiting_plate_clear gate for printer %s", printer_id)
         except Exception as e:
             logger.warning("[PLATE] Failed to arm awaiting_plate_clear: %s", e)
-    elif archive_id:
+    elif archive_id and _completion_may_apply_printer_effect(printer_id, archive_id):
         # The swap path cleared the plate for real — so RELEASE the gate, don't
         # merely skip arming it. Skipping was the whole bug: the flag is
         # persisted to ``printers.awaiting_plate_clear`` and restored at
@@ -7618,7 +7652,7 @@ async def _on_print_complete_impl(
                 # inline block here hardcoded a 50°C / 600s cooldown wait and
                 # powered off on the timeout regardless of print state — cutting
                 # a touchscreen reprint mid-print.
-                if queue_item.auto_off_after:
+                if queue_item.auto_off_after and _completion_may_apply_printer_effect(printer_id, archive_id):
                     try:
                         await smart_plug_manager.schedule_off_after_queue_job(printer_id, db)
                     except Exception as e:
@@ -7872,7 +7906,7 @@ async def _on_print_complete_impl(
             _bed_cooldown_tasks.pop(printer_id, None)
 
     # Only start bed cooldown for completed prints
-    if data.get("status") == "completed":
+    if data.get("status") == "completed" and _completion_may_apply_printer_effect(printer_id, archive_id):
         # Cancel any existing task for this printer
         existing_task = _bed_cooldown_tasks.pop(printer_id, None)
         if existing_task and not existing_task.done():

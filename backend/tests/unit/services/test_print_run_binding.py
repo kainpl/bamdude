@@ -9,6 +9,7 @@ from backend.app.services.print_run_binding import (
     begin_print_start_resolution,
     bind_prepared_print_run,
     bind_print_run,
+    completion_effects_are_owned,
     current_print_run,
     defer_matching_terminal_during_start,
     discard_print_run,
@@ -82,6 +83,27 @@ def test_finishing_registry_keeps_the_exact_terminal_run_address():
     begin_print_run_finishing(manager, 7, 41)
 
     assert [run.archive_id for run in finishing_print_runs(manager, 7)] == [41]
+
+
+def test_finishing_a_cannot_touch_printer_effects_after_b_starts():
+    manager = PrinterManager()
+    bind_print_run(manager, printer_id=7, archive_id=41)
+    begin_print_run_finishing(manager, 7, 41)
+
+    assert completion_effects_are_owned(manager, 7, 41)
+
+    bind_print_run(manager, printer_id=7, archive_id=42)
+
+    assert not completion_effects_are_owned(manager, 7, 41)
+
+
+def test_pending_b_start_vetoes_printer_effects_for_finishing_a():
+    manager = PrinterManager()
+    bind_print_run(manager, printer_id=7, archive_id=41)
+    begin_print_run_finishing(manager, 7, 41)
+    begin_print_start_resolution(manager, 7, {"subtask_id": "92"})
+
+    assert not completion_effects_are_owned(manager, 7, 41)
 
 
 def test_pending_terminal_requires_the_active_start_subtask_id():
