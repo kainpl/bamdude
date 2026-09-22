@@ -14,6 +14,8 @@ Modes:
     cyrillic_search    upper-case Cyrillic finds its lower-case row, naturally
                        and through the forced collated SQL
     archive_write_lock PostgreSQL holds the per-archive write guard until commit
+    printer_lane_admission PostgreSQL serializes two direct-start admissions for
+                           one printer and rejects the loser after the commit
     analysis_wait_release a cold usage projection releases its DB transaction
                           before waiting for shared file analysis
 
@@ -411,6 +413,102 @@ async def _archive_write_lock() -> dict:
     return {"blocked_before_commit": blocked_before_commit, "second_entered": second_entered.is_set()}
 
 
+async def _printer_lane_admission() -> dict:
+    """Measure the shared printer-lane guard with two real PG sessions.
+
+    The normal process-local lock is deliberately replaced by a no-op here:
+    this probe's purpose is the PostgreSQL advisory fence that protects
+    independent application processes, not the easier same-event-loop path.
+    """
+    from backend.app.core.database import async_session
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer import Printer
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.printer_occupancy import (
+        PrinterOccupancyConflict,
+        read_queue_occupancy,
+        require_direct_admission,
+    )
+    from backend.app.services.queue_ops import _queue_claim_locks, queue_claim_scope
+
+    class _NoopLock:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return False
+
+    async with async_session() as setup:
+        printer = Printer(
+            name="lane-admission-printer",
+            ip_address="10.0.0.19",
+            access_code="00000000",
+            serial_number="LANEADMIT1",
+            model="X1C",
+        )
+        setup.add(printer)
+        await setup.flush()
+        setup.add(PrinterQueue(id=printer.id, printer_id=printer.id))
+        await setup.commit()
+        printer_id = printer.id
+
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    second_attempted = asyncio.Event()
+    second_entered = asyncio.Event()
+    second_code: str | None = None
+    original_lock = _queue_claim_locks[printer_id]
+    _queue_claim_locks[printer_id] = _NoopLock()
+
+    async def first_writer() -> None:
+        async with async_session() as db, queue_claim_scope(db, printer_id):
+            occupancy = await read_queue_occupancy(db, printer_id, for_update=True)
+            require_direct_admission(occupancy)
+            item = PrintQueueItem(queue_id=printer_id, status="printing", position=0, origin="direct")
+            db.add(item)
+            await db.flush()
+            occupancy.queue.status = "printing"
+            occupancy.queue.current_item_id = item.id
+            first_entered.set()
+            await release_first.wait()
+            await db.commit()
+
+    async def second_writer() -> None:
+        nonlocal second_code
+        await first_entered.wait()
+        second_attempted.set()
+        async with async_session() as db, queue_claim_scope(db, printer_id):
+            second_entered.set()
+            occupancy = await read_queue_occupancy(db, printer_id, for_update=True)
+            try:
+                require_direct_admission(occupancy)
+            except PrinterOccupancyConflict as exc:
+                second_code = exc.code
+            await db.rollback()
+
+    try:
+        first = asyncio.create_task(first_writer())
+        await first_entered.wait()
+        second = asyncio.create_task(second_writer())
+        await second_attempted.wait()
+        try:
+            await asyncio.wait_for(second_entered.wait(), timeout=0.2)
+        except TimeoutError:
+            blocked_before_commit = True
+        else:
+            blocked_before_commit = False
+        release_first.set()
+        await asyncio.gather(first, second)
+    finally:
+        _queue_claim_locks[printer_id] = original_lock
+
+    return {
+        "blocked_before_commit": blocked_before_commit,
+        "second_entered": second_entered.is_set(),
+        "second_code": second_code,
+    }
+
+
 async def _analysis_wait_release() -> dict:
     """Prove the projection worker wait does not retain a PG transaction.
 
@@ -500,6 +598,8 @@ async def _main(mode: str) -> dict:
         return await _cyrillic_search()
     if mode == "archive_write_lock":
         return await _archive_write_lock()
+    if mode == "printer_lane_admission":
+        return await _printer_lane_admission()
     if mode == "analysis_wait_release":
         return await _analysis_wait_release()
     return await _report()

@@ -435,6 +435,20 @@ class TestArchiveWriteScope:
         assert result == {"blocked_before_commit": True, "second_entered": True}
 
 
+class TestPrinterLaneAdmission:
+    """The shared queue guard must work across real PostgreSQL sessions."""
+
+    def test_one_direct_start_wins_and_the_other_reads_the_active_claim(self, tmp_path_factory):
+        url = _pg_url()
+        _wipe(url)
+        result = _run("printer_lane_admission", tmp_path_factory.mktemp("pg_printer_lane_admission"), url)
+        assert result == {
+            "blocked_before_commit": True,
+            "second_entered": True,
+            "second_code": "active_claim",
+        }
+
+
 class TestPrintAnalysisConnectionRelease:
     """The cache wait must not hold a PostgreSQL transaction or pool checkout."""
 
