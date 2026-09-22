@@ -665,6 +665,10 @@ class PrinterManager:
         self._print_run_bindings: dict[int, object] = {}
         self._print_run_finishing_bindings: dict[tuple[int, int], object] = {}
         self._print_run_binding_sequence = 0
+        # A callback is accepted only from the MQTT client generation that is
+        # currently registered for this printer. A disconnected paho client
+        # can still deliver a queued callback after its replacement exists.
+        self._client_generations: dict[int, int] = {}
         self._uses_print_file_analysis_process = True
         self._models: dict[int, str | None] = {}  # Cache printer models for feature detection
         self._connected_at: dict[int, float] = {}  # Unix timestamp of last connection
@@ -700,6 +704,20 @@ class PrinterManager:
     def get_printer(self, printer_id: int) -> PrinterInfo | None:
         """Get printer info by ID."""
         return self._printer_info.get(printer_id)
+
+    def current_client_generation(self, printer_id: int) -> int | None:
+        """Return the currently accepted MQTT-client generation, if connected."""
+        return self._client_generations.get(printer_id)
+
+    def accepts_client_callback_generation(self, printer_id: int, generation: object) -> bool:
+        """Whether a queued MQTT callback still belongs to this client session.
+
+        Older integration callers carry no generation and keep their legacy
+        recovery path. A callback that *does* name a different live client is
+        positively stale and must not reach printer-wide completion effects.
+        """
+        current = self.current_client_generation(printer_id)
+        return not (isinstance(generation, int) and current is not None and generation != current)
 
     def update_printer_name(self, printer_id: int, name: str) -> None:
         """Refresh the display name held for callbacks without reconnecting."""
@@ -999,6 +1017,8 @@ class PrinterManager:
             self.disconnect_printer(printer.id)
 
         printer_id = printer.id
+        client_generation = self._client_generations.get(printer_id, 0) + 1
+        self._client_generations[printer_id] = client_generation
 
         def on_state_change(state: PrinterState):
             if self._on_status_change:
@@ -1010,7 +1030,15 @@ class PrinterManager:
 
         def on_print_complete(data: dict):
             if self._on_print_complete:
-                self._schedule_async(self._on_print_complete(printer_id, data))
+                # Copy before scheduling: the MQTT client mutates its live
+                # state immediately after terminal detection. The generation
+                # belongs to this callback source, not to mutable print state.
+                self._schedule_async(
+                    self._on_print_complete(
+                        printer_id,
+                        {**data, "_bamdude_client_generation": client_generation},
+                    )
+                )
 
         def on_print_running_observed(data: dict):
             if self._on_print_running_observed:

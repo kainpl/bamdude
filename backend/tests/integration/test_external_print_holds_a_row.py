@@ -315,6 +315,39 @@ async def test_identified_completion_with_two_matching_rows_has_no_printer_wide_
     assert await _completion_conflicts_with_active_queue(printer.id, {"subtask_name": "Duplicate print"}) is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_bound_completion_addresses_its_archive_not_a_same_named_newer_row(
+    db_session, printer_factory, main_db, archive_factory
+):
+    """A repeating file must not make a completion choose the newer archive.
+
+    Names stay available for restart recovery only. Once the live run has an
+    execution archive, the queue row is selected by that direct relation even
+    when A and B have identical printable names.
+    """
+    from backend.app.main import _bound_printing_item
+    from backend.app.services.print_run_binding import PrintRunBinding
+
+    printer, queue = await _queue(db_session, printer_factory)
+    first = await archive_factory(printer.id, status="printing", print_name="Repeat me")
+    newer = await archive_factory(printer.id, status="printing", print_name="Repeat me")
+    first_row = PrintQueueItem(queue_id=queue.id, archive_id=first.id, status="printing", position=1)
+    newer_row = PrintQueueItem(queue_id=queue.id, archive_id=newer.id, status="printing", position=2)
+    db_session.add_all([first_row, newer_row])
+    await db_session.commit()
+
+    chosen, unresolved = await _bound_printing_item(
+        db_session,
+        printer.id,
+        PrintRunBinding(printer_id=printer.id, archive_id=first.id),
+    )
+
+    assert chosen is not None
+    assert chosen.id == first_row.id
+    assert unresolved is False
+
+
 class TestTheRowCarriesWhatThePrinterToldUs:
     """⚠️ Reported from a farm: repeating a print picked up from BambuStudio went
     out with no AMS mapping.

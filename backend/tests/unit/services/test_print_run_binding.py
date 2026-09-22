@@ -51,3 +51,17 @@ def test_repeated_filename_is_not_part_of_run_identity():
     assert first.archive_id != second.archive_id
     assert first.sequence != second.sequence
     assert current_print_run(manager, 7) == second
+
+
+def test_client_generation_rejects_a_stale_callback_only_after_reconnect():
+    manager = PrinterManager()
+
+    # The manager assigns the value while it wires each client callback. A
+    # queued callback can compare its captured source at app-loop ingress.
+    manager._client_generations[7] = 3
+
+    assert manager.current_client_generation(7) == 3
+    assert manager.accepts_client_callback_generation(7, 3)
+    assert not manager.accepts_client_callback_generation(7, 2)
+    assert manager.accepts_client_callback_generation(7, None)
+    assert manager.accepts_client_callback_generation(8, 1)

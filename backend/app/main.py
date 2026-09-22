@@ -3337,6 +3337,7 @@ def _bind_print_file_analysis_context(printer_id: int, archive) -> None:
         printer_id=printer_id,
         archive_id=archive.id,
         observed_subtask_id=getattr(archive, "subtask_id", None),
+        client_generation=printer_manager.current_client_generation(printer_id),
     )
 
     relative_path = getattr(archive, "file_path", None)
@@ -6083,6 +6084,21 @@ async def _printing_rows_for_printer(db, printer_id: int) -> list:
     return list(result.scalars().all())
 
 
+async def _bound_printing_item(db, printer_id: int, binding):
+    """Return the one printing row addressed by an accepted run binding.
+
+    The binding's archive is an execution archive, so this is a direct DB
+    relation rather than another round of filename comparison.  A vanished or
+    reused row is deliberately not replaced by a similarly named candidate.
+    """
+
+    rows = await _printing_rows_for_printer(db, printer_id)
+    matches = [row for row in rows if row.archive_id == binding.archive_id]
+    if binding.queue_item_id is not None:
+        matches = [row for row in matches if row.id == binding.queue_item_id]
+    return matches[0] if len(matches) == 1 else None, bool(rows and len(matches) != 1)
+
+
 async def _completion_conflicts_with_active_queue(printer_id: int, data: dict) -> bool:
     """Whether a terminal MQTT event positively belongs to no active queue row.
 
@@ -6186,12 +6202,49 @@ async def _on_print_complete_impl(
 
     logger.info("[CALLBACK] on_print_complete started for printer %s", printer_id)
 
-    # A delayed terminal event from A must be refused before it can touch
-    # printer-scoped state for B.  The queue update below repeats the binding
-    # selection under its own transaction; this early guard protects macros,
-    # notifications, user-stop attribution and the in-memory print context.
-    if await _completion_conflicts_with_active_queue(printer_id, data):
+    # A direct execution-archive binding wins over filename aliases.  This is
+    # captured at the common authoritative archive lifecycle point, so an
+    # ID-only terminal event can finish its own run.  A positive contradictory
+    # device ID is still foreign even when an old binding happens to exist.
+    from backend.app.services.print_run_binding import (
+        begin_print_run_finishing,
+        current_print_run,
+    )
+
+    bound_run = current_print_run(printer_manager, printer_id)
+    event_client_generation = data.get("_bamdude_client_generation")
+    accepted_client_generation = printer_manager.current_client_generation(printer_id)
+    if not printer_manager.accepts_client_callback_generation(printer_id, event_client_generation):
+        logger.warning(
+            "Ignoring terminal event from stale MQTT client on printer %s: event_generation=%s accepted_generation=%s",
+            printer_id,
+            event_client_generation,
+            accepted_client_generation,
+        )
         return
+    if bound_run is not None and not bound_run.matches_device_subtask(data.get("subtask_id")):
+        logger.warning(
+            "Ignoring foreign terminal event on printer %s: bound archive=%s sequence=%s device_subtask=%r",
+            printer_id,
+            bound_run.archive_id,
+            bound_run.sequence,
+            data.get("subtask_id"),
+        )
+        return
+    # Legacy/adopted events that have not acquired a binding retain the
+    # conservative old guard and its name-based recovery behavior.
+    if bound_run is None and await _completion_conflicts_with_active_queue(printer_id, data):
+        return
+
+    archive_id = bound_run.archive_id if bound_run is not None else None
+    if archive_id is not None:
+        # Freeze A before any awaited effect can observe a newer B.  Both
+        # runtime resources use exact archive-scoped finishing leases.
+        analysis_completion["archive_id"] = archive_id
+        begin_print_run_finishing(printer_manager, printer_id, archive_id)
+        from backend.app.services.print_file_analysis import begin_print_file_analysis_finishing
+
+        begin_print_file_analysis_finishing(printer_manager, printer_id, archive_id)
 
     try:
         ws_data = {
@@ -6242,7 +6295,7 @@ async def _on_print_complete_impl(
     filename = data.get("filename", "")
     subtask_name = data.get("subtask_name", "")
 
-    if not filename and not subtask_name:
+    if archive_id is None and not filename and not subtask_name:
         logger.warning("Print complete without filename or subtask_name")
         return
 
@@ -6298,16 +6351,22 @@ async def _on_print_complete_impl(
     # Find the archive for this print
     logger.info("Looking for archive in _active_prints, keys to try: %s...", possible_keys[:5])
     logger.info("Current _active_prints: %s", list(_active_prints.keys()))
-    archive_id = None
-    for key in possible_keys:
-        archive_id = _active_prints.pop(key, None)
-        if archive_id:
-            logger.info("Found archive %s with key %s", archive_id, key)
-            # Also clean up any other keys pointing to this archive
-            keys_to_remove = [k for k, v in _active_prints.items() if v == archive_id]
-            for k in keys_to_remove:
-                _active_prints.pop(k, None)
-            break
+    if archive_id is None:
+        for key in possible_keys:
+            archive_id = _active_prints.pop(key, None)
+            if archive_id:
+                logger.info("Found archive %s with key %s", archive_id, key)
+                # Also clean up any other keys pointing to this archive
+                keys_to_remove = [k for k, v in _active_prints.items() if v == archive_id]
+                for k in keys_to_remove:
+                    _active_prints.pop(k, None)
+                break
+    else:
+        # The direct binding has already chosen the run.  Aliases are merely
+        # stale recovery aids now; clearing aliases of this exact archive cannot
+        # affect a repeated filename bound to another execution archive.
+        for key in [key for key, value in _active_prints.items() if value == archive_id]:
+            _active_prints.pop(key, None)
 
     if not archive_id:
         # Try to find by filename or subtask_name if not tracked (for prints started before app)
@@ -7088,21 +7147,30 @@ async def _on_print_complete_impl(
                     printer_id,
                     [(i.id, i.archive_id, i.library_file_id) for i in printing_items],
                 )
-            matching_items = [item for item in printing_items if await _completion_belongs_to_item(db, item, data)]
-            queue_identity_unresolved = False
-            if len(matching_items) == 1:
-                queue_item = matching_items[0]
-            elif len(matching_items) > 1:
-                queue_item = None
-                queue_identity_unresolved = True
-                logger.warning(
-                    "Completion on printer %s matches multiple printing queue items %s — preserving all claims",
-                    printer_id,
-                    [item.id for item in matching_items],
-                )
+            if bound_run is not None:
+                queue_item, queue_identity_unresolved = await _bound_printing_item(db, printer_id, bound_run)
+                if queue_item is None and queue_identity_unresolved:
+                    logger.warning(
+                        "Bound completion archive %s on printer %s has no unique current queue row; preserving claims",
+                        bound_run.archive_id,
+                        printer_id,
+                    )
             else:
-                queue_item = None
-                queue_identity_unresolved = bool(printing_items)
+                matching_items = [item for item in printing_items if await _completion_belongs_to_item(db, item, data)]
+                queue_identity_unresolved = False
+                if len(matching_items) == 1:
+                    queue_item = matching_items[0]
+                elif len(matching_items) > 1:
+                    queue_item = None
+                    queue_identity_unresolved = True
+                    logger.warning(
+                        "Completion on printer %s matches multiple printing queue items %s — preserving all claims",
+                        printer_id,
+                        [item.id for item in matching_items],
+                    )
+                else:
+                    queue_item = None
+                    queue_identity_unresolved = bool(printing_items)
             if queue_item:
                 queue_status = data.get("status", "completed")
                 # MQTT sends "aborted" for cancelled prints; normalise to
@@ -8284,8 +8352,10 @@ async def on_print_complete(printer_id: int, data: dict) -> None:
             archive_id = analysis_completion["archive_id"]
             if archive_id is not None:
                 from backend.app.services.print_file_analysis import discard_print_file_analysis
+                from backend.app.services.print_run_binding import discard_print_run
 
                 discard_print_file_analysis(printer_manager, printer_id, archive_id)
+                discard_print_run(printer_manager, printer_id, archive_id)
 
 
 def _ams_has_filament(ams_data: dict) -> bool:

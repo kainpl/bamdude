@@ -203,6 +203,30 @@ class TestPrinterManager:
             mock_client.disconnect.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_terminal_callback_carries_its_client_generation(self, manager, mock_printer):
+        """A callback queued by a replaced client remains distinguishable."""
+        delivered = []
+
+        async def on_complete(printer_id, data):
+            delivered.append((printer_id, data))
+
+        manager.set_print_complete_callback(on_complete)
+        manager._schedule_async = MagicMock()
+        with patch("backend.app.services.printer_manager.BambuMQTTClient") as MockClient:
+            instance = MagicMock()
+            instance.state = MagicMock(connected=True)
+            MockClient.return_value = instance
+
+            await manager.connect_printer(mock_printer)
+
+            callback = MockClient.call_args.kwargs["on_print_complete"]
+            callback({"status": "completed"})
+            scheduled = manager._schedule_async.call_args.args[0]
+            await scheduled
+
+        assert delivered == [(mock_printer.id, {"status": "completed", "_bamdude_client_generation": 1})]
+
+    @pytest.mark.asyncio
     async def test_connect_printer_returns_false_on_failure(self, manager, mock_printer):
         """Verify returns False when connection fails."""
         with patch("backend.app.services.printer_manager.BambuMQTTClient") as MockClient:
