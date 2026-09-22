@@ -181,14 +181,16 @@ async def busy_printer_ids(db: AsyncSession) -> set[int]:
     One function, so the rebalancer (``services/queue_rebalance.py``) reads the
     same definition the tick does.
     """
-    printing = await db.execute(select(PrinterQueue.printer_id).where(PrinterQueue.status == "printing"))
+    from backend.app.services.printer_occupancy import active_claim_printer_ids
+
+    printing = await active_claim_printer_ids(db)
     holding = await db.execute(
         select(PrinterQueue.printer_id)
         .join(PrintQueueItem, PrintQueueItem.queue_id == PrinterQueue.id)
         .where(PrintQueueItem.status == "pending")
         .distinct()
     )
-    return {pid for (pid,) in printing.all()} | {pid for (pid,) in holding.all()}
+    return printing | {pid for (pid,) in holding.all()}
 
 
 async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list[Printer], str, str]:

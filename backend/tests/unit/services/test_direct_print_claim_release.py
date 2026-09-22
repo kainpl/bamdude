@@ -35,6 +35,7 @@ async def _claimed(db_session, printer_factory, **job_kwargs):
         printer_id=printer.id,
         printer_name=printer.name,
         queue_item_id=item.id,
+        claim_started_at=item.started_at,
         **job_kwargs,
     )
     return queue, item, job

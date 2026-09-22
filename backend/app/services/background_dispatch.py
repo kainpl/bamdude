@@ -735,7 +735,7 @@ class BackgroundDispatchService:
         state = printer_manager.get_status(printer_id)
         if not state:
             return False
-        return state.state in ("RUNNING", "PAUSE", "PAUSED") and bool(state.gcode_file)
+        return state.state in _ACTIVE_PRINT_STATES
 
     async def _release_direct_claim(self, job: PrintDispatchJob, *, status: str, queue_error: bool = True) -> None:
         """Give the printer back after a direct dispatch that will not print.
@@ -762,24 +762,60 @@ class BackgroundDispatchService:
 
         from backend.app.models.print_queue import PrintQueueItem
         from backend.app.services.queue_counters import set_queue_error, set_queue_idle, update_queue_counters
+        from backend.app.services.queue_ops import queue_claim_scope
 
         try:
             async with async_session() as db:
-                item = await db.get(PrintQueueItem, job.queue_item_id)
-                if item is None:
+                if job.claim_started_at is None:
                     return
-                item.status = status
-                item.completed_at = datetime.now(timezone.utc)
-                if status == "failed":
-                    item.error_message = str((job.outcome or {}).get("error") or "Dispatch failed")
-                    if queue_error:
-                        await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+                # A direct-claim queue id is the printer id.  Enter before the
+                # first read so a fresh SQLite session can acquire its writer
+                # before it observes the row it may release.
+                async with queue_claim_scope(db, job.printer_id):
+                    item = await db.get(PrintQueueItem, job.queue_item_id, populate_existing=True)
+                    from backend.app.services.printer_occupancy import claim_token_matches, read_queue_occupancy
+
+                    if (
+                        item is None
+                        or item.status != "printing"
+                        or not claim_token_matches(item.started_at, job.claim_started_at)
+                    ):
+                        logger.debug("Direct claim %s is no longer the current printing row", job.queue_item_id)
+                        return
+
+                    if item.queue_id != job.printer_id:
+                        logger.warning(
+                            "Direct claim %s belongs to queue %s, not printer %s; leaving it untouched",
+                            item.id,
+                            item.queue_id,
+                            job.printer_id,
+                        )
+                        return
+
+                    occupancy = await read_queue_occupancy(db, item.queue_id, for_update=True)
+                    if (
+                        not claim_token_matches(item.started_at, job.claim_started_at)
+                        or occupancy.queue.current_item_id != item.id
+                    ):
+                        logger.debug(
+                            "Direct claim %s no longer owns queue %s (current=%s)",
+                            item.id,
+                            item.queue_id,
+                            occupancy.queue.current_item_id,
+                        )
+                        return
+                    item.status = status
+                    item.completed_at = datetime.now(timezone.utc)
+                    if status == "failed":
+                        item.error_message = str((job.outcome or {}).get("error") or "Dispatch failed")
+                        if queue_error:
+                            await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+                        else:
+                            await set_queue_idle(db, item.queue_id)
                     else:
                         await set_queue_idle(db, item.queue_id)
-                else:
-                    await set_queue_idle(db, item.queue_id)
-                await update_queue_counters(db, item.queue_id)
-                await db.commit()
+                    await update_queue_counters(db, item.queue_id)
+                    await db.commit()
         except Exception:
             logger.exception("Failed to release the dispatch claim for job %s", job.id)
 
@@ -1190,21 +1226,27 @@ class BackgroundDispatchService:
             # the three small reads ``order_filing.resolve_line_id`` makes to
             # find it (spec pass 7) — and the enqueue path is not on any hot
             # loop.
+            from backend.app.services.printer_occupancy import PrinterOccupancyConflict
             from backend.app.services.queue_batch import claim_printer_for_direct_print
 
             async with async_session() as claim_db:
-                claim_item = await claim_printer_for_direct_print(
-                    claim_db,
-                    printer_id=printer_id,
-                    origin="direct",
-                    archive_id=source_id if kind == "reprint_archive" else None,
-                    library_file_id=source_id if kind == "print_library_file" else None,
-                    options=options,
-                    created_by_id=requested_by_user_id,
-                    project_id=project_id,
-                    project_line_id=project_line_id,
-                    staged=staged,
-                )
+                try:
+                    claim_item = await claim_printer_for_direct_print(
+                        claim_db,
+                        printer_id=printer_id,
+                        origin="direct",
+                        archive_id=source_id if kind == "reprint_archive" else None,
+                        library_file_id=source_id if kind == "print_library_file" else None,
+                        options=options,
+                        created_by_id=requested_by_user_id,
+                        project_id=project_id,
+                        project_line_id=project_line_id,
+                        staged=staged,
+                    )
+                except PrinterOccupancyConflict as exc:
+                    raise DispatchEnqueueRejected(
+                        f"Printer {printer_name} is no longer available ({exc.code})"
+                    ) from exc
                 claim_item_id = claim_item.id if claim_item is not None else None
                 if claim_item is not None:
                     # ⚠️ **The claim row is the resolved answer, and the job must
@@ -1237,6 +1279,7 @@ class BackgroundDispatchService:
                 project_line_id=project_line_id,
                 cleanup_library_after_dispatch=cleanup_library_after_dispatch,
                 queue_item_id=claim_item_id,
+                claim_started_at=claim_item.started_at if claim_item is not None else None,
                 # ⚠️ ``awaited_by_scheduler`` stays False: the dispatcher owns
                 # this item, and is therefore the one that must release it.
             )

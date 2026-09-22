@@ -55,7 +55,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -1006,6 +1006,11 @@ async def publish(
 
             factory = session_factory or database.async_session
             async with factory() as session:
+                # ``attach`` can be a direct-printer claim. Take SQLite's
+                # writer before the hash lookup, rather than admitting from a
+                # deferred snapshot which a competing writer can invalidate.
+                if session.get_bind().dialect.name == "sqlite":
+                    await session.execute(text("BEGIN IMMEDIATE"))
                 # No SELECT ... FOR UPDATE: one process owns this spool (§2), the
                 # guard above is the mutual exclusion, and SQLite has no such lock.
                 existing = await session.scalar(select(QueueSource).where(QueueSource.sha256 == receipt.sha256))

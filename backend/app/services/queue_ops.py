@@ -12,8 +12,10 @@ into a status with ``queue_source_capture.refusal`` — one taxonomy, mapped onc
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -24,6 +26,8 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.services.queue_source_capture import reusing_sources
 
 logger = logging.getLogger(__name__)
+
+_queue_claim_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 @asynccontextmanager
@@ -39,6 +43,25 @@ async def queue_scope_lock(db: AsyncSession, queue_id: int):
         # 1625 is the existing namespace used for per-queue append locks.
         await db.execute(text("SELECT pg_advisory_xact_lock(1625, :queue_id)"), {"queue_id": queue_id})
     yield
+
+
+@asynccontextmanager
+async def queue_claim_scope(db: AsyncSession, queue_id: int):
+    """Serialize a short final printer-lane admission.
+
+    SQLite's in-process lock closes the coroutine window. A fresh SQLite
+    session also takes its writer before authoritative reads; a caller-owned
+    publication/write transaction is preserved. PostgreSQL's advisory guard
+    remains transaction-scoped through the caller's commit; callers must keep
+    the critical section short and do no external I/O in it.
+    """
+    async with _queue_claim_locks[queue_id]:
+        dialect = db.get_bind().dialect.name
+        if dialect == "postgresql":
+            await db.execute(text("SELECT pg_advisory_xact_lock(1625, :queue_id)"), {"queue_id": queue_id})
+        elif dialect == "sqlite" and not db.in_transaction():
+            await db.execute(text("BEGIN IMMEDIATE"))
+        yield
 
 
 async def place_pending_block(

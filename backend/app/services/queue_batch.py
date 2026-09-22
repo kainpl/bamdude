@@ -27,8 +27,9 @@ from backend.app.services.filament_intake import item_source
 from backend.app.services.filament_policy import record_queue_source
 from backend.app.services.filament_policy_write import prepare_routing
 from backend.app.services.order_filing import resolve_line_id
+from backend.app.services.printer_occupancy import read_queue_occupancy, require_direct_admission
 from backend.app.services.queue_counters import set_queue_printing, update_queue_counters
-from backend.app.services.queue_ops import queue_scope_lock
+from backend.app.services.queue_ops import queue_claim_scope, queue_scope_lock
 from backend.app.services.queue_source_capture import (
     StagedSource,
     capture_staged,
@@ -198,46 +199,50 @@ async def claim_printer_for_direct_print(
     async def build(session: AsyncSession, source: QueueSource | None) -> PrintQueueItem:
         from backend.app.services.printer_queues import ensure_printer_queue
 
-        queue = await ensure_printer_queue(session, printer_id)
+        async with queue_claim_scope(session, printer_id):
+            queue = await ensure_printer_queue(session, printer_id)
+            occupancy = await read_queue_occupancy(session, queue.id, for_update=True)
+            if origin == "direct":
+                require_direct_admission(occupancy)
 
-        # The order named without its line — file the line when this plate points
-        # at exactly one (spec pass 7, Decision 4a), the same rule and the same
-        # helper the three queue writers use. ⚠️ "Print now" with quantity 1 never
-        # reaches ``enqueue_batch_copies``, so without this the one door that
-        # dispatches straight to a printer was also the one door that dropped the
-        # answer the operator had just given the Print dialog's Order field. An
-        # explicit line is never overridden; an ambiguous plate stays NULL and the
-        # plan's implicit branch re-asks on every read.
-        line_id = project_line_id
-        if project_id is not None and line_id is None:
-            line_id = await resolve_line_id(
-                session, project_id=project_id, library_file_id=library_file_id, plate_index=columns.get("plate_id")
+            # The order named without its line — file the line when this plate points
+            # at exactly one (spec pass 7, Decision 4a), the same rule and the same
+            # helper the three queue writers use. ⚠️ "Print now" with quantity 1 never
+            # reaches ``enqueue_batch_copies``, so without this the one door that
+            # dispatches straight to a printer was also the one door that dropped the
+            # answer the operator had just given the Print dialog's Order field. An
+            # explicit line is never overridden; an ambiguous plate stays NULL and the
+            # plan's implicit branch re-asks on every read.
+            line_id = project_line_id
+            if project_id is not None and line_id is None:
+                line_id = await resolve_line_id(
+                    session, project_id=project_id, library_file_id=library_file_id, plate_index=columns.get("plate_id")
+                )
+
+            item = PrintQueueItem(
+                filament_routing=record_queue_source(routing, source),
+                queue_id=queue.id,
+                position=0,
+                status="printing",
+                origin=origin,
+                started_at=datetime.now(timezone.utc),
+                created_by_id=created_by_id,
+                queue_source_id=None if source is None else source.id,
+                source_snapshot=None if source is None else queue_sources.snapshot_for(staged.receipt, source),
+                **_item_columns(
+                    archive_id=archive_id,
+                    library_file_id=library_file_id,
+                    options=columns,
+                    project_id=project_id,
+                    project_line_id=line_id,
+                ),
             )
+            session.add(item)
+            await session.flush()
 
-        item = PrintQueueItem(
-            filament_routing=record_queue_source(routing, source),
-            queue_id=queue.id,
-            position=0,
-            status="printing",
-            origin=origin,
-            started_at=datetime.now(timezone.utc),
-            created_by_id=created_by_id,
-            queue_source_id=None if source is None else source.id,
-            source_snapshot=None if source is None else queue_sources.snapshot_for(staged.receipt, source),
-            **_item_columns(
-                archive_id=archive_id,
-                library_file_id=library_file_id,
-                options=columns,
-                project_id=project_id,
-                project_line_id=line_id,
-            ),
-        )
-        session.add(item)
-        await session.flush()
-
-        await set_queue_printing(session, queue.id, item.id)
-        await update_queue_counters(session, queue.id)
-        return item
+            await set_queue_printing(session, queue.id, item.id)
+            await update_queue_counters(session, queue.id)
+            return item
 
     if staged is None:
         item = await build(db, None)

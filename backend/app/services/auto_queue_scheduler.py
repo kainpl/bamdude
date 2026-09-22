@@ -45,7 +45,6 @@ from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
-from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import normalize_mode
@@ -58,8 +57,13 @@ from backend.app.services.filament_requirements import PrintRequirementsCache, p
 from backend.app.services.filament_routing import resolve_filament_routing
 from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.printer_occupancy import (
+    PrinterOccupancyConflict,
+    read_queue_occupancy,
+    require_auto_placement,
+)
 from backend.app.services.queue_counters import update_queue_counters
-from backend.app.services.queue_ops import queue_scope_lock
+from backend.app.services.queue_ops import queue_claim_scope
 from backend.app.services.queue_rebalance import REBALANCE_SETTING_KEY
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
 
@@ -68,6 +72,19 @@ logger = logging.getLogger(__name__)
 
 SJF_SETTING_KEY = "queue_shortest_first"
 PREFER_LOWEST_SETTING_KEY = "prefer_lowest_filament"
+
+
+class AutoPlacementConflict(RuntimeError):
+    """An expected auto-item race or stale-routing refusal.
+
+    Unlike :class:`PrinterOccupancyConflict`, this can describe the router
+    item or its evidence rather than the selected printer lane.  Callers must
+    handle it as a normal retry/wait outcome, never as a 500.
+    """
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
 
 
 def _feed_moved(printer_id: int, policy, plan, signature: tuple[int, str] | None) -> bool:
@@ -167,57 +184,65 @@ class AutoQueueScheduler:
             woke_one = False
             requirements_cache = PrintRequirementsCache()
             for item in items:
-                eligible = await find_eligible_printer(
-                    db, item, busy_printers, cache=requirements_cache, prefer_lowest=prefer_lowest
-                )
-                printer, reason = eligible
-                if printer is None:
-                    source_reason = getattr(eligible.requirements, "reason", None)
-                    if source_reason in SOURCE_FAILURES:
-                        await fail_auto_source(db, item, source_reason)
-                        logger.warning("Auto item %s failed: %s", item.id, source_reason)
-                        continue
-                    if not woke_one:
-                        woke_one = await self._wake_offline_printer(db, item, busy_printers)
-                    # The reason has always been computed and stored on the row;
-                    # it was never logged, which is why three support bundles
-                    # from a farm whose "queue stopped moving" contained no
-                    # evidence at all. INFO on change only — see _last_stall.
-                    if reason and item.waiting_reason != reason:
-                        logger.info("Auto item %s not placed: %s", item.id, reason)
-                        item.waiting_reason = reason
-                    blocked.append(reason or "no reason reported")
-                    if first_blocked is None:
-                        first_blocked = (item, reason or "no reason reported")
-                    continue
-
-                try:
-                    await self._assign(
-                        db,
-                        item,
-                        printer,
-                        prefer_lowest=prefer_lowest,
-                        plan=eligible.plan,
-                        requirements=eligible.requirements,
-                        snapshot_signature=eligible.snapshot_signature,
+                while True:
+                    eligible = await find_eligible_printer(
+                        db, item, busy_printers, cache=requirements_cache, prefer_lowest=prefer_lowest
                     )
-                except SourceUnavailable as exc:
-                    # The nested assignment rolled back; reload its expired row
-                    # before recording the failure outside that savepoint.
-                    await db.refresh(item)
-                    if exc.reason in SOURCE_FAILURES:
-                        await fail_auto_source(db, item, exc.reason)
-                    continue
-                except Exception:
-                    logger.exception("Failed to assign auto item %s to printer %s", item.id, printer.id)
-                    continue
+                    printer, reason = eligible
+                    if printer is None:
+                        source_reason = getattr(eligible.requirements, "reason", None)
+                        if source_reason in SOURCE_FAILURES:
+                            await fail_auto_source(db, item, source_reason)
+                            logger.warning("Auto item %s failed: %s", item.id, source_reason)
+                            break
+                        if not woke_one:
+                            woke_one = await self._wake_offline_printer(db, item, busy_printers)
+                        if reason and item.waiting_reason != reason:
+                            logger.info("Auto item %s not placed: %s", item.id, reason)
+                            item.waiting_reason = reason
+                        blocked.append(reason or "no reason reported")
+                        if first_blocked is None:
+                            first_blocked = (item, reason or "no reason reported")
+                        break
 
-                busy_printers.add(printer.id)
-                placed += 1
-                changed_queue_printer_ids.add(printer.id)
+                    try:
+                        await self._assign(
+                            db,
+                            item,
+                            printer,
+                            prefer_lowest=prefer_lowest,
+                            plan=eligible.plan,
+                            requirements=eligible.requirements,
+                            snapshot_signature=eligible.snapshot_signature,
+                        )
+                    except SourceUnavailable as exc:
+                        await db.refresh(item)
+                        if exc.reason in SOURCE_FAILURES:
+                            await fail_auto_source(db, item, exc.reason)
+                        break
+                    except (PrinterOccupancyConflict, AutoPlacementConflict) as exc:
+                        # The candidate was lost after its snapshot. Exclude it
+                        # and resolve the next one in this same bounded pass. A
+                        # concurrently cancelled/assigned router row is not a
+                        # printer conflict; leave it to its winning writer.
+                        await db.refresh(item)
+                        if isinstance(exc, AutoPlacementConflict) and exc.code == "item_changed":
+                            break
+                        busy_printers.add(printer.id)
+                        logger.info(
+                            "Auto item %s lost printer %s (%s); trying another candidate", item.id, printer.id, exc.code
+                        )
+                        continue
+                    except Exception:
+                        logger.exception("Failed to assign auto item %s to printer %s", item.id, printer.id)
+                        break
 
-                if sjf:
-                    await self._mark_jumped_peers(db, item)
+                    busy_printers.add(printer.id)
+                    placed += 1
+                    changed_queue_printer_ids.add(printer.id)
+                    if sjf:
+                        await self._mark_jumped_peers(db, item)
+                    break
 
             announce = self._log_stall(
                 [item for item in items if item.status == "pending"], placed, blocked, busy_printers
@@ -491,7 +516,7 @@ class AutoQueueScheduler:
                 plan = resolve_filament_routing(requirements, policy, snapshot, prefer_lowest=prefer_lowest).plan
                 snapshot_signature = feed_signature(policy, snapshot)
             if plan is None:
-                raise ValueError("No complete filament routing plan")
+                raise AutoPlacementConflict("routing_unavailable")
             ams_mapping_json = json.dumps(plan.mapping)
 
             # The auto queue has no one physical printer to configure.  Resolve
@@ -519,14 +544,6 @@ class AutoQueueScheduler:
                 execute_swap_macros = False
             swap_macro_events = options.get("swap_macro_events") if execute_swap_macros else None
 
-            # 2. Find target queue for this printer
-            queue_result = await db.execute(
-                select(PrinterQueue).where(PrinterQueue.printer_id == printer.id).with_for_update()
-            )
-            printer_queue = queue_result.scalar_one_or_none()
-            if printer_queue is None:
-                raise RuntimeError(f"Printer {printer.id} has no PrinterQueue row")
-
             # Revalidate the SAME plan after DB awaits and before claiming the row.
             # ⚠️ Both re-probes below carry ``identity.sha256``, so they ask the same
             # question the first read asked. For a captured source the identity is
@@ -540,12 +557,14 @@ class AutoQueueScheduler:
                 or policy.fingerprint != plan.policy_fingerprint
                 or identity != current_identity
             ):
-                raise ValueError("Filament routing evidence changed before assignment")
-            # All queue-order changes share this lock with ordinary append,
-            # Run next and the scheduler claim. The re-probe below is small
+                raise AutoPlacementConflict("routing_changed")
+            # The re-probe below is small
             # metadata I/O only; queue-source capture already happened before
             # Auto Queue reached this assignment transaction.
-            async with queue_scope_lock(db, printer_queue.id):
+            async with queue_claim_scope(db, printer.id):
+                occupancy = await read_queue_occupancy(db, printer.id, for_update=True)
+                printer_queue = occupancy.queue
+                require_auto_placement(occupancy)
                 # 3. Compute next position in the per-printer queue.
                 max_pos = await db.scalar(
                     select(func.coalesce(func.max(PrintQueueItem.position), 0)).where(
@@ -553,18 +572,6 @@ class AutoQueueScheduler:
                     )
                 )
                 next_pos = (max_pos or 0) + 1
-                if printer_queue.status == "printing" or printer_queue.is_paused:
-                    raise ValueError("Printer queue is no longer available")
-                pending = await db.scalar(
-                    select(PrintQueueItem.id)
-                    .where(
-                        PrintQueueItem.queue_id == printer_queue.id,
-                        PrintQueueItem.status.in_(["pending", "printing"]),
-                    )
-                    .limit(1)
-                )
-                if pending is not None:
-                    raise ValueError("Printer queue is already occupied")
                 claimed = await db.execute(
                     update(AutoQueueItem)
                     .where(
@@ -575,11 +582,11 @@ class AutoQueueScheduler:
                     .values(status="assigned")
                 )
                 if not claimed.rowcount:
-                    raise ValueError("Auto item is no longer pending")
+                    raise AutoPlacementConflict("item_changed")
 
                 current_identity = await probe_identity(identity)
                 if _feed_moved(printer.id, policy, plan, snapshot_signature) or identity != current_identity:
-                    raise ValueError("Filament routing evidence changed while claiming assignment")
+                    raise AutoPlacementConflict("routing_changed")
 
                 # 4. Build the per-printer item with the target model's profile.
                 new_item = PrintQueueItem(

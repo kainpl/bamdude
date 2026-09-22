@@ -42,7 +42,13 @@ from backend.app.services.printer_manager import (
     supports_drying,
     supports_drying_while_printing,
 )
-from backend.app.services.queue_ops import queue_scope_lock
+from backend.app.services.printer_occupancy import (
+    PrinterOccupancyConflict,
+    active_claim_printer_ids,
+    read_queue_occupancy,
+    require_scheduler_claim,
+)
+from backend.app.services.queue_ops import queue_claim_scope
 from backend.app.services.queue_wait_reason import set_wait_reason
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, require_source_file
@@ -358,14 +364,7 @@ class PrintScheduler:
                 # == 'printing') so mid-print drying (print_drying_enabled) resumes
                 # even when the dispatched print was the LAST queued item and no
                 # pending rows remain to drive the full seeding path.
-                from backend.app.models.print_queue import PrinterQueue
-
-                busy_seed_result = await db.execute(
-                    select(PrinterQueue.printer_id)
-                    .where(PrinterQueue.status == "printing")
-                    .where(PrinterQueue.printer_id.is_not(None))
-                )
-                busy_seed: set[int] = {pid for (pid,) in busy_seed_result.all() if pid is not None}
+                busy_seed = await active_claim_printer_ids(db)
                 await self._check_auto_drying(db, [], busy_seed)
                 return False
 
@@ -390,14 +389,7 @@ class PrintScheduler:
             # PrinterQueue directly is simpler than joining through
             # PrintQueueItem and also catches external / direct prints that
             # don't have a corresponding item row.
-            from backend.app.models.print_queue import PrinterQueue
-
-            busy_result = await db.execute(
-                select(PrinterQueue.printer_id)
-                .where(PrinterQueue.status == "printing")
-                .where(PrinterQueue.printer_id.is_not(None))
-            )
-            busy_printers: set[int] = {pid for (pid,) in busy_result.all() if pid is not None}
+            busy_printers = await active_claim_printer_ids(db)
 
             # Defense-in-depth (#1157): augment busy_printers with any printer
             # still inside its post-dispatch hold window. The DB seed above can
@@ -2490,7 +2482,13 @@ class PrintScheduler:
         # deliberately ignorable here: the regular scheduler can progress past
         # them, and this barrier must preserve that existing behavior.
         now = datetime.now(timezone.utc)
-        async with queue_scope_lock(db, item.queue_id):
+        async with queue_claim_scope(db, item.queue_id):
+            try:
+                require_scheduler_claim(await read_queue_occupancy(db, item.queue_id, for_update=True))
+            except PrinterOccupancyConflict as exc:
+                await db.rollback()
+                logger.info("Queue item %s: admission lost (%s) — skipping", item.id, exc.code)
+                return
             first_runnable_id = await db.scalar(
                 select(PrintQueueItem.id)
                 .where(PrintQueueItem.queue_id == item.queue_id)

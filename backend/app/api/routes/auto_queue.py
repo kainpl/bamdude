@@ -53,7 +53,7 @@ from backend.app.schemas.filament_routing import PrinterRoutingPreviewRequest, R
 from backend.app.schemas.project import RebalanceOut
 from backend.app.services import queue_rebalance
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
-from backend.app.services.auto_queue_eligibility import find_eligible_printer
+from backend.app.services.auto_queue_eligibility import busy_printer_ids, find_eligible_printer
 from backend.app.services.filament_intake import (
     fail_auto_source,
     loaded_descriptor,
@@ -562,7 +562,7 @@ async def assign_now(
     item as-is if no eligible printer is available; otherwise the
     item is assigned via the same ``_assign`` path the scheduler uses.
     """
-    from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
+    from backend.app.services.auto_queue_scheduler import AutoPlacementConflict, auto_queue_scheduler
 
     result = await db.execute(select(AutoQueueItem).where(AutoQueueItem.id == item_id))
     item = result.scalar_one_or_none()
@@ -571,35 +571,42 @@ async def assign_now(
     if item.status != "pending":
         raise HTTPException(400, f"Cannot assign-now item in status '{item.status}'")
 
-    busy_result = await db.execute(select(PrinterQueue.printer_id).where(PrinterQueue.status == "printing"))
-    busy_printers: set[int] = {pid for (pid,) in busy_result.all()}
+    from backend.app.services.printer_occupancy import PrinterOccupancyConflict
 
-    eligible = await find_eligible_printer(db, item, busy_printers)
-    printer, reason = eligible
-    if printer is None:
-        source_reason = getattr(eligible.requirements, "reason", None)
-        if source_reason in SOURCE_FAILURES:
-            await fail_auto_source(db, item, source_reason)
-        if reason:
-            item.waiting_reason = reason
-            await db.commit()
-        raise HTTPException(409, reason or "No eligible printer available")
+    busy_printers = await busy_printer_ids(db)
+    while True:
+        eligible = await find_eligible_printer(db, item, busy_printers)
+        printer, reason = eligible
+        if printer is None:
+            source_reason = getattr(eligible.requirements, "reason", None)
+            if source_reason in SOURCE_FAILURES:
+                await fail_auto_source(db, item, source_reason)
+            if reason:
+                item.waiting_reason = reason
+                await db.commit()
+            raise HTTPException(409, reason or "No eligible printer available")
 
-    try:
-        await auto_queue_scheduler._assign(
-            db,
-            item,
-            printer,
-            plan=eligible.plan,
-            requirements=eligible.requirements,
-            snapshot_signature=eligible.snapshot_signature,
-        )
-    except SourceUnavailable as exc:
-        await db.refresh(item)
-        if exc.reason in SOURCE_FAILURES:
-            await fail_auto_source(db, item, exc.reason)
-            await db.commit()
-        raise HTTPException(409, routing_detail(exc.reason)) from exc
+        try:
+            await auto_queue_scheduler._assign(
+                db,
+                item,
+                printer,
+                plan=eligible.plan,
+                requirements=eligible.requirements,
+                snapshot_signature=eligible.snapshot_signature,
+            )
+            break
+        except SourceUnavailable as exc:
+            await db.refresh(item)
+            if exc.reason in SOURCE_FAILURES:
+                await fail_auto_source(db, item, exc.reason)
+                await db.commit()
+            raise HTTPException(409, routing_detail(exc.reason)) from exc
+        except (PrinterOccupancyConflict, AutoPlacementConflict) as exc:
+            await db.refresh(item)
+            if isinstance(exc, AutoPlacementConflict) and exc.code == "item_changed":
+                raise HTTPException(409, "Auto-queue item changed before assignment") from exc
+            busy_printers.add(printer.id)
     await db.commit()
     return await get_auto_queue_item(item_id, db, _)
 

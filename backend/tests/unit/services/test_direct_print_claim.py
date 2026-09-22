@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
+from backend.app.services.printer_occupancy import PrinterOccupancyConflict
 from backend.app.services.queue_batch import claim_printer_for_direct_print
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
@@ -310,3 +311,53 @@ async def test_an_external_claim_still_takes_no_snapshot(db_session, printer_fac
     assert item.origin == "external"
     assert item.queue_source_id is None
     assert item.source_snapshot is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_direct_claim_refuses_a_printing_child_even_when_the_header_is_idle(
+    db_session, printer_factory, raw_gcode_source, a_direct_capture
+):
+    """A damaged/stale header must not make a live child look like free capacity."""
+    printer, queue = await _queue(db_session, printer_factory)
+    db_session.add(PrintQueueItem(queue_id=queue.id, status="printing", position=0))
+    await db_session.commit()
+
+    with pytest.raises(PrinterOccupancyConflict, match="active_claim"):
+        await claim_printer_for_direct_print(
+            db_session,
+            printer_id=printer.id,
+            origin="direct",
+            library_file_id=raw_gcode_source.id,
+            staged=await a_direct_capture(raw_gcode_source),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_direct_claim_allows_pending_backlog_but_not_a_paused_queue(
+    db_session, printer_factory, raw_gcode_source, a_direct_capture
+):
+    printer, queue = await _queue(db_session, printer_factory)
+    db_session.add(PrintQueueItem(queue_id=queue.id, status="pending", position=1))
+    await db_session.commit()
+
+    claimed = await claim_printer_for_direct_print(
+        db_session,
+        printer_id=printer.id,
+        origin="direct",
+        library_file_id=raw_gcode_source.id,
+        staged=await a_direct_capture(raw_gcode_source),
+    )
+    assert claimed is not None
+
+    queue.is_paused = True
+    await db_session.commit()
+    with pytest.raises(PrinterOccupancyConflict, match="queue_paused"):
+        await claim_printer_for_direct_print(
+            db_session,
+            printer_id=printer.id,
+            origin="direct",
+            library_file_id=raw_gcode_source.id,
+            staged=await a_direct_capture(raw_gcode_source),
+        )

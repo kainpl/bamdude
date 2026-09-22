@@ -185,6 +185,31 @@ async def test_an_adopted_row_learns_its_archive(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_an_external_start_with_a_different_archive_does_not_steal_an_old_claim(
+    db_session, printer_factory, main_db, archive_factory
+):
+    """Archive identity, not recency, decides whether a physical B owns A's row."""
+    printer, queue = await _queue(db_session, printer_factory)
+    old = await archive_factory(printer.id, status="printing")
+    observed = await archive_factory(printer.id, status="printing")
+    first = PrintQueueItem(queue_id=queue.id, archive_id=old.id, status="printing", position=0)
+    db_session.add(first)
+    await db_session.flush()
+    queue.status = "printing"
+    queue.current_item_id = first.id
+    await db_session.commit()
+
+    await mark_queue_printing_for_printer(printer.id, archive_id=observed.id)
+
+    rows = await _printing_rows(db_session, queue.id)
+    await db_session.refresh(queue)
+    assert {row.archive_id for row in rows} == {old.id, observed.id}
+    assert queue.current_item_id == next(row.id for row in rows if row.archive_id == observed.id)
+    assert queue.is_paused is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_a_scheduler_item_is_adopted_not_duplicated(db_session, printer_factory, main_db):
     printer, queue = await _queue(db_session, printer_factory)
     item = PrintQueueItem(queue_id=queue.id, status="printing", position=1, started_at=datetime.now(timezone.utc))

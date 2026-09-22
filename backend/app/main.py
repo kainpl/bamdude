@@ -798,7 +798,7 @@ async def _record_print_energy(archive_id: int, printer_id: int, *, approximate:
             energy_used = round(energy["total"] - starting_kwh, 4)
             logger.info("[ENERGY-BG] Per-print energy: %s kWh", energy_used)
             if energy_used < 0:
-                logger.warning(
+                logging.getLogger(__name__).warning(
                     "[ENERGY-BG] Negative energy delta for archive %s (start=%s, end=%s) - counter reset?",
                     archive_id,
                     starting_kwh,
@@ -1119,10 +1119,10 @@ async def mark_queue_printing_for_printer(
     external print looks like: started from the printer's screen or sent
     straight from a slicer, so BamDude registered no expected key for it.
 
-    ⚠️ **A missing row is created, an existing one is adopted.** Two rows in
-    ``printing`` on one queue is exactly the state ``on_print_complete`` warns
-    about as "BUG: Multiple queue items in 'printing' status", and it would
-    attribute the print to whichever came back first.
+    ⚠️ **A missing row is created, but never by guessing from recency.** A
+    physical start may arrive while an old claim is still unresolved.  In that
+    case a different archive is a different run: keep the old evidence, make
+    the new run addressable and pause further automated starts for inspection.
 
     ``options`` is what the PRINTER told us about a print BamDude did not send,
     and it is only ever used for a row being created here. Repeating such a row
@@ -1148,36 +1148,59 @@ async def mark_queue_printing_for_printer(
         queue = await ensure_printer_queue(db, printer_id)
 
         if item_id is None:
-            existing = (
+            printing = list(
                 (
                     await db.execute(
-                        select(PrintQueueItem)
-                        .where(PrintQueueItem.queue_id == queue.id)
-                        .where(PrintQueueItem.status == "printing")
-                        .order_by(PrintQueueItem.started_at.desc())
+                        select(PrintQueueItem).where(
+                            PrintQueueItem.queue_id == queue.id,
+                            PrintQueueItem.status == "printing",
+                        )
                     )
                 )
                 .scalars()
-                .first()
+                .all()
             )
-            if existing is not None:
-                item_id = existing.id
-                # ⚠️ A direct print's row is created before its archive exists.
-                # The dispatcher wires the two together, but a re-trigger path
-                # that adopts a *different* archive would leave the row pointing
-                # nowhere — and a completed item with no archive is never
-                # auto-cleaned, so it would outlive its print.
-                if existing.archive_id is None and archive_id is not None:
-                    existing.archive_id = archive_id
-                    await db.commit()
+            matching = [row for row in printing if archive_id is not None and row.archive_id == archive_id]
+            if len(matching) == 1:
+                item_id = matching[0].id
+            elif len(matching) > 1:
+                queue.is_paused = True
+                logging.getLogger(__name__).warning(
+                    "Printer %s reported archive %s with %d matching queue claims; pausing queue for review",
+                    printer_id,
+                    archive_id,
+                    len(matching),
+                )
             else:
-                # Reached only when no row is printing on this queue — i.e.
-                # nothing BamDude sent. See the ``origin`` note on the model.
+                # A direct claim is intentionally created before the execution
+                # archive. Bind only that known owner; never borrow an external
+                # row merely because it happens to be the newest one.
+                # A sole live row is the same observed run on a repeated
+                # callback.  Once there is more than one, there is no safe
+                # inference from a filename, timestamp or list order.
+                sole_owner = printing[0] if len(printing) == 1 else None
+                if sole_owner is not None and sole_owner.origin == "direct" and archive_id is not None:
+                    sole_owner.archive_id = archive_id
+                    item_id = sole_owner.id
+                elif sole_owner is not None and archive_id is None and sole_owner.archive_id is None:
+                    item_id = sole_owner.id
+
+            if item_id is None:
+                # This is observation, not permission to dispatch.  A new B is
+                # still recorded when stale A exists, so completion can address
+                # B; the queue is paused to prevent any automatic follow-up.
+                had_unrelated_claim = bool(printing)
                 created = await claim_printer_for_direct_print(
                     db, printer_id=printer_id, origin="external", archive_id=archive_id, options=options
                 )
                 if created is not None:
                     item_id = created.id
+                if had_unrelated_claim:
+                    queue.is_paused = True
+                    logging.getLogger(__name__).warning(
+                        "Printer %s started an external run beside unresolved claim(s); queue paused for review",
+                        printer_id,
+                    )
 
         if queue.status == "printing" and queue.current_item_id == item_id:
             return  # already in correct state
