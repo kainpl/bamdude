@@ -6,6 +6,7 @@ import re
 import secrets
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -5359,32 +5360,73 @@ async def _restore_usage_tracking_session(printer_id: int, state, db, logger) ->
         logger.exception("[RESTART] Failed to restore usage-tracking session for printer %s", printer_id)
 
 
-async def _live_archive_for_running_print(printer_id: int, data: dict) -> tuple[int | None, int | None]:
-    """The archive of the print this printer is running, for a print BamDude
-    did not see start: the newest ``printing`` archive on the printer whose
-    name agrees with the live subtask, when the printer names one. Returns
-    ``(archive_id, plate_index)`` or ``(None, None)``."""
+@dataclass(frozen=True, slots=True)
+class _LiveArchiveResolution:
+    """Recovery evidence for a print observed after the process started."""
+
+    archive_id: int | None
+    plate_index: int | None
+    reason: str
+
+
+async def _live_archive_for_running_print(printer_id: int, data: dict) -> _LiveArchiveResolution:
+    """Resolve a previously running archive without treating a name as identity.
+
+    A live binding or a positive firmware subtask ID is proof.  Names remain a
+    recovery aid only where precisely one printing row agrees; multiple
+    same-name rows are deliberately unresolved rather than "newest wins".
+    """
     from backend.app.models.archive import PrintArchive as _PA
     from backend.app.services.print_reconciliation import _name_matches_subtask
+    from backend.app.services.print_run_binding import current_print_run
 
     subtask = (data.get("subtask_name") or "").strip()
+    subtask_id = str(data.get("subtask_id") or "").strip()
+    if subtask_id == "0":
+        subtask_id = ""
+    bound = current_print_run(printer_manager, printer_id)
     async with async_session() as db:
+        if bound is not None and bound.matches_device_subtask(subtask_id):
+            bound_archive = await db.get(_PA, bound.archive_id)
+            if (
+                bound_archive is not None
+                and bound_archive.printer_id == printer_id
+                and bound_archive.status == "printing"
+            ):
+                return _LiveArchiveResolution(bound_archive.id, bound_archive.plate_index, "runtime_binding")
+
+        if subtask_id:
+            exact = (
+                (
+                    await db.execute(
+                        select(_PA)
+                        .where(_PA.printer_id == printer_id, _PA.status == "printing", _PA.subtask_id == subtask_id)
+                        .order_by(_PA.id.desc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if len(exact) == 1:
+                return _LiveArchiveResolution(exact[0].id, exact[0].plate_index, "subtask_id")
+            if len(exact) > 1:
+                return _LiveArchiveResolution(None, None, "ambiguous_subtask_id")
+
         candidates = (
             (
                 await db.execute(
-                    select(_PA)
-                    .where(_PA.printer_id == printer_id, _PA.status == "printing")
-                    .order_by(_PA.id.desc())
-                    .limit(5)
+                    select(_PA).where(_PA.printer_id == printer_id, _PA.status == "printing").order_by(_PA.id.desc())
                 )
             )
             .scalars()
             .all()
         )
-    for archive in candidates:
-        if not subtask or _name_matches_subtask(archive, subtask):
-            return archive.id, archive.plate_index
-    return None, None
+    matching = [archive for archive in candidates if not subtask or _name_matches_subtask(archive, subtask)]
+    if len(matching) == 1:
+        return _LiveArchiveResolution(matching[0].id, matching[0].plate_index, "unambiguous_name")
+    if len(matching) > 1:
+        return _LiveArchiveResolution(None, None, "ambiguous_name")
+    return _LiveArchiveResolution(None, None, "no_live_archive")
 
 
 async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | None:
@@ -5829,16 +5871,31 @@ async def on_print_running_observed(printer_id: int, data: dict):
     # BamDude was down and had no row anywhere. ``_adopt_running_print`` claims
     # the queue row itself, so there is nothing left to claim here.
     try:
-        live_archive_id, live_plate = await _live_archive_for_running_print(printer_id, data)
-        if live_archive_id is None:
+        live = await _live_archive_for_running_print(printer_id, data)
+        if live.archive_id is None and live.reason.startswith("ambiguous_"):
+            logger.warning(
+                "[RECOVERY] Not adopting print on printer %s: %s leaves no unique archive address",
+                printer_id,
+                live.reason,
+            )
+        elif live.archive_id is None:
             # Nothing below reads the new id: the adoption claims the queue row
             # itself, and the plate-gate release keys off the printer.
             await _adopt_running_print(printer_id, data, logger)
         else:
+            # The same authoritative archive binding serves a reconnect and a
+            # start observed in this process.  Bind before later queue work so
+            # a terminal delta cannot re-discover a repeated filename.
+            async with async_session() as db:
+                from backend.app.models.archive import PrintArchive
+
+                archive = await db.get(PrintArchive, live.archive_id)
+                if archive is not None and archive.status == "printing":
+                    _bind_print_file_analysis_context(printer_id, archive)
             await mark_queue_printing_for_printer(
                 printer_id,
-                archive_id=live_archive_id,
-                options=_printer_reported_options(data, live_archive_id, live_plate),
+                archive_id=live.archive_id,
+                options=_printer_reported_options(data, live.archive_id, live.plate_index),
             )
         if printer_manager.is_awaiting_plate_clear(printer_id):
             from backend.app.services.plate_hold import answer_by_clearing

@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.app.main import _timelapse_baselines
+from backend.app.main import _LiveArchiveResolution, _timelapse_baselines
 
 
 @pytest.fixture(autouse=True)
@@ -121,7 +121,7 @@ async def test_running_observed_skips_when_baseline_already_present():
         # and this test stays about the TIMELAPSE half.
         patch(
             "backend.app.main._live_archive_for_running_print",
-            new=AsyncMock(return_value=(None, None)),
+            new=AsyncMock(return_value=_LiveArchiveResolution(None, None, "test")),
         ),
         # …and since spec 2026-09-12 "no live archive" means the print is
         # adopted, which opens a session of its own before the baseline

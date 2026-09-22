@@ -118,7 +118,9 @@ async def _drive_hook(
     every outbound effect either spied on or stubbed."""
     from contextlib import ExitStack
 
-    from backend.app.main import on_print_running_observed
+    from backend.app.main import _LiveArchiveResolution, on_print_running_observed
+
+    live_resolution = _LiveArchiveResolution(*live_archive, "test")
 
     printer = await printer_factory()
     printer.auto_archive = True
@@ -159,7 +161,7 @@ async def _drive_hook(
         patch("backend.app.main.mqtt_relay", MagicMock(on_archive_created=AsyncMock())),
         patch("backend.app.main.smart_plug_manager", MagicMock(on_print_start=spies["plug_on_print_start"])),
         patch("backend.app.main.spawn_background_task", spawned),
-        patch("backend.app.main._live_archive_for_running_print", AsyncMock(return_value=live_archive)),
+        patch("backend.app.main._live_archive_for_running_print", AsyncMock(return_value=live_resolution)),
         patch("backend.app.main.mark_queue_printing_for_printer", spies["queue_claim"]),
         patch("backend.app.main._record_energy_start", spies["energy_start"]),
         patch("backend.app.main._capture_timelapse_baseline_at_start", spies["baseline"]),
@@ -318,6 +320,58 @@ class TestTheHookAdoptsThePrintItFound:
         spies["queue_claim"].assert_not_awaited()
         spies["energy_start"].assert_not_awaited()
         assert spawned.names == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_running_recovery_prefers_exact_subtask_id_over_a_repeated_name(
+    db_session, printer_factory, archive_factory, main_db
+):
+    """A restart cannot let a repeated filename pick the newest old archive."""
+
+    from backend.app.main import _live_archive_for_running_print
+
+    printer = await printer_factory()
+    first = await archive_factory(
+        printer.id,
+        status="printing",
+        print_name="Repeat me",
+        subtask_id="old-run",
+    )
+    second = await archive_factory(
+        printer.id,
+        status="printing",
+        print_name="Repeat me",
+        subtask_id="new-run",
+    )
+
+    resolution = await _live_archive_for_running_print(
+        printer.id,
+        {"subtask_name": "Repeat me", "subtask_id": "old-run"},
+    )
+
+    assert resolution.archive_id == first.id
+    assert resolution.archive_id != second.id
+    assert resolution.reason == "subtask_id"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_running_recovery_leaves_same_name_rows_ambiguous_without_a_device_id(
+    db_session, printer_factory, archive_factory, main_db
+):
+    """Name matching may recover one row, never choose one of two repeats."""
+
+    from backend.app.main import _live_archive_for_running_print
+
+    printer = await printer_factory()
+    await archive_factory(printer.id, status="printing", print_name="Repeat me", subtask_id="first")
+    await archive_factory(printer.id, status="printing", print_name="Repeat me", subtask_id="second")
+
+    resolution = await _live_archive_for_running_print(printer.id, {"subtask_name": "Repeat me"})
+
+    assert resolution.archive_id is None
+    assert resolution.reason == "ambiguous_name"
 
 
 def _provisional(printer_id: int, *, plate: int | None = 1) -> PrintArchive:
