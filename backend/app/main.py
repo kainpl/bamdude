@@ -6231,7 +6231,7 @@ async def _on_print_complete_impl(
     # captured at the common authoritative archive lifecycle point, so an
     # ID-only terminal event can finish its own run.  A positive contradictory
     # device ID is still foreign even when an old binding happens to exist.
-    from backend.app.services.print_run_binding import current_print_run
+    from backend.app.services.print_run_binding import current_print_run, finishing_print_runs
 
     bound_run = current_print_run(printer_manager, printer_id)
     event_client_generation = data.get("_bamdude_client_generation")
@@ -6253,6 +6253,27 @@ async def _on_print_complete_impl(
             data.get("subtask_id"),
         )
         return
+    if bound_run is None:
+        finishing = finishing_print_runs(printer_manager, printer_id)
+        # Once A has been accepted it is removed from ``current`` before its
+        # long effects. A duplicate terminal must not fall back into legacy
+        # name matching and run those effects again. A new B would have its
+        # own current binding, so an unbound event here is safely duplicate or
+        # unresolved; both preserve the printer state.
+        if finishing:
+            if any(run.matches_device_subtask(data.get("subtask_id")) for run in finishing):
+                logger.info(
+                    "Ignoring duplicate terminal while archive(s) %s are finishing on printer %s",
+                    [run.archive_id for run in finishing],
+                    printer_id,
+                )
+            else:
+                logger.warning(
+                    "Ignoring terminal with conflicting identity while archive(s) %s are finishing on printer %s",
+                    [run.archive_id for run in finishing],
+                    printer_id,
+                )
+            return
     # Legacy/adopted events that have not acquired a binding retain the
     # conservative old guard and its name-based recovery behavior.
     if bound_run is None and await _completion_conflicts_with_active_queue(printer_id, data):

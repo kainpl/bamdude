@@ -169,6 +169,14 @@ def current_print_run(manager: PrinterManager, printer_id: int) -> PrintRunBindi
     return _current(manager).get(printer_id)
 
 
+def finishing_print_runs(manager: PrinterManager, printer_id: int) -> tuple[PrintRunBinding, ...]:
+    """Addressed terminal leases still being processed for one printer."""
+
+    return tuple(
+        binding for (bound_printer_id, _), binding in _finishing(manager).items() if bound_printer_id == printer_id
+    )
+
+
 def begin_print_run_finishing(manager: PrinterManager, printer_id: int, archive_id: int) -> PrintRunBinding | None:
     """Move exactly this run into its finishing lease.
 

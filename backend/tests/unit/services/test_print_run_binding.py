@@ -1,6 +1,7 @@
 """Run binding is independent from filename aliases and analysis revisions."""
 
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock
 
 from backend.app.services.print_run_binding import (
     begin_print_run_finishing,
@@ -8,6 +9,7 @@ from backend.app.services.print_run_binding import (
     bind_print_run,
     current_print_run,
     discard_print_run,
+    finishing_print_runs,
 )
 from backend.app.services.printer_manager import PrinterManager
 
@@ -66,6 +68,35 @@ def test_finishing_a_cannot_discard_new_current_b():
 
     assert finishing_a is not None
     assert current_print_run(manager, 7) == bound_b
+
+
+def test_finishing_registry_keeps_the_exact_terminal_run_address():
+    manager = PrinterManager()
+    bind_print_run(manager, printer_id=7, archive_id=41, observed_subtask_id="91")
+
+    begin_print_run_finishing(manager, 7, 41)
+
+    assert [run.archive_id for run in finishing_print_runs(manager, 7)] == [41]
+
+
+async def test_duplicate_terminal_in_finishing_never_enters_legacy_name_fallback(monkeypatch):
+    """A duplicate A terminal must not finish through the unbound legacy path."""
+
+    from backend.app import main
+
+    printer_id = 991_001
+    archive_id = 991_002
+    bind_print_run(main.printer_manager, printer_id=printer_id, archive_id=archive_id, observed_subtask_id="91")
+    begin_print_run_finishing(main.printer_manager, printer_id, archive_id)
+    legacy_fallback = AsyncMock(return_value=False)
+    monkeypatch.setattr(main, "_completion_conflicts_with_active_queue", legacy_fallback)
+
+    try:
+        await main._on_print_complete_impl(printer_id, {"subtask_id": "91"}, {"archive_id": None})
+    finally:
+        discard_print_run(main.printer_manager, printer_id, archive_id)
+
+    legacy_fallback.assert_not_awaited()
 
 
 def test_prepared_a_cannot_replace_observed_b():
