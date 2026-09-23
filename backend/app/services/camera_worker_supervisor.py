@@ -87,7 +87,7 @@ class CameraWorkerSupervisor:
 
         creation_kwargs: dict = {}
         if os.name == "nt":
-            creation_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            creation_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
         else:
             creation_kwargs["start_new_session"] = True
         # ⚠️ ``cwd`` explicitly, not inherited. ``-m backend.app.camera_worker``
