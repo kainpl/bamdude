@@ -124,7 +124,12 @@ from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.spool_assignment_notifications import (
     notify_missing_spool_assignments_on_print_start,
 )
-from backend.app.services.spoolman import close_spoolman_client, get_spoolman_client, init_spoolman_client
+from backend.app.services.spoolman import (
+    ArchivedTagIndex,
+    close_spoolman_client,
+    get_spoolman_client,
+    init_spoolman_client,
+)
 from backend.app.services.spoolman_tracking import (
     cleanup_tracking as _cleanup_spoolman_tracking,
     report_usage as _report_spoolman_usage,
@@ -2563,6 +2568,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                 auto_assign_spool,
                 create_spool_from_tray,
                 find_matching_untagged_spool,
+                get_archived_spool_by_tag,
                 get_spool_by_tag,
                 is_bambu_tag,
                 is_valid_tag,
@@ -2759,6 +2765,12 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         if is_bambu_tag(tag_uid, tray_uuid, tray_info_idx):
                             # BL spool with RFID tag: auto-match → inventory match → auto-create
                             spool = await get_spool_by_tag(db, tag_uid, tray_uuid)
+                            if not spool and await get_archived_spool_by_tag(db, tag_uid, tray_uuid):
+                                # An archived spool's reel still in the slot — typically
+                                # the one the runout close-out just retired after an
+                                # auto-switch. Not unknown: no create, no tag moved onto
+                                # another spool, no "+ Add" prompt.
+                                continue
                             if not spool:
                                 # Try matching an untagged inventory spool (same material/color)
                                 spool = await find_matching_untagged_spool(db, tray)
@@ -2812,6 +2824,10 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                 tray_id,
                             )
                         elif is_valid_tag(tag_uid, tray_uuid):
+                            if not await get_spool_by_tag(db, tag_uid, tray_uuid) and await get_archived_spool_by_tag(
+                                db, tag_uid, tray_uuid
+                            ):
+                                continue  # an archived spool's reel still in the slot — see above
                             # Non-BL spool with some tag - let user choose
                             await _broadcast_unknown_tag(
                                 printer_id=printer_id,
@@ -2881,6 +2897,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
             try:
                 cached_spools = await client.get_spools()
                 logger.debug("[Printer %s] Cached %d spools for batch sync", printer_id, len(cached_spools))
+                archived_reels = ArchivedTagIndex(client)
             except Exception as e:
                 logger.error(
                     "[Printer %s] Failed to fetch spools cache after retries, aborting AMS sync: %s",
@@ -2934,6 +2951,17 @@ async def on_ams_change(printer_id: int, ams_data: list):
                     )
                     if spool_tag:
                         current_tray_uuids.add(spool_tag.upper())
+                    if spool_tag and await archived_reels.holds_archived_reel(spool_tag, cached_spools):
+                        # An archived spool's reel still in the slot — typically the
+                        # one the runout close-out just retired after an auto-switch.
+                        # It is not unknown: no auto-create, no "+ Add" prompt.
+                        logger.debug(
+                            "[Printer %s] AMS %s tray %s holds an archived spool's reel — not syncing",
+                            printer_id,
+                            ams_id,
+                            tray.tray_id,
+                        )
+                        continue
 
                     try:
                         inv_remaining = inventory_weights.get((ams_id, tray.tray_id))

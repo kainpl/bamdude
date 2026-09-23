@@ -1270,6 +1270,44 @@ class SpoolmanClient:
         )
 
 
+def _normalized_spool_tag(spool: dict) -> str:
+    """The spool's ``extra.tag`` the way ``find_spool_by_tag`` compares it (unquoted, upper case)."""
+    return ((spool.get("extra") or {}).get("tag") or "").strip('"').upper()
+
+
+class ArchivedTagIndex:
+    """Answers "is this tray an ARCHIVED spool's reel?" for one AMS sync.
+
+    The sync cache (``get_spools`` → ``GET /spool``) never lists archived
+    spools — Spoolman returns them only with ``allow_archived`` — so to
+    ``find_spool_by_tag`` a retired reel still sitting in the AMS looks
+    brand new, and the sync would auto-create a duplicate or prompt "+ Add".
+    That is the usual state right after an AMS auto-switch, when the runout
+    close-out archives the emptied reel while it stays in its slot.
+
+    One extra request at most per sync, and only once a tag has missed the
+    active cache. Best-effort: when archived spools cannot be read, nothing
+    is treated as archived and the sync behaves as it always did.
+    """
+
+    def __init__(self, client: SpoolmanClient) -> None:
+        self._client = client
+        self._archived_tags: set[str] | None = None
+
+    async def holds_archived_reel(self, spool_tag: str, cached_spools: list[dict]) -> bool:
+        wanted = spool_tag.strip('"').upper()
+        if not wanted or any(_normalized_spool_tag(s) == wanted for s in cached_spools):
+            return False
+        if self._archived_tags is None:
+            try:
+                spools = await self._client.get_all_spools(allow_archived=True)
+            except Exception as exc:  # noqa: BLE001 — a guard must never break the sync it guards
+                logger.debug("Could not list archived Spoolman spools for the AMS sync: %s", exc)
+                spools = []
+            self._archived_tags = {tag for s in spools if s.get("archived") and (tag := _normalized_spool_tag(s))}
+        return wanted in self._archived_tags
+
+
 # Global client instance (initialized when settings are loaded)
 _spoolman_client: SpoolmanClient | None = None
 

@@ -22,6 +22,7 @@ from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.spoolman import (
+    ArchivedTagIndex,
     SpoolmanClientError,
     SpoolmanNotFoundError,
     SpoolmanUnavailableError,
@@ -261,6 +262,7 @@ async def sync_printer_ams(
             status_code=503,
             detail=f"Failed to connect to Spoolman after multiple retries: {str(e)}",
         )
+    archived_reels = ArchivedTagIndex(client)
 
     # Load inventory weights as fallback (when AMS MQTT data lacks remain values)
     inv_weights: dict[tuple[int, int], float] = {}
@@ -322,6 +324,9 @@ async def sync_printer_ams(
                 if tray.tray_uuid and tray.tray_uuid != "00000000000000000000000000000000"
                 else tray.tag_uid
             )
+            if spool_tag and await archived_reels.holds_archived_reel(spool_tag, cached_spools):
+                # A retired reel still in the slot — not new, not to be re-created.
+                continue
 
             hint = spoolman_slot_map.get((ams_id, tray.tray_id)) if not spool_tag else None
 
@@ -461,6 +466,7 @@ async def sync_all_printers(
             status_code=503,
             detail=f"Failed to connect to Spoolman after multiple retries: {str(e)}",
         )
+    archived_reels = ArchivedTagIndex(client)
 
     # Load inventory assignments for weight fallback (when AMS MQTT data lacks remain values)
     # Key: (printer_id, ams_id, tray_id) → remaining_weight in grams
@@ -549,6 +555,9 @@ async def sync_all_printers(
                     if tray.tray_uuid and tray.tray_uuid != "00000000000000000000000000000000"
                     else tray.tag_uid
                 )
+                if spool_tag and await archived_reels.holds_archived_reel(spool_tag, cached_spools):
+                    # A retired reel still in the slot — not new, not to be re-created.
+                    continue
 
                 hint = all_slot_map.get((printer.id, ams_id, tray.tray_id)) if not spool_tag else None
 

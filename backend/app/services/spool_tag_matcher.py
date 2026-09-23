@@ -357,6 +357,31 @@ async def link_tag_to_inventory_spool(db: AsyncSession, spool: Spool, tray_data:
     )
 
 
+async def get_archived_spool_by_tag(db: AsyncSession, tag_uid: str, tray_uuid: str) -> Spool | None:
+    """The ARCHIVED spool whose reel this is — exact tray UUID first, then exact tag UID.
+
+    ``get_spool_by_tag`` sees active spools only, so on its own a retired reel
+    still sitting in the AMS (the usual state right after an auto-switch, when
+    the runout close-out archives it) reads as unknown: auto-add would create
+    it again, or the untagged matcher would hang its tag on another spool.
+    Callers ask this after an active miss and leave such a slot alone.
+    """
+    tray_uuid_norm = _normalize_tray_uuid(tray_uuid)
+    tag_uid_norm = _normalize_tag_uid(tag_uid)
+    for column, value, zero in (
+        (Spool.tray_uuid, tray_uuid_norm, ZERO_TRAY_UUID),
+        (Spool.tag_uid, tag_uid_norm, ZERO_TAG_UID),
+    ):
+        if not value or value == zero or value == "0" * len(value):
+            continue
+        spool = (
+            await db.execute(select(Spool).where(func.upper(column) == value, Spool.archived_at.is_not(None)).limit(1))
+        ).scalar_one_or_none()
+        if spool:
+            return spool
+    return None
+
+
 async def get_spool_by_tag(db: AsyncSession, tag_uid: str, tray_uuid: str) -> Spool | None:
     """Look up an active spool by RFID tag UID or Bambu Lab tray UUID.
 
