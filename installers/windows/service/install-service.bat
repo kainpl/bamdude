@@ -77,6 +77,8 @@ if /I "%DB_MODE%"=="embedded-service" (
 REM ---------------------------------------------------------------------------
 REM  BamDude service (NSSM-wrapped uvicorn)
 REM ---------------------------------------------------------------------------
+REM Upgrade an existing service's grace BEFORE the first stop as well.
+"%NSSM%" set BamDude AppStopMethodConsole 90000 2>nul
 "%NSSM%" stop BamDude 2>nul
 "%NSSM%" remove BamDude confirm 2>nul
 
@@ -96,12 +98,9 @@ REM Environment: DATA_DIR + LOG_DIR under ProgramData, our bin/ on PATH for
 REM ffmpeg/ffprobe, plus the database backend selected above.
 "%NSSM%" set BamDude AppEnvironmentExtra "DATA_DIR=%DATA_DIR%" "LOG_DIR=%LOG_DIR%" "PORT=%PORT%" "PATH=%BIN_DIR%;%PATH%" %DB_ENV%
 
-REM embedded-child: BamDude starts and stops the server inside its own lifespan.
-REM Give the console-stop a long window so the clean fast-shutdown completes
-REM before NSSM would kill the tree.
-if /I "%DB_MODE%"=="embedded-child" (
-    "%NSSM%" set BamDude AppStopMethodConsole 90000
-)
+REM Every DB mode owns local preview NATS/workers. Allow lifespan to stop them
+REM in order before NSSM's forced tree cleanup (also covers embedded-child PG).
+"%NSSM%" set BamDude AppStopMethodConsole 90000
 
 REM embedded-service: the SCM must start BamDudePostgres before BamDude, and
 REM stop BamDude first on the way down.

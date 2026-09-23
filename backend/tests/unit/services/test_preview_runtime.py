@@ -131,6 +131,94 @@ async def test_store_lock_is_fail_soft_and_clean_restart(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_externally_stopped_broker_requires_explicit_recovery(tmp_path, caplog):
+    import json
+
+    import psutil
+
+    first = PreviewRuntime(tmp_path / "crashed")
+    await first.start()
+    assert first.ready
+    marker = first.root / "broker/managed-runtime.json"
+    metadata = json.loads(marker.read_text())
+    child = psutil.Process(metadata["child_pid"])
+    assert child.ppid() == os.getpid()  # Only terminate the broker this test owns.
+    try:
+        child.terminate()
+        await disk(child.wait, 5)
+    finally:
+        await first.stop()
+    assert marker.exists()
+    assert "RecoveryRequired" in caplog.text
+    replacement = PreviewRuntime(first.root)
+    try:
+        await replacement.start()
+        assert not replacement.ready
+        assert json.loads(marker.read_text()) == metadata
+    finally:
+        await replacement.stop()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX owner-only versus group SIGTERM")
+@pytest.mark.parametrize("whole_group", [False, True])
+def test_broker_signal_order_controls_clean_restart(tmp_path, whole_group):
+    import signal
+    import subprocess
+    import sys
+
+    script = """
+import signal, sys, time
+from pathlib import Path
+from embedded_nats import NatsServer, RecoveryRequired
+root = Path(sys.argv[1])
+stopping = False
+def stop_requested(*_):
+    global stopping
+    stopping = True
+signal.signal(signal.SIGTERM, stop_requested)
+broker = NatsServer(root / 'broker', auth_token='test-only-signal-order')
+broker.start()
+(root / 'ready').touch()
+while not stopping:
+    time.sleep(0.01)
+# Model lifespan work before broker.stop; group SIGTERM has already hit NATS.
+time.sleep(0.5)
+try:
+    broker.stop()
+except RecoveryRequired:
+    print('RECOVERY_REQUIRED', flush=True)
+else:
+    print('CLEAN_STOP', flush=True)
+"""
+    owner = subprocess.Popen(
+        [sys.executable, "-c", script, str(tmp_path)],
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 20
+        while not (tmp_path / "ready").exists() and owner.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert (tmp_path / "ready").exists()
+        if whole_group:
+            os.killpg(owner.pid, signal.SIGTERM)
+        else:
+            owner.send_signal(signal.SIGTERM)
+        output, error = owner.communicate(timeout=15)
+        assert owner.returncode == 0, error
+        assert ("RECOVERY_REQUIRED" if whole_group else "CLEAN_STOP") in output
+        assert (tmp_path / "broker/managed-runtime.json").exists() is whole_group
+    finally:
+        try:
+            os.killpg(owner.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        owner.communicate(timeout=5)
+
+
+@pytest.mark.asyncio
 async def test_real_obj_and_source_checkpoint_preserve_gcode(local_runtime, tmp_path):
     import trimesh
 

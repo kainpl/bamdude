@@ -39,6 +39,12 @@
 
 ### Fixed
 
+- **Service stops preserve the local preview broker's clean shutdown.**
+  Linux, macOS and Windows service wrappers now allow ordered child-process
+  shutdown with every database backend, not just bundled PostgreSQL. Windows
+  upgrades apply the grace period before stopping the old service; Docker
+  forwards stop signals directly to the application. This avoids leaving
+  previews unavailable after an otherwise normal service restart.
 - **Model previews no longer render in the web server.** STL/OBJ uploads,
   ZIP imports, thumbnail regeneration and missing previews after slicing use
   a bounded local preview service, bundled with BamDude in the same installation

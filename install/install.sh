@@ -609,15 +609,11 @@ create_systemd_service() {
         protect_home="read-only"
     fi
 
-    # Embedded PostgreSQL is a child of the app process. Give the lifespan time
-    # to run `pg_ctl stop -m fast` (a clean checkpoint) on shutdown, and let
-    # KillMode=mixed SIGKILL any postmaster still standing after the grace
-    # window — never rely on WAL recovery for an ordinary stop. SQLite / external
-    # backends keep the tighter default.
-    local stop_settings="TimeoutStopSec=10"
-    if [[ "$DB_MODE" == "embedded" ]]; then
-        stop_settings=$'TimeoutStopSec=90\nKillMode=mixed'
-    fi
+    # Every DB mode owns local children (preview NATS/service/renderer), not
+    # only embedded PostgreSQL. SIGTERM must reach the app first so lifespan
+    # can stop children in order; an already-exited broker retains its recovery
+    # marker. KillMode=mixed still kills leftover children after the grace.
+    local stop_settings=$'TimeoutStopSec=90\nKillMode=mixed'
 
     # This function overwrites /etc/systemd/system/bamdude.service outright. Any
     # ReadWritePaths the operator added by hand — a NAS share for Scheduled
@@ -728,12 +724,9 @@ create_launchd_service() {
 
     local plist_path="$HOME/Library/LaunchAgents/com.bamdude.app.plist"
 
-    # Embedded PostgreSQL is stopped by the app on SIGTERM; give launchd's
-    # SIGTERM→SIGKILL window room for the clean fast-shutdown (default is 20s).
-    local exit_timeout_xml=""
-    if [[ "$DB_MODE" == "embedded" ]]; then
-        exit_timeout_xml=$'    <key>ExitTimeOut</key>\n    <integer>90</integer>'
-    fi
+    # Local preview children also need ordered lifespan shutdown with SQLite
+    # or external PostgreSQL. Keep the same grace in every database mode.
+    local exit_timeout_xml=$'    <key>ExitTimeOut</key>\n    <integer>90</integer>'
 
     cat > "$plist_path" << EOF
 <?xml version="1.0" encoding="UTF-8"?>

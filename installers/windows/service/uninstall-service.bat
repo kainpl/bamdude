@@ -30,6 +30,8 @@ REM ===========================================================================
 :main
 
 REM BamDude first — it depends on the PostgreSQL service.
+REM Older installs may still have NSSM's short default console timeout.
+"%NSSM%" set BamDude AppStopMethodConsole 90000
 "%NSSM%" stop BamDude
 "%NSSM%" remove BamDude confirm
 

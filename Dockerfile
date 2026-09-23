@@ -133,4 +133,6 @@ ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 # installers already expose this as BIND_ADDRESS.
 # --loop asyncio is NOT optional here — uvloop's TLS layer silently truncates
 # 3MFs uploaded to the virtual printer on a ragged EOF (#1896).
-CMD ["sh", "-c", "uvicorn backend.app.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000} --loop asyncio"]
+# Replace the expansion shell: container SIGTERM must reach uvicorn/lifespan,
+# not leave it waiting behind PID 1 while Docker kills the NATS child tree.
+CMD ["sh", "-c", "exec uvicorn backend.app.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000} --loop asyncio"]

@@ -40,8 +40,10 @@ ExecStart=INSTALL_PATH/venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --po
 Restart=on-failure
 RestartSec=5
 
-# Graceful shutdown
-TimeoutStopSec=10
+# Signal the app first: lifespan owns preview NATS/workers in EVERY DB mode
+# (plus PostgreSQL when embedded). Kill leftover children only after grace.
+TimeoutStopSec=90
+KillMode=mixed
 
 # Kill zombie ffmpeg processes (timelapse processing)
 ExecStartPre=-/usr/bin/pkill -9 -f "ffmpeg.*bamdude"

@@ -218,6 +218,7 @@ jobs:
           python -m pytest backend/tests/unit/services/test_preview_runtime.py
             backend/tests/unit/services/test_preview_protocol.py
             backend/tests/unit/services/test_preview_artifacts.py
+            backend/tests/unit/test_service_shutdown_contract.py
           -v --tb=short --timeout=180 --timeout-method=thread -n 1
 
   postgres-scenarios:

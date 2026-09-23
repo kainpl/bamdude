@@ -379,6 +379,9 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+  NssmPath: String;
 begin
   Result := '';
   NeedsRestart := False;
@@ -390,7 +393,17 @@ begin
   //
   // Both are best-effort: a service that is not installed returns at once, so
   // this is a no-op on a first-time install.
-  StopServiceAndWait('BamDude', 60);
+  // Apply the child-process grace BEFORE stopping an older installation.
+  // The [Run] script only sets up the replacement service after file copy.
+  NssmPath := ExpandConstant('{app}\bin\nssm.exe');
+  if ServiceExists('BamDude') and FileExists(NssmPath) then
+    if not Exec(NssmPath, 'set BamDude AppStopMethodConsole 90000', '',
+      SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      Log('Could not configure BamDude console-stop grace before upgrade')
+    else if ResultCode <> 0 then
+      Log('NSSM rejected BamDude console-stop grace before upgrade');
+  // Console grace plus NSSM's remaining shutdown stages.
+  StopServiceAndWait('BamDude', 100);
 
   if not StopServiceAndWait('BamDudePostgres', 90) then
     // Not fatal on its own — say it in the log and let [Files] report the real
