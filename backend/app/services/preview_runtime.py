@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from backend.app.schemas.system import PreviewHealth
 from backend.app.services.preview_artifacts import describe, disk, get, owned, put, snapshot
 from backend.app.services.preview_process import PreviewProcess
 from backend.app.services.preview_protocol import (
@@ -33,6 +34,7 @@ from backend.app.services.preview_protocol import (
 )
 
 logger = logging.getLogger(__name__)
+RECOVERY_GUIDE = "https://docs.bamdude.top/reference/troubleshooting/#local-preview-service"
 
 
 @dataclass
@@ -60,13 +62,56 @@ class PreviewRuntime:
         self.restarts = []
         self.circuit_until = 0.0
         self.dependency_lost = False
+        self.reason = "not_started"
+        self.error_type = None
+
+    def health(self) -> PreviewHealth:
+        """In-memory snapshot only: never probe processes, disk or the broker here."""
+        if self.uncertain:
+            state, reason = "unavailable", "ownership_uncertain"
+        elif self.ready and not self.closed:
+            state, reason = "ready", None
+        elif self.reason == "starting":
+            state, reason = "starting", self.reason
+        elif self.reason == "worker_restarting" and not self.closed:
+            state = "recovering"
+            reason = "circuit_open" if time.monotonic() < self.circuit_until else self.reason
+        else:
+            state, reason = "unavailable", self.reason
+        return PreviewHealth(
+            state=state,
+            reason=reason,
+            error_type=self.error_type,
+            runtime_dir=str(self.root),
+            recovery_required=reason in {"recovery_required", "ownership_uncertain"},
+        )
+
+    def _unavailable(self, reason: str, exc: Exception | None = None):
+        self.ready = False
+        error_type = type(exc).__name__ if exc else None
+        changed = (reason, error_type) != (self.reason, self.error_type)
+        self.reason, self.error_type = reason, error_type
+        if changed:
+            # Do not emit exception text: connection errors may contain credentials.
+            logger.warning(
+                "Preview unavailable: reason=%s error=%s runtime_dir=%s; API and printing continue. "
+                "Inspect installation/disk/logs; for unresolved ownership stop BamDude, verify all preview "
+                "processes exited and follow %s. Do not delete the runtime marker blindly.",
+                reason,
+                error_type or "none",
+                self.root,
+                RECOVERY_GUIDE,
+            )
 
     async def start(self):
+        self.reason = "starting"
+        recovery_errors: tuple[type[Exception], ...] = ()
         try:
             import nats
-            from embedded_nats import NatsServer
+            from embedded_nats import NatsServer, RecoveryRequired
             from nats.js.api import ObjectStoreConfig
 
+            recovery_errors = (RecoveryRequired,)
             self.token = secrets.token_urlsafe(32)
             await disk(self._directories)
             self.broker = NatsServer(
@@ -107,7 +152,7 @@ class PreviewRuntime:
                 await self._launch()
             self.monitor = asyncio.create_task(self._monitor(), name="preview-service-monitor")
         except Exception as exc:
-            logger.warning("Preview unavailable during startup (%s); API and printing continue", type(exc).__name__)
+            self._unavailable("recovery_required" if isinstance(exc, recovery_errors) else "startup_failed", exc)
             logger.debug("Preview startup failure", exc_info=True)
             await self.stop()
 
@@ -174,6 +219,8 @@ class PreviewRuntime:
                     and before <= reply.get("monotonic_ns", 0) <= after
                 ):
                     self.ready = True
+                    self.reason = None
+                    self.error_type = None
                     return
             except Exception:
                 pass
@@ -186,17 +233,22 @@ class PreviewRuntime:
 
     async def disconnected(self):
         self.ready = False
+        if not self.closed:
+            self._unavailable("broker_disconnected")
         if self.active_task:
             self.dependency_lost = True
             self.active_task.cancel()
 
     async def _retire(self):
         self.ready = False
+        if not self.closed and not self.uncertain and self.reason != "broker_disconnected":
+            self.reason = "worker_restarting"
         if self.service:
             try:
                 await disk(self.service.stop)
             except Exception:
                 self.uncertain = True
+                self._unavailable("ownership_uncertain")
                 raise
             self.service = None
 
@@ -230,7 +282,9 @@ class PreviewRuntime:
                 logger.warning("Preview process ownership uncertain; restart disabled")
                 return
             if not self.nc.is_connected:  # package RecoveryRequired is not auto-healed
+                self._unavailable("broker_disconnected")
                 return
+            self.reason = "worker_restarting"
             now = time.monotonic()
             self.restarts = [x for x in self.restarts if now - x < 60]
             if now < self.circuit_until:
@@ -242,7 +296,8 @@ class PreviewRuntime:
             self.restarts.append(time.monotonic())
             try:
                 await self._launch()
-            except Exception:
+            except Exception as exc:
+                self._unavailable("worker_restarting", exc)
                 try:
                     await self._retire()
                 except Exception:
@@ -449,6 +504,8 @@ class PreviewRuntime:
     async def stop(self):
         self.closed = True
         self.ready = False
+        if self.reason in {None, "starting", "worker_restarting", "not_started"}:
+            self.reason = "stopped"
         if self.monitor:
             self.monitor.cancel()
             await asyncio.gather(self.monitor, return_exceptions=True)
@@ -465,14 +522,16 @@ class PreviewRuntime:
             try:
                 await disk(self.broker.stop)
             except Exception as exc:
-                logger.warning(
-                    "Preview broker requires manual recovery (%s); runtime marker retained", type(exc).__name__
-                )
+                self._unavailable("recovery_required", exc)
         if not self.uncertain and hasattr(self, "staging") and not self.slot.locked():
             await disk(shutil.rmtree, self.staging, True)
 
 
 runtime: PreviewRuntime | None = None
+
+
+def get_preview_health() -> PreviewHealth:
+    return runtime.health() if runtime else PreviewHealth(state="unavailable", reason="not_started")
 
 
 async def start_preview_runtime(base: Path):

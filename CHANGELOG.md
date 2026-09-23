@@ -2,6 +2,11 @@
 
 ### Added
 
+- **Preview-service diagnostics on the System page.** See availability,
+  worker restart/backoff, or a startup/ownership failure, with a runtime path
+  and recovery instructions in English and Ukrainian. Warnings now include
+  the path and safe next steps; printing and existing thumbnails are unaffected.
+
 - **Empty spools can retire themselves.** A new Usage accuracy switch,
   *Archive the spool it closed*, moves a spool to the inventory archive when
   an unambiguous filament runout closed it at empty and the printer

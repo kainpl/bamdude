@@ -46,6 +46,8 @@ class TestSystemAPI:
         assert "system" in result
         assert "memory" in result
         assert "cpu" in result
+        assert "preview" in result
+        assert set(result["preview"]) == {"state", "reason", "error_type", "runtime_dir", "recovery_required"}
 
     @pytest.mark.asyncio
     @pytest.mark.integration

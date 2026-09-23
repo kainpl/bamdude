@@ -104,7 +104,7 @@ function Section({
 }
 
 export function SystemInfoPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
 
   // Diagnostics, not configuration: when readings look wrong the first two
   // questions are which dongle is answering and on which network, and both were
@@ -596,6 +596,37 @@ export function SystemInfoPage() {
           </div>
         </Section>
       )}
+
+      <Section title={t('system.preview.title')} icon={Activity}>
+        <p className={systemInfo.preview?.state === 'ready' ? 'text-bambu-green' : 'text-yellow-400'}>
+          {t(`system.preview.states.${systemInfo.preview?.state ?? 'unavailable'}`)}
+        </p>
+        {systemInfo.preview?.reason && (
+          <p className="text-sm text-bambu-gray mt-2">{t(`system.preview.reasons.${systemInfo.preview.reason}`)}</p>
+        )}
+        <p className="text-sm text-bambu-gray mt-2">{t('system.preview.scope')}</p>
+        {systemInfo.preview?.state !== 'ready' && (
+          <>
+            <p className="text-sm text-bambu-gray mt-2">
+              {t(systemInfo.preview?.recovery_required ? 'system.preview.manualRecovery' : 'system.preview.checkLogs')}
+            </p>
+            {systemInfo.preview?.error_type && (
+              <p className="text-sm mt-2">{t('system.preview.error')}: <code>{systemInfo.preview.error_type}</code></p>
+            )}
+            {systemInfo.preview?.runtime_dir && (
+              <p className="text-sm mt-2 break-all">{t('system.preview.directory')}: <code>{systemInfo.preview.runtime_dir}</code></p>
+            )}
+            <a
+              href={`https://docs.bamdude.top/${i18n.resolvedLanguage?.startsWith('uk') ? 'uk/' : ''}reference/troubleshooting/#local-preview-service`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block mt-2 text-bambu-green hover:underline"
+            >
+              {t('system.preview.guide')}
+            </a>
+          </>
+        )}
+      </Section>
 
       <Section title={t('system.database', 'Database')} icon={Database}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">

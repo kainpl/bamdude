@@ -1,11 +1,36 @@
-"""Response shape for ``GET /system/database``.
+"""Response shapes for System diagnostics.
 
-Every field is optional on purpose: a probe that fails leaves its own field
+Database probe fields are optional: a probe that fails leaves its own field
 ``None`` and names itself in ``probes_failed``, because this is the page an
 operator opens when the database is already misbehaving.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel
+
+
+class PreviewHealth(BaseModel):
+    """Read-only lifecycle snapshot; no credentials, protocol payloads or probing."""
+
+    state: Literal["ready", "starting", "recovering", "unavailable"]
+    reason: (
+        Literal[
+            "not_started",
+            "starting",
+            "stopped",
+            "startup_failed",
+            "recovery_required",
+            "broker_disconnected",
+            "worker_restarting",
+            "circuit_open",
+            "ownership_uncertain",
+        ]
+        | None
+    ) = None
+    error_type: str | None = None
+    runtime_dir: str | None = None
+    recovery_required: bool = False
 
 
 class PoolStatus(BaseModel):

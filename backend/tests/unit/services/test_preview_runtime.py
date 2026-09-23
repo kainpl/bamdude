@@ -154,6 +154,9 @@ async def test_externally_stopped_broker_requires_explicit_recovery(tmp_path, ca
     try:
         await replacement.start()
         assert not replacement.ready
+        assert replacement.health().reason == "recovery_required"
+        assert replacement.health().recovery_required
+        assert replacement.health().error_type == "RecoveryRequired"
         assert json.loads(marker.read_text()) == metadata
     finally:
         await replacement.stop()

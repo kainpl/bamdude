@@ -7,6 +7,7 @@ import { screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { SystemInfoPage } from '../../pages/SystemInfoPage';
 import { api } from '../../api/client';
+import i18n from '../../i18n';
 
 // Mock the API client
 vi.mock('../../api/client', () => ({
@@ -151,6 +152,70 @@ const mockSystemInfo = {
 describe('SystemInfoPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('shows recovery instructions and the safe runtime path without a repair button', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      preview: {
+        state: 'unavailable', reason: 'recovery_required', error_type: 'RecoveryRequired',
+        runtime_dir: '/data/.cache/preview-service', recovery_required: true,
+      },
+    } as never);
+    render(<SystemInfoPage />);
+    expect(await screen.findByText('RecoveryRequired')).toBeInTheDocument();
+    expect(screen.getByText('/data/.cache/preview-service')).toBeInTheDocument();
+    expect(screen.getByText(/Do not delete the runtime marker blindly/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Preview troubleshooting and recovery' })).toHaveAttribute(
+      'href', 'https://docs.bamdude.top/reference/troubleshooting/#local-preview-service',
+    );
+    expect(screen.queryByRole('button', { name: /recover|repair/i })).not.toBeInTheDocument();
+  });
+
+  it('renders a recovering worker separately from manual recovery', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      preview: {
+        state: 'recovering', reason: 'circuit_open', error_type: null,
+        runtime_dir: '/data/.cache/preview-service', recovery_required: false,
+      },
+    } as never);
+    render(<SystemInfoPage />);
+    expect(await screen.findByText('Restarting')).toBeInTheDocument();
+    expect(screen.getByText(/automatic restart is temporarily delayed/)).toBeInTheDocument();
+    expect(screen.queryByText(/Do not delete the runtime marker blindly/)).not.toBeInTheDocument();
+  });
+
+  it('does not display recovery advice for a healthy service', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      preview: { state: 'ready', reason: null, error_type: null, runtime_dir: '/cache', recovery_required: false },
+    } as never);
+    render(<SystemInfoPage />);
+    expect(await screen.findByText('Local preview service')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Preview troubleshooting and recovery' })).not.toBeInTheDocument();
+  });
+
+  it('uses the Ukrainian recovery text and matching documentation page', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      preview: {
+        state: 'unavailable', reason: 'recovery_required', error_type: 'RecoveryRequired',
+        runtime_dir: '/cache', recovery_required: true,
+      },
+    } as never);
+    await i18n.changeLanguage('uk');
+    const view = render(<SystemInfoPage />);
+    try {
+      expect(await screen.findByText('Локальний сервіс прев’ю')).toBeInTheDocument();
+      expect(screen.getByText(/Не видаляйте маркер середовища навмання/)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Діагностика та відновлення прев’ю' })).toHaveAttribute(
+        'href', 'https://docs.bamdude.top/uk/reference/troubleshooting/#local-preview-service',
+      );
+    } finally {
+      view.unmount();
+      await i18n.changeLanguage('en');
+    }
   });
 
   it('renders loading state initially', async () => {

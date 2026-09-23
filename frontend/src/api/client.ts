@@ -11981,7 +11981,17 @@ export interface DbHealth {
   probes_failed: string[];
 }
 
+export interface PreviewHealth {
+  state: 'ready' | 'starting' | 'recovering' | 'unavailable';
+  reason: 'not_started' | 'starting' | 'stopped' | 'startup_failed' | 'recovery_required'
+    | 'broker_disconnected' | 'worker_restarting' | 'circuit_open' | 'ownership_uncertain' | null;
+  error_type: string | null;
+  runtime_dir: string | null;
+  recovery_required: boolean;
+}
+
 export interface SystemInfo {
+  preview?: PreviewHealth;
   app: {
     version: string;
     base_dir: string;

@@ -28,6 +28,7 @@ from backend.app.schemas.system import DbHealth
 from backend.app.services import db_health
 from backend.app.services.log_health import ScanResult, scan_logs
 from backend.app.services.log_reader import collect_sensitive_strings
+from backend.app.services.preview_runtime import get_preview_health
 from backend.app.services.printer_manager import printer_manager
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -569,6 +570,7 @@ async def get_system_info(
             "uptime_seconds": app_uptime_seconds,
             "uptime_formatted": format_uptime(app_uptime_seconds) if app_uptime_seconds is not None else None,
         },
+        "preview": get_preview_health().model_dump(),
         "database": {
             "engine": engine_name,
             "version": db_version,
