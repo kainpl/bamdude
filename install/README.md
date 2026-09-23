@@ -47,7 +47,7 @@ Installs BamDude with Python virtual environment and optional systemd/launchd se
 - RHEL/Fedora/CentOS (dnf/yum)
 - Arch Linux (pacman)
 - openSUSE (zypper)
-- macOS (Homebrew)
+- macOS 12 or newer (Homebrew)
 
 **Options:**
 ```

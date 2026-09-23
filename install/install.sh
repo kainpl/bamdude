@@ -187,6 +187,16 @@ show_help() {
 
 detect_os() {
     if [[ "$OSTYPE" == "darwin"* ]]; then
+        local macos_version macos_major
+        macos_version=$(sw_vers -productVersion) || {
+            log_error "Could not determine the macOS version. BamDude requires macOS 12 or newer."
+            exit 1
+        }
+        macos_major=${macos_version%%.*}
+        if [[ ! "$macos_major" =~ ^[0-9]+$ ]] || (( macos_major < 12 )); then
+            log_error "BamDude requires macOS 12 or newer (found ${macos_version})."
+            exit 1
+        fi
         OS_TYPE="macos"
         PKG_MANAGER="brew"
         return

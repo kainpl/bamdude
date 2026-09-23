@@ -416,6 +416,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 
 ### Requirements
 - Python 3.12+ (only for a native install — the Docker image bundles its own)
+- macOS 12+ for a native macOS install
 - Bambu Lab printer with **Developer Mode** enabled
 - Same local network as printer
 
