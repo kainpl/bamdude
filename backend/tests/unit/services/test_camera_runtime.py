@@ -18,26 +18,73 @@ class FakeRuntime:
 
 
 @pytest.mark.asyncio
-async def test_inline_runtime_delegates_built_in_without_import_time_camera_stack(monkeypatch):
+async def test_unstarted_worker_never_falls_back_to_builtin_capture(monkeypatch):
     from backend.app.services import camera
 
-    expected = CameraCaptureResult(b"frame", "fresh", "attempt-1")
-    call = {}
-
     async def capture_builtin(*args):
-        call["args"] = args
-        return expected
+        raise AssertionError("main must not open a physical camera")
 
     monkeypatch.setattr(camera, "capture_camera_frame_with_provenance", capture_builtin)
     request = camera_runtime.CameraCaptureRequest.builtin(
         ip_address="192.0.2.10", access_code="secret", model="P1S", timeout=20, purpose="obico"
     )
-    assert await camera_runtime.capture(request) is expected
-    assert call["args"] == ("192.0.2.10", "secret", "P1S", 20)
+    with pytest.raises(camera_runtime.CameraWorkerUnavailable):
+        await camera_runtime.capture(request)
 
 
 @pytest.mark.asyncio
-async def test_runtime_override_is_task_local_and_restores_inline():
+async def test_worker_owner_starts_and_stops_without_opening_a_camera():
+    owner = camera_runtime.CameraRuntimeOwner(
+        camera_runtime.WorkerCameraRuntime(camera_runtime.CameraWorkerSupervisor())
+    )
+    try:
+        await owner.start()
+        assert owner.snapshot()["state"] == "ready"
+        assert owner.runtime.supervisor.process is not None
+        assert owner.runtime.supervisor.process.stdin is not None
+        assert not owner.runtime.supervisor.process.stdin.is_closing()
+    finally:
+        await owner.stop()
+    assert owner.snapshot()["state"] == "stopped"
+    assert owner.runtime.supervisor.process is None
+
+
+@pytest.mark.asyncio
+async def test_worker_owner_recovers_from_child_crash_with_new_generation():
+    owner = camera_runtime.CameraRuntimeOwner(
+        camera_runtime.WorkerCameraRuntime(camera_runtime.CameraWorkerSupervisor())
+    )
+    try:
+        await owner.start()
+        first = owner.runtime.supervisor
+        first_generation = first.bootstrap.generation
+        first.process.kill()
+        await asyncio.wait_for(first.process.wait(), timeout=5)
+
+        async def recovered():
+            while owner.snapshot()["state"] != "ready" or owner.runtime.supervisor is first:
+                await asyncio.sleep(0.1)
+
+        await asyncio.wait_for(recovered(), timeout=12)
+        assert owner.runtime.supervisor.bootstrap.generation != first_generation
+        assert owner.snapshot()["restart_count"] >= 1
+    finally:
+        await owner.stop()
+
+
+def test_worker_restart_policy_uses_bounded_backoff_and_half_open_circuit():
+    owner = camera_runtime.CameraRuntimeOwner(
+        camera_runtime.WorkerCameraRuntime(camera_runtime.CameraWorkerSupervisor())
+    )
+    assert [owner._restart_delay(now, half_open=False)[0] for now in (0, 1, 2)] == [1, 2, 4]
+    assert owner._restart_delay(3, half_open=False) == (60, True)
+    assert owner.snapshot()["state"] == "unavailable"
+    assert owner._restart_delay(64, half_open=True) == (60, True)
+    assert owner._restart_delay(125, half_open=False) == (1, False)
+
+
+@pytest.mark.asyncio
+async def test_runtime_override_is_task_local_and_restores_worker():
     fake = FakeRuntime(CameraCaptureResult(b"frame", "fresh"), [])
     request = camera_runtime.CameraCaptureRequest.external(url="http://example.test/cam", camera_type="mjpeg")
 

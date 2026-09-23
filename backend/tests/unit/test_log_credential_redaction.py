@@ -5,9 +5,9 @@ stderr. Our RTSP URL is ``rtsp://bblp:<access code>@…`` — so the printer's a
 code was written to ``bamdude.log`` in plaintext, on disk, where the
 support-bundle sanitizer (which only runs on the way *out*) could not help.
 
-We had already understood the risk on the *argv* side — ``routes/camera.py``
-builds a ``_redacted_cmd`` before logging the command. The stderr path was simply
-never considered.
+We had already understood the risk on the *argv* side. The stderr path was
+simply never considered. The camera worker now uses the shared ffmpeg summary
+utility; the main HTTP route does not own an ffmpeg process.
 
 One pattern now serves both consumers, so they cannot drift: the live log keeps
 the username for diagnosis, the support bundle drops it.
@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import time
 
-from backend.app.api.routes.camera import _summarize_ffmpeg_stderr
 from backend.app.core.logging_filters import URL_CREDENTIALS_PATTERN, redact_url_credentials
 from backend.app.services.log_reader import sanitize_log_content
+from backend.app.utils.ffmpeg_output import summarize_ffmpeg_stderr
 
 # The reported shape, verbatim from ffmpeg's banner.
 FFMPEG_INPUT_LINE = "Input #0, rtsp, from 'rtsp://bblp:12345678@127.0.0.1:8554/streaming/live/1':"
@@ -36,9 +36,8 @@ class TestTheReportedLeak:
         assert "127.0.0.1:8554/streaming/live/1" in out
 
     def test_the_stderr_funnel_redacts(self) -> None:
-        """``_summarize_ffmpeg_stderr`` is the one funnel every stderr log in the
-        camera route passes through — masking there covers all of them at once."""
-        assert "12345678" not in _summarize_ffmpeg_stderr(FFMPEG_INPUT_LINE)
+        """The shared ffmpeg summary redacts before shortening output."""
+        assert "12345678" not in summarize_ffmpeg_stderr(FFMPEG_INPUT_LINE)
 
 
 class TestTheHolesInTheOldPattern:

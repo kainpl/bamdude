@@ -1,5 +1,6 @@
 """Unit tests for Obico detection service (#172)."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -64,6 +65,41 @@ class TestSettingsSchemaValidators:
         with pytest.raises(ValueError):
             AppSettingsUpdate(obico_poll_interval=121)
         assert AppSettingsUpdate(obico_poll_interval=10).obico_poll_interval == 10
+
+
+@pytest.mark.asyncio
+async def test_camera_outage_pauses_obico_without_carrying_run_a_into_run_b(caplog):
+    caplog.set_level("INFO", logger="backend.app.services.obico_detection")
+    service = ObicoDetectionService()
+    service._states[1] = object()
+    service._state_keys[1] = "run-a"
+    service._action_fired[1] = True
+    running_a = SimpleNamespace(state="RUNNING", task_name="run-a")
+    stopped = SimpleNamespace(state="FINISH", task_name="run-a")
+    running_b = SimpleNamespace(state="RUNNING", task_name="run-b")
+    with (
+        patch(
+            "backend.app.services.printer_manager.printer_manager.get_all_statuses",
+            side_effect=[{1: running_a}, {1: stopped}, {1: running_b}, {1: running_b}],
+        ),
+        patch("backend.app.services.printer_manager.printer_manager.is_connected", return_value=True),
+        patch(
+            "backend.app.services.camera_runtime.camera_runtime_health",
+            side_effect=[{"state": "unavailable"}] * 3 + [{"state": "ready"}],
+        ),
+        patch.object(service, "_check_printer", new_callable=AsyncMock) as check,
+    ):
+        for _ in range(3):
+            await service._poll_once({"enabled_printers": None})
+        assert 1 not in service._states
+        assert 1 not in service._state_keys
+        assert 1 not in service._action_fired
+        check.assert_not_awaited()
+        await service._poll_once({"enabled_printers": None})
+        check.assert_awaited_once()
+        assert check.await_args.args[1] is running_b
+    assert caplog.text.count("Obico camera detection paused") == 1
+    assert caplog.text.count("Obico camera detection resumed") == 1
 
 
 class TestGetStatus:
@@ -740,44 +776,41 @@ class TestIsStreamActiveHelper:
     def test_no_streams_registered_returns_false(self):
         from backend.app.api.routes import camera
 
-        camera._active_streams.clear()
-        camera._active_chamber_streams.clear()
+        camera._active_worker_streams.clear()
         assert camera.is_stream_active(42) is False
         assert camera.try_get_active_buffered_frame(42) is None
 
-    def test_main_fanout_stream_registered_returns_true(self):
+    def test_worker_fanout_stream_registered_returns_true(self):
         from backend.app.api.routes import camera
 
-        camera._active_streams.clear()
-        camera._active_chamber_streams.clear()
-        camera._active_streams["42-fanout"] = MagicMock()
+        camera._active_worker_streams.clear()
+        camera._active_worker_streams[42] = ("relay", "rtsp")
         try:
             assert camera.is_stream_active(42) is True
         finally:
-            camera._active_streams.pop("42-fanout", None)
+            camera._active_worker_streams.pop(42, None)
 
     def test_chamber_stream_registered_returns_true(self):
         from backend.app.api.routes import camera
 
-        camera._active_streams.clear()
-        camera._active_chamber_streams.clear()
-        camera._active_chamber_streams["42-chamber"] = (MagicMock(), MagicMock())
+        camera._active_worker_streams.clear()
+        camera._active_worker_streams[42] = ("relay", "chamber_image")
         try:
             assert camera.is_stream_active(42) is True
         finally:
-            camera._active_chamber_streams.pop("42-chamber", None)
+            camera._active_worker_streams.pop(42, None)
 
     def test_try_get_active_buffered_returns_frame_when_stream_active_and_buffered(self):
         from backend.app.api.routes import camera
 
-        camera._active_streams.clear()
+        camera._active_worker_streams.clear()
         camera._last_frames.clear()
-        camera._active_streams["42-fanout"] = MagicMock()
+        camera._active_worker_streams[42] = ("relay", "rtsp")
         camera._last_frames[42] = b"BUFFERED"
         try:
             assert camera.try_get_active_buffered_frame(42) == b"BUFFERED"
         finally:
-            camera._active_streams.pop("42-fanout", None)
+            camera._active_worker_streams.pop(42, None)
             camera._last_frames.pop(42, None)
 
     def test_try_get_active_buffered_returns_none_when_no_stream_even_with_buffer(self):
@@ -785,8 +818,7 @@ class TestIsStreamActiveHelper:
         returning stale frames from a previously-attached viewer."""
         from backend.app.api.routes import camera
 
-        camera._active_streams.clear()
-        camera._active_chamber_streams.clear()
+        camera._active_worker_streams.clear()
         camera._last_frames.clear()
         camera._last_frames[42] = b"STALE"
         try:

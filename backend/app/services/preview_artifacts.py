@@ -41,8 +41,8 @@ async def owned(awaitable):
         raise
 
 
-async def disk(function, *args):
-    return await owned(asyncio.to_thread(function, *args))
+async def disk(function, *args, **kwargs):
+    return await owned(asyncio.to_thread(function, *args, **kwargs))
 
 
 def signature(path: Path) -> tuple:

@@ -142,13 +142,14 @@ class LiveProducerRegistry:
         self._subscribers: dict[str, dict[str, asyncio.Queue[bytes]]] = {}
         self._latest: dict[str, bytes] = {}
         self._raw_leases: dict[str, RawCameraLease] = {}
+        self._probe_leases: set[str] = set()
         self._lock = asyncio.Lock()
 
     async def subscribe(
         self, identity: str, start: Callable[[], Awaitable[None]]
     ) -> tuple[LiveLease, asyncio.Queue[bytes]]:
         async with self._lock:
-            if identity in self._raw_leases:
+            if identity in self._raw_leases or identity in self._probe_leases:
                 raise RuntimeError("camera worker raw lease is active")
             subscribers = self._subscribers.setdefault(identity, {})
             if len(subscribers) >= MAX_LIVE_SUBSCRIBERS:
@@ -170,11 +171,37 @@ class LiveProducerRegistry:
         """Reserve an identity for transparent VP TCP, never JPEG relay."""
 
         async with self._lock:
-            if identity in self._raw_leases or self._subscribers.get(identity) or identity in self._producers:
+            if (
+                identity in self._raw_leases
+                or identity in self._probe_leases
+                or self._subscribers.get(identity)
+                or identity in self._producers
+            ):
                 raise RuntimeError("camera worker identity is busy")
             lease = RawCameraLease(identity, str(uuid.uuid4()))
             self._raw_leases[identity] = lease
             return lease
+
+    async def is_busy(self, identity: str) -> bool:
+        async with self._lock:
+            return identity in self._raw_leases or identity in self._producers or identity in self._probe_leases
+
+    async def acquire_probe(self, identity: str) -> bool:
+        """Reserve a brief active diagnosis; never race live/raw leases."""
+        async with self._lock:
+            if (
+                identity in self._probe_leases
+                or identity in self._raw_leases
+                or identity in self._producers
+                or self._subscribers.get(identity)
+            ):
+                return False
+            self._probe_leases.add(identity)
+            return True
+
+    async def release_probe(self, identity: str) -> None:
+        async with self._lock:
+            self._probe_leases.discard(identity)
 
     async def release_raw(self, lease: RawCameraLease) -> None:
         async with self._lock:

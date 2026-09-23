@@ -195,9 +195,7 @@ def test_retry_reset_polling_and_source_evidence_are_not_fabricated():
 
 @pytest.mark.asyncio
 async def test_status_is_read_only_and_cache_has_no_fake_connect_time(monkeypatch):
-    monkeypatch.setattr(routes, "_active_streams", {})
-    monkeypatch.setattr(routes, "_active_external_streams", set())
-    monkeypatch.setattr(routes, "_active_chamber_streams", {})
+    monkeypatch.setattr(routes, "_active_worker_streams", {})
     no_capture = AsyncMock(side_effect=AssertionError("status must never open a camera"))
     monkeypatch.setattr(camera, "capture_camera_frame_with_provenance", no_capture)
     metrics.remember_delivery(42, "snapshot_cache")

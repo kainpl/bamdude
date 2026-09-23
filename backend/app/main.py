@@ -8572,13 +8572,23 @@ async def _on_print_complete_impl(
                 # Check for external camera first
                 if printer.external_camera_enabled and printer.external_camera_url:
                     logger.info("[PHOTO-BG] Using external camera")
-                    from backend.app.services.external_camera import capture_frame
+                    from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-                    frame_data = await capture_frame(
-                        printer.external_camera_url,
-                        printer.external_camera_type or "mjpeg",
-                        snapshot_url=printer.external_camera_snapshot_url,
-                    )
+                    try:
+                        camera_result = await capture(
+                            CameraCaptureRequest.external(
+                                url=printer.external_camera_url,
+                                camera_type=printer.external_camera_type or "mjpeg",
+                                snapshot_url=printer.external_camera_snapshot_url,
+                                timeout=30,
+                                purpose="finish_photo",
+                                printer_id=printer_id,
+                            )
+                        )
+                        frame_data = camera_result.frame
+                    except Exception as exc:
+                        logger.warning("[PHOTO-BG] Camera worker unavailable: %s", type(exc).__name__)
+                        frame_data = None
                     if frame_data:
                         photos_dir = archive_dir / "photos"
                         photos_dir.mkdir(parents=True, exist_ok=True)
@@ -9556,40 +9566,6 @@ def stop_runtime_tracking():
         logging.getLogger(__name__).info("Printer runtime tracking stopped")
 
 
-# Camera stream orphan cleanup
-_camera_cleanup_task: asyncio.Task | None = None
-CAMERA_CLEANUP_INTERVAL = 60
-
-
-async def _camera_cleanup_loop():
-    """Periodically clean up orphaned ffmpeg processes."""
-    from backend.app.api.routes.camera import cleanup_orphaned_streams
-
-    while True:
-        try:
-            await cleanup_orphaned_streams()
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logging.getLogger(__name__).warning("Camera stream cleanup failed: %s", e)
-        await asyncio.sleep(CAMERA_CLEANUP_INTERVAL)
-
-
-def start_camera_cleanup():
-    global _camera_cleanup_task
-    if _camera_cleanup_task is None:
-        _camera_cleanup_task = asyncio.create_task(_camera_cleanup_loop())
-        logging.getLogger(__name__).info("Camera stream cleanup started")
-
-
-def stop_camera_cleanup():
-    global _camera_cleanup_task
-    if _camera_cleanup_task:
-        _camera_cleanup_task.cancel()
-        _camera_cleanup_task = None
-        logging.getLogger(__name__).info("Camera stream cleanup stopped")
-
-
 # ---------------------------------------------------------------------------
 # Expected-print TTL eviction
 # ---------------------------------------------------------------------------
@@ -9871,13 +9847,11 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
-    # The worker is opt-in and must establish containment before any camera
-    # caller can run. Do not silently leave an inline owner alive when an
-    # install explicitly selected the worker runtime.
-    if app_settings.camera_runtime == "worker":
-        from backend.app.services.camera_runtime import configure_camera_runtime
+    # Camera ownership is worker-only. A failed worker degrades cameras but
+    # must not prevent queueing, dispatch or health endpoints from starting.
+    from backend.app.services.camera_runtime import configure_camera_runtime
 
-        await configure_camera_runtime("worker")
+    await configure_camera_runtime()
 
     # Warm the system language into process memory. Sync callers on hot paths
     # read it from there — notably the MQTT pause classifier, which cannot
@@ -10570,7 +10544,6 @@ async def lifespan(app: FastAPI):
     start_runtime_tracking()
 
     # Start camera stream orphan cleanup
-    start_camera_cleanup()
 
     # Start anonymized opt-out telemetry (daily snapshot)
     from backend.app.services.telemetry import start_telemetry
@@ -10620,6 +10593,9 @@ async def lifespan(app: FastAPI):
 
     virtual_printer_manager.set_session_factory(async_session)
     virtual_printer_manager.set_printer_manager(printer_manager)
+    from backend.app.services.camera_runtime import register_camera_recovery
+
+    unregister_camera_recovery = register_camera_recovery(virtual_printer_manager.reconcile_camera_proxies)
     try:
         await virtual_printer_manager.sync_from_db()
         logging.info("Virtual printer manager synced from database")
@@ -10691,6 +10667,10 @@ async def lifespan(app: FastAPI):
     from backend.app.services.preview_runtime import start_preview_runtime, stop_preview_runtime
 
     await start_preview_runtime(Path(app_settings.base_dir))
+    from backend.app.services.analysis_runtime import start_analysis_runtime, stop_analysis_runtime
+    from backend.app.services.local_worker_broker import stop_local_worker_broker
+
+    await start_analysis_runtime(Path(app_settings.base_dir))
 
     yield
 
@@ -10777,7 +10757,6 @@ async def lifespan(app: FastAPI):
 
     await stop_connection_watchdog()
     stop_runtime_tracking()
-    stop_camera_cleanup()
     try:
         from backend.app.services.camera_runtime import stop_configured_camera_runtime
 
@@ -10819,12 +10798,12 @@ async def lifespan(app: FastAPI):
 
     cancel_running_scans()
     printer_manager.disconnect_all()
-    from backend.app.services.print_file_analysis import shutdown_print_file_analysis_workers
-
-    shutdown_print_file_analysis_workers()
+    await stop_analysis_runtime()
+    await stop_local_worker_broker()
     await close_spoolman_client()
 
     # Stop all virtual printer services
+    unregister_camera_recovery()
     await virtual_printer_manager.stop_all()
 
     await mqtt_smart_plug_service.disconnect(timeout=2)

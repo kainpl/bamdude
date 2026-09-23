@@ -3,6 +3,7 @@
 import asyncio
 import concurrent.futures
 import logging
+import os
 import time
 import zipfile
 from dataclasses import asdict
@@ -24,9 +25,9 @@ from backend.app.services.print_file_analysis import (
 
 
 class _Manager:
-    # Production PrinterManager enables the child process.  The narrow runner
+    # Production PrinterManager enables the analysis service. The narrow runner
     # seam keeps these deterministic lifecycle tests in-process.
-    _uses_print_file_analysis_process = False
+    _uses_print_file_analysis_service = False
 
 
 def test_main_lifecycle_wiring_waits_for_the_late_archive_file(tmp_path, monkeypatch):
@@ -232,6 +233,25 @@ async def test_changed_source_never_reuses_the_previous_table(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_same_size_and_mtime_replacement_invalidates_the_table(tmp_path):
+    path = tmp_path / "job.3mf"
+    path.write_bytes(b"old")
+    original = path.stat()
+    manager = _Manager()
+    calls = []
+    manager._print_file_analysis_runner = _runner_factory(calls)
+    first = await get_print_file_analysis(manager, 7, 42, path, None)
+    replacement = tmp_path / "next.3mf"
+    replacement.write_bytes(b"new")
+    os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+    os.replace(replacement, path)
+    assert path.stat().st_ino != original.st_ino
+    second = await get_print_file_analysis(manager, 7, 42, path, None)
+    assert second is not first
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_ready_analysis_survives_later_source_deletion_until_context_release(tmp_path):
     path = tmp_path / "job.3mf"
     path.write_bytes(b"fixture")
@@ -348,17 +368,6 @@ async def test_deadline_marks_context_unavailable_without_leaving_preparing(tmp_
     assert await get_print_file_analysis(manager, 7, 42, path, None) is None
     assert manager._print_file_analysis_contexts[7].state == "unavailable"
     assert "deadline" in manager._print_file_analysis_contexts[7].error
-
-
-@pytest.mark.asyncio
-async def test_child_rss_watch_reports_the_crossed_budget_without_blocking(monkeypatch):
-    from backend.app.services import print_file_analysis
-
-    monkeypatch.setattr(print_file_analysis, "_CHILD_RSS_POLL_SECONDS", 0.001)
-    monkeypatch.setattr(print_file_analysis, "_MAX_CHILD_RSS_BYTES", 100)
-    monkeypatch.setattr(print_file_analysis, "_pool_child_rss_bytes", lambda pool: 101)
-
-    assert await print_file_analysis._watch_child_rss(object()) is True
 
 
 def test_parser_rejects_an_oversized_gcode_member_before_extracting(tmp_path, monkeypatch):
@@ -496,145 +505,3 @@ async def test_completion_wrapper_releases_its_context_after_an_unexpected_error
 
     assert not manager._print_file_analysis_contexts
     assert not manager._print_file_analysis_finishing_contexts
-
-
-@pytest.mark.asyncio
-async def test_real_printer_manager_uses_the_child_executor(tmp_path):
-    """The production manager selects the process path, not the test seam."""
-    from backend.app.services import print_file_analysis
-    from backend.app.services.printer_manager import PrinterManager
-
-    path = tmp_path / "job.3mf"
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(
-            "Metadata/slice_info.config",
-            '<config><filament id="1" used_g="12.5" type="PLA" color="#FFFFFF" /></config>',
-        )
-        archive.writestr("Metadata/plate_1.gcode", "M73 L1\nM620 S0\nG1 E2\n")
-
-    result = await get_print_file_analysis(PrinterManager(), 7, 42, path, None)
-
-    assert result is not None
-    assert result.filament_usage[0]["used_g"] == 12.5
-    assert print_file_analysis._executor is not None
-    assert print_file_analysis._executor._mp_context.get_start_method() == "spawn"
-    print_file_analysis.shutdown_print_file_analysis_workers()
-
-
-@pytest.mark.asyncio
-async def test_process_deadline_reaps_the_child_and_a_later_retry_gets_a_fresh_worker(tmp_path, monkeypatch):
-    """A wedged real child cannot poison the one-worker executor forever."""
-    from backend.app.services import print_file_analysis
-    from backend.app.services.printer_manager import PrinterManager
-
-    path = tmp_path / "job.3mf"
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(
-            "Metadata/slice_info.config",
-            '<config><filament id="1" used_g="12.5" type="PLA" color="#FFFFFF" /></config>',
-        )
-        archive.writestr("Metadata/plate_1.gcode", "M73 L1\nM620 S0\nG1 E2\n")
-
-    print_file_analysis.shutdown_print_file_analysis_workers()
-    manager = PrinterManager()
-    monkeypatch.setattr(print_file_analysis, "_ANALYSIS_DEADLINE_SECONDS", 0.001)
-    try:
-        assert await get_print_file_analysis(manager, 7, 42, path, None) is None
-        context = manager._print_file_analysis_contexts[7]
-        assert context.state == "unavailable"
-        assert "deadline" in (context.error or "")
-        assert print_file_analysis._executor is None
-
-        monkeypatch.setattr(print_file_analysis, "_ANALYSIS_DEADLINE_SECONDS", 10.0)
-        context.retry_at = 0.0
-        assert await get_print_file_analysis(manager, 7, 42, path, None) is not None
-    finally:
-        print_file_analysis.shutdown_print_file_analysis_workers()
-
-
-@pytest.mark.asyncio
-async def test_crashed_process_is_replaced_before_the_context_retries(tmp_path):
-    """An abruptly terminated child leaves a usable executor for its retry."""
-    from backend.app.services import print_file_analysis
-    from backend.app.services.printer_manager import PrinterManager
-
-    path = tmp_path / "job.3mf"
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(
-            "Metadata/slice_info.config",
-            '<config><filament id="1" used_g="12.5" type="PLA" color="#FFFFFF" /></config>',
-        )
-        # Keep the child occupied after startup; it is intentionally small
-        # enough for a regular retry to finish quickly.
-        archive.writestr("Metadata/plate_1.gcode", ("M73 L1\nM620 S0\nG1 E2\n" * 200_000).encode())
-
-    print_file_analysis.shutdown_print_file_analysis_workers()
-    manager = PrinterManager()
-    pending = asyncio.create_task(get_print_file_analysis(manager, 7, 42, path, None))
-    try:
-        for _ in range(200):
-            pool = print_file_analysis._executor
-            processes = tuple(getattr(pool, "_processes", {}).values()) if pool is not None else ()
-            if processes and processes[0].pid:
-                processes[0].terminate()
-                break
-            await asyncio.sleep(0.01)
-        else:
-            pytest.fail("analysis child did not start")
-
-        assert await pending is None
-        context = manager._print_file_analysis_contexts[7]
-        assert context.state == "unavailable"
-        assert "worker crashed" in (context.error or "")
-        assert print_file_analysis._executor is None
-
-        context.retry_at = 0.0
-        assert await get_print_file_analysis(manager, 7, 42, path, None) is not None
-    finally:
-        if not pending.done():
-            pending.cancel()
-        print_file_analysis.shutdown_print_file_analysis_workers()
-
-
-@pytest.mark.asyncio
-async def test_retiring_an_active_process_reaps_it_before_the_next_print(tmp_path):
-    """A completed/removed context cannot leave its parser holding the only child."""
-    from backend.app.services import print_file_analysis
-    from backend.app.services.printer_manager import PrinterManager
-
-    slow_path = tmp_path / "slow.3mf"
-    with zipfile.ZipFile(slow_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(
-            "Metadata/slice_info.config",
-            '<config><filament id="1" used_g="12.5" type="PLA" color="#FFFFFF" /></config>',
-        )
-        # The parser sees a genuinely substantial member, not a sleep mock.
-        archive.writestr("Metadata/plate_1.gcode", "M73 L1\nG1 E2\n" * 3_000_000)
-
-    retry_path = tmp_path / "retry.3mf"
-    with zipfile.ZipFile(retry_path, "w") as archive:
-        archive.writestr(
-            "Metadata/slice_info.config",
-            '<config><filament id="1" used_g="12.5" type="PLA" color="#FFFFFF" /></config>',
-        )
-        archive.writestr("Metadata/plate_1.gcode", "M73 L1\nG1 E2\n")
-
-    print_file_analysis.shutdown_print_file_analysis_workers()
-    manager = PrinterManager()
-    try:
-        reader = asyncio.create_task(get_print_file_analysis(manager, 7, 42, slow_path, None))
-        for _ in range(100):
-            pool = print_file_analysis._executor
-            processes = tuple(getattr(pool, "_processes", {}).values()) if pool is not None else ()
-            if processes and any(process.is_alive() for process in processes):
-                break
-            await asyncio.sleep(0.01)
-        else:
-            pytest.fail("parser child did not start")
-
-        discard_print_file_analysis(manager, 7, 42)
-        assert await reader is None
-        assert print_file_analysis._executor is None
-        assert await get_print_file_analysis(manager, 7, 43, retry_path, None) is not None
-    finally:
-        print_file_analysis.shutdown_print_file_analysis_workers()

@@ -82,6 +82,7 @@
   "Calibration not found": "Калібрування не знайдено",
   "Calibration not found for this printer": "Калібрування для цього принтера не знайдено",
   "Calibration slicing requires a connected slicer sidecar; enable 'Server-side slicing' under Settings → General → General and configure an OrcaSlicer / Bambu Studio API URL.": "Слайсинг калібрування потребує підключеного сервісу слайсера; увімкніть «Слайсинг на сервері» в розділі Налаштування → Загальні → Загальні та вкажіть URL API OrcaSlicer / Bambu Studio.",
+  "Camera worker is unavailable.": "Воркер камери недоступний.",
   "Can only set status to 'idle' or 'paused'": "Статус можна встановити лише на «idle» або «paused»",
   "Can only start pending items, current status: '{}'": "Запускати можна лише елементи в очікуванні, поточний статус: «{}»",
   "Can only stop items that are printing, current status: '{}'": "Зупиняти можна лише елементи, що друкуються, поточний статус: «{}»",

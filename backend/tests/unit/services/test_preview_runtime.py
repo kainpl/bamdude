@@ -574,6 +574,7 @@ print('EMBEDDED_PREVIEW_OK')
 async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime, tmp_path):
     import json
     import statistics
+    from types import SimpleNamespace
 
     import httpx
     import psutil
@@ -581,7 +582,8 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
     from fastapi import FastAPI
 
     from backend.app.core.websocket import ConnectionManager
-    from backend.app.services import print_file_analysis
+    from backend.app.services import analysis_runtime
+    from backend.app.services.analysis_runtime import AnalysisRuntime
     from backend.app.services.print_file_analysis import get_print_file_analysis
     from backend.app.services.printer_manager import PrinterManager
 
@@ -608,11 +610,16 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
         return {"ok": True}
 
     manager = PrinterManager()
-    archive_path = tmp_path / "print.3mf"
+    (tmp_path / "archive").mkdir()
+    archive_path = tmp_path / "archive" / "print.3mf"
     with zipfile.ZipFile(archive_path, "w") as archive:
         archive.writestr("Metadata/slice_info.config", '<config><filament id="1" used_g="12.5" type="PLA" /></config>')
         archive.writestr("Metadata/plate_1.gcode", b"M73 L1\nM620 S0\nG1 E2\n" * 10000)
     mesh = trimesh.creation.icosphere(subdivisions=5).export(file_type="stl")
+    parser = AnalysisRuntime(tmp_path, SimpleNamespace(url=local_runtime.broker.url, token=local_runtime.token))
+    await parser.start()
+    assert parser.ready
+    analysis_runtime.runtime = parser
     latencies, gaps, memory, disks, ws_latencies, baseline = [], [], [], [], [], []
     cpu = {}
     started = time.perf_counter()
@@ -629,7 +636,7 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
 
         tasks = [
             asyncio.create_task(render()),
-            asyncio.create_task(get_print_file_analysis(manager, 77, 123, archive_path, None)),
+            *[asyncio.create_task(get_print_file_analysis(manager, 77, 123, archive_path, None)) for _ in range(100)],
         ]
         try:
             previous = time.perf_counter()
@@ -659,12 +666,13 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
                     pass
                 previous = before
                 await asyncio.sleep(0.02)
-            _, analysis = await asyncio.gather(*tasks)
-            assert analysis is not None
+            _, *analyses = await asyncio.gather(*tasks)
+            assert analyses[0] is not None
+            assert all(analysis is analyses[0] for analysis in analyses)
             assert manager._print_file_analysis_contexts[77].state == "ready"
             p95 = statistics.quantiles(latencies, n=20)[18]
             print(
-                f"preview mixed: baseline max={max(baseline):.4f}s, HTTP p95={p95:.4f}s, loop max={max(gaps):.4f}s, WS max={max(ws_latencies):.4f}s, total tree RSS={max(memory)}, disk={max(disks)}, CPU sampled seconds={sum(end - start for start, end in cpu.values()):.2f}, elapsed={time.perf_counter() - started:.2f}s"
+                f"preview + analysis + 100 readers: baseline max={max(baseline):.4f}s, HTTP p95={p95:.4f}s, loop max={max(gaps):.4f}s, WS max={max(ws_latencies):.4f}s, total tree RSS={max(memory)}, disk={max(disks)}, CPU sampled seconds={sum(end - start for start, end in cpu.values()):.2f}, elapsed={time.perf_counter() - started:.2f}s"
             )
             assert p95 < 0.2
             assert max(gaps) < 1
@@ -672,7 +680,8 @@ async def test_mixed_parser_preview_keeps_http_and_loop_responsive(local_runtime
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            print_file_analysis.shutdown_print_file_analysis_workers()
+            analysis_runtime.runtime = None
+            await parser.stop()
             await sockets.shutdown()
 
 

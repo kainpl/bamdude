@@ -1864,42 +1864,7 @@ class VirtualPrinterInstance:
             # spoofed identity has no bearing on how the real device serves its
             # camera. The ``_rtsp_proxy`` attribute name is kept for a tight diff;
             # it doubles as chamber-image passthrough on A1/P1.
-            target_client = self._printer_manager.get_client(self.target_printer_id)
-            target_ip = getattr(target_client, "ip_address", None) if target_client else None
-            target_model = getattr(target_client, "model", None) if target_client else None
-            if target_ip:
-                from backend.app.services.camera import get_camera_port
-
-                camera_port = get_camera_port(target_model)
-                if app_settings.camera_runtime == "worker":
-                    from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
-
-                    runtime = get_camera_runtime()
-                    if not isinstance(runtime, WorkerCameraRuntime):
-                        raise RuntimeError("worker camera runtime is not available")
-                    self._worker_camera_lease = await runtime.start_raw_proxy(
-                        identity=str(
-                            uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:printer:{self.target_printer_id}:builtin")
-                        ),
-                        bind_address=bind_addr,
-                        listen_port=camera_port,
-                        target_host=target_ip,
-                        target_port=camera_port,
-                    )
-                else:
-                    self._rtsp_proxy = TCPProxy(
-                        name=f"Camera-{camera_port}",
-                        listen_port=camera_port,
-                        target_host=target_ip,
-                        target_port=camera_port,
-                        bind_address=bind_addr,
-                    )
-                    self._tasks.append(
-                        asyncio.create_task(
-                            run_with_logging(self._rtsp_proxy.start(), f"Camera-{camera_port}"),
-                            name=f"vp_{self.id}_camera",
-                        )
-                    )
+            await self.reconcile_camera_proxy()
 
         # Bind server
         self._bind = BindServer(
@@ -1968,6 +1933,39 @@ class VirtualPrinterInstance:
         if self._mqtt_bridge:
             await self._mqtt_bridge.start()
 
+    async def reconcile_camera_proxy(self) -> None:
+        """Lease the current target's camera after each worker generation."""
+        if self.is_proxy:
+            if self._proxy is not None:
+                await self._proxy.reconcile_camera_proxy()
+            return
+        if self.target_printer_id is None or self._printer_manager is None:
+            return
+        client = self._printer_manager.get_client(self.target_printer_id)
+        target_ip = getattr(client, "ip_address", None)
+        target_model = getattr(client, "model", None)
+        from backend.app.services.camera import get_camera_port
+        from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
+        from backend.app.utils.printer_configs import load_printer_config
+
+        if not target_ip or load_printer_config(target_model) is None:
+            return
+        runtime = get_camera_runtime()
+        if not isinstance(runtime, WorkerCameraRuntime):
+            return
+        camera_port = get_camera_port(target_model)
+        self._worker_camera_lease = None  # old generation's lease is not reusable
+        try:
+            self._worker_camera_lease = await runtime.start_raw_proxy(
+                identity=str(uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:printer:{self.target_printer_id}:builtin")),
+                bind_address=self.bind_ip or "0.0.0.0",  # nosec B104
+                listen_port=camera_port,
+                target_host=target_ip,
+                target_port=camera_port,
+            )
+        except Exception as exc:
+            logger.warning("[VP %s] Camera worker proxy unavailable: %s", self.name, type(exc).__name__)
+
     async def stop_server(self) -> None:
         """Stop server-mode services."""
         if self._finish_release_task is not None and not self._finish_release_task.done():
@@ -2021,8 +2019,16 @@ class VirtualPrinterInstance:
         # (it has its own advertise_ip wired below).
         cert_path, key_path, _ = self._resolve_cert_and_advertise()
 
+        target_client = (
+            self._printer_manager.get_client(self.target_printer_id)
+            if self._printer_manager is not None and self.target_printer_id is not None
+            else None
+        )
         self._proxy = SlicerProxyManager(
             target_host=self.target_printer_ip,
+            target_model=getattr(target_client, "model", None),
+            target_firmware=getattr(getattr(target_client, "state", None), "firmware_version", None),
+            target_printer_id=self.target_printer_id,
             cert_path=cert_path,
             key_path=key_path,
             on_activity=lambda n, m: logger.info("[VP %s] Proxy %s: %s", self.name, n, m),
@@ -2301,6 +2307,7 @@ class VirtualPrinterManager:
                     serial_suffix=vp.serial_suffix,
                     target_printer_ip=target_ip,
                     target_printer_serial=target_serial,
+                    target_printer_id=vp.target_printer_id,
                     auto_dispatch=vp.auto_dispatch,
                     queue_force_color_match=vp.queue_force_color_match,
                     gcode_injection=vp.gcode_injection,
@@ -2358,6 +2365,13 @@ class VirtualPrinterManager:
             await self.remove_instance(vp_id)
 
         logger.info("All virtual printer services stopped")
+
+    async def reconcile_camera_proxies(self) -> None:
+        """Restore only current enabled instances after worker recovery."""
+        async with self._sync_lock:
+            for instance in tuple(self._instances.values()):
+                if instance.is_proxy or instance.is_running:
+                    await instance.reconcile_camera_proxy()
 
     def get_instance(self, vp_id: int) -> VirtualPrinterInstance | None:
         """Get a running instance by ID."""

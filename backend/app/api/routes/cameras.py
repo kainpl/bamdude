@@ -234,9 +234,9 @@ async def test_camera_source(
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Open the source once, confirm a frame, disconnect. For a camera not yet saved."""
-    from backend.app.services.external_camera import test_connection
+    from backend.app.services.camera_runtime import test_external_connection
 
-    return await test_connection(payload.url, payload.camera_type)
+    return await test_external_connection(payload.url, payload.camera_type)
 
 
 @router.post("/{camera_id}/test")
@@ -246,9 +246,9 @@ async def test_saved_camera(
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     camera = await _get_camera_or_404(camera_id, db)
-    from backend.app.services.external_camera import test_connection
+    from backend.app.services.camera_runtime import test_external_connection
 
-    return await test_connection(camera.url, camera.camera_type)
+    return await test_external_connection(camera.url, camera.camera_type)
 
 
 # ---------------------------------------------------------------- stream
@@ -284,44 +284,19 @@ async def camera_stream(
         url, camera_type = camera.url, camera.camera_type
 
     fps = min(max(fps, 1), 15)
-    stop_event = asyncio.Event()
-    stream_id = f"camera-{camera_id}-{uuid.uuid4().hex[:8]}"
-
-    def _register_process(proc: asyncio.subprocess.Process) -> None:
-        # The janitor's registry, shared with the printer routes on purpose:
-        # an ffmpeg we started holding a device open is its business whoever
-        # asked for it.
-        from backend.app.api.routes.camera import _spawned_ffmpeg_pids
-
-        _spawned_ffmpeg_pids[proc.pid] = time.time()
 
     def _factory(disconnect_event: asyncio.Event):
-        from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
+        from backend.app.services.camera_runtime import get_camera_runtime
 
         runtime = get_camera_runtime()
-        if isinstance(runtime, WorkerCameraRuntime):
-            # A stable, secret-free identity, exactly as the printer paths do
-            # it: rotating a camera's credentials must not create a second
-            # physical producer.
-            return runtime.stream_external(
-                identity=str(uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:camera:{camera_id}")),
-                url=url,
-                camera_type=camera_type,
-                fps=fps,
-                disconnect_event=disconnect_event,
-                on_frame=lambda frame: _publish_frame(camera_id, frame),
-            )
-
-        from backend.app.services.external_camera import generate_mjpeg_stream
-
-        return generate_mjpeg_stream(
-            url,
-            camera_type,
-            fps,
-            on_process=_register_process,
+        # Credential rotation must not create a second physical producer.
+        return runtime.stream_external(
+            identity=str(uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:camera:{camera_id}")),
+            url=url,
+            camera_type=camera_type,
+            fps=fps,
+            disconnect_event=disconnect_event,
             on_frame=lambda frame: _publish_frame(camera_id, frame),
-            stop_event=disconnect_event,
-            stream_id=stream_id,
         )
 
     key = _fanout_key(camera_id)
@@ -354,7 +329,6 @@ async def camera_stream(
             ):
                 yield chunk
         finally:
-            stop_event.set()
             if broadcaster.subscriber_count == 0:
                 _forget_frames(camera_id)
 
@@ -407,16 +381,19 @@ async def camera_snapshot(
 
     frame = _live_frame(camera_id) or _cached_snapshot(camera_id)
     if frame is None:
-        from backend.app.services.camera_runtime import CameraCaptureRequest, capture
+        from backend.app.services.camera_runtime import CameraCaptureRequest, CameraWorkerUnavailable, capture
 
-        result = await capture(
-            CameraCaptureRequest.external(
-                url=url,
-                camera_type=camera_type,
-                snapshot_url=snapshot_url,
-                purpose="snapshot",
+        try:
+            result = await capture(
+                CameraCaptureRequest.external(
+                    url=url,
+                    camera_type=camera_type,
+                    snapshot_url=snapshot_url,
+                    purpose="snapshot",
+                )
             )
-        )
+        except CameraWorkerUnavailable as exc:
+            raise HTTPException(503, "Camera worker is unavailable.") from exc
         frame = result.frame
         if not frame:
             raise HTTPException(503, "Failed to capture a frame from this camera.")

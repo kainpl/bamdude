@@ -1,4 +1,4 @@
-"""Child process for opt-in one-shot camera capture through local IPC.
+"""Child process for worker-only camera capture through local IPC.
 
 The entry point starts no FastAPI, database or MQTT runtime.  Camera transports
 are imported only after an authenticated capture command reaches this process.
@@ -163,6 +163,7 @@ async def run(bootstrap: WorkerBootstrap) -> int:
         )
 
         live_registry = LiveProducerRegistry()
+        transport_locks: dict[str, asyncio.Lock] = {}
         live_leases = {}
         live_forwarders: dict[str, asyncio.Task[None]] = {}
         raw_proxies: dict[str, tuple[object, object, asyncio.Task[None]]] = {}
@@ -247,11 +248,101 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                     generation=bootstrap.generation,
                     request_id=request["request_id"],
                     ok=True,
-                    result={"state": "ready", "camera_runtime": "not_started"},
+                    result={"state": "ready", "camera_runtime": "worker"},
                 )
+            elif operation == "probe_tcp":
+                payload = request["payload"]
+                host = payload.get("host")
+                port = payload.get("port")
+                timeout = payload.get("timeout")
+                identity = payload.get("identity")
+                try:
+                    uuid.UUID(identity)
+                    valid_identity = True
+                except (TypeError, ValueError, AttributeError):
+                    valid_identity = False
+                if (
+                    set(payload) != {"host", "port", "timeout", "identity"}
+                    or not isinstance(host, str)
+                    or not host
+                    or len(host) > 255
+                    or any(char.isspace() for char in host)
+                    or not isinstance(port, int)
+                    or not 1 <= port <= 65535
+                    or not isinstance(timeout, (int, float))
+                    or not 0.1 <= timeout <= 10
+                    or not valid_identity
+                ):
+                    reply = make_reply(
+                        generation=bootstrap.generation,
+                        request_id=request["request_id"],
+                        ok=False,
+                        error="protocol_error",
+                    )
+                else:
+
+                    async def probe(
+                        host=host, port=port, timeout=timeout, identity=identity, request_id=request["request_id"]
+                    ):
+                        lock = transport_locks.setdefault(host, asyncio.Lock())
+                        if lock.locked() or not await live_registry.acquire_probe(identity):
+                            code = "camera_busy"
+                        else:
+                            try:
+                                await asyncio.wait_for(lock.acquire(), timeout=0.01)
+                            except TimeoutError:
+                                code = "camera_busy"
+                            else:
+                                try:
+                                    try:
+                                        _probe_reader, probe_writer = await asyncio.wait_for(
+                                            asyncio.open_connection(host, port), timeout=float(timeout)
+                                        )
+                                    except TimeoutError:
+                                        code = "tcp_timeout"
+                                    except ConnectionRefusedError:
+                                        code = "tcp_refused"
+                                    except OSError:
+                                        code = "tcp_unreachable"
+                                    else:
+                                        probe_writer.close()
+                                        try:
+                                            await probe_writer.wait_closed()
+                                        except OSError:
+                                            pass
+                                        code = "ok"
+                                finally:
+                                    lock.release()
+                            finally:
+                                await live_registry.release_probe(identity)
+                        async with write_lock:
+                            await write_control(
+                                writer,
+                                make_reply(
+                                    generation=bootstrap.generation,
+                                    request_id=request_id,
+                                    ok=True,
+                                    result={"code": code},
+                                ),
+                            )
+
+                    task = asyncio.create_task(probe(), name=f"camera-worker-probe-{request['request_id']}")
+                    capture_tasks.add(task)
+                    task.add_done_callback(capture_tasks.discard)
+                    continue
             elif operation == "capture":
+
+                async def guarded_capture(request=request):
+                    payload = request["payload"]
+                    host = payload.get("ip_address") if payload.get("kind") == "builtin" else None
+                    if isinstance(host, str) and host:
+                        async with transport_locks.setdefault(host, asyncio.Lock()):
+                            await _serve_capture(request, bootstrap, writer, write_lock)
+                    else:
+                        await _serve_capture(request, bootstrap, writer, write_lock)
+
                 task = asyncio.create_task(
-                    _serve_capture(request, bootstrap, writer, write_lock),
+                    guarded_capture(),
                     name=f"camera-worker-{request['request_id']}",
                 )
                 capture_tasks.add(task)

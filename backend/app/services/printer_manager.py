@@ -669,7 +669,7 @@ class PrinterManager:
         # currently registered for this printer. A disconnected paho client
         # can still deliver a queued callback after its replacement exists.
         self._client_generations: dict[int, int] = {}
-        self._uses_print_file_analysis_process = True
+        self._uses_print_file_analysis_service = True
         self._models: dict[int, str | None] = {}  # Cache printer models for feature detection
         self._connected_at: dict[int, float] = {}  # Unix timestamp of last connection
         self._printer_info: dict[int, PrinterInfo] = {}  # Cache printer name/serial for callbacks

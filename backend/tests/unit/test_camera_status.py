@@ -1,7 +1,5 @@
 """The camera-status endpoint exposes non-secret support evidence."""
 
-from types import SimpleNamespace
-
 import pytest
 
 from backend.app.api.routes import camera as camera_routes
@@ -10,14 +8,7 @@ from backend.app.api.routes import camera as camera_routes
 @pytest.mark.asyncio
 async def test_status_reports_builtin_source_and_fanout_subscribers(monkeypatch):
     printer_id = 42
-    monkeypatch.setattr(
-        camera_routes,
-        "_active_streams",
-        {f"{printer_id}-fanout-test": SimpleNamespace(returncode=None)},
-    )
-    monkeypatch.setattr(camera_routes, "_active_chamber_streams", {})
-    monkeypatch.setattr(camera_routes, "_active_external_streams", set())
-    monkeypatch.setattr(camera_routes, "_active_worker_streams", {})
+    monkeypatch.setattr(camera_routes, "_active_worker_streams", {printer_id: ("worker-lease", "rtsp")})
     monkeypatch.setattr(camera_routes, "_last_frames", {printer_id: b"frame"})
     monkeypatch.setattr(camera_routes, "_last_frame_times", {printer_id: 100.0})
     monkeypatch.setattr(camera_routes, "_stream_start_times", {printer_id: 90.0})
@@ -36,9 +27,6 @@ async def test_status_reports_builtin_source_and_fanout_subscribers(monkeypatch)
 @pytest.mark.asyncio
 async def test_status_and_capture_gate_recognize_worker_builtin_stream(monkeypatch):
     printer_id = 43
-    monkeypatch.setattr(camera_routes, "_active_streams", {})
-    monkeypatch.setattr(camera_routes, "_active_chamber_streams", {})
-    monkeypatch.setattr(camera_routes, "_active_external_streams", set())
     monkeypatch.setattr(camera_routes, "_active_worker_streams", {printer_id: ("worker-lease", "chamber_image")})
     monkeypatch.setattr(camera_routes, "_last_frames", {printer_id: b"frame"})
 

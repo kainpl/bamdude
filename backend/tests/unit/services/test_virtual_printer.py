@@ -2028,7 +2028,7 @@ class TestSlicerProxyManager:
 
     @pytest.mark.asyncio
     async def test_proxy_start_creates_transparent_proxies(self, tmp_path):
-        """Verify start() uses TCPProxy for FTP/FileTransfer/RTSP and TLSProxy only for MQTT.
+        """Unknown targets retain the file tunnel, not a guessed camera listener.
 
         The transparent proxy architecture preserves end-to-end TLS between
         slicer and printer for all protocols except MQTT, which must be
@@ -2066,10 +2066,13 @@ class TestSlicerProxyManager:
             # Trigger start but let gather return immediately.
             await mgr.start()
 
-        # FTP, FileTransfer, RTSP should be TCPProxy (transparent)
+        # The unknown target may use 6000 for non-camera file transfer.
         assert isinstance(mgr._ftp_proxy, TCPProxy), "FTP should be TCPProxy (transparent)"
         assert isinstance(mgr._file_transfer_proxy, TCPProxy), "FileTransfer should be TCPProxy"
-        assert isinstance(mgr._rtsp_proxy, TCPProxy), "RTSP should be TCPProxy"
+        assert mgr._rtsp_proxy is None
+
+        # Camera transport is never started in the main proxy manager.
+        assert mgr._worker_camera_lease is None
 
         # MQTT should be TLSProxy (TLS-terminated for IP rewriting)
         assert isinstance(mgr._mqtt_proxy, TLSProxy), "MQTT should be TLSProxy (TLS-terminated)"
@@ -2092,10 +2095,43 @@ class TestSlicerProxyManager:
         assert first_dp.listen_port == 50000
         assert first_dp.target_port == 50000
         assert first_dp.target_host == "192.168.1.100"
-
         last_dp = mgr._ftp_data_proxies[-1]
         assert last_dp.listen_port == 50100
         assert last_dp.target_port == 50100
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "camera_port", "file_tunnel"),
+        [("P1S", 6000, False), ("A1", 6000, False), ("X2D", 322, True), ("CUSTOM", None, True)],
+    )
+    async def test_proxy_camera_port_uses_real_target_model(
+        self, tmp_path, monkeypatch, model, camera_port, file_tunnel
+    ):
+        from unittest.mock import AsyncMock, patch
+
+        from backend.app.services import camera_runtime
+        from backend.app.services.virtual_printer.tcp_proxy import SlicerProxyManager
+
+        supervisor = MagicMock()
+        supervisor.start_raw_proxy = AsyncMock(return_value="worker-lease")
+        runtime = camera_runtime.WorkerCameraRuntime(supervisor)
+        monkeypatch.setattr(camera_runtime, "get_camera_runtime", lambda: runtime)
+        mgr = SlicerProxyManager(
+            target_host="192.0.2.20",
+            cert_path=tmp_path / "cert.pem",
+            key_path=tmp_path / "key.pem",
+            bind_address="192.0.2.10",
+            bind_identity={"serial": "test", "model": "P2S", "name": "spoof", "version": "01.00.00.00"},
+            target_model=model,
+        )
+        with patch("asyncio.create_task") as create_task, patch("asyncio.gather", new_callable=AsyncMock):
+            create_task.return_value = MagicMock()
+            await mgr.start()
+        assert (mgr._file_transfer_proxy is not None) is file_tunnel
+        assert (mgr._worker_camera_lease is not None) is (camera_port is not None)
+        if camera_port is not None:
+            assert supervisor.start_raw_proxy.await_args.kwargs["listen_port"] == camera_port
+            assert supervisor.start_raw_proxy.await_args.kwargs["target_port"] == camera_port
 
     def test_proxy_manager_mqtt_has_ip_rewriting(self, tmp_path):
         """Verify MQTT proxy is configured with IP rewriting when bind_address is set."""

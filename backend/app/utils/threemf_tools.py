@@ -10,6 +10,7 @@ import logging
 import math
 import re
 import zipfile
+from contextlib import nullcontext
 from pathlib import Path
 
 # Parsing goes through defusedxml; the element type it hands back is the
@@ -20,6 +21,13 @@ from xml.etree.ElementTree import Element as XmlElement
 import defusedxml.ElementTree as ET
 
 logger = logging.getLogger(__name__)
+_ZIP_FILE_TYPE = zipfile.ZipFile
+
+
+def _zip_source(source: Path | zipfile.ZipFile):
+    """Internal read seam; an owned archive stays open across extractors."""
+    return nullcontext(source) if isinstance(source, _ZIP_FILE_TYPE) else zipfile.ZipFile(source, "r")
+
 
 # Default filament properties
 DEFAULT_FILAMENT_DIAMETER = 1.75  # mm
@@ -188,7 +196,7 @@ def mm_to_grams(
 
 
 def extract_layer_filament_usage_from_3mf(
-    file_path: Path, plate_id: int | None = None
+    file_path: Path | zipfile.ZipFile, plate_id: int | None = None
 ) -> dict[int, dict[int, float]] | None:
     """Extract per-layer filament usage from a 3MF file's embedded G-code.
 
@@ -218,7 +226,7 @@ def extract_layer_filament_usage_from_3mf(
         Format: {layer: {filament_id: cumulative_mm}, ...}
     """
     try:
-        with zipfile.ZipFile(file_path, "r") as zf:
+        with _zip_source(file_path) as zf:
             gcode_files = [f for f in zf.namelist() if f.endswith(".gcode")]
             if not gcode_files:
                 return None
@@ -299,7 +307,7 @@ def slot_progress_fraction(
     return min(at_layer / final, 1.0)
 
 
-def extract_filament_properties_from_3mf(file_path: Path) -> dict[int, dict]:
+def extract_filament_properties_from_3mf(file_path: Path | zipfile.ZipFile) -> dict[int, dict]:
     """Extract filament properties (density, diameter, type) from 3MF metadata.
 
     Args:
@@ -313,7 +321,7 @@ def extract_filament_properties_from_3mf(file_path: Path) -> dict[int, dict]:
     """
     properties: dict[int, dict] = {}
     try:
-        with zipfile.ZipFile(file_path, "r") as zf:
+        with _zip_source(file_path) as zf:
             # Try slice_info.config first for filament types
             if "Metadata/slice_info.config" in zf.namelist():
                 content = zf.read("Metadata/slice_info.config").decode()
@@ -675,7 +683,7 @@ def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile, plate_id: int | None = 
         return None
 
 
-def extract_filament_usage_from_3mf(file_path: Path, plate_id: int | None = None) -> list[dict]:
+def extract_filament_usage_from_3mf(file_path: Path | zipfile.ZipFile, plate_id: int | None = None) -> list[dict]:
     """Extract per-filament total usage from 3MF slice_info.config.
 
     This extracts the slicer-estimated total usage per filament slot,
@@ -691,7 +699,7 @@ def extract_filament_usage_from_3mf(file_path: Path, plate_id: int | None = None
     """
     filament_usage = []
     try:
-        with zipfile.ZipFile(file_path, "r") as zf:
+        with _zip_source(file_path) as zf:
             if "Metadata/slice_info.config" not in zf.namelist():
                 return []
 

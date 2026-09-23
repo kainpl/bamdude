@@ -561,6 +561,9 @@ async def get_system_info(
         db_version_row = await db.execute(sa_text("SELECT sqlite_version()"))
     db_version = db_version_row.scalar() or ""
 
+    from backend.app.services.analysis_runtime import get_analysis_health
+    from backend.app.services.camera_runtime import camera_runtime_health
+
     return {
         "app": {
             "version": APP_VERSION,
@@ -571,6 +574,8 @@ async def get_system_info(
             "uptime_formatted": format_uptime(app_uptime_seconds) if app_uptime_seconds is not None else None,
         },
         "preview": get_preview_health().model_dump(),
+        "analysis_worker": get_analysis_health(),
+        "camera_worker": camera_runtime_health(),
         "database": {
             "engine": engine_name,
             "version": db_version,

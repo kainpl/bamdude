@@ -628,6 +628,40 @@ export function SystemInfoPage() {
         )}
       </Section>
 
+      <Section title={t('system.cameraWorker.title')} icon={Activity}>
+        <p className={systemInfo.camera_worker?.state === 'ready' ? 'text-bambu-green' : 'text-yellow-400'}>
+          {t(`system.cameraWorker.states.${systemInfo.camera_worker?.state ?? 'unavailable'}`)}
+        </p>
+        <p className="text-sm text-bambu-gray mt-2">{t('system.cameraWorker.scope')}</p>
+        {systemInfo.camera_worker?.reason && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.cameraWorker.reason')}: <code>{systemInfo.camera_worker.reason}</code>
+          </p>
+        )}
+        {systemInfo.camera_worker?.next_retry_at && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.cameraWorker.nextRetry')}: {new Date(systemInfo.camera_worker.next_retry_at).toLocaleTimeString()}
+          </p>
+        )}
+        {systemInfo.camera_worker?.restart_count !== undefined && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.cameraWorker.restarts')}: {systemInfo.camera_worker.restart_count}
+          </p>
+        )}
+      </Section>
+
+      <Section title={t('system.analysisWorker.title')} icon={Activity}>
+        <p className={systemInfo.analysis_worker?.state === 'ready' ? 'text-bambu-green' : 'text-yellow-400'}>
+          {t(`system.analysisWorker.states.${systemInfo.analysis_worker?.state ?? 'unavailable'}`)}
+        </p>
+        <p className="text-sm text-bambu-gray mt-2">{t('system.analysisWorker.scope')}</p>
+        {systemInfo.analysis_worker?.reason && (
+          <p className="text-sm text-bambu-gray mt-2">
+            {t('system.analysisWorker.reason')}: <code>{systemInfo.analysis_worker.reason}</code>
+          </p>
+        )}
+      </Section>
+
       <Section title={t('system.database', 'Database')} icon={Database}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <StatCard

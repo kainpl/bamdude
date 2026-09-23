@@ -17,6 +17,7 @@ import logging
 import re
 import ssl
 import subprocess
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -831,6 +832,9 @@ class SlicerProxyManager:
         on_activity: Callable[[str, str], None] | None = None,
         bind_address: str = "0.0.0.0",  # nosec B104
         bind_identity: dict[str, str] | None = None,
+        target_model: str | None = None,
+        target_firmware: str | None = None,
+        target_printer_id: int | None = None,
     ):
         """Initialize the slicer proxy manager.
 
@@ -851,11 +855,15 @@ class SlicerProxyManager:
         self.on_activity = on_activity
         self.bind_address = bind_address
         self.bind_identity = bind_identity
+        self.target_model = target_model
+        self.target_firmware = target_firmware
+        self.target_printer_id = target_printer_id
 
         self._ftp_proxy: TCPProxy | None = None
         self._mqtt_proxy: TLSProxy | None = None
         self._file_transfer_proxy: TCPProxy | None = None
         self._rtsp_proxy: TCPProxy | None = None
+        self._worker_camera_lease: str | None = None
         self._aux_proxies: list[TCPProxy] = []
         self._bind_proxies: list[TCPProxy] = []
         self._bind_server = None
@@ -934,27 +942,25 @@ class SlicerProxyManager:
             rewrite_ip=(self.target_host, self.bind_address) if self.bind_address != "0.0.0.0" else None,  # nosec B104
         )
 
-        # File transfer - raw TCP pass-through (port 6000)
-        self._file_transfer_proxy = TCPProxy(
-            name="FileTransfer",
-            listen_port=self.PRINTER_FILE_TRANSFER_PORT,
-            target_host=self.target_host,
-            target_port=self.PRINTER_FILE_TRANSFER_PORT,
-            on_connect=lambda cid: self._log_activity("FileTransfer", f"connected: {cid}"),
-            on_disconnect=lambda cid: self._log_activity("FileTransfer", f"disconnected: {cid}"),
-            bind_address=self.bind_address,
-        )
+        # Port 6000 is a chamber camera on known A1/P1 targets, but the
+        # non-camera file tunnel on X2D. An unknown target is never guessed.
+        from backend.app.services.camera import get_camera_port
+        from backend.app.utils.printer_configs import load_printer_config
 
-        # RTSP camera - raw TCP pass-through (port 322)
-        self._rtsp_proxy = TCPProxy(
-            name="RTSP",
-            listen_port=self.PRINTER_RTSP_PORT,
-            target_host=self.target_host,
-            target_port=self.PRINTER_RTSP_PORT,
-            on_connect=lambda cid: self._log_activity("RTSP", f"connected: {cid}"),
-            on_disconnect=lambda cid: self._log_activity("RTSP", f"disconnected: {cid}"),
-            bind_address=self.bind_address,
-        )
+        known_target = load_printer_config(self.target_model, self.target_firmware) is not None
+        camera_port = get_camera_port(self.target_model) if known_target else None
+        if camera_port != self.PRINTER_FILE_TRANSFER_PORT:
+            self._file_transfer_proxy = TCPProxy(
+                name="FileTransfer",
+                listen_port=self.PRINTER_FILE_TRANSFER_PORT,
+                target_host=self.target_host,
+                target_port=self.PRINTER_FILE_TRANSFER_PORT,
+                on_connect=lambda cid: self._log_activity("FileTransfer", f"connected: {cid}"),
+                on_disconnect=lambda cid: self._log_activity("FileTransfer", f"disconnected: {cid}"),
+                bind_address=self.bind_address,
+            )
+        if camera_port is not None:
+            await self.reconcile_camera_proxy()
 
         # Auxiliary ports (2024-2026) - raw TCP pass-through for undocumented
         # proprietary services. Required by BambuStudio/OrcaSlicer for some
@@ -1031,15 +1037,11 @@ class SlicerProxyManager:
                 run_with_logging(self._mqtt_proxy),
                 name="slicer_proxy_mqtt",
             ),
-            asyncio.create_task(
-                run_with_logging(self._file_transfer_proxy),
-                name="slicer_proxy_file_transfer",
-            ),
-            asyncio.create_task(
-                run_with_logging(self._rtsp_proxy),
-                name="slicer_proxy_rtsp",
-            ),
         ]
+        if self._file_transfer_proxy is not None:
+            self._tasks.append(
+                asyncio.create_task(run_with_logging(self._file_transfer_proxy), name="slicer_proxy_file_transfer")
+            )
         for ap in self._aux_proxies:
             self._tasks.append(
                 asyncio.create_task(
@@ -1100,6 +1102,35 @@ class SlicerProxyManager:
         except asyncio.CancelledError:
             logger.debug("Slicer proxy start cancelled")
 
+    async def reconcile_camera_proxy(self) -> None:
+        """Rebind only the camera lease for the current target configuration."""
+        from backend.app.services.camera import get_camera_port
+        from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
+        from backend.app.utils.printer_configs import load_printer_config
+
+        if load_printer_config(self.target_model, self.target_firmware) is None:
+            return
+        runtime = get_camera_runtime()
+        if not isinstance(runtime, WorkerCameraRuntime):
+            return
+        camera_port = get_camera_port(self.target_model)
+        self._worker_camera_lease = None
+        try:
+            source_identity = (
+                f"bamdude:printer:{self.target_printer_id}:builtin"
+                if self.target_printer_id is not None
+                else f"bamdude:proxy:{self.target_host}:{camera_port}"
+            )
+            self._worker_camera_lease = await runtime.start_raw_proxy(
+                identity=str(uuid.uuid5(uuid.NAMESPACE_URL, source_identity)),
+                bind_address=self.bind_address,
+                listen_port=camera_port,
+                target_host=self.target_host,
+                target_port=camera_port,
+            )
+        except Exception as exc:
+            logger.warning("Proxy camera worker unavailable: %s", type(exc).__name__)
+
     async def stop(self) -> None:
         """Stop all proxies."""
         logger.info("Stopping slicer proxy")
@@ -1120,6 +1151,16 @@ class SlicerProxyManager:
         if self._rtsp_proxy:
             await self._rtsp_proxy.stop()
             self._rtsp_proxy = None
+        if self._worker_camera_lease:
+            from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
+
+            runtime = get_camera_runtime()
+            if isinstance(runtime, WorkerCameraRuntime):
+                try:
+                    await runtime.stop_raw_proxy(self._worker_camera_lease)
+                except Exception:
+                    logger.warning("Proxy camera lease already unavailable")
+            self._worker_camera_lease = None
 
         for ap in self._aux_proxies:
             await ap.stop()

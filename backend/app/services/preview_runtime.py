@@ -45,8 +45,9 @@ class PreviewResult:
 
 
 class PreviewRuntime:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, shared_broker=None):
         self.root = root
+        self.shared_broker = shared_broker
         self.generation = uuid.uuid4().hex
         self.epoch = uuid.uuid4().hex
         self.bucket = f"bamdude_preview_{self.generation}"
@@ -112,9 +113,9 @@ class PreviewRuntime:
             from nats.js.api import ObjectStoreConfig
 
             recovery_errors = (RecoveryRequired,)
-            self.token = secrets.token_urlsafe(32)
+            self.token = self.shared_broker.token if self.shared_broker else secrets.token_urlsafe(32)
             await disk(self._directories)
-            self.broker = NatsServer(
+            self.broker = self.shared_broker or NatsServer(
                 self.root / "broker",
                 auth_token=self.token,
                 max_file_store="3072MB",
@@ -125,8 +126,9 @@ class PreviewRuntime:
                 recover_stale=True,
             )
             async with asyncio.timeout(STARTUP_SECONDS):
-                await disk(self.broker.start)
-                if self.broker.recovered_generation:
+                if not self.shared_broker:
+                    await disk(self.broker.start)
+                if not self.shared_broker and self.broker.recovered_generation:
                     logger.warning(
                         "Preview broker recovered abandoned generation=%s; runtime_dir=%s. "
                         "Old preview staging is retained until manual ownership verification; see %s",
@@ -458,6 +460,13 @@ class PreviewRuntime:
                 result.outcome = "canceled" if canceled else "unavailable"
                 try:
                     await owned(self._cancel(command))
+                except asyncio.CancelledError:
+                    # Broker-loss callbacks may cancel this task again while
+                    # the shielded retirement is being joined. The checkpoint
+                    # remains usable; this is unavailable, not user cancel.
+                    if not self.dependency_lost:
+                        canceled = True
+                        result.files.clear()
                 except Exception:
                     self.uncertain = True
             except Exception as exc:
@@ -470,6 +479,12 @@ class PreviewRuntime:
                 if command and result.outcome in {"unavailable", "timeout", "protocol_error"}:
                     try:
                         await owned(self._cancel(command))
+                    except asyncio.CancelledError:
+                        if self.dependency_lost:
+                            result.outcome = "unavailable"
+                        else:
+                            canceled = True
+                            result.files.clear()
                     except Exception:
                         self.uncertain = True
             finally:
@@ -493,9 +508,13 @@ class PreviewRuntime:
                 try:
                     await owned(close_transfers())
                 except asyncio.CancelledError:
-                    revoked = canceled = True
-                    result.files.clear()
-                    result.outcome = "canceled"
+                    revoked = True
+                    if self.dependency_lost:
+                        result.outcome = "unavailable"
+                    else:
+                        canceled = True
+                        result.files.clear()
+                        result.outcome = "canceled"
                     try:
                         await owned(self._retire())
                     except BaseException:
@@ -538,7 +557,7 @@ class PreviewRuntime:
             logger.warning("Preview process ownership uncertain; staging retained")
         if self.nc:
             await self.nc.close()
-        if self.broker:
+        if self.broker and not self.shared_broker:
             try:
                 await disk(self.broker.stop)
             except Exception as exc:
@@ -556,7 +575,19 @@ def get_preview_health() -> PreviewHealth:
 
 async def start_preview_runtime(base: Path):
     global runtime
+    from backend.app.services.local_worker_broker import start_local_worker_broker
+
     runtime = PreviewRuntime(base / ".cache" / "preview-service")
+    try:
+        broker = await start_local_worker_broker(base)
+    except Exception as exc:
+        from embedded_nats import RecoveryRequired
+
+        runtime._unavailable("recovery_required" if isinstance(exc, RecoveryRequired) else "startup_failed", exc)
+        if isinstance(exc, RecoveryRequired):
+            logger.warning("Preview broker recovery refused: marker=%s; follow %s", exc.marker_path, RECOVERY_GUIDE)
+        return
+    runtime.shared_broker = broker
     await runtime.start()
 
 

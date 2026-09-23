@@ -1,25 +1,31 @@
-"""Stable in-process boundary for one-shot camera capture.
-
-The current implementation is deliberately inline.  Callers use this module so
-the future worker can take ownership of physical camera connections without
-changing every consumer at once.  It must stay free of FastAPI, database, MQTT,
-browser-token and worker-process imports.
-"""
+"""Camera facade: physical capture belongs exclusively to the worker."""
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
+import time
 import uuid
+from collections import deque
 from collections.abc import AsyncGenerator, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol
+from datetime import UTC, datetime, timedelta
+from typing import Literal, Protocol
 
 from backend.app.services.camera_metrics import CameraCaptureResult
+from backend.app.services.camera_worker_supervisor import CameraWorkerSupervisor, CameraWorkerUnavailable
 
-if TYPE_CHECKING:
-    from backend.app.services.camera_worker_supervisor import CameraWorkerSupervisor
+logger = logging.getLogger(__name__)
+_recovery_observers: set[Callable[[], object]] = set()
+
+
+def register_camera_recovery(observer: Callable[[], object]) -> Callable[[], None]:
+    _recovery_observers.add(observer)
+    return lambda: _recovery_observers.discard(observer)
+
 
 CameraPurpose = Literal[
     "snapshot",
@@ -125,43 +131,22 @@ class CameraRuntime(Protocol):
     async def capture(self, request: CameraCaptureRequest) -> CameraCaptureResult: ...
 
 
-class InlineCameraRuntime:
-    """The existing capture paths behind the worker-ready interface."""
-
-    async def capture(self, request: CameraCaptureRequest) -> CameraCaptureResult:
-        if request.kind == "builtin":
-            from backend.app.services.camera import capture_camera_frame_with_provenance
-
-            return await capture_camera_frame_with_provenance(
-                request.ip_address or "",
-                request.access_code or "",
-                request.model,
-                request.timeout,
-            )
-
-        from backend.app.services.external_camera import capture_frame_with_provenance
-
-        return await capture_frame_with_provenance(
-            request.url or "",
-            request.camera_type or "",
-            request.timeout,
-            request.snapshot_url,
-        )
-
-
 @dataclass
 class WorkerCameraRuntime:
-    """Explicit test/rollout adapter for the supervised capture worker.
-
-    Nothing selects this adapter globally yet.  Application startup will add a
-    validated runtime setting only after the worker's producer and relay gates
-    have passed on supported hosts.
-    """
+    """The only production adapter for physical camera operations."""
 
     supervisor: CameraWorkerSupervisor
 
     async def capture(self, request: CameraCaptureRequest) -> CameraCaptureResult:
         return await self.supervisor.capture(request)
+
+    async def probe_tcp(self, host: str, port: int, timeout: float, *, identity: str) -> str:
+        reply = await self.supervisor.request(
+            "probe_tcp", {"host": host, "port": port, "timeout": timeout, "identity": identity}, timeout=timeout + 2
+        )
+        if not reply["ok"]:
+            raise CameraWorkerUnavailable("camera worker rejected TCP probe")
+        return reply["result"]["code"]
 
     async def stream_external(
         self,
@@ -185,7 +170,8 @@ class WorkerCameraRuntime:
         # Validate it here too: callers must not use an endpoint URL as the
         # worker identity, which would make credentials part of a registry key.
         uuid.UUID(identity)
-        lease_id, queue = await self.supervisor.subscribe_external(
+        supervisor = self.supervisor
+        lease_id, queue = await supervisor.subscribe_external(
             identity=identity,
             url=url,
             camera_type=camera_type,
@@ -205,7 +191,7 @@ class WorkerCameraRuntime:
                     on_frame(media.frame)
                 yield format_mjpeg_frame(media.frame)
         finally:
-            await self.supervisor.unsubscribe(lease_id, queue)
+            await supervisor.unsubscribe(lease_id, queue)
 
     async def stream_builtin(
         self,
@@ -221,7 +207,8 @@ class WorkerCameraRuntime:
         """Yield worker-owned Bambu chamber/RTSPS frames as MJPEG parts."""
 
         uuid.UUID(identity)
-        lease_id, queue = await self.supervisor.subscribe_builtin(
+        supervisor = self.supervisor
+        lease_id, queue = await supervisor.subscribe_builtin(
             identity=identity,
             ip_address=ip_address,
             access_code=access_code,
@@ -242,7 +229,7 @@ class WorkerCameraRuntime:
                     on_frame(media.frame)
                 yield format_mjpeg_frame(media.frame)
         finally:
-            await self.supervisor.unsubscribe(lease_id, queue)
+            await supervisor.unsubscribe(lease_id, queue)
 
     async def start_raw_proxy(
         self,
@@ -271,8 +258,122 @@ class WorkerCameraRuntime:
         await self.supervisor.stop()
 
 
-_inline_runtime = InlineCameraRuntime()
-_configured_runtime: CameraRuntime = _inline_runtime
+@dataclass
+class CameraRuntimeOwner:
+    """Lifespan owner with bounded, camera-only process recovery."""
+
+    runtime: WorkerCameraRuntime
+    state: str = "stopped"
+    reason: str | None = None
+    restart_count: int = 0
+    next_retry_at: datetime | None = None
+    _task: asyncio.Task[None] | None = None
+    _stopping: asyncio.Event = field(default_factory=asyncio.Event)
+    _first_attempt: asyncio.Future[None] | None = None
+    _failures: deque[float] = field(default_factory=deque)
+
+    async def start(self) -> None:
+        if self._task is not None:
+            return
+        self._stopping.clear()
+        self.state = "starting"
+        self._first_attempt = asyncio.get_running_loop().create_future()
+        self._task = asyncio.create_task(self._run(), name="camera-worker-owner")
+        await self._first_attempt
+
+    async def stop(self) -> None:
+        self._stopping.set()
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        self.state = "stopped"
+        self.next_retry_at = None
+
+    async def _run(self) -> None:
+        half_open = False
+        try:
+            while not self._stopping.is_set():
+                supervisor = CameraWorkerSupervisor()
+                self.runtime.supervisor = supervisor
+                self.state = "starting" if self.restart_count == 0 else "recovering"
+                self.next_retry_at = None
+                try:
+                    await asyncio.wait_for(supervisor.start(), timeout=20)
+                    self.state = "ready"
+                    self.reason = None
+                    half_open = False
+                    if self._first_attempt is not None and not self._first_attempt.done():
+                        self._first_attempt.set_result(None)
+                    for observer in tuple(_recovery_observers):
+                        try:
+                            result = observer()
+                            if asyncio.iscoroutine(result):
+                                await result
+                        except Exception as exc:
+                            logger.warning("Camera proxy reconciliation failed: %s", type(exc).__name__)
+                    while not self._stopping.is_set():
+                        try:
+                            await asyncio.wait_for(self._stopping.wait(), timeout=3)
+                        except TimeoutError:
+                            if supervisor.process is None or supervisor.process.returncode is not None:
+                                raise CameraWorkerUnavailable("camera worker exited")
+                            await supervisor.request("heartbeat", timeout=2)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self.state = "unavailable"
+                    self.reason = type(exc).__name__
+                    logger.warning("Camera worker unavailable (%s); print service remains available", self.reason)
+                finally:
+                    try:
+                        await asyncio.wait_for(supervisor.stop(), timeout=20)
+                    except Exception as exc:
+                        self.state = "unavailable"
+                        self.reason = "cleanup_failed"
+                        logger.error("Camera worker cleanup is uncertain: %s", type(exc).__name__)
+                        break
+                    if self._first_attempt is not None and not self._first_attempt.done():
+                        self._first_attempt.set_result(None)
+                if self._stopping.is_set():
+                    break
+                delay, half_open = self._restart_delay(time.monotonic(), half_open=half_open)
+                self.restart_count += 1
+                self.next_retry_at = datetime.now(UTC) + timedelta(seconds=delay)
+                try:
+                    await asyncio.wait_for(self._stopping.wait(), timeout=delay)
+                except TimeoutError:
+                    pass
+        finally:
+            if self._first_attempt is not None and not self._first_attempt.done():
+                self._first_attempt.set_result(None)
+
+    def _restart_delay(self, now: float, *, half_open: bool) -> tuple[float, bool]:
+        while self._failures and now - self._failures[0] >= 60:
+            self._failures.popleft()
+        if half_open or len(self._failures) >= 3:
+            self._failures.clear()
+            self.state = "unavailable"
+            return 60.0, True
+        delay = float(2 ** len(self._failures))
+        self._failures.append(now)
+        self.state = "recovering"
+        return delay, False
+
+    def snapshot(self) -> dict:
+        return {
+            "state": self.state,
+            "reason": self.reason,
+            "restart_count": self.restart_count,
+            "next_retry_at": self.next_retry_at.isoformat() if self.next_retry_at else None,
+        }
+
+
+_configured_runtime = WorkerCameraRuntime(CameraWorkerSupervisor())
+_owner: CameraRuntimeOwner | None = None
 _runtime_override: ContextVar[CameraRuntime | None] = ContextVar("camera_runtime_override", default=None)
 
 
@@ -280,28 +381,32 @@ def get_camera_runtime() -> CameraRuntime:
     return _runtime_override.get() or _configured_runtime
 
 
-async def configure_camera_runtime(mode: Literal["inline", "worker"]) -> None:
-    """Select one process-wide physical camera owner at application startup."""
+async def configure_camera_runtime() -> None:
+    """Start the only physical owner; degraded cameras never block printing."""
 
-    global _configured_runtime
-    if mode == "inline":
-        if isinstance(_configured_runtime, WorkerCameraRuntime):
-            await _configured_runtime.stop()
-        _configured_runtime = _inline_runtime
-        return
-    if isinstance(_configured_runtime, WorkerCameraRuntime):
-        return
-    from backend.app.services.camera_worker_supervisor import CameraWorkerSupervisor
-
-    runtime = WorkerCameraRuntime(CameraWorkerSupervisor())
-    await runtime.supervisor.start()
-    _configured_runtime = runtime
+    global _owner
+    if _owner is None:
+        if os.environ.get("CAMERA_RUNTIME") is not None:
+            logger.warning("CAMERA_RUNTIME is obsolete and ignored; cameras always use the isolated worker")
+        _owner = CameraRuntimeOwner(_configured_runtime)
+    await _owner.start()
 
 
 async def stop_configured_camera_runtime() -> None:
     """Release the worker tree before the app tears down camera dependencies."""
 
-    await configure_camera_runtime("inline")
+    global _owner
+    if _owner is not None:
+        await _owner.stop()
+        _owner = None
+
+
+def camera_runtime_health() -> dict:
+    return (
+        _owner.snapshot()
+        if _owner is not None
+        else {"state": "stopped", "reason": None, "restart_count": 0, "next_retry_at": None}
+    )
 
 
 async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:
@@ -319,6 +424,29 @@ async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:
         if lease is not None:
             await lease.settle()
         return await get_camera_runtime().capture(request)
+
+
+async def test_external_connection(url: str, camera_type: str) -> dict:
+    """Probe a proposed external source through the worker, never in main."""
+    try:
+        result = await capture(
+            CameraCaptureRequest.external(url=url, camera_type=camera_type, timeout=10, purpose="diagnose")
+        )
+        frame = result.frame
+        if not frame:
+            return {"success": False, "error": "Failed to capture frame from camera"}
+        resolution = None
+        for marker in (b"\xff\xc0", b"\xff\xc1", b"\xff\xc2"):
+            index = frame.find(marker)
+            if index >= 0 and index + 9 <= len(frame):
+                height = (frame[index + 5] << 8) | frame[index + 6]
+                width = (frame[index + 7] << 8) | frame[index + 8]
+                resolution = f"{width}x{height}"
+                break
+        return {"success": True, "resolution": resolution}
+    except Exception as exc:
+        logger.warning("External camera test failed: %s", type(exc).__name__)
+        return {"success": False, "error": f"Connection failed: {type(exc).__name__}"}
 
 
 @contextmanager

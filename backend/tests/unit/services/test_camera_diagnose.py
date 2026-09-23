@@ -18,6 +18,32 @@ from backend.app.services.camera_diagnose import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fake_worker_probe(monkeypatch):
+    """Preserve the stage mapping oracle without opening sockets in main."""
+    from backend.app.services import camera_runtime
+
+    runtime = camera_runtime.WorkerCameraRuntime(supervisor=object())
+
+    async def probe(host, port, timeout, *, identity):
+        try:
+            _, writer = await camera_runtime.asyncio.wait_for(
+                camera_runtime.asyncio.open_connection(host, port), timeout=timeout
+            )
+        except TimeoutError:
+            return "tcp_timeout"
+        except ConnectionRefusedError:
+            return "tcp_refused"
+        except OSError:
+            return "tcp_unreachable"
+        writer.close()
+        await writer.wait_closed()
+        return "ok"
+
+    monkeypatch.setattr(runtime, "probe_tcp", probe)
+    monkeypatch.setattr(camera_runtime, "get_camera_runtime", lambda: runtime)
+
+
 class TestLiveStreamShortcut:
     """If a viewer is currently watching the camera with a fresh frame,
     diagnose must NOT open a fresh socket — single-camera-connection
@@ -59,7 +85,7 @@ class TestLiveStreamShortcut:
         reconnect) shouldn't short-circuit — the stream might be
         wedged and the user needs the real test."""
         with patch(
-            "backend.app.services.camera_diagnose.asyncio.open_connection",
+            "backend.app.services.camera_runtime.asyncio.open_connection",
             new_callable=AsyncMock,
             side_effect=TimeoutError,
         ):
@@ -85,7 +111,7 @@ class TestTcpStage:
     @pytest.mark.asyncio
     async def test_timeout_maps_to_printer_unreachable(self):
         with patch(
-            "backend.app.services.camera_diagnose.asyncio.open_connection",
+            "backend.app.services.camera_runtime.asyncio.open_connection",
             new_callable=AsyncMock,
             side_effect=TimeoutError,
         ):
@@ -111,7 +137,7 @@ class TestTcpStage:
         sees a specific remediation hint, not the generic
         'unreachable' message."""
         with patch(
-            "backend.app.services.camera_diagnose.asyncio.open_connection",
+            "backend.app.services.camera_runtime.asyncio.open_connection",
             new_callable=AsyncMock,
             side_effect=ConnectionRefusedError(),
         ):
@@ -129,7 +155,7 @@ class TestTcpStage:
         """Generic OSError (no-route-to-host etc.) lumps under
         'printer_unreachable' — same remediation as timeout."""
         with patch(
-            "backend.app.services.camera_diagnose.asyncio.open_connection",
+            "backend.app.services.camera_runtime.asyncio.open_connection",
             new_callable=AsyncMock,
             side_effect=OSError("No route to host"),
         ):
@@ -157,7 +183,7 @@ class TestFirstFrameStage:
 
         with (
             patch(
-                "backend.app.services.camera_diagnose.asyncio.open_connection",
+                "backend.app.services.camera_runtime.asyncio.open_connection",
                 new=_tcp_ok,
             ),
             patch(
@@ -191,7 +217,7 @@ class TestFirstFrameStage:
 
         with (
             patch(
-                "backend.app.services.camera_diagnose.asyncio.open_connection",
+                "backend.app.services.camera_runtime.asyncio.open_connection",
                 new=_tcp_ok,
             ),
             patch(
@@ -217,7 +243,7 @@ class TestFirstFrameStage:
 
         with (
             patch(
-                "backend.app.services.camera_diagnose.asyncio.open_connection",
+                "backend.app.services.camera_runtime.asyncio.open_connection",
                 new=_tcp_ok,
             ),
             patch(
@@ -247,7 +273,7 @@ class TestResultMetadata:
     @pytest.mark.asyncio
     async def test_p2s_reports_p2s_profile_and_rtsp_protocol(self):
         with patch(
-            "backend.app.services.camera_diagnose.asyncio.open_connection",
+            "backend.app.services.camera_runtime.asyncio.open_connection",
             new_callable=AsyncMock,
             side_effect=TimeoutError,
         ):
@@ -264,7 +290,7 @@ class TestResultMetadata:
     @pytest.mark.asyncio
     async def test_a1_reports_default_profile_and_chamber_protocol(self):
         with patch(
-            "backend.app.services.camera_diagnose.asyncio.open_connection",
+            "backend.app.services.camera_runtime.asyncio.open_connection",
             new_callable=AsyncMock,
             side_effect=TimeoutError,
         ):
@@ -281,7 +307,7 @@ class TestResultMetadata:
     @pytest.mark.asyncio
     async def test_x1c_reports_default_profile_and_rtsp(self):
         with patch(
-            "backend.app.services.camera_diagnose.asyncio.open_connection",
+            "backend.app.services.camera_runtime.asyncio.open_connection",
             new_callable=AsyncMock,
             side_effect=TimeoutError,
         ):

@@ -99,7 +99,6 @@ def assert_stopped(startup):
         ("SimpleMQTTServer", "raise"),
         ("BindServer", "ready_exit"),
         ("VirtualPrinterSSDPServer", "exit"),
-        ("TCPProxy", "exit"),
     ],
 )
 async def test_failed_listener_cleans_up_without_attaching_bridge(startup, caplog, service, mode):
@@ -123,27 +122,27 @@ async def test_failed_listener_cleans_up_without_attaching_bridge(startup, caplo
 
 
 @pytest.mark.asyncio
-async def test_camera_readiness_timeout_releases_other_listeners(startup):
-    startup.modes["TCPProxy"] = "stall"
-    assert await asyncio.wait_for(startup.instance.start_server(), timeout=7) is False
+async def test_camera_worker_unavailable_does_not_block_other_vp_listeners(startup):
+    assert await asyncio.wait_for(startup.instance.start_server(), timeout=7) is True
+    assert startup.instance.is_running
+    assert startup.instance._worker_camera_lease is None
+    await startup.instance.stop_server()
     assert_stopped(startup)
 
 
 @pytest.mark.asyncio
-async def test_worker_camera_runtime_refuses_direct_vp_camera_proxy(startup, monkeypatch):
-    """A configured worker without its runtime process must still fail closed."""
+async def test_worker_camera_runtime_refuses_direct_vp_camera_proxy(startup):
+    """An unavailable worker never opens a direct camera listener in main."""
 
-    from backend.app.core import config
-
-    monkeypatch.setattr(config.settings, "camera_runtime", "worker")
-    assert await startup.instance.start_server() is False
+    assert await startup.instance.start_server() is True
+    assert startup.instance._worker_camera_lease is None
+    assert all(service.name != "TCPProxy" for service in startup.services)
+    await startup.instance.stop_server()
     assert_stopped(startup)
-    startup.client.register_raw_message_handler.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_worker_camera_runtime_owns_vp_raw_camera_proxy(startup, monkeypatch):
-    from backend.app.core import config
     from backend.app.services import camera_runtime
 
     class Supervisor:
@@ -152,7 +151,6 @@ async def test_worker_camera_runtime_owns_vp_raw_camera_proxy(startup, monkeypat
 
     supervisor = Supervisor()
     runtime = camera_runtime.WorkerCameraRuntime(supervisor)
-    monkeypatch.setattr(config.settings, "camera_runtime", "worker")
     monkeypatch.setattr(camera_runtime, "get_camera_runtime", lambda: runtime)
 
     assert await startup.instance.start_server() is True

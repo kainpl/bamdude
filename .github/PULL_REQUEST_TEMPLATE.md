@@ -27,7 +27,7 @@ Fixes #
 - [ ] Branch is based on `dev` and the PR targets `dev`
 - [ ] `ruff check backend/ && ruff format --check backend/` is clean
 - [ ] `cd frontend && npm run lint && npm run typecheck && npm run i18n:check` is clean (`npm run typecheck`, not a bare `tsc --noEmit`)
-- [ ] Tests pass locally (`CAMERA_RUNTIME=inline pytest backend/tests/ -n auto --timeout=300 --timeout-method=thread` from the repo root, `npm run test:run`), and a test that fails without this change is included
+- [ ] Tests pass locally (`python -m pytest backend/tests/ -n 4 --timeout=300 --timeout-method=thread` from the repo root, `npm run test:run`), and a test that fails without this change is included
 - [ ] Every new user-facing string exists in **both** `en` and `uk` (frontend locales, backend JSON pairs, `api_errors_uk.json` via `scripts/api_error_catalog.py sync`)
 - [ ] One bullet added to `CHANGELOG.md` under `[Unreleased]`
 - [ ] Schema change: model edited **and** a new `m<NNN>_*.py` migration added; no shipped migration edited

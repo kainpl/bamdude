@@ -195,9 +195,11 @@ class ObicoDetectionService:
 
     async def _poll_once(self, settings: dict):
         # Late import to avoid cycles at module load time
+        from backend.app.services.camera_runtime import camera_runtime_health
         from backend.app.services.printer_manager import printer_manager
 
         statuses = printer_manager.get_all_statuses()
+        camera_ready = camera_runtime_health()["state"] == "ready"
         for printer_id, status in list(statuses.items()):
             if settings["enabled_printers"] is not None and printer_id not in settings["enabled_printers"]:
                 continue
@@ -210,6 +212,14 @@ class ObicoDetectionService:
                 self._action_fired.pop(printer_id, None)
                 continue
 
+            if not camera_ready:
+                if not getattr(self, "_camera_worker_paused", False):
+                    logger.warning("Obico camera detection paused: camera worker unavailable")
+                    self._camera_worker_paused = True
+                continue
+            if getattr(self, "_camera_worker_paused", False):
+                logger.info("Obico camera detection resumed: camera worker ready")
+                self._camera_worker_paused = False
             await self._check_printer(printer_id, status, settings)
 
     async def _capture_frame(self, printer_id: int) -> bytes | None:

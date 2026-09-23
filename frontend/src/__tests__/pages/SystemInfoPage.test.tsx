@@ -196,6 +196,42 @@ describe('SystemInfoPage', () => {
     expect(screen.queryByRole('link', { name: 'Preview troubleshooting and recovery' })).not.toBeInTheDocument();
   });
 
+  it('shows camera retry time and a separate analysis outage without marking printing down', async () => {
+    const nextRetry = '2026-09-24T12:34:00+00:00';
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      camera_worker: {
+        state: 'recovering', reason: 'CameraWorkerUnavailable', restart_count: 2,
+        next_retry_at: nextRetry,
+      },
+      analysis_worker: { state: 'unavailable', reason: 'worker_restarting' },
+    } as never);
+    render(<SystemInfoPage />);
+    expect(await screen.findByText('Camera worker')).toBeInTheDocument();
+    expect(screen.getByText('CameraWorkerUnavailable')).toBeInTheDocument();
+    expect(screen.getByText(`Next retry: ${new Date(nextRetry).toLocaleTimeString()}`)).toBeInTheDocument();
+    expect(screen.getByText('3MF analysis worker')).toBeInTheDocument();
+    expect(screen.getByText('worker_restarting')).toBeInTheDocument();
+    expect(screen.getByText(/Unrelated printing and queues remain available/)).toBeInTheDocument();
+  });
+
+  it('localizes the independent camera and analysis worker panels', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      camera_worker: { state: 'ready', reason: null, restart_count: 0, next_retry_at: null },
+      analysis_worker: { state: 'ready', reason: null },
+    } as never);
+    await i18n.changeLanguage('uk');
+    const view = render(<SystemInfoPage />);
+    try {
+      expect(await screen.findByText('Воркер камер')).toBeInTheDocument();
+      expect(screen.getByText('Воркер аналізу 3MF')).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      await i18n.changeLanguage('en');
+    }
+  });
+
   it('uses the Ukrainian recovery text and matching documentation page', async () => {
     vi.mocked(api.getSystemInfo).mockResolvedValue({
       ...mockSystemInfo,

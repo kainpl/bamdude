@@ -73,6 +73,12 @@ class PreviewProcess:
         except psutil.NoSuchProcess:
             return 0
 
+    def send(self, payload: dict) -> None:
+        if self.process.poll() is not None or self.process.stdin is None:
+            raise PreviewError("unavailable")
+        self.process.stdin.write(encode(payload) + b"\n")
+        self.process.stdin.flush()
+
     def stop(self):
         process = self.process
         children = descendants(process.pid)

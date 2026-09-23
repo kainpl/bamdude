@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import multiprocessing as mp
 import os
 import pickle
 import time
@@ -19,15 +18,12 @@ import zipfile
 from bisect import bisect_right
 from collections import deque
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor
-from concurrent.futures.process import BrokenProcessPool
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import FunctionType
 from typing import TYPE_CHECKING, Literal
 from xml.etree import ElementTree
-
-import psutil
 
 if TYPE_CHECKING:
     from backend.app.services.printer_manager import PrinterManager
@@ -43,8 +39,6 @@ _MAX_LAYER_CHANNEL_ENTRIES = 1_000_000
 _MAX_ANALYSIS_BYTES = 32 * 1024 * 1024
 _MAX_RETAINED_ANALYSIS_BYTES = 256 * 1024 * 1024
 _ANALYSIS_DEADLINE_SECONDS = 180.0
-_MAX_CHILD_RSS_BYTES = 1024 * 1024 * 1024
-_CHILD_RSS_POLL_SECONDS = 0.25
 
 
 class AnalysisResourceError(RuntimeError):
@@ -98,7 +92,7 @@ class PrintFileAnalysis:
 class _Context:
     archive_id: int
     generation: int
-    source: tuple[str, int | None, int, int] | None
+    source: tuple[str, int | None, int, int, int, int] | None
     state: AnalysisState
     lifecycle: LifecycleState
     task: asyncio.Task[PrintFileAnalysis] | None = None
@@ -107,7 +101,7 @@ class _Context:
     failed_attempts: int = 0
     retry_at: float | None = None
     started_at: float | None = None
-    worker: Literal["process", "thread"] | None = None
+    worker: Literal["service", "thread"] | None = None
 
 
 @dataclass
@@ -127,103 +121,7 @@ class _AnalysisDiagnostics:
     last_parse: dict[str, int | str] | None = None
 
 
-_executor: ProcessPoolExecutor | None = None
-_process_gate_loop: asyncio.AbstractEventLoop | None = None
-_process_gate: asyncio.Lock | None = None
-
-
-def _analysis_executor() -> ProcessPoolExecutor:
-    """Use one bounded child across all printers, created only when needed."""
-    global _executor
-    if _executor is None:
-        # ``spawn`` is the portable baseline (including Windows embedded
-        # Python); no fork-only state can leak from the web server to a worker.
-        _executor = ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn"))
-    return _executor
-
-
-def _analysis_process_gate() -> asyncio.Lock:
-    """Return the one app-loop gate for work submitted to the parser child.
-
-    ``ProcessPoolExecutor(max_workers=1)`` serializes execution but not
-    ownership: it can hold an old retired job and a newer job in its internal
-    queue.  The explicit gate makes the current submitter the only possible
-    child owner, so cancellation can terminate/reap it without killing an
-    unrelated print that happened to be queued behind it.  Test event loops
-    are short-lived; recreating their gate is intentional and does not change
-    the production single-event-loop invariant.
-    """
-    global _process_gate, _process_gate_loop
-    loop = asyncio.get_running_loop()
-    if _process_gate is None or _process_gate_loop is not loop:
-        _process_gate_loop = loop
-        _process_gate = asyncio.Lock()
-    return _process_gate
-
-
-async def _abandon_timed_out_executor(pool: ProcessPoolExecutor) -> None:
-    """Kill/reap the single parser child after its hard deadline.
-
-    ``ProcessPoolExecutor.shutdown`` only cancels queued futures; a parser
-    stuck in ZIP decode keeps its child alive.  Current CPython keeps those
-    child handles on the executor; isolate that implementation detail here and
-    guard it for interpreter changes.
-    """
-    global _executor
-    if _executor is pool:
-        _executor = None
-    processes = tuple(getattr(pool, "_processes", {}).values())
-    pool.shutdown(wait=False, cancel_futures=True)
-
-    def terminate_and_reap() -> None:
-        for process in processes:
-            if process.is_alive():
-                process.terminate()
-        for process in processes:
-            process.join(timeout=5)
-
-    await asyncio.to_thread(terminate_and_reap)
-
-
-async def _abandon_executor_future(pool: ProcessPoolExecutor, future) -> None:
-    """Retire a wedged pool and consume its terminal Future outcome.
-
-    Killing a process turns its outstanding executor future into
-    ``BrokenProcessPool`` asynchronously.  Leaving that future unobserved
-    produces an event-loop warning even though the caller already received the
-    intended resource failure.
-    """
-    await _abandon_timed_out_executor(pool)
-    await asyncio.gather(future, return_exceptions=True)
-
-
-def _pool_child_rss_bytes(pool: ProcessPoolExecutor) -> int:
-    """Return the largest live parser-child RSS, best-effort and portable."""
-    largest = 0
-    for process in tuple(getattr(pool, "_processes", {}).values()):
-        pid = getattr(process, "pid", None)
-        if not pid:
-            continue
-        try:
-            largest = max(largest, psutil.Process(pid).memory_info().rss)
-        except (psutil.Error, OSError):
-            # A child can exit between ProcessPool bookkeeping and this sample.
-            continue
-    return largest
-
-
-async def _watch_child_rss(pool: ProcessPoolExecutor) -> bool:
-    """Wait until the parser child crosses its RSS budget or the caller cancels."""
-    while True:
-        await asyncio.sleep(_CHILD_RSS_POLL_SECONDS)
-        # psutil can block in native code on Windows; never sample it on the
-        # event loop that serves API/MQTT work.
-        rss = await asyncio.to_thread(_pool_child_rss_bytes, pool)
-        if rss > _MAX_CHILD_RSS_BYTES:
-            return True
-
-
-def _parse_3mf(path_text: str, plate_id: int | None) -> PrintFileAnalysis:
+def _parse_3mf(path_text: str, plate_id: int | None, source_descriptor=None) -> PrintFileAnalysis:
     """Child-process entry point. Keep imports inside the child boundary."""
     from backend.app.utils.threemf_tools import (
         extract_filament_properties_from_3mf,
@@ -235,31 +133,41 @@ def _parse_3mf(path_text: str, plate_id: int | None) -> PrintFileAnalysis:
     # The production source descriptor admits only a real regular file.  Some
     # legacy unit seams deliberately provide a virtual path and mock the
     # extractor below; do not turn that math fixture into a ZipFile contract.
-    if path.is_file():
-        _validate_gcode_size(path, plate_id)
-    # Metadata totals are independently useful when the optional per-layer
-    # timeline cannot be extracted.  Read only slice_info here: ThreeMFParser
-    # also reads thumbnails and objects, neither of which belongs in a filament
-    # analysis worker or its memory budget.
-    slicer_estimates = _slicer_estimates_from_slice_info(path, plate_id)
+    if source_descriptor is not None:
+        from backend.app.services.analysis_source import AnalysisSource, open_verified_archive
 
-    try:
-        filament_usage = extract_filament_usage_from_3mf(path, plate_id) or []
-    except Exception as exc:  # noqa: BLE001 - degraded data is still useful
-        logger.warning("3MF filament totals unavailable for %s: %s", path, exc)
-        filament_usage = []
-    try:
-        layer_usage = extract_layer_filament_usage_from_3mf(path, plate_id)
-        timeline_error = None
-    except Exception as exc:  # noqa: BLE001 - preserve metadata/totals
-        logger.warning("3MF layer timeline unavailable for %s: %s", path, exc)
-        layer_usage = None
-        timeline_error = str(exc)
-    try:
-        filament_properties = extract_filament_properties_from_3mf(path) or {}
-    except Exception as exc:  # noqa: BLE001 - properties are accounting aid
-        logger.warning("3MF filament properties unavailable for %s: %s", path, exc)
-        filament_properties = {}
+        descriptor = AnalysisSource.from_payload(source_descriptor)
+        if descriptor.path != str(path) or descriptor.plate_id != plate_id:
+            raise AnalysisResourceError("analysis source descriptor disagrees with request")
+        source = open_verified_archive(descriptor)
+    else:
+        try:
+            source = zipfile.ZipFile(path, "r") if path.is_file() else nullcontext(path)
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise AnalysisResourceError("archive is not a readable 3MF") from exc
+    with source as archive:
+        if isinstance(archive, zipfile.ZipFile):
+            _validate_gcode_size(archive, plate_id)
+        # Metadata totals survive a missing timeline. All reads share this
+        # archive handle; the child closes it before its size estimate/encode.
+        slicer_estimates = _slicer_estimates_from_slice_info(archive, plate_id)
+        try:
+            filament_usage = extract_filament_usage_from_3mf(archive, plate_id) or []
+        except Exception as exc:  # noqa: BLE001 - degraded data is still useful
+            logger.warning("3MF filament totals unavailable for %s: %s", path, exc)
+            filament_usage = []
+        try:
+            layer_usage = extract_layer_filament_usage_from_3mf(archive, plate_id)
+            timeline_error = None
+        except Exception as exc:  # noqa: BLE001 - preserve metadata/totals
+            logger.warning("3MF layer timeline unavailable for %s: %s", path, exc)
+            layer_usage = None
+            timeline_error = str(exc)
+        try:
+            filament_properties = extract_filament_properties_from_3mf(archive) or {}
+        except Exception as exc:  # noqa: BLE001 - properties are accounting aid
+            logger.warning("3MF filament properties unavailable for %s: %s", path, exc)
+            filament_properties = {}
     analysis = PrintFileAnalysis(
         filament_usage=filament_usage,
         layer_usage=layer_usage,
@@ -276,10 +184,10 @@ def _parse_3mf(path_text: str, plate_id: int | None) -> PrintFileAnalysis:
     return replace(analysis, retained_bytes=retained_bytes)
 
 
-def _slicer_estimates_from_slice_info(path: Path, plate_id: int | None) -> dict[str, int | float]:
+def _slicer_estimates_from_slice_info(path: Path | zipfile.ZipFile, plate_id: int | None) -> dict[str, int | float]:
     """Read just the printed plate's time/weight, never its thumbnail/object data."""
     try:
-        with zipfile.ZipFile(path, "r") as archive:
+        with nullcontext(path) if isinstance(path, zipfile.ZipFile) else zipfile.ZipFile(path, "r") as archive:
             try:
                 raw = archive.read("Metadata/slice_info.config")
             except KeyError:
@@ -316,10 +224,10 @@ def _slicer_estimates_from_slice_info(path: Path, plate_id: int | None) -> dict[
     return estimates
 
 
-def _validate_gcode_size(path: Path, plate_id: int | None) -> None:
+def _validate_gcode_size(path: Path | zipfile.ZipFile, plate_id: int | None) -> None:
     """Reject a selected G-code member before any extractor inflates it."""
     try:
-        with zipfile.ZipFile(path, "r") as archive:
+        with nullcontext(path) if isinstance(path, zipfile.ZipFile) else zipfile.ZipFile(path, "r") as archive:
             gcode_members = [name for name in archive.namelist() if name.endswith(".gcode")]
             if not gcode_members:
                 return
@@ -456,7 +364,7 @@ def _release_context(
 def _new_context(
     printer_manager: PrinterManager,
     archive_id: int,
-    source: tuple[str, int | None, int, int] | None,
+    source: tuple[str, int | None, int, int, int, int] | None,
     *,
     lifecycle: LifecycleState = "active",
 ) -> _Context:
@@ -482,14 +390,14 @@ def _retire(context: _Context) -> None:
         context.task.cancel()
 
 
-def _source(path: Path, plate_id: int | None) -> tuple[str, int | None, int, int] | None:
+def _source(path: Path, plate_id: int | None) -> tuple[str, int | None, int, int, int, int] | None:
     try:
         stat = path.stat()
     except OSError:
         return None
     if not path.is_file():
         return None
-    return (os.fspath(path), plate_id, stat.st_size, stat.st_mtime_ns)
+    return (os.fspath(path), plate_id, stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino)
 
 
 def bind_print_file_analysis(
@@ -631,7 +539,6 @@ async def _prepare(
     # future lifecycle caller cannot accidentally submit a waiting context.
     source = context.source
     assert source is not None
-    loop = asyncio.get_running_loop()
     if runner is not None:
         awaitable = asyncio.to_thread(runner, os.fspath(path), source[1])
         try:
@@ -644,43 +551,9 @@ async def _prepare(
             return await asyncio.wait_for(awaitable, timeout=_ANALYSIS_DEADLINE_SECONDS)
         except TimeoutError as exc:
             raise AnalysisResourceError("analysis exceeded its deadline") from exc
-    async with _analysis_process_gate():
-        pool = _analysis_executor()
-        awaitable = loop.run_in_executor(pool, _parse_3mf, os.fspath(path), source[1])
-        rss_watch = asyncio.create_task(_watch_child_rss(pool), name="3mf-analysis-rss-watch")
-        try:
-            done, _ = await asyncio.wait(
-                (awaitable, rss_watch), timeout=_ANALYSIS_DEADLINE_SECONDS, return_when=asyncio.FIRST_COMPLETED
-            )
-            if not done:
-                await _abandon_executor_future(pool, awaitable)
-                raise AnalysisResourceError("analysis exceeded its deadline")
-            if rss_watch in done and rss_watch.result():
-                await _abandon_executor_future(pool, awaitable)
-                raise AnalysisResourceError("analysis exceeded child RSS budget")
-            return awaitable.result()
-        except BrokenProcessPool as exc:
-            # A child can die from an OS kill/OOM or a native ZIP/parser crash.
-            # A broken executor is permanently unusable, so keeping it would make
-            # every bounded retry fail without ever starting a replacement child.
-            await _abandon_timed_out_executor(pool)
-            raise AnalysisResourceError("analysis worker crashed") from exc
-        except TimeoutError as exc:  # defensive: executor future may surface its own timeout
-            await _abandon_executor_future(pool, awaitable)
-            raise AnalysisResourceError("analysis exceeded its deadline") from exc
-        except asyncio.CancelledError:
-            # This task owns the gate, hence no other context can be executing
-            # or queued in this one-worker pool.  Retiring a print must reclaim
-            # its child rather than leave CPU/RSS occupied until a huge G-code
-            # parse happens to end.
-            await _abandon_executor_future(pool, awaitable)
-            raise
-        finally:
-            rss_watch.cancel()
-            try:
-                await rss_watch
-            except asyncio.CancelledError:
-                pass
+    from backend.app.services.analysis_runtime import analyze_3mf
+
+    return await analyze_3mf(path, source[1])
 
 
 async def get_print_file_analysis(
@@ -760,9 +633,9 @@ async def get_print_file_analysis(
         # tests can exercise the lifecycle without spawning a child process.
         candidate = getattr(printer_manager, "_print_file_analysis_runner", None)
         runner = candidate if isinstance(candidate, FunctionType) else None
-        use_process = getattr(printer_manager, "_uses_print_file_analysis_process", False) is True
+        use_process = getattr(printer_manager, "_uses_print_file_analysis_service", False) is True
         context.started_at = time.monotonic()
-        context.worker = "process" if use_process else "thread"
+        context.worker = "service" if use_process else "thread"
         diagnostics.parses_started += 1
         logger.info(
             "[3MF ANALYSIS] started printer_id=%s archive_id=%s generation=%s plate_index=%s source_bytes=%s worker=%s",
@@ -892,11 +765,3 @@ def discard_printer_print_file_analysis(printer_manager: PrinterManager, printer
     finishing = _finishing_contexts(printer_manager)
     for key in [key for key in finishing if key[0] == printer_id]:
         _release_context(printer_manager, printer_id, finishing.pop(key), reason="printer_deleted")
-
-
-def shutdown_print_file_analysis_workers() -> None:
-    """Best-effort process cleanup for application shutdown and tests."""
-    global _executor
-    if _executor is not None:
-        _executor.shutdown(wait=False, cancel_futures=True)
-        _executor = None

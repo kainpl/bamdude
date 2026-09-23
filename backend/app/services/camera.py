@@ -779,15 +779,25 @@ async def capture_finish_photo(
     filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
     output_path = photos_dir / filename  # SEC-PATH-OK: filename is the server-generated finish_<timestamp>_<uuid8>.jpg
 
-    success = await capture_camera_frame(
-        ip_address=ip_address,
-        access_code=access_code,
-        model=model,
-        output_path=output_path,
-        timeout=30,
-    )
+    from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-    if success:
+    try:
+        result = await capture(
+            CameraCaptureRequest.builtin(
+                ip_address=ip_address,
+                access_code=access_code,
+                model=model,
+                timeout=30,
+                purpose="finish_photo",
+                printer_id=printer_id,
+            )
+        )
+    except Exception:
+        logger.exception("Failed to capture finish photo for printer %s", printer_id)
+        return None
+
+    if result.frame:
+        await asyncio.to_thread(output_path.write_bytes, result.frame)
         await apply_camera_rotation_to_file(output_path, rotation, logger)
         logger.info("Finish photo saved: %s", filename)
         return filename
@@ -805,38 +815,27 @@ async def test_camera_connection(
 
     Returns dict with success status and any error message.
     """
-    import os
-    import tempfile
-
-    fd, tmp_name = tempfile.mkstemp(suffix=".jpg")
-    os.close(fd)
-    test_path = Path(tmp_name)
-    test_path.chmod(0o600)
+    from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
     try:
-        success = await capture_camera_frame(
-            ip_address=ip_address,
-            access_code=access_code,
-            model=model,
-            output_path=test_path,
-            timeout=15,
+        result = await capture(
+            CameraCaptureRequest.builtin(
+                ip_address=ip_address, access_code=access_code, model=model, timeout=15, purpose="diagnose"
+            )
         )
-
-        if success:
-            return {"success": True, "message": "Camera connection successful"}
-        else:
-            return {
-                "success": False,
-                "error": (
-                    "Failed to capture frame from camera. "
-                    "Ensure the printer is powered on, camera is enabled, and Developer Mode is active. "
-                    "If running in Docker, try 'network_mode: host' in docker-compose.yml."
-                ),
-            }
-    finally:
-        # Clean up test file
-        if test_path.exists():
-            test_path.unlink()
+    except Exception:
+        logger.exception("Camera connection test failed")
+        result = None
+    if result is not None and result.frame:
+        return {"success": True, "message": "Camera connection successful"}
+    return {
+        "success": False,
+        "error": (
+            "Failed to capture frame from camera. "
+            "Ensure the printer is powered on, camera is enabled, and Developer Mode is active. "
+            "If running in Docker, try 'network_mode: host' in docker-compose.yml."
+        ),
+    }
 
 
 async def extract_video_last_frame(video_path: Path, output_path: Path) -> bool:

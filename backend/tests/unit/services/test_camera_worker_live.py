@@ -63,6 +63,22 @@ async def test_raw_lease_and_live_producer_are_mutually_exclusive():
 
 
 @pytest.mark.asyncio
+async def test_tcp_probe_reserves_the_identity_without_displacing_a_viewer():
+    registry = LiveProducerRegistry()
+    assert await registry.acquire_probe("camera-a")
+    assert await registry.is_busy("camera-a")
+    assert not await registry.acquire_probe("camera-a")
+    with pytest.raises(RuntimeError, match="raw lease"):
+        await registry.subscribe("camera-a", lambda: asyncio.sleep(0))
+    with pytest.raises(RuntimeError, match="busy"):
+        await registry.acquire_raw("camera-a")
+    await registry.release_probe("camera-a")
+    live, _queue = await registry.subscribe("camera-a", lambda: asyncio.sleep(0.1))
+    assert not await registry.acquire_probe("camera-a")
+    await registry.unsubscribe(live)
+
+
+@pytest.mark.asyncio
 async def test_live_registry_waits_for_last_producer_cleanup_and_notifies_subscribers():
     registry = LiveProducerRegistry()
     cleanup_complete = asyncio.Event()

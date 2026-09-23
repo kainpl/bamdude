@@ -39,7 +39,6 @@ literally watching the camera right now, no test needed.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -139,43 +138,33 @@ def _profile_label(model: str | None) -> str:
     return key if key in _PROFILES else "default"
 
 
-async def _check_tcp_reachable(ip_address: str, port: int, timeout: float) -> CameraDiagnoseStage:
-    """Stage 1 — open a TCP socket to the camera port."""
+async def _check_tcp_reachable(ip_address: str, port: int, timeout: float, printer_id: int) -> CameraDiagnoseStage:
+    """Stage 1 — ask the camera worker to probe its owned transport."""
     started = time.monotonic()
     try:
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip_address, port),
-            timeout=timeout,
-        )
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except OSError:
-            pass
+        from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
+
+        runtime = get_camera_runtime()
+        if not isinstance(runtime, WorkerCameraRuntime):
+            raise RuntimeError("camera worker unavailable")
+        import uuid
+
+        identity = str(uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:printer:{printer_id}:builtin"))
+        code = await runtime.probe_tcp(ip_address, port, timeout, identity=identity)
+    except Exception:
+        code = "worker_unavailable"
+    if code == "ok":
         return CameraDiagnoseStage(
             name="tcp_reachable",
             status="ok",
             duration_ms=int((time.monotonic() - started) * 1000),
         )
-    except TimeoutError:
-        return CameraDiagnoseStage(
-            name="tcp_reachable",
-            status="failed",
-            duration_ms=int((time.monotonic() - started) * 1000),
-            code="tcp_timeout",
-        )
-    except (ConnectionRefusedError, OSError) as exc:
-        # ConnectionRefusedError = printer up, camera port closed (likely
-        # LAN-only off or developer mode off). Other OSError = host
-        # unreachable. We keep these separate codes so the frontend can
-        # surface a precise remediation hint.
-        is_refused = isinstance(exc, ConnectionRefusedError)
-        return CameraDiagnoseStage(
-            name="tcp_reachable",
-            status="failed",
-            duration_ms=int((time.monotonic() - started) * 1000),
-            code="tcp_refused" if is_refused else "tcp_unreachable",
-        )
+    return CameraDiagnoseStage(
+        name="tcp_reachable",
+        status="failed",
+        duration_ms=int((time.monotonic() - started) * 1000),
+        code=code,
+    )
 
 
 async def _check_first_frame(
@@ -246,6 +235,10 @@ def _summary_for_stages(stages: list[CameraDiagnoseStage]) -> str:
             return "camera_port_closed"
         if stage.code == "tcp_unreachable":
             return "printer_unreachable"
+        if stage.code == "worker_unavailable":
+            return "worker_unavailable"
+        if stage.code == "camera_busy":
+            return "camera_busy"
         if stage.code in ("no_frame", "capture_exception"):
             return "no_frame"
         return "unknown_failure"
@@ -306,7 +299,7 @@ async def diagnose_camera(
         return result
 
     # Stage 1
-    tcp_stage = await _check_tcp_reachable(ip_address, port, tcp_timeout)
+    tcp_stage = await _check_tcp_reachable(ip_address, port, tcp_timeout, printer_id)
     result.stages.append(tcp_stage)
     if tcp_stage.status != "ok":
         result.overall_status = "failed"

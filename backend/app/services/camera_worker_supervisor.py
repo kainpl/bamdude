@@ -1,13 +1,10 @@
-"""Supervisor for the opt-in out-of-process one-shot camera runtime.
-
-Application settings still select the inline adapter.  This module provides a
-test/rollout seam that proves child ownership, authenticated bootstrap and a
-bounded media relay before the worker becomes a production runtime.
-"""
+"""Supervisor for the contained, authenticated camera worker."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import os
 import secrets
@@ -21,7 +18,6 @@ from pathlib import Path
 
 from backend.app.services.camera_metrics import CameraCaptureResult
 from backend.app.services.camera_worker_capture import WorkerCaptureCommand
-from backend.app.services.camera_worker_containment import CameraWorkerContainmentError, WorkerContainment
 from backend.app.services.camera_worker_logging import MAX_LINE_BYTES, decode_worker_log
 from backend.app.services.camera_worker_media import (
     WorkerMediaFrame,
@@ -38,8 +34,10 @@ from backend.app.services.camera_worker_protocol import (
     validate_reply,
     write_control,
 )
+from backend.app.services.worker_containment import WorkerContainment, WorkerContainmentError
+from backend.app.services.worker_process import descendants, descendants_reaped, kill_owned_group
 
-_STARTUP_TIMEOUT_SECONDS = 5.0
+_STARTUP_TIMEOUT_SECONDS = 20.0
 _REQUEST_TIMEOUT_SECONDS = 2.0
 _SHUTDOWN_TIMEOUT_SECONDS = 5.0
 _MAX_PENDING_CONTROL_REQUESTS = 256
@@ -104,32 +102,37 @@ class CameraWorkerSupervisor:
         self.process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
-            "backend.app.camera_worker",
+            "backend.app.worker_guardian",
             cwd=str(Path(__file__).resolve().parents[3]),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
             # stderr is a UTF-8 JSON-lines channel, independent of the host's
             # Windows console code page.
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            env=self._worker_env(),
             **creation_kwargs,
         )
         try:
             # The child imports only its IPC harness before it receives stdin;
             # attaching here precedes any future FFmpeg/camera spawn.
             self._containment = WorkerContainment.attach(self.process.pid)
-        except CameraWorkerContainmentError as exc:
+        except WorkerContainmentError as exc:
             await self._terminate_uncontained_process()
             await self._close_servers()
             raise CameraWorkerUnavailable("camera worker process containment is unavailable") from exc
         self._stderr_task = asyncio.create_task(self._drain_stderr(), name="camera-worker-harness-stderr")
         assert self.process.stdin is not None
-        self.process.stdin.write(self.bootstrap.to_bytes())
+        self.process.stdin.write(
+            json.dumps(
+                {
+                    "module": "backend.app.camera_worker",
+                    "camera_frame": base64.b64encode(self.bootstrap.to_bytes()).decode("ascii"),
+                }
+            ).encode("ascii")
+            + b"\n"
+        )
         await self.process.stdin.drain()
-        self.process.stdin.close()
-        # Proactor's anonymous-pipe ``wait_closed`` can hang after a successful
-        # drain on Windows.  The child already has the whole bounded bootstrap;
-        # close is enough to prevent a later write from extending its input.
+        # Keep this pipe open: its EOF is the guardian's owner-death signal.
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=_STARTUP_TIMEOUT_SECONDS)
         except TimeoutError as exc:
@@ -175,13 +178,13 @@ class CameraWorkerSupervisor:
     async def capture(self, request) -> CameraCaptureResult:
         """Run one physical capture in the child and receive its bounded JPEG relay.
 
-        This is an opt-in runtime seam only: no application setting selects it
-        yet.  The caller supplies the already-authorised in-memory request; its
+        This is the only production camera-capture path. The caller supplies
+        the already-authorised in-memory request; its
         credentials travel only over the authenticated loopback control channel.
         """
 
-        if self.process is None:
-            await self.start()
+        if self.process is None or self.process.returncode is not None:
+            raise CameraWorkerUnavailable("camera worker is not ready")
         assert self.bootstrap is not None
         started = time.monotonic()
         session_id = str(uuid.uuid4())
@@ -222,10 +225,10 @@ class CameraWorkerSupervisor:
     ) -> tuple[str, LiveMediaQueue]:
         """Start one worker-owned external producer and return its latest-frame relay."""
 
-        if self.process is None:
-            await self.start()
         if len(self._live_media_queues) >= _MAX_LIVE_MEDIA_QUEUES:
             raise CameraWorkerUnavailable("camera worker live relay limit reached")
+        if self.process is None or self.process.returncode is not None:
+            raise CameraWorkerUnavailable("camera worker is not ready")
         session_id = str(uuid.uuid4())
         queue: LiveMediaQueue = asyncio.Queue(maxsize=1)
         self._live_media_queues[session_id] = queue
@@ -253,8 +256,8 @@ class CameraWorkerSupervisor:
     ) -> tuple[str, LiveMediaQueue]:
         """Start one worker-owned Bambu chamber/RTSPS producer."""
 
-        if self.process is None:
-            await self.start()
+        if self.process is None or self.process.returncode is not None:
+            raise CameraWorkerUnavailable("camera worker is not ready")
         if len(self._live_media_queues) >= _MAX_LIVE_MEDIA_QUEUES:
             raise CameraWorkerUnavailable("camera worker live relay limit reached")
         session_id = str(uuid.uuid4())
@@ -297,8 +300,8 @@ class CameraWorkerSupervisor:
     ) -> str:
         """Bind a worker-owned transparent VP camera listener and return its lease."""
 
-        if self.process is None:
-            await self.start()
+        if self.process is None or self.process.returncode is not None:
+            raise CameraWorkerUnavailable("camera worker is not ready")
         reply = await self.request(
             "start_raw_proxy",
             {
@@ -324,6 +327,7 @@ class CameraWorkerSupervisor:
         """Bound normal shutdown, then terminate only this supervisor's child."""
 
         process = self.process
+        children = descendants(process.pid) if process is not None and isinstance(process.pid, int) else []
         if process is not None and process.returncode is None:
             try:
                 await self.request("shutdown")
@@ -337,23 +341,34 @@ class CameraWorkerSupervisor:
         if self._writer is not None:
             self._writer.close()
             try:
-                await self._writer.wait_closed()
-            except OSError:
+                await asyncio.wait_for(self._writer.wait_closed(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+            except (OSError, TimeoutError):
                 pass
         self._fail_pending_requests()
+        if process is not None and process.stdin is not None:
+            process.stdin.close()  # guardian EOF, including on clean shutdown
         if process is not None and process.returncode is None:
             try:
                 await asyncio.wait_for(process.wait(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
             except TimeoutError:
                 await self._terminate_process_tree(process)
         await self._close_servers()
-        if self._stderr_task is not None:
-            await self._stderr_task
-        if self._control_reader_task is not None:
-            await self._control_reader_task
         if self._containment is not None:
             self._containment.close()
             self._containment = None
+        if process is not None:
+            if os.name != "nt":
+                kill_owned_group(process.pid)
+            if not await asyncio.to_thread(descendants_reaped, children):
+                raise CameraWorkerUnavailable("camera worker descendants could not be reaped")
+        for task in (self._stderr_task, self._control_reader_task):
+            if task is None:
+                continue
+            try:
+                await asyncio.wait_for(task, timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+            except TimeoutError as exc:
+                task.cancel()
+                raise CameraWorkerUnavailable("camera worker I/O task did not finish") from exc
         if process is not None:
             logger.info("Camera worker stopped: pid=%s exit_code=%s", process.pid, process.returncode)
         self.process = None
@@ -367,8 +382,11 @@ class CameraWorkerSupervisor:
 
         process = self.process
         if process is not None and process.returncode is None:
-            process.terminate()
-            await process.wait()
+            if os.name != "nt":
+                kill_owned_group(process.pid)
+            else:
+                process.terminate()
+            await asyncio.wait_for(process.wait(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
         self.process = None
 
     async def _terminate_process_tree(self, process: asyncio.subprocess.Process) -> None:
@@ -390,7 +408,7 @@ class CameraWorkerSupervisor:
             pass
 
         if os.name != "nt":
-            os.killpg(process.pid, signal.SIGKILL)
+            kill_owned_group(process.pid)
         else:  # pragma: no cover - defensive fallback after Job Object close
             process.kill()
         await process.wait()
@@ -588,6 +606,27 @@ class CameraWorkerSupervisor:
         self._end_all_live_queues()
         self._pending_requests.clear()
         self._control_reader_task = None
+
+    @staticmethod
+    def _worker_env() -> dict[str, str]:
+        """The guardian and child receive no database, API or broker secrets."""
+        keys = {
+            "PATH",
+            "SYSTEMROOT",
+            "WINDIR",
+            "TEMP",
+            "TMP",
+            "TMPDIR",
+            "LANG",
+            "LC_ALL",
+            "LD_LIBRARY_PATH",
+            "DYLD_LIBRARY_PATH",
+            "FFMPEG_PATH",
+            "SSL_CERT_FILE",
+        }
+        env = {key: value for key, value in os.environ.items() if key.upper() in keys}
+        env.update(BAMDUDE_IGNORE_DOTENV="1", PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+        return env
 
     def _fail_media_waiters(self) -> None:
         for waiter in self._media_waiters.values():

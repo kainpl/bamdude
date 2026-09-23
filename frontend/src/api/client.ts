@@ -11990,8 +11990,17 @@ export interface PreviewHealth {
   recovery_required: boolean;
 }
 
+export interface CameraWorkerHealth {
+  state: 'ready' | 'starting' | 'recovering' | 'unavailable' | 'stopped';
+  reason: string | null;
+  restart_count: number;
+  next_retry_at: string | null;
+}
+
 export interface SystemInfo {
   preview?: PreviewHealth;
+  analysis_worker?: { state: 'ready' | 'unavailable'; reason: string | null };
+  camera_worker?: CameraWorkerHealth;
   app: {
     version: string;
     base_dir: string;

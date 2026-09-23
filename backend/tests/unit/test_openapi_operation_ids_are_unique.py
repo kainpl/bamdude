@@ -19,13 +19,10 @@ not repeat an id, and — the cause, caught where the author can see it — no
 route may carry more than one method. Declare one decorator per method instead.
 """
 
-import os
 from collections import defaultdict
 
 import pytest
 from fastapi.routing import APIRoute
-
-os.environ.setdefault("CAMERA_RUNTIME", "inline")
 
 from backend.app.main import app  # noqa: E402
 

@@ -2,6 +2,19 @@
 
 ### Added
 
+- **Camera capture is worker-only.** Built-in and external live views, snapshots,
+  connection tests, background photos and Virtual Printer camera passthrough
+  use one supervised local worker; there is no inline fallback. A failed camera
+  worker leaves unrelated printing and queues available; camera-dependent
+  checks can wait for its bounded restart. System has a separate health panel.
+  The former `CAMERA_RUNTIME` variable is ignored.
+- **3MF filament analysis has its own local service.** A shared embedded NATS
+  broker carries bounded results from a reusable, supervised parser process;
+  the source archive remains a local read-only file. Repeated browser polls
+  still share the print-context cache, while a slow or crashed G-code parser
+  no longer occupies the server event loop. System shows this worker's state
+  separately from preview and cameras.
+
 - **Preview recovery after an unclean shutdown.** On the next application start,
   the embedded broker can recover its runtime when an inherited OS lifetime
   lock proves that the old broker has exited. A live broker or unverifiable

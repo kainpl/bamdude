@@ -14,7 +14,12 @@ import subprocess
 import sys
 import threading
 
-_PREVIEW_MODULES = {"backend.app.preview_service", "backend.app.preview_render"}
+_PREVIEW_MODULES = {
+    "backend.app.preview_service",
+    "backend.app.preview_render",
+    "backend.app.analysis_service",
+    "backend.app.analysis_child",
+}
 _CAMERA_MODULE = "backend.app.camera_worker"
 _PREVIEW_BOOTSTRAP_LIMIT = 16384
 _CAMERA_BOOTSTRAP_LIMIT = 65536
@@ -46,11 +51,16 @@ def _child_bootstrap(line: bytes) -> tuple[str, bytes]:
 
 
 def main():
-    bootstrap = sys.stdin.buffer.readline(98305)
+    bootstrap = bytearray()
+    while len(bootstrap) <= 98304 and not bootstrap.endswith(b"\n"):
+        block = os.read(0, 1)
+        if not block:
+            return 2
+        bootstrap.extend(block)
     if len(bootstrap) > 98304 or not bootstrap.endswith(b"\n"):
         return 2
     try:
-        module, child_bootstrap = _child_bootstrap(bootstrap)
+        module, child_bootstrap = _child_bootstrap(bytes(bootstrap))
     except (KeyError, TypeError, ValueError, UnicodeDecodeError):
         return 2
     child = subprocess.Popen(
@@ -60,16 +70,23 @@ def main():
     )
 
     def owner_died():
-        while os.read(0, 1):  # no buffered-reader lock at interpreter shutdown
-            pass
+        while chunk := os.read(0, 4096):
+            if module == "backend.app.analysis_child":
+                try:
+                    child.stdin.write(chunk)
+                    child.stdin.flush()
+                except (BrokenPipeError, OSError):
+                    pass
         if os.name != "nt":
             os.killpg(os.getpgrp(), signal.SIGKILL)
         else:
             child.kill()  # main Job Object is the tree backstop
 
-    threading.Thread(target=owner_died, daemon=True).start()
     child.stdin.write(child_bootstrap)
-    child.stdin.close()
+    child.stdin.flush()
+    if module != "backend.app.analysis_child":
+        child.stdin.close()
+    threading.Thread(target=owner_died, daemon=True).start()
     return child.wait()
 
 

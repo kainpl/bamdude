@@ -50,7 +50,7 @@ cd frontend && npm run typecheck                       # Frontend Type Check —
 cd frontend && npm run i18n:check                      # en/uk drift, names the key
 pytest backend/tests/ -k "<name>" -v                   # a single backend test
 # Full suite: from the REPO ROOT, with the .env kept out of it (CONTRIBUTING.md#testing)
-CAMERA_RUNTIME=inline pytest backend/tests/ -n auto --timeout=300 --timeout-method=thread
+python -m pytest backend/tests/ -n 4 --timeout=300 --timeout-method=thread
 ```
 
 ## Merging a contributor PR

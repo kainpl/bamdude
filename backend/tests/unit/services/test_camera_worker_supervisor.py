@@ -2,8 +2,12 @@ import asyncio
 import logging
 import os
 import socket
+import subprocess
+import sys
 import uuid
+from pathlib import Path
 
+import psutil
 import pytest
 
 from backend.app.services.camera_runtime import CameraCaptureRequest, WorkerCameraRuntime
@@ -36,13 +40,75 @@ async def test_harness_worker_authenticates_answers_and_exits_cleanly():
         if os.name == "nt":
             assert supervisor._containment._job_handle is not None
         assert (await supervisor.request("heartbeat"))["result"] == {"state": "ready"}
-        assert (await supervisor.request("status"))["result"]["camera_runtime"] == "not_started"
+        assert (await supervisor.request("status"))["result"]["camera_runtime"] == "worker"
         assert (await supervisor.request("not_real"))["error"] == "unknown_operation"
         assert supervisor.bootstrap is not None
         assert supervisor.bootstrap.secret.hex() not in repr(supervisor.bootstrap)
     finally:
         await supervisor.stop()
     assert supervisor._containment is None
+
+
+@pytest.mark.asyncio
+async def test_worker_tcp_probe_does_not_open_camera_socket_in_main():
+    async def accept(_reader, writer):
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(accept, host="127.0.0.1", port=0)
+    supervisor = CameraWorkerSupervisor()
+    try:
+        await supervisor.start()
+        runtime = WorkerCameraRuntime(supervisor)
+        assert (
+            await runtime.probe_tcp("127.0.0.1", server.sockets[0].getsockname()[1], 2, identity=str(uuid.uuid4()))
+            == "ok"
+        )
+        assert (await supervisor.request("heartbeat"))["result"]["state"] == "ready"
+    finally:
+        await supervisor.stop()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_owner_hard_death_reaps_camera_guardian_and_child():
+    script = (
+        "import asyncio\n"
+        "import psutil\n"
+        "from backend.app.services.camera_worker_supervisor import CameraWorkerSupervisor\n"
+        "async def run():\n"
+        "    owner=CameraWorkerSupervisor()\n"
+        "    await owner.start()\n"
+        "    children=psutil.Process(owner.process.pid).children(recursive=True)\n"
+        "    print(owner.process.pid, children[0].pid, flush=True)\n"
+        "    await asyncio.Event().wait()\n"
+        "asyncio.run(run())\n"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[4],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    guardian_pid = None
+    worker_pid = None
+    try:
+        line = await asyncio.wait_for(asyncio.to_thread(parent.stdout.readline), timeout=15)
+        guardian_pid, worker_pid = map(int, line.split())
+        parent.kill()
+        await asyncio.to_thread(parent.wait, 5)
+
+        async def gone():
+            while psutil.pid_exists(guardian_pid) or psutil.pid_exists(worker_pid):
+                await asyncio.sleep(0.1)
+
+        await asyncio.wait_for(gone(), timeout=8)
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            await asyncio.to_thread(parent.wait, 5)
+        parent.stdout.close()
 
 
 @pytest.mark.asyncio
@@ -102,6 +168,7 @@ async def test_worker_runtime_relays_an_external_snapshot_without_starting_main_
     port = server.sockets[0].getsockname()[1]
     runtime = WorkerCameraRuntime(CameraWorkerSupervisor())
     try:
+        await runtime.supervisor.start()
         result = await runtime.capture(
             CameraCaptureRequest.external(
                 url=f"http://127.0.0.1:{port}/snapshot.jpg", camera_type="snapshot", timeout=5
@@ -172,6 +239,7 @@ async def test_worker_relays_latest_frames_for_an_external_live_lease():
     supervisor = CameraWorkerSupervisor()
     queue = None
     try:
+        await supervisor.start()
         lease_id, queue = await supervisor.subscribe_external(
             identity=str(uuid.uuid4()),
             url=f"http://127.0.0.1:{port}/snapshot.jpg",
@@ -208,6 +276,7 @@ async def test_worker_runtime_adapts_external_live_lease_to_mjpeg_and_releases_i
     supervisor = CameraWorkerSupervisor()
     runtime = WorkerCameraRuntime(supervisor)
     disconnect = asyncio.Event()
+    await supervisor.start()
     stream = runtime.stream_external(
         identity=str(uuid.uuid4()),
         url=f"http://127.0.0.1:{port}/snapshot.jpg",
@@ -247,6 +316,7 @@ async def test_worker_owns_and_releases_transparent_raw_camera_proxy():
 
     supervisor = CameraWorkerSupervisor()
     try:
+        await supervisor.start()
         lease_id = await supervisor.start_raw_proxy(
             identity=str(uuid.uuid4()),
             bind_address="127.0.0.1",

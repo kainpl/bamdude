@@ -117,15 +117,11 @@ class TestRtspArgvUsesProbe:
     # runs it). __file__ lives at backend/tests/unit/, so the repo root
     # is three parents up.
     _REPO_ROOT = Path(__file__).resolve().parents[3]
-    _RTSP_FFMPEG_CALLERS = (
-        "backend/app/api/routes/camera.py",
-        "backend/app/services/external_camera.py",
-    )
+    _RTSP_FFMPEG_CALLERS = ("backend/app/services/external_camera.py",)
 
     @pytest.mark.parametrize("rel", _RTSP_FFMPEG_CALLERS)
     def test_no_hard_coded_timeout_literal(self, rel):
-        """Neither RTSP ffmpeg argv may pass a hard-coded ``-timeout``
-        or ``-stimeout`` literal — both must come from the probe."""
+        """The worker's RTSP ffmpeg argv must use the probed timeout flag."""
         # ⚠️ ``encoding="utf-8"`` is load-bearing on Windows: `read_text()` with
         # no encoding uses the ANSI code page (cp1252 here), and this repo's
         # source is UTF-8 — comments carry ⚠️ and em dashes throughout. The test

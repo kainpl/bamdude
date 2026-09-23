@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from typing import Literal
 
 from pydantic_settings import BaseSettings
 
@@ -236,11 +235,6 @@ class Settings(BaseSettings):
     # hasn't reached an already-running shell/service yet.
     ffmpeg_path: str | None = None
 
-    # Camera ownership stays in-process unless a validated worker rollout is
-    # explicitly requested. Worker startup is fail-closed; it never falls back
-    # to a second inline owner after a containment or IPC failure.
-    camera_runtime: Literal["inline", "worker"] = "inline"
-
     # Logging
     log_level: str = "INFO"  # Override with LOG_LEVEL env var (DEBUG, INFO, WARNING, ERROR)
     log_to_file: bool = True  # Set to false to disable file logging
@@ -314,10 +308,9 @@ class Settings(BaseSettings):
 # It exists for the test suite, and it is not a convenience: ``settings`` is a
 # singleton built at import, and pydantic-settings reads ``.env`` from the
 # WORKING DIRECTORY, so without this a developer's own file silently decides
-# what the tests measure. It cost a day on 2026-09-17 - a suite that hung for
-# an hour because ``CAMERA_RUNTIME=worker`` was set for the developer's farm,
-# and a test process that opened a connection to the live application database
-# because ``DATABASE_URL=embedded`` was too. Nothing in production sets it.
+# what the tests measure. In particular, a developer's ``DATABASE_URL=embedded``
+# once made a test process open the live application database. Camera ownership
+# is now worker-only, so there is no camera mode for tests to override.
 settings = Settings(_env_file=None if os.getenv("BAMDUDE_IGNORE_DOTENV") else ".env")
 
 # Ensure directories exist

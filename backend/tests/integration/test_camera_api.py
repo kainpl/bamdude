@@ -95,56 +95,14 @@ class TestCameraAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_stop_camera_stream_with_active_stream(self, async_client: AsyncClient, printer_factory):
-        """Verify stop terminates active streams for the printer."""
+    async def test_stop_camera_stream_shuts_down_worker_relay(self, async_client: AsyncClient, printer_factory):
         printer = await printer_factory()
-
-        # Mock an active stream - wait() must be AsyncMock since it's awaited
-        mock_process = MagicMock()
-        mock_process.returncode = None
-        mock_process.pid = 99999
-        mock_process.terminate = MagicMock()
-        mock_process.wait = AsyncMock()
-
-        with patch("backend.app.api.routes.camera._active_streams", {f"{printer.id}-abc123": mock_process}):
+        with patch("backend.app.api.routes.camera.shutdown_broadcaster", new_callable=AsyncMock) as shutdown:
+            shutdown.return_value = True
             response = await async_client.post(f"/api/v1/printers/{printer.id}/camera/stop")
-
         assert response.status_code == 200
         assert response.json()["stopped"] == 1
-        mock_process.terminate.assert_called_once()
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_stop_camera_stream_only_stops_matching_printer(self, async_client: AsyncClient, printer_factory):
-        """Verify stop only terminates streams for the specified printer."""
-        printer1 = await printer_factory(name="Printer 1")
-        printer2 = await printer_factory(name="Printer 2")
-
-        # Mock active streams for both printers - wait() must be AsyncMock since it's awaited
-        mock_process1 = MagicMock()
-        mock_process1.returncode = None
-        mock_process1.pid = 99998
-        mock_process1.terminate = MagicMock()
-        mock_process1.wait = AsyncMock()
-
-        mock_process2 = MagicMock()
-        mock_process2.returncode = None
-        mock_process2.pid = 99997
-        mock_process2.terminate = MagicMock()
-        mock_process2.wait = AsyncMock()
-
-        active_streams = {
-            f"{printer1.id}-abc123": mock_process1,
-            f"{printer2.id}-def456": mock_process2,
-        }
-
-        with patch("backend.app.api.routes.camera._active_streams", active_streams):
-            response = await async_client.post(f"/api/v1/printers/{printer1.id}/camera/stop")
-
-        assert response.status_code == 200
-        assert response.json()["stopped"] == 1
-        mock_process1.terminate.assert_called_once()
-        mock_process2.terminate.assert_not_called()
+        shutdown.assert_awaited_once_with(f"printer-{printer.id}")
 
     # ========================================================================
     # Camera Test Endpoint
@@ -293,9 +251,9 @@ class TestCameraAPI:
         fake_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
 
         with patch(
-            "backend.app.services.external_camera._capture_frame_uncoalesced",
+            "backend.app.services.camera_runtime.capture",
             new_callable=AsyncMock,
-            return_value=fake_jpeg,
+            return_value=CameraCaptureResult(fake_jpeg, "fresh"),
         ):
             response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
 
@@ -314,14 +272,29 @@ class TestCameraAPI:
         )
 
         with patch(
-            "backend.app.services.external_camera._capture_frame_uncoalesced",
+            "backend.app.services.camera_runtime.capture",
             new_callable=AsyncMock,
-            return_value=None,
+            return_value=CameraCaptureResult(None, None),
         ):
             response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
 
         assert response.status_code == 503
         assert "external camera" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_camera_snapshot_worker_unavailable_is_503(self, async_client: AsyncClient, printer_factory):
+        from backend.app.services.camera_worker_supervisor import CameraWorkerUnavailable
+
+        printer = await printer_factory(
+            external_camera_enabled=True,
+            external_camera_url="http://192.0.2.50/snapshot.jpg",
+            external_camera_type="snapshot",
+        )
+        with patch("backend.app.services.camera_runtime.capture", side_effect=CameraWorkerUnavailable("stopped")):
+            response = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot")
+        assert response.status_code == 503
+        assert "worker" in response.json()["detail"].lower()
 
     # ========================================================================
     # Camera Stream Endpoint
@@ -341,18 +314,18 @@ class TestCameraAPI:
         """Verify FPS parameter is validated and clamped."""
         printer = await printer_factory()
 
-        # FPS should be clamped between 1 and 30
-        # Testing that the endpoint accepts various FPS values without error
-        # (actual streaming would require mocking ffmpeg)
+        # The request reaches the worker relay with a clamped rate; no ffmpeg
+        # or camera socket is opened by the API process.
+        with patch("backend.app.api.routes.camera._worker_stream_response", new_callable=AsyncMock) as relay:
+            from fastapi.responses import Response
 
-        with patch("backend.app.api.routes.camera.get_ffmpeg_path", return_value=None):
-            # With no ffmpeg, stream should return error message but not crash
+            relay.return_value = Response(status_code=200)
             response = await async_client.get(
                 f"/api/v1/printers/{printer.id}/camera/stream",
                 params={"fps": 100},  # Should be clamped to 30
             )
-            # Response will be a streaming response with error
             assert response.status_code == 200
+            assert relay.await_args.kwargs["fps"] == 30
 
     # ========================================================================
     # Plate Detection Endpoints

@@ -2,13 +2,11 @@
 
 import asyncio
 import sys
-from dataclasses import replace
 from unittest.mock import AsyncMock, Mock
 from urllib.parse import urlparse
 
 import pytest
 
-from backend.app.api.routes import camera as route
 from backend.app.services import camera, camera_cleanup, camera_tls, external_camera
 from backend.app.services.camera_cleanup import CameraAttempt, CameraCleanupError
 from backend.tests.unit.services.test_camera_tls_lifecycle import TLSPeer, eventually, run, tls_context
@@ -70,15 +68,10 @@ def processes(monkeypatch):
         return process
 
     monkeypatch.setattr(camera, "create_tls_proxy", proxy)
-    monkeypatch.setattr(route, "create_tls_proxy", proxy)
     monkeypatch.setattr(camera, "get_ffmpeg_path", lambda: "ffmpeg-test")
-    monkeypatch.setattr(route, "get_ffmpeg_path", lambda: "ffmpeg-test")
     monkeypatch.setattr(external_camera, "get_ffmpeg_path", lambda: "ffmpeg-test")
-    monkeypatch.setattr(route, "rtsp_socket_timeout_flag", lambda: "timeout")
     monkeypatch.setattr(camera, "rtsp_socket_timeout_flag", lambda: "timeout")
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    profile = replace(route.get_camera_profile("X1C"), rtsp_reconnect_delay=0.01, rtsp_reconnect_max=3)
-    monkeypatch.setattr(route, "get_camera_profile", lambda model: profile)
 
     class Farm:
         async def __aenter__(self):
@@ -108,9 +101,6 @@ def processes(monkeypatch):
                     pass
             self.target.close()
             await self.target.wait_closed()
-            route._active_streams.clear()
-            route._spawned_ffmpeg_pids.clear()
-            route._disconnect_events.clear()
 
         def __call__(self, context):
             self.context = context
@@ -119,70 +109,7 @@ def processes(monkeypatch):
     return Farm(), created, servers, modes
 
 
-@pytest.mark.parametrize("mode", ["eof", "timeout"])
-def test_reconnect_closes_old_proxy_before_spawn_including_immediate_failure(run, tls_context, processes, mode):
-    farm, created, servers, modes = processes
-    modes.extend([{"mode": mode}, {"immediate": True}, {}])
-
-    async def scenario():
-        async with farm(tls_context):
-            stream = route.generate_rtsp_mjpeg_stream("127.0.0.1", "secret", "X1C", stream_id="test", printer_id=1)
-            assert FRAME in await anext(stream)
-            assert FRAME in await anext(stream)  # after EOF/timeout and one immediate-exit retry
-            assert len(created) == 3
-            assert route._last_frames[1] == FRAME
-            await stream.aclose()
-            assert all(camera_tls._proxy_states[server].closed for server in servers)
-            assert all(process.returncode is not None for process in created)
-            await eventually(lambda: not camera_cleanup._owned_tasks)
-            assert not route._active_streams and not route._spawned_ffmpeg_pids
-
-    run(scenario())
-
-
-@pytest.mark.parametrize("action", ["disconnect", "cancel"])
-def test_stop_during_backoff_cannot_spawn_again(run, tls_context, processes, monkeypatch, action):
-    farm, created, servers, _ = processes
-    original_sleep = asyncio.sleep
-    backoff = asyncio.Event()
-
-    async def wait_for_reconnect(delay, disconnect_event):
-        if delay > 0:
-            backoff.set()
-            await original_sleep(0.05)
-            return disconnect_event is None or not disconnect_event.is_set()
-        return True
-
-    monkeypatch.setattr(route, "wait_for_rtsp_reconnect", wait_for_reconnect)
-
-    async def scenario():
-        async with farm(tls_context):
-            stop = asyncio.Event()
-            stream = route.generate_rtsp_mjpeg_stream(
-                "127.0.0.1", "secret", "X1C", stream_id="stop", disconnect_event=stop
-            )
-            await anext(stream)
-            # The first reconnect is deliberately immediate. Consume that
-            # replacement's first frame, then exercise cancellation while the
-            # second consecutive failure is in its jittered backoff window.
-            assert FRAME in await anext(stream)
-            next_frame = asyncio.create_task(anext(stream))
-            await asyncio.wait_for(backoff.wait(), 2)
-            if action == "cancel":
-                next_frame.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await next_frame
-            else:
-                stop.set()
-                with pytest.raises(StopAsyncIteration):
-                    await next_frame
-            await stream.aclose()
-            assert len(created) == 2 and all(camera_tls._proxy_states[server].closed for server in servers)
-
-    run(scenario())
-
-
-@pytest.mark.parametrize("owner", ["capture", "external_capture", "stream", "external_stream"])
+@pytest.mark.parametrize("owner", ["capture", "external_capture", "external_stream"])
 def test_spawn_failure_closes_each_owner_proxy(run, tls_context, processes, monkeypatch, owner, caplog):
     farm, created, servers, _ = processes
     monkeypatch.setattr(
@@ -196,11 +123,7 @@ def test_spawn_failure_closes_each_owner_proxy(run, tls_context, processes, monk
             elif owner == "external_capture":
                 assert await external_camera._capture_rtsp_frame("rtsps://bblp:secret@127.0.0.1/live", 1) is None
             else:
-                stream = (
-                    route.generate_rtsp_mjpeg_stream("127.0.0.1", "secret", "X1C")
-                    if owner == "stream"
-                    else external_camera._stream_rtsp("rtsps://bblp:secret@127.0.0.1/live", 5)
-                )
+                stream = external_camera._stream_rtsp("rtsps://bblp:secret@127.0.0.1/live", 5)
                 async for _ in stream:
                     pass
             assert len(servers) == 1 and camera_tls._proxy_states[servers[0]].closed
@@ -209,7 +132,7 @@ def test_spawn_failure_closes_each_owner_proxy(run, tls_context, processes, monk
     run(scenario())
 
 
-@pytest.mark.parametrize("owner", ["capture", "external_capture", "stream", "external_stream"])
+@pytest.mark.parametrize("owner", ["capture", "external_capture", "external_stream"])
 def test_cancellation_reaps_process_then_closes_proxy(run, tls_context, processes, owner, monkeypatch):
     farm, created, servers, _ = processes
 
@@ -238,11 +161,7 @@ def test_cancellation_reaps_process_then_closes_proxy(run, tls_context, processe
                     external_camera._capture_rtsp_frame("rtsps://bblp:secret@127.0.0.1/live", 10)
                 )
             else:
-                stream = (
-                    route.generate_rtsp_mjpeg_stream("127.0.0.1", "secret", "X1C", stream_id="cancel")
-                    if owner == "stream"
-                    else external_camera._stream_rtsp("rtsps://bblp:secret@127.0.0.1/live", 5)
-                )
+                stream = external_camera._stream_rtsp("rtsps://bblp:secret@127.0.0.1/live", 5)
                 task = asyncio.create_task(anext(stream))
             await asyncio.wait_for(blocked.wait(), 2)
             task.cancel()
@@ -253,39 +172,6 @@ def test_cancellation_reaps_process_then_closes_proxy(run, tls_context, processe
             assert created[0].reaped and camera_tls._proxy_states[servers[0]].closed
             assert not camera._active_capture_pids
             await eventually(lambda: not camera_cleanup._owned_tasks)
-
-    run(scenario())
-
-
-@pytest.mark.parametrize("fault", ["unreaped", "tls_timeout"])
-def test_cleanup_failure_stops_stream_retries(run, tls_context, processes, monkeypatch, fault):
-    farm, created, servers, _ = processes
-
-    async def scenario():
-        async with farm(tls_context):
-            stream = route.generate_rtsp_mjpeg_stream("127.0.0.1", "secret", "X1C", stream_id="failed")
-            await anext(stream)
-            if fault == "unreaped":
-
-                async def unconfirmed(*args):
-                    raise TimeoutError()
-
-                created[0].wait = unconfirmed
-            else:
-                original_close = camera_tls.close_tls_proxy
-
-                async def failed_close(server):
-                    await original_close(server)
-                    raise TimeoutError("fault injection")
-
-                monkeypatch.setattr(camera_tls, "close_tls_proxy", failed_close)
-            with pytest.raises(StopAsyncIteration):
-                await anext(stream)
-            assert len(created) == 1
-            assert camera_tls._proxy_states[servers[0]].closed
-            assert not route._active_streams and not route._spawned_ffmpeg_pids
-            if fault == "unreaped":
-                assert camera_cleanup._unreaped_processes[created[0].pid] is created[0]
 
     run(scenario())
 
@@ -425,13 +311,12 @@ def test_external_direct_fallback_is_preserved(run, monkeypatch, caplog):
     run(scenario())
 
 
-def test_existing_janitor_reaps_explicit_handoff_without_proc_scan(run, monkeypatch):
+def test_worker_reaps_explicit_failed_cleanup_handoff(run):
     async def scenario():
         process = FakeProcess(98765)
         camera_cleanup._unreaped_processes[process.pid] = process
-        monkeypatch.setattr(route, "_scan_bambu_ffmpeg_pids", lambda: [])
         try:
-            await route.cleanup_orphaned_streams()
+            await camera_cleanup.reap_camera_processes()
             assert process.reaped and process.pid not in camera_cleanup._unreaped_processes
         finally:
             camera_cleanup._unreaped_processes.pop(process.pid, None)
