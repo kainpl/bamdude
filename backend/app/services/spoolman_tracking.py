@@ -609,6 +609,8 @@ async def _apply_runout_zero_corrections_spoolman(client, journal_events: list, 
     its episode was CLOSED by a spool_loaded — a reinserted same reel keeps
     printing and is not empty; an autoswitch is closed by definition. The
     negative clamp stays unconditional (impossible arithmetic either way).
+    With ``runout_archive_spool_enabled`` on, a closed episode also archives
+    the spool in Spoolman; a failed archive keeps the drain.
     """
     from backend.app.models.print_usage_event import (
         EVENT_RUNOUT,
@@ -633,54 +635,78 @@ async def _apply_runout_zero_corrections_spoolman(client, journal_events: list, 
         from backend.app.api.routes.settings import get_setting
 
         raw = await get_setting(db, "runout_zero_point_enabled")
+        archive_raw = await get_setting(db, "runout_archive_spool_enabled")
     if raw is not None and raw.lower() == "false":
         return 0
+    # Off unless the row says so — mirrors usage_tracker._archive_on_runout_enabled.
+    archive_on_close = archive_raw is not None and archive_raw.lower() == "true"
 
     updated = 0
+    archived_any = False
     for event in runouts:
         spool_id = event.spoolman_spool_id
+        loads_after = [
+            e
+            for e in (journal_events or [])
+            if getattr(e, "event", "") == EVENT_SPOOL_LOADED
+            and getattr(e, "global_tray_id", None) == event.global_tray_id
+            and getattr(e, "id", 0) > getattr(event, "id", 0)
+        ]
+        episode_closed = getattr(event, "kind", None) == KIND_AUTOSWITCH or bool(loads_after)
+        # Retiring needs a DIFFERENT reel (or none assigned yet) — a load that
+        # froze this same spool is the reel re-fed; mirrors usage_tracker.
+        reel_replaced = getattr(event, "kind", None) == KIND_AUTOSWITCH or any(
+            getattr(e, "spoolman_spool_id", None) != spool_id for e in loads_after
+        )
         try:
             spool = await client.get_spool(spool_id)
         except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as exc:
             logger.debug("[SPOOLMAN] Zero correction: get_spool(%s) failed: %s", spool_id, exc)
             continue
         remaining = spool.get("remaining_weight")
-        if remaining is None:
-            continue
-        episode_closed = getattr(event, "kind", None) == KIND_AUTOSWITCH or any(
-            getattr(e, "event", "") == EVENT_SPOOL_LOADED
-            and getattr(e, "global_tray_id", None) == event.global_tray_id
-            and getattr(e, "id", 0) > getattr(event, "id", 0)
-            for e in (journal_events or [])
-        )
-        try:
-            if remaining > 0 and not episode_closed:
-                logger.info(
-                    "[SPOOLMAN] Archive %s: runout on spool %s stays OPEN (no replacement seen) — not draining",
-                    archive_id,
-                    spool_id,
-                )
-                continue
-            if remaining > 0:
-                await client.use_spool(spool_id, round(float(remaining), 2))
-                updated += 1
-                logger.info(
-                    "[SPOOLMAN] Archive %s: runout zero-point drained %.2fg from spool %s",
-                    archive_id,
-                    remaining,
-                    spool_id,
-                )
-            elif remaining < 0:
-                await client.update_spool(spool_id, remaining_weight=0)
-                updated += 1
-                logger.info(
-                    "[SPOOLMAN] Archive %s: runout zero-point clamped spool %s (%.2fg over) to 0",
-                    archive_id,
-                    -remaining,
-                    spool_id,
-                )
-        except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as exc:
-            logger.warning("[SPOOLMAN] Zero correction failed for spool %s: %s", spool_id, exc)
+        if remaining is not None:
+            try:
+                if remaining > 0 and not episode_closed:
+                    logger.info(
+                        "[SPOOLMAN] Archive %s: runout on spool %s stays OPEN (no replacement seen) — not draining",
+                        archive_id,
+                        spool_id,
+                    )
+                elif remaining > 0:
+                    await client.use_spool(spool_id, round(float(remaining), 2))
+                    updated += 1
+                    logger.info(
+                        "[SPOOLMAN] Archive %s: runout zero-point drained %.2fg from spool %s",
+                        archive_id,
+                        remaining,
+                        spool_id,
+                    )
+                elif remaining < 0:
+                    await client.update_spool(spool_id, remaining_weight=0)
+                    updated += 1
+                    logger.info(
+                        "[SPOOLMAN] Archive %s: runout zero-point clamped spool %s (%.2fg over) to 0",
+                        archive_id,
+                        spool_id,
+                        -remaining,
+                    )
+            except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as exc:
+                logger.warning("[SPOOLMAN] Zero correction failed for spool %s: %s", spool_id, exc)
+        # The reel is demonstrably empty only on a CLOSED episode. The archive
+        # does not depend on which way the drain went, nor on Spoolman knowing
+        # a remaining figure at all; and a failed archive never undoes a drain
+        # that already happened — two independent writes.
+        if archive_on_close and reel_replaced and not spool.get("archived"):
+            try:
+                await client.set_spool_archived(spool_id, archived=True)
+                archived_any = True
+                logger.info("[SPOOLMAN] Archive %s: runout closed spool %s — archived", archive_id, spool_id)
+            except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as exc:
+                logger.warning("[SPOOLMAN] Archiving run-out spool %s failed: %s", spool_id, exc)
+    if archived_any:
+        from backend.app.core.websocket import ws_manager
+
+        await ws_manager.broadcast({"type": "inventory_changed"})
     return updated
 
 

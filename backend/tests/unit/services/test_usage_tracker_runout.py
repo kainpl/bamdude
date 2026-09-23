@@ -7,7 +7,7 @@ spools, and only then closes unambiguous runouts out to exactly label_weight.
 
 import zipfile
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -1028,3 +1028,337 @@ class TestTheSlicerSlotOrderCountsOCCUPIEDTrays:
 
         lookup = {0: {"tray_type": "PETG"}, 1: {"tray_type": ""}, 254: {"tray_type": "PETG"}}
         assert loaded_trays_in_slicer_order(lookup, {}) == [0, 254]
+
+
+class TestRunoutArchivesTheSpool:
+    """Opt-in retire: a CLOSED runout episode also archives the emptied reel.
+
+    The gate is the same one the positive tail already uses (autoswitch, or a
+    spool_loaded on the tray after the runout). The tail's sign is irrelevant —
+    the reel is empty because the printer demonstrably moved on, not because
+    the books say so.
+    """
+
+    async def _closed_episode(self, db_session, printer, archive, spool_a, spool_b):
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [
+                (EVENT_START, None, 0, 0, spool_a.id),
+                (EVENT_RUNOUT, KIND_PAUSE, 0, 140, spool_a.id),
+                (EVENT_SPOOL_LOADED, None, 0, 140, spool_b.id),
+            ],
+        )
+
+    async def _complete(self, db_session, printer, archive):
+        _active_sessions[printer.id] = _session(printer.id)
+        p1, p2 = _patched_3mf([{"slot_id": 1, "used_g": 300.0, "type": "PLA", "color": "#FF0000"}])
+        with p1, p2, patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()) as broadcast:
+            await on_print_complete(
+                printer.id, {"status": "completed"}, _pm(total_layers=200), db_session, archive_id=archive.id
+            )
+        return [c.args[0] for c in broadcast.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_closed_episode_archives_the_empty_reel(self, db_session, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, weight_used=700)
+        spool_b = await _make_spool(db_session, weight_used=0)
+        await self._closed_episode(db_session, printer, archive, spool_a, spool_b)
+
+        sent = await self._complete(db_session, printer, archive)
+
+        await db_session.refresh(spool_a)
+        await db_session.refresh(spool_b)
+        assert spool_a.archived_at is not None
+        assert spool_b.archived_at is None
+        # The books still close exactly as before: 700 + 210 (split) + 90 (tail) = label.
+        assert spool_a.weight_used == pytest.approx(1000.0)
+        assert (spool_a.id, 90.0, RUNOUT_STATUS) in await _history(db_session)
+        assert {"type": "inventory_changed"} in sent
+
+    @pytest.mark.asyncio
+    async def test_the_retired_reel_gets_no_low_stock_warning_from_its_tail(self, db_session, tmp_path, monkeypatch):
+        """archived_at is set BEFORE the tail branch's ``_warn_if_low_stock``,
+        which skips archived spools. The print rows leave this reel at 79 %
+        (0 + 210 of 1000) — only the 790 g tail could warn, and must not."""
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, weight_used=0)
+        spool_b = await _make_spool(db_session, weight_used=0)
+        await self._closed_episode(db_session, printer, archive, spool_a, spool_b)
+
+        await self._complete(db_session, printer, archive)
+
+        await db_session.refresh(spool_a)
+        assert spool_a.low_stock_notified is False
+        assert spool_a.archived_at is not None
+        assert spool_a.weight_used == pytest.approx(1000.0)
+        assert (spool_a.id, 790.0, RUNOUT_STATUS) in await _history(db_session)
+
+    @pytest.mark.asyncio
+    async def test_an_open_episode_never_archives_even_when_it_clamps(self, db_session, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        # Books land over the label (990 + 300): the negative clamp fires on an
+        # open episode too — the reel was reinserted and kept printing.
+        spool_a = await _make_spool(db_session, weight_used=990)
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [(EVENT_START, None, 0, 0, spool_a.id), (EVENT_RUNOUT, KIND_PAUSE, 0, 140, spool_a.id)],
+        )
+
+        sent = await self._complete(db_session, printer, archive)
+
+        await db_session.refresh(spool_a)
+        assert spool_a.weight_used == pytest.approx(1000.0)  # clamped, as before
+        assert spool_a.archived_at is None
+        assert {"type": "inventory_changed"} not in sent
+
+    @pytest.mark.asyncio
+    async def test_autoswitch_is_closed_by_definition_and_archives_on_a_negative_tail(
+        self, db_session, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, weight_used=990)
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [(EVENT_START, None, 0, 0, spool_a.id), (EVENT_RUNOUT, KIND_AUTOSWITCH, 0, 140, spool_a.id)],
+        )
+
+        await self._complete(db_session, printer, archive)
+
+        await db_session.refresh(spool_a)
+        assert spool_a.weight_used == pytest.approx(1000.0)
+        assert spool_a.archived_at is not None
+
+    @pytest.mark.asyncio
+    async def test_absent_setting_means_off(self, db_session, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, weight_used=700)
+        spool_b = await _make_spool(db_session, weight_used=0)
+        await self._closed_episode(db_session, printer, archive, spool_a, spool_b)
+
+        sent = await self._complete(db_session, printer, archive)
+
+        await db_session.refresh(spool_a)
+        assert spool_a.weight_used == pytest.approx(1000.0)  # zero-point itself still on
+        assert spool_a.archived_at is None
+        assert {"type": "inventory_changed"} not in sent
+
+    @pytest.mark.asyncio
+    async def test_zero_point_off_disables_archiving_too(self, db_session, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_zero_point_enabled", value="false"))
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, weight_used=700)
+        spool_b = await _make_spool(db_session, weight_used=0)
+        await self._closed_episode(db_session, printer, archive, spool_a, spool_b)
+
+        await self._complete(db_session, printer, archive)
+
+        await db_session.refresh(spool_a)
+        assert spool_a.archived_at is None
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_runout_never_archives(self, db_session, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, weight_used=700)
+        spool_b = await _make_spool(db_session, weight_used=0)
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [
+                (EVENT_START, None, 0, 0, spool_a.id),
+                (EVENT_RUNOUT, KIND_AMBIGUOUS, 0, 140, spool_a.id),
+                (EVENT_SPOOL_LOADED, None, 0, 140, spool_b.id),
+            ],
+        )
+
+        await self._complete(db_session, printer, archive)
+
+        await db_session.refresh(spool_a)
+        assert spool_a.archived_at is None
+
+    @pytest.mark.asyncio
+    async def test_a_spool_without_a_label_is_still_archived(self, db_session, tmp_path, monkeypatch):
+        """No label means the books cannot close — not that the reel is not empty."""
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, label_weight=0, weight_used=700)
+        spool_b = await _make_spool(db_session, weight_used=0)
+        await self._closed_episode(db_session, printer, archive, spool_a, spool_b)
+
+        sent = await self._complete(db_session, printer, archive)
+
+        await db_session.refresh(spool_a)
+        assert spool_a.archived_at is not None
+        assert not any(sid == spool_a.id and st == RUNOUT_STATUS for sid, _w, st in await _history(db_session))
+        assert {"type": "inventory_changed"} in sent
+
+    @pytest.mark.asyncio
+    async def test_an_already_archived_spool_is_left_alone(self, db_session, tmp_path, monkeypatch):
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        archived_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        spool_a = await _make_spool(db_session, weight_used=700)
+        spool_a.archived_at = archived_at
+        await db_session.commit()
+        spool_b = await _make_spool(db_session, weight_used=0)
+        await self._closed_episode(db_session, printer, archive, spool_a, spool_b)
+
+        sent = await self._complete(db_session, printer, archive)
+
+        await db_session.refresh(spool_a)
+        assert spool_a.archived_at.replace(tzinfo=None) == archived_at.replace(tzinfo=None)
+        assert {"type": "inventory_changed"} not in sent
+
+    @pytest.mark.asyncio
+    async def test_a_reload_of_the_same_reel_closes_the_books_but_does_not_archive(
+        self, db_session, tmp_path, monkeypatch
+    ):
+        """A spool_loaded that froze the SAME spool as the runout is the same reel
+        re-fed (the RFID path can journal one when the uuid was blank at runout).
+        The episode still counts as closed for the books — that gate is shared and
+        unchanged — but only a demonstrably different reel retires this one."""
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, weight_used=700)
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [
+                (EVENT_START, None, 0, 0, spool_a.id),
+                (EVENT_RUNOUT, KIND_PAUSE, 0, 140, spool_a.id),
+                (EVENT_SPOOL_LOADED, None, 0, 140, spool_a.id),
+            ],
+        )
+
+        sent = await self._complete(db_session, printer, archive)
+
+        await db_session.refresh(spool_a)
+        assert spool_a.weight_used == pytest.approx(1000.0)
+        assert spool_a.archived_at is None
+        assert {"type": "inventory_changed"} not in sent
+
+    @pytest.mark.asyncio
+    async def test_a_load_that_froze_no_spool_still_counts_as_a_replacement(self, db_session, tmp_path, monkeypatch):
+        """A replacement nobody assigned yet journals spool_id=None — a different reel all the same."""
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, weight_used=700)
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [
+                (EVENT_START, None, 0, 0, spool_a.id),
+                (EVENT_RUNOUT, KIND_PAUSE, 0, 140, spool_a.id),
+                (EVENT_SPOOL_LOADED, None, 0, 140, None),
+            ],
+        )
+
+        await self._complete(db_session, printer, archive)
+
+        await db_session.refresh(spool_a)
+        assert spool_a.archived_at is not None
+
+    @pytest.mark.asyncio
+    async def test_the_slot_assignment_survives_the_archive(self, db_session, tmp_path, monkeypatch):
+        """Spec rule 8: archiving is not unassigning — during the print the row is
+        the only record of what fed it, and on idle on_ams_change settles the slot."""
+        from backend.app.models.spool_assignment import SpoolAssignment
+
+        monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        archive = await _make_archive(db_session, printer, tmp_path)
+        spool_a = await _make_spool(db_session, weight_used=990)
+        db_session.add(SpoolAssignment(spool_id=spool_a.id, printer_id=printer.id, ams_id=0, tray_id=0))
+        await db_session.commit()
+        await _journal(
+            db_session,
+            printer,
+            archive,
+            [(EVENT_START, None, 0, 0, spool_a.id), (EVENT_RUNOUT, KIND_AUTOSWITCH, 0, 140, spool_a.id)],
+        )
+
+        await self._complete(db_session, printer, archive)
+
+        await db_session.refresh(spool_a)
+        assert spool_a.archived_at is not None
+        rows = (await db_session.execute(select(SpoolAssignment))).scalars().all()
+        assert [(r.printer_id, r.ams_id, r.tray_id, r.spool_id) for r in rows] == [(printer.id, 0, 0, spool_a.id)]
+
+    @pytest.mark.asyncio
+    async def test_two_archived_reels_make_one_broadcast(self, db_session, monkeypatch):
+        """Spec rule 9: one inventory_changed per completion, however many reels retire."""
+        from types import SimpleNamespace
+
+        from backend.app.services.usage_tracker import apply_runout_zero_corrections
+
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await _make_printer(db_session)
+        spool_a = await _make_spool(db_session, weight_used=1000)
+        spool_b = await _make_spool(db_session, weight_used=1000)
+
+        def _ev(eid, event, kind, tray, spool_id):
+            return SimpleNamespace(
+                id=eid, event=event, kind=kind, global_tray_id=tray, spool_id=spool_id, archive_id=None
+            )
+
+        events = [
+            _ev(1, EVENT_RUNOUT, KIND_AUTOSWITCH, 0, spool_a.id),
+            _ev(2, EVENT_RUNOUT, KIND_AUTOSWITCH, 1, spool_b.id),
+        ]
+        with patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()) as broadcast:
+            await apply_runout_zero_corrections(db_session, printer.id, events, 0.0)
+
+        await db_session.refresh(spool_a)
+        await db_session.refresh(spool_b)
+        assert spool_a.archived_at is not None and spool_b.archived_at is not None
+        assert [c.args[0] for c in broadcast.await_args_list].count({"type": "inventory_changed"}) == 1

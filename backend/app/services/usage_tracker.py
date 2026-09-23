@@ -920,6 +920,18 @@ async def _zero_point_enabled(db: AsyncSession) -> bool:
     return raw is None or raw.lower() != "false"
 
 
+async def _archive_on_runout_enabled(db: AsyncSession) -> bool:
+    """Off unless the row says so — a farm opt-in, never inferred from absence.
+
+    Deliberately the opposite default of ``_zero_point_enabled``: closing the
+    books is what the accounting does; retiring the reel is a workflow choice.
+    """
+    from backend.app.api.routes.settings import get_setting
+
+    raw = await get_setting(db, "runout_archive_spool_enabled")
+    return raw is not None and raw.lower() == "true"
+
+
 async def apply_runout_zero_corrections(
     db: AsyncSession,
     printer_id: int,
@@ -946,7 +958,9 @@ async def apply_runout_zero_corrections(
     An autoswitch is closed by definition: the firmware moved to the backup,
     the origin could not have continued. The negative clamp stays
     unconditional either way — books over the label are impossible
-    arithmetic, not a claim about emptiness.
+    arithmetic, not a claim about emptiness. With
+    ``runout_archive_spool_enabled`` on, a closed episode also archives the
+    spool — before the tail branch, whatever the tail's sign.
     """
     from backend.app.models.print_usage_event import (
         EVENT_RUNOUT,
@@ -968,21 +982,43 @@ async def apply_runout_zero_corrections(
         return []
     if not await _zero_point_enabled(db):
         return []
+    archive_on_close = await _archive_on_runout_enabled(db)
 
     results: list[dict] = []
     touched = False
+    archived_ids: list[int] = []
     for event in runouts:
         spool = (await db.execute(select(Spool).where(Spool.id == event.spool_id))).scalar_one_or_none()
         if spool is None:
             continue
+        loads_after = [
+            e
+            for e in (events or [])
+            if e.event == EVENT_SPOOL_LOADED and e.global_tray_id == event.global_tray_id and e.id > event.id
+        ]
+        episode_closed = event.kind == KIND_AUTOSWITCH or bool(loads_after)
+        # The reel is demonstrably empty only on a CLOSED episode — the same
+        # test the positive tail uses below. Retiring it does not care which
+        # way the tail went, nor whether a label lets the books close at all;
+        # and it happens BEFORE the tail branch so ``_warn_if_low_stock`` (which
+        # skips archived spools) stays quiet about a reel that is being retired.
+        # Retiring asks one thing more than the books do: a load that froze the
+        # SAME spool is that reel re-fed (the RFID path journals one when the
+        # uuid was blank at runout), so only a different spool — or none yet
+        # assigned — counts as the replacement.
+        reel_replaced = event.kind == KIND_AUTOSWITCH or any(e.spool_id != event.spool_id for e in loads_after)
+        if archive_on_close and reel_replaced and spool.archived_at is None:
+            spool.archived_at = datetime.now(timezone.utc)
+            archived_ids.append(spool.id)
+            touched = True
+            logger.info(
+                "[UsageTracker] Runout zero-point: spool %d archived (empty reel, episode closed)",
+                spool.id,
+            )
         label = spool.label_weight or 0
         if label <= 0:
             continue
         tail = round(label - (spool.weight_used or 0), 1)
-        episode_closed = event.kind == KIND_AUTOSWITCH or any(
-            e.event == EVENT_SPOOL_LOADED and e.global_tray_id == event.global_tray_id and e.id > event.id
-            for e in (events or [])
-        )
         if tail > 0 and not episode_closed:
             logger.info(
                 "[UsageTracker] Runout on spool %d stays OPEN (no replacement seen) — not closing the books",
@@ -1046,6 +1082,13 @@ async def apply_runout_zero_corrections(
             )
     if touched:
         await db.commit()
+    if archived_ids:
+        # The runout row (when there is one) rides ``spool_usage_logged``; a
+        # closed episode with a zero or negative tail produces no row at all,
+        # so the Inventory page would never learn the reel is gone.
+        from backend.app.core.websocket import ws_manager
+
+        await ws_manager.broadcast({"type": "inventory_changed"})
     return results
 
 

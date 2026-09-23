@@ -77,6 +77,13 @@ class AppSettings(BaseModel):
         default=True,
         description="Close a spool at exactly empty when the printer reports an unambiguous filament runout",
     )
+    runout_archive_spool_enabled: bool = Field(
+        default=False,
+        description=(
+            "After the runout zero-point closes a spool at empty, also archive it — only when the "
+            "runout episode was closed by an AMS auto-switch or a replacement loaded into the slot"
+        ),
+    )
     ams_sync_bidirectional: bool = Field(
         default=True,
         description=(
@@ -688,6 +695,7 @@ class AppSettingsUpdate(BaseModel):
     slow_query_ms: int | None = Field(default=None, ge=0, le=60000)
     slow_request_ms: int | None = Field(default=None, ge=0, le=600000)
     runout_zero_point_enabled: bool | None = None
+    runout_archive_spool_enabled: bool | None = None
     ams_sync_bidirectional: bool | None = None
     runout_purge_grams: int | None = Field(default=None, ge=0, le=500)
     usage_events_retention_hours: int | None = Field(default=None, ge=1, le=8760)

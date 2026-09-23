@@ -18,6 +18,7 @@ from backend.app.models.print_usage_event import (
     KIND_AMBIGUOUS,
     KIND_PAUSE,
 )
+from backend.app.services.spoolman import SpoolmanClientError
 
 
 class _AsyncCtx:
@@ -97,6 +98,7 @@ async def _run(tracking, client, events, pm=None, get_setting=None):
 
     db = _make_db(tracking)
     setting = get_setting or AsyncMock(return_value="true")
+    broadcast = AsyncMock()
     with (
         patch("backend.app.services.spoolman_tracking.async_session", lambda: _AsyncCtx(db)),
         patch("backend.app.api.routes.settings.get_setting", setting),
@@ -109,8 +111,10 @@ async def _run(tracking, client, events, pm=None, get_setting=None):
         patch("backend.app.services.spoolman_tracking._apply_spool_types_to_archive", AsyncMock()),
         patch("backend.app.services.spoolman_tracking._load_journal_events", AsyncMock(return_value=events)),
         patch("backend.app.services.printer_manager.printer_manager", pm or _pm()),
+        patch("backend.app.core.websocket.ws_manager.broadcast", broadcast),
     ):
         await report_usage(printer_id=1, archive_id=143)
+    return broadcast
 
 
 class TestSpoolmanRunoutZeroPoint:
@@ -233,3 +237,129 @@ class TestAutoswitchPurgeGramsSpoolman:
         # 300 g over 200 layers, runout at 100: origin 150, backup 150 + 25 purge.
         assert by_spool[8] == pytest.approx(150.0)
         assert by_spool[9] == pytest.approx(175.0)
+
+
+def _setting_map(**values):
+    """A key-aware get_setting: every key answers "true" like ``_run``'s default
+    (``spoolman_enabled`` must, or nothing is tracked at all) except the ones
+    given here; a key given as None answers None, like an absent row."""
+
+    async def _get(db, key):
+        return values.get(key, "true")
+
+    return AsyncMock(side_effect=_get)
+
+
+_ARCHIVE_ON = {"runout_archive_spool_enabled": "true"}
+
+
+def _closed_episode():
+    return [
+        _event(1, EVENT_RUNOUT, KIND_PAUSE, 0, 140, 8),
+        _event(2, EVENT_SPOOL_LOADED, None, 0, 140, 9),
+    ]
+
+
+class TestSpoolmanRunoutArchivesTheSpool:
+    @pytest.mark.asyncio
+    async def test_closed_episode_archives_the_empty_spool(self):
+        client = _client(remaining=30.0)
+
+        broadcast = await _run(_tracking(), client, _closed_episode(), get_setting=_setting_map(**_ARCHIVE_ON))
+
+        client.set_spool_archived.assert_awaited_once_with(8, archived=True)
+        # The drain is untouched: 30 g remaining still leaves via use_spool.
+        assert any(c.args == (8, 30.0) for c in client.use_spool.await_args_list)
+        assert {"type": "inventory_changed"} in [c.args[0] for c in broadcast.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_an_open_episode_never_archives(self):
+        events = [_event(1, EVENT_RUNOUT, KIND_PAUSE, 0, 140, 8)]
+        client = _client(remaining=-5.0)  # negative → the clamp fires even on an open episode
+
+        broadcast = await _run(_tracking(), client, events, get_setting=_setting_map(**_ARCHIVE_ON))
+
+        client.update_spool.assert_awaited_once_with(8, remaining_weight=0)
+        client.set_spool_archived.assert_not_awaited()
+        assert {"type": "inventory_changed"} not in [c.args[0] for c in broadcast.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_absent_setting_means_off(self):
+        client = _client(remaining=30.0)
+
+        await _run(_tracking(), client, _closed_episode(), get_setting=_setting_map(runout_archive_spool_enabled=None))
+
+        client.set_spool_archived.assert_not_awaited()
+        assert any(c.args == (8, 30.0) for c in client.use_spool.await_args_list)  # zero-point itself still on
+
+    @pytest.mark.asyncio
+    async def test_a_failed_archive_keeps_the_drain(self):
+        client = _client(remaining=30.0)
+        client.set_spool_archived = AsyncMock(side_effect=SpoolmanClientError("boom", 400))
+
+        broadcast = await _run(_tracking(), client, _closed_episode(), get_setting=_setting_map(**_ARCHIVE_ON))
+
+        client.set_spool_archived.assert_awaited_once_with(8, archived=True)
+        assert any(c.args == (8, 30.0) for c in client.use_spool.await_args_list)
+        assert {"type": "inventory_changed"} not in [c.args[0] for c in broadcast.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_a_spool_without_remaining_is_still_archived(self):
+        """No remaining figure means no books to close — not a reason to keep an empty reel active."""
+        client = _client(remaining=None)
+
+        await _run(_tracking(), client, _closed_episode(), get_setting=_setting_map(**_ARCHIVE_ON))
+
+        client.set_spool_archived.assert_awaited_once_with(8, archived=True)
+
+    @pytest.mark.asyncio
+    async def test_an_already_archived_spool_is_left_alone(self):
+        client = _client(remaining=0.0)
+        client.get_spool = AsyncMock(return_value={"id": 8, "remaining_weight": 0.0, "archived": True, "filament": {}})
+
+        broadcast = await _run(_tracking(), client, _closed_episode(), get_setting=_setting_map(**_ARCHIVE_ON))
+
+        client.set_spool_archived.assert_not_awaited()
+        assert {"type": "inventory_changed"} not in [c.args[0] for c in broadcast.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_a_reload_of_the_same_reel_drains_but_does_not_archive(self):
+        """spool_loaded froze the SAME spoolman id as the runout: the same reel re-fed.
+        The drain gate is unchanged; only a different reel retires this one."""
+        events = [
+            _event(1, EVENT_RUNOUT, KIND_PAUSE, 0, 140, 8),
+            _event(2, EVENT_SPOOL_LOADED, None, 0, 140, 8),
+        ]
+        client = _client(remaining=30.0)
+
+        await _run(_tracking(), client, events, get_setting=_setting_map(**_ARCHIVE_ON))
+
+        assert any(c.args == (8, 30.0) for c in client.use_spool.await_args_list)
+        client.set_spool_archived.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_closed_episode_with_books_over_the_label_clamps_and_archives(self):
+        client = _client(remaining=-12.0)
+
+        broadcast = await _run(_tracking(), client, _closed_episode(), get_setting=_setting_map(**_ARCHIVE_ON))
+
+        client.update_spool.assert_awaited_once_with(8, remaining_weight=0)
+        client.set_spool_archived.assert_awaited_once_with(8, archived=True)
+        assert [c.args[0] for c in broadcast.await_args_list].count({"type": "inventory_changed"}) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_archive_keeps_the_count(self):
+        """The corrections count is about the books; a failed archive neither adds to nor takes from it."""
+        from backend.app.services.spoolman_tracking import _apply_runout_zero_corrections_spoolman
+
+        client = _client(remaining=30.0)
+        client.set_spool_archived = AsyncMock(side_effect=SpoolmanClientError("boom", 400))
+        with (
+            patch("backend.app.services.spoolman_tracking.async_session", lambda: _AsyncCtx(_make_db(None))),
+            patch("backend.app.api.routes.settings.get_setting", _setting_map(**_ARCHIVE_ON)),
+            patch("backend.app.core.websocket.ws_manager.broadcast", AsyncMock()),
+        ):
+            updated = await _apply_runout_zero_corrections_spoolman(client, _closed_episode(), 143)
+
+        assert updated == 1
+        client.use_spool.assert_awaited_once_with(8, 30.0)
