@@ -9,6 +9,18 @@
   loaded into the slot. A reel that was simply reinserted and kept printing
   stays active. Works for the built-in inventory and Spoolman alike. Off by
   default: farms that archive empty spools by hand lose nothing.
+- **Clear a printer's finished issues in one go.** The Issues section of a
+  queue card gained *Delete all*: after a confirm that names the printer and
+  the counts, it removes the failed and cancelled jobs the section is
+  showing — the ones you are allowed to delete, so an operator who may only
+  delete their own jobs sees exactly that number. Skipped jobs stay (they are
+  deferred work, not finished failures), print history and the queue's
+  counters are untouched, and a job that was retried in the meantime is left
+  in place rather than deleted. Deleting failed jobs counts as acknowledging
+  them: jobs set to wait for a successful previous print may start on that
+  printer again, and the confirm says so. Suggested by a farm operator. Along
+  the way the per-row remove button got its missing tooltip text, and its
+  toast now says the job was removed rather than cancelled.
 
 ### Fixed
 
