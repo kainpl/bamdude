@@ -612,12 +612,12 @@ describe('PrinterQueueWidget - Clear Plate', () => {
   });
 
   describe('defects beside the answer', () => {
-    it('sends the touched defect counters with Clear plate, and nothing when untouched', async () => {
+    it('sends the touched defect counters with the displayed run identity', async () => {
       let clearBody: unknown = 'unset';
       server.use(
         http.get('/api/v1/printers/:id/waiting-print', () =>
           HttpResponse.json({
-            archive_id: 9, print_name: 'Done', status: 'completed', quantity: 6, defective_count: 0,
+            archive_id: 9, gate_token: 'gate-9', print_name: 'Done', status: 'completed', quantity: 6, defective_count: 0,
             parts: [
               { id: 21, name: 'lid', name_key: 'lid', quantity: 2, defective: 0 },
               { id: 22, name: 'base', name_key: 'base', quantity: 4, defective: 0 },
@@ -640,7 +640,7 @@ describe('PrinterQueueWidget - Clear Plate', () => {
       await user.click(screen.getByText('Clear plate'));
 
       await waitFor(() =>
-        expect(clearBody).toEqual({ defects: { parts: [{ id: 21, defective: 1 }, { id: 22, defective: 0 }] } }),
+        expect(clearBody).toEqual({ expected_archive_id: 9, expected_gate_token: 'gate-9', defects: { parts: [{ id: 21, defective: 1 }, { id: 22, defective: 0 }] } }),
       );
     });
 
@@ -771,11 +771,11 @@ describe('PrinterQueueWidget - Clear Plate', () => {
       await waitFor(() => expect(asked).toBeGreaterThan(1));
     });
 
-    it('clears without a body when no counter was touched', async () => {
+    it('clears with run identity and no defects when no counter was touched', async () => {
       let clearBody: unknown = 'unset';
       server.use(
         http.get('/api/v1/printers/:id/waiting-print', () =>
-          HttpResponse.json({ archive_id: 9, print_name: 'Done', status: 'completed', quantity: 6, defective_count: 0, parts: [] }),
+          HttpResponse.json({ archive_id: 9, gate_token: 'gate-9', print_name: 'Done', status: 'completed', quantity: 6, defective_count: 0, parts: [] }),
         ),
         http.post('/api/v1/printers/:id/clear-plate', async ({ request }) => {
           const text = await request.text();
@@ -785,8 +785,9 @@ describe('PrinterQueueWidget - Clear Plate', () => {
       );
       const user = userEvent.setup();
       render(<PrinterQueueWidget printerId={1} printerState="FINISH" awaitingPlateClear={true} />);
+      await screen.findByTestId('plate-defects-toggle');
       await user.click(await screen.findByText('Clear plate'));
-      await waitFor(() => expect(clearBody).toBeNull());
+      await waitFor(() => expect(clearBody).toEqual({ expected_archive_id: 9, expected_gate_token: 'gate-9' }));
     });
   });
 });

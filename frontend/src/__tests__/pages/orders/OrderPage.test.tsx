@@ -181,7 +181,7 @@ describe('OrderPage', () => {
     // The interim picker is gone with its button — the plan block is the only
     // way from this page into the queue.
     expect(screen.queryByTestId('line-10-print')).not.toBeInTheDocument();
-  });
+  }, 15_000); // Full order/plan mount; >7s observed in the four-worker full suite.
 
   it('suggests closing an order whose lines are all covered, and closes it on demand', async () => {
     vi.spyOn(api, 'getOrder').mockResolvedValue(order as never);

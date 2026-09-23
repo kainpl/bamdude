@@ -69,6 +69,7 @@ const finishedAwaitingClear = {
 
 const waitingPrint = {
   archive_id: 9,
+  gate_token: 'gate-9',
   print_name: 'Done',
   status: 'completed',
   quantity: 2,
@@ -115,16 +116,16 @@ describe('the Queue page card', () => {
     fireEvent.change(lid, { target: { value: '1' } });
     fireEvent.click(screen.getByRole('button', { name: /Clear plate/i }));
     await waitFor(() =>
-      expect(posted.clear).toEqual({ defects: { parts: [{ id: 21, defective: 1 }] } }),
+      expect(posted.clear).toEqual({ expected_archive_id: 9, expected_gate_token: 'gate-9', defects: { parts: [{ id: 21, defective: 1 }] } }),
     );
   });
 
-  it('an untouched row sends no body', async () => {
+  it('an untouched row sends the displayed run identity but no defects', async () => {
     const posted = mockApi();
     render(<QueuePage />);
     await screen.findByTestId('plate-defects-toggle');
     fireEvent.click(screen.getByRole('button', { name: /Clear plate/i }));
     await waitFor(() => expect(posted.clearCalls).toBe(1));
-    expect(posted.clear).toBeNull();
+    expect(posted.clear).toEqual({ expected_archive_id: 9, expected_gate_token: 'gate-9' });
   });
 });

@@ -13,8 +13,8 @@ import { invalidateQueueViews, invalidateOrderViews } from '../utils/queryInvali
  * queue has run dry, and the only one on the compact card) and the Queue
  * page's card. The print the gate is about is fetched only while the pair is
  * on screen; the numbers are a starting point pre-filled from it and travel
- * with whichever button is pressed, and only when a counter was touched — an
- * untouched row sends no body, so the backend records nothing. The row itself
+ * with whichever button is pressed, and only when a counter was touched. An
+ * untouched row still names the displayed run/gate, but sends no defects. The row itself
  * is `components/PlateDefectsRow`.
  */
 export interface PlateDefects {

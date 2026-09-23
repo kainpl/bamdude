@@ -5,12 +5,13 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../utils';
 import { api } from '../../../api/client';
 import type { FarmNeeds } from '../../../api/client';
 import { OrdersPage } from '../../../pages/orders/OrdersPage';
+import { SEARCH_DEBOUNCE_MS } from '../../../hooks/useSearchBox';
 
 const rowA = { id: 1, name: 'A', status: 'active', customer_id: 1, customer_name: 'ACME', ordered: 2, printed: 1, covered_units: 1, remaining: 1, from_stock_units: 0, progress: 0.5, lines_count: 1, priority: 'normal', line_products: [] };
 const rowB = { id: 2, name: 'B', status: 'completed', customer_id: null, customer_name: null, ordered: 1, printed: 1, covered_units: 1, remaining: 0, from_stock_units: 0, progress: 1, lines_count: 1, priority: 'normal', line_products: [] };
@@ -66,7 +67,14 @@ describe('OrdersPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: /all/i }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith({ sort_by: 'updated-desc', page: 1, per_page: 24 }));
     expect(window.location.search).toBe('?tab=all');
-    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'gear' } });
+    // Exercise the debounce, not the speed of a loaded four-worker host.
+    vi.useFakeTimers();
+    try {
+      fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'gear' } });
+      await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
+    } finally {
+      vi.useRealTimers();
+    }
     await waitFor(() => expect(get).toHaveBeenLastCalledWith({ q: 'gear', sort_by: 'updated-desc', page: 1, per_page: 24 }));
     expect(window.location.search).toContain('q=gear');
   });

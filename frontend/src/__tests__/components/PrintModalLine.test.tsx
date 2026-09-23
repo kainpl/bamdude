@@ -210,7 +210,7 @@ describe('PrintModal — order line', () => {
 
     await waitFor(() => expect(add).toHaveBeenCalled());
     expect(add.mock.calls[0][0]).toMatchObject({ project_id: 3, project_line_id: null });
-  });
+  }, 15_000); // Two complete modal mounts; >7s observed in the four-worker full suite.
 
   it('carries the line into the add-to-queue payload', async () => {
     const add = vi.spyOn(api, 'addToQueue').mockResolvedValue({ id: 1 } as never);

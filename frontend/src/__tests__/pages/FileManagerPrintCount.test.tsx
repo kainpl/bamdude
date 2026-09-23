@@ -175,7 +175,7 @@ describe('library print count', () => {
     // printed. Nothing survives both — which proves they compose rather than
     // the later one replacing the earlier.
     expect(await screen.findByText('No matching files')).toBeInTheDocument();
-  });
+  }, 15_000); // Full page + two async filter updates on a loaded four-worker host.
 
   it('is cleared by the clear-filters button', async () => {
     // The button promises a reset; leaving one filter on leaves the library
