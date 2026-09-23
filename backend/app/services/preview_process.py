@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import sys
 import threading
@@ -11,8 +10,9 @@ from pathlib import Path
 
 import psutil
 
-from backend.app.services.camera_worker_containment import WorkerContainment
 from backend.app.services.preview_protocol import LOG_BYTES, PreviewError, encode
+from backend.app.services.worker_containment import WorkerContainment
+from backend.app.services.worker_process import descendants, descendants_reaped, kill_owned_group
 
 
 class PreviewProcess:
@@ -39,7 +39,7 @@ class PreviewProcess:
         env.setdefault("MPLCONFIGDIR", str(cache))
         self.tail = bytearray()
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "backend.app.preview_guardian"],
+            [sys.executable, "-m", "backend.app.worker_guardian"],
             cwd=Path(__file__).resolve().parents[3],
             env=env,
             stdin=subprocess.PIPE,
@@ -75,10 +75,7 @@ class PreviewProcess:
 
     def stop(self):
         process = self.process
-        try:
-            descendants = psutil.Process(process.pid).children(recursive=True)
-        except psutil.NoSuchProcess:
-            descendants = []
+        children = descendants(process.pid)
         if process.stdin:
             process.stdin.close()  # EOF guardian kills even detached grandchildren
         if process.poll() is None:
@@ -86,7 +83,7 @@ class PreviewProcess:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 if os.name != "nt":
-                    os.killpg(process.pid, signal.SIGKILL)
+                    kill_owned_group(process.pid)
                 elif self.containment:
                     self.containment.close()
                 else:
@@ -97,12 +94,8 @@ class PreviewProcess:
         if os.name != "nt":
             # The group can outlive its leader (guardian crash). It is the
             # owned session we created, not a PID adopted from a marker.
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        _, alive = psutil.wait_procs(descendants, timeout=5)
-        if alive:
+            kill_owned_group(process.pid)
+        if not descendants_reaped(children):
             raise PreviewError("unavailable")  # no replacement while ownership is uncertain
         if hasattr(self, "reader"):
             self.reader.join(timeout=5)
