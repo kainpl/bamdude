@@ -131,6 +131,16 @@ describe('ProductGallery', () => {
     );
   });
 
+  it('shows the cover and every picture whole, never cropped', () => {
+    render(<ProductGallery product={product} canEdit />);
+    expect(screen.getByTestId('product-gallery-cover').className).toContain('object-contain');
+    for (const tile of screen.getAllByTestId(/^gallery-picture-/)) {
+      const img = tile.querySelector('img')!;
+      expect(img.className).toContain('object-contain');
+      expect(img.className).not.toContain('object-cover');
+    }
+  });
+
   it('falls back to the placeholder tile when nothing can be a cover', () => {
     render(<ProductGallery product={{ ...product, has_cover: false, attachments: [] }} canEdit />);
 

@@ -5260,6 +5260,12 @@ export default {
   },
 
   // Projects section, orders face — the whole vocabulary of the redesign.
+  list: {
+    view: { label: 'Вигляд', cards: 'Картки', table: 'Таблиця' },
+    search: { clear: 'Очистити пошук' },
+    empty: { noMatch: 'Нічого не збігається з пошуком або фільтрами.', reset: 'Скинути' },
+    sort: { label: 'Сортування', asc: 'За зростанням', desc: 'За спаданням', updated: 'Остання зміна', created: 'Дата створення' },
+  },
   orders: {
     status: {
       active: 'Активне',
@@ -5279,8 +5285,11 @@ export default {
       noCustomer: 'Без замовника',
       customerFilterAll: 'Усі замовники',
       groupByCustomer: 'Групувати за замовником',
-      viewCards: 'Картки',
-      viewTable: 'Таблиця',
+      searchPlaceholder: 'Пошук замовлень або замовників…',
+      items_one: 'замовлення',
+      items_few: 'замовлення',
+      items_many: 'замовлень',
+      items_other: 'замовлення',
       empty: {
         active: 'Немає активних замовлень',
         completed: 'Немає виконаних замовлень',
@@ -5302,6 +5311,7 @@ export default {
       due: 'Дедлайн',
       readyAt: 'Готово',
       machineHours: 'Маш.-год',
+      forecastSortHint: 'Сортує лише цю сторінку — прогноз довідковий і не є порядком списку',
     },
     card: {
       lines_one: '{{count}} позиція',
@@ -5669,6 +5679,17 @@ export default {
       title: 'Замовники',
       newCustomer: 'Новий замовник',
       empty: 'Замовників ще немає',
+      searchPlaceholder: 'Пошук замовників…',
+      items_one: 'замовник',
+      items_few: 'замовники',
+      items_many: 'замовників',
+      items_other: 'замовника',
+    },
+    card: {
+      orders_one: '{{count}} замовлення',
+      orders_few: '{{count}} замовлення',
+      orders_many: '{{count}} замовлень',
+      orders_other: '{{count}} замовлення',
     },
     table: {
       name: 'Ім’я',
@@ -5769,6 +5790,18 @@ export default {
       search: 'Пошук виробів…',
       inCatalog: 'У каталозі',
       empty: 'Виробів ще немає',
+      items_one: 'виріб',
+      items_few: 'вироби',
+      items_many: 'виробів',
+      items_other: 'виробу',
+    },
+    table: {
+      name: 'Виріб',
+      parts: 'Деталей',
+      plates: 'Плит',
+      orders: 'У замовленнях',
+      kits: 'Комплектів на полиці',
+      catalog: 'У каталозі',
     },
     import: {
       title: 'Імпорт виробу',

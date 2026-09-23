@@ -39,6 +39,7 @@ from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate, product_files, product_folders
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
 from backend.app.models.user import User
+from backend.app.schemas.listing import ProductListPage
 from backend.app.schemas.product import (
     AttachmentOrderRequest,
     CoverPickRequest,
@@ -66,6 +67,14 @@ from backend.app.schemas.product import (
     StockMovementOut,
 )
 from backend.app.services import part_stock, product_delete
+from backend.app.services.list_paging import (
+    SortSpec,
+    apply_sql_sort,
+    page_meta,
+    resolve_sort,
+    slice_page,
+    sort_computed,
+)
 from backend.app.services.part_names import canonicalize, name_key
 from backend.app.services.product_card import (
     export_zip,
@@ -263,16 +272,50 @@ async def _apply_folder(db: AsyncSession, folder_id: int, product_ids: set[int])
         raise HTTPException(status_code=404, detail=str(e)) from e
 
 
-@router.get("", response_model=list[ProductListItem])
-@router.get("/", response_model=list[ProductListItem])
+_PRODUCT_SORT = SortSpec(
+    sql={
+        "name": (func.lower(Product.name), False),
+        "updated": (Product.updated_at, False),
+        "created": (Product.created_at, False),
+    },
+    computed={"parts", "plates", "orders", "kits"},
+    default="name-asc",
+)
+_PRODUCT_COMPUTED = {
+    "parts": lambda r: r.parts_count,
+    "plates": lambda r: r.plates_count,
+    "orders": lambda r: r.lines_count,
+    "kits": lambda r: r.kits_available,
+}
+
+
+@router.get("", response_model=list[ProductListItem] | ProductListPage)
+@router.get("/", response_model=list[ProductListItem] | ProductListPage)
 async def list_products(
     active: bool | None = None,
     q: str | None = None,
     include_adhoc: bool = False,
+    sort_by: str | None = Query(None, description="With page set: '<key>-<asc|desc>'; unknown → name-asc"),
+    page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
+    per_page: int = Query(24, ge=1, le=200),
+    all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
-    query = select(Product).options(selectinload(Product.parts), selectinload(Product.plates)).order_by(Product.name)
+    """The product catalog. ``page`` is the compat switch (the inventory's contract).
+
+    Without it the flat array the pickers, the link-to-products dialog, the
+    model card and the stock journal read — unchanged. With it ``{items, meta}``
+    and ``sort_by``. A SQL key (``name``, ``updated``, ``created``) pages in the
+    database and the counts below are read for that page only; a computed key
+    (``parts``, ``plates``, ``orders``, ``kits``) loads the filtered catalog,
+    counts it as the unpaged list always did, sorts here and slices.
+    """
+    paged = page is not None
+    key, direction, computed = resolve_sort(_PRODUCT_SORT, sort_by)
+    query = select(Product).options(selectinload(Product.parts), selectinload(Product.plates))
+    if not paged:
+        query = query.order_by(Product.name)
     # The catalogue never saw an adhoc product (spec Decision 2); only a
     # caller that asks by name gets them.
     if not include_adhoc:
@@ -281,6 +324,12 @@ async def list_products(
         query = query.where(Product.is_active.is_(active))
     if q:
         query = query.where(Product.name.ilike(f"%{q.strip()}%"))
+    total = 0
+    if paged and not computed:
+        total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
+        query = apply_sql_sort(query, _PRODUCT_SORT, key, direction, Product.id)
+        if not all:
+            query = query.limit(per_page).offset((page - 1) * per_page)
     products = (await db.execute(query)).scalars().all()
     counts = dict(
         (
@@ -294,7 +343,7 @@ async def list_products(
     # counts above it — ``kits_available`` per product is a per-row number and a
     # per-row query for it would be an N+1 nobody notices until the catalog grows.
     stock = await part_stock.balances_for_products(db, [p.id for p in products])
-    return [
+    items = [
         ProductListItem(
             id=p.id,
             name=p.name,
@@ -311,6 +360,13 @@ async def list_products(
         )
         for p in products
     ]
+    if not paged:
+        return items
+    if computed:
+        items = sort_computed(items, _PRODUCT_COMPUTED[key], direction, id_fn=lambda r: r.id)
+        total = len(items)
+        items = slice_page(items, page, per_page, all)
+    return ProductListPage(items=items, meta=page_meta(total, page, per_page, all))
 
 
 @router.post("", response_model=ProductResponse)

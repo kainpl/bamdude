@@ -15,7 +15,7 @@ from typing import NamedTuple
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -46,6 +46,7 @@ from backend.app.schemas.farm_forecast import (
     RowForecastOut,
 )
 from backend.app.schemas.filament_needs import FarmNeedsOut, FarmRowOut, NeedRowOut, OrderNeedsOut
+from backend.app.schemas.listing import OrderListPage, OrderListTotals
 from backend.app.schemas.order_from_files import OrderFromFilesRequest
 from backend.app.schemas.project import (
     PROJECT_PRIORITIES,
@@ -95,6 +96,14 @@ from backend.app.services.archive_write_scope import archive_write_scope
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.filament_intake import require_source_requirements
 from backend.app.services.filament_requirements import PrintRequirementsCache
+from backend.app.services.list_paging import (
+    SortSpec,
+    apply_sql_sort,
+    page_meta,
+    resolve_sort,
+    slice_page,
+    sort_computed,
+)
 from backend.app.services.order_metrics import (
     attribute,
     grouped_figures,
@@ -214,20 +223,92 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
 # ---------- CRUD ----------
 
 
-@router.get("", response_model=list[ProjectListResponse])
-@router.get("/", response_model=list[ProjectListResponse])
+# low < normal < high < urgent — a CASE so the column sorts by rank, not alphabet.
+_PRIORITY_RANK = case(
+    (Project.priority == "low", 0),
+    (Project.priority == "normal", 1),
+    (Project.priority == "high", 2),
+    else_=3,
+)
+_ORDER_SORT = SortSpec(
+    sql={
+        "updated": (Project.updated_at, False),
+        "created": (Project.created_at, False),
+        "name": (func.lower(Project.name), False),
+        "due": (Project.due_date, True),
+        "priority": (_PRIORITY_RANK, False),
+        "customer": (func.lower(Customer.name), True),
+    },
+    computed={"progress", "remaining", "printing", "queued"},
+    default="updated-desc",
+)
+_ORDER_COMPUTED = {
+    "progress": lambda r: r.progress,
+    "remaining": lambda r: r.remaining,
+    "printing": lambda r: r.prints_in_progress,
+    "queued": lambda r: r.prints_queued,
+}
+
+
+def _order_search(query, q: str):
+    """``q`` on the order name or its customer's name; the caller has joined Customer."""
+    needle = f"%{q.strip()}%"
+    return query.where(or_(Project.name.ilike(needle), Customer.name.ilike(needle)))
+
+
+async def _order_totals(
+    db: AsyncSession, *, customer_id: int | None, product_id: int | None, q: str | None
+) -> OrderListTotals:
+    """Tab counts under the current filters WITHOUT status, so the tabs tell the
+    truth under the chosen customer or search — not the whole farm's numbers."""
+    base = select(Project.status, func.count(Project.id)).group_by(Project.status)
+    if customer_id is not None:
+        base = base.where(Project.customer_id == customer_id)
+    if product_id is not None:
+        base = base.where(Project.id.in_(select(ProjectLine.project_id).where(ProjectLine.product_id == product_id)))
+    if q:
+        base = _order_search(base.outerjoin(Customer, Customer.id == Project.customer_id), q)
+    counts = dict((await db.execute(base)).all())
+    return OrderListTotals(
+        active=counts.get("active", 0),
+        completed=counts.get("completed", 0),
+        cancelled=counts.get("cancelled", 0),
+        all=sum(counts.values()),
+    )
+
+
+@router.get("", response_model=list[ProjectListResponse] | OrderListPage)
+@router.get("/", response_model=list[ProjectListResponse] | OrderListPage)
 async def list_projects(
     status: str | None = None,
     customer_id: int | None = None,
     product_id: int | None = None,
+    q: str | None = Query(None, description="With page set: ilike on the order name or its customer's name"),
+    sort_by: str | None = Query(None, description="With page set: '<key>-<asc|desc>'; unknown → updated-desc"),
+    page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
+    per_page: int = Query(24, ge=1, le=200),
+    all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
-    query = (
-        select(Project)
-        .options(selectinload(Project.lines), selectinload(Project.customer))
-        .order_by(Project.updated_at.desc())
-    )
+    """The orders list. ``page`` is the compat switch (the inventory's contract).
+
+    Without it the answer is the flat array every existing reader takes — the
+    customer and product pages, the order candidates — byte for byte as before.
+    With it: ``{items, meta, totals}``, ``q`` and ``sort_by`` apply, and
+    ``totals`` counts the tabs under every filter but ``status``.
+
+    A SQL sort key pages in the database, and the figures below are computed
+    for that page only. A computed key (``progress``, ``remaining``,
+    ``printing``, ``queued``) is a figure no column carries: the filtered set
+    is loaded whole, its figures computed as always, sorted here and sliced —
+    exactly the cost of the unpaged list, which is what it replaces.
+    """
+    paged = page is not None
+    key, direction, computed = resolve_sort(_ORDER_SORT, sort_by)
+    query = select(Project).options(selectinload(Project.lines), selectinload(Project.customer))
+    if not paged:
+        query = query.order_by(Project.updated_at.desc())
     if status:
         # Same answer ``update_project`` gives an unknown status: an empty list
         # reads as "no orders like that" and hides the typo — most cruelly for
@@ -242,6 +323,21 @@ async def list_projects(
         # than a join, so an order carrying two lines of the same product is
         # still one row. Composes with the filters above.
         query = query.where(Project.id.in_(select(ProjectLine.project_id).where(ProjectLine.product_id == product_id)))
+    total = 0
+    totals: OrderListTotals | None = None
+    if paged:
+        # One join for both needs: the search reads the customer's name, and so
+        # does the ``customer`` sort key.
+        if q or key == "customer":
+            query = query.outerjoin(Customer, Customer.id == Project.customer_id)
+        if q:
+            query = _order_search(query, q)
+        totals = await _order_totals(db, customer_id=customer_id, product_id=product_id, q=q)
+        if not computed:
+            total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
+            query = apply_sql_sort(query, _ORDER_SORT, key, direction, Project.id)
+            if not all:
+                query = query.limit(per_page).offset((page - 1) * per_page)
     projects = (await db.execute(query)).scalars().all()
     product_ids = {line.product_id for p in projects for line in p.lines}
     # The order card draws a cover strip per line, and the EFFECTIVE cover may be
@@ -303,7 +399,13 @@ async def list_projects(
                 ],
             )
         )
-    return out
+    if not paged:
+        return out
+    if computed:
+        out = sort_computed(out, _ORDER_COMPUTED[key], direction, id_fn=lambda r: r.id)
+        total = len(out)
+        out = slice_page(out, page, per_page, all)
+    return OrderListPage(items=out, meta=page_meta(total, page, per_page, all), totals=totals)
 
 
 async def _check_customer(db: AsyncSession, customer_id: int | None) -> None:

@@ -25,7 +25,7 @@ interface ProductGalleryProps {
   headingKey?: string;
 }
 
-const TILE_CLASS = 'w-40 h-40 rounded-xl object-cover bg-bambu-dark border border-bambu-dark-tertiary';
+const TILE_CLASS = 'w-40 h-40 rounded-xl object-contain bg-bambu-dark border border-bambu-dark-tertiary';
 const ICON_BUTTON_CLASS =
   'p-1.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors disabled:opacity-50';
 
@@ -257,7 +257,7 @@ export function ProductGallery({
                   <img
                     src={api.getProductAttachmentImageUrl(product.id, picture.filename)}
                     alt={picture.original_name}
-                    className="w-full h-24 rounded object-cover bg-bambu-dark"
+                    className="w-full h-24 rounded object-contain bg-bambu-dark"
                   />
                 </button>
                 {canEdit && (

@@ -1,11 +1,9 @@
 import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Copy, Download, Eye, EyeOff, Package, Pencil, Trash2 } from 'lucide-react';
-import { api, ApiError } from '../../api/client';
+import { Package } from 'lucide-react';
+import { api } from '../../api/client';
 import type { ProductListItem } from '../../api/client';
-import { useAuth } from '../../contexts/AuthContext';
-import { useToast } from '../../contexts/ToastContext';
-import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
+import { ProductActionMenu } from './ProductActionMenu';
 
 interface ProductCardProps {
   product: ProductListItem;
@@ -27,27 +25,19 @@ interface ProductCardProps {
  * A linked file's thumbnail is still NOT a stand-in: it would show one part of
  * a multi-file product as if it were the product.
  *
+ * **The picture is shown whole** (`object-contain`): a plate thumbnail is square
+ * (512×512), and the grid's cards are mostly narrow enough to stack, where a
+ * `object-cover` strip 96 px tall cut it to a ribbon. Stacked, the picture gets
+ * the 160 px the product page's own cover tile has; the placeholder takes the
+ * same room so a row of cards lines up. The menu is `ProductActionMenu`, the
+ * same one the table rows use.
+ *
  * ⚠️ **The link is an OVERLAY, not the card's wrapper** — same trap and same
  * fix as `OrderCard`: the menu was a `<button>` inside an `<a>` and every item
  * had to undo the navigation its own click caused.
  */
 export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDelete }: ProductCardProps) {
   const { t } = useTranslation();
-  const { hasPermission } = useAuth();
-  const { showToast } = useToast();
-
-  // Not a mutation: nothing on this page changes, and a failed download must
-  // say so where the operator clicked rather than navigate anywhere.
-  const exportProduct = async () => {
-    try {
-      await api.downloadProductExport(product.id);
-    } catch (e) {
-      showToast(
-        e instanceof ApiError ? t('products.toast.exportFailed', { status: e.status }) : (e as Error).message,
-        'error',
-      );
-    }
-  };
 
   return (
     <div
@@ -60,12 +50,12 @@ export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDe
             data-testid="product-cover"
             src={api.getProductCoverImageUrl(product.id)}
             alt=""
-            className="w-20 h-20 @max-[22rem]:w-full @max-[22rem]:h-24 flex-shrink-0 rounded-lg object-cover bg-bambu-dark"
+            className="w-20 h-20 @max-[22rem]:w-full @max-[22rem]:h-40 flex-shrink-0 rounded-lg object-contain bg-bambu-dark"
           />
         ) : (
           <div
             data-testid="product-cover-placeholder"
-            className="w-20 h-20 @max-[22rem]:w-full @max-[22rem]:h-24 flex-shrink-0 rounded-lg bg-bambu-dark flex items-center justify-center"
+            className="w-20 h-20 @max-[22rem]:w-full @max-[22rem]:h-40 flex-shrink-0 rounded-lg bg-bambu-dark flex items-center justify-center"
           >
             <Package className="w-7 h-7 text-bambu-gray" />
           </div>
@@ -76,66 +66,13 @@ export function ProductCard({ product, onEdit, onDuplicate, onToggleActive, onDe
             <h3 className="font-semibold text-white truncate">{product.name}</h3>
             {/* Above the overlay link, so the trigger is clickable at all. */}
             <div className="relative z-10 flex-shrink-0">
-              <CardActionMenu label={t('common.actions')} testId="product-menu">
-                {(close) => (
-                  <>
-                    {hasPermission('projects:update') && (
-                      <CardActionMenuItem
-                        onSelect={() => {
-                          onEdit(product);
-                          close();
-                        }}
-                      >
-                        <Pencil className="w-4 h-4" />
-                        {t('products.card.menu.edit')}
-                      </CardActionMenuItem>
-                    )}
-                    {hasPermission('projects:create') && (
-                      <CardActionMenuItem
-                        onSelect={() => {
-                          onDuplicate(product);
-                          close();
-                        }}
-                      >
-                        <Copy className="w-4 h-4" />
-                        {t('products.card.menu.duplicate')}
-                      </CardActionMenuItem>
-                    )}
-                    <CardActionMenuItem
-                      onSelect={() => {
-                        exportProduct();
-                        close();
-                      }}
-                    >
-                      <Download className="w-4 h-4" />
-                      {t('products.card.menu.export')}
-                    </CardActionMenuItem>
-                    {hasPermission('projects:update') && (
-                      <CardActionMenuItem
-                        onSelect={() => {
-                          onToggleActive(product);
-                          close();
-                        }}
-                      >
-                        {product.is_active ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                        {product.is_active ? t('products.card.menu.hide') : t('products.card.menu.show')}
-                      </CardActionMenuItem>
-                    )}
-                    {hasPermission('projects:delete') && (
-                      <CardActionMenuItem
-                        danger
-                        onSelect={() => {
-                          onDelete(product);
-                          close();
-                        }}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        {t('products.card.menu.delete')}
-                      </CardActionMenuItem>
-                    )}
-                  </>
-                )}
-              </CardActionMenu>
+              <ProductActionMenu
+                product={product}
+                onEdit={onEdit}
+                onDuplicate={onDuplicate}
+                onToggleActive={onToggleActive}
+                onDelete={onDelete}
+              />
             </div>
           </div>
 

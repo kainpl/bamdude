@@ -5233,6 +5233,12 @@ export default {
   },
 
   // Projects section, orders face — the whole vocabulary of the redesign.
+  list: {
+    view: { label: 'View', cards: 'Cards', table: 'Table' },
+    search: { clear: 'Clear search' },
+    empty: { noMatch: 'Nothing matches your search or filters.', reset: 'Reset' },
+    sort: { label: 'Sort by', asc: 'Ascending', desc: 'Descending', updated: 'Last updated', created: 'Created' },
+  },
   orders: {
     status: {
       active: 'Active',
@@ -5252,8 +5258,9 @@ export default {
       noCustomer: 'No customer',
       customerFilterAll: 'All customers',
       groupByCustomer: 'Group by customer',
-      viewCards: 'Cards',
-      viewTable: 'Table',
+      searchPlaceholder: 'Search orders or customers…',
+      items_one: 'order',
+      items_other: 'orders',
       empty: {
         active: 'No active orders',
         completed: 'No completed orders',
@@ -5275,6 +5282,7 @@ export default {
       due: 'Due',
       readyAt: 'Ready',
       machineHours: 'Machine h',
+      forecastSortHint: 'Sorted within this page — forecasts are advisory and not part of the list order',
     },
     card: {
       lines_one: '{{count}} line',
@@ -5614,6 +5622,13 @@ export default {
       title: 'Customers',
       newCustomer: 'New customer',
       empty: 'No customers yet',
+      searchPlaceholder: 'Search customers…',
+      items_one: 'customer',
+      items_other: 'customers',
+    },
+    card: {
+      orders_one: '{{count}} order',
+      orders_other: '{{count}} orders',
     },
     table: {
       name: 'Name',
@@ -5710,6 +5725,16 @@ export default {
       search: 'Search products…',
       inCatalog: 'In catalog',
       empty: 'No products yet',
+      items_one: 'product',
+      items_other: 'products',
+    },
+    table: {
+      name: 'Product',
+      parts: 'Parts',
+      plates: 'Plates',
+      orders: 'In orders',
+      kits: 'Kits in stock',
+      catalog: 'In catalog',
     },
     import: {
       title: 'Import a product',

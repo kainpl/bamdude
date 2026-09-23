@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useState } from 'react';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import { Plus } from 'lucide-react';
+import { Plus, Search, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { OrderListItem, ProjectStatus } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
@@ -15,10 +15,23 @@ import { FilamentStrip } from '../../components/projects/FilamentStrip';
 import { ConfirmModal } from '../../components/ConfirmModal';
 import { Button } from '../../components/Button';
 import { Select } from '../../components/Select';
+import { ListViewToggle } from '../../components/ListViewToggle';
+import { ListSortControl } from '../../components/ListSortControl';
+import type { ListView } from '../../components/ListViewToggle';
+import { PaginationBar } from '../../components/PaginationBar';
+import { useListUrlState } from '../../hooks/useListUrlState';
+import { parseListView, parsePageSize, usePersistedState } from '../../hooks/usePersistedState';
+import { useSearchBox } from '../../hooks/useSearchBox';
 import { invalidateAfterDelete, invalidateOrderViews } from '../../utils/queryInvalidation';
 
 const GROUP_STORAGE_KEY = 'projects.groupByCustomer';
 const VIEW_STORAGE_KEY = 'projects.view';
+const PER_PAGE_STORAGE_KEY = 'projects.perPage';
+const TABS: readonly (ProjectStatus | 'all')[] = ['active', 'completed', 'cancelled', 'all'];
+/** Each view has its own default order (owner's ruling): the table is the
+ *  deadline roll-up it always was, the cards are "what moved lately". An
+ *  explicit `?sort=` applies to both. */
+const DEFAULT_SORT = { table: 'due-asc', cards: 'updated-desc' } as const;
 
 /** How many placeholder cards the first fetch draws. Enough to fill the top of
  *  a normal window without pretending to know how many orders there are. */
@@ -82,11 +95,15 @@ function groupBy<T>(items: T[], keyFn: (item: T) => string): Map<string, T[]> {
 }
 
 /**
- * The order list: status tabs, a customer filter and an optional grouping.
+ * The order list: status tabs, a customer filter, a search and an optional
+ * grouping — one page at a time from the server (spec projects-lists-parity).
  *
- * The list is fetched ONCE without a status filter — the tab counts need
- * every status anyway, so the tabs filter the already-loaded list client-side
- * rather than firing a second request per tab.
+ * The tab counts are the server's `totals`: every filter but the status, so
+ * the tabs tell the truth under the chosen customer or search without a
+ * request per tab. The place in the list (tab, customer, search, sort, page)
+ * lives in the URL; the view mode, the grouping and the page size are the
+ * viewer's preferences. Grouping groups the PAGE — it is not a sort. The
+ * default sort follows the view (`DEFAULT_SORT`).
  */
 export function OrdersPage() {
   const { t } = useTranslation();
@@ -95,8 +112,21 @@ export function OrdersPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  const [tab, setTab] = useState<ProjectStatus | 'all'>('active');
-  const [customerId, setCustomerId] = useState<number | null>(null);
+  const [view, setViewPref] = usePersistedState<ListView>(VIEW_STORAGE_KEY, 'cards', parseListView);
+  const { page, q, sort, extra, setPage, setQ, setSort, setExtra, resetFilters, clampToLastPage } = useListUrlState({
+    defaults: { sort: DEFAULT_SORT[view], extra: { tab: 'active', customer: '' } },
+  });
+  // Another view is another default order, so the page it stood on means nothing there.
+  const setView = (next: ListView) => {
+    setViewPref(next);
+    setPage(1);
+  };
+  const tab: ProjectStatus | 'all' = (TABS as readonly string[]).includes(extra.tab)
+    ? (extra.tab as ProjectStatus | 'all')
+    : 'active';
+  const customerId = extra.customer && Number.isInteger(Number(extra.customer)) ? Number(extra.customer) : null;
+  const { typed, setTyped, forget } = useSearchBox(q, setQ);
+  const [perPage, setPerPage] = usePersistedState<number>(PER_PAGE_STORAGE_KEY, 24, parsePageSize);
   const [groupByCustomer, setGroupByCustomer] = useState<boolean>(() => {
     try {
       return localStorage.getItem(GROUP_STORAGE_KEY) === '1';
@@ -104,33 +134,35 @@ export function OrdersPage() {
       return false;
     }
   });
-  const [view, setView] = useState<'cards' | 'table'>(() => {
-    try {
-      return localStorage.getItem(VIEW_STORAGE_KEY) === 'table' ? 'table' : 'cards';
-    } catch {
-      return 'cards';
-    }
-  });
   const [editing, setEditing] = useState<OrderListItem | null | 'new'>(null);
   const [deleting, setDeleting] = useState<OrderListItem | null>(null);
 
-  const { data: orders = [], isLoading } = useQuery({
-    queryKey: ['projects', { customer_id: customerId ?? undefined }],
-    queryFn: () => api.getOrders(customerId != null ? { customer_id: customerId } : {}),
+  const params = {
+    ...(tab !== 'all' ? { status: tab } : {}),
+    ...(customerId != null ? { customer_id: customerId } : {}),
+    ...(q ? { q } : {}),
+    sort_by: sort,
+    page,
+    ...(perPage === -1 ? { all: true } : { per_page: perPage }),
+  };
+  const { data, isLoading, isPlaceholderData } = useQuery({
+    queryKey: ['projects', params],
+    queryFn: () => api.getOrdersPaged(params),
+    // The old page stays on screen while the next one loads — no skeleton flash.
+    placeholderData: keepPreviousData,
   });
   const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: api.getCustomers });
+  // A delete (ours or someone else's) can leave us past the last page. Only an
+  // answer for THIS view may clamp: the previous page's, still on screen while
+  // the next loads, knows nothing about how many pages the new filter has.
+  useEffect(() => {
+    if (data && !isPlaceholderData) clampToLastPage(data.meta.last_page);
+  }, [data, isPlaceholderData, clampToLastPage]);
 
-  const counts = useMemo(
-    () => ({
-      active: orders.filter((o) => o.status === 'active').length,
-      completed: orders.filter((o) => o.status === 'completed').length,
-      cancelled: orders.filter((o) => o.status === 'cancelled').length,
-      all: orders.length,
-    }),
-    [orders],
-  );
-
-  const visible = tab === 'all' ? orders : orders.filter((o) => o.status === tab);
+  const counts = data?.totals ?? { active: 0, completed: 0, cancelled: 0, all: 0 };
+  const visible = useMemo(() => data?.items ?? [], [data]);
+  const total = data?.meta.total ?? 0;
+  const filtered = q !== '' || customerId != null;
   const groups = groupByCustomer ? groupBy(visible, (o) => o.customer_name ?? t('orders.list.noCustomer')) : null;
 
   // Only ACTIVE orders are forecast: «closed = nothing is planned» is the
@@ -202,21 +234,42 @@ export function OrdersPage() {
     }
   };
 
-  const setViewPersisted = (value: 'cards' | 'table') => {
-    setView(value);
-    try {
-      localStorage.setItem(VIEW_STORAGE_KEY, value);
-    } catch {
-      // Private browsing / storage disabled — the toggle still works this session.
-    }
-  };
-
   const tabs: { key: ProjectStatus | 'all'; label: string; count: number }[] = [
     { key: 'active', label: t('orders.status.active'), count: counts.active },
     { key: 'completed', label: t('orders.status.completed'), count: counts.completed },
     { key: 'cancelled', label: t('orders.status.cancelled'), count: counts.cancelled },
     { key: 'all', label: t('orders.list.tabAll'), count: counts.all },
   ];
+
+  const sortOptions = [
+    { key: 'updated', label: t('list.sort.updated'), descFirst: true },
+    { key: 'created', label: t('list.sort.created'), descFirst: true },
+    { key: 'name', label: t('orders.table.name') },
+    { key: 'due', label: t('orders.table.due') },
+    { key: 'priority', label: t('orders.modal.priority'), descFirst: true },
+    { key: 'customer', label: t('orders.table.customer') },
+    { key: 'progress', label: t('orders.table.progress'), descFirst: true },
+    { key: 'remaining', label: t('orders.table.remaining'), descFirst: true },
+    { key: 'printing', label: t('orders.table.printing'), descFirst: true },
+    { key: 'queued', label: t('orders.table.queued'), descFirst: true },
+  ];
+
+  const pageBar = (variant: 'card' | 'bare') =>
+    data ? (
+      <PaginationBar
+        page={data.meta.current_page}
+        totalPages={data.meta.last_page}
+        perPage={perPage}
+        total={total}
+        onPageChange={setPage}
+        onPerPageChange={(n) => {
+          setPerPage(n);
+          setPage(1);
+        }}
+        items={t('orders.list.items', { count: total })}
+        variant={variant}
+      />
+    ) : null;
 
   const renderCard = (order: OrderListItem) => (
     <OrderCard
@@ -251,7 +304,7 @@ export function OrdersPage() {
               type="button"
               role="tab"
               aria-selected={tab === key}
-              onClick={() => setTab(key)}
+              onClick={() => setExtra('tab', key)}
               className={`px-4 py-2 text-sm border-b-2 -mb-px transition-colors ${
                 tab === key ? 'border-bambu-green text-white' : 'border-transparent text-bambu-gray hover:text-white'
               }`}
@@ -261,10 +314,29 @@ export function OrdersPage() {
           ))}
         </div>
 
-        <Select
-          value={customerId ?? ''}
-          onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}
-        >
+        <div className="relative">
+          <Search className="w-4 h-4 text-bambu-gray absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="search"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder={t('orders.list.searchPlaceholder')}
+            aria-label={t('orders.list.searchPlaceholder')}
+            className="pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
+          />
+          {typed && (
+            <button
+              type="button"
+              onClick={() => setTyped('')}
+              aria-label={t('list.search.clear')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        <Select value={customerId ?? ''} onChange={(e) => setExtra('customer', e.target.value)}>
           <option value="">{t('orders.list.customerFilterAll')}</option>
           {customers.map((c) => (
             <option key={c.id} value={c.id}>
@@ -284,38 +356,84 @@ export function OrdersPage() {
           {t('orders.list.groupByCustomer')}
         </label>
 
-        <div role="group" aria-label={t('orders.list.viewCards')} className="flex rounded-lg border border-bambu-dark-tertiary overflow-hidden text-sm">
-          {(['cards', 'table'] as const).map((v) => (
-            <button key={v} type="button" aria-pressed={view === v} onClick={() => setViewPersisted(v)} className={`px-3 py-1.5 ${view === v ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'}`}>
-              {t(v === 'cards' ? 'orders.list.viewCards' : 'orders.list.viewTable')}
-            </button>
-          ))}
-        </div>
+        {/* A table sorts from its headers; the cards need a control of their own. */}
+        {view === 'cards' && <ListSortControl sort={sort} options={sortOptions} onChange={setSort} />}
+
+        <ListViewToggle value={view} onChange={setView} />
       </div>
 
       {filamentQuery.data && <FilamentStrip farm={filamentQuery.data} />}
 
-      {!isLoading && visible.length === 0 && <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>}
+      {!isLoading && total === 0 && (
+        filtered ? (
+          <div className="flex items-center gap-3 text-bambu-gray text-sm">
+            <span>{t('list.empty.noMatch')}</span>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                forget();
+                resetFilters(['tab']);
+              }}
+            >
+              {t('list.empty.reset')}
+            </Button>
+          </div>
+        ) : (
+          <p className="text-bambu-gray text-sm">{t(`orders.list.empty.${tab}`)}</p>
+        )
+      )}
 
       {isLoading ? (
         <OrdersSkeleton />
-      ) : groups ? (
-        <div className="space-y-4">
-          {[...groups.entries()].map(([customerName, group]) => (
-            <section key={customerName}>
-              <h2 className="text-lg font-medium text-white mb-2">{customerName}</h2>
-              {view === 'table' ? (
-                <OrdersTable orders={group} forecasts={forecasts} forecastError={forecastQuery.isError} />
-              ) : (
-                <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{group.map(renderCard)}</div>
-              )}
-            </section>
-          ))}
-        </div>
-      ) : view === 'table' ? (
-        <OrdersTable orders={visible} forecasts={forecasts} forecastError={forecastQuery.isError} />
       ) : (
-        <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{visible.map(renderCard)}</div>
+        // The previous page stays on screen while the next one loads — dimmed
+        // and marked busy, so it is not read as the answer to the new question.
+        <div
+          data-testid="list-body"
+          aria-busy={isPlaceholderData}
+          className={`transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}
+        >
+          {groups ? (
+            <>
+              <div className="space-y-4">
+                {[...groups.entries()].map(([customerName, group]) => (
+                  <section key={customerName}>
+                    <h2 className="text-lg font-medium text-white mb-2">{customerName}</h2>
+                    {view === 'table' ? (
+                      <OrdersTable
+                        orders={group}
+                        forecasts={forecasts}
+                        forecastError={forecastQuery.isError}
+                        sort={sort}
+                        onSortChange={setSort}
+                      />
+                    ) : (
+                      <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{group.map(renderCard)}</div>
+                    )}
+                  </section>
+                ))}
+              </div>
+              {/* Several tables, one bar — it belongs to the page, not to a group. */}
+              {total > 0 && <div className="mt-4">{pageBar('bare')}</div>}
+            </>
+          ) : view === 'table' ? (
+            total > 0 && (
+              <OrdersTable
+                orders={visible}
+                forecasts={forecasts}
+                forecastError={forecastQuery.isError}
+                sort={sort}
+                onSortChange={setSort}
+                footer={pageBar('card')}
+              />
+            )
+          ) : (
+            <>
+              <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">{visible.map(renderCard)}</div>
+              {total > 0 && <div className="mt-4">{pageBar('bare')}</div>}
+            </>
+          )}
+        </div>
       )}
 
       {editing && (

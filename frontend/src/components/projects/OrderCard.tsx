@@ -70,7 +70,7 @@ export function OrderCard({ order, onEdit, onDuplicate, onSetStatus, onDelete }:
                     data-testid="product-cover"
                     src={api.getProductCoverImageUrl(line.product_id)}
                     alt=""
-                    className="w-9 h-9 rounded-lg object-cover bg-bambu-dark"
+                    className="w-9 h-9 rounded-lg object-contain bg-bambu-dark"
                   />
                 ) : (
                   // A line whose product has no cover still keeps its tile: the

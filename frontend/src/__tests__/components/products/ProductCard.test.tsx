@@ -43,6 +43,23 @@ function mount(over: Partial<ProductListItem> = {}) {
 }
 
 describe('ProductCard cover', () => {
+  it('shows the whole picture: contain, and the stacked card gives it a 160 px band', () => {
+    // A square plate (512×512) cropped to a 96 px strip was the operator's
+    // complaint; the product page's own cover tile is 160 px and contained.
+    mount({ has_cover: true });
+    const cover = screen.getByTestId('product-cover');
+    expect(cover.className).toContain('object-contain');
+    expect(cover.className).not.toContain('object-cover');
+    expect(cover.className).toContain('@max-[22rem]:h-40');
+  });
+
+  it('the placeholder takes the same room as a cover, so the cards line up', () => {
+    mount();
+    const tile = screen.getByTestId('product-cover-placeholder');
+    expect(tile.className).toContain('w-20 h-20');
+    expect(tile.className).toContain('@max-[22rem]:h-40');
+  });
+
   it('renders the cover image when the product has one', () => {
     mount({ has_cover: true });
 

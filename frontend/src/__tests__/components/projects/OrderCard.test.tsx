@@ -47,6 +47,13 @@ describe('OrderCard', () => {
     expect(screen.queryByTestId('order-1-from-stock')).not.toBeInTheDocument();
     expect(strayZeroTextNodes(screen.getByTestId('order-1-card'))).toHaveLength(0);
   });
+  it("shows each line's product picture whole in the strip", () => {
+    render(<OrderCard order={base} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);
+    const tile = screen.getByTestId('product-cover');
+    expect(tile.className).toContain('object-contain');
+    expect(tile.className).not.toContain('object-cover');
+  });
+
   it('shows at most three product tiles however long the order is', () => {
     const many = [11, 12, 13, 14, 15].map((product_id) => ({ product_id, has_cover: false }));
     render(<OrderCard order={{ ...base, line_products: many }} onEdit={noop} onDuplicate={noop} onSetStatus={noop} onDelete={noop} />);

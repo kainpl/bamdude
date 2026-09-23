@@ -1,8 +1,8 @@
 """Customers — who an order is for. Lives under the projects permissions:
 one domain, no new Permission (spec §API)."""
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select, update
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequirePermission
@@ -17,6 +17,15 @@ from backend.app.schemas.customer import (
     CustomerListFigures,
     CustomerResponse,
     CustomerUpdate,
+)
+from backend.app.schemas.listing import CustomerListPage
+from backend.app.services.list_paging import (
+    SortSpec,
+    apply_sql_sort,
+    page_meta,
+    resolve_sort,
+    slice_page,
+    sort_computed,
 )
 from backend.app.services.order_metrics import customer_figures
 
@@ -86,14 +95,58 @@ async def _get_or_404(db: AsyncSession, customer_id: int) -> Customer:
     return customer
 
 
-@router.get("", response_model=list[CustomerResponse])
-@router.get("/", response_model=list[CustomerResponse])
+_CUSTOMER_SORT = SortSpec(
+    sql={"name": (func.lower(Customer.name), False), "created": (Customer.created_at, False)},
+    computed={"orders", "active", "completed", "cancelled", "total_price"},
+    default="name-asc",
+)
+# ``orders`` is the light figures' ``projects`` — every order of the customer.
+_CUSTOMER_COMPUTED = {
+    "orders": lambda r: r.figures.projects,
+    "active": lambda r: r.figures.active,
+    "completed": lambda r: r.figures.completed,
+    "cancelled": lambda r: r.figures.cancelled,
+    "total_price": lambda r: r.figures.total_price,
+}
+
+
+@router.get("", response_model=list[CustomerResponse] | CustomerListPage)
+@router.get("/", response_model=list[CustomerResponse] | CustomerListPage)
 async def list_customers(
-    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.PROJECTS_READ)
+    q: str | None = Query(None, description="With page set: ilike on the name or the contact"),
+    sort_by: str | None = Query(None, description="With page set: '<key>-<asc|desc>'; unknown → name-asc"),
+    page: int | None = Query(None, ge=1, description="Omit entirely for the legacy flat-array response"),
+    per_page: int = Query(24, ge=1, le=200),
+    all: bool = Query(False, description="With page set, skip pagination and return every matching row"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
-    rows = (await db.execute(select(Customer).order_by(Customer.name))).scalars().all()
+    """The customers list. ``page`` is the compat switch (the inventory's contract).
+
+    Without it the flat array the customer picker and the orders page's filter
+    read — unchanged. With it ``{items, meta}``, ``q`` (name or contact) and
+    ``sort_by``. The light figures are one GROUP BY over the whole table either
+    way; a computed key (an order count or the price sum) sorts the built rows
+    here and slices, a SQL key (``name``, ``created``) pages in the database.
+    """
+    paged = page is not None
+    key, direction, computed = resolve_sort(_CUSTOMER_SORT, sort_by)
+    query = select(Customer)
+    if not paged:
+        query = query.order_by(Customer.name)
+    total = 0
+    if paged:
+        if q:
+            needle = f"%{q.strip()}%"
+            query = query.where(or_(Customer.name.ilike(needle), Customer.contact.ilike(needle)))
+        if not computed:
+            total = await db.scalar(select(func.count()).select_from(query.subquery())) or 0
+            query = apply_sql_sort(query, _CUSTOMER_SORT, key, direction, Customer.id)
+            if not all:
+                query = query.limit(per_page).offset((page - 1) * per_page)
+    rows = (await db.execute(query)).scalars().all()
     figures = await _light_figures_by_customer(db)
-    return [
+    items = [
         CustomerResponse(
             id=c.id,
             name=c.name,
@@ -108,6 +161,13 @@ async def list_customers(
         )
         for c in rows
     ]
+    if not paged:
+        return items
+    if computed:
+        items = sort_computed(items, _CUSTOMER_COMPUTED[key], direction, id_fn=lambda r: r.id)
+        total = len(items)
+        items = slice_page(items, page, per_page, all)
+    return CustomerListPage(items=items, meta=page_meta(total, page, per_page, all))
 
 
 @router.post("", response_model=CustomerResponse)

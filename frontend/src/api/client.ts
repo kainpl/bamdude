@@ -1802,6 +1802,48 @@ export interface OrderListParams {
   product_id?: number;
 }
 
+/**
+ * The paged mode of the projects section's three lists (spec
+ * projects-lists-parity). Sending `page` is the switch: without it each
+ * endpoint answers the flat array its many other readers take.
+ */
+export interface PagedListParams {
+  page?: number;
+  per_page?: number;
+  all?: boolean;
+  q?: string;
+  sort_by?: string;
+}
+export interface OrderListTotals {
+  active: number;
+  completed: number;
+  cancelled: number;
+  all: number;
+}
+export interface OrderListPage {
+  items: OrderListItem[];
+  meta: PaginationMeta;
+  /** Tab counts under every filter but status. */
+  totals: OrderListTotals;
+}
+export interface ProductListPage {
+  items: ProductListItem[];
+  meta: PaginationMeta;
+}
+export interface CustomerListPage {
+  items: Customer[];
+  meta: PaginationMeta;
+}
+
+function pagedSearchParams(qs: URLSearchParams, params: PagedListParams): URLSearchParams {
+  qs.set('page', String(params.page ?? 1));
+  if (params.all) qs.set('all', 'true');
+  else if (params.per_page) qs.set('per_page', String(params.per_page));
+  if (params.q) qs.set('q', params.q);
+  if (params.sort_by) qs.set('sort_by', params.sort_by);
+  return qs;
+}
+
 // ---- the print plan (pass 3) ----
 //
 // One contiguous block mirroring `backend/app/schemas/project.py`'s own plan
@@ -10611,6 +10653,14 @@ export const api = {
     if (params.product_id != null) qs.set('product_id', String(params.product_id));
     return request<OrderListItem[]>(`/projects/?${qs}`);
   },
+  /** The orders page's list — the only caller that sends `page` (spec projects-lists-parity). */
+  getOrdersPaged: (params: OrderListParams & PagedListParams) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set('status', params.status);
+    if (params.customer_id != null) qs.set('customer_id', String(params.customer_id));
+    if (params.product_id != null) qs.set('product_id', String(params.product_id));
+    return request<OrderListPage>(`/projects/?${pagedSearchParams(qs, params)}`);
+  },
   getOrder: (id: number) => request<Order>(`/projects/${id}`),
   createOrder: (data: OrderCreate) =>
     request<Order>('/projects/', { method: 'POST', body: JSON.stringify(data) }),
@@ -10690,6 +10740,9 @@ export const api = {
 
   // Customers
   getCustomers: () => request<Customer[]>('/customers/'),
+  /** The customers page's list — the only caller that sends `page`. */
+  getCustomersPaged: (params: PagedListParams) =>
+    request<CustomerListPage>(`/customers/?${pagedSearchParams(new URLSearchParams(), params)}`),
   getCustomer: (id: number) => request<Customer>(`/customers/${id}`),
   createCustomer: (data: CustomerCreate) =>
     request<Customer>('/customers/', { method: 'POST', body: JSON.stringify(data) }),
@@ -10706,6 +10759,13 @@ export const api = {
     if (params.q) qs.set('q', params.q);
     if (params.include_adhoc) qs.set('include_adhoc', 'true');
     return request<ProductListItem[]>(`/products/?${qs}`);
+  },
+  /** The catalog page's list — the only caller that sends `page`. */
+  getProductsPaged: (params: Omit<ProductListParams, 'q'> & PagedListParams) => {
+    const qs = new URLSearchParams();
+    if (params.active != null) qs.set('active', String(params.active));
+    if (params.include_adhoc) qs.set('include_adhoc', 'true');
+    return request<ProductListPage>(`/products/?${pagedSearchParams(qs, params)}`);
   },
   getProduct: (id: number) => request<Product>(`/products/${id}`),
   createProduct: (data: ProductCreate) =>
