@@ -120,8 +120,14 @@ async def get_settings(
                 "ldap_auto_provision",
                 "library_all_files_recursive",
                 "local_login_enabled",
+                "runout_archive_spool_enabled",
             ]:
                 settings_dict[setting.key] = setting.value.lower() == "true"
+            elif setting.key in ["runout_zero_point_enabled", "ams_sync_bidirectional"]:
+                # On unless the row says "false" — exactly how usage_tracker and
+                # main.on_ams_change read these two, so a stored "None" (a PUT
+                # with null) neither 500s here nor reads off while acting on.
+                settings_dict[setting.key] = setting.value.lower() != "false"
             elif setting.key in [
                 "default_filament_cost",
                 "energy_cost_per_kwh",
