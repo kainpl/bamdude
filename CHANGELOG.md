@@ -51,6 +51,12 @@
 
 ### Fixed
 
+- **The AMS drying panel on the printer card opens again.** Since 0.6.0 a
+  click on the flame did nothing visible: the panel opened beyond the edge of
+  the card and was cut off by it. It now opens next to its button and scrolls
+  with the page like the card's other menus. The AMS slot cards that appear on
+  hover scroll with the page the same way, instead of floating over it while
+  the page moves underneath.
 - **Service stops preserve the local preview broker's clean shutdown.**
   Linux, macOS and Windows service wrappers now allow ordered child-process
   shutdown with every database backend, not just bundled PostgreSQL. Windows

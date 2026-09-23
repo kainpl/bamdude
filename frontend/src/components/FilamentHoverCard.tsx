@@ -8,24 +8,23 @@ import { Modal } from './Modal';
 
 type CardPlacement = { top: number; left: number; side: 'top' | 'bottom'; arrowLeft: number };
 
-/** Where a hover card goes, in viewport coordinates.
+/** Where a hover card goes, in DOCUMENT coordinates.
  *
- * ⚠️ The card is portalled to `document.body` and positioned `fixed`. That is
- * the whole point: as a child of the trigger it was `absolute` inside `<main>`,
- * which has `overflow-auto` and clipped it. The horizontal clamp that used to
- * work around that clipping is still here — it also keeps the card off the
- * fixed sidebar — but it is now the card's actual `left` rather than a
+ * ⚠️ The card is portalled to `document.body`: as a child of the trigger it
+ * was clipped by the printer card it lives in. The horizontal clamp keeps it
+ * off the fixed sidebar; it is the card's actual `left` rather than a
  * `marginLeft` correction layered on top of `-translate-x-1/2`.
  *
- * ⚠️ `useLayoutEffect`, not `useEffect`. Measuring needs the card in the DOM,
- * and with `fixed` an unmeasured first frame paints at the viewport origin —
- * a flash in the top-left corner that `absolute` positioning never had, since
- * there the un-corrected position was already nearly right. Running before
- * paint is what keeps the port invisible.
+ * ⚠️ `absolute` in DOCUMENT coordinates (viewport + scroll), placed once when
+ * the card opens — NOT `fixed` re-placed from a scroll listener. The page
+ * scrolls on the window, so the browser carries an absolute card with its slot
+ * the way it carries the bed-jog menu; a fixed card chasing the slot from a
+ * scroll listener visibly floated over the page. Re-placed on resize only,
+ * when the printer card itself reflows.
  *
- * ⚠️ Recomputed on scroll and resize. `absolute` moved with the content for
- * free; `fixed` does not, so a card left open while the page scrolls would
- * drift off its trigger.
+ * ⚠️ `useLayoutEffect`, not `useEffect`. Measuring needs the card in the DOM,
+ * and an unmeasured first frame paints at the origin — a flash in the corner.
+ * Running before paint is what keeps the port invisible.
  */
 function useCardPlacement(
   isVisible: boolean,
@@ -67,20 +66,18 @@ function useCardPlacement(
       const left = Math.max(minLeft, Math.min(triggerCenterX - cardWidth / 2, maxLeft));
 
       setPlacement({
-        top: side === 'top' ? rect.top - cardHeight - gap : rect.bottom + gap,
-        left,
+        top: (side === 'top' ? rect.top - cardHeight - gap : rect.bottom + gap) + window.scrollY,
+        left: left + window.scrollX,
         side,
-        // Arrow keeps pointing at the trigger after the card was clamped.
+        // Arrow keeps pointing at the trigger after the card was clamped
+        // (both in viewport terms, so the scroll offset cancels out).
         arrowLeft: triggerCenterX - left,
       });
     };
 
     measure();
-    // Capture phase: the scroll that matters happens on `<main>`, not `window`.
-    window.addEventListener('scroll', measure, true);
     window.addEventListener('resize', measure);
     return () => {
-      window.removeEventListener('scroll', measure, true);
       window.removeEventListener('resize', measure);
     };
   }, [isVisible, flip, triggerRef, cardRef]);
@@ -268,7 +265,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
           data-testid="filament-hover-card"
-          className="fixed z-[60] animate-in fade-in-0 zoom-in-95"
+          className="absolute z-[60] animate-in fade-in-0 zoom-in-95"
           style={{
             // ⚠️ Never transition the position. A bare `duration-*` class sets
             // `transition-duration` while `transition-property` stays at its
@@ -280,8 +277,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
             transition: 'none',
             top: placement?.top ?? 0,
             left: placement?.left ?? 0,
-            // Hidden until measured: fixed positioning has no sensible default,
-            // and an unmeasured frame paints in the corner.
+            // Hidden until measured: an unmeasured frame paints in the corner.
             visibility: placement ? 'visible' : 'hidden',
             maxWidth: 'calc(100vw - 24px)',
           }}
@@ -684,7 +680,8 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
           // a portalled card that does not carry them loses its own buttons.
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
-          className="fixed z-[60] animate-in fade-in-0 zoom-in-95"
+          data-testid="empty-slot-hover-card"
+          className="absolute z-[60] animate-in fade-in-0 zoom-in-95"
           style={{
             // ⚠️ Never transition the position. A bare `duration-*` class sets
             // `transition-duration` while `transition-property` stays at its

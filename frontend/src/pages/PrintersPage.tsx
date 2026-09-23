@@ -1,4 +1,5 @@
 import { useState, useEffect, useId, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { WindowVirtualGrid } from '../components/WindowVirtualGrid';
 import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
@@ -1917,7 +1918,30 @@ function PrinterCard({
   const [dryingTemp, setDryingTemp] = useState(50);
   const [dryingDuration, setDryingDuration] = useState(4);
   const [dryingRotateTray, setDryingRotateTray] = useState(false);
-  const [dryingPopoverPos, setDryingPopoverPos] = useState<{ top: number; left: number } | null>(null);
+  // The popover is portalled into body (the card's content-visibility would
+  // clip it) and placed in DOCUMENT coordinates, so the page's own scroll
+  // carries it with its card like the bed-jog menu — nothing chases the button
+  // in JS. `viewportTop` keeps the max-height cap in viewport terms. Re-placed
+  // only on resize, when the card itself reflows.
+  const [dryingPopoverPos, setDryingPopoverPos] = useState<{ top: number; left: number; viewportTop: number } | null>(null);
+  const dryingTriggerRef = useRef<HTMLElement | null>(null);
+  const placeDryingPopover = useCallback((trigger: HTMLElement) => {
+    const pos = computePopoverPosition({
+      triggerRect: trigger.getBoundingClientRect(),
+      popoverWidth: DRYING_POPOVER_WIDTH,
+      estimatedHeight: DRYING_POPOVER_ESTIMATED_HEIGHT,
+    });
+    setDryingPopoverPos({ top: pos.top + window.scrollY, left: pos.left + window.scrollX, viewportTop: pos.top });
+  }, []);
+  useEffect(() => {
+    if (dryingPopoverAmsId === null) return;
+    const onResize = () => {
+      const trigger = dryingTriggerRef.current;
+      if (trigger?.isConnected) placeDryingPopover(trigger);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [dryingPopoverAmsId, placeDryingPopover]);
   // Post-ack drying watch (#2533). The firmware's ack only proves the command was
   // TAKEN — a P1 answers success and discards it, and even on capable hardware a
   // blocker the `dry_sf_reason` guard didn't catch can swallow it. So after a
@@ -4784,8 +4808,8 @@ function PrinterCard({
                                           setDryingRotateTray(false);
                                           setDryingPopoverModuleType(ams.module_type);
                                           setDryingPopoverAmsId(ams.id);
-                                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                          setDryingPopoverPos(computePopoverPosition({ triggerRect: rect, popoverWidth: DRYING_POPOVER_WIDTH, estimatedHeight: DRYING_POPOVER_ESTIMATED_HEIGHT }));
+                                          dryingTriggerRef.current = e.currentTarget as HTMLElement;
+                                          placeDryingPopover(e.currentTarget as HTMLElement);
                                         }
                                       }}
                                       className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[length:var(--pc-t9,9px)] transition-colors ${
@@ -5416,8 +5440,8 @@ function PrinterCard({
                                         setDryingRotateTray(false);
                                         setDryingPopoverModuleType(ams.module_type);
                                         setDryingPopoverAmsId(ams.id);
-                                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                        setDryingPopoverPos(computePopoverPosition({ triggerRect: rect, popoverWidth: DRYING_POPOVER_WIDTH, estimatedHeight: DRYING_POPOVER_ESTIMATED_HEIGHT }));
+                                        dryingTriggerRef.current = e.currentTarget as HTMLElement;
+                                        placeDryingPopover(e.currentTarget as HTMLElement);
                                       }
                                     }}
                                     className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[length:var(--pc-t9,9px)] transition-colors ${
@@ -7093,7 +7117,10 @@ function PrinterCard({
         // option in that case so we don't send a command the printer will refuse.
         const targetAms = amsData.find(a => a.id === dryingPopoverAmsId);
         const anyTrayLoaded = targetAms?.tray?.some(tr => tr.state === 11) ?? false;
-        return (
+        // Portalled into body: the coordinates are document-relative, outside
+        // the card's content-visibility clipping. Inside the card, the popover
+        // opened off its edge and was invisible.
+        return createPortal(
           <>
             {/* not-a-modal: popover */}
             <div className="fixed inset-0 z-[48]" onClick={() => setDryingPopoverAmsId(null)} />
@@ -7101,7 +7128,8 @@ function PrinterCard({
                 inside #root, which the modal stack marks inert, so anything of
                 ours painting over a dialog would be visible but dead. */}
             <div
-              className="fixed z-[49] flex flex-col w-[240px] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl overflow-hidden"
+              data-testid="ams-drying-popover"
+              className="absolute z-[49] flex flex-col w-[240px] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl overflow-hidden"
               style={{
                 top: dryingPopoverPos.top,
                 left: dryingPopoverPos.left,
@@ -7113,7 +7141,7 @@ function PrinterCard({
                 // reachable (#1458 / #1447 follow-up). dvh (not vh) so iOS
                 // Safari's bottom toolbar overlay doesn't clip the footer
                 // (#1669, iPhone 17 Safari).
-                maxHeight: `calc(100dvh - ${dryingPopoverPos.top}px - 8px)`,
+                maxHeight: `calc(100dvh - ${dryingPopoverPos.viewportTop}px - 8px)`,
               }}
               onClick={e => e.stopPropagation()}
             >
@@ -7235,7 +7263,8 @@ function PrinterCard({
                 </button>
               </div>
             </div>
-          </>
+          </>,
+          document.body,
         );
       })()}
     </Card>

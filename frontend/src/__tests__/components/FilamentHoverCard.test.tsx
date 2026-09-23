@@ -209,6 +209,49 @@ describe('FilamentHoverCard', () => {
       expect(screen.getByText('PLA Basic')).toBeInTheDocument();
     });
 
+    // Like the bed-jog menu on the printer card, the card rides the page's own
+    // scroll: placed once in DOCUMENT coordinates (+ scrollY), `absolute` in
+    // <body>, so the browser moves it with its slot. A `fixed` card chased the
+    // slot from a scroll listener and visibly floated over the page.
+    it.each([
+      ['filament', 'filament-hover-card'],
+      ['empty slot', 'empty-slot-hover-card'],
+    ])('%s card: placed in document coordinates, not chasing the scroll', async (_kind, testId) => {
+      const ui =
+        testId === 'filament-hover-card' ? (
+          <FilamentHoverCard data={baseFilamentData}>
+            <div>trigger</div>
+          </FilamentHoverCard>
+        ) : (
+          <EmptySlotHoverCard configureSlot={{ enabled: true, onConfigure: vi.fn() }} onAssignSpool={vi.fn()}>
+            <div>trigger</div>
+          </EmptySlotHoverCard>
+        );
+      const result = render(ui);
+      const trigger = result.container.firstElementChild as HTMLElement;
+      const rect = (top: number) => ({ top, bottom: top + 20, left: 400, right: 420, width: 20, height: 20, x: 400, y: top, toJSON: () => ({}) });
+      trigger.getBoundingClientRect = () => rect(300) as DOMRect;
+      Object.defineProperty(window, 'scrollY', { configurable: true, value: 500 });
+      try {
+        fireEvent.mouseEnter(trigger);
+        vi.advanceTimersByTime(100);
+        const card = await screen.findByTestId(testId);
+        await waitFor(() => expect(card.style.visibility).toBe('visible'));
+        // jsdom lays out nothing, so the card measures 0×0: it goes above the
+        // trigger (300 − 0 − 8 gap) and centres on it (410); + 500 scrolled.
+        expect(card).toHaveClass('absolute');
+        expect(card).not.toHaveClass('fixed');
+        expect(card.style.top).toBe('792px');
+        expect(card.style.left).toBe('410px');
+
+        trigger.getBoundingClientRect = () => rect(100) as DOMRect;
+        fireEvent.scroll(window);
+        expect(card.style.top).toBe('792px');
+      } finally {
+        Object.defineProperty(window, 'scrollY', { configurable: true, value: 0 });
+      }
+    });
+
     it('closes once the pointer leaves the card too', async () => {
       renderWithHover(
         <FilamentHoverCard data={baseFilamentData}>

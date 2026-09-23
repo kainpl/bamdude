@@ -710,4 +710,71 @@ describe('PrintersPage', () => {
     }
   });
 
+  it('opens the AMS drying popover outside the card, where content-visibility cannot clip it', async () => {
+    // The popover is outside the card so content-visibility cannot clip it.
+    // Its position is absolute in document coordinates after portalling.
+    server.use(
+      http.get('/api/v1/printers/:id/status', ({ params }) =>
+        HttpResponse.json({
+          id: Number(params.id),
+          name: 'X1 Carbon',
+          connected: true,
+          state: 'FINISH',
+          progress: 0,
+          layer_num: 0,
+          total_layers: 0,
+          temperatures: { nozzle: 25, bed: 25, chamber: 25 },
+          remaining_time: 0,
+          filename: null,
+          supports_drying: true,
+          drying_screen_only: false,
+          vt_tray: [],
+          ams: [
+            {
+              id: 0,
+              module_type: 'n3f',
+              humidity: 3,
+              temp: 25,
+              dry_time: 0,
+              dry_sf_reason: [],
+              tray: [0, 1, 2, 3].map((slot) => ({ id: slot, tray_type: slot === 0 ? 'PLA' : '', state: 0 })),
+            },
+          ],
+        }),
+      ),
+    );
+    const view = render(<PrintersPage />);
+    try {
+      const card = await waitFor(() => {
+        const el = document.getElementById('printer-1');
+        expect(el).not.toBeNull();
+        return el!;
+      });
+      const flame = await within(card).findByTitle('Start Drying');
+      // The page is scrolled 500px when the button is clicked.
+      const rect = (top: number) => ({ top, bottom: top + 20, left: 400, right: 420, width: 20, height: 20, x: 400, y: top, toJSON: () => ({}) });
+      flame.getBoundingClientRect = () => rect(100) as DOMRect;
+      Object.defineProperty(window, 'scrollY', { configurable: true, value: 500 });
+      await userEvent.click(flame);
+      const popover = await screen.findByTestId('ams-drying-popover');
+      expect(card.contains(popover)).toBe(false);
+      expect(popover.parentElement).toBe(document.body);
+
+      // Like the bed-jog menu, it rides the page's own scroll: positioned in
+      // DOCUMENT coordinates (button bottom 120 + 4 gap + 500 scrolled), so the
+      // browser moves it with the page and nothing chases the button in JS.
+      expect(popover).toHaveClass('absolute');
+      expect(popover).not.toHaveClass('fixed');
+      expect(popover.style.top).toBe('624px');
+      flame.getBoundingClientRect = () => rect(300) as DOMRect;
+      act(() => {
+        window.dispatchEvent(new Event('scroll'));
+      });
+      expect(screen.getByTestId('ams-drying-popover').style.top).toBe('624px');
+    } finally {
+      Object.defineProperty(window, 'scrollY', { configurable: true, value: 0 });
+      view.unmount();
+    }
+  });
+
 });
