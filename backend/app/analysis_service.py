@@ -199,6 +199,12 @@ class Service:
         sequence = command["sequence"]
         if sequence in self.terminals:
             original, result = self.terminals[sequence]
+            # Cancellation may arrive after the run has committed its terminal
+            # result. The caller no longer wants that result, but ownership is
+            # already settled: acknowledge the matching cancel without forcing
+            # the client to retire an otherwise healthy service/child.
+            if operation == "cancel" and original == {**command, "operation": "run"}:
+                return {"outcome": "canceled"}
             return result if original == command else {"outcome": "protocol_error"}
         if self.active and self.active["sequence"] == sequence:
             if self.active != {**command, "operation": "run"}:

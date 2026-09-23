@@ -14,6 +14,22 @@ from backend.app.services.print_file_analysis import AnalysisResourceError, get_
 from backend.app.services.printer_manager import PrinterManager
 
 
+@pytest.mark.asyncio
+async def test_cancel_after_terminal_run_acknowledges_settled_ownership(tmp_path):
+    from backend.app.analysis_service import Service
+
+    service = Service(
+        {"generation": "generation", "epoch": "epoch", "staging": str(tmp_path), "archive_root": str(tmp_path)}
+    )
+    run = {"sequence": 7, "attempt_id": "a" * 32, "operation": "run", "source": {"token": "source"}}
+    service.terminals[7] = (run, {"outcome": "ok", "artifact": {"name": "old"}})
+
+    assert await service.command({**run, "operation": "cancel"}) == {"outcome": "canceled"}
+    assert await service.command({**run, "operation": "cancel", "attempt_id": "b" * 32}) == {
+        "outcome": "protocol_error"
+    }
+
+
 def test_service_rejects_non_string_operation_as_protocol_error(tmp_path):
     from backend.app.analysis_service import Service
     from backend.app.services.preview_protocol import encode
