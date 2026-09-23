@@ -100,3 +100,24 @@ def test_docker_expansion_shell_execs_application():
     assert command[:2] == ["sh", "-c"]
     assert command[2].startswith("exec uvicorn ")
     assert "stop_grace_period: 60s" in (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+
+def test_ci_preview_smoke_is_one_shell_command():
+    import shlex
+
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    step = next(
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if step.get("name") == "Exercise local preview broker, service and renderer"
+    )
+    # More-indented lines in folded YAML retain newlines, making the shell
+    # execute the second test path as a program rather than a pytest argument.
+    assert len(step["run"].strip().splitlines()) == 1
+    args = shlex.split(step["run"])
+    assert args[:3] == ["python", "-m", "pytest"]
+    assert "backend/tests/unit/test_service_shutdown_contract.py" in args
+    assert args[-2:] == ["-n", "1"]
