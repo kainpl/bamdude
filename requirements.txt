@@ -27,7 +27,7 @@ embedded-postgres>=18.6.3,<19  # bundled PostgreSQL 18 for DATABASE_URL=embedded
 greenlet>=3.0.0
 
 # Local preview service: bundled broker, no runtime downloads or external server.
-embedded-nats==2.15.0.0
+embedded-nats==2.15.0.1
 nats-py==2.16.0
 
 # Pydantic

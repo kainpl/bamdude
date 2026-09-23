@@ -131,7 +131,7 @@ async def test_store_lock_is_fail_soft_and_clean_restart(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_externally_stopped_broker_requires_explicit_recovery(tmp_path, caplog):
+async def test_externally_stopped_broker_recovers_on_restart(tmp_path, caplog):
     import json
 
     import psutil
@@ -153,13 +153,66 @@ async def test_externally_stopped_broker_requires_explicit_recovery(tmp_path, ca
     replacement = PreviewRuntime(first.root)
     try:
         await replacement.start()
-        assert not replacement.ready
-        assert replacement.health().reason == "recovery_required"
-        assert replacement.health().recovery_required
-        assert replacement.health().error_type == "RecoveryRequired"
-        assert json.loads(marker.read_text()) == metadata
+        assert replacement.ready
+        assert replacement.broker.recovered_generation == metadata["generation"]
+        assert replacement.health().reason is None
+        assert not replacement.health().recovery_required
+        assert replacement.health().error_type is None
+        assert json.loads(marker.read_text())["generation"] != metadata["generation"]
+        assert "recovered abandoned generation=" in caplog.text
     finally:
         await replacement.stop()
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_legacy_marker_stays_manual_and_diagnostic(tmp_path, caplog):
+    import json
+
+    from embedded_nats import NatsServer, RecoveryRequired
+
+    root = tmp_path / "legacy"
+    broker = NatsServer(root / "broker").start()
+    broker._process.kill()
+    broker._process.wait(timeout=5)
+    with pytest.raises(RecoveryRequired):
+        broker.stop()
+    marker = broker.recovery_marker_path
+    metadata = json.loads(marker.read_text())
+    del metadata["schema"]
+    marker.write_text(json.dumps(metadata))
+    before = marker.read_bytes()
+    service = PreviewRuntime(root)
+    await service.start()
+    try:
+        assert not service.ready
+        assert service.health().recovery_required
+        assert service.health().reason == "recovery_required"
+        assert marker.read_bytes() == before
+        assert str(marker) in caplog.text
+        assert "unknown_marker" in caplog.text
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_old_staging_is_retained_even_across_clean_restarts(tmp_path, caplog):
+    root = tmp_path / "retained"
+    old = root / "staging" / ("a" * 32)
+    old.mkdir(parents=True)
+    artifact = old / "still-in-use.stl"
+    artifact.write_bytes(b"old worker may still be reading")
+    for _ in range(2):
+        service = PreviewRuntime(root)
+        await service.start()
+        try:
+            assert service.ready
+            assert artifact.read_bytes() == b"old worker may still be reading"
+        finally:
+            await service.stop()
+        assert not service.staging.exists()  # Own generation is reaped and cleaned.
+    assert str(old) in caplog.text
+    assert "ownership is unproven" in caplog.text
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX owner-only versus group SIGTERM")

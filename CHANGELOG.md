@@ -2,6 +2,13 @@
 
 ### Added
 
+- **Preview recovery after an unclean shutdown.** On the next application start,
+  the embedded broker can recover its runtime when an inherited OS lifetime
+  lock proves that the old broker has exited. A live broker or unverifiable
+  legacy/corrupt marker remains a visible manual-recovery condition, not a
+  reason to guess from a PID or closed port. Old renderer staging is retained
+  with cleanup guidance; existing library/archive thumbnails are untouched.
+
 - **Preview-service diagnostics on the System page.** See availability,
   worker restart/backoff, or a startup/ownership failure, with a runtime path
   and recovery instructions in English and Ukrainian. Warnings now include

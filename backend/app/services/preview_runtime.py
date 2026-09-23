@@ -122,9 +122,18 @@ class PreviewRuntime:
                 max_payload=1024**2,
                 startup_timeout=15,
                 shutdown_timeout=2,
+                recover_stale=True,
             )
             async with asyncio.timeout(STARTUP_SECONDS):
                 await disk(self.broker.start)
+                if self.broker.recovered_generation:
+                    logger.warning(
+                        "Preview broker recovered abandoned generation=%s; runtime_dir=%s. "
+                        "Old preview staging is retained until manual ownership verification; see %s",
+                        self.broker.recovered_generation,
+                        self.root,
+                        RECOVERY_GUIDE,
+                    )
                 self.nc = await nats.connect(
                     self.broker.url,
                     token=self.token,
@@ -139,10 +148,9 @@ class PreviewRuntime:
                 for stream in streams:
                     if stream.config.name.startswith("OBJ_bamdude_preview_"):
                         await js.delete_stream(stream.config.name)
-                # No prior unresolved managed broker was accepted by start().
-                # A clean previous shutdown reaped its workers before stopping
-                # that broker, so only abandoned preview generations remain.
-                await disk(self._clean_old_staging)
+                # Broker ownership says nothing about an old worker/renderer's
+                # disk I/O. Even a later clean restart cannot prove it is gone.
+                await disk(self._report_retained_staging)
                 self.store = await js.create_object_store(
                     bucket=self.bucket,
                     config=ObjectStoreConfig(
@@ -153,6 +161,13 @@ class PreviewRuntime:
             self.monitor = asyncio.create_task(self._monitor(), name="preview-service-monitor")
         except Exception as exc:
             self._unavailable("recovery_required" if isinstance(exc, recovery_errors) else "startup_failed", exc)
+            if isinstance(exc, recovery_errors):
+                logger.warning(
+                    "Preview broker recovery refused: reason=%s marker=%s; follow %s",
+                    exc.reason,
+                    exc.marker_path or (self.broker.recovery_marker_path if self.broker else None),
+                    RECOVERY_GUIDE,
+                )
             logger.debug("Preview startup failure", exc_info=True)
             await self.stop()
 
@@ -163,12 +178,17 @@ class PreviewRuntime:
         (self.staging / "main").mkdir(mode=0o700)
         (self.staging / "service").mkdir(mode=0o700)
 
-    def _clean_old_staging(self):
+    def _report_retained_staging(self):
         for directory in self.staging.parent.iterdir():
             if directory == self.staging or directory.is_symlink() or directory.is_junction():
                 continue
             if len(directory.name) == 32 and all(c in "0123456789abcdef" for c in directory.name):
-                shutil.rmtree(directory)
+                logger.warning(
+                    "Retained preview staging: %s; old worker/renderer ownership is unproven. "
+                    "Stop all preview processes before manual cleanup; see %s",
+                    directory,
+                    RECOVERY_GUIDE,
+                )
 
     def _command(self, operation="ready", manifest=(), attempt_id=None, deadline=None):
         self.sequence += 1
@@ -281,7 +301,7 @@ class PreviewRuntime:
             except Exception:
                 logger.warning("Preview process ownership uncertain; restart disabled")
                 return
-            if not self.nc.is_connected:  # package RecoveryRequired is not auto-healed
+            if not self.nc.is_connected:  # Broker recovery happens on the next application start, not in-flight.
                 self._unavailable("broker_disconnected")
                 return
             self.reason = "worker_restarting"
