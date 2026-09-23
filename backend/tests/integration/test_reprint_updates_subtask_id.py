@@ -45,6 +45,7 @@ def _clear_active_print_state():
     so without clearing, one test's adoption leaves an ``_active_prints`` entry
     that makes the next test hit the duplicate-print_start guard."""
     from backend.app import main as main_module
+    from backend.app.services.printer_manager import printer_manager
 
     for _d in (
         main_module._active_prints,
@@ -53,6 +54,15 @@ def _clear_active_print_state():
         main_module._expected_print_creators,
     ):
         _d.clear()
+    for attribute in (
+        "_print_run_bindings",
+        "_print_run_finishing_bindings",
+        "_print_start_resolutions",
+        "_pending_print_terminals",
+    ):
+        registry = getattr(printer_manager, attribute, None)
+        if isinstance(registry, dict):
+            registry.clear()
     yield
     for _d in (
         main_module._active_prints,
@@ -61,6 +71,15 @@ def _clear_active_print_state():
         main_module._expected_print_creators,
     ):
         _d.clear()
+    for attribute in (
+        "_print_run_bindings",
+        "_print_run_finishing_bindings",
+        "_print_start_resolutions",
+        "_pending_print_terminals",
+    ):
+        registry = getattr(printer_manager, attribute, None)
+        if isinstance(registry, dict):
+            registry.clear()
 
 
 async def _make_printing_archive(db_session, printer_id: int, *, subtask_id: str | None) -> int:

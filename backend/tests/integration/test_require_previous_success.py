@@ -297,6 +297,7 @@ class TestTheGateSeesPrintsItUsedToMiss:
             printer_id=printer.id,
             printer_name=printer.name,
             queue_item_id=claimed.id,
+            claim_started_at=claimed.started_at,
         )
         job.outcome = {"success": False, "archive_id": None, "error": "FTP 553", "cancelled": False}
         await background_dispatch._release_direct_claim(job, status="failed")

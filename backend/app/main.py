@@ -1773,13 +1773,17 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if state.ams_backup_groups is not None
         else None
     )
+    # A freshly connected real ``PrinterState`` always carries the default
+    # FilaSwitchState. Keep the status callback compatible with partial state
+    # snapshots during startup: absence means no FTS evidence, never installed.
+    fila_switch = getattr(state, "fila_switch", None)
     fts_key = (
-        state.fila_switch.installed,
-        state.fts_pending_confirmation,
-        tuple(state.fila_switch.in_slots),
-        tuple(state.fila_switch.out_extruders),
-        state.fila_switch.stat,
-        state.fila_switch.info,
+        getattr(fila_switch, "installed", False),
+        getattr(state, "fts_pending_confirmation", False),
+        tuple(getattr(fila_switch, "in_slots", ())),
+        tuple(getattr(fila_switch, "out_extruders", ())),
+        getattr(fila_switch, "stat", 0),
+        getattr(fila_switch, "info", 0),
     )
     status_key = (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:"

@@ -1131,7 +1131,10 @@ class TestMidPrintDrying(_DryingTestBase):
 
         scheduler._check_auto_drying = AsyncMock()
 
-        with patch("backend.app.services.print_scheduler.async_session", return_value=_FakeSessionCtx()):
+        with (
+            patch("backend.app.services.print_scheduler.async_session", return_value=_FakeSessionCtx()),
+            patch("backend.app.services.print_scheduler.active_claim_printer_ids", AsyncMock(return_value={1})),
+        ):
             await scheduler.check_queue()
 
         scheduler._check_auto_drying.assert_awaited_once()

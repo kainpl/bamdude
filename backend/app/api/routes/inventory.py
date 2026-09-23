@@ -3651,7 +3651,12 @@ async def get_inventory_forecast_logistics(
         # this is the banner's user-facing number, and the flag is exactly its
         # non-nullness (hasBreak = stockBreaksAt !== null). NOT the series'
         # first zero: rounding puts that a day later in general.
-        zero_day = math.floor(row.total_remaining_g / rate)
+        # SQL aggregates can put an exact decimal quantity one ULP below its
+        # mathematical value (400 becomes 399.99999999999994), which made the
+        # headline show day 7 for a precise 400 g / 50 g-per-day boundary.
+        # The tolerance is in days and only compensates representational noise;
+        # it cannot promote a meaningful fractional day.
+        zero_day = math.floor((row.total_remaining_g / rate) + 1e-9)
         stock_break_day = zero_day if zero_day < lead else None
 
         out.append(

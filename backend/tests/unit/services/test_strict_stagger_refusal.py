@@ -243,6 +243,7 @@ async def _real_claim(db_session, printer_factory, raw_gcode_source, staged):
         printer_id=printer.id,
         printer_name=printer.name,
         queue_item_id=item.id,
+        claim_started_at=item.started_at,
     )
     job.outcome = {"success": False, "archive_id": None, "error": REASON, "cancelled": False, "deferred": False}
     return queue, item, job

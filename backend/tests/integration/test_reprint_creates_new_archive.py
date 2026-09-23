@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.services.background_dispatch import BackgroundDispatchService, PrintDispatchJob
+from backend.app.services.printer_manager import printer_manager
 
 
 def _write_minimal_3mf(path: Path) -> str:
@@ -55,6 +56,19 @@ async def test_reprint_creates_new_archive_and_leaves_source_failed_row_intact(
     """Reprinting a 'failed' archive creates a new 'printing' row + leaves source untouched."""
     from backend.app.core.config import settings as app_settings
     from backend.app.core.database import async_session as global_session_factory
+
+    # This runner intentionally stops after a synthetic start, without the
+    # MQTT terminal event that normally retires the process-global binding.
+    # The test database is new, so start from the matching fresh-server state.
+    for attribute in (
+        "_print_run_bindings",
+        "_print_run_finishing_bindings",
+        "_print_start_resolutions",
+        "_pending_print_terminals",
+    ):
+        registry = getattr(printer_manager, attribute, None)
+        if isinstance(registry, dict):
+            registry.clear()
 
     # Redirect file-on-disk lookups to the temp tree.
     monkeypatch.setattr(app_settings, "base_dir", tmp_path)
@@ -131,7 +145,6 @@ async def test_reprint_creates_new_archive_and_leaves_source_failed_row_intact(
     from backend.app.models.printer_queue import PrinterQueue
     from backend.app.services.bambu_mqtt import BambuMQTTClient
     from backend.app.services.filament_policy_write import prepare_routing
-    from backend.app.services.printer_manager import printer_manager
 
     mqtt = BambuMQTTClient("127.0.0.1", "SYNTHETIC", "00000000", model="P1S")
     mqtt.state.connected = True

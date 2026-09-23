@@ -2319,7 +2319,8 @@ class PrintScheduler:
         - archive_id: Print from an existing archive
         - library_file_id: Print from a library file (file manager)
         """
-        logger.info("Starting queue item %s", item.id)
+        item_id = item.id
+        logger.info("Starting queue item %s", item_id)
 
         # Get printer first (needed for both paths)
         result = await db.execute(select(Printer).where(Printer.id == item.queue_id))
@@ -2487,7 +2488,7 @@ class PrintScheduler:
                 require_scheduler_claim(await read_queue_occupancy(db, item.queue_id, for_update=True))
             except PrinterOccupancyConflict as exc:
                 await db.rollback()
-                logger.info("Queue item %s: admission lost (%s) — skipping", item.id, exc.code)
+                logger.info("Queue item %s: admission lost (%s) — skipping", item_id, exc.code)
                 return
             first_runnable_id = await db.scalar(
                 select(PrintQueueItem.id)

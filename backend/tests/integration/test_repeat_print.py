@@ -166,15 +166,15 @@ async def test_the_route_re_arms_and_releases_the_gate(async_client, db_session,
     printer, _, row = await _finished(db_session, printer_factory)
     released = []
     monkeypatch.setattr(
-        "backend.app.api.routes.printers.printer_manager.set_awaiting_plate_clear",
-        MagicMock(side_effect=lambda pid, val: released.append((pid, val))),
+        "backend.app.api.routes.printers.printer_manager.confirm_awaiting_plate_clear_released",
+        MagicMock(side_effect=lambda pid: released.append(pid)),
     )
 
     resp = await async_client.post(f"/api/v1/printers/{printer.id}/repeat-print")
 
     assert resp.status_code == 200
     assert resp.json()["item_id"] == row.id
-    assert released == [(printer.id, False)]
+    assert released == [printer.id]
 
 
 async def test_the_route_refuses_when_nothing_is_waiting(async_client, db_session, printer_factory):

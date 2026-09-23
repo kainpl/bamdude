@@ -1009,7 +1009,12 @@ async def publish(
                 # ``attach`` can be a direct-printer claim. Take SQLite's
                 # writer before the hash lookup, rather than admitting from a
                 # deferred snapshot which a competing writer can invalidate.
-                if session.get_bind().dialect.name == "sqlite":
+                bind = session.get_bind()
+                # ``:memory:`` uses one DBAPI connection for all test sessions;
+                # another fixture can already own its transaction, so a nested
+                # BEGIN IMMEDIATE is neither possible nor evidence of the
+                # file-backed multi-writer boundary this protects in production.
+                if bind.dialect.name == "sqlite" and bind.url.database != ":memory:":
                     await session.execute(text("BEGIN IMMEDIATE"))
                 # No SELECT ... FOR UPDATE: one process owns this spool (§2), the
                 # guard above is the mutual exclusion, and SQLite has no such lock.

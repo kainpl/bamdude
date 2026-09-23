@@ -16,10 +16,36 @@ from backend.app.services.filament_policy_write import prepare_routing
 from backend.app.services.filament_preflight import preflight_item
 from backend.app.services.filament_routing import RoutingDeferred
 from backend.app.services.print_scheduler import PrintScheduler
+from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_counters import get_queue_terminal_counts
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _clear_synthetic_run_bindings():
+    """This harness stops synthetic runs before their MQTT terminal event.
+
+    Each parametrized case owns a fresh database but the manager is process
+    global. Do not let a deliberately unfinished fake run veto the next case
+    as if it were a competing live print.
+    """
+    attributes = (
+        "_print_run_bindings",
+        "_print_run_finishing_bindings",
+        "_print_start_resolutions",
+        "_pending_print_terminals",
+    )
+    for attribute in attributes:
+        registry = getattr(printer_manager, attribute, None)
+        if isinstance(registry, dict):
+            registry.clear()
+    yield
+    for attribute in attributes:
+        registry = getattr(printer_manager, attribute, None)
+        if isinstance(registry, dict):
+            registry.clear()
 
 
 @pytest.mark.parametrize("kind", ["print_library_file", "reprint_archive"])

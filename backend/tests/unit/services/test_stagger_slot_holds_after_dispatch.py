@@ -177,6 +177,7 @@ async def test_an_empty_queue_releases_an_expired_idle_stagger_slot(scheduler):
     scheduler._check_auto_drying = AsyncMock()
     with (
         patch("backend.app.services.print_scheduler.async_session", return_value=_FakeSessionCtx()),
+        patch("backend.app.services.print_scheduler.active_claim_printer_ids", AsyncMock(return_value=set())),
         patch.object(PrintScheduler, "_get_stagger_settings", AsyncMock(return_value=(True, 1, 0, True))),
         patch("backend.app.services.print_scheduler.printer_manager", _FakeManager({1: "IDLE"})),
     ):

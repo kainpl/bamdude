@@ -41,6 +41,8 @@ from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.print_queue import PrintQueueItemCreate
 from backend.app.services import queue_sources
 from backend.app.services.filament_routing import RoutingDeferred
+from backend.app.services.print_run_binding import discard_print_run
+from backend.app.services.printer_manager import printer_manager
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
@@ -60,6 +62,20 @@ PLATE_FILAMENTS = [{"id": 3, "type": "PLA", "color": "#FF0000", "used_g": "0.000
 def clean_spool_state():
     """Process-global capture state must not travel between tests."""
     queue_sources._reset_state()
+    # These tests deliberately stop after synthetic dispatch rather than feed a
+    # terminal MQTT event.  Start each independent fixture with the same empty
+    # runtime binding a fresh server would have; otherwise a fake run from an
+    # earlier test can correctly veto a later test's dispatch for the wrong
+    # reason.
+    for attribute in (
+        "_print_run_bindings",
+        "_print_run_finishing_bindings",
+        "_print_start_resolutions",
+        "_pending_print_terminals",
+    ):
+        registry = getattr(printer_manager, attribute, None)
+        if isinstance(registry, dict):
+            registry.clear()
     yield
     deadline = time.monotonic() + 10
     while queue_sources.active_captures() and time.monotonic() < deadline:  # pragma: no cover - drain
@@ -806,6 +822,19 @@ async def test_two_prints_of_one_blob_share_the_archive_bytes(
         await db_session.refresh(row)
         assert row.status == "printing", index
         archives.append(await db_session.get(PrintArchive, row.archive_id))
+        # This fixture drives the scheduler directly to test archive-byte
+        # deduplication.  Finish its synthetic first run before asking the
+        # scheduler to admit the next one; a live claim is deliberately not
+        # bypassed merely because this test did not start the MQTT completion
+        # path.
+        if index == 0:
+            from backend.app.services.queue_counters import set_queue_idle
+
+            row.status = "completed"
+            archives[-1].status = "completed"
+            await set_queue_idle(db_session, queue.id, expected_item_id=row.id)
+            await db_session.commit()
+            discard_print_run(printer_manager, printer.id, archives[-1].id)
 
     assert archives[0].id != archives[1].id
     assert archives[0].file_path == archives[1].file_path, "the same bytes must not be copied twice"

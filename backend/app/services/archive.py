@@ -2359,7 +2359,11 @@ class ArchiveService:
             # could land in an existing dir and overwrite it. In practice the
             # printer can't run two prints at once, but the suffix loop costs
             # nothing and removes the silent-overwrite footgun.
-            archive_dir = create_archive_directory(settings.archive_dir / printer_folder, display_stem)
+            archive_dir = (
+                create_archive_directory(  # SEC-PATH-OK: printer_folder is server-owned printer id or "unassigned".
+                    settings.archive_dir / printer_folder, display_stem
+                )
+            )
             # The human name when the caller has one (a captured source's own name
             # is its hash — see ``stored_filename``), containment-checked exactly
             # as ``attach_3mf_to_archive`` does it: the string reaches here from a
@@ -2806,7 +2810,11 @@ class ArchiveService:
                 # No existing copy — create a fresh archive_dir and copy
                 # from the temp source. Suffix loop guards the
                 # theoretical-only same-second collision.
-                archive_dir = create_archive_directory(settings.archive_dir / printer_folder, display_stem)
+                archive_dir = (
+                    create_archive_directory(  # SEC-PATH-OK: printer_folder is server-owned printer id or "unassigned".
+                        settings.archive_dir / printer_folder, display_stem
+                    )
+                )
                 created_archive_dir = archive_dir
                 # Prefer the clean original_filename (e.g. "Swapmod_STL.gcode.3mf")
                 # over the potentially-prefixed temp source_file name (e.g.

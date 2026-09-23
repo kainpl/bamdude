@@ -25,6 +25,17 @@ from backend.app.core.database import Base
 _TYPE, _NOTNULL, _DFLT = 2, 3, 4
 
 
+def _load_all_models() -> None:
+    """Populate metadata for both the fixture and its standalone guard."""
+    import importlib
+    import pkgutil
+
+    import backend.app.models as models_pkg
+
+    for mod in pkgutil.iter_modules(models_pkg.__path__):
+        importlib.import_module(f"{models_pkg.__name__}.{mod.name}")
+
+
 @pytest.fixture(scope="module")
 def backup_schema(tmp_path_factory):
     """The schema a portable backup gets, keyed table -> column -> PRAGMA row.
@@ -35,13 +46,7 @@ def backup_schema(tmp_path_factory):
     Walk the package instead, which also keeps this from silently under-testing
     when a new model file is added.
     """
-    import importlib
-    import pkgutil
-
-    import backend.app.models as models_pkg
-
-    for mod in pkgutil.iter_modules(models_pkg.__path__):
-        importlib.import_module(f"{models_pkg.__name__}.{mod.name}")
+    _load_all_models()
 
     db_path = tmp_path_factory.mktemp("backup") / "schema.db"
     engine = create_engine(f"sqlite:///{db_path}")
@@ -112,6 +117,8 @@ _CYCLIC_FK_GROUP = frozenset(
         "library_folders",
         "print_archives",
         "print_queue",
+        "printer_queues",
+        "printers",
         "products",
         "project_lines",
     }
@@ -144,6 +151,7 @@ class TestBackupSchemaFidelity:
         it left the cycle. Measured deterministic across processes (2026-09-18)."""
         from sqlalchemy.sql.ddl import sort_tables_and_constraints
 
+        _load_all_models()
         deferred = sort_tables_and_constraints(list(Base.metadata.tables.values()))[-1][1]
         assert {fkc.table.name for fkc in deferred} == set(_CYCLIC_FK_GROUP)
 
