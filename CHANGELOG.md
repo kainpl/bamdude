@@ -1,6 +1,30 @@
 ## [Unreleased]
 
+### Added
+
+- **Empty spools can retire themselves.** A new Usage accuracy switch,
+  *Archive the spool it closed*, moves a spool to the inventory archive when
+  an unambiguous filament runout closed it at empty and the printer
+  demonstrably moved on — an AMS auto-switch to a backup, or a replacement
+  loaded into the slot. A reel that was simply reinserted and kept printing
+  stays active. Works for the built-in inventory and Spoolman alike. Off by
+  default: farms that archive empty spools by hand lose nothing.
+
 ### Fixed
+
+- **An archived spool no longer comes back while its empty reel is still in
+  the AMS.** The AMS sync did not recognise the tag of an archived spool, so
+  the next update re-added the reel: Spoolman auto-created a duplicate spool
+  (or offered "+ Add" when auto-add is off), and the built-in inventory could
+  hang the tag on another spool of the same colour. That hit anyone who
+  archived a spool before taking it out, and would have hit every reel the
+  new auto-archive retires after an AMS auto-switch. A slot holding an
+  archived spool's reel is now left alone, in the automatic sync and both
+  manual Sync buttons; restore the spool to use the reel again.
+- **Settings stay readable after an API client sends `null` for a switch.**
+  Writing `null` to the runout zero-point or two-way AMS weight sync switch
+  made the settings endpoint fail until the value was set again; it now reads
+  as the switch's default, the same way the accounting already treated it.
 
 - **Repeated or late printer events now stay with the physical print that
   caused them.** BamDude keeps the known run's archive and queue attempt from
