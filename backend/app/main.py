@@ -10688,9 +10688,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to start Cloud Link: %s", e)
 
+    from backend.app.services.preview_runtime import start_preview_runtime, stop_preview_runtime
+
+    await start_preview_runtime(Path(app_settings.base_dir))
+
     yield
 
     # Shutdown
+    await stop_preview_runtime()
     await ws_manager.shutdown()
     # Cloud Link first: it holds a socket and describes this farm, so it should
     # let go before the services it describes start disappearing underneath it.

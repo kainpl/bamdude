@@ -5,6 +5,7 @@ Generates thumbnail images from STL files using trimesh and matplotlib.
 
 import logging
 import os
+import sys
 import uuid
 from pathlib import Path
 
@@ -68,6 +69,15 @@ def generate_stl_thumbnail(
     thumbnails_dir: Path,
     size: int = 256,
 ) -> str | None:
+    try:
+        return _generate_stl_thumbnail(stl_path, thumbnails_dir, size)
+    finally:
+        # This renderer runs in a disposable child; also close failed figures.
+        if pyplot := sys.modules.get("matplotlib.pyplot"):
+            pyplot.close("all")
+
+
+def _generate_stl_thumbnail(stl_path: Path, thumbnails_dir: Path, size: int) -> str | None:
     """Generate a thumbnail image from an STL file.
 
     Args:
@@ -115,19 +125,20 @@ def generate_stl_thumbnail(
             return None
 
         # Simplify large meshes for performance
-        if len(mesh.vertices) > MAX_VERTICES:
+        from backend.app.services.preview_protocol import FACE_LIMIT
+
+        if len(mesh.vertices) > MAX_VERTICES or len(mesh.faces) > FACE_LIMIT:
             logger.info("Simplifying mesh from %s vertices", len(mesh.vertices))
             try:
                 # Calculate reduction ratio (0-1 range)
                 # e.g., 124633 vertices -> 100000 means keep ~80%, so reduce by ~20%
                 keep_ratio = MAX_VERTICES / len(mesh.vertices)
-                target_reduction = 1.0 - keep_ratio
-                # Clamp to valid range (0.01 to 0.99)
-                target_reduction = max(0.01, min(0.99, target_reduction))
-                mesh = mesh.simplify_quadric_decimation(target_reduction)
+                mesh = mesh.simplify_quadric_decimation(face_count=min(FACE_LIMIT, int(len(mesh.faces) * keep_ratio)))
                 logger.info("Simplified mesh to %s vertices", len(mesh.vertices))
             except Exception as e:
-                logger.warning("Mesh simplification failed, using original: %s", e)
+                logger.warning("Mesh simplification failed: %s", e)
+            if len(mesh.faces) > FACE_LIMIT:
+                return None
 
         # Get mesh bounds and center it
         vertices = mesh.vertices

@@ -126,7 +126,7 @@ def resolve_disk_path(library_file: Any) -> Path | None:
     direction — the same reason the upload allowlists were moved OUT of
     ``routes/projects.py`` into ``product_files``. Until that helper moves too,
     this is the shape ``services/calibration_service.py`` and
-    ``services/library_3mf_preview.py`` already use.
+    ``services/library_preview.py`` already use.
     """
     from backend.app.api.routes.library import to_absolute_path
 

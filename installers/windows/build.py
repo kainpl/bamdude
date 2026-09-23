@@ -293,7 +293,7 @@ def verify_requirements(python_dir: Path) -> None:
     this runs on every build, not only after a pip install.
     """
     py = python_dir / "python.exe"
-    names = ["fastapi", "sqlalchemy", "aiogram", "uvicorn", "asyncpg", "embedded-postgres"]
+    names = ["fastapi", "sqlalchemy", "aiogram", "uvicorn", "asyncpg", "embedded-postgres", "embedded-nats", "nats-py"]
     script = (
         "import sys\n"
         "from importlib.metadata import version, PackageNotFoundError\n"
@@ -317,7 +317,8 @@ def verify_requirements(python_dir: Path) -> None:
     for exe in ("postgres.exe", "initdb.exe", "pg_ctl.exe"):
         if not (pg_bin / exe).exists():
             raise RuntimeError(f"bundled PostgreSQL is incomplete: {pg_bin / exe} is missing")
-    log(f"verified staged Python: {len(names)} key packages + PostgreSQL binaries present")
+    subprocess.run([str(py), "-c", "from embedded_nats import binary_path; assert binary_path().is_file()"], check=True)
+    log(f"verified staged Python: {len(names)} key packages + PostgreSQL/NATS binaries present")
 
 
 def build_frontend() -> Path:

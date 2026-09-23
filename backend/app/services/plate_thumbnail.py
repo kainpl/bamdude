@@ -20,7 +20,7 @@ trimesh can't parse, matplotlib render fails) returns the input bytes
 unchanged so the slice flow itself never breaks.
 
 BamDude layers this AFTER its own higher-fidelity STL-source preview
-injection (``library_3mf_preview.inject_source_stl_preview``): that path
+injection (``preview_transform.inject_source`` in the preview child): that path
 renders plate_1 from the original STL when the slice came from a library
 STL, so the checker here skips plate 1 and only fills the blanks it
 leaves — STEP/STP sources, preview-less 3MF sources, and plates 2..N of
@@ -156,13 +156,16 @@ def _render_model_thumbnails(threemf_bytes: bytes) -> tuple[bytes | None, bytes 
         return None, None
 
     mesh = loaded
-    if len(mesh.vertices) > _MAX_VERTICES:
+    from backend.app.services.preview_protocol import FACE_LIMIT
+
+    if len(mesh.vertices) > _MAX_VERTICES or len(mesh.faces) > FACE_LIMIT:
         try:
             keep_ratio = _MAX_VERTICES / len(mesh.vertices)
-            target_reduction = max(0.01, min(0.99, 1.0 - keep_ratio))
-            mesh = mesh.simplify_quadric_decimation(target_reduction)
+            mesh = mesh.simplify_quadric_decimation(face_count=min(FACE_LIMIT, int(len(mesh.faces) * keep_ratio)))
         except Exception as exc:
-            logger.debug("plate_thumbnail: mesh simplification failed, using original: %s", exc)
+            logger.debug("plate_thumbnail: mesh simplification failed: %s", exc)
+        if len(mesh.faces) > FACE_LIMIT:
+            return None, None
 
     vertices = mesh.vertices
     bounds_min = vertices.min(axis=0)
@@ -180,6 +183,13 @@ def _render_model_thumbnails(threemf_bytes: bytes) -> tuple[bytes | None, bytes 
 
 
 def _render_at_size(poly3d, size: int, plt, Poly3DCollection) -> bytes:
+    try:
+        return _render_figure(poly3d, size, plt, Poly3DCollection)
+    finally:
+        plt.close("all")
+
+
+def _render_figure(poly3d, size: int, plt, Poly3DCollection) -> bytes:
     """Render the prepared poly3d collection to an in-memory PNG."""
     fig = plt.figure(figsize=(size / 100, size / 100), dpi=100)
     fig.patch.set_facecolor(_BACKGROUND_COLOR)
@@ -233,6 +243,8 @@ def _inject_pngs(
         for item in src.infolist():
             dst.writestr(item, src.read(item.filename))
         for n in plate_ids:
-            dst.writestr(f"Metadata/plate_{n}.png", large_png)
-            dst.writestr(f"Metadata/plate_{n}_small.png", small_png)
+            if f"Metadata/plate_{n}.png" not in src.namelist():
+                dst.writestr(f"Metadata/plate_{n}.png", large_png)
+            if f"Metadata/plate_{n}_small.png" not in src.namelist():
+                dst.writestr(f"Metadata/plate_{n}_small.png", small_png)
     return out_buf.getvalue()

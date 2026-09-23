@@ -104,6 +104,31 @@ async def test_start_refuses_a_data_directory_of_another_major(live_settings, mo
         await ep.start()
 
 
+async def test_preview_publication_cas_native_postgres(live_settings, tmp_path, monkeypatch):
+    from backend.tests.integration.test_library_preview_publication import (
+        exercise_cas,
+        test_upload_commits_before_preview_and_off_dedup_never_render,
+    )
+
+    await ep.start()
+    password = quote(ep._password(), safe="")
+    url = f"postgresql+asyncpg://{ep.PG_USER}:{password}@{ep.PG_HOST}:{settings.embedded_pg_port}/{ep.PG_DATABASE}"
+    engine = create_async_engine(url)
+    try:
+        import_all_models()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        monkeypatch.setattr(settings, "base_dir", tmp_path)
+        monkeypatch.setattr(settings, "library_dir", tmp_path / "library")
+        await exercise_cas(async_sessionmaker(engine, expire_on_commit=False), tmp_path)
+        await test_upload_commits_before_preview_and_off_dedup_never_render(
+            async_sessionmaker(engine, expire_on_commit=False), tmp_path, monkeypatch
+        )
+    finally:
+        await engine.dispose()
+        await ep.stop()
+
+
 async def test_archive_attach_rollback_and_retry_use_the_native_windows_postgres(live_settings, tmp_path, monkeypatch):
     """A smoke start is insufficient: exercise the actual archive transaction."""
     await ep.start()

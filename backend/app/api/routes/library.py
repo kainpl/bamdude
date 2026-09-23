@@ -98,10 +98,15 @@ from backend.app.services.library_helpers import (
     sync_system_tags,
 )
 from backend.app.services.library_ingest import IngestResult, find_reusable_row
+from backend.app.services.library_preview import (
+    Source as PreviewSource,
+    generate as generate_library_preview,
+    sliced_preview,
+)
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.order_filing import order_candidates
 from backend.app.services.plate_summaries import cached_plates, plate_summary, split_types
-from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
+from backend.app.services.preview_artifacts import disk as preview_disk
 from backend.app.services.process_overrides import apply_process_overrides
 from backend.app.services.product_files import attachment_limit, exceeds_attachment_limit
 from backend.app.services.product_sync import (
@@ -111,7 +116,7 @@ from backend.app.services.product_sync import (
     sync_product_for_file,
 )
 from backend.app.services.slice_output_check import missing_start_gcode_message, start_gcode_is_missing
-from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
+from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.services.threemf_card import CARD_PICTURE_CATEGORIES, ThreeMFCardParser, content_type_for
 from backend.app.utils.filename import (
@@ -1677,65 +1682,6 @@ async def create_external_folder(
     )
 
 
-async def _backfill_external_mesh_thumbnails(folder_ids: list[int]) -> None:
-    """Generate STL / OBJ thumbnails for an external folder tree in the background.
-
-    Spawned via ``spawn_background_task`` from ``scan_external_folder`` so the
-    HTTP request can return as soon as the filesystem walk + folder / file
-    rows are committed. Thumbnails for thousands of mesh files would
-    otherwise hold the request open for many minutes (each file triggers a
-    ``trimesh.load`` + matplotlib render, ~1-5s each) and the FE modal times
-    out before the final ``db.commit()`` runs — the original symptom in
-    upstream Bambuddy #1299 where subdirectories never showed up because
-    nothing got committed.
-
-    Opens its own session because the request session is closed by the time
-    this task starts running. Commits per-file so a worker restart mid-run
-    only loses the in-flight file, and processes one file at a time to avoid
-    memory pressure on systems with many huge meshes.
-    """
-    if not folder_ids:
-        return
-    from backend.app.core.database import async_session
-
-    thumbnails_dir = get_library_thumbnails_dir()
-    async with async_session() as db:
-        result = await db.execute(
-            LibraryFile.active().where(
-                LibraryFile.folder_id.in_(folder_ids),
-                LibraryFile.file_type.in_(("stl", "obj")),
-                LibraryFile.thumbnail_path.is_(None),
-            )
-        )
-        mesh_files = result.scalars().all()
-        if not mesh_files:
-            return
-        logger.info(
-            "Backfilling mesh thumbnails: %d file(s) across %d folder(s)",
-            len(mesh_files),
-            len(folder_ids),
-        )
-        for mesh_file in mesh_files:
-            abs_path = to_absolute_path(mesh_file.file_path)
-            if not abs_path or not abs_path.exists():
-                continue
-            # Stub / placeholder STLs can't contain a usable mesh — skip before
-            # trimesh so bulk backfills don't emit a warning per stub (#1820).
-            try:
-                if abs_path.stat().st_size < MIN_USABLE_STL_BYTES:
-                    continue
-            except OSError:
-                continue
-            try:
-                thumb_path = generate_stl_thumbnail(abs_path, thumbnails_dir)
-            except Exception as exc:  # noqa: BLE001 — never let one bad mesh kill the rest
-                logger.debug("Mesh thumbnail backfill skipped %s: %s", abs_path, exc)
-                continue
-            if thumb_path:
-                mesh_file.thumbnail_path = to_relative_path(Path(thumb_path))
-                await db.commit()
-
-
 @router.post("/folders/{folder_id}/scan")
 async def scan_external_folder(
     folder_id: int,
@@ -2944,18 +2890,17 @@ async def slice_and_persist(
     # use the post-injection bytes so file_hash matches what's on disk.
     sliced_bytes = result.content
     source_lib_file_id = (extra_metadata or {}).get("sliced_from_library_file_id")
+    preview_source = None
     if source_lib_file_id is not None:
         src_row = (
             await db.execute(LibraryFile.active().where(LibraryFile.id == source_lib_file_id))
         ).scalar_one_or_none()
         if src_row is not None:
-            from backend.app.services.library_3mf_preview import inject_source_stl_preview
-
-            sliced_bytes = await inject_source_stl_preview(
-                sliced_3mf_bytes=sliced_bytes,
-                source_library_file=src_row,
-                db=db,
-            )
+            preview_source = PreviewSource.capture(src_row)
+    # Slicer job updates have their own commits; this is the source-read owner
+    # boundary. Never hold its connection through the local preview service.
+    await db.commit()
+    sliced_bytes = await sliced_preview(db, sliced_bytes, model_bytes=model_bytes, source=preview_source)
 
     # ⚠️ ``model_filename`` can be built from the source's embedded
     # ``print_name``, which is free text. Managed storage names the file after
@@ -2990,8 +2935,8 @@ async def slice_and_persist(
     # library-STL slices (higher fidelity) — this checker skips any plate that
     # already has a PNG, so it only fills the blanks. Best-effort: returns the
     # bytes unchanged on any render error, so a slice never fails on a thumb.
-    sliced_bytes = inject_plate_thumbnails_if_missing(sliced_bytes)
-    out_path.write_bytes(sliced_bytes)
+    await db.commit()  # release destination lookup before file preparation
+    await preview_disk(out_path.write_bytes, sliced_bytes)
 
     # Extract thumbnail from the produced 3MF so the library card shows a
     # preview. Failures here aren't fatal — the file is still useful.
@@ -2999,7 +2944,7 @@ async def slice_and_persist(
     parsed_metadata: dict = {}
     try:
         parser = ThreeMFParser(str(out_path))
-        parsed = parser.parse()
+        parsed = await preview_disk(parser.parse)
         thumb_data = parsed.get("_thumbnail_data")
         thumb_ext = parsed.get("_thumbnail_ext", ".png")
         if thumb_data:
@@ -3033,7 +2978,7 @@ async def slice_and_persist(
     # bytes, so this path produces duplicates readily. ``find_reusable_row`` is
     # the one place that decides; an existing row is returned as-is, keeping its
     # name, folder and print history.
-    sliced_hash = hashlib.sha256(sliced_bytes).hexdigest()
+    sliced_hash = await preview_disk(lambda: hashlib.sha256(sliced_bytes).hexdigest())
     reusable = await find_reusable_row(db, content_hash=sliced_hash)
     if reusable is not None:
         existing, present = reusable
@@ -3116,7 +3061,33 @@ async def slice_and_persist_as_archive(
     inheriting printer / project / makerworld metadata from the source
     archive. Always exports as a ``.gcode.3mf`` so the existing thumbnail
     and plates infrastructure works on the new archive."""
+    import copy
+    from types import SimpleNamespace
+
     from backend.app.schemas.slicer import SliceArchiveResponse
+
+    # Keep scalar provenance across release/re-slice; do not lazy-load an
+    # expired source archive after the long-running preview attempt.
+    source_archive = SimpleNamespace(
+        **{
+            name: copy.deepcopy(getattr(source_archive, name))
+            for name in (
+                "id",
+                "printer_id",
+                "project_id",
+                "file_path",
+                "extra_data",
+                "filament_type",
+                "filament_color",
+                "sliced_for_model",
+                "print_name",
+                "layer_height",
+                "nozzle_diameter",
+                "makerworld_url",
+                "designer",
+            )
+        }
+    )
 
     archive_request = request.model_copy(update={"export_3mf": True})
 
@@ -3128,6 +3099,9 @@ async def slice_and_persist_as_archive(
         job_id=job_id,
         current_user_id=current_user_id,
     )
+
+    await db.commit()
+    result = result._replace(content=await sliced_preview(db, result.content))
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     printer_folder = str(source_archive.printer_id) if source_archive.printer_id is not None else "unassigned"
@@ -3159,8 +3133,7 @@ async def slice_and_persist_as_archive(
     # in headless --export-3mf, so a re-sliced archive often has no thumbnail.
     # Render + inject server-side (SliceResult is a NamedTuple, so _replace).
     # No-op when the slicer did embed (desktop Studio); best-effort on error.
-    result = result._replace(content=inject_plate_thumbnails_if_missing(result.content))
-    out_path.write_bytes(result.content)
+    await preview_disk(out_path.write_bytes, result.content)
 
     # Thumbnail for the new archive card. Priority: (1) the source archive's
     # own ``plate_{N}.png`` (the GUI render of the plate being re-sliced —
@@ -3174,7 +3147,7 @@ async def slice_and_persist_as_archive(
     parsed_metadata: dict = {}
 
     src_3mf_path = app_settings.base_dir / source_archive.file_path
-    source_plate_bytes = _read_3mf_entry(src_3mf_path, f"Metadata/plate_{plate_num}.png")
+    source_plate_bytes = await preview_disk(_read_3mf_entry, src_3mf_path, f"Metadata/plate_{plate_num}.png")
     if source_plate_bytes:
         thumb_dest = archive_dir / "thumbnail.png"
         thumb_dest.write_bytes(source_plate_bytes)
@@ -3182,7 +3155,7 @@ async def slice_and_persist_as_archive(
 
     try:
         parser = ThreeMFParser(str(out_path), plate_number=plate_num)
-        parsed = parser.parse()
+        parsed = await preview_disk(parser.parse)
         if thumbnail_path is None:
             thumb_data = parsed.get("_thumbnail_data")
             thumb_ext = parsed.get("_thumbnail_ext", ".png")
@@ -3195,6 +3168,10 @@ async def slice_and_persist_as_archive(
         logger.warning("Failed to parse sliced 3MF metadata for %s: %s", out_filename, exc)
 
     metadata = dict(source_archive.extra_data) if source_archive.extra_data else {}
+    # A re-slice is a new artifact, never the source's physical print run.
+    from backend.app.services.print_run_metadata import without_run_identity
+
+    metadata = without_run_identity(metadata)
     metadata.update(parsed_metadata)
     metadata.update(
         {
@@ -3229,6 +3206,7 @@ async def slice_and_persist_as_archive(
         and new_target_model != source_archive.sliced_for_model
     )
     new_printer_id = None if is_cross_model_reslice else source_archive.printer_id
+    sliced_hash = await preview_disk(lambda: hashlib.sha256(result.content).hexdigest())
 
     new_archive = PrintArchive(
         printer_id=new_printer_id,
@@ -3236,7 +3214,8 @@ async def slice_and_persist_as_archive(
         filename=out_filename,
         file_path=str(out_path.relative_to(app_settings.base_dir)),
         file_size=len(result.content),
-        content_hash=hashlib.sha256(result.content).hexdigest(),
+        content_hash=sliced_hash,
+        source_content_hash=sliced_hash,
         thumbnail_path=thumbnail_path,
         # Inherit identity from the source archive so the new entry shows up
         # alongside its sibling in the archives list.
@@ -3544,13 +3523,6 @@ async def store_library_upload(
         # For image files, create a thumbnail from the image itself
         thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
 
-    elif ext in (".stl", ".obj"):
-        # Generate mesh thumbnail (STL + OBJ both go through trimesh).
-        # Skip stub / placeholder meshes below MIN_USABLE_STL_BYTES — they
-        # can't contain a usable mesh and would only log noise (#1820).
-        if generate_stl_thumbnails and file_path.stat().st_size >= MIN_USABLE_STL_BYTES:
-            thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
-
     # Detect swap mode compatibility from filename. Covers both the
     # singular ".swap." suffix (older / custom tooling) and the ".swaps."
     # suffix that swaplist.app actually emits on export.
@@ -3584,6 +3556,29 @@ async def store_library_upload(
     # recipe automatically.
     await inherit_folder_products(db, library_file, target_folder)
     await db.commit()
+    if ext in (".stl", ".obj") and generate_stl_thumbnails and len(content) >= MIN_USABLE_STL_BYTES:
+        # Ingest is durable, including product/folder inheritance. No checked-out
+        # connection during admission, file transfer or rendering.
+        source = PreviewSource.capture(library_file)
+        try:
+            await generate_library_preview(db, source)
+        except asyncio.CancelledError:
+            # The mesh was committed before preview. Cancellation cannot undo
+            # it; let open clients learn about the durable row best-effort.
+            from backend.app.core.websocket import ws_manager
+            from backend.app.services.preview_artifacts import owned
+
+            try:
+                await owned(
+                    asyncio.wait_for(
+                        ws_manager.send_library_file_added({"id": source.id, "filename": source.filename}), 2
+                    )
+                )
+            except Exception:
+                pass
+            raise
+        except Exception:
+            logger.warning("Preview skipped for saved library file %s", source.id, exc_info=True)
     await db.refresh(library_file)
 
     # Tell open browsers the library changed. ``library_file_added`` was
@@ -3773,7 +3768,10 @@ async def extract_zip_file(
                 and not os.path.basename(name).startswith(".")
             ]
 
+            upload_user_id = current_user.id if current_user else None
             for zip_path in file_list:
+                pending_folders = {}
+                new_folder_count = 0
                 try:
                     # Determine target folder (use zip_folder_id as base if create_folder_from_zip was used)
                     target_folder_id = zip_folder_id
@@ -3814,9 +3812,9 @@ async def extract_zip_file(
                                         db.add(new_folder)
                                         await db.flush()
                                         current_parent = new_folder.id
-                                        folders_created += 1
+                                        new_folder_count += 1
 
-                                    folder_cache[current_path] = current_parent
+                                    pending_folders[current_path] = current_parent
 
                             target_folder_id = current_parent
 
@@ -3849,6 +3847,9 @@ async def extract_zip_file(
                         # re-import of the same ZIP leaves another orphan behind.
                         file_path.unlink(missing_ok=True)
                         skipped_duplicates += 1
+                        await db.commit()
+                        folder_cache.update(pending_folders)
+                        folders_created += new_folder_count
                         continue
 
                     # Extract metadata and thumbnail for 3MF files
@@ -3916,13 +3917,6 @@ async def extract_zip_file(
                     elif ext.lower() in IMAGE_EXTENSIONS:
                         thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
 
-                    elif ext in (".stl", ".obj"):
-                        # Generate mesh thumbnail (STL + OBJ both go through trimesh).
-                        # Skip sub-MIN_USABLE_STL_BYTES stubs so a ZIP of small
-                        # test meshes doesn't emit a warning storm (#1820).
-                        if generate_stl_thumbnails and file_path.stat().st_size >= MIN_USABLE_STL_BYTES:
-                            thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
-
                     # Create database entry (store relative paths for portability)
                     library_file = LibraryFile(
                         folder_id=target_folder_id,
@@ -3934,7 +3928,7 @@ async def extract_zip_file(
                         file_hash=file_hash,
                         thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
                         file_metadata=_without_print_name(metadata) if metadata else None,
-                        created_by_id=current_user.id if current_user else None,
+                        created_by_id=upload_user_id,
                     )
                     db.add(library_file)
                     await db.flush()
@@ -3959,7 +3953,18 @@ async def extract_zip_file(
                         ).scalar_one_or_none()
                         if per_file_folder is not None:
                             await inherit_folder_products(db, library_file, per_file_folder)
-                    await db.refresh(library_file)
+                    await db.commit()
+                    folder_cache.update(pending_folders)
+                    folders_created += new_folder_count
+                    if (
+                        ext in (".stl", ".obj")
+                        and generate_stl_thumbnails
+                        and len(file_content) >= MIN_USABLE_STL_BYTES
+                    ):
+                        try:
+                            await generate_library_preview(db, PreviewSource.capture(library_file))
+                        except Exception:
+                            logger.warning("Preview skipped for extracted file %s", library_file.id, exc_info=True)
 
                     extracted_files.append(
                         ZipExtractResult(
@@ -4019,120 +4024,45 @@ async def batch_generate_stl_thumbnails(
     - All STL files in a folder (folder_id)
     - All STL files missing thumbnails (all_missing=True)
     """
-    thumbnails_dir = get_library_thumbnails_dir()
     results: list[BatchThumbnailResult] = []
-
-    # Build query based on request (trash-aware: skip soft-deleted rows).
-    # Both STL and OBJ go through the same trimesh renderer — pick up
-    # both file types in the batch sweep.
     query = LibraryFile.active().where(LibraryFile.file_type.in_(("stl", "obj")))
-
     if request.file_ids:
-        # Specific files
         query = query.where(LibraryFile.id.in_(request.file_ids))
     elif request.folder_id is not None:
-        # All STL files in a specific folder
         query = query.where(LibraryFile.folder_id == request.folder_id)
-        if not request.all_missing:
-            # If not specifically asking for missing thumbnails, get all
-            pass
-        else:
+        if request.all_missing:
             query = query.where(LibraryFile.thumbnail_path.is_(None))
     elif request.all_missing:
-        # All STL files without thumbnails
         query = query.where(LibraryFile.thumbnail_path.is_(None))
     else:
-        # No criteria specified - return empty
-        return BatchThumbnailResponse(
-            processed=0,
-            succeeded=0,
-            failed=0,
-            results=[],
-        )
+        return BatchThumbnailResponse(processed=0, succeeded=0, failed=0, results=[])
 
-    result = await db.execute(query)
-    stl_files = result.scalars().all()
-
-    succeeded = 0
-    failed = 0
-
-    for stl_file in stl_files:
-        file_path = to_absolute_path(stl_file.file_path)
-
-        if not file_path or not file_path.exists():
-            results.append(
-                BatchThumbnailResult(
-                    file_id=stl_file.id,
-                    filename=stl_file.filename,
-                    success=False,
-                    error="File not found on disk",
-                )
-            )
-            failed += 1
-            continue
-
-        # Stub / placeholder meshes below MIN_USABLE_STL_BYTES can't produce a
-        # thumbnail — report a clear reason instead of running trimesh (#1820).
-        try:
-            too_small = file_path.stat().st_size < MIN_USABLE_STL_BYTES
-        except OSError:
-            too_small = False
-        if too_small:
-            results.append(
-                BatchThumbnailResult(
-                    file_id=stl_file.id,
-                    filename=stl_file.filename,
-                    success=False,
-                    error="File too small to contain a usable mesh",
-                )
-            )
-            failed += 1
-            continue
-
-        try:
-            thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
-
-            if thumbnail_path:
-                # Update database with relative path
-                stl_file.thumbnail_path = to_relative_path(thumbnail_path)
-                await db.flush()
-                results.append(
-                    BatchThumbnailResult(
-                        file_id=stl_file.id,
-                        filename=stl_file.filename,
-                        success=True,
-                    )
-                )
-                succeeded += 1
-            else:
-                results.append(
-                    BatchThumbnailResult(
-                        file_id=stl_file.id,
-                        filename=stl_file.filename,
-                        success=False,
-                        error="Thumbnail generation failed",
-                    )
-                )
-                failed += 1
-        except Exception as e:
-            logger.error("Failed to generate thumbnail for %s: %s", stl_file.filename, e)
-            results.append(
-                BatchThumbnailResult(
-                    file_id=stl_file.id,
-                    filename=stl_file.filename,
-                    success=False,
-                    error=str(e),
-                )
-            )
-            failed += 1
-
+    rows = (await db.execute(query)).scalars().all()
+    sources = [PreviewSource.capture(row) for row in rows]
+    # This route owns only an auth/selection read transaction.
     await db.commit()
-
+    for source in sources:
+        success = False
+        error = "Thumbnail generation failed"
+        try:
+            path = to_absolute_path(source.file_path)
+            size = await preview_disk(lambda path=path: path.stat().st_size if path else 0)
+            if size < MIN_USABLE_STL_BYTES:
+                error = "File too small to contain a usable mesh"
+            else:
+                success = await generate_library_preview(db, source)
+        except FileNotFoundError:
+            error = "File not found on disk"
+        except Exception:
+            logger.warning("Preview skipped for library file %s", source.id, exc_info=True)
+        results.append(
+            BatchThumbnailResult(
+                file_id=source.id, filename=source.filename, success=success, error=None if success else error
+            )
+        )
+    succeeded = sum(item.success for item in results)
     return BatchThumbnailResponse(
-        processed=len(stl_files),
-        succeeded=succeeded,
-        failed=failed,
-        results=results,
+        processed=len(results), succeeded=succeeded, failed=len(results) - succeeded, results=results
     )
 
 

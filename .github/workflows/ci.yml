@@ -211,6 +211,14 @@ jobs:
           python -m pytest backend/tests/unit/services/test_print_file_analysis.py
           -k "real_printer_manager_uses_the_child_executor or process_deadline_reaps or crashed_process_is_replaced or retiring_an_active_process"
           -v --tb=short --timeout=180 --timeout-method=thread -n 1
+      - name: Exercise local preview broker, service and renderer
+        env:
+          CAMERA_RUNTIME: inline
+        run: >
+          python -m pytest backend/tests/unit/services/test_preview_runtime.py
+            backend/tests/unit/services/test_preview_protocol.py
+            backend/tests/unit/services/test_preview_artifacts.py
+          -v --tb=short --timeout=180 --timeout-method=thread -n 1
 
   postgres-scenarios:
     name: PostgreSQL Scenarios

@@ -39,6 +39,13 @@
 
 ### Fixed
 
+- **Model previews no longer render in the web server.** STL/OBJ uploads,
+  ZIP imports, thumbnail regeneration and missing previews after slicing use
+  a bounded local preview service, bundled with BamDude in the same installation
+  or container. A failed or overloaded renderer leaves the uploaded/sliced file
+  usable, and regenerating a preview keeps the old picture until the replacement
+  is safely attached. Concurrent file changes cannot receive a stale preview.
+  No separate broker setup, exposed port or remote service is required.
 - **A product's picture is no longer cropped.** On the catalog cards — most
   of which are narrow enough to stack — a square plate picture was cut to a
   thin strip; it is now shown whole in a band as tall as the product page's

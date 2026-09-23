@@ -550,6 +550,12 @@ class TestSliceArchive:
             file_size=src_3mf.stat().st_size,
             content_hash="x" * 64,
             print_name="Test Cube",
+            extra_data={
+                "dispatch_intent": {"run_id": "old-run"},
+                "bamdude_terminal_acceptance": {"accepted": True},
+                "bamdude_terminal_effects": {"done": True},
+                "source_provenance": "keep me",
+            },
         )
         db_session.add(archive)
         await db_session.commit()
@@ -585,6 +591,16 @@ class TestSliceArchive:
         assert result["print_time_seconds"] == 777
         assert result["archive_id"] is not None
         assert "(re-sliced)" in result["name"]
+        import hashlib
+
+        created = await db_session.get(PrintArchive, result["archive_id"])
+        assert created.extra_data["source_provenance"] == "keep me"
+        assert (
+            not {"dispatch_intent", "bamdude_terminal_acceptance", "bamdude_terminal_effects"}
+            & created.extra_data.keys()
+        )
+        digest = hashlib.sha256((slice_test_setup["tmp_path"] / created.file_path).read_bytes()).hexdigest()
+        assert created.content_hash == created.source_content_hash == digest
 
 
 # ---------------------------------------------------------------------------
