@@ -21,9 +21,29 @@
   printer again, and the confirm says so. Suggested by a farm operator. Along
   the way the per-row remove button got its missing tooltip text, and its
   toast now says the job was removed rather than cancelled.
+- **Orders, products and customers now page, search and sort like the
+  archive.** Each list loads 24 rows a page (12–96, or all), has a search box
+  — orders by their own name or the customer's, customers by name or
+  contact — sorts on the server (from the table's column headers, or a sort
+  picker over the cards), and offers both cards and a table: the product
+  catalog gained a table, customers gained cards, and the customer table's
+  header now looks like the other two. The order table still
+  opens sorted by due date; the order cards open with the most recently
+  changed first. While the next page loads, the current one stays on screen,
+  dimmed. The page, the search, the sort and the orders tab and customer
+  filter live in the address bar, so Back, a refresh or a shared link lands
+  on the same view; the view mode and the page size are remembered per
+  browser. The order tabs count under the current customer and search
+  instead of across the whole farm. Everything else that reads these lists
+  — pickers, the customer and product pages — works exactly as before.
 
 ### Fixed
 
+- **A product's picture is no longer cropped.** On the catalog cards — most
+  of which are narrow enough to stack — a square plate picture was cut to a
+  thin strip; it is now shown whole in a band as tall as the product page's
+  own cover tile, and the product page's gallery and the order cards show
+  their pictures whole too. Reported by a farm operator.
 - **An archived spool no longer comes back while its empty reel is still in
   the AMS.** The AMS sync did not recognise the tag of an archived spool, so
   the next update re-added the reel: Spoolman auto-created a duplicate spool
