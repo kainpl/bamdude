@@ -740,4 +740,55 @@ describe('SettingsPage', () => {
     });
   });
 
+  describe('Usage accuracy — runout_archive_spool_enabled', () => {
+    const LABEL = 'Archive the spool it closed';
+
+    const openFilamentTab = async (user: ReturnType<typeof userEvent.setup>) => {
+      render(<SettingsPage />);
+      const tab = await waitFor(() => {
+        const buttons = screen.getAllByText('Filament').filter((el) => el.tagName === 'BUTTON');
+        expect(buttons.length).toBeGreaterThan(0);
+        return buttons[0];
+      });
+      await user.click(tab);
+      await screen.findByText(LABEL, {}, { timeout: 5000 });
+    };
+
+    it('renders off, and switchable, when the server has never set it', async () => {
+      const user = userEvent.setup();
+      await openFilamentTab(user);
+      expect(toggleFor(LABEL)).not.toBeChecked();
+      expect(toggleFor(LABEL)).not.toBeDisabled();
+    }, 15000);
+
+    it('sends runout_archive_spool_enabled: true once switched on', async () => {
+      let receivedBody: Record<string, unknown> | null = null;
+      server.use(
+        http.put('/api/v1/settings/', async ({ request }) => {
+          receivedBody = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ ...mockSettings, ...receivedBody });
+        }),
+      );
+      const user = userEvent.setup();
+      await openFilamentTab(user);
+
+      await user.click(toggleFor(LABEL));
+      expect(toggleFor(LABEL)).toBeChecked();
+      await waitFor(() => expect(receivedBody).not.toBeNull(), { timeout: 5000 });
+      expect(receivedBody).toMatchObject({ runout_archive_spool_enabled: true });
+    }, 15000);
+
+    it('reads off and cannot be switched while the zero-point is off, whatever it stored', async () => {
+      server.use(
+        http.get('/api/v1/settings/', () =>
+          HttpResponse.json({ ...mockSettings, runout_zero_point_enabled: false, runout_archive_spool_enabled: true }),
+        ),
+      );
+      const user = userEvent.setup();
+      await openFilamentTab(user);
+      expect(toggleFor(LABEL)).toBeDisabled();
+      expect(toggleFor(LABEL)).not.toBeChecked();
+    }, 15000);
+  });
+
 });

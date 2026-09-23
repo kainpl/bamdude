@@ -2736,6 +2736,8 @@ export default {
       title: 'Usage accuracy',
       zeroPoint: 'Close spools at empty on runout',
       zeroPointDesc: 'When the printer reports an unambiguous filament runout, book the spool remaining tail so it ends at exactly its label weight',
+      zeroPointArchive: 'Archive the spool it closed',
+      zeroPointArchiveDesc: 'After a runout closes a spool at empty, move it to the archive - only when the printer switched to a backup or a replacement was loaded into the slot. Off by default; leave it off if you prefer to archive empty spools yourself',
       bidirectional: 'Two-way AMS weight sync (tagged spools)',
       bidirectionalDesc: 'Let idle AMS readings correct a Bambu-tagged spool weight downward too - applied only after the same value repeats across two reports a minute apart',
       purgeGrams: 'Purge per backup switch (g)',

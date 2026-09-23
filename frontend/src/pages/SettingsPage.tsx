@@ -1290,6 +1290,7 @@ export function SettingsPage() {
       baseline.disable_filament_warnings !== localSettings.disable_filament_warnings ||
       (baseline.prefer_lowest_filament ?? true) !== (localSettings.prefer_lowest_filament ?? true) ||
       (baseline.runout_zero_point_enabled ?? true) !== (localSettings.runout_zero_point_enabled ?? true) ||
+      (baseline.runout_archive_spool_enabled ?? false) !== (localSettings.runout_archive_spool_enabled ?? false) ||
       (baseline.ams_sync_bidirectional ?? true) !== (localSettings.ams_sync_bidirectional ?? true) ||
       (baseline.runout_purge_grams ?? 0) !== (localSettings.runout_purge_grams ?? 0) ||
       (baseline.usage_events_retention_hours ?? 72) !== (localSettings.usage_events_retention_hours ?? 72) ||
@@ -1403,6 +1404,7 @@ export function SettingsPage() {
         disable_filament_warnings: localSettings.disable_filament_warnings,
         prefer_lowest_filament: localSettings.prefer_lowest_filament,
         runout_zero_point_enabled: localSettings.runout_zero_point_enabled,
+        runout_archive_spool_enabled: localSettings.runout_archive_spool_enabled,
         ams_sync_bidirectional: localSettings.ams_sync_bidirectional,
         runout_purge_grams: localSettings.runout_purge_grams,
         usage_events_retention_hours: localSettings.usage_events_retention_hours,
@@ -5728,6 +5730,22 @@ export function SettingsPage() {
                       className="sr-only peer"
                     />
                     <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-white">{t('settings.usageAccuracy.zeroPointArchive')}</p>
+                    <p className="text-sm text-bambu-gray">{t('settings.usageAccuracy.zeroPointArchiveDesc')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={(localSettings.runout_zero_point_enabled ?? true) && (localSettings.runout_archive_spool_enabled ?? false)}
+                      disabled={!(localSettings.runout_zero_point_enabled ?? true)}
+                      onChange={(e) => updateSetting('runout_archive_spool_enabled', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green peer-disabled:opacity-50 peer-disabled:cursor-not-allowed"></div>
                   </label>
                 </div>
                 <div className="flex items-center justify-between">
