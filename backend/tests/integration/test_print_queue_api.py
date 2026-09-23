@@ -666,6 +666,161 @@ class TestPrintQueueAPI:
         response = await async_client.delete("/api/v1/queue/9999")
         assert response.status_code == 404
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bulk_delete_removes_only_failed_and_cancelled(
+        self, async_client: AsyncClient, queue_item_factory, printer_factory, db_session
+    ):
+        """The Issues button sends what it shows; the server keeps every row that
+        is not a finished failure/cancellation, whatever the caller listed."""
+        from sqlalchemy import select as _select
+
+        from backend.app.models.print_queue import PrintQueueItem
+
+        _printer, queue = await printer_factory()
+        failed = await queue_item_factory(queue_id=queue.id, status="failed")
+        cancelled = await queue_item_factory(queue_id=queue.id, status="cancelled")
+        skipped = await queue_item_factory(queue_id=queue.id, status="skipped")
+        pending = await queue_item_factory(queue_id=queue.id, status="pending")
+        printing = await queue_item_factory(queue_id=queue.id, status="printing")
+
+        response = await async_client.post(
+            "/api/v1/queue/bulk-delete",
+            json={"item_ids": [failed.id, cancelled.id, skipped.id, pending.id, printing.id, 999999]},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["deleted_count"] == 2
+        assert body["skipped_count"] == 4  # skipped + pending + printing + unknown id
+        # Ids first: after expire_all an attribute read is a lazy load, which async refuses.
+        queue_id, kept = queue.id, {skipped.id, pending.id, printing.id}
+        db_session.expire_all()
+        left = (
+            (await db_session.execute(_select(PrintQueueItem.id).where(PrintQueueItem.queue_id == queue_id)))
+            .scalars()
+            .all()
+        )
+        assert set(left) == kept
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bulk_delete_a_repeated_id_is_one_row_not_a_phantom_skip(
+        self, async_client: AsyncClient, queue_item_factory
+    ):
+        failed = await queue_item_factory(status="failed")
+
+        response = await async_client.post("/api/v1/queue/bulk-delete", json={"item_ids": [failed.id, failed.id]})
+
+        assert response.status_code == 200
+        assert response.json() == {"deleted_count": 1, "skipped_count": 0, "message": "Deleted 1 items"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bulk_delete_rechecks_the_status_in_the_write_itself(self, queue_item_factory, db_session):
+        """The status the list was built from can be stale by the time the rows
+        go — a retry that committed in between turned one back into ``pending``.
+        The claim re-checks the status inside a write (which also takes the
+        writer on SQLite and the row locks on PostgreSQL) and answers only the
+        rows still failed/cancelled."""
+        from backend.app.api.routes.print_queue import _claim_still_deletable
+
+        failed = await queue_item_factory(status="failed")
+        retried = await queue_item_factory(status="pending")  # was failed when the list was read
+
+        claimed = await _claim_still_deletable(db_session, [failed.id, retried.id])
+
+        assert claimed == {failed.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bulk_delete_deletes_only_what_the_claim_kept(
+        self, async_client: AsyncClient, queue_item_factory, monkeypatch, db_session
+    ):
+        from sqlalchemy import select as _select
+
+        from backend.app.api.routes import print_queue as route_module
+        from backend.app.models.print_queue import PrintQueueItem
+
+        a = await queue_item_factory(status="failed")
+        b = await queue_item_factory(status="failed")
+        a_id, b_id = a.id, b.id
+
+        async def lost_the_race(db, ids):
+            return {a_id}  # b was retried between the read and the write
+
+        monkeypatch.setattr(route_module, "_claim_still_deletable", lost_the_race)
+
+        response = await async_client.post("/api/v1/queue/bulk-delete", json={"item_ids": [a_id, b_id]})
+
+        assert response.json() == {"deleted_count": 1, "skipped_count": 1, "message": "Deleted 1 items, skipped 1"}
+        db_session.expire_all()
+        left = (
+            await db_session.execute(_select(PrintQueueItem.id).where(PrintQueueItem.id.in_([a_id, b_id])))
+        ).scalars()
+        assert set(left) == {b_id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bulk_delete_empty_list_is_refused(self, async_client: AsyncClient):
+        response = await async_client.post("/api/v1/queue/bulk-delete", json={"item_ids": []})
+        assert response.status_code == 400
+        assert response.json()["detail"] == "No item IDs provided"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bulk_delete_detaches_refs_for_exactly_the_deleted_rows(
+        self, async_client: AsyncClient, queue_item_factory, printer_factory, monkeypatch
+    ):
+        """SQLite runs no FK actions: the partner rows are cleaned in code, and
+        only for the rows that really go — a skipped row keeps its links."""
+        from backend.app.services import queue_counters
+
+        seen: list[list[int]] = []
+        real = queue_counters.detach_print_queue_refs
+
+        async def spy(db, item_ids):
+            seen.append(sorted(item_ids))
+            await real(db, item_ids)
+
+        monkeypatch.setattr(queue_counters, "detach_print_queue_refs", spy)
+
+        _printer, queue = await printer_factory()
+        failed = await queue_item_factory(queue_id=queue.id, status="failed")
+        pending = await queue_item_factory(queue_id=queue.id, status="pending")
+
+        response = await async_client.post("/api/v1/queue/bulk-delete", json={"item_ids": [failed.id, pending.id]})
+
+        assert response.status_code == 200
+        assert seen == [[failed.id]]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bulk_delete_touches_the_queue_counters_once_per_queue(
+        self, async_client: AsyncClient, queue_item_factory, printer_factory, monkeypatch
+    ):
+        from backend.app.services import queue_counters
+
+        touched: list[int] = []
+        real = queue_counters.update_queue_counters
+
+        async def spy(db, queue_id):
+            touched.append(queue_id)
+            await real(db, queue_id)
+
+        monkeypatch.setattr(queue_counters, "update_queue_counters", spy)
+
+        _p1, q1 = await printer_factory()
+        _p2, q2 = await printer_factory()
+        a = await queue_item_factory(queue_id=q1.id, status="failed")
+        b = await queue_item_factory(queue_id=q1.id, status="cancelled")
+        c = await queue_item_factory(queue_id=q2.id, status="failed")
+
+        response = await async_client.post("/api/v1/queue/bulk-delete", json={"item_ids": [a.id, b.id, c.id]})
+
+        assert response.status_code == 200
+        assert sorted(touched) == sorted([q1.id, q2.id])
+
     # --- Soft-deleted (trashed) source archive (#1348 follow-up) -----------
 
     @pytest.mark.asyncio

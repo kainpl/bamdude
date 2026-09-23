@@ -326,3 +326,19 @@ class PrintQueueBulkUpdateResponse(BaseModel):
     updated_count: int
     skipped_count: int
     message: str
+
+
+class PrintQueueBulkDelete(BaseModel):
+    """Delete the listed rows that are still failed or cancelled.
+
+    Selection-scoped by construction: the client names the rows it showed,
+    the server never derives a set from a status filter.
+    """
+
+    item_ids: list[int]
+
+
+class PrintQueueBulkDeleteResponse(BaseModel):
+    deleted_count: int
+    skipped_count: int
+    message: str

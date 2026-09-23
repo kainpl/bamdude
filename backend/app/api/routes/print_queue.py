@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import func, inspect as sa_inspect, select
+from sqlalchemy import func, inspect as sa_inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -28,6 +28,8 @@ from backend.app.schemas.calibration_mode import derive_mode, normalize_mode
 from backend.app.schemas.farm_forecast import FarmForecastOut
 from backend.app.schemas.print_queue import (
     PrintQueueBatchCreate,
+    PrintQueueBulkDelete,
+    PrintQueueBulkDeleteResponse,
     PrintQueueBulkUpdate,
     PrintQueueBulkUpdateResponse,
     PrintQueueItemCreate,
@@ -557,6 +559,97 @@ async def bulk_update_queue_items(
         skipped_count=skipped_count,
         message=f"Updated {updated_count} items"
         + (f", skipped {skipped_count} non-pending/not-owned" if skipped_count else ""),
+    )
+
+
+# The only statuses the Issues section's «Delete all» may remove. A skipped
+# row is deferred live work and stays; pending/printing/completed are never
+# touched whatever the caller lists.
+_BULK_DELETABLE_STATUSES = ("failed", "cancelled")
+
+
+async def _claim_still_deletable(db: AsyncSession, item_ids: list[int]) -> set[int]:
+    """Of ``item_ids``, the rows that are STILL failed/cancelled — asked inside a write.
+
+    The list the route filtered was read a moment earlier, and a retry can
+    commit in between (failed → pending). A no-op UPDATE guarded by the status
+    re-checks it at write time and holds what it matched until the commit:
+    on SQLite it is the transaction's first write, so it takes the writer; on
+    PostgreSQL it row-locks the matches and re-evaluates the guard against a
+    concurrent commit. ``detach_print_queue_refs`` must still run BEFORE the
+    delete (it reads the rows), which is why this is not a guarded DELETE.
+    """
+    if not item_ids:
+        return set()
+    result = await db.execute(
+        update(PrintQueueItem)
+        .where(PrintQueueItem.id.in_(item_ids), PrintQueueItem.status.in_(_BULK_DELETABLE_STATUSES))
+        .values(status=PrintQueueItem.status)
+        .returning(PrintQueueItem.id)
+        .execution_options(synchronize_session=False)
+    )
+    return set(result.scalars().all())
+
+
+@router.post("/bulk-delete", response_model=PrintQueueBulkDeleteResponse)
+async def bulk_delete_queue_items(
+    data: PrintQueueBulkDelete,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.QUEUE_DELETE_ALL,
+            Permission.QUEUE_DELETE_OWN,
+        )
+    ),
+):
+    """Delete the listed queue rows that are still failed or cancelled.
+
+    Mirrors ``PATCH /bulk``: inside the list nothing is refused, only skipped
+    and counted — a row that changed status since the operator looked at it
+    (a retry that got through), a row someone else owns when the caller has
+    only ``delete_own``, an id that no longer exists. The cleanup is the single
+    delete's, once per row, with the counters refreshed once per queue and one
+    commit for the whole request.
+    """
+    user, can_modify_all = auth_result
+
+    if not data.item_ids:
+        raise HTTPException(400, "No item IDs provided")
+
+    result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id.in_(data.item_ids)))
+    items = result.scalars().all()
+
+    candidates: list[PrintQueueItem] = []
+    skipped = len(set(data.item_ids)) - len(items)  # ids that are already gone
+    for item in items:
+        if item.status not in _BULK_DELETABLE_STATUSES:
+            skipped += 1
+            continue
+        if not can_modify_all and (user is None or item.created_by_id != user.id):
+            skipped += 1
+            continue
+        candidates.append(item)
+
+    claimed = await _claim_still_deletable(db, [item.id for item in candidates])
+    to_delete = [item for item in candidates if item.id in claimed]
+    skipped += len(candidates) - len(to_delete)  # retried (or otherwise changed) since the read
+
+    if to_delete:
+        from backend.app.services.queue_counters import detach_print_queue_refs, update_queue_counters
+
+        await detach_print_queue_refs(db, [item.id for item in to_delete])
+        queue_ids = {item.queue_id for item in to_delete}
+        for item in to_delete:
+            await db.delete(item)
+        for queue_id in queue_ids:
+            await update_queue_counters(db, queue_id)
+        await db.commit()
+
+    logger.info("Bulk deleted %s queue items, skipped %s", len(to_delete), skipped)
+    return PrintQueueBulkDeleteResponse(
+        deleted_count=len(to_delete),
+        skipped_count=skipped,
+        message=f"Deleted {len(to_delete)} items" + (f", skipped {skipped}" if skipped else ""),
     )
 
 

@@ -378,6 +378,104 @@ class TestQueueOwnershipPermissions(TestOwnershipPermissionsSetup):
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_operator_bulk_delete_keeps_others_rows(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory
+    ):
+        """With delete_own only, a foreign failed row is skipped, never refused."""
+        own = await queue_item_factory(created_by_id=auth_setup["operator_user"]["id"], status="failed")
+        other = await queue_item_factory(created_by_id=auth_setup["operator2_user"]["id"], status="failed")
+
+        response = await async_client.post(
+            "/api/v1/queue/bulk-delete",
+            json={"item_ids": [own.id, other.id]},
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"deleted_count": 1, "skipped_count": 1, "message": "Deleted 1 items, skipped 1"}
+        still_there = await async_client.get(
+            f"/api/v1/queue/{other.id}",
+            headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+        )
+        assert still_there.status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_operator_bulk_delete_skips_an_ownerless_row(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory
+    ):
+        """An external print's row has no creator; like the single delete, only
+        ``delete_all`` may take it."""
+        ownerless = await queue_item_factory(created_by_id=None, status="failed")
+
+        response = await async_client.post(
+            "/api/v1/queue/bulk-delete",
+            json={"item_ids": [ownerless.id]},
+            headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["deleted_count"] == 0
+        assert response.json()["skipped_count"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_api_key_with_the_queue_scope_deletes_any_failed_row(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory, db_session
+    ):
+        from backend.app.core.auth import generate_api_key
+        from backend.app.models.api_key import APIKey
+
+        other = await queue_item_factory(created_by_id=auth_setup["operator2_user"]["id"], status="failed")
+        raw, key_hash, key_prefix = generate_api_key()
+        db_session.add(APIKey(name="k-queue", key_hash=key_hash, key_prefix=key_prefix, enabled=True, can_queue=True))
+        await db_session.commit()
+
+        response = await async_client.post(
+            "/api/v1/queue/bulk-delete", json={"item_ids": [other.id]}, headers={"Authorization": f"Bearer {raw}"}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["deleted_count"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_an_api_key_without_the_queue_scope_is_refused(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory, db_session
+    ):
+        from backend.app.core.auth import generate_api_key
+        from backend.app.models.api_key import APIKey
+
+        row = await queue_item_factory(created_by_id=auth_setup["operator_user"]["id"], status="failed")
+        raw, key_hash, key_prefix = generate_api_key()
+        db_session.add(APIKey(name="k-status", key_hash=key_hash, key_prefix=key_prefix, enabled=True, can_queue=False))
+        await db_session.commit()
+
+        response = await async_client.post(
+            "/api/v1/queue/bulk-delete", json={"item_ids": [row.id]}, headers={"Authorization": f"Bearer {raw}"}
+        )
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_admin_bulk_delete_takes_any_failed_row(
+        self, async_client: AsyncClient, auth_setup, queue_item_factory
+    ):
+        own = await queue_item_factory(created_by_id=auth_setup["operator_user"]["id"], status="cancelled")
+        other = await queue_item_factory(created_by_id=auth_setup["operator2_user"]["id"], status="failed")
+
+        response = await async_client.post(
+            "/api/v1/queue/bulk-delete",
+            json={"item_ids": [own.id, other.id]},
+            headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["deleted_count"] == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_operator_can_update_own_queue_item(self, async_client: AsyncClient, auth_setup, queue_item_factory):
         """Operator can update their own queue item."""
         item = await queue_item_factory(created_by_id=auth_setup["operator_user"]["id"])
