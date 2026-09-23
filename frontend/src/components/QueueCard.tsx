@@ -44,7 +44,9 @@ import {
   RotateCcw,
   ListPlus,
   Copy,
+  Trash2,
 } from 'lucide-react';
+import { ConfirmModal } from './ConfirmModal';
 import { SelectionBox } from './SelectionBox';
 import { BatchActionDialog } from './Queue/BatchActionDialog';
 import { CopyQueueModal } from './CopyQueueModal';
@@ -124,7 +126,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasPermission } = useAuth();
+  const { hasPermission, canModify } = useAuth();
   const [expanded, setExpanded] = useState(false);
 
   // Drag-drop: drop a sliced file on the queue card → upload to library +
@@ -1077,7 +1079,9 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
             cancelledItems={cancelledItems ?? []}
             skippedItems={skippedItems ?? []}
             queueKey={['queue', queue.printer_id]}
+            printerName={queue.printer_name ?? String(queue.printer_id)}
             hasPermission={hasPermission}
+            canModify={canModify}
             t={t}
           />
         )}
@@ -1530,18 +1534,33 @@ interface IssuesSectionProps {
   cancelledItems: PrintQueueItem[];
   skippedItems: PrintQueueItem[];
   queueKey: (string | number)[];
+  printerName: string;
   hasPermission: (perm: Permission) => boolean;
+  canModify: (resource: 'queue', action: 'delete', createdById: number | null | undefined) => boolean;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }
 
 /**
- * Collapsible section under pending items showing failed + skipped
- * items with retry / unskip / remove-from-queue affordances.
+ * Collapsible section under pending items showing failed + cancelled +
+ * skipped items with retry / unskip / remove-from-queue affordances.
  *
  * Collapsed by default — summary only.  Expands on click.  Each row
- * has its own mutation state; no bulk actions here.
+ * has its own mutation state. Per-row actions plus one bulk action —
+ * Delete all — scoped to the failed + cancelled rows the section is
+ * showing (spec: queue-issues-delete-all): the ids go to the server,
+ * which deletes only those still failed/cancelled. Skipped rows are
+ * deferred live work and are never part of it.
  */
-function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, hasPermission, t }: IssuesSectionProps) {
+function IssuesSection({
+  failedItems,
+  cancelledItems,
+  skippedItems,
+  queueKey,
+  printerName,
+  hasPermission,
+  canModify,
+  t,
+}: IssuesSectionProps) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const [open, setOpen] = useState(false);
@@ -1568,9 +1587,43 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
     mutationFn: (id: number) => api.removeFromQueue(id),
     onSuccess: () => {
       invalidate();
-      showToast(t('queue.toast.cancelled'), 'success');
+      showToast(t('queueCard.toast.removed'), 'success');
     },
     onError: (err: Error) => showToast(err.message, 'error'),
+  });
+
+  // Only the rows this user may delete — the server's own ownership rule
+  // (canModify: *_all, or *_own on rows they created; ownerless needs *_all),
+  // so the count on the button is what actually goes.
+  const deletableFailed = failedItems.filter(item => canModify('queue', 'delete', item.created_by_id));
+  const deletableCancelled = cancelledItems.filter(item => canModify('queue', 'delete', item.created_by_id));
+  const deletableIds = [...deletableFailed, ...deletableCancelled].map(item => item.id);
+  // Frozen at the click: the lists refetch behind the open dialog, and a row
+  // that failed after the operator looked must not ride along unseen.
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState<{
+    ids: number[];
+    failed: number;
+    cancelled: number;
+  } | null>(null);
+
+  const deleteAllMutation = useMutation({
+    mutationFn: (ids: number[]) => api.bulkDeleteQueueItems(ids),
+    onSuccess: (res) => {
+      setConfirmDeleteAll(null);
+      invalidate();
+      if (res.deleted_count === 0) {
+        showToast(t('queueCard.toast.issuesNoneRemoved'), 'info');
+        return;
+      }
+      showToast(t('queueCard.toast.issuesDeleted', { count: res.deleted_count }), 'success');
+      if (res.skipped_count > 0) {
+        showToast(t('queueCard.toast.issuesLeft', { count: res.skipped_count }), 'info');
+      }
+    },
+    onError: (err: Error) => {
+      setConfirmDeleteAll(null);
+      showToast(err.message, 'error');
+    },
   });
 
   const total = failedItems.length + cancelledItems.length + skippedItems.length;
@@ -1578,14 +1631,33 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
 
   return (
     <div className="space-y-1 pt-1">
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center gap-1 text-xs text-bambu-gray hover:text-white transition-colors"
-      >
-        {open ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-        <AlertCircle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
-        <span>{t('queueCard.issues.header', { count: total })}</span>
-      </button>
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => setOpen(v => !v)}
+          className="flex-1 flex items-center gap-1 text-xs text-bambu-gray hover:text-white transition-colors"
+        >
+          {open ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          <AlertCircle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
+          <span>{t('queueCard.issues.header', { count: total })}</span>
+        </button>
+        {deletableIds.length > 0 && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setConfirmDeleteAll({
+                ids: deletableIds,
+                failed: deletableFailed.length,
+                cancelled: deletableCancelled.length,
+              });
+            }}
+            disabled={deleteAllMutation.isPending}
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] text-red-700 dark:text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+          >
+            <Trash2 className="w-3 h-3" />
+            {t('queueCard.issues.deleteAll', { count: deletableIds.length })}
+          </button>
+        )}
+      </div>
       {open && (
         <div className="space-y-1">
           {failedItems.map(item => {
@@ -1620,7 +1692,7 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
                     onClick={() => removeMutation.mutate(item.id)}
                     disabled={removeMutation.isPending}
                     className="p-0.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 disabled:opacity-50"
-                    title={t('queue.removeFromQueue')}
+                    title={t('queueCard.actions.remove')}
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
@@ -1657,7 +1729,7 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
                     onClick={() => removeMutation.mutate(item.id)}
                     disabled={removeMutation.isPending}
                     className="p-0.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 disabled:opacity-50"
-                    title={t('queue.removeFromQueue')}
+                    title={t('queueCard.actions.remove')}
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
@@ -1691,7 +1763,7 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
                     onClick={() => removeMutation.mutate(item.id)}
                     disabled={removeMutation.isPending}
                     className="p-0.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 disabled:opacity-50"
-                    title={t('queue.removeFromQueue')}
+                    title={t('queueCard.actions.remove')}
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
@@ -1700,6 +1772,28 @@ function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, ha
             );
           })}
         </div>
+      )}
+      {confirmDeleteAll && (
+        <ConfirmModal
+          title={t('queueCard.issues.deleteAllTitle')}
+          message={t('queueCard.issues.deleteAllMessage', {
+            failed: confirmDeleteAll.failed,
+            cancelled: confirmDeleteAll.cancelled,
+            printer: printerName,
+          })}
+          confirmText={t('queueCard.issues.deleteAllConfirm')}
+          variant="danger"
+          isLoading={deleteAllMutation.isPending}
+          onConfirm={() => deleteAllMutation.mutate(confirmDeleteAll.ids)}
+          onCancel={() => setConfirmDeleteAll(null)}
+        >
+          {/* The require_previous_success gate (m116) reads the newest
+              unacknowledged failure among these rows; deleting it is the
+              operator's acknowledgement, and the dialog says what it releases. */}
+          {confirmDeleteAll.failed > 0 && (
+            <p className="text-sm text-yellow-700 dark:text-yellow-400">{t('queueCard.issues.deleteAllGate')}</p>
+          )}
+        </ConfirmModal>
       )}
     </div>
   );

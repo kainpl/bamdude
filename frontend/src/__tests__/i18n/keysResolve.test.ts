@@ -112,7 +112,6 @@ const KNOWN_MISSING = new Set([
   'printModal.plateNumber',
   'printers.connection.ethernet',
   'printers.networkLabel',
-  'queue.removeFromQueue',
   'settings.preheatOverride_',
   'settings.spoolmanAmsSyncError',
   'settings.spoolmanAmsSyncErrorNotConfigured',

@@ -4596,6 +4596,12 @@ export interface PrintQueueBulkUpdateResponse {
   message: string;
 }
 
+export interface PrintQueueBulkDeleteResponse {
+  deleted_count: number;
+  skipped_count: number;
+  message: string;
+}
+
 export type FeedPolicy = 'auto' | 'ams_only' | 'external_only';
 export interface FilamentRoutingSnapshot {
   version: number;
@@ -9377,6 +9383,12 @@ export const api = {
     request<PrintQueueBulkUpdateResponse>('/queue/bulk', {
       method: 'PATCH',
       body: JSON.stringify(data),
+    }),
+  /** Delete the failed/cancelled rows the Issues section is showing — ids in, counts out. */
+  bulkDeleteQueueItems: (itemIds: number[]) =>
+    request<PrintQueueBulkDeleteResponse>('/queue/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ item_ids: itemIds }),
     }),
 
   // Auto Queue — single global router-queue above per-printer queues

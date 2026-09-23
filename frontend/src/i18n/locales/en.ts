@@ -1693,10 +1693,16 @@ export default {
       retry: 'Retry',
       restart: 'Restart',
       more: 'More',
-      drag: 'Drag to reorder'
+      drag: 'Drag to reorder',
+      remove: 'Remove from queue'
     },
     issues: {
-      header: 'Issues ({{count}})'
+      header: 'Issues ({{count}})',
+      deleteAll: 'Delete all ({{count}})',
+      deleteAllTitle: 'Clear issues from the queue',
+      deleteAllMessage: 'Remove from the queue of {{printer}} — failed: {{failed}}, cancelled: {{cancelled}}? Skipped jobs stay. Print history and the counters below are not affected.',
+      deleteAllConfirm: 'Delete',
+      deleteAllGate: 'Jobs set to wait for a successful previous print will no longer be held back by these failures.'
     },
     batch: {
       label: 'Batch {{count}}',
@@ -1744,7 +1750,11 @@ export default {
       retrying: 'Retry queued',
       manualStartToggled: 'Manual start toggled',
       batchCancelled: 'Batch cancelled',
-      batchCloned: 'Batch cloned'
+      batchCloned: 'Batch cloned',
+      removed: 'Removed from queue',
+      issuesDeleted: '{{count}} removed',
+      issuesLeft: '{{count}} left in place (changed or removed meanwhile)',
+      issuesNoneRemoved: 'Nothing removed — the jobs changed or were removed meanwhile'
     },
     viewCompact: 'Compact view',
     viewExpanded: 'Expanded view',

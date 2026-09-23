@@ -1698,10 +1698,16 @@ export default {
       retry: 'Повторити',
       restart: 'Перезапустити',
       more: 'Більше',
-      drag: 'Перетягніть для зміни порядку'
+      drag: 'Перетягніть для зміни порядку',
+      remove: 'Прибрати з черги'
     },
     issues: {
-      header: 'Проблеми ({{count}})'
+      header: 'Проблеми ({{count}})',
+      deleteAll: 'Видалити все ({{count}})',
+      deleteAllTitle: 'Прибрати проблеми з черги',
+      deleteAllMessage: 'Прибрати з черги {{printer}} — невдалих: {{failed}}, скасованих: {{cancelled}}? Пропущені лишаються. Історія друків і лічильники нижче не змінюються.',
+      deleteAllConfirm: 'Видалити',
+      deleteAllGate: 'Завдання, що чекають успішного попереднього друку, більше не стримуватимуться цими збоями.'
     },
     batch: {
       label: 'Пачка {{count}}',
@@ -1749,7 +1755,11 @@ export default {
       retrying: 'Повторна спроба в черзі',
       manualStartToggled: 'Ручний старт перемкнуто',
       batchCancelled: 'Пачку скасовано',
-      batchCloned: 'Пачку клоновано'
+      batchCloned: 'Пачку клоновано',
+      removed: 'Прибрано з черги',
+      issuesDeleted: 'Прибрано: {{count}}',
+      issuesLeft: 'Не прибрано: {{count}} (змінились або зникли тим часом)',
+      issuesNoneRemoved: 'Нічого не прибрано — завдання змінились або зникли тим часом'
     },
     viewCompact: 'Компактний вигляд',
     viewExpanded: 'Розгорнутий вигляд',
