@@ -3615,9 +3615,18 @@ class ArchiveService:
         if not archive:
             return False
 
-        # Get archive directory
-        file_path = settings.base_dir / archive.file_path
-        archive_dir = file_path.parent
+        # Where this archive's files live — the shared helper, never derived
+        # from ``file_path`` by hand. A print with no 3MF (an H2 / P2S job sent
+        # from the slicer lives on the printer's internal storage, so nothing
+        # can be fetched) has ``file_path == ""``, and ``(base_dir / "").parent``
+        # is the PARENT of the data directory: in Docker that is /app, so the
+        # write failed with EACCES and the video was fetched again and
+        # discarded over and over; where the parent was writable it landed
+        # beside the install and the attach failed anyway on relative_to
+        # below (upstream #2843).
+        from backend.app.utils.archive_paths import archive_dir_for
+
+        archive_dir = archive_dir_for(archive)
 
         # ``filename`` originates from a printer's FTP directory listing (the
         # printer is part of the trust surface — a compromised/malicious printer
@@ -3631,6 +3640,10 @@ class ArchiveService:
             logger.warning("attach_timelapse: rejected traversal filename %r for archive %s", filename, archive_id)
             return False
 
+        # Created only once the name has been vetted, so a rejected filename
+        # leaves nothing behind. A no-3MF archive has never had a folder of its
+        # own, and the timelapse can be the first thing to want one.
+        await asyncio.to_thread(lambda: timelapse_file.parent.mkdir(parents=True, exist_ok=True))
         # Save timelapse - use thread pool to avoid blocking event loop
         # (timelapse files can be 100MB+, sync write blocks for seconds)
         await asyncio.to_thread(timelapse_file.write_bytes, timelapse_data)

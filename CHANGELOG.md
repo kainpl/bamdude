@@ -78,6 +78,14 @@
 
 ### Fixed
 
+- **A print with no 3MF in its archive can receive its timelapse and a Fusion
+  360 design file again.** H2-series and P2S printers keep a job sent from the
+  slicer on their internal storage, where it cannot be downloaded, so the
+  archive has no 3MF. For such an archive the timelapse and the design file were
+  written one folder above the data directory — under Docker that failed with a
+  permission error, so the timelapse was downloaded and thrown away again and
+  again; elsewhere the file landed beside the installation and the attach still
+  failed. Both now go into the archive's own folder, next to its photos.
 - **Starting a print no longer switches the printer's AMS and print settings
   off in BamDude.** A printer confirms a print job by echoing the job back, and
   that echo was read as the printer's own status. The job carries a value that

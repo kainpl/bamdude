@@ -3659,11 +3659,14 @@ async def upload_f3d(
     if not file.filename or not file.filename.endswith(".f3d"):
         raise HTTPException(400, "File must be a .f3d file")
 
-    # Get archive directory and create f3d subdirectory
-    file_path = settings.base_dir / archive.file_path
-    archive_dir = file_path.parent
-    f3d_dir = archive_dir / "f3d"
-    f3d_dir.mkdir(exist_ok=True)
+    # The archive's folder from the shared helper, never from ``file_path`` by
+    # hand: a print with no 3MF has ``file_path == ""``, and ``(base_dir /
+    # "").parent`` is outside the data directory (upstream #2843). Such an
+    # archive may have no folder yet, hence ``parents``.
+    from backend.app.utils.archive_paths import archive_dir_for
+
+    f3d_dir = archive_dir_for(archive) / "f3d"
+    f3d_dir.mkdir(parents=True, exist_ok=True)
 
     # Delete old F3D file if exists
     if archive.f3d_path:
