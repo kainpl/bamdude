@@ -9897,8 +9897,11 @@ class BambuMQTTClient:
         """Jog one axis by a relative distance — BS ``DevAxis::Ctrl_Axis``.
 
         ``axis`` is "X", "Y", "Z" or "E"; ``distance`` is signed millimetres.
-        On Z the sign follows BS's own convention, where **negative closes the
-        nozzle-bed gap** ("up" in the UI). On E, negative retracts.
+        On Z the sign is BS's ARROW convention: **negative moves the part that
+        travels on Z up** ("up" in the UI) — the bed on CoreXY, which closes the
+        nozzle-bed gap, and the toolhead on an i3 bed-slinger, which opens it.
+        For a model-independent gap use ``move_nozzle_bed_gap``. On E, negative
+        retracts.
 
         ⚠️ **Y and Z are inverted on non-CoreXY machines, X and E are not.**
         On a bed-slinger the Z axis carries the toolhead rather than the bed, so
@@ -9964,6 +9967,20 @@ class BambuMQTTClient:
                 ]
             )
         )
+
+    def move_nozzle_bed_gap(self, gap: float) -> bool:
+        """Open (positive) or close (negative) the nozzle-bed gap, on any model.
+
+        ``G1 Z+`` opens the gap on every Bambu printer: the bed drops away from
+        a fixed nozzle on CoreXY, the toolhead rises off a fixed bed on an i3
+        bed-slinger. ``move_axis`` takes BS's arrow value instead and flips Z on
+        i3 (``DevAxis::Ctrl_Axis``), so the gap is handed to it pre-flipped —
+        the one flip still lives there, and both transports (g-code and
+        ``xyz_ctrl``) carry the gap's direction.
+        """
+        from backend.app.utils.printer_configs import is_bed_slinger
+
+        return self.move_axis("Z", -gap if is_bed_slinger(self.model) else gap)
 
     def extruder_control(self, length: float, extruder_index: int = 0) -> bool:
         """Push or pull filament by hand — BS ``command_extruder_control``.

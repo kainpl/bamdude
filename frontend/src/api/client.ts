@@ -1018,6 +1018,10 @@ export interface PrinterStatus {
   // the machine's screen still prompted, and losing home after our command did
   // not. Absent keys mean the printer never reported, which reads as homed.
   axis_at_home?: { x?: boolean; y?: boolean; z?: boolean };
+  // Z carries the toolhead (i3 bed-slinger: A1 / A1 Mini / A2L), not the bed.
+  // ⚠️ For WORDING only ("Z" / "toolhead" instead of "Bed" / "plate", as
+  // BambuStudio labels it) — never flip a jog sign with it; the backend does.
+  is_bed_slinger?: boolean;
   // Per-extruder "filament is loaded". Drives whether the extruder graphic shows
   // filament — a picture that always did would be a small lie told often.
   ext_has_filament?: Record<number, boolean>;
@@ -7727,11 +7731,10 @@ export const api = {
       method: 'POST',
     }),
 
-  // Bed (Z-axis) jog
-  bedJog: (printerId: number, distance: number) =>
-    request<{ success: boolean; message: string }>(`/printers/${printerId}/bed-jog?distance=${distance}`, {
-      method: 'POST',
-    }),
+  // The card's Z arrows use jogAxis('z', …) — BambuStudio's arrow convention,
+  // like the motion window. POST /printers/{id}/bed-jog stays for API clients:
+  // it takes a model-independent nozzle-bed GAP, which on an i3 bed-slinger is
+  // the opposite sign of an arrow (upstream #1334, audit D11).
   homeAxes: (printerId: number, axes: 'z' | 'xy' | 'all' = 'z') =>
     request<{ success: boolean; message: string }>(
       `/printers/${printerId}/home-axes?axes=${axes}`,

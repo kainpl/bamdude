@@ -23,7 +23,7 @@ from backend.app.services.bambu_mqtt import (
     airduct_parts_effective,
     get_stage_name,
 )
-from backend.app.utils.printer_configs import airduct_fan_label, get_device_support_flags
+from backend.app.utils.printer_configs import airduct_fan_label, get_device_support_flags, is_bed_slinger
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import limits_for
 from backend.app.utils.timelapse import capability_for as timelapse_capability_for
@@ -2329,6 +2329,8 @@ def printer_state_to_dict(
         "ext_has_nozzle": dict(state.ext_has_nozzle),
         "supports_chamber_heater": supports_chamber_heater(model),
         "axis_at_home": dict(state.axis_at_home),
+        # Wording only — see ``PrinterStatus.is_bed_slinger``.
+        "is_bed_slinger": is_bed_slinger(model),
         "ext_has_filament": dict(state.ext_has_filament),
         "timelapse_capability": timelapse_capability_for(model, state),
         "airduct_fans": [f.model_dump() for f in _airduct_fans(model, state)],

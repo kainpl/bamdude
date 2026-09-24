@@ -2730,8 +2730,12 @@ function PrinterCard({
       showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
 
+  // ⚠️ /jog, not /bed-jog. The arrows send BambuStudio's arrow value ("up" =
+  // negative = the part that travels on Z goes up) and the backend applies the
+  // i3 flip. /bed-jog means a model-independent GAP for API clients — the
+  // opposite sign of an arrow on a bed-slinger (upstream #1334, audit D11).
   const bedJogMutation = useMutation({
-    mutationFn: ({ distance }: { distance: number }) => api.bedJog(printer.id, distance),
+    mutationFn: ({ distance }: { distance: number }) => api.jogAxis(printer.id, 'z', distance),
     onError: (error: Error) =>
       showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
@@ -4514,9 +4518,14 @@ function PrinterCard({
                       {(() => {
                         const canControl = hasPermission('printers:control');
                         const disabled = isPrinting || !canControl;
-                        const bambuIsPlateBelow = true; // positive Z moves plate away from nozzle
+                        // Wording only: on an i3 bed-slinger (A1 / A1 Mini / A2L)
+                        // Z carries the toolhead, so the card says "Z" /
+                        // "toolhead" as BambuStudio does. ⚠️ The sign is never
+                        // flipped here — "up" sends BS's arrow value (negative)
+                        // on every model and the backend applies the i3 flip.
+                        const zMovesToolhead = status?.is_bed_slinger === true;
                         const requestJog = (direction: 1 | -1) => {
-                          const signed = direction * bedJogStep * (bambuIsPlateBelow ? 1 : -1);
+                          const signed = direction * bedJogStep;
                           const warnedKey = `bamdude.bedJog.warned.${printer.id}`;
                           const warned = (() => {
                             try { return sessionStorage.getItem(warnedKey) === '1'; }
@@ -4539,11 +4548,11 @@ function PrinterCard({
                                   ? 'bg-bambu-dark cursor-not-allowed'
                                   : 'bg-indigo-500/10 hover:bg-indigo-500/20'
                               }`}
-                              title={!canControl ? t('printers.permission.noControl') : isPrinting ? t('printers.bedJog.disabledWhilePrinting') : t('printers.bedJog.title')}
+                              title={!canControl ? t('printers.permission.noControl') : isPrinting ? t('printers.bedJog.disabledWhilePrinting') : t(zMovesToolhead ? 'printers.bedJog.titleToolhead' : 'printers.bedJog.title')}
                             >
                               <MoveVertical className={`w-[var(--pc-i35,0.875rem)] h-[var(--pc-i35,0.875rem)] ${disabled ? 'text-bambu-gray/50' : 'text-indigo-400'}`} />
                               <span className={`text-[length:var(--pc-t10,10px)] ${disabled ? 'text-bambu-gray/50' : 'text-indigo-400'}`}>
-                                {t('printers.bedJog.bed')}
+                                {t(zMovesToolhead ? 'printers.bedJog.z' : 'printers.bedJog.bed')}
                               </span>
                               <span className={`text-[length:var(--pc-t10,10px)] tabular-nums opacity-70 ${disabled ? 'text-bambu-gray/50' : 'text-indigo-400'}`}>
                                 {bedJogStep}mm
@@ -4558,14 +4567,14 @@ function PrinterCard({
                                     <button
                                       onClick={() => requestJog(-1)}
                                       className="flex-1 flex items-center justify-center py-1.5 rounded bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300"
-                                      aria-label={t('printers.bedJog.up')}
+                                      aria-label={t(zMovesToolhead ? 'printers.bedJog.upToolhead' : 'printers.bedJog.up')}
                                     >
                                       <ArrowUp className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
                                     </button>
                                     <button
                                       onClick={() => requestJog(1)}
                                       className="flex-1 flex items-center justify-center py-1.5 rounded bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300"
-                                      aria-label={t('printers.bedJog.down')}
+                                      aria-label={t(zMovesToolhead ? 'printers.bedJog.downToolhead' : 'printers.bedJog.down')}
                                     >
                                       <ArrowDown className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
                                     </button>

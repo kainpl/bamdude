@@ -44,6 +44,20 @@ class TestLoader:
     def test_unknown_returns_none(self, model):
         assert load_printer_config(model) is None
 
+    @pytest.mark.parametrize(
+        ("code", "model"),
+        [("A11", "A1"), ("A12", "A1 Mini"), ("A04", "A1 Mini"), ("O2D", "H2D Pro")],
+    )
+    def test_an_alternate_internal_code_resolves_to_its_model(self, code, model):
+        """⚠️ Codes ``PRINTER_MODEL_ID_MAP`` knows but no mirrored JSON names.
+
+        They answered ``None`` — and every per-model question fell back to its
+        default. For ``printer_arch`` that default is ``core_xy``, so an A1 stored
+        as ``A11`` lost its bed-slinger Z flip and the jog "up" arrow drove the
+        nozzle into the bed: upstream #1334 again, on an alias.
+        """
+        assert load_printer_config(code) == load_printer_config(model)
+
 
 class TestDeviceCalibrationAvailability:
     def test_x2d_full(self):

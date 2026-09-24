@@ -155,8 +155,12 @@ export function MotionModal({ printerId, isOpen, onClose, status, isDualNozzle, 
               className="w-full max-w-[220px] mx-auto"
             />
 
-            {/* The bed row, laid out as Studio lays it: the two step sizes on
-                each side of the label, arrows pointing the way the gap goes. */}
+            {/* The Z row, laid out as Studio lays it: the two step sizes on each
+                side of the label, arrows pointing the way the part that travels
+                on Z moves — the bed on CoreXY, the toolhead on an i3
+                bed-slinger, where Studio labels the row "Z" and so do we. The
+                titles are the values sent (BS's arrow convention), the same on
+                every model; the backend applies the i3 flip. */}
             <div className="flex items-center justify-center gap-1 mt-3">
               {[-STEP_COARSE, -STEP_FINE].map((d) => (
                 <Btn
@@ -169,7 +173,9 @@ export function MotionModal({ printerId, isOpen, onClose, status, isDualNozzle, 
                   <ArrowUpFromLine className="w-3.5 h-3.5" /> {Math.abs(d)}
                 </Btn>
               ))}
-              <span className="text-[10px] text-bambu-gray px-1">{t('printers.motion.bed')}</span>
+              <span className="text-[10px] text-bambu-gray px-1">
+                {t(status.is_bed_slinger ? 'printers.motion.z' : 'printers.motion.bed')}
+              </span>
               {[STEP_FINE, STEP_COARSE].map((d) => (
                 <Btn
                   key={d}

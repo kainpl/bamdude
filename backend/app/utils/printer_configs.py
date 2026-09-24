@@ -24,7 +24,7 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 
-from backend.app.utils.printer_models import normalize_printer_model
+from backend.app.utils.printer_models import PRINTER_MODEL_ID_MAP, normalize_printer_model
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +174,15 @@ def load_printer_config(model: str | None, firmware_version: str | None = None) 
         # Also try the "Bambu Lab X" long form directly.
         short = normalize_printer_model(model)
         stem = _model_index().get(_norm(short)) if short else None
+    if not stem:
+        # ⚠️ An alternate internal code no mirrored JSON names — A11 / A12 / A04
+        # (A1 family), O2D (H2D Pro). ``PRINTER_MODEL_ID_MAP`` knows them; the
+        # index does not. They used to answer None, and every per-model question
+        # fell back to its default — for ``printer_arch`` that is ``core_xy``, so
+        # an A1 stored as ``A11`` lost its bed-slinger Z flip and the jog "up"
+        # arrow drove the nozzle into the bed (upstream #1334, on an alias).
+        alias = PRINTER_MODEL_ID_MAP.get(model.strip().upper())
+        stem = _model_index().get(_norm(alias)) if alias else None
     if not stem:
         return None
     try:

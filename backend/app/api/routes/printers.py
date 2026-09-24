@@ -108,6 +108,7 @@ from backend.app.services.printer_manager import (
 from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
 from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
 from backend.app.utils.http import build_content_disposition
+from backend.app.utils.printer_configs import is_bed_slinger
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import is_within, limits_for
 from backend.app.utils.timelapse import capability_for as timelapse_capability_for
@@ -1508,6 +1509,7 @@ async def _build_printer_status(
         ext_has_nozzle=dict(state.ext_has_nozzle),
         supports_chamber_heater=supports_chamber_heater(printer.model),
         axis_at_home=dict(state.axis_at_home),
+        is_bed_slinger=is_bed_slinger(printer.model),
         ext_has_filament=dict(state.ext_has_filament),
         timelapse_capability=timelapse_capability_for(printer.model, state),
         storage_capability=storage_capability_for(printer.model, state),
@@ -3487,10 +3489,10 @@ async def bed_jog(
     distance: float = Query(
         ...,
         description=(
-            "Signed nozzle-bed gap adjustment in mm. Negative = decrease gap "
-            '("up" arrow in the UI: bed up on bed-on-Z models, toolhead down '
-            "on A1 bed-slingers). Positive = increase gap. The backend "
-            "translates this into the right G-code Z sign per printer model."
+            "Signed nozzle-bed gap adjustment in mm, the same meaning on every "
+            "model: positive opens the gap (bed drops on CoreXY, toolhead rises "
+            "on A1 / A1 Mini / A2L), negative closes it. Positive is always the "
+            "safe direction."
         ),
     ),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
@@ -3498,8 +3500,18 @@ async def bed_jog(
 ):
     """Adjust the nozzle-bed gap by a relative distance.
 
-    A thin wrapper over ``move_axis("Z", …)``, kept because its contract is the
-    nozzle-bed GAP rather than an axis — which is the question the card asks.
+    The API for a GAP, not for an axis: ``distance`` means the same thing on
+    every model (``BambuMQTTClient.move_nozzle_bed_gap``). The printer card does
+    not use this route — its arrows speak BambuStudio's arrow convention and go
+    through ``/jog?axis=z``, like the motion window.
+
+    ⚠️ Until 2026-09-24 this passed ``distance`` straight to ``move_axis``, i.e.
+    it spoke BS's ARROW convention ("negative = the Z part goes up") while this
+    very description promised a gap. On an i3 bed-slinger those are opposite, so
+    an API client that sent +5 for clearance on an A1 drove the nozzle down
+    (upstream #1334, reported against the API). Decision D11 of the 1.2.5.6
+    audit: the route keeps the gap it documents; the flip stays in
+    ``move_axis`` (``inv-jog-mirrors-bambustudio``).
 
     ⚠️ This used to send its own copy of the sequence at ``F600`` while claiming
     to mirror BS "byte-for-byte". The sequence did match; the feedrate did not
@@ -3522,15 +3534,11 @@ async def bed_jog(
     the same reason BS sends them: the jog must not disturb the reference frame
     a running job depends on.
 
-    Direction handling: on bed-on-Z printers (X1 / P1 / H2 family) the bed
-    is the Z-axis, and Bambu's home convention puts Z=0 at the top with
-    Z+ moving the bed down — so a frontend "Up" (decrease gap) maps
-    naturally to ``G1 Z-``. On bed-slingers (A1 / A1 Mini) the Z-axis is
-    the *toolhead*, and ``G1 Z-`` instead drives the nozzle DOWN into the
-    bed. We invert the signed distance here for bed-slingers so the UI
-    contract ("Up arrow = decrease gap = negative distance") stays
-    consistent regardless of which physical part moves. Upstream Bambuddy
-    #1334 / commit a2c9eef8 — safety-critical.
+    Direction: ``G1 Z+`` opens the gap on every Bambu model — the bed drops
+    away on CoreXY (X1 / P1 / H2 / P2S / X2D), the toolhead rises on the i3
+    bed-slingers (A1 / A1 Mini / A2L). So the wire carries the caller's sign
+    unchanged; ``move_nozzle_bed_gap`` hands ``move_axis`` a pre-flipped value
+    so its one i3 flip cancels out. Safety-critical — upstream Bambuddy #1334.
     """
     if distance == 0 or abs(distance) > 200:
         raise HTTPException(400, "Distance must be non-zero and <= 200 mm")
@@ -3550,10 +3558,11 @@ async def bed_jog(
         # API key and by a tab opened before the print started.
         raise HTTPException(409, "Printer is busy — cannot jog while a job is on it")
 
-    # One implementation for every axis — ``BambuMQTTClient.move_axis`` mirrors
-    # ``DevAxis::Ctrl_Axis``, including the bed-slinger flip described above and
-    # the choice between the g-code sequence and ``xyz_ctrl``.
-    if not client.move_axis("Z", distance):
+    # One implementation for every axis — ``move_axis`` mirrors
+    # ``DevAxis::Ctrl_Axis`` (the endstop sequence, the i3 flip, the choice
+    # between g-code and ``xyz_ctrl``); the gap is translated into its arrow
+    # value right beside it.
+    if not client.move_nozzle_bed_gap(distance):
         raise HTTPException(500, "Failed to send bed-jog command")
 
     return {"success": True, "message": f"Bed jog {distance:+.1f} mm sent"}
@@ -3563,7 +3572,15 @@ async def bed_jog(
 async def jog_axis(
     printer_id: int,
     axis: str = Query(..., description="Which axis: x | y | z | e"),
-    distance: float = Query(..., description="Signed millimetres. On Z and E, negative is the UI's 'up'."),
+    distance: float = Query(
+        ...,
+        description=(
+            "Signed millimetres in BambuStudio's arrow convention. On Z, negative moves the part that "
+            "travels on Z up: the bed on CoreXY (closes the gap), the toolhead on A1 / A1 Mini / A2L "
+            "(opens it) — the backend applies that flip, as BambuStudio does. For a model-independent "
+            "nozzle-bed gap use /bed-jog. On E, negative retracts."
+        ),
+    ),
     extruder_index: int = Query(0, ge=0, le=1, description="E only: 0 = main, 1 = deputy"),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),

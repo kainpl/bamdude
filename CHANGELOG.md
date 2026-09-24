@@ -78,6 +78,21 @@
 
 ### Fixed
 
+- **The jog "up" arrow on an A1 recorded under an alternate model code no
+  longer drives the nozzle into the bed.** The printer's own model name decides
+  whether the Z direction is reversed for a bed-slinger, and three alternate
+  codes for the A1 and A1 Mini (`A11`, `A12`, `A04`) were not recognised, so
+  those printers were treated as if the bed moved on Z. They — and `O2D` for
+  the H2D Pro — now resolve to their model everywhere a per-model capability is
+  looked up.
+- **`POST /printers/{id}/bed-jog` now means what its documentation says on
+  every printer.** `distance` is the nozzle-bed gap: positive opens it, whether
+  the bed drops away (X1, P1, H2, P2S, X2D) or the toolhead rises (A1, A1 Mini,
+  A2L). On bed-slingers it used to follow the arrow direction instead, so a
+  script that asked for clearance lowered the nozzle. The printer card's arrows
+  are unchanged — they now use the same axis control as the Motion window —
+  and on a bed-slinger the card and that window label the control **Z** and
+  talk about the toolhead rather than the plate, as Bambu Studio does.
 - **A printer that stops answering can no longer freeze the whole web
   interface.** When a printer went offline but its port still accepted
   connections, rebuilding its connection — by the connection watchdog, a

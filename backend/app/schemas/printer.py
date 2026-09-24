@@ -590,6 +590,11 @@ class PrinterStatus(BaseModel):
     # guess that was wrong in both directions: homing from the machine's own
     # screen still prompted, and losing home after our command did not.
     axis_at_home: dict[str, bool] = Field(default_factory=dict)
+    # Whether Z carries the toolhead (i3 bed-slinger: A1 / A1 Mini / A2L)
+    # rather than the bed. ⚠️ For WORDING only — "Z" / "toolhead" instead of
+    # "Bed" / "plate", as BambuStudio labels it. The sign flip stays in
+    # ``BambuMQTTClient.move_axis``; the UI must never flip it.
+    is_bed_slinger: bool = False
     # Per-extruder "filament is loaded", keyed by extruder id. Parsed since the
     # AMS-firmware guard needed it; published so the extruder graphic can show
     # what is actually in the machine instead of a picture that always agrees.

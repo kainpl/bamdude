@@ -111,60 +111,60 @@ class TestBedJogAPI:
             assert "M211 X1 Y1 Z1" in sent_gcode
             assert "G1 Z-5.0" in sent_gcode
 
-    # --- Direction-flip regression on bed-slingers (upstream #1334) ---
+    # --- The nozzle-bed GAP, on every model (upstream #1334, D11 2026-09-24) ---
     #
-    # The UI maps "Up arrow = decrease nozzle-bed gap" to a negative distance
-    # (the X1/P1/H2 bed-on-Z convention, where Z=0 is at the top and Z+ moves
-    # the bed down). On A1 / A1 Mini bed-slingers the Z-axis controls the
-    # *toolhead* — same `G1 Z-` literal would drive the nozzle straight into
-    # the bed. The backend therefore inverts the signed distance on A1 family
-    # printers so the UI contract stays consistent.
+    # ``/bed-jog`` is documented as a signed nozzle-bed gap: positive = more room.
+    # ``G1 Z+`` opens that gap on every Bambu model — the bed drops away on CoreXY
+    # (X1 / P1 / H2 / P2S / X2D), the toolhead rises on the i3 bed-slingers
+    # (A1 / A1 Mini / A2L). So the wire carries the caller's sign unchanged,
+    # whatever the model. It used to carry BambuStudio's ARROW convention
+    # instead ("negative = the Z part goes up"), which is model-dependent: an
+    # API client that sent +5 for clearance on an A1 drove the nozzle down.
+    # The card's arrows keep BS's convention through ``/jog?axis=z``, where
+    # ``move_axis`` applies the i3 flip — see test_axis_control.
+
+    _CORE_XY = ["X1C", "X1E", "P1S", "P1P", "H2D", "H2S", "H2C", "P2S", "X2D"]
+    _I3 = ["A1", "A1 Mini", "A1MINI", "A1-MINI", "a1", "N1", "N2S", "A2L", "N9", "A11", "A12", "A04"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "model",
-        ["X1C", "X1E", "P1S", "P1P", "H2D", "H2S", "H2C", "P2S"],
-    )
-    async def test_bed_on_z_models_pass_through(self, async_client: AsyncClient, printer_factory, model):
-        """Every bed-on-Z model still emits the literal sign the UI sent."""
-        printer = await printer_factory(name=f"BedOnZ-{model}", model=model)
+    @pytest.mark.parametrize("model", _CORE_XY + _I3)
+    async def test_positive_opens_the_gap_on_every_model(self, async_client: AsyncClient, printer_factory, model):
+        printer = await printer_factory(name=f"Gap-{model}", model=model)
         mock_client = _jog_client(model)
-        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
-            mock_pm.get_client.return_value = mock_client
-            # UI "Up" = negative distance = decrease nozzle-bed gap
-            response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=-10")
-            assert response.status_code == 200
-            sent_gcode = mock_client.send_gcode.call_args[0][0]
-            assert "G1 Z-10.0" in sent_gcode, f"{model} should pass through the negative sign"
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "model",
-        ["A1", "A1 Mini", "A1MINI", "A1-MINI", "a1", "N1", "N2S"],
-    )
-    async def test_bed_slinger_models_invert_sign(self, async_client: AsyncClient, printer_factory, model):
-        """A1 family inverts the sign so UI "Up" drives the toolhead UP, not into the bed."""
-        printer = await printer_factory(name=f"Slinger-{model}", model=model)
-        mock_client = _jog_client(model)
-        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
-            mock_pm.get_client.return_value = mock_client
-            # UI "Up" = negative distance, but on bed-slinger we want toolhead UP
-            response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=-10")
-            assert response.status_code == 200
-            sent_gcode = mock_client.send_gcode.call_args[0][0]
-            assert "G1 Z10.0" in sent_gcode, f"{model} should invert the sign (toolhead goes up)"
-
-    @pytest.mark.asyncio
-    async def test_bed_slinger_down_arrow_drops_toolhead(self, async_client: AsyncClient, printer_factory):
-        """Symmetric: UI "Down arrow" (positive distance) on A1 produces G1 Z-, dropping the toolhead toward the bed."""
-        printer = await printer_factory(name="A1-down", model="A1")
-        mock_client = _jog_client("A1")
         with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
             mock_pm.get_client.return_value = mock_client
             response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=5")
             assert response.status_code == 200
             sent_gcode = mock_client.send_gcode.call_args[0][0]
-            assert "G1 Z-5.0" in sent_gcode
+            assert "G1 Z5.0 " in sent_gcode, f"{model}: +5 must open the gap (G1 Z+), got {sent_gcode!r}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", _CORE_XY + _I3)
+    async def test_negative_closes_the_gap_on_every_model(self, async_client: AsyncClient, printer_factory, model):
+        printer = await printer_factory(name=f"Close-{model}", model=model)
+        mock_client = _jog_client(model)
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=-10")
+            assert response.status_code == 200
+            sent_gcode = mock_client.send_gcode.call_args[0][0]
+            assert "G1 Z-10.0 " in sent_gcode, f"{model}: -10 must close the gap (G1 Z-), got {sent_gcode!r}"
+
+    @pytest.mark.asyncio
+    async def test_the_new_protocol_opens_the_gap_too(self, async_client: AsyncClient, printer_factory):
+        """``xyz_ctrl`` carries only a direction — and it must be the gap's, not
+        the arrow's, on a bed-slinger as well."""
+        printer = await printer_factory(name="A1-xyz", model="A1")
+        mock_client = _jog_client("A1")
+        mock_client.state.print_option_support["mqtt_axis_ctrl"] = True
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/bed-jog?distance=5")
+            assert response.status_code == 200
+            import json
+
+            sent = json.loads(mock_client._client.publish.call_args[0][1])["print"]
+            assert (sent["command"], sent["axis"], sent["dir"]) == ("xyz_ctrl", "Z", 1)
 
 
 class TestHomeAxesAPI:

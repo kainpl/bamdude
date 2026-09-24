@@ -1661,6 +1661,13 @@ class TestIsBedSlinger:
         assert is_bed_slinger("a1") is True
         assert is_bed_slinger("a1 mini") is True
 
+    @pytest.mark.parametrize("code", ["A11", "A12", "A04"])
+    def test_alternate_a1_codes_are_bed_slingers(self, code):
+        """⚠️ Safety. These are A1 / A1 Mini codes the mirrored configs do not
+        name; they classified as CoreXY, so the Z flip was skipped and "up" drove
+        the nozzle into the bed (upstream #1334 on an alias)."""
+        assert is_bed_slinger(code) is True
+
     def test_bed_on_z_models_return_false(self):
         """Every bed-on-Z model must NOT be classified as a bed-slinger."""
         for model in ("X1C", "X1", "X1E", "P1S", "P1P", "H2D", "H2C", "H2S", "P2S", "X2D"):

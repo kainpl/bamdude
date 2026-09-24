@@ -86,6 +86,25 @@ describe('MotionModal', () => {
     await waitFor(() => expect(jogAxis).toHaveBeenCalledWith(1, 'z', -10, 0));
   });
 
+  it('calls the row "Bed" where the bed travels on Z', () => {
+    show();
+
+    expect(screen.getByText('printers.motion.bed')).toBeInTheDocument();
+    expect(screen.queryByText('printers.motion.z')).not.toBeInTheDocument();
+  });
+
+  it('calls it "Z" on a bed-slinger and still sends Studio\'s arrow value', async () => {
+    /* ⚠️ On an i3 machine Z carries the toolhead, so "Bed" names a part that
+       does not move in Z — Studio labels the row "Z". The number sent does NOT
+       change: the backend applies the flip (upstream #1334). */
+    show({ is_bed_slinger: true });
+
+    expect(screen.getByText('printers.motion.z')).toBeInTheDocument();
+    expect(screen.queryByText('printers.motion.bed')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Z -10'));
+    await waitFor(() => expect(jogAxis).toHaveBeenCalledWith(1, 'z', -10, 0));
+  });
+
   it('draws one round pad carrying all eight directions and Home', () => {
     /* ⚠️ Pins the SHAPE, not just the buttons. An earlier version split the two
        rings across two square grids, which parked X-1 and X+1 in a strip under
