@@ -18,11 +18,24 @@ it a property of ``connect()`` itself.
 """
 
 import logging
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+
+def _eventually(check, timeout: float = 5.0) -> bool:
+    """The retirement runs on a thread of its own (upstream #3068), so the old
+    client's DISCONNECT and ``loop_stop`` land shortly after ``connect()``
+    returns, not before it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if check():
+            return True
+        time.sleep(0.01)
+    return check()
 
 
 @pytest.fixture
@@ -52,6 +65,7 @@ class TestConnectRetiresWhatItReplaces:
             client.connect()
 
         assert len(paho_clients) == 2, "expected a fresh client for the second connect"
+        assert _eventually(lambda: first.loop_stop.call_count == 1)
         first.disconnect.assert_called_once()
         first.loop_stop.assert_called_once()
         assert client._client is paho_clients[1]
@@ -89,8 +103,8 @@ class TestConnectRetiresWhatItReplaces:
         client.connect()
         client.connect()
 
-        assert paho_clients[0].disconnect.called
-        assert paho_clients[0].loop_stop.called
+        assert _eventually(lambda: paho_clients[0].disconnect.called)
+        assert _eventually(lambda: paho_clients[0].loop_stop.called)
 
 
 class TestAFailedConnectSaysWhy:

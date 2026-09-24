@@ -4620,9 +4620,22 @@ class TestForceReconnectRouting:
     behaviour, safe from paho's own network thread).
 
     The routing decision is based on whether an asyncio loop is running:
-    hard-reset requires `loop_stop()`, which would deadlock if called from
-    inside the network thread itself.
+    hard-reset rebuilds the client and needs a running loop to hand it, which
+    paho's own network thread does not have.
     """
+
+    @staticmethod
+    def _eventually(check, timeout: float = 5.0) -> bool:
+        """The old client is retired on a thread of its own (upstream #3068),
+        so its DISCONNECT and ``loop_stop`` land just after the call returns."""
+        import time
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if check():
+                return True
+            time.sleep(0.01)
+        return check()
 
     @pytest.fixture
     def mqtt_client(self):
@@ -4660,8 +4673,8 @@ class TestForceReconnectRouting:
             mqtt_client.force_reconnect_stale_session("test")
 
         asyncio.run(_trigger())
+        assert self._eventually(lambda: original.loop_stop.called)
         original.disconnect.assert_called()
-        original.loop_stop.assert_called()
         # connect() stub didn't repopulate _client, so it's None — the contract
         # in production is that connect() builds a fresh mqtt.Client here.
         assert mqtt_client._client is None
@@ -4681,6 +4694,8 @@ class TestHardResetClientDirect:
     by the routing layer when a full paho-client teardown is safe. These tests
     drive the helper directly so they don't depend on the routing decision.
     """
+
+    _eventually = staticmethod(TestForceReconnectRouting._eventually)
 
     @pytest.fixture
     def mqtt_client(self):
@@ -4704,8 +4719,8 @@ class TestHardResetClientDirect:
         loop_stop (network thread exits, taking its QoS 1 queue with it)."""
         original = mqtt_client._client
         mqtt_client._hard_reset_client()
+        assert self._eventually(lambda: original.loop_stop.called)
         original.disconnect.assert_called()
-        original.loop_stop.assert_called()
 
     def test_clears_client_reference(self, mqtt_client):
         """Old reference must go to None so subsequent code can't accidentally
@@ -4723,7 +4738,7 @@ class TestHardResetClientDirect:
         # No exception escapes the call (test would fail if it did).
         mqtt_client._hard_reset_client()
         # loop_stop is still attempted after the disconnect failure.
-        original.loop_stop.assert_called()
+        assert self._eventually(lambda: original.loop_stop.called)
         assert mqtt_client._client is None
 
 

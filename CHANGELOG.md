@@ -78,6 +78,17 @@
 
 ### Fixed
 
+- **A printer that stops answering can no longer freeze the whole web
+  interface.** When a printer went offline but its port still accepted
+  connections, rebuilding its connection — by the connection watchdog, a
+  queue dispatch, a status check, or editing, deleting or disconnecting the
+  printer — could wait indefinitely for the old connection to wind down, and
+  BamDude stopped answering every page and API call while the process stayed
+  up. The old connection is now let go on a background thread and the new one
+  starts straight away; a teardown that takes longer than a few seconds is
+  logged with the printer's serial. The MQTT relay and the MQTT smart-plug
+  connection shut down the same way, so a stuck broker no longer holds up a
+  service stop.
 - **The AMS drying panel on the printer card opens again.** Since 0.6.0 a
   click on the flame did nothing visible: the panel opened beyond the edge of
   the card and was cut off by it. It now opens next to its button and scrolls

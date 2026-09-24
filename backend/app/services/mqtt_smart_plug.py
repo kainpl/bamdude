@@ -14,6 +14,7 @@ from typing import Any
 import paho.mqtt.client as mqtt
 
 from backend.app.services.measurement_buffer import measurement_buffer
+from backend.app.utils.paho_teardown import retire_paho_client
 
 logger = logging.getLogger(__name__)
 
@@ -636,7 +637,9 @@ class MQTTSmartPlugService:
                 self._disconnection_event = threading.Event()
                 self.client.disconnect()
                 await asyncio.to_thread(self._disconnection_event.wait, timeout=timeout)
-                self.client.loop_stop()
+                # Not loop_stop(): its join has no bound, and a wedged broker
+                # would keep the process from exiting (upstream #3068).
+                retire_paho_client(self.client, "smart-plugs")
             except Exception as e:
                 logger.debug("MQTT smart plug disconnect error (ignored): %s", e)
             finally:
