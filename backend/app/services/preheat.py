@@ -20,9 +20,11 @@ Resolution order:
   1. ``preheat_override`` ('off' skips; 'inherit' → global ``preheat_enabled``;
      'on' forces the stage on even when the global is off).
   2. Chamber target — explicit per-item override if non-null; else the max of
-     ``preheat_filament_targets[normalize(tray_type)]`` across loaded AMS slots;
-     else 0 (skips the chamber phase, keeps bed phase + soak). Mixed PA+PLA picks
-     PA's 50 (max-across-slots — PA's chamber requirement is binding).
+     ``preheat_filament_targets[normalize(material)]`` across the feeds the job's
+     ``ams_mapping`` names (every AMS slot when it names none); else 0 (skips the
+     chamber phase, keeps bed phase + soak). A PA+PLA print picks PA's 50 — the
+     requirement of a filament the print USES is binding; an ASA merely parked
+     in the AMS is not (upstream #2886).
   3. Three hardware tiers branch the wait:
      - Chamber heater (H2C/H2D/H2D Pro/H2S/X2D/X1E → ``supports_chamber_heater``):
        ``set_ctt`` to target, then wait for the chamber sensor to reach it (or timeout).
@@ -198,38 +200,66 @@ def _normalize_filament_type(tray_type: str) -> str:
     return tray_type.split()[0].upper() if tray_type else ""
 
 
-def _derive_chamber_target(printer: Printer, targets: dict[str, int]) -> int:
-    """Max chamber target across loaded AMS trays. Returns 0 when no AMS data is
-    available (external-spool prints) or every loaded slot maps to 0 — the chamber
-    phase then short-circuits. Reads the same ``raw_data['ams'][].tray[]`` shape the
-    dispatcher's AMS mapping uses; empty / RFID-less slots contribute nothing."""
-    state = printer_manager.get_status(printer.id)
-    if state is None:
+def _target_for_type(material: str | None, targets: dict[str, int]) -> int:
+    """The per-filament chamber target of one feed's material; 0 for a feed reporting none."""
+    normalised = _normalize_filament_type(material or "")
+    if not normalised:
         return 0
-    ams_list = (state.raw_data or {}).get("ams") if state.raw_data else None
-    # Older Bambu firmware nests AMS as {"ams": {"ams": [...]}} — accept both.
-    if isinstance(ams_list, dict):
-        ams_list = ams_list.get("ams") or []
-    if not isinstance(ams_list, list):
-        return 0
+    # A filled or foamed variant with no row of its own wants its base
+    # material's chamber: ASA-GF is ASA and needs ASA's 45 °C, not the 0 an
+    # unknown type falls to. The full type is tried first, so PETG-CF and PA-CF
+    # keep their own hotter rows (upstream #2902).
+    target = targets.get(normalised)
+    if target is None:
+        target = targets.get(normalised.split("-")[0], targets.get("DEFAULT", 0))
+    return target
+
+
+def _used_source_ids(ams_mapping: Any) -> set[int] | None:
+    """The feed sources this print loads, or None when the job states none.
+
+    ``ams_mapping`` is the array the print command carries — position = the
+    plate's filament, value = the feed's global id (``ams*4+tray``, the unit id
+    for an AMS-HT, 254/255 for an external feed), ``-1`` for a filament the plate
+    does not use. None means "no usable statement": no mapping, junk, or one that
+    names no feed at all — and the caller must then read every AMS feed, not none,
+    or a print that needs the chamber would silently skip it.
+    """
+    mapping = ams_mapping
+    if isinstance(mapping, str):
+        try:
+            mapping = json.loads(mapping)
+        except ValueError:
+            return None
+    if not isinstance(mapping, list):
+        return None
+    used = {v for v in mapping if isinstance(v, int) and not isinstance(v, bool) and v >= 0}
+    return used or None
+
+
+def _derive_chamber_target(printer: Printer, targets: dict[str, int], ams_mapping: Any = None) -> int:
+    """Max chamber target across the feeds THIS print loads (upstream #2886).
+
+    The whole AMS used to be scanned, so one ASA spool parked beside the PLA put
+    a 45 °C chamber — and on a printer that cannot reach it, the entire max-wait
+    plus soak — in front of every PLA job on that machine. The job's
+    ``ams_mapping`` (the routing plan's, the one ``start_print`` sends) names
+    the feeds it uses, and only those count; an external feed it names counts
+    too. Without a usable mapping every AMS feed counts, as before, and the
+    external one stays out.
+
+    Reads the printer's feed snapshot — the ids the routing plan was made of, and
+    the SPOOL's material where a slot is advertised under another profile
+    (``ams_advertised_overlay``). Returns 0 when nothing considered maps above
+    0 — the chamber phase then short-circuits.
+    """
+    snapshot = printer_manager.get_feed_snapshot(printer.id)
+    used = _used_source_ids(ams_mapping)
     best = 0
-    for ams in ams_list:
-        trays = (ams.get("tray") or []) if isinstance(ams, dict) else []
-        for tray in trays:
-            if not isinstance(tray, dict):
-                continue
-            normalised = _normalize_filament_type(tray.get("tray_type") or "")
-            if not normalised:
-                continue
-            # A filled or foamed variant with no row of its own wants its base
-            # material's chamber: ASA-GF is ASA and needs ASA's 45 °C, not the 0
-            # an unknown type falls to. The full type is tried first, so PETG-CF
-            # and PA-CF keep their own hotter rows (upstream #2902).
-            target = targets.get(normalised)
-            if target is None:
-                target = targets.get(normalised.split("-")[0], targets.get("DEFAULT", 0))
-            if target > best:
-                best = target
+    for source in snapshot.sources:
+        if (source.kind != "ams") if used is None else (source.id not in used):
+            continue
+        best = max(best, _target_for_type(source.material, targets))
     return best
 
 
@@ -289,7 +319,8 @@ async def preheat_and_soak(
     soak_seconds = await _get_int_setting(db, "preheat_soak_seconds", default=300)
 
     # Chamber target: explicit per-item override wins; explicit 0 means "no chamber
-    # even if the filament wants it"; otherwise derive from loaded AMS filament types.
+    # even if the filament wants it"; otherwise derive from the filaments this
+    # print loads (the job's ams_mapping, put in the options by the routing plan).
     explicit_target = opts.get("preheat_chamber_target_override")
     if explicit_target is not None and explicit_target > 0:
         chamber_target = int(explicit_target)
@@ -299,7 +330,7 @@ async def preheat_and_soak(
         chamber_source = "item-override-zero"
     else:
         targets = await _get_preheat_filament_targets(db)
-        chamber_target = _derive_chamber_target(printer, targets)
+        chamber_target = _derive_chamber_target(printer, targets, opts.get("ams_mapping"))
         chamber_source = "filament-map"
 
     bed_target = int(archive.bed_temperature) if archive and archive.bed_temperature else 0

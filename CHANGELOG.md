@@ -122,6 +122,14 @@
   the slot keeps the type as the spool gives it. A material written as `PLA+`,
   "PLA Matte" or "PolyTerra PLA" is recognised as PLA, where `PLA+` used to leave
   the slot unconfigured.
+- **Preheat heats the chamber for the filaments the print uses, not for every
+  spool in the AMS.** The chamber target was the highest one across all loaded
+  slots, so a single ASA spool parked beside PLA made every PLA job wait for a
+  45 °C chamber — on a printer without a chamber heater, the full maximum wait
+  and soak before each upload. Only the slots the print's filament mapping
+  names count now, including an external spool the print feeds from, which used
+  to be ignored. A print without a filament mapping still considers every AMS
+  slot.
 - **Preheat gives a filled or foamed filament its base material's chamber
   temperature.** A slot with ASA-GF, ASA Aero or ABS-GF had no row of its own
   in the chamber-target map and fell to "Other" — 0 °C, no chamber phase.

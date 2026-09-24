@@ -3042,7 +3042,7 @@ export default {
     preheatEnabled: 'Enable preheat & soak',
     preheatEnabledDesc: 'When off, queued prints dispatch immediately. Each queue item can override per print.',
     preheatFilamentTargetsLabel: 'Per-filament chamber target (°C)',
-    preheatFilamentTargetsHint: 'BamDude picks the highest target across the loaded AMS slots; PLA-only prints derive 0 and skip the chamber phase automatically.',
+    preheatFilamentTargetsHint: 'BamDude picks the highest target among the filaments the print uses — a spool that only sits in the AMS does not count; PLA-only prints derive 0 and skip the chamber phase automatically.',
     preheatFilamentTargetsReset: 'Reset to defaults',
     preheatFilamentTargetsDefaultRow: 'Other / unmapped',
     preheatMaxWait: 'Max wait (seconds)',

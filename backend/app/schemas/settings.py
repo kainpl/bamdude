@@ -252,8 +252,9 @@ class AppSettings(BaseModel):
     # (H2C/H2D/H2D Pro/H2S/X2D/X1E) set_ctt → wait for chamber sensor → soak; chamber sensor
     # only (X1C/P2S) M140 → wait for radiant warm-up OR timeout → soak; no chamber sensor
     # (P1S/P1P/A1/A1 Mini) M140 → fixed soak timer. Chamber target derives per-print from
-    # the loaded AMS filament types (max across slots); 0 skips the chamber phase but keeps
-    # the bed phase + soak. Per-item preheat_chamber_target_override bypasses the derivation.
+    # the filaments the print loads (max across the feeds its AMS mapping names); 0 skips the
+    # chamber phase but keeps the bed phase + soak. Per-item preheat_chamber_target_override
+    # bypasses the derivation.
     preheat_enabled: bool = Field(
         default=False,
         description="Master toggle / default for new queue items. Per-item preheat_override can flip the decision per print.",
@@ -263,7 +264,7 @@ class AppSettings(BaseModel):
         description=(
             "JSON map of normalized filament type -> chamber target degC. Empty = bundled defaults "
             "(PLA/PETG/TPU/PVA: 0, PETG-CF: 40, ABS/ASA: 45, PA/PC/PC-FR: 50, PA-CF: 55, default: 0). "
-            "Scheduler picks the max across loaded AMS slots; 0 disables the chamber phase for that print."
+            "The print gets the max across the filaments it loads; 0 disables the chamber phase for that print."
         ),
     )
     preheat_max_wait_seconds: int = Field(
