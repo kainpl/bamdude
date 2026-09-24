@@ -39,6 +39,8 @@
   "Admin username and password are required": "Імʼя користувача та пароль адміністратора обовʼязкові",
   "Advanced authentication is not enabled": "Розширену автентифікацію не ввімкнено",
   "All items must be in the same printer queue": "Усі елементи мають бути в черзі одного принтера",
+  "An API key restricted to specific printers cannot use the farm-wide auto-queue": "API-ключ, обмежений окремими принтерами, не може користуватися автоматичною чергою всієї ферми",
+  "An API key restricted to specific printers must name a printer by its id": "API-ключ, обмежений окремими принтерами, має називати принтер його ідентифікатором",
   "An attachment may be at most {} bytes": "Вкладення може бути щонайбільше {} байтів",
   "An external folder already exists for this path": "Для цього шляху вже існує зовнішня тека",
   "An import may be at most {} bytes": "Імпорт може бути щонайбільше {} байтів",

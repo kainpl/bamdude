@@ -7,13 +7,14 @@ import time
 import zipfile
 import zlib
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.core import database
+from backend.app.core.api_key_scope import in_key_scope
 from backend.app.core.auth import (
     RequireCameraStreamToken,
     RequireOverlayToken,
@@ -191,6 +192,7 @@ def _serialize_printer(printer: Printer, *, include_secret: bool):
 
 @router.get("/")
 async def list_printers(
+    request: Request,
     include_archived: bool = False,
     user: User | None = RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
@@ -208,7 +210,7 @@ async def list_printers(
     if not include_archived:
         stmt = stmt.where(Printer.archived.is_(False))
     result = await db.execute(stmt)
-    printers = list(result.scalars().all())
+    printers = [p for p in result.scalars().all() if in_key_scope(request, p.id)]
     include_secret = _caller_can_view_printer_secrets(user)
     return [_serialize_printer(p, include_secret=include_secret) for p in printers]
 
@@ -1060,14 +1062,17 @@ async def get_printer_status_batch(
     ids: list[int] = Query(min_length=1, max_length=100),
     _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
+    request: Request = None,
 ):
     """One bounded REST snapshot for a fleet view, including WS-unavailable clients.
 
     Missing IDs are omitted; each client caller can handle its own 404 without
     failing the other cards. Uses the single-printer response builder verbatim.
+    A printer outside an API key's list is omitted the same way.
     """
     started = time.monotonic()
-    printers = list((await db.scalars(select(Printer).where(Printer.id.in_(set(ids))))).all())
+    wanted = {pid for pid in ids if in_key_scope(request, pid)}
+    printers = list((await db.scalars(select(Printer).where(Printer.id.in_(wanted)))).all())
     subtasks = {}
     held = []
     for printer in printers:

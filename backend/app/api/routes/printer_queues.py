@@ -3,10 +3,11 @@
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.api_key_scope import in_key_scope
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -88,6 +89,7 @@ async def _bulk_terminal_counts(db: AsyncSession, queue_ids: list[int]) -> dict[
 
 @router.get("/", response_model=list[PrinterQueueResponse])
 async def list_queues(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_READ),
 ):
@@ -103,7 +105,7 @@ async def list_queues(
         .options(selectinload(PrinterQueue.printer))
         .order_by(Printer.name, PrinterQueue.id)
     )
-    queues = list(result.scalars().all())
+    queues = [q for q in result.scalars().all() if in_key_scope(request, q.printer_id)]
     counts_by_queue = await _bulk_terminal_counts(db, [q.id for q in queues])
     return [_to_response(q, counts_by_queue.get(q.id, {})) for q in queues]
 

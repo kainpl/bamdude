@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+### Security
+
+- **An API key limited to some printers now stays with those printers.** The
+  printer list on an API key was saved and shown, but only the webhook routes
+  honoured it: a key limited to printer 1 could read, control and queue work
+  for printer 2 through the rest of the API. It now applies everywhere a request
+  names a printer — in the address, in the query, anywhere in the request body,
+  and through what belongs to a printer: its queue, a queued job or a batch of
+  jobs, a smart plug, a maintenance item, a running dispatch, a calibration
+  session, and the MQTT recordings a support bundle can attach. The printer
+  list, printer statuses, queues, queued jobs and the monitor wall show such a
+  key only its own printers. The auto-queue hands work to whichever printer
+  fits, so a limited key cannot use it at all. Keys without a printer list
+  work as before; a key with an empty list reaches no printer.
+
 ### Added
 
 - **Camera capture is worker-only.** Built-in and external live views, snapshots,

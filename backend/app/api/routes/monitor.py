@@ -2,12 +2,13 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import require_ownership_permission, require_permission, security
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -25,22 +26,23 @@ _items_read = require_ownership_permission(Permission.QUEUE_READ_ALL, Permission
 
 
 async def monitor_access(
+    request: Request,
     view: MonitorView = "printers",
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     x_api_key: str | None = Header(None, alias="X-API-Key"),
 ) -> MonitorAccess:
-    user = await _printers_read(credentials=credentials, x_api_key=x_api_key)
+    user = await _printers_read(request=request, credentials=credentials, x_api_key=x_api_key)
     queue_read = False
     read_all = read_own = False
     try:
-        await _queues_read(credentials=credentials, x_api_key=x_api_key)
+        await _queues_read(request=request, credentials=credentials, x_api_key=x_api_key)
         queue_read = True
     except HTTPException as exc:
         if exc.status_code != 403 or view == "queues":
             raise
     if queue_read:
         try:
-            _, read_all = await _items_read(credentials=credentials, x_api_key=x_api_key)
+            _, read_all = await _items_read(request=request, credentials=credentials, x_api_key=x_api_key)
             read_own = not read_all
         except HTTPException as exc:
             if exc.status_code != 403:
@@ -52,6 +54,7 @@ async def monitor_access(
         user_id=user.id if user else None,
         open_printer=bool(user and user.has_permission(Permission.PRINTERS_READ.value)),
         open_queue=bool(user and queue_read),
+        printer_ids=key_printer_scope(request),
     )
 
 

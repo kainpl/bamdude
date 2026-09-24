@@ -9,11 +9,12 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import func, inspect as sa_inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequirePermission, require_ownership_permission
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
@@ -314,6 +315,7 @@ async def get_queue_forecast(
 
 @router.get("/", response_model=list[PrintQueueItemResponse])
 async def list_queue(
+    request: Request,
     queue_id: int | None = Query(None, description="Filter by printer queue"),
     status: str | None = Query(None, description="Filter by status"),
     db: AsyncSession = Depends(get_db),
@@ -340,6 +342,9 @@ async def list_queue(
     )
     if user is not None and not can_read_all:
         query = query.where(PrintQueueItem.created_by_id == user.id)
+    key_scope = key_printer_scope(request)
+    if key_scope is not None:
+        query = query.where(PrintQueueItem.queue_id.in_(key_scope))
 
     if queue_id is not None:
         query = query.where(PrintQueueItem.queue_id == queue_id)
@@ -364,7 +369,7 @@ async def list_queue(
             target_queue_ids = [queue_id]
         else:
             all_queues = (await db.execute(select(PrinterQueue))).scalars().all()
-            target_queue_ids = [q.id for q in all_queues]
+            target_queue_ids = [q.id for q in all_queues if key_scope is None or q.id in key_scope]
 
         for q_id in target_queue_ids:
             queue_row = (await db.execute(select(PrinterQueue).where(PrinterQueue.id == q_id))).scalar_one_or_none()

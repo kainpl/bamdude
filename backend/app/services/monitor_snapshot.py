@@ -44,6 +44,8 @@ class MonitorAccess:
     kiosk: bool = False
     open_printer: bool = False
     open_queue: bool = False
+    # An API key restricted to some printers sees those alone; None = every printer.
+    printer_ids: frozenset[int] | None = None
 
     def visible(self, item: PrintQueueItem) -> bool:
         return not self.kiosk and (
@@ -107,6 +109,8 @@ def _waiting(item: PrintQueueItem | None, printer: MonitorPrinter, access: Monit
 async def build_snapshot(db: AsyncSession, view: MonitorView, access: MonitorAccess) -> MonitorSnapshot:
     now = datetime.now(timezone.utc)
     printers = list((await db.scalars(select(Printer).where(Printer.archived.is_(False)).order_by(Printer.name))).all())
+    if access.printer_ids is not None:
+        printers = [p for p in printers if p.id in access.printer_ids]
     ids = [p.id for p in printers]
     queues = {}
     counts = {}

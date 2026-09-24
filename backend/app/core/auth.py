@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt.exceptions import PyJWTError as JWTError
 from passlib.context import CryptContext
@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.api_key_scope import enforce_printer_scope, printer_refusal
 from backend.app.core.database import async_session, get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
@@ -1609,10 +1610,7 @@ def check_printer_access(api_key: APIKey, printer_id: int) -> None:
 
     # Check if printer_id is in allowed list
     if printer_id not in api_key.printer_ids:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"API key does not have access to printer {printer_id}",
-        )
+        raise printer_refusal(printer_id)
 
 
 # Convenience dependencies - these are functions that return Depends objects
@@ -1658,7 +1656,8 @@ def require_permission(*permissions: str | Permission):
 
     API keys bypass the per-resource permission check (legacy behavior); their
     access is instead narrowed through the API-key-specific ``can_queue`` /
-    ``can_control_printer`` / ``can_read_status`` flags elsewhere.
+    ``can_control_printer`` / ``can_read_status`` flags elsewhere, and a key
+    with a printer list is held to it here (``core/api_key_scope``).
 
     Args:
         *permissions: Permission strings or Permission enum values to require
@@ -1671,6 +1670,7 @@ def require_permission(*permissions: str | Permission):
     perm_strings = [p.value if isinstance(p, Permission) else p for p in permissions]
 
     async def permission_checker(
+        request: Request,
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     ) -> User | None:
@@ -1682,6 +1682,7 @@ def require_permission(*permissions: str | Permission):
                     # GHSA-r2qv-8222-hqg3: gate on the key's scope flags instead
                     # of allowing any valid key unconditionally.
                     await authorize_api_key(db, api_key, perm_strings)
+                    await enforce_printer_scope(db, request, api_key)
                     return None  # API key valid + scoped, allow access
 
             credentials_exception = HTTPException(
@@ -1699,6 +1700,7 @@ def require_permission(*permissions: str | Permission):
                 api_key = await _validate_api_key(db, token)
                 if api_key:
                     await authorize_api_key(db, api_key, perm_strings)
+                    await enforce_printer_scope(db, request, api_key)
                     return None  # API key valid + scoped, allow access
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1833,6 +1835,7 @@ def require_any_permission(*permissions: str | Permission):
     perm_strings = [p.value if isinstance(p, Permission) else p for p in permissions]
 
     async def permission_checker(
+        request: Request,
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     ) -> User | None:
@@ -1842,6 +1845,7 @@ def require_any_permission(*permissions: str | Permission):
                 if api_key:
                     # GHSA-r2qv-8222-hqg3: require at least one requested scope.
                     await authorize_api_key(db, api_key, perm_strings, require_any=True)
+                    await enforce_printer_scope(db, request, api_key)
                     return None
 
             credentials_exception = HTTPException(
@@ -1858,6 +1862,7 @@ def require_any_permission(*permissions: str | Permission):
                 api_key = await _validate_api_key(db, token)
                 if api_key:
                     await authorize_api_key(db, api_key, perm_strings, require_any=True)
+                    await enforce_printer_scope(db, request, api_key)
                     return None
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -2010,6 +2015,7 @@ def require_ownership_permission(
     own_perm = own_permission.value if isinstance(own_permission, Permission) else own_permission
 
     async def checker(
+        request: Request,
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     ) -> tuple[User | None, bool]:
@@ -2026,6 +2032,7 @@ def require_ownership_permission(
                     # keys have no per-row ownership identity so a passing key
                     # keeps can_modify_all=True.
                     await authorize_api_key(db, api_key, [all_perm])
+                    await enforce_printer_scope(db, request, api_key)
                     return None, True
 
             # Check for Bearer token (could be JWT or API key)
@@ -2036,6 +2043,7 @@ def require_ownership_permission(
                     api_key = await _validate_api_key(db, token)
                     if api_key:
                         await authorize_api_key(db, api_key, [all_perm])
+                        await enforce_printer_scope(db, request, api_key)
                         return None, True
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,

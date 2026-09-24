@@ -1188,6 +1188,18 @@ class BackgroundDispatchService:
             active.job.printer_id == printer_id for active in self._active_jobs.values()
         )
 
+    def printer_of_job(self, job_id: int) -> int | None:
+        """The printer a queued or active dispatch job is for; None when it is neither.
+
+        Read synchronously, like ``has_work_for_printer``: the API-key printer
+        scope asks it before ``cancel_job`` takes the lock, and a job that ends
+        in between is simply not found by the cancel.
+        """
+        active = self._active_jobs.get(job_id)
+        if active is not None:
+            return active.job.printer_id
+        return next((job.printer_id for job in self._queued_jobs if job.id == job_id), None)
+
     def _refuse_unless_free(self, printer_id: int, printer_name: str) -> None:
         """Both availability questions, asked under ``_lock``.
 
