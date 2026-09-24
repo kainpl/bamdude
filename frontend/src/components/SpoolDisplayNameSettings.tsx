@@ -8,6 +8,7 @@ import type { InventorySpool } from '../api/client';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 import {
   DEFAULT_SPOOL_DISPLAY_TEMPLATE,
   SPOOL_PLACEHOLDERS,
@@ -57,6 +58,7 @@ const PREVIEW_FALLBACK: InventorySpool = {
 
 export function SpoolDisplayNameSettings() {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
 
@@ -66,14 +68,13 @@ export function SpoolDisplayNameSettings() {
   });
 
   // Preview uses a real inventory spool when available so the operator sees the
-  // template applied to actual data (catches empty-value surprises early). Only
-  // first active spool is fetched — the Filaments page already loads the full
-  // list, so this query is a cheap cache hit in practice.
-  const { data: spools } = useQuery({
-    queryKey: ['spools'],
-    queryFn: () => api.getSpools(false),
+  // template applied to actual data, without fetching the whole inventory.
+  const { data: sample } = useQuery({
+    queryKey: ['inventory-spools', 'display-name-sample', 'active'],
+    queryFn: () => api.getSpoolsPaged({ archived: 'active', page: 1, per_page: 1 }),
+    enabled: hasPermission('inventory:read'),
   });
-  const previewSpool: InventorySpool = spools?.[0] ?? PREVIEW_FALLBACK;
+  const previewSpool: InventorySpool = sample?.items[0] ?? PREVIEW_FALLBACK;
 
   const [localTemplate, setLocalTemplate] = useState('');
 
@@ -141,7 +142,7 @@ export function SpoolDisplayNameSettings() {
           <div className="rounded-lg bg-bambu-dark border border-bambu-dark-tertiary p-3">
             <div className="text-xs text-bambu-gray mb-1">
               {t('settings.spoolDisplayName.previewLabel')}
-              {!spools?.length && (
+              {!sample?.items.length && (
                 <span className="ml-2 italic">{t('settings.spoolDisplayName.previewFallback')}</span>
               )}
             </div>

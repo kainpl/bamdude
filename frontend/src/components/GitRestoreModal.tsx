@@ -172,6 +172,7 @@ export function GitRestoreModal({ onClose }: GitRestoreModalProps) {
         // the cache instead. That page now reconciles a moved server snapshot
         // field by field, so the restore no longer needs an exception.
         invalidateSpoolViews(queryClient);
+        queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
         queryClient.invalidateQueries({ queryKey: ['archives'] });
         queryClient.invalidateQueries({ queryKey: ['settings'] });
       }

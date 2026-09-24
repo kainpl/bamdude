@@ -8,7 +8,10 @@ vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
   getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
+    getCurrentUser: vi.fn().mockResolvedValue({ id: 1, username: 'admin', is_admin: true, permissions: [] }),
     getSpools: vi.fn(),
+    getSpoolPicker: vi.fn(),
+    getSpool: vi.fn(),
     getAssignments: vi.fn(),
     assignSpool: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({}),
@@ -75,7 +78,12 @@ const anotherManualSpool = {
 describe('AssignSpoolModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([manualSpool, blSpool, anotherManualSpool]);
+    (api.getSpoolPicker as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [manualSpool, blSpool, anotherManualSpool],
+      meta: { total: 3, current_page: 1, per_page: 60, last_page: 1 },
+    });
+    (api.getSpool as ReturnType<typeof vi.fn>).mockImplementation(async (id: number) =>
+      [manualSpool, blSpool, anotherManualSpool].find(spool => spool.id === id));
     (api.getAssignments as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
@@ -136,13 +144,39 @@ describe('AssignSpoolModal', () => {
   });
 
   it('shows noAvailableSpools message when inventory is empty', async () => {
-    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (api.getSpoolPicker as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [], meta: { total: 0, current_page: 1, per_page: 60, last_page: 1 },
+    });
 
     render(<AssignSpoolModal {...defaultProps} />);
 
     await waitFor(() => {
       expect(screen.getByText(/No spools available/i)).toBeInTheDocument();
     });
+  });
+
+  it('keeps a selected spool addressable across server pages', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    const farSpool = { ...manualSpool, id: 731, brand: 'Faraway' };
+    (api.getSpoolPicker as ReturnType<typeof vi.fn>).mockImplementation(async (params: { page: number }) => ({
+      items: params.page === 1 ? [manualSpool] : [farSpool],
+      meta: { total: 61, current_page: params.page, per_page: 60, last_page: 2 },
+    }));
+    (api.getSpool as ReturnType<typeof vi.fn>).mockImplementation(async (id: number) =>
+      id === farSpool.id ? farSpool : manualSpool);
+    (api.assignSpool as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1, spool_id: farSpool.id });
+
+    render(<AssignSpoolModal {...defaultProps} />);
+    await waitFor(() => expect(screen.getByText(/Polymaker/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Next page/i }));
+    await waitFor(() => expect(screen.getByText(/Faraway/)).toBeInTheDocument());
+    fireEvent.click(screen.getByText(/Faraway/));
+    fireEvent.click(screen.getByRole('button', { name: /Previous page/i }));
+    await waitFor(() => expect(screen.getByText(/Polymaker/)).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: /Assign Spool/ }).at(-1)!);
+    await waitFor(() => expect(api.assignSpool).toHaveBeenCalledWith(
+      expect.objectContaining({ spool_id: farSpool.id })
+    ));
   });
 
   it('a paused print asks "replacement or correction?" before assigning', async () => {
@@ -237,7 +271,9 @@ describe('AssignSpoolModal', () => {
 
   it('drops archived spools always — even with the toggle on', async () => {
     const archivedSpool = { ...manualSpool, id: 99, archived_at: '2026-01-01T00:00:00Z', brand: 'Archived' };
-    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([archivedSpool]);
+    (api.getSpoolPicker as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [archivedSpool], meta: { total: 1, current_page: 1, per_page: 60, last_page: 1 },
+    });
 
     render(<AssignSpoolModal {...defaultProps} />);
 
@@ -259,7 +295,12 @@ describe('AssignSpoolModal', () => {
 
     beforeEach(() => {
       (api.getReplacementWindow as ReturnType<typeof vi.fn>).mockResolvedValue({ mode: 'none', pause_layer: null });
-      (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([onSlotSpool, freeSpool]);
+      (api.getSpoolPicker as ReturnType<typeof vi.fn>).mockResolvedValue({
+        items: [onSlotSpool, freeSpool],
+        meta: { total: 2, current_page: 1, per_page: 60, last_page: 1 },
+      });
+      (api.getSpool as ReturnType<typeof vi.fn>).mockImplementation(async (id: number) =>
+        [onSlotSpool, freeSpool].find(spool => spool.id === id));
       (api.getAssignments as ReturnType<typeof vi.fn>).mockResolvedValue([
         { id: 1, spool_id: 7, printer_id: 1, ams_id: 0, tray_id: 0 },
       ]);

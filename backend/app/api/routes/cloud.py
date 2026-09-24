@@ -9,13 +9,13 @@ import logging
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermission, _validate_api_key, security
+from backend.app.core.auth import RequirePermission, _api_key_authority_or_none, security
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.settings import Settings
@@ -339,6 +339,7 @@ async def resolve_api_key_cloud_owner(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
     x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     db: AsyncSession = Depends(get_db),
+    request: Request = None,
 ) -> User | None:
     """Permissive dep: resolve "the user behind this API key" for cloud routes.
 
@@ -360,9 +361,9 @@ async def resolve_api_key_cloud_owner(
     (the new #1182 behaviour), and an ownerless / cloud-denied API key
     silently falls through so the route can 401 like before.
 
-    Permissive on purpose — never raises. ``RequirePermission`` already
-    guards the actual route, so a bad key surfaces there with the correct
-    403/401, not from inside this resolver.
+    Invalid keys resolve to None: ``RequirePermission`` guards the route and
+    supplies its usual 403/401. A saturated hash worker returns transient 503
+    here as everywhere else; it must not be mistaken for an invalid key.
     """
     api_key_value: str | None = None
     if x_api_key:
@@ -373,15 +374,17 @@ async def resolve_api_key_cloud_owner(
     if not api_key_value:
         return None
 
-    api_key = await _validate_api_key(db, api_key_value)
-    if api_key is None or not api_key.can_access_cloud or api_key.user_id is None:
+    authority = await _api_key_authority_or_none(request, api_key_value)
+    if authority is None or "can_access_cloud" not in authority.scope_flags or authority.key.user_id is None:
         return None
 
     # Load the user with groups so downstream permission checks (if the
     # caller composes this with anything that inspects permissions) work
     # without lazy-loading.
     result = await db.execute(
-        select(User).where(User.id == api_key.user_id, User.is_active.is_(True)).options(selectinload(User.groups))
+        select(User)
+        .where(User.id == authority.key.user_id, User.is_active.is_(True))
+        .options(selectinload(User.groups))
     )
     return result.scalar_one_or_none()
 

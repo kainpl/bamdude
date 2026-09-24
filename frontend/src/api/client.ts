@@ -5473,8 +5473,8 @@ export interface InventorySpool {
 
 // ── Server-driven spool list (task 4, 2026-08-29 server-driven-lists) ────────
 // Params for the paged GET /inventory/spools surface (tasks 1-3). Consumed
-// only by getSpoolsPaged / getSpoolGroupsPaged / getSpoolIds below — every
-// other consumer stays on the legacy flat `getSpools`.
+// by paged inventory and bounded local pickers; legacy flat getSpools remains
+// available for scripts and callers that intentionally need the whole list.
 export interface SpoolListParams {
   /** ⚠️ ALWAYS send this from tab-scoped UI: the paged branch ignores the
    *  legacy `include_archived` entirely, and omitting `archived` means "both
@@ -9978,10 +9978,8 @@ export const api = {
   // Inventory
   // ⚠️ LEGACY flat list — signature and shape pinned (task 4, 2026-08-29
   // server-driven-lists). Never send `page` from here: `page` flips the
-  // endpoint to the `{items, meta}` envelope. Four consumers depend on
-  // exactly this flat full shape (re-grepped 2026-08-29):
-  //   AssignSpoolModal.tsx, ConfigureAmsSlotModal.tsx,
-  //   SpoolDisplayNameSettings.tsx, SpoolFormModal.tsx.
+  // endpoint to the `{items, meta}` envelope. Keep the legacy response for
+  // existing clients; local UI helpers use bounded projections below.
   // InventoryPage itself now rides the paged fns below.
   getSpools: (includeArchived = false) =>
     request<InventorySpool[]>(`/inventory/spools?include_archived=${includeArchived}`),
@@ -10002,6 +10000,21 @@ export const api = {
   /** Distinct dropdown values under one archived tab (task 2). */
   getSpoolFacets: (archived?: 'active' | 'archived') =>
     request<SpoolFacets>(`/inventory/spools/facets${archived ? `?archived=${archived}` : ''}`),
+  getSpoolFamilyColors: (filamentFamilyId: string) =>
+    request<{ hex_color: string; color_name: string }[]>(
+      `/inventory/spools/family-colors?filament_family_id=${encodeURIComponent(filamentFamilyId)}`,
+    ),
+  getSpoolPicker: (params: {
+    printer_id: number; ams_id: number; tray_id: number;
+    tray_material?: string; tray_profile?: string; q?: string;
+    show_all?: boolean; replacing_spool_id?: number; page: number;
+  }, signal?: AbortSignal) => {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') query.set(key, String(value));
+    });
+    return request<SpoolListPage>(`/inventory/spools/picker?${query}`, { signal });
+  },
   /** The stats bar, aggregated server-side (task 5). Farm-wide and
    *  unfiltered — the memo it replaced read the whole feed, not the filter. */
   getInventoryStats: () => request<InventoryStats>('/inventory/stats'),

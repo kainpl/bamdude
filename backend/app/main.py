@@ -11163,43 +11163,40 @@ async def auth_middleware(request, call_next):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Validate JWT token
-    import jwt
+    # The same complete validation is reused by route dependencies below.
+    from backend.app.core.auth import JWTValidationFailure, finish_request_auth, resolve_jwt_authority
 
     try:
-        from backend.app.core.auth import ALGORITHM, SECRET_KEY
-
-        token = auth_header.replace("Bearer ", "")
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username = payload.get("sub")
-        if not username:
-            raise ValueError("No username in token")
-
-        # Verify user exists and is active
-        async with async_session() as db:
-            from backend.app.core.auth import get_user_by_username
-
-            user = await get_user_by_username(db, username)
-            if not user or not user.is_active:
+        try:
+            await resolve_jwt_authority(request, auth_header.removeprefix("Bearer "))
+        except JWTValidationFailure as exc:
+            if exc.reason == "expired":
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Token has expired"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            if exc.reason in {"missing_user", "inactive"}:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "User not found or inactive"},
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-    except jwt.ExpiredSignatureError:
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Token has expired"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    except (jwt.InvalidTokenError, ValueError, Exception):
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Invalid token"},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    return await call_next(request)
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid token"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        except Exception:
+            # A failed authority DB read must never become anonymous access.
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid token"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return await call_next(request)
+    finally:
+        await finish_request_auth(request)
 
 
 _security_headers_logger = logging.getLogger("backend.app.main.security_headers")

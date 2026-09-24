@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, inspect as sa_inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import lazyload, load_only, selectinload
 
 from backend.app.core.auth import RequirePermission, require_ownership_permission
 from backend.app.core.config import settings
@@ -21,6 +21,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.queue_source import FORMAT_GCODE, STATE_READY, QueueSource
 from backend.app.models.user import User
@@ -331,7 +332,9 @@ async def list_queue(
         .options(
             selectinload(PrintQueueItem.archive),
             selectinload(PrintQueueItem.queue_source),
-            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.queue)
+            .selectinload(PrinterQueue.printer)
+            .options(load_only(Printer.id, Printer.name), lazyload(Printer.tags), lazyload(Printer.location)),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
             selectinload(PrintQueueItem.project),
@@ -355,24 +358,14 @@ async def list_queue(
     # (external / direct-dispatch prints).  Skipped when the caller
     # filtered by a specific non-matching status.
     if not status or status == "printing":
-        from backend.app.services.queue_virtual import build_virtual_current_print
+        from backend.app.services.queue_virtual import build_virtual_current_prints
 
-        # Find which queue ids to scan — either the requested one or all
-        # queues that showed up in the result set, plus queues that had
-        # no items at all (need a separate query for those).
-        if queue_id is not None:
-            target_queue_ids = [queue_id]
-        else:
-            all_queues = (await db.execute(select(PrinterQueue))).scalars().all()
-            target_queue_ids = [q.id for q in all_queues]
-
-        for q_id in target_queue_ids:
-            queue_row = (await db.execute(select(PrinterQueue).where(PrinterQueue.id == q_id))).scalar_one_or_none()
-            if queue_row is None:
-                continue
-            virtual = await build_virtual_current_print(db, queue_row.printer_id)
-            if virtual:
-                enriched.insert(0, virtual)
+        virtual = await build_virtual_current_prints(
+            db,
+            queue_id=queue_id,
+            viewer_id=user.id if user is not None and not can_read_all else None,
+        )
+        enriched = virtual + enriched
 
     return enriched
 

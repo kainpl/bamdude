@@ -78,6 +78,15 @@
 
 ### Fixed
 
+- **Busy farm reads do less repeated work without widening access.** A request
+  reuses one complete JWT or API-key authority check across middleware and
+  permission gates; revoked or stale JWTs can no longer pass a narrower route
+  check. API-key hashing runs outside the server event loop with bounded
+  concurrency. Queue lists batch virtual-print lookups, keep them visible only
+  to their archive owner, and no longer fetch printer tags and locations to
+  show a printer name. Local spool pickers search and page on the server;
+  display-name previews, form categories and AMS family colours read only the
+  data they need. Spoolman lists are unchanged.
 - **The AMS drying panel on the printer card opens again.** Since 0.6.0 a
   click on the flame did nothing visible: the panel opened beyond the edge of
   the card and was cut off by it. It now opens next to its button and scrolls

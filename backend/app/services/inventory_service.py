@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import Integer, Numeric, String, and_, case, cast, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import raiseload, selectinload
 
 from backend.app.core.db_dialect import is_postgres
 from backend.app.models.location import Location
@@ -542,6 +542,7 @@ async def list_spools(
     sort_by: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    load_k_profiles: bool = True,
 ) -> list[Spool]:
     """List spools.
 
@@ -565,7 +566,7 @@ async def list_spools(
     Cloud Link remote op always passes a real limit (its answer must fit one
     ws frame — see ``remote_ops._slim_spool``).
     """
-    query = select(Spool).options(selectinload(Spool.k_profiles))
+    query = select(Spool).options(selectinload(Spool.k_profiles) if load_k_profiles else raiseload(Spool.k_profiles))
 
     if filters is None:
         if not include_archived:
