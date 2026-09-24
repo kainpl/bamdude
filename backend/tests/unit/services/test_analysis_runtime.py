@@ -341,6 +341,12 @@ async def test_cancel_reaps_busy_parser_before_next_request(tmp_path):
         pending.cancel()
         with pytest.raises(asyncio.CancelledError):
             await pending
+        # A cancel that cannot be acknowledged retires the service. Its
+        # monitor then relaunches it; admission is intentionally unavailable
+        # until that replacement is ready, especially on slower CI hosts.
+        async with asyncio.timeout(20):
+            while not runtime.ready:
+                await asyncio.sleep(0.05)
         assert await runtime.parse(quick, 1) is not None
         assert (runtime.staging / "service" / "child.ready").read_text(encoding="ascii") != original_pid
     finally:
