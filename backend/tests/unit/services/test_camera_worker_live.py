@@ -108,6 +108,35 @@ async def test_live_registry_waits_for_last_producer_cleanup_and_notifies_subscr
 
 
 @pytest.mark.asyncio
+async def test_independent_producer_releases_can_join_in_parallel():
+    registry = LiveProducerRegistry()
+    both_cleaning = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    started = set()
+
+    async def producer(identity):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            started.add(identity)
+            if len(started) == 2:
+                both_cleaning.set()
+            await release_cleanup.wait()
+
+    first, _ = await registry.subscribe("camera-a", lambda: producer("a"))
+    second, _ = await registry.subscribe("camera-b", lambda: producer("b"))
+    shared, _ = await registry.subscribe("camera-a", lambda: producer("should-not-start"))
+    await asyncio.sleep(0)
+    await registry.unsubscribe(first)
+    assert not started
+    tasks = [asyncio.create_task(registry.unsubscribe(lease)) for lease in (shared, second)]
+    await asyncio.wait_for(both_cleaning.wait(), 1)
+    assert started == {"a", "b"}
+    release_cleanup.set()
+    await asyncio.gather(*tasks)
+
+
+@pytest.mark.asyncio
 async def test_live_registry_drops_a_frame_over_the_process_memory_budget():
     registry = LiveProducerRegistry()
     stopped = asyncio.Event()

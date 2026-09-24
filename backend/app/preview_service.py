@@ -27,6 +27,7 @@ from backend.app.services.preview_protocol import (
     encode,
     remaining,
 )
+from backend.app.services.worker_staging import cleanup_owned
 
 
 class Service:
@@ -115,8 +116,11 @@ class Service:
                 raise PreviewError("protocol_error")
             if operation == "cancel":
                 self.task.cancel()
-                await owned(self.task)
-                return {"outcome": "unavailable" if self.uncertain else "canceled"}
+                terminal = await owned(self.task)
+                reply = {"outcome": "unavailable" if self.uncertain else "canceled"}
+                if isinstance(terminal, dict) and "staging_cleanup" in terminal:
+                    reply["staging_cleanup"] = terminal["staging_cleanup"]
+                return reply
             return {"outcome": "busy"}  # duplicate/status never execute again
         if command.attempt_seq <= self.highwater:
             return {"outcome": "canceled"}  # evicted terminal cannot resurrect
@@ -196,6 +200,7 @@ class Service:
         deadline = command.deadline_monotonic_ns
         total = sum(x.size for x in command.manifest)
         transfer_nc = None
+        reply = {"outcome": "unavailable"}
         try:
             await disk(root.mkdir)
             transfer_nc = await nats.connect(
@@ -241,13 +246,17 @@ class Service:
             else:
                 await self.render(root, "mesh", deadline, command.manifest[0].kind)
                 await publish("preview", "png")
-            return {"outcome": "ok", "manifest": outputs}
+            reply = {"outcome": "ok", "manifest": outputs}
+            return reply
         except asyncio.CancelledError:
-            return {"outcome": "canceled"}
+            reply = {"outcome": "canceled"}
+            return reply
         except PreviewError as exc:
-            return {"outcome": exc.outcome}
+            reply = {"outcome": exc.outcome}
+            return reply
         except Exception:
-            return {"outcome": "render_failed"}
+            reply = {"outcome": "render_failed"}
+            return reply
         finally:
             if transfer_nc:
                 await owned(transfer_nc.close())
@@ -258,7 +267,13 @@ class Service:
                 except Exception:
                     self.uncertain = True
             if not self.uncertain:
-                await disk(shutil.rmtree, root, True)
+                cleanup = await disk(cleanup_owned, root)
+                if cleanup.status == "retained_error":
+                    reply["staging_cleanup"] = {
+                        "path": str(cleanup.path),
+                        "error": cleanup.error_type,
+                        "code": cleanup.error_code,
+                    }
 
     async def stop(self):
         if self.task:

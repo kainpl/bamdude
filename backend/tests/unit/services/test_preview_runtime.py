@@ -2,16 +2,74 @@
 
 import asyncio
 import io
+import logging
 import os
 import time
 import uuid
 import zipfile
+from dataclasses import replace
 
 import pytest
 
 from backend.app.services.preview_artifacts import describe, disk, get, put
 from backend.app.services.preview_protocol import Command, PreviewError
 from backend.app.services.preview_runtime import PreviewRuntime
+
+
+@pytest.mark.asyncio
+async def test_preview_cancel_forwards_service_cleanup_diagnostic(tmp_path):
+    from backend.app.preview_service import Service
+
+    service = Service({"generation": "a" * 32, "epoch": "b" * 32})
+    command = Command(1, "a" * 32, "b" * 32, "c" * 32, 1, "run", time.monotonic_ns() + 10**9, ())
+    service.active = command
+
+    async def running():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return {"outcome": "canceled", "staging_cleanup": {"path": str(tmp_path), "error": "PermissionError"}}
+
+    service.task = asyncio.create_task(running())
+    await asyncio.sleep(0)
+    reply = await service.command(replace(command, operation="cancel"))
+    assert reply["outcome"] == "canceled"
+    assert reply["staging_cleanup"]["error"] == "PermissionError"
+
+
+@pytest.mark.asyncio
+async def test_main_cleanup_failure_preserves_preview_result_and_explains_next_admission(tmp_path, monkeypatch, caplog):
+    import trimesh
+
+    from backend.app.services import preview_runtime
+    from backend.app.services.worker_staging import CleanupResult
+
+    runtime = PreviewRuntime(tmp_path / "preview")
+    await runtime.start()
+    original = preview_runtime.cleanup_owned
+    denied = False
+
+    def cleanup(path, **kwargs):
+        nonlocal denied
+        if not denied and path.parent == runtime.staging / "main":
+            denied = True
+            return CleanupResult("retained_error", path, "PermissionError", 5)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(preview_runtime, "cleanup_owned", cleanup)
+    mesh = trimesh.creation.box().export(file_type="stl")
+    try:
+        with caplog.at_level(logging.WARNING, logger="backend.app.services.preview_runtime"):
+            async with runtime.attempt({"mesh": (mesh, "stl")}) as result:
+                assert result.outcome == "ok" and result.files["preview"].exists()
+            assert denied
+            assert "staging_cleanup_failed: phase=main_attempt" in caplog.text
+            async with runtime.attempt({"mesh": (mesh, "stl")}) as result:
+                assert result.outcome == "resource_limit"
+            assert "staging_residue_blocks_admission" in caplog.text
+    finally:
+        monkeypatch.setattr(preview_runtime, "cleanup_owned", original)
+        await runtime.stop()
 
 
 @pytest.fixture
@@ -44,6 +102,23 @@ async def test_readiness_failure_is_fail_soft_and_does_not_leak(tmp_path, monkey
         assert replacement.ready
     finally:
         await replacement.stop()
+
+
+@pytest.mark.asyncio
+async def test_empty_retired_preview_skeleton_is_not_warned_on_two_starts(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="backend.app.services.preview_runtime")
+    root = tmp_path / "preview"
+    old = root / "staging" / ("a" * 32)
+    (old / "main").mkdir(parents=True)
+    (old / "service").mkdir()
+    for _ in range(2):
+        runtime = PreviewRuntime(root)
+        await runtime.start()
+        assert runtime.ready
+        await runtime.stop()
+    assert old.exists()
+    assert caplog.text.count("empty_skeleton_count=1") == 2
+    assert "Retained preview staging:" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -434,6 +509,45 @@ async def test_deadline_reaps_and_service_crash_restarts_new_epoch(local_runtime
     async with asyncio.timeout(15):
         while local_runtime.epoch == old_epoch or not local_runtime.ready:
             await asyncio.sleep(0.05)
+    async with local_runtime.attempt({"mesh": (trimesh.creation.box().export(file_type="stl"), "stl")}) as result:
+        assert result.outcome == "ok"
+
+
+@pytest.mark.asyncio
+async def test_crashed_service_attempt_residue_is_cleaned_before_relaunch(local_runtime):
+    """Regression for the service-residue probe: same generation must recover."""
+    import psutil
+    import trimesh
+
+    mesh = trimesh.creation.icosphere(subdivisions=5).export(file_type="stl")
+    service_root = local_runtime.staging / "service"
+
+    async def first_attempt():
+        async with local_runtime.attempt({"mesh": (mesh, "stl")}) as result:
+            return result.outcome
+
+    task = asyncio.create_task(first_attempt())
+    async with asyncio.timeout(30):
+        while not list(service_root.glob("*/mesh.stl")):
+            await asyncio.sleep(0.02)
+    guardian = psutil.Process(local_runtime.service.process.pid)
+    candidates = [
+        child for child in guardian.children(recursive=True) if "backend.app.preview_service" in child.cmdline()
+    ]
+    assert candidates
+    # A venv launcher and interpreter can both match; they must form one
+    # ancestry chain, and the actual interpreter is the deepest member.
+    for left in candidates:
+        for right in candidates:
+            if left != right:
+                assert left in right.parents() or right in left.parents()
+    service = max(candidates, key=lambda child: len(child.parents()))
+    service.kill()
+    assert await asyncio.wait_for(task, 60) == "unavailable"
+    async with asyncio.timeout(30):
+        while not local_runtime.ready:
+            await asyncio.sleep(0.1)
+    assert not list(service_root.glob("*/mesh.stl"))
     async with local_runtime.attempt({"mesh": (trimesh.creation.box().export(file_type="stl"), "stl")}) as result:
         assert result.outcome == "ok"
 

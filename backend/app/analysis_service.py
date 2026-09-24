@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -17,6 +16,7 @@ from backend.app.services.analysis_transport import ARTIFACT_BYTES, describe, pu
 from backend.app.services.preview_artifacts import disk, owned
 from backend.app.services.preview_process import PreviewProcess
 from backend.app.services.preview_protocol import CONTROL_SECONDS, PreviewError, decode, encode, remaining
+from backend.app.services.worker_staging import cleanup_owned
 
 _HEX = re.compile(r"[0-9a-f]{32}\Z")
 _RSS_BYTES = 1024**3
@@ -211,8 +211,11 @@ class Service:
                 return {"outcome": "protocol_error"}
             if operation == "cancel":
                 self.active_task.cancel()
-                await owned(self.active_task)
-                return {"outcome": "unavailable" if self.uncertain else "canceled"}
+                terminal = await owned(self.active_task)
+                reply = {"outcome": "unavailable" if self.uncertain else "canceled"}
+                if isinstance(terminal, dict) and "staging_cleanup" in terminal:
+                    reply["staging_cleanup"] = terminal["staging_cleanup"]
+                return reply
             return {"outcome": "busy"}
         if sequence <= self.highwater:
             return {"outcome": "canceled"}
@@ -238,6 +241,7 @@ class Service:
         attempt = command["attempt_id"]
         root = self.staging / attempt
         deadline = command["deadline_ns"]
+        reply = {"outcome": "unavailable"}
         try:
             await disk(root.mkdir)
             if self.child is None or self.child.process.poll() is not None:
@@ -262,28 +266,37 @@ class Service:
             transfer_deadline = min(deadline + 60 * 10**9, compute_complete_ns + 60 * 10**9)
             ref = await disk(describe, output, attempt, transfer_deadline)
             await put(self.store, output, ref, transfer_deadline)
-            return {"outcome": "ok", "artifact": ref.wire(), "compute_complete_ns": compute_complete_ns}
+            reply = {"outcome": "ok", "artifact": ref.wire(), "compute_complete_ns": compute_complete_ns}
+            return reply
         except asyncio.CancelledError:
             try:
                 await owned(self.retire_child())
             except Exception:
                 self.uncertain = True
-            return {"outcome": "canceled"}
+            reply = {"outcome": "canceled"}
+            return reply
         except PreviewError as exc:
             try:
                 await owned(self.retire_child())
             except Exception:
                 self.uncertain = True
-            return {"outcome": exc.outcome}
+            reply = {"outcome": exc.outcome}
+            return reply
         except Exception:
             try:
                 await owned(self.retire_child())
             except Exception:
                 self.uncertain = True
-            return {"outcome": "unavailable"}
+            return reply
         finally:
             if not self.uncertain:
-                await disk(shutil.rmtree, root, True)
+                cleanup = await disk(cleanup_owned, root)
+                if cleanup.status == "retained_error":
+                    reply["staging_cleanup"] = {
+                        "path": str(cleanup.path),
+                        "error": cleanup.error_type,
+                        "code": cleanup.error_code,
+                    }
 
     async def stop(self):
         if self.idle_monitor:

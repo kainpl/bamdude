@@ -7,20 +7,28 @@
   use one supervised local worker; there is no inline fallback. A failed camera
   worker leaves unrelated printing and queues available; camera-dependent
   checks can wait for its bounded restart. System has a separate health panel.
-  The former `CAMERA_RUNTIME` variable is ignored.
+  The former `CAMERA_RUNTIME` variable is ignored. Normal shutdown now waits
+  for the worker to finish its camera cleanup before closing its guardian;
+  independent live streams are released concurrently, while an unresponsive
+  worker is still forcibly reaped without delaying recovery.
 - **3MF filament analysis has its own local service.** A shared embedded NATS
   broker carries bounded results from a reusable, supervised parser process;
   the source archive remains a local read-only file. Repeated browser polls
   still share the print-context cache, while a slow or crashed G-code parser
   no longer occupies the server event loop. System shows this worker's state
-  separately from preview and cameras.
+  separately from preview and cameras. Failed temporary-file cleanup is
+  reported in the server log instead of silently retaining artifacts.
 
 - **Preview recovery after an unclean shutdown.** On the next application start,
   the embedded broker can recover its runtime when an inherited OS lifetime
   lock proves that the old broker has exited. A live broker or unverifiable
   legacy/corrupt marker remains a visible manual-recovery condition, not a
-  reason to guess from a PID or closed port. Old renderer staging is retained
-  with cleanup guidance; existing library/archive thumbnails are untouched.
+  reason to guess from a PID or closed port. Old renderer staging with payloads
+  or uncertain ownership is retained with cleanup guidance; harmless empty
+  skeletons are distinguished from it. After a confirmed service crash, its
+  abandoned current-generation attempt files are cleaned before relaunch, so
+  the next preview need not wait for an application restart. Existing
+  library/archive thumbnails are untouched.
 
 - **Preview-service diagnostics on the System page.** See availability,
   worker restart/backoff, or a startup/ownership failure, with a runtime path

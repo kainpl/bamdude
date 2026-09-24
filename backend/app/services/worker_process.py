@@ -15,14 +15,15 @@ def descendants(pid: int) -> list[psutil.Process]:
         return []
 
 
-def kill_owned_group(pid: int) -> None:
+def kill_owned_group(pid: int) -> bool:
     """Kill only a process group created by our own start_new_session spawn."""
     if os.name == "nt":
         raise RuntimeError("POSIX process groups are unavailable on Windows")
     try:
         os.killpg(pid, signal.SIGKILL)
+        return True
     except ProcessLookupError:
-        pass
+        return False
 
 
 def descendants_reaped(children: list[psutil.Process], *, timeout: float = 5) -> bool:

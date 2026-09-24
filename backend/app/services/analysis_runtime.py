@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 import time
 import uuid
 from pathlib import Path
@@ -16,6 +15,7 @@ from backend.app.services.local_worker_broker import get_local_worker_broker
 from backend.app.services.preview_artifacts import disk, owned
 from backend.app.services.preview_process import PreviewProcess
 from backend.app.services.preview_protocol import CONTROL_SECONDS, PreviewError, decode, encode
+from backend.app.services.worker_staging import abandoned_attempts, cleanup_owned, retained_entries
 
 logger = logging.getLogger(__name__)
 _COMPUTE_SECONDS = 180
@@ -38,6 +38,8 @@ class AnalysisRuntime:
         self.nc = self.store = self.service = self.monitor = None
         self.ready = self.closed = self.uncertain = False
         self.reason = "not_started"
+        self._last_staging_issue = None
+        self._last_admission_issue = None
         self.restarts = []
         self.circuit_until = 0.0
         self.stats = {
@@ -70,6 +72,7 @@ class AnalysisRuntime:
             await disk(self.staging.mkdir, parents=True, exist_ok=True, mode=0o700)
             await disk((self.staging / "main").mkdir)
             await disk((self.staging / "service").mkdir)
+            await disk(self._report_retained_staging)
             self.nc = await nats.connect(
                 self.broker.url,
                 token=self.broker.token,
@@ -105,6 +108,49 @@ class AnalysisRuntime:
                     self.monitor = asyncio.create_task(self._monitor(), name="analysis-service-monitor")
             else:
                 await self.stop()
+
+    def _report_retained_staging(self):
+        empty = 0
+        for path, classification, reason in retained_entries(self.staging.parent, self.staging, "analysis"):
+            if classification == "empty_skeleton":
+                empty += 1
+                logger.debug("Analysis staging skeleton retained: path=%s", path)
+            else:
+                logger.warning(
+                    "Retained analysis staging: path=%s classification=%s reason=%s; verify owners before manual cleanup",
+                    path,
+                    classification,
+                    reason,
+                )
+        if empty:
+            logger.info("Analysis staging empty_skeleton_count=%d; no manual cleanup required", empty)
+
+    def _cleanup_result(self, result, phase: str, attempt: str | None = None):
+        if result.status == "retained_error":
+            issue = (phase, str(result.path), result.error_type, result.error_code)
+            log = logger.warning if issue != self._last_staging_issue else logger.debug
+            log(
+                "Analysis staging_cleanup_failed: phase=%s attempt=%s path=%s error=%s code=%s",
+                phase,
+                attempt,
+                result.path,
+                result.error_type,
+                result.error_code,
+            )
+            self._last_staging_issue = issue
+        else:
+            self._last_staging_issue = None
+
+    def _service_cleanup_reply(self, reply, attempt):
+        detail = reply.get("staging_cleanup") if isinstance(reply, dict) else None
+        if isinstance(detail, dict):
+            logger.warning(
+                "Analysis staging_cleanup_failed: phase=service_attempt attempt=%s path=%s error=%s code=%s",
+                attempt,
+                detail.get("path"),
+                detail.get("error"),
+                detail.get("code"),
+            )
 
     def command(self, operation: str, attempt_id: str | None = None, source: dict | None = None, deadline: int = 0):
         self.sequence += 1
@@ -178,13 +224,34 @@ class AnalysisRuntime:
     async def retire(self):
         self.ready = False
         if self.service:
-            service, self.service = self.service, None
+            retired_epoch = self.epoch
+            service = self.service
             try:
                 await disk(service.stop)
             except Exception:
                 self.uncertain = True
                 self.reason = "ownership_uncertain"
                 raise
+            self.service = None
+            attempts, unknown = await disk(abandoned_attempts, self.staging / "service")
+            deadline = time.monotonic() + 2.0
+            for path in unknown:
+                logger.warning(
+                    "Analysis service residue unknown: generation=%s epoch=%s path=%s",
+                    self.generation,
+                    retired_epoch,
+                    path,
+                )
+            for path in attempts:
+                result = await disk(cleanup_owned, path, deadline=deadline)
+                logger.info(
+                    "Analysis service_residue_after_retire: generation=%s epoch=%s path=%s result=%s",
+                    self.generation,
+                    retired_epoch,
+                    path,
+                    result.status,
+                )
+                self._cleanup_result(result, "service_residue_after_retire", path.name)
 
     async def _monitor(self):
         while not self.closed:
@@ -231,6 +298,7 @@ class AnalysisRuntime:
         if self.nc and self.nc.is_connected:
             try:
                 reply = await self.rpc({**command, "operation": "cancel"}, CONTROL_SECONDS)
+                self._service_cleanup_reply(reply, command["attempt_id"])
                 if reply.get("outcome") == "canceled":
                     return
             except Exception:
@@ -266,12 +334,21 @@ class AnalysisRuntime:
             command_completed = False
             try:
                 await disk(root.mkdir)
-                if (
-                    await disk(lambda: sum(p.stat().st_size for p in self.staging.rglob("*") if p.is_file()))
-                    > STAGING_BYTES
-                ):
+                used_bytes = await disk(lambda: sum(p.stat().st_size for p in self.staging.rglob("*") if p.is_file()))
+                if used_bytes > STAGING_BYTES:
+                    issue = (str(self.staging), STAGING_BYTES)
+                    log = logger.warning if issue != self._last_admission_issue else logger.debug
+                    log(
+                        "analysis_staging_budget_exceeded: used_bytes=%d limit_bytes=%d path=%s",
+                        used_bytes,
+                        STAGING_BYTES,
+                        self.staging,
+                    )
+                    self._last_admission_issue = issue
                     raise AnalysisResourceError("analysis staging budget exceeded")
+                self._last_admission_issue = None
                 reply = await self.rpc(command, _HARD_SECONDS)
+                self._service_cleanup_reply(reply, attempt)
                 command_completed = True
                 if reply.get("outcome") != "ok":
                     raise AnalysisResourceError(f"analysis worker {reply.get('outcome', 'unavailable')}")
@@ -324,7 +401,7 @@ class AnalysisRuntime:
                     except Exception:
                         pass  # orphan is bounded by bucket TTL
                     if not self.uncertain:
-                        await disk(shutil.rmtree, root, True)
+                        self._cleanup_result(await disk(cleanup_owned, root), "main_attempt", attempt)
 
                 try:
                     await owned(cleanup())
@@ -349,7 +426,7 @@ class AnalysisRuntime:
         if self.nc:
             await self.nc.close()
         if not self.uncertain and hasattr(self, "staging") and not self.slot.locked():
-            await disk(shutil.rmtree, self.staging, True)
+            self._cleanup_result(await disk(cleanup_owned, self.staging), "generation")
 
 
 runtime: AnalysisRuntime | None = None

@@ -205,10 +205,12 @@ jobs:
           python -m pytest backend/tests/unit/services/test_analysis_runtime.py
           backend/tests/unit/services/test_analysis_codec.py
           backend/tests/unit/services/test_analysis_source.py
+          backend/tests/unit/services/test_worker_staging.py
           -v --tb=short --timeout=180 --timeout-method=thread -n 1
       - name: Exercise local preview broker, service and renderer
         run: >
           python -m pytest backend/tests/unit/services/test_preview_runtime.py
+          backend/tests/unit/services/test_preview_health.py
           backend/tests/unit/services/test_preview_protocol.py
           backend/tests/unit/services/test_preview_artifacts.py
           backend/tests/unit/test_service_shutdown_contract.py
@@ -217,6 +219,10 @@ jobs:
         run: >
           python -m pytest backend/tests/unit/services/test_camera_worker_supervisor.py
           backend/tests/unit/services/test_camera_runtime.py
+          backend/tests/unit/services/test_camera_worker_capture.py
+          backend/tests/unit/services/test_camera_worker_live.py
+          backend/tests/unit/services/test_camera_worker_containment.py
+          backend/tests/unit/services/test_worker_guardian.py
           backend/tests/unit/services/test_camera_worker_only_contract.py
           -v --tb=short --timeout=180 --timeout-method=thread -n 1
 

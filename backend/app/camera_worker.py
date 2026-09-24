@@ -167,6 +167,18 @@ async def run(bootstrap: WorkerBootstrap) -> int:
         live_leases = {}
         live_forwarders: dict[str, asyncio.Task[None]] = {}
         raw_proxies: dict[str, tuple[object, object, asyncio.Task[None]]] = {}
+        release_tasks: set[asyncio.Task[bool]] = set()
+        release_errors: list[BaseException] = []
+
+        def track_release(task: asyncio.Task[bool]) -> None:
+            release_tasks.add(task)
+
+            def finished(completed: asyncio.Task[bool]) -> None:
+                release_tasks.discard(completed)
+                if not completed.cancelled() and (error := completed.exception()) is not None:
+                    release_errors.append(error)
+
+            task.add_done_callback(finished)
 
         async def release_live_lease(lease_id: str, *, cancel_forwarder: bool) -> bool:
             """Release both halves of a live lease exactly once.
@@ -194,9 +206,11 @@ async def run(bootstrap: WorkerBootstrap) -> int:
             if not completed.cancelled():
                 completed.exception()
             if lease_id in live_leases:
-                asyncio.create_task(
-                    release_live_lease(lease_id, cancel_forwarder=False),
-                    name=f"camera-worker-live-release-{lease_id}",
+                track_release(
+                    asyncio.create_task(
+                        release_live_lease(lease_id, cancel_forwarder=False),
+                        name=f"camera-worker-live-release-{lease_id}",
+                    )
                 )
 
         async def release_raw_proxy(lease_id: str) -> bool:
@@ -216,9 +230,11 @@ async def run(bootstrap: WorkerBootstrap) -> int:
             if not completed.cancelled():
                 completed.exception()
             if lease_id in raw_proxies:
-                asyncio.create_task(
-                    release_raw_proxy(lease_id),
-                    name=f"camera-worker-raw-release-{lease_id}",
+                track_release(
+                    asyncio.create_task(
+                        release_raw_proxy(lease_id),
+                        name=f"camera-worker-raw-release-{lease_id}",
+                    )
                 )
 
         while True:
@@ -524,13 +540,22 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                     result={"released": released},
                 )
             elif operation == "shutdown":
-                for task in capture_tasks:
+                for task in tuple(capture_tasks):
                     task.cancel()
-                await asyncio.gather(*capture_tasks, return_exceptions=True)
-                for lease_id in tuple(live_leases):
-                    await release_live_lease(lease_id, cancel_forwarder=True)
-                for lease_id in tuple(raw_proxies):
-                    await release_raw_proxy(lease_id)
+                await asyncio.gather(*tuple(capture_tasks), return_exceptions=True)
+                releases = [
+                    *(release_live_lease(lease_id, cancel_forwarder=True) for lease_id in tuple(live_leases)),
+                    *(release_raw_proxy(lease_id) for lease_id in tuple(raw_proxies)),
+                ]
+                if releases:
+                    outcomes = await asyncio.gather(*releases, return_exceptions=True)
+                    release_errors.extend(error for error in outcomes if isinstance(error, BaseException))
+                # Forwarder callbacks may already have popped a lease before
+                # this branch; they still own a producer cleanup until joined.
+                while release_tasks:
+                    await asyncio.gather(*tuple(release_tasks), return_exceptions=True)
+                if release_errors:
+                    raise RuntimeError("camera worker release failed") from release_errors[0]
                 async with write_lock:
                     await write_control(
                         writer,

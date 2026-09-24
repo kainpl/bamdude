@@ -226,7 +226,9 @@ class LiveProducerRegistry:
         # ``finally``.  Wait for that cleanup outside the registry lock so a
         # new, unrelated lease is never blocked behind it.
         if producer is not None:
-            await asyncio.gather(producer, return_exceptions=True)
+            (result,) = await asyncio.gather(producer, return_exceptions=True)
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                raise RuntimeError("camera producer cleanup failed") from result
 
     def publish(self, identity: str, frame: bytes) -> None:
         if not 0 < len(frame) <= MAX_LIVE_FRAME_BYTES:

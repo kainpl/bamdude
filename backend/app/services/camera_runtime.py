@@ -301,6 +301,7 @@ class CameraRuntimeOwner:
                 self.runtime.supervisor = supervisor
                 self.state = "starting" if self.restart_count == 0 else "recovering"
                 self.next_retry_at = None
+                stop_cause = "owner_stop"
                 try:
                     await asyncio.wait_for(supervisor.start(), timeout=20)
                     self.state = "ready"
@@ -325,12 +326,17 @@ class CameraRuntimeOwner:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    stop_cause = (
+                        "unresponsive"
+                        if isinstance(exc, (CameraWorkerUnavailable, TimeoutError))
+                        else "startup_failure"
+                    )
                     self.state = "unavailable"
                     self.reason = type(exc).__name__
                     logger.warning("Camera worker unavailable (%s); print service remains available", self.reason)
                 finally:
                     try:
-                        await asyncio.wait_for(supervisor.stop(), timeout=20)
+                        await supervisor.stop(cause=stop_cause)
                     except Exception as exc:
                         self.state = "unavailable"
                         self.reason = "cleanup_failed"

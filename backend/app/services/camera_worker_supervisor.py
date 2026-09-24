@@ -40,6 +40,8 @@ from backend.app.services.worker_process import descendants, descendants_reaped,
 _STARTUP_TIMEOUT_SECONDS = 20.0
 _REQUEST_TIMEOUT_SECONDS = 2.0
 _SHUTDOWN_TIMEOUT_SECONDS = 5.0
+_STOP_GRACE_SECONDS = 15.0
+_STOP_HARD_SECONDS = 20.0
 _MAX_PENDING_CONTROL_REQUESTS = 256
 # A live producer may legitimately run at 1 FPS.  Keep its relay open longer
 # than the control/snapshot timeout while still detecting a lost producer.
@@ -74,6 +76,8 @@ class CameraWorkerSupervisor:
     _containment: WorkerContainment | None = None
     _media_waiters: dict[str, asyncio.Future[WorkerMediaFrame]] = field(default_factory=dict)
     _live_media_queues: dict[str, LiveMediaQueue] = field(default_factory=dict)
+    _stop_task: asyncio.Task[None] | None = None
+    last_stop_outcome: str | None = None
 
     async def start(self) -> None:
         if self.process is not None:
@@ -136,7 +140,7 @@ class CameraWorkerSupervisor:
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=_STARTUP_TIMEOUT_SECONDS)
         except TimeoutError as exc:
-            await self.stop()
+            await self.stop(cause="startup_timeout")
             raise CameraWorkerUnavailable("camera worker did not authenticate") from exc
         logger.info("Camera worker ready: pid=%s generation=%s", self.process.pid, self.bootstrap.generation)
 
@@ -145,7 +149,12 @@ class CameraWorkerSupervisor:
     ) -> dict:
         """Send a request without making a slow capture block control replies."""
 
-        if self.bootstrap is None or self._reader is None or self._writer is None:
+        if (
+            (self._stop_task is not None and operation != "shutdown")
+            or self.bootstrap is None
+            or self._reader is None
+            or self._writer is None
+        ):
             raise CameraWorkerUnavailable("camera worker is not connected")
         request_id = str(uuid.uuid4())
         future: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
@@ -163,6 +172,10 @@ class CameraWorkerSupervisor:
                         payload=payload or {},
                     ),
                 )
+            except asyncio.CancelledError:
+                self._pending_requests.pop(request_id, None)
+                future.cancel()
+                raise
             except (CameraWorkerProtocolError, OSError, TimeoutError) as exc:
                 self._pending_requests.pop(request_id, None)
                 raise CameraWorkerUnavailable("camera worker control request failed") from exc
@@ -323,54 +336,123 @@ class CameraWorkerSupervisor:
 
         await self.request("stop_raw_proxy", {"lease_id": lease_id})
 
-    async def stop(self) -> None:
-        """Bound normal shutdown, then terminate only this supervisor's child."""
+    async def stop(self, *, cause: str = "owner_stop") -> None:
+        """Join one owned teardown, even if the caller is cancelled repeatedly."""
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._stop_impl(cause), name="camera-worker-stop")
+        task = self._stop_task
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+            if not task.cancelled():
+                task.result()
+            raise
 
+    async def _stop_impl(self, cause: str) -> None:
+        started = time.monotonic()
+        graceful_end = started + _STOP_GRACE_SECONDS
+        hard_end = started + _STOP_HARD_SECONDS
         process = self.process
         children = descendants(process.pid) if process is not None and isinstance(process.pid, int) else []
-        if process is not None and process.returncode is None:
-            try:
-                await self.request("shutdown")
-            except CameraWorkerUnavailable:
-                pass
-        # Release the accepted handler and close the parent's half before
-        # waiting for the child.  ``Server.wait_closed`` otherwise waits for a
-        # handler that is deliberately holding this connection open for
-        # ``request()`` ownership.
-        self._close_listeners()
-        if self._writer is not None:
-            self._writer.close()
-            try:
-                await asyncio.wait_for(self._writer.wait_closed(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
-            except (OSError, TimeoutError):
-                pass
-        self._fail_pending_requests()
-        if process is not None and process.stdin is not None:
-            process.stdin.close()  # guardian EOF, including on clean shutdown
-        if process is not None and process.returncode is None:
-            try:
-                await asyncio.wait_for(process.wait(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
-            except TimeoutError:
-                await self._terminate_process_tree(process)
-        await self._close_servers()
-        if self._containment is not None:
-            self._containment.close()
-            self._containment = None
-        if process is not None:
-            if os.name != "nt":
-                kill_owned_group(process.pid)
-            if not await asyncio.to_thread(descendants_reaped, children):
-                raise CameraWorkerUnavailable("camera worker descendants could not be reaped")
-        for task in (self._stderr_task, self._control_reader_task):
-            if task is None:
-                continue
-            try:
-                await asyncio.wait_for(task, timeout=_SHUTDOWN_TIMEOUT_SECONDS)
-            except TimeoutError as exc:
-                task.cancel()
-                raise CameraWorkerUnavailable("camera worker I/O task did not finish") from exc
-        if process is not None:
-            logger.info("Camera worker stopped: pid=%s exit_code=%s", process.pid, process.returncode)
+        was_live = process is not None and process.returncode is None
+        ack = False
+        forced = False
+        proof = False
+        try:
+            if was_live and cause == "owner_stop" and self._writer is not None:
+                try:
+                    reply = await asyncio.wait_for(
+                        self.request("shutdown", timeout=max(0.001, graceful_end - time.monotonic())),
+                        timeout=max(0.001, graceful_end - time.monotonic()),
+                    )
+                    ack = reply.get("ok") is True and reply.get("result", {}).get("state") == "stopping"
+                except (CameraWorkerUnavailable, TimeoutError):
+                    pass
+            if process is not None and process.returncode is None and ack:
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=max(0.001, graceful_end - time.monotonic()))
+                except TimeoutError:
+                    pass
+            if process is not None and process.returncode is None:
+                forced = await self._terminate_process_tree(process, hard_end)
+            # EOF must follow the clean exit, not the shutdown ACK: the guardian
+            # treats an early EOF as an owner crash and kills the worker.
+            if process is not None and process.stdin is not None:
+                process.stdin.close()
+            self._close_listeners()
+            if self._writer is not None:
+                self._writer.close()
+                try:
+                    await asyncio.wait_for(self._writer.wait_closed(), timeout=max(0.001, hard_end - time.monotonic()))
+                except (OSError, TimeoutError):
+                    pass
+            if process is not None:
+                reaped = await asyncio.to_thread(
+                    descendants_reaped, children, timeout=max(0.0, graceful_end - time.monotonic()) if ack else 0.0
+                )
+                if os.name != "nt" and kill_owned_group(process.pid):
+                    forced = True
+                if os.name == "nt" and self._containment is not None and not reaped:
+                    forced = True
+                if self._containment is not None:
+                    self._containment.close()
+                    self._containment = None
+                if not reaped and not await asyncio.to_thread(
+                    descendants_reaped, children, timeout=max(0.0, hard_end - time.monotonic())
+                ):
+                    raise CameraWorkerUnavailable("camera worker descendants could not be reaped")
+            await asyncio.wait_for(self._close_servers(), timeout=max(0.001, hard_end - time.monotonic()))
+            for task in (self._stderr_task, self._control_reader_task):
+                if task is not None:
+                    await asyncio.wait_for(task, timeout=max(0.001, hard_end - time.monotonic()))
+            proof = True
+        finally:
+            if not proof:
+                self.last_stop_outcome = "cleanup_failed"
+                logger.error(
+                    "Camera worker stop: generation=%s pid=%s ack=%s forced=%s exit_code=%s elapsed_ms=%d outcome=cleanup_failed reason=%s error=%s",
+                    self.bootstrap.generation if self.bootstrap else None,
+                    process.pid if process else None,
+                    ack,
+                    forced,
+                    process.returncode if process else None,
+                    (time.monotonic() - started) * 1000,
+                    cause,
+                    sys.exc_info()[0].__name__ if sys.exc_info()[0] else "unknown",
+                )
+        if process is None:
+            outcome = "not_started"
+        elif forced:
+            outcome = "forced"
+        elif not was_live:
+            outcome = "already_exited"
+        elif ack and process.returncode == 0:
+            outcome = "graceful"
+        else:
+            outcome = "unexpected_exit"
+        self.last_stop_outcome = outcome
+        level = (
+            logging.INFO
+            if outcome in {"graceful", "not_started"} or (outcome == "already_exited" and process.returncode == 0)
+            else logging.WARNING
+        )
+        logger.log(
+            level,
+            "Camera worker stopped: generation=%s pid=%s ack=%s forced=%s exit_code=%s elapsed_ms=%d outcome=%s reason=%s",
+            self.bootstrap.generation if self.bootstrap else None,
+            process.pid if process else None,
+            ack,
+            forced,
+            process.returncode if process else None,
+            (time.monotonic() - started) * 1000,
+            outcome,
+            cause,
+        )
         self.process = None
         self._reader = None
         self._writer = None
@@ -389,29 +471,44 @@ class CameraWorkerSupervisor:
             await asyncio.wait_for(process.wait(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
         self.process = None
 
-    async def _terminate_process_tree(self, process: asyncio.subprocess.Process) -> None:
+    async def _terminate_process_tree(self, process: asyncio.subprocess.Process, deadline: float | None = None) -> bool:
         """Escalate a stuck worker without leaving its future producers behind."""
-
+        signal_sent = False
         if os.name == "nt" and self._containment is not None:
             # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE ends every descendant, unlike
             # Process.terminate(), which would only end the worker parent.
             self._containment.close()
             self._containment = None
+            signal_sent = True
         elif os.name != "nt":
-            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                signal_sent = True
+            except ProcessLookupError:
+                pass
         else:  # pragma: no cover - Windows attaches a Job Object before bootstrap
             process.terminate()
+            signal_sent = True
         try:
-            await asyncio.wait_for(process.wait(), timeout=_SHUTDOWN_TIMEOUT_SECONDS)
-            return
+            await asyncio.wait_for(
+                process.wait(),
+                timeout=min(_SHUTDOWN_TIMEOUT_SECONDS, max(0.001, deadline - time.monotonic()))
+                if deadline
+                else _SHUTDOWN_TIMEOUT_SECONDS,
+            )
+            return signal_sent
         except TimeoutError:
             pass
 
         if os.name != "nt":
-            kill_owned_group(process.pid)
+            signal_sent = kill_owned_group(process.pid) or signal_sent
         else:  # pragma: no cover - defensive fallback after Job Object close
             process.kill()
-        await process.wait()
+            signal_sent = True
+        await asyncio.wait_for(
+            process.wait(), timeout=max(0.001, deadline - time.monotonic()) if deadline else _SHUTDOWN_TIMEOUT_SECONDS
+        )
+        return signal_sent
 
     async def _accept_control(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -596,6 +693,8 @@ class CameraWorkerSupervisor:
         """Allow a stopped harness object to start a fresh authenticated child."""
 
         self.bootstrap = None
+        self._stop_task = None
+        self.last_stop_outcome = None
         self._reader = None
         self._writer = None
         self._ready.clear()

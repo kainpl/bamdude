@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -32,6 +31,7 @@ from backend.app.services.preview_protocol import (
     encode,
     remaining,
 )
+from backend.app.services.worker_staging import abandoned_attempts, cleanup_owned, retained_entries
 
 logger = logging.getLogger(__name__)
 RECOVERY_GUIDE = "https://docs.bamdude.top/reference/troubleshooting/#local-preview-service"
@@ -65,6 +65,8 @@ class PreviewRuntime:
         self.dependency_lost = False
         self.reason = "not_started"
         self.error_type = None
+        self._last_staging_issue = None
+        self._last_admission_issue = None
 
     def health(self) -> PreviewHealth:
         """In-memory snapshot only: never probe processes, disk or the broker here."""
@@ -181,16 +183,49 @@ class PreviewRuntime:
         (self.staging / "service").mkdir(mode=0o700)
 
     def _report_retained_staging(self):
-        for directory in self.staging.parent.iterdir():
-            if directory == self.staging or directory.is_symlink() or directory.is_junction():
-                continue
-            if len(directory.name) == 32 and all(c in "0123456789abcdef" for c in directory.name):
+        empty = 0
+        for directory, classification, reason in retained_entries(self.staging.parent, self.staging, "preview"):
+            if classification == "empty_skeleton":
+                empty += 1
+                logger.debug("Preview staging skeleton retained: path=%s", directory)
+            else:
                 logger.warning(
-                    "Retained preview staging: %s; old worker/renderer ownership is unproven. "
-                    "Stop all preview processes before manual cleanup; see %s",
+                    "Retained preview staging: path=%s classification=%s reason=%s; "
+                    "old worker/renderer ownership is unproven; verify owners before manual cleanup; see %s",
                     directory,
+                    classification,
+                    reason,
                     RECOVERY_GUIDE,
                 )
+        if empty:
+            logger.info("Preview staging empty_skeleton_count=%d; no manual cleanup required", empty)
+
+    def _cleanup_result(self, result, phase: str, attempt: str | None = None):
+        if result.status == "retained_error":
+            issue = (phase, str(result.path), result.error_type, result.error_code)
+            log = logger.warning if issue != self._last_staging_issue else logger.debug
+            log(
+                "Preview staging_cleanup_failed: phase=%s attempt=%s path=%s error=%s code=%s",
+                phase,
+                attempt,
+                result.path,
+                result.error_type,
+                result.error_code,
+            )
+            self._last_staging_issue = issue
+        else:
+            self._last_staging_issue = None
+
+    def _service_cleanup_reply(self, reply, attempt_id):
+        detail = reply.get("staging_cleanup") if isinstance(reply, dict) else None
+        if isinstance(detail, dict):
+            logger.warning(
+                "Preview staging_cleanup_failed: phase=service_attempt attempt=%s path=%s error=%s code=%s",
+                attempt_id,
+                detail.get("path"),
+                detail.get("error"),
+                detail.get("code"),
+            )
 
     def _command(self, operation="ready", manifest=(), attempt_id=None, deadline=None):
         self.sequence += 1
@@ -266,6 +301,7 @@ class PreviewRuntime:
         if not self.closed and not self.uncertain and self.reason != "broker_disconnected":
             self.reason = "worker_restarting"
         if self.service:
+            retired_epoch = self.epoch
             try:
                 await disk(self.service.stop)
             except Exception:
@@ -273,6 +309,26 @@ class PreviewRuntime:
                 self._unavailable("ownership_uncertain")
                 raise
             self.service = None
+            service_root = self.staging / "service"
+            attempts, unknown = await disk(abandoned_attempts, service_root)
+            deadline = time.monotonic() + 2.0
+            for path in unknown:
+                logger.warning(
+                    "Preview service residue unknown: generation=%s epoch=%s path=%s",
+                    self.generation,
+                    retired_epoch,
+                    path,
+                )
+            for path in attempts:
+                result = await disk(cleanup_owned, path, deadline=deadline)
+                logger.info(
+                    "Preview service_residue_after_retire: generation=%s epoch=%s path=%s result=%s",
+                    self.generation,
+                    retired_epoch,
+                    path,
+                    result.status,
+                )
+                self._cleanup_result(result, "service_residue_after_retire", path.name)
 
     async def _cancel(self, command):
         # Revoke in the caller first. A reply is accepted only after the service
@@ -280,6 +336,7 @@ class PreviewRuntime:
         if command and self.nc.is_connected:
             try:
                 reply = await self._rpc(command, "cancel")
+                self._service_cleanup_reply(reply, command.attempt_id)
                 if reply.get("outcome") == "canceled":
                     return
             except Exception:
@@ -366,7 +423,7 @@ class PreviewRuntime:
                     except Exception:
                         pass  # bucket TTL bounds interrupted/partial uploads
             if not self.uncertain:
-                await disk(shutil.rmtree, root, True)
+                self._cleanup_result(await disk(cleanup_owned, root), "main_attempt", attempt_id)
 
         try:
             try:
@@ -376,8 +433,14 @@ class PreviewRuntime:
                 self.dependency_lost = False
                 # A previous denied cleanup must not accumulate unbounded
                 # staging across attempts. No other attempt owns this slot.
-                if await disk(lambda: any(p.is_file() for p in self.staging.rglob("*"))):
+                residue = await disk(lambda: next((p for p in self.staging.rglob("*") if p.is_file()), None))
+                if residue is not None:
+                    issue = ("admission", str(residue))
+                    log = logger.warning if issue != self._last_admission_issue else logger.debug
+                    log("Preview staging_residue_blocks_admission: path=%s", residue)
+                    self._last_admission_issue = issue
                     raise PreviewError("resource_limit")
+                self._last_admission_issue = None
                 await disk(root.mkdir)
                 manifest = []
                 async with asyncio.timeout(remaining(deadline)):
@@ -445,6 +508,7 @@ class PreviewRuntime:
                     subscription = await self.nc.subscribe(command.subject + ".checkpoint", cb=checkpoint)
                     await self.nc.flush(timeout=CONTROL_SECONDS)
                     reply = await self._rpc(command, timeout=remaining(deadline))
+                    self._service_cleanup_reply(reply, attempt_id)
                     result.outcome = reply.get("outcome", "protocol_error")
                     if not isinstance(result.outcome, str) or result.outcome not in OUTCOMES:
                         raise PreviewError("protocol_error")
@@ -563,7 +627,7 @@ class PreviewRuntime:
             except Exception as exc:
                 self._unavailable("recovery_required", exc)
         if not self.uncertain and hasattr(self, "staging") and not self.slot.locked():
-            await disk(shutil.rmtree, self.staging, True)
+            self._cleanup_result(await disk(cleanup_owned, self.staging), "generation")
 
 
 runtime: PreviewRuntime | None = None
