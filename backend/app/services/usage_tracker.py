@@ -1506,16 +1506,24 @@ async def on_print_complete(
     # Belt-and-braces against the multicolour runout double-count: every tray
     # the journal names is off-limits to the remain%-delta fallback, whether
     # or not Path 1 managed to attribute it.
-    for tray in journal_touched_trays(journal_events):
+    def _slot_key(tray: int) -> tuple[int, int]:
         if tray >= 254:
-            handled_trays.add((255, tray - 254))
-        elif tray >= 128:
-            handled_trays.add((tray, 0))
-        else:
-            handled_trays.add((tray // 4, tray % 4))
+            return (255, tray - 254)
+        if tray >= 128:
+            return (tray, 0)
+        return (tray // 4, tray % 4)
+
+    for tray in journal_touched_trays(journal_events):
+        handled_trays.add(_slot_key(tray))
+
+    # The slots the print was dispatched to use — only these are worth a word
+    # when they cannot be charged. Empty when the mapping is unknown.
+    print_used_keys = {_slot_key(t) for t in (ams_mapping or []) if isinstance(t, int) and t >= 0}
 
     # --- Path 2 (FALLBACK): AMS remain% delta (only for trays not handled by 3MF) ---
-    if session and session.tray_remain_start:
+    # Entered even when no slot had a reading at print start, so a used slot
+    # that cannot be charged is still named below instead of skipped unseen.
+    if session:
         state = printer_manager.get_status(printer_id)
         if state and state.raw_data:
             ams_raw = state.raw_data.get("ams", [])
@@ -1533,6 +1541,20 @@ async def on_print_complete(
                         continue  # Already tracked via 3MF
 
                     if key not in session.tray_remain_start:
+                        # No usable remain% when the print began, so no delta to
+                        # charge. Said out loud (upstream #2843) for the same
+                        # reason as the skips below: a slot the print used went
+                        # missing from the accounting without a word. Common on
+                        # spools without RFID, which report remain = -1 until a
+                        # remaining amount is set by hand.
+                        if not print_used_keys or key in print_used_keys:
+                            logger.info(
+                                "[UsageTracker] AMS%d-T%d: no valid remain%% at print start, nothing to charge "
+                                "for printer %d",
+                                ams_id,
+                                tray_id,
+                                printer_id,
+                            )
                         continue
 
                     # ⚠️ A zero here is refused, not read as "empty" — see

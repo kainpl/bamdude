@@ -139,3 +139,51 @@ class TestTheInternalDeltaPath:
 
         assert len(results) == 1
         assert results[0]["weight_used"] == 100.0
+
+
+class TestASlotWithNoStartingReadingSaysSo:
+    """Upstream #2843 part 3. A print with no 3MF falls back to the remain%
+    delta, which needs a reading at print start — and a spool without RFID has
+    none until somebody sets a remaining amount by hand. Such a slot the print
+    used was skipped with a bare ``continue``: charging nothing without a word
+    is indistinguishable from having nothing to charge."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_sessions(self):
+        _active_sessions.clear()
+        yield
+        _active_sessions.clear()
+
+    @pytest.fixture(autouse=True)
+    def _mock_get_setting(self):
+        with patch("backend.app.api.routes.settings.get_setting", new_callable=AsyncMock, return_value=None):
+            yield
+
+    @staticmethod
+    def _printer_manager():
+        state = MagicMock()
+        # Tray 1 was used; tray 2 was not. Neither had a reading at print start.
+        state.raw_data = {"ams": [{"id": 0, "tray": [{"id": 1, "remain": -1}, {"id": 2, "remain": -1}]}]}
+        state.tray_now = 255
+        pm = MagicMock()
+        pm.get_status = MagicMock(return_value=state)
+        return pm
+
+    @pytest.mark.asyncio
+    async def test_a_used_slot_is_named_and_an_idle_one_is_not(self, caplog) -> None:
+        _active_sessions[1] = PrintSession(
+            printer_id=1,
+            print_name="test",
+            started_at=datetime.now(timezone.utc),
+            tray_remain_start={},
+        )
+
+        with caplog.at_level("INFO", logger="backend.app.services.usage_tracker"):
+            results = await on_print_complete(
+                1, {"status": "completed"}, self._printer_manager(), AsyncMock(), ams_mapping=[1]
+            )
+
+        assert results == []
+        lines = [r.getMessage() for r in caplog.records if "no valid remain% at print start" in r.getMessage()]
+        assert len(lines) == 1
+        assert "AMS0-T1" in lines[0]
