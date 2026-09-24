@@ -111,6 +111,9 @@ export interface CalibrationProfile {
   n_coef: number;
   extruder_id?: number | null;
   nozzle_diameter?: string;
+  // BambuStudio's NozzleVolumeType read off the printer's nozzle_id
+  // ("standard" / "high_flow" / …) — see nozzleFlowFromId.
+  nozzle_flow?: string;
 }
 
 // Filament option from presets

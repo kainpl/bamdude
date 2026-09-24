@@ -11,6 +11,7 @@ import { screen, waitFor, fireEvent } from '@testing-library/react';
 import { render } from '../utils';
 import { SpoolFormModal } from '../../components/SpoolFormModal';
 import type { InventorySpool } from '../../api/client';
+import type { PrinterWithCalibrations } from '../../components/spool-form/types';
 
 // Mock the API client
 vi.mock('../../api/client', () => ({
@@ -516,5 +517,78 @@ describe('SpoolFormModal copy mode', () => {
 
     const [payload] = vi.mocked(api.createSpool).mock.calls[0];
     expect((payload as Record<string, unknown>).weight_used).toBe(0);
+  });
+});
+
+/**
+ * Saving the PA tab re-sends the profile that was linked, of ITS nozzle.
+ *
+ * The printer numbers its calibration table per nozzle diameter, so a spool
+ * linked to index 3 of the 0.6 mm table sits next to an unrelated index 3 of
+ * the 0.4 mm table. The save looked the index up alone and re-linked whichever
+ * came first — an untouched 0.6 mm link came back as the 0.4 mm profile.
+ */
+describe('SpoolFormModal PA profiles per nozzle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('re-sends the linked 0.6 mm profile, not the 0.4 mm one under the same index', async () => {
+    const spool: InventorySpool = {
+      ...existingSpool,
+      k_profiles: [
+        {
+          id: 5,
+          spool_id: 1,
+          printer_id: 1,
+          extruder: 0,
+          nozzle_diameter: '0.6',
+          nozzle_type: 'standard',
+          k_value: 0.03,
+          name: 'PLA 0.6',
+          cali_idx: 3,
+          setting_id: null,
+          auto_linked: false,
+          created_at: '2025-01-01T00:00:00Z',
+        },
+      ],
+    };
+    const cal = (k: number, nozzle: string) => ({
+      cali_idx: 3,
+      filament_id: 'GFL99',
+      setting_id: '',
+      name: `PLA ${nozzle}`,
+      k_value: k,
+      n_coef: 0,
+      extruder_id: 0,
+      nozzle_diameter: nozzle,
+      nozzle_flow: 'standard',
+    });
+    const withCalibrations = [
+      { printer: { id: 1, name: 'X1C', connected: true }, calibrations: [cal(0.02, '0.4'), cal(0.03, '0.6')] },
+    ] as unknown as PrinterWithCalibrations[];
+
+    render(
+      <SpoolFormModal
+        isOpen={true}
+        onClose={vi.fn()}
+        spool={spool}
+        currencySymbol="$"
+        printersWithCalibrations={withCalibrations}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Edit Spool')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => {
+      expect(api.saveSpoolKProfiles).toHaveBeenCalledTimes(1);
+    });
+    const [, profiles] = vi.mocked(api.saveSpoolKProfiles).mock.calls[0];
+    expect(profiles).toEqual([
+      expect.objectContaining({ printer_id: 1, extruder: 0, nozzle_diameter: '0.6', k_value: 0.03, cali_idx: 3 }),
+    ]);
   });
 });

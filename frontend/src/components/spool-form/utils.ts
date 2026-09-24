@@ -42,10 +42,84 @@ export async function fetchPrinterCalibrations(
         n_coef: parseFloat(p.n_coef) || 0,
         extruder_id: p.extruder_id,
         nozzle_diameter: p.nozzle_diameter,
+        nozzle_flow: nozzleFlowFromId(p.nozzle_id),
       });
     }
   }
   return calibrations;
+}
+
+// Bambu nozzle ids carry the flow class in their first two letters — the same
+// table as the backend's `calibration_service._NOZZLE_PREFIX_TO_VOL_TYPE`.
+const NOZZLE_PREFIX_TO_FLOW: Record<string, string> = {
+  HS: 'standard',
+  HH: 'high_flow',
+  HU: 'tpu_high_flow',
+  HB: 'e3d_high_flow',
+  HY: 'hybrid',
+};
+
+/**
+ * The flow type a profile belongs to, read off its `nozzle_id` ("HH00-0.4").
+ * A missing or unknown id is Standard — BambuStudio reads the absence that way,
+ * and most firmware sends no nozzle id in the calibration table at all.
+ */
+export function nozzleFlowFromId(nozzleId: string | null | undefined): string {
+  return NOZZLE_PREFIX_TO_FLOW[(nozzleId ?? '').slice(0, 2)] ?? 'standard';
+}
+
+function nozzleKey(diameter: string | number | null | undefined): string {
+  const parsed = parseFloat(String(diameter ?? ''));
+  return Number.isFinite(parsed) ? String(parsed) : '';
+}
+
+/**
+ * The PA tab's name for one profile: printer, calibration index, extruder,
+ * nozzle diameter and flow type.
+ *
+ * BambuStudio identifies a pressure-advance profile by filament + extruder +
+ * nozzle diameter + nozzle flow type, and the printer numbers its table per
+ * nozzle diameter — index 3 of the 0.4 mm table and index 3 of the 0.6 mm table
+ * are different profiles. The key used to stop at the extruder, which made those
+ * two one checkbox and let the save re-link whichever it met first.
+ *
+ * The one format every reader and writer of the selection goes through.
+ */
+export function profileSelectionKey(
+  printerId: number | string,
+  caliIdx: number,
+  extruder: number | null | undefined,
+  nozzleDiameter: string | number | null | undefined,
+  nozzleFlow: string | null | undefined,
+): string {
+  return [printerId, caliIdx, extruder ?? 'null', nozzleKey(nozzleDiameter), nozzleFlow || 'standard'].join(':');
+}
+
+export function parseProfileSelectionKey(key: string): {
+  printerId: number;
+  caliIdx: number;
+  extruder: string;
+  nozzle: string;
+  flow: string;
+} {
+  const [printerId, caliIdx, extruder, nozzle = '', flow = 'standard'] = key.split(':');
+  return { printerId: parseInt(printerId), caliIdx: parseInt(caliIdx), extruder, nozzle, flow };
+}
+
+/**
+ * The slot a selection occupies: a spool holds ONE profile per printer,
+ * extruder, nozzle diameter and flow type — so a 0.4 mm and a 0.6 mm profile,
+ * or a Standard and a High Flow one, sit side by side, while a second profile
+ * for the same nozzle replaces the first.
+ */
+export function profileSelectionGroup(key: string): string {
+  const { printerId, extruder, nozzle, flow } = parseProfileSelectionKey(key);
+  return [printerId, extruder, nozzle, flow].join(':');
+}
+
+/** The selection key of a profile the picker is showing. */
+export function calibrationSelectionKey(printerId: number | string, cal: CalibrationProfile): string {
+  return profileSelectionKey(printerId, cal.cali_idx, cal.extruder_id, cal.nozzle_diameter, cal.nozzle_flow);
 }
 
 // Fallback filament presets when cloud is not available

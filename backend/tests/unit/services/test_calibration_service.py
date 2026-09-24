@@ -1261,7 +1261,9 @@ def _live_kprofile(slot_id: int, k: str, nozzle: str, *, name: str, extruder: in
     return kp
 
 
-async def _cached_calibration(db_session, printer_id: int, *, nozzle: float, name: str, k: float, extruder: int = 0):
+async def _cached_calibration(
+    db_session, printer_id: int, *, nozzle: float, name: str, k: float, extruder: int = 0, flow: str = "standard"
+):
     from backend.app.models.filament_calibration import FilamentCalibration
 
     fc = FilamentCalibration(
@@ -1269,14 +1271,14 @@ async def _cached_calibration(db_session, printer_id: int, *, nozzle: float, nam
         filament_id="GFG96",
         filament_setting_id="GFSG96",
         nozzle_diameter=nozzle,
-        nozzle_volume_type="standard",
+        nozzle_volume_type=flow,
         extruder_id=extruder,
         pa_k_value=k,
         cali_mode="pa_line",
         source="manual",
         is_active=True,
         name=name,
-        nozzle_id=f"HS00-{nozzle}",
+        nozzle_id=f"{'HH' if flow == 'high_flow' else 'HS'}00-{nozzle}",
     )
     db_session.add(fc)
     await db_session.commit()
@@ -1415,6 +1417,54 @@ async def test_apply_binds_the_index_of_the_calibrations_own_hotend(db_session, 
 
     assert fired is True
     assert client.extrusion_cali_sel.call_args.kwargs["cali_idx"] == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("flow", "expected_idx"), [("high_flow", 4), ("standard", 3)])
+async def test_a_spool_linked_for_both_flow_types_binds_the_requested_one(
+    db_session, printer_factory, flow, expected_idx
+):
+    """A spool may hold a Standard AND a High Flow profile for the same nozzle
+    (one per extruder / diameter / flow type, as BambuStudio keys them). The
+    link used to be picked by diameter alone — the first one won."""
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_k_profile import SpoolKProfile
+
+    printer = await printer_factory(model="X1C")
+    standard = await _cached_calibration(db_session, printer.id, nozzle=0.4, name="PETG S", k=0.025)
+    high_flow = await _cached_calibration(db_session, printer.id, nozzle=0.4, name="PETG HF", k=0.018, flow="high_flow")
+    spool = Spool(material="PETG", filament_family_id="GFG96")
+    db_session.add(spool)
+    await db_session.commit()
+    for fc in (standard, high_flow):  # the Standard link first: the order a bare "first match" would take
+        db_session.add(
+            SpoolKProfile(spool_id=spool.id, printer_id=printer.id, extruder=0, filament_calibration_id=fc.id)
+        )
+    await db_session.commit()
+
+    client = MagicMock()
+    client.state.connected = True
+    client.state.kprofiles = [
+        _live_kprofile(3, "0.025000", "0.4", name="PETG S"),
+        _live_kprofile(4, "0.018000", "0.4", name="PETG HF"),
+    ]
+    client.extrusion_cali_sel = MagicMock(return_value=(True, "0"))
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        fired, _row = await apply_active_calibration_to_slot(
+            db=db_session,
+            printer_id=printer.id,
+            ams_id=0,
+            slot_id=0,
+            filament_id="GFG96",
+            nozzle_diameter=0.4,
+            nozzle_volume_type=flow,
+            spool_id=spool.id,
+        )
+
+    assert fired is True
+    assert client.extrusion_cali_sel.call_args.kwargs["cali_idx"] == expected_idx
 
 
 @pytest.mark.asyncio

@@ -1449,11 +1449,20 @@ async def apply_active_calibration_to_slot(
             .scalars()
             .all()
         )
-        for ln in link_rows:
-            fc = ln.filament_calibration
-            if fc and abs(fc.nozzle_diameter - nozzle_diameter) < 0.05:
-                cache_row = fc
-                break
+        # A spool holds one link per extruder / diameter / flow type (the
+        # identity BambuStudio gives a PA profile), so a Standard and a High
+        # Flow link can share a nozzle diameter: prefer the one of the flow
+        # asked for. Falling back to any link of the diameter keeps a spool
+        # linked for one flow type binding as it did before the flow was known.
+        same_nozzle = [
+            ln.filament_calibration
+            for ln in link_rows
+            if ln.filament_calibration and abs(ln.filament_calibration.nozzle_diameter - nozzle_diameter) < 0.05
+        ]
+        cache_row = next(
+            (fc for fc in same_nozzle if (fc.nozzle_volume_type or "standard") == nozzle_volume_type),
+            same_nozzle[0] if same_nozzle else None,
+        )
 
     if cache_row is None:
         cache_row = await resolve_active_calibration(

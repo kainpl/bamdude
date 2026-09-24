@@ -3,7 +3,19 @@ import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import type { CalibrationProfile, PAProfileSectionProps } from './types';
-import { isMatchingCalibration, normalizeSlicerCodeToFilamentId, resolveTargetFilamentId } from './utils';
+import {
+  calibrationSelectionKey,
+  isMatchingCalibration,
+  normalizeSlicerCodeToFilamentId,
+  profileSelectionGroup,
+  resolveTargetFilamentId,
+} from './utils';
+
+// Same labels the printer's Parts tab uses for a nozzle's flow type.
+const NOZZLE_FLOW_LABELS: Record<string, string> = {
+  high_flow: 'printers.nozzleHighFlow',
+  tpu_high_flow: 'printers.nozzleTpuHighFlow',
+};
 
 export function PAProfileSection({
   formData,
@@ -47,20 +59,20 @@ export function PAProfileSection({
     });
   };
 
-  const toggleProfileSelected = (printerId: string, caliIdx: number, extruderId?: number | null) => {
-    const key = `${printerId}:${caliIdx}:${extruderId ?? 'null'}`;
-    const printerNozzleKey = `${printerId}:${extruderId ?? 'null'}`;
+  const toggleProfileSelected = (printerId: number, cal: CalibrationProfile) => {
+    const key = calibrationSelectionKey(printerId, cal);
+    const group = profileSelectionGroup(key);
 
     setSelectedProfiles((prev) => {
       const next = new Set(prev);
       if (next.has(key)) {
         next.delete(key);
       } else {
-        // Remove existing profile for same printer/nozzle
+        // One profile per printer / extruder / nozzle diameter / flow type:
+        // picking another for the same nozzle replaces it, a different nozzle
+        // keeps its own.
         for (const existingKey of Array.from(next)) {
-          const parts = existingKey.split(':');
-          const existingPrinterNozzle = `${parts[0]}:${parts[2]}`;
-          if (existingPrinterNozzle === printerNozzleKey) {
+          if (profileSelectionGroup(existingKey) === group) {
             next.delete(existingKey);
           }
         }
@@ -81,21 +93,18 @@ export function PAProfileSection({
         isMatchingCalibration(cal, formData, targetFilamentId),
       );
 
-      // Group by extruder
-      const byExtruder = new Map<string, CalibrationProfile[]>();
+      // Group by the slot a selection occupies (extruder, nozzle, flow type)
+      const byGroup = new Map<string, CalibrationProfile[]>();
       for (const cal of matchingCals) {
-        const extKey = `${cal.extruder_id ?? 'null'}`;
-        if (!byExtruder.has(extKey)) byExtruder.set(extKey, []);
-        byExtruder.get(extKey)!.push(cal);
+        const group = profileSelectionGroup(calibrationSelectionKey(printer.id, cal));
+        if (!byGroup.has(group)) byGroup.set(group, []);
+        byGroup.get(group)!.push(cal);
       }
 
-      // Select best (highest K) for each extruder
-      for (const [extKey, cals] of byExtruder) {
-        if (cals.length > 0) {
-          const sorted = [...cals].sort((a, b) => b.k_value - a.k_value);
-          const best = sorted[0];
-          newSelection.add(`${printer.id}:${best.cali_idx}:${extKey}`);
-        }
+      // Select best (highest K) for each of them
+      for (const cals of byGroup.values()) {
+        const best = [...cals].sort((a, b) => b.k_value - a.k_value)[0];
+        newSelection.add(calibrationSelectionKey(printer.id, best));
       }
     }
 
@@ -140,11 +149,14 @@ export function PAProfileSection({
   }, 0);
 
   const renderProfile = (printer: { id: number }, cal: CalibrationProfile) => {
-    const key = `${printer.id}:${cal.cali_idx}:${cal.extruder_id ?? 'null'}`;
+    const key = calibrationSelectionKey(printer.id, cal);
     const isSelected = selectedProfiles.has(key);
+    const flowLabel = cal.nozzle_flow && cal.nozzle_flow !== 'standard'
+      ? (NOZZLE_FLOW_LABELS[cal.nozzle_flow] ? t(NOZZLE_FLOW_LABELS[cal.nozzle_flow]) : cal.nozzle_flow)
+      : null;
     return (
       <label
-        key={`${cal.cali_idx}-${cal.extruder_id}`}
+        key={key}
         className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all border ${
           isSelected
             ? 'bg-bambu-green/10 border-bambu-green/30'
@@ -154,7 +166,7 @@ export function PAProfileSection({
         <input
           type="checkbox"
           checked={isSelected}
-          onChange={() => toggleProfileSelected(String(printer.id), cal.cali_idx, cal.extruder_id)}
+          onChange={() => toggleProfileSelected(printer.id, cal)}
           className="accent-bambu-green w-4 h-4 rounded border-bambu-dark-tertiary text-bambu-green focus:ring-bambu-green"
         />
         <div className="flex-1 min-w-0">
@@ -169,6 +181,13 @@ export function PAProfileSection({
           {cal.nozzle_diameter && (
             <span className="text-xs font-mono px-2 py-0.5 rounded bg-bambu-dark text-bambu-gray">
               {cal.nozzle_diameter}mm
+            </span>
+          )}
+          {/* A High Flow profile can sit beside a Standard one for the same
+              nozzle — the flow type is then the only visible difference. */}
+          {flowLabel && (
+            <span className="text-xs px-2 py-0.5 rounded bg-bambu-dark text-bambu-gray">
+              {flowLabel}
             </span>
           )}
           <span className="text-xs font-mono px-2 py-0.5 rounded bg-bambu-dark text-bambu-gray">

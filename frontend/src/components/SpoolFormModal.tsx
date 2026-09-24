@@ -9,7 +9,7 @@ import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
 import type { SpoolFormData, PrinterWithCalibrations, ColorPreset, SpoolFormMode } from './spool-form/types';
 import { defaultFormData, spoolDetailsRequired, validateForm, SPOOLMAN_LINKED_FIELDS } from './spool-form/types';
-import { extractBrandsFromPresets, fetchPrinterCalibrations, loadRecentColors, normalizeSlicerCodeToFilamentId, parsePresetName, resolveTargetFilamentId, saveRecentColor } from './spool-form/utils';
+import { calibrationSelectionKey, extractBrandsFromPresets, fetchPrinterCalibrations, loadRecentColors, normalizeSlicerCodeToFilamentId, parsePresetName, parseProfileSelectionKey, profileSelectionKey, resolveTargetFilamentId, saveRecentColor } from './spool-form/utils';
 import { MATERIALS } from './spool-form/constants';
 import { FilamentSection } from './spool-form/FilamentSection';
 import { FamilyPicker } from './FamilyPicker';
@@ -136,7 +136,7 @@ export function SpoolFormModal({
   // inflate the badge past the printers actually offered for assignment.
   const activePrinterIds = new Set(resolvedCalibrations.map((pc) => pc.printer.id));
   const selectedProfileCount = Array.from(selectedProfiles).filter((key) =>
-    activePrinterIds.has(Number(key.split(':')[0])),
+    activePrinterIds.has(parseProfileSelectionKey(key).printerId),
   ).length;
 
   // Fetch Spoolman filament catalog when in Spoolman mode
@@ -392,7 +392,7 @@ export function SpoolFormModal({
           const profileKeys = new Set<string>();
           for (const p of spool.k_profiles) {
             if (p.cali_idx !== null && p.cali_idx !== undefined) {
-              profileKeys.add(`${p.printer_id}:${p.cali_idx}:${p.extruder ?? 'null'}`);
+              profileKeys.add(profileSelectionKey(p.printer_id, p.cali_idx, p.extruder, p.nozzle_diameter, p.nozzle_type));
             }
           }
           setSelectedProfiles(profileKeys);
@@ -704,14 +704,14 @@ export function SpoolFormModal({
     const profiles: SpoolKProfileInput[] = [];
     let dropped = 0;
     for (const key of selectedProfiles) {
-      const [printerIdStr, caliIdxStr, extruderStr] = key.split(':');
-      const printerId = parseInt(printerIdStr);
-      const caliIdx = parseInt(caliIdxStr);
+      const { printerId, extruder: extruderStr } = parseProfileSelectionKey(key);
       const extruder = extruderStr === 'null' ? 0 : parseInt(extruderStr);
 
       const pc = resolvedCalibrations.find(p => p.printer.id === printerId);
       if (pc) {
-        const cal = pc.calibrations.find(c => c.cali_idx === caliIdx);
+        // The whole key, not the index alone: the printer numbers its table
+        // per nozzle, so index 3 exists once per diameter.
+        const cal = pc.calibrations.find(c => calibrationSelectionKey(printerId, c) === key);
         if (cal) {
           profiles.push({
             printer_id: printerId,

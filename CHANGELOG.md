@@ -102,6 +102,13 @@
   annotate the other nozzle's profile — a note saved that way could also fail
   with a server error. The Calibration History window likewise keeps every
   nozzle size it has read instead of only the latest.
+- **A spool's PA tab now holds one K-profile per nozzle size and flow type, as
+  Bambu Studio does.** On a printer with two nozzle sizes, profiles that shared
+  a number were one checkbox, and saving could re-link the other size's
+  profile. A spool can now keep, for example, a 0.4 mm and a 0.6 mm profile, or
+  a Standard and a High Flow one, side by side on the same printer; picking a
+  second profile for the same nozzle still replaces the first. High Flow
+  profiles are labelled in the list.
 - **The jog "up" arrow on an A1 recorded under an alternate model code no
   longer drives the nozzle into the bed.** The printer's own model name decides
   whether the Z direction is reversed for a bed-slinger, and three alternate
