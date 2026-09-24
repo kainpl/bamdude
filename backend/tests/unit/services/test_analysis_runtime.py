@@ -39,6 +39,34 @@ async def test_analysis_cancel_forwards_service_cleanup_diagnostic(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_analysis_service_cleanup_failure_preserves_primary_outcome(tmp_path, monkeypatch):
+    from backend.app import analysis_service
+    from backend.app.services.worker_staging import CleanupResult
+
+    service = analysis_service.Service(
+        {"generation": "a" * 32, "epoch": "b" * 32, "staging": str(tmp_path), "archive_root": str(tmp_path)}
+    )
+    command = {"attempt_id": "c" * 32, "deadline_ns": 1, "source": None}
+
+    async def retire():
+        pass
+
+    async def unavailable():
+        raise PreviewError("timeout")
+
+    monkeypatch.setattr(service, "retire_child", retire)
+    monkeypatch.setattr(service, "start_child", unavailable)
+    monkeypatch.setattr(
+        analysis_service,
+        "cleanup_owned",
+        lambda path: CleanupResult("retained_error", path, "PermissionError", 5),
+    )
+    reply = await service.run(command)
+    assert reply["outcome"] == "timeout"
+    assert reply["staging_cleanup"]["error"] == "PermissionError"
+
+
+@pytest.mark.asyncio
 async def test_main_cleanup_failure_preserves_parse_and_below_quota_admission(tmp_path, monkeypatch, caplog):
     from backend.app.services.worker_staging import CleanupResult
 
@@ -74,6 +102,35 @@ async def test_main_cleanup_failure_preserves_parse_and_below_quota_admission(tm
     finally:
         monkeypatch.setattr(analysis_runtime, "cleanup_owned", original)
         await runtime.stop()
+        await broker.stop()
+
+
+@pytest.mark.asyncio
+async def test_final_generation_cleanup_failure_is_logged_without_masking_stop(tmp_path, monkeypatch, caplog):
+    from backend.app.services.worker_staging import CleanupResult
+
+    (tmp_path / "archive").mkdir()
+    broker = LocalWorkerBroker(tmp_path / ".cache" / "preview-service")
+    await broker.start()
+    runtime = AnalysisRuntime(tmp_path, broker)
+    await runtime.start()
+    original = analysis_runtime.cleanup_owned
+
+    def cleanup(path, **kwargs):
+        if path == runtime.staging:
+            return CleanupResult("retained_error", path, "PermissionError", 5)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(analysis_runtime, "cleanup_owned", cleanup)
+    try:
+        with caplog.at_level(logging.WARNING, logger="backend.app.services.analysis_runtime"):
+            await runtime.stop()
+        assert "staging_cleanup_failed: phase=generation" in caplog.text
+        assert runtime.staging.exists()
+    finally:
+        monkeypatch.setattr(analysis_runtime, "cleanup_owned", original)
+        if runtime.staging.exists():
+            assert original(runtime.staging).status == "removed"
         await broker.stop()
 
 
@@ -121,6 +178,33 @@ async def test_failed_retire_keeps_service_handle_and_residue(tmp_path):
     with pytest.raises(RuntimeError, match="reap unproven"):
         await runtime.retire()
     assert runtime.service is service and runtime.uncertain and attempt.exists()
+
+
+@pytest.mark.asyncio
+async def test_post_retire_filesystem_failure_is_not_ownership_uncertain(tmp_path, monkeypatch, caplog):
+    from backend.app.services.worker_staging import CleanupResult
+
+    runtime = AnalysisRuntime(tmp_path, None)
+    runtime.staging = runtime.root / "staging" / runtime.generation
+    attempt = runtime.staging / "service" / ("a" * 32)
+    attempt.mkdir(parents=True)
+    (attempt / "analysis.bin").write_bytes(b"residue")
+
+    class Service:
+        def stop(self):
+            assert attempt.exists()
+
+    runtime.service = Service()
+    monkeypatch.setattr(
+        analysis_runtime,
+        "cleanup_owned",
+        lambda path, **_kwargs: CleanupResult("retained_error", path, "PermissionError", 5),
+    )
+    with caplog.at_level(logging.INFO, logger="backend.app.services.analysis_runtime"):
+        await runtime.retire()
+    assert runtime.service is None and not runtime.uncertain and attempt.exists()
+    assert "service_residue_after_retire" in caplog.text
+    assert "staging_cleanup_failed: phase=service_residue_after_retire" in caplog.text
 
 
 @pytest.mark.asyncio
