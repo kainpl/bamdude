@@ -523,10 +523,13 @@ async def test_broker_loss_preserves_received_checkpoint(local_runtime, tmp_path
     async with local_runtime.attempt(
         {"sliced": (content.getvalue(), "3mf"), "mesh": (trimesh.creation.box().export(file_type="stl"), "stl")}
     ) as result:
+        # Keep the attempt's staging ownership until the broker has stopped.
+        # Fast renderers can otherwise leave the context and delete the
+        # checkpoint between two polls in stop_after_checkpoint().
+        await stopper
         assert "checkpoint" in result.files
         with zipfile.ZipFile(result.files["checkpoint"]) as archive:
             assert archive.read("Metadata/plate_1.png").startswith(b"\x89PNG")
-    await stopper
     assert not local_runtime.ready
 
 

@@ -10757,6 +10757,14 @@ async def lifespan(app: FastAPI):
 
     await stop_connection_watchdog()
     stop_runtime_tracking()
+    # Live fan-out must unsubscribe while the worker control channel still
+    # exists. Otherwise a normal shutdown looks like a crashed pump.
+    try:
+        from backend.app.services.camera_fanout import shutdown_all_broadcasters
+
+        await shutdown_all_broadcasters()
+    except Exception as e:
+        logging.warning("Failed to shut down camera broadcasters: %s", e)
     try:
         from backend.app.services.camera_runtime import stop_configured_camera_runtime
 
@@ -10781,14 +10789,6 @@ async def lifespan(app: FastAPI):
     from backend.app.services.telemetry import stop_telemetry
 
     stop_telemetry()
-    # Tear down all camera fan-out broadcasters (#1089) so subscribers exit
-    # cleanly and pump tasks don't outlive the asyncio loop.
-    try:
-        from backend.app.services.camera_fanout import shutdown_all_broadcasters
-
-        await shutdown_all_broadcasters()
-    except Exception as e:
-        logging.warning("Failed to shut down camera broadcasters: %s", e)
     stop_expected_prints_cleanup()
     stop_label_reclaim()
     await stop_queue_source_collector()
