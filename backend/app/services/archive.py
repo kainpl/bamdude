@@ -3454,7 +3454,10 @@ class ArchiveService:
         from backend.app.services.archive_write_scope import archive_write_scope
 
         async with archive_write_scope(self.db, archive_id):
-            return await self._delete_archive_locked(archive_id)
+            deleted = await self._delete_archive_locked(archive_id)
+        if deleted:
+            _remove_id_owned_folders(archive_id)
+        return deleted
 
     async def _delete_archive_locked(self, archive_id: int) -> bool:
         """Hard-delete an archive: its row, and its files on disk.
@@ -3660,6 +3663,27 @@ class ArchiveService:
             )
 
         return True
+
+
+def _remove_id_owned_folders(archive_id: int) -> None:
+    """Remove the folders an archive owns by its id, once its row is gone.
+
+    Whatever its ``file_path`` says now: the fallback it used while it had no
+    3MF (``no_source/<id>/`` — photos, timelapse, design file, source 3MF) and
+    the photo folder of the fallback before that (``<id>/photos/``). Both are
+    this archive's alone, never shared by content-hash dedup the way a 3MF
+    folder is. Before, nothing removed them — the old fallback sat in printer
+    folders and could not be deleted safely — so every such archive left its
+    files behind.
+
+    ⚠️ Never ``archive/<id>/`` itself: it may be printer <id>'s folder, full of
+    other archives (utils/archive_paths).
+    """
+    from backend.app.utils.archive_paths import fallback_dir_for, legacy_photos_dir_for
+
+    for folder in (fallback_dir_for(archive_id), legacy_photos_dir_for(archive_id)):
+        if folder.is_dir():
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 async def _convert_timelapse_to_mp4(archive_id: int, source_path: Path) -> None:

@@ -16,17 +16,24 @@ Existing installs may still carry leftovers from the prior semantics:
   prevented the rmtree
 * files dropped into archive/ manually by an operator
 
-This script reconciles on-disk state against the DB. For every regular file
-under ``<DATA_DIR>/archive/`` the relative path from ``DATA_DIR`` is checked
-against the union of:
+This script reconciles on-disk state against the DB. A regular file under
+``<DATA_DIR>/archive/`` or ``<DATA_DIR>/library/`` is wanted when
 
-* ``print_archives.file_path`` + ``print_archives.thumbnail_path``
-* ``library_files.file_path`` + ``library_files.thumbnail_path``
+* any ``*_path`` column of ``print_archives``, ``library_files`` or
+  ``library_file_makerworld_meta`` names it (read off the schema, so a new file
+  column is covered by its name), or
+* it lies in a folder an archive row owns whole — its 3MF's folder, its
+  ``no_source/<id>/`` fallback, or the older ``<id>/photos/`` — because photos
+  are stored as bare names and an edited timelapse is named by nothing.
 
 …across **both live and trashed** rows (``deleted_at`` IS NULL or NOT NULL):
 trash-retained files still live on disk until the retention sweeper hard-
-deletes them. Files that don't match any reference are orphans. After files
-are removed, empty directories are collapsed bottom-up.
+deletes them. Everything else is an orphan. After files are removed, empty
+directories are collapsed bottom-up.
+
+⚠️ Until 2026-09-24 only ``file_path`` + ``thumbnail_path`` counted, so
+``--apply`` deleted every timelapse, photo, Fusion design, source 3MF and
+MakerWorld cover (audit 1.2.5.3-1.2.5.6, D14).
 
 Skipped from the file sweep:
 
@@ -133,6 +140,20 @@ def _resolve_data_dir(arg_data_dir: str | None) -> Path:
     return (Path(__file__).resolve().parent.parent / "data").resolve()
 
 
+# Tables whose ``*_path`` columns name files under ``archive/`` or ``library/``.
+# ⚠️ EVERY such column, read off the table itself: listing them by hand is how
+# this script came to know only ``file_path`` + ``thumbnail_path`` — and with
+# ``--apply`` delete every timelapse, Fusion design, source 3MF and MakerWorld
+# cover (audit 1.2.5.3-1.2.5.6, D14). A new file column is covered by its name.
+# The first two are required (see ``_REQUIRED_TABLES``); the MakerWorld one is
+# read when present.
+_PATH_TABLES = ("print_archives", "library_files", "library_file_makerworld_meta")
+
+
+def _path_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    return [row[1] for row in conn.execute(f"PRAGMA table_info({table})") if str(row[1]).endswith("_path")]  # noqa: S608 — fixed tables
+
+
 def _collect_referenced_paths(db_path: Path) -> set[str]:
     """Build the set of relative paths (POSIX style, from DATA_DIR) the DB references.
 
@@ -143,13 +164,16 @@ def _collect_referenced_paths(db_path: Path) -> set[str]:
     """
     conn = sqlite3.connect(str(db_path))
     referenced: set[str] = set()
-    for table, cols in (
-        ("print_archives", ("file_path", "thumbnail_path")),
-        ("library_files", ("file_path", "thumbnail_path")),
-    ):
-        cols_sql = ", ".join(cols)
+    present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for table in _PATH_TABLES:
+        if table not in present and table not in _REQUIRED_TABLES:
+            continue
         try:
-            for row in conn.execute(f"SELECT {cols_sql} FROM {table}"):  # noqa: S608 — fixed columns
+            cols = _path_columns(conn, table)
+            if not cols:
+                raise sqlite3.OperationalError(f"no *_path column on {table}")
+            cols_sql = ", ".join(cols)
+            for row in conn.execute(f"SELECT {cols_sql} FROM {table}"):  # noqa: S608 — columns read off the schema
                 for v in row:
                     if v:
                         referenced.add(Path(str(v)).as_posix())
@@ -166,6 +190,42 @@ def _collect_referenced_paths(db_path: Path) -> set[str]:
             ) from e
     conn.close()
     return referenced
+
+
+def _owned_archive_dirs(db_path: Path, data_dir: Path) -> list[Path]:
+    """Folders a live (or trashed) archive owns WHOLE, so nothing inside them is an orphan.
+
+    Not every file of an archive is named by a column: its photos are stored as
+    bare names, and the timelapse editor's "save as new" copy is named by
+    nothing. So an archive owns (mirrors ``backend/app/utils/archive_paths.py``):
+
+    * the folder of its 3MF — photos/, source/, f3d/, edited timelapses;
+    * ``archive/no_source/<id>/`` — its folder while it had no 3MF;
+    * ``archive/<id>/photos/`` — the fallback's photos before 2026-09-24.
+
+    ⚠️ Never ``archive/<id>/`` itself: that is also printer <id>'s folder. And a
+    3MF folder is owned only when it is at least two levels into ``archive/``
+    (``archive/<printer>/<dated folder>``): a row whose file lies higher would
+    otherwise claim a whole printer's folder, or the whole archive.
+    """
+    archive_root = data_dir / "archive"
+    owned: list[Path] = []
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(print_archives)")}
+        select_id = "id" if "id" in columns else "NULL"
+        for archive_id, file_path in conn.execute(f"SELECT {select_id}, file_path FROM print_archives"):  # noqa: S608 — fixed columns
+            if file_path:
+                folder = (data_dir / Path(str(file_path))).parent
+                try:
+                    depth = len(folder.relative_to(archive_root).parts)
+                except ValueError:
+                    depth = 0
+                if depth >= 2:
+                    owned.append(folder)
+            if isinstance(archive_id, int):
+                owned.append(archive_root / "no_source" / str(archive_id))
+                owned.append(archive_root / str(archive_id) / "photos")
+    return owned
 
 
 # ``<data_dir>/<subdir>/<id>/`` — one per row of ``<table>``, attachments inside
@@ -306,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
 
     referenced = _collect_referenced_paths(db_path)
     print(f"Referenced paths in DB: {len(referenced)}")
+    owned_dirs = _owned_archive_dirs(db_path, data_dir)
+    print(f"Folders owned by archive rows: {len(owned_dirs)}")
 
     orphans: list[Path] = []
     total_files = 0
@@ -315,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     for walk_root in (archive_root, library_root):
         for rel, abs_path in _walk_archive_files(walk_root, data_dir, skip_dirs):
             total_files += 1
-            if rel not in referenced:
+            if rel not in referenced and not any(_is_under(abs_path, d) for d in owned_dirs):
                 try:
                     size = abs_path.stat().st_size
                 except OSError:

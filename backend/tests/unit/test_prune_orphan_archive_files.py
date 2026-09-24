@@ -134,6 +134,70 @@ def test_it_refuses_to_guess_when_the_data_dir_is_not_one(tmp_path, missing):
         assert prune.main(["--data-dir", str(data)]) == 0
 
 
+class TestItKeepsEveryFileAnArchiveOwns:
+    """Audit 1.2.5.3-1.2.5.6, D14. The script named only ``file_path`` and
+    ``thumbnail_path`` as wanted, so ``--apply`` deleted every timelapse, photo,
+    Fusion design, source 3MF and MakerWorld cover — and an edited timelapse,
+    which no column names at all. Now a file is wanted when a ``*_path`` column
+    names it, or when it lies in a folder a live archive owns: its 3MF's folder,
+    ``no_source/<id>/`` and the old ``<id>/photos/``."""
+
+    @staticmethod
+    def _db(data: Path) -> None:
+        (data / "archive").mkdir(parents=True)
+        conn = sqlite3.connect(data / "bamdude.db")
+        conn.execute(
+            "CREATE TABLE print_archives (id INTEGER PRIMARY KEY, file_path TEXT, thumbnail_path TEXT, "
+            "timelapse_path TEXT, source_3mf_path TEXT, f3d_path TEXT, photos TEXT)"
+        )
+        conn.execute("CREATE TABLE library_files (file_path TEXT, thumbnail_path TEXT)")
+        conn.execute("CREATE TABLE library_file_makerworld_meta (cover_path TEXT, variant_cover_path TEXT)")
+        conn.execute("CREATE TABLE projects (id INTEGER PRIMARY KEY)")
+        conn.execute("CREATE TABLE products (id INTEGER PRIMARY KEY)")
+        conn.execute(
+            "INSERT INTO print_archives VALUES (3, 'archive/3/20260924_job/job.3mf', "
+            "'archive/3/20260924_job/thumbnail.png', 'archive/3/20260924_job/video.mp4', NULL, NULL, '[\"p.jpg\"]')"
+        )
+        conn.execute(
+            "INSERT INTO print_archives VALUES (7, '', NULL, 'archive/no_source/7/video.mp4', NULL, NULL, NULL)"
+        )
+        # A row whose 3MF lies at the top of archive/ — its folder is the whole
+        # root, which no row may own.
+        conn.execute("INSERT INTO print_archives VALUES (8, 'archive/loose.3mf', NULL, NULL, NULL, NULL, NULL)")
+        conn.execute("INSERT INTO library_file_makerworld_meta VALUES ('library/makerworld-covers/5-cover.jpg', NULL)")
+        conn.commit()
+        conn.close()
+
+    def test_apply_keeps_what_live_archives_own(self, tmp_path):
+        data = tmp_path / "data"
+        self._db(data)
+        archive = data / "archive"
+        kept = [
+            _write(archive / "3" / "20260924_job" / "job.3mf"),
+            _write(archive / "3" / "20260924_job" / "video.mp4"),
+            _write(archive / "3" / "20260924_job" / "job_edited.mp4"),  # the timelapse editor's copy: no column
+            _write(archive / "3" / "20260924_job" / "photos" / "p.jpg"),
+            _write(archive / "3" / "20260924_job" / "source" / "project.3mf"),
+            _write(archive / "3" / "20260924_job" / "f3d" / "design.f3d"),
+            _write(archive / "no_source" / "7" / "video.mp4"),
+            _write(archive / "no_source" / "7" / "photos" / "a.jpg"),
+            _write(archive / "7" / "photos" / "b.jpg"),  # the fallback before no_source
+            _write(archive / "loose.3mf"),
+            _write(data / "library" / "makerworld-covers" / "5-cover.jpg"),
+        ]
+        gone = [
+            _write(archive / "no_source" / "99" / "video.mp4"),  # its row was deleted
+            _write(archive / "3" / "20250101_dead" / "dead.3mf"),
+            _write(archive / "stray.3mf"),  # beside a row that lives at the root: not owned by it
+            _write(data / "library" / "makerworld-covers" / "6-cover.jpg"),
+        ]
+
+        assert prune.main(["--data-dir", str(data), "--apply"]) == 0
+
+        assert [p for p in kept if not p.exists()] == []
+        assert [p for p in gone if p.exists()] == []
+
+
 class TestItRefusesWhatItCannotAnswer:
     """⚠️ The script deletes what no database row names. So a database that
     names nothing is not an empty install — it is a broken question, and the

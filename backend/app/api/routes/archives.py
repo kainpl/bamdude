@@ -42,9 +42,8 @@ from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope
 from backend.app.services.design_settings import overrides_from_config
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
-from backend.app.utils.archive_paths import photos_dir_for
+from backend.app.utils.archive_paths import find_photo, photos_dir_for
 from backend.app.utils.http import build_content_disposition
-from backend.app.utils.safe_path import safe_join_under
 from backend.app.utils.threemf_tools import (
     expand_to_project_slots,
     extract_embedded_presets_from_3mf,
@@ -2206,9 +2205,10 @@ async def upload_photo(
     if not file.filename or not file.filename.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
         raise HTTPException(400, "File must be an image (.jpg, .jpeg, .png, .webp)")
 
-    # Get archive directory
+    # Written to the archive's CURRENT folder. ``parents``: an archive with no
+    # 3MF may have no folder yet, and this can be the first file it gets.
     photos_dir = photos_dir_for(archive)
-    photos_dir.mkdir(exist_ok=True)
+    photos_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate unique filename
     import uuid
@@ -2253,9 +2253,13 @@ async def get_photo(
     # (served to <img> tags). Without containment it FileResponse-served any
     # file the backend could read (``..%2f..%2fetc%2fpasswd``) — safe_join_under
     # rejects traversal with 400 (path-traversal hardening, GHSA-r2qv).
-    photo_path = safe_join_under(photos_dir_for(archive), filename)
+    #
+    # Looked up in every folder a photo of this archive can have been written
+    # to: one taken before the 3MF arrived is in the fallback folder, and the
+    # archive's folder moved when the 3MF was attached (utils/archive_paths).
+    photo_path = find_photo(archive, filename, http=True)
 
-    if not photo_path.exists():
+    if photo_path is None:
         raise HTTPException(404, "Photo not found")
 
     # Determine media type
@@ -2294,9 +2298,10 @@ async def delete_photo(
     # Delete file. The membership check above already limits ``filename`` to a
     # UUID-generated name in ``archive.photos``; safe_join_under is
     # defence-in-depth so a future change that drops the membership gate can't
-    # reintroduce a traversal-delete.
-    photo_path = safe_join_under(photos_dir_for(archive), filename)
-    if photo_path.exists():
+    # reintroduce a traversal-delete. Found wherever it was written — see
+    # get_photo.
+    photo_path = find_photo(archive, filename, http=True)
+    if photo_path is not None:
         photo_path.unlink()
 
     # Update archive photos list
@@ -3402,7 +3407,10 @@ def _resolve_source_3mf_path(archive: PrintArchive, source_filename: str) -> Pat
         archive_file = settings.base_dir / archive.file_path
         source_dir = archive_file.parent / "source"
     else:
-        source_dir = settings.base_dir / "archive" / "no_source" / str(archive.id)
+        # The same folder every other file of such an archive goes to.
+        from backend.app.utils.archive_paths import fallback_dir_for
+
+        source_dir = fallback_dir_for(archive.id)
 
     # Containment check via resolve() — catches absolute file_path, `..`
     # traversal, and any other shape that escapes the data volume — but we

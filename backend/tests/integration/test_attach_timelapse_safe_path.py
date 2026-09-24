@@ -69,8 +69,8 @@ async def test_a_print_without_a_3mf_keeps_its_timelapse_inside_the_data_dir(
     assert not (tmp_path / "timelapse.mp4").exists()
     await db_session.refresh(archive)
     assert (data_dir / archive.timelapse_path).read_bytes() == b"video"
-    # The same folder the archive's photos already use (utils/archive_paths).
-    assert (data_dir / archive.timelapse_path).parent == data_dir / "archive" / str(archive.id)
+    # The same folder the archive's photos use (utils/archive_paths).
+    assert (data_dir / archive.timelapse_path).parent == data_dir / "archive" / "no_source" / str(archive.id)
 
 
 @pytest.mark.asyncio
@@ -86,7 +86,7 @@ async def test_a_rejected_timelapse_name_leaves_no_folder_behind(
 
     assert await ArchiveService(db_session).attach_timelapse(archive.id, b"x", "../../evil.mp4") is False
 
-    assert not (data_dir / "archive" / str(archive.id)).exists()
+    assert not (data_dir / "archive" / "no_source" / str(archive.id)).exists()
 
 
 @pytest.mark.asyncio
@@ -107,4 +107,4 @@ async def test_a_print_without_a_3mf_takes_a_design_file(
     assert response.status_code == 200, response.text
     stored = response.json()["f3d_path"]
     assert (data_dir / stored).read_bytes() == b"fusion"
-    assert (data_dir / stored).is_relative_to(data_dir / "archive" / str(archive.id))
+    assert (data_dir / stored).is_relative_to(data_dir / "archive" / "no_source" / str(archive.id))

@@ -8464,7 +8464,7 @@ async def _on_print_complete_impl(
             from backend.app.utils.archive_paths import archive_dir_for
 
             if not archive.file_path:
-                logger.warning("[PHOTO-BG] Archive %s has no file_path, using the per-id folder", archive_id)
+                logger.warning("[PHOTO-BG] Archive %s has no file_path, using its no_source folder", archive_id)
             archive_dir = archive_dir_for(archive)
             photo_filename = None
 
@@ -8757,10 +8757,13 @@ async def _on_print_complete_impl(
 
                             # Read finish photo bytes for image attachment (e.g. Pushover)
                             try:
-                                from backend.app.utils.archive_paths import photos_dir_for
+                                from backend.app.utils.archive_paths import find_photo
 
-                                photo_path = photos_dir_for(archive) / finish_photo_filename
-                                if photo_path.exists():
+                                # Wherever it was written: the 3MF may have been
+                                # attached since the photo was taken, and that
+                                # moves the archive's folder.
+                                photo_path = find_photo(archive, finish_photo_filename)
+                                if photo_path is not None:
                                     photo_bytes = await asyncio.to_thread(photo_path.read_bytes)
                                     if len(photo_bytes) <= 2_500_000:
                                         archive_data["image_data"] = photo_bytes

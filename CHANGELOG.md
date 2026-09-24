@@ -86,6 +86,20 @@
   permission error, so the timelapse was downloaded and thrown away again and
   again; elsewhere the file landed beside the installation and the attach still
   failed. Both now go into the archive's own folder, next to its photos.
+- **Deleting an archive that has no 3MF now removes its photos, timelapse and
+  design file, and a photo taken before the 3MF arrived no longer disappears.**
+  Such an archive kept its files in a folder named after its number inside
+  the archive directory — the same place where printers' folders are named
+  after theirs, so archive 3's files sat in printer 3's folder and were never
+  cleaned up. They now live in `archive/no_source/<number>/`. When the 3MF
+  reaches the archive later, as it routinely does after a delayed download,
+  photos taken before that are still shown and can still be deleted; photos in
+  the old location are found as well.
+- **`scripts/prune_orphan_archive_files.py --apply` no longer deletes
+  timelapses, photos, design files, source 3MFs and MakerWorld covers.** It
+  treated every file not named as an archive's 3MF or thumbnail as an orphan.
+  It now keeps every file any path column names and everything inside a folder
+  that belongs to an archive still in the database or the trash.
 - **Starting a print no longer switches the printer's AMS and print settings
   off in BamDude.** A printer confirms a print job by echoing the job back, and
   that echo was read as the printer's own status. The job carries a value that
