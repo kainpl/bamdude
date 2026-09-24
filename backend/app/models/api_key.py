@@ -17,7 +17,8 @@ class APIKey(Base):
     # 64-char SHA-256 hex the column was first sized for. PostgreSQL enforces the
     # length, SQLite does not; m167 widens existing PostgreSQL databases.
     key_hash: Mapped[str] = mapped_column(String(255))
-    key_prefix: Mapped[str] = mapped_column(String(16))  # "bb_" + 8 chars for identification
+    # The key's first 8 characters + "..." for identification: "bd_…", or "bb_…" on keys issued before 2026-09-24
+    key_prefix: Mapped[str] = mapped_column(String(16))
 
     # Owner — keys created via UI are stamped with the creating user's id so
     # cloud-aware routes can resolve "the key's user" and reuse that user's

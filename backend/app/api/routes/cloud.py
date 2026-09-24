@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermission, _validate_api_key, security
+from backend.app.core.auth import RequirePermission, _validate_api_key, is_api_key_token, security
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.settings import Settings
@@ -345,7 +345,7 @@ async def resolve_api_key_cloud_owner(
     Returns the owning ``User`` when:
 
     1. The request carries a valid, enabled API key (X-API-Key header or
-       Bearer bb_xxx).
+       a Bearer API key).
     2. The key has ``can_access_cloud=True`` AND a non-NULL ``user_id``.
     3. That user exists and is active.
 
@@ -367,7 +367,7 @@ async def resolve_api_key_cloud_owner(
     api_key_value: str | None = None
     if x_api_key:
         api_key_value = x_api_key
-    elif credentials is not None and credentials.credentials.startswith("bb_"):
+    elif credentials is not None and is_api_key_token(credentials.credentials):
         api_key_value = credentials.credentials
 
     if not api_key_value:

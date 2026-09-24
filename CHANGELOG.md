@@ -15,6 +15,14 @@
   fits, so a limited key cannot use it at all. Keys without a printer list
   work as before; a key with an empty list reaches no printer.
 
+### Changed
+
+- **New API keys start with `bd_`.** The `bb_` they used to start with came
+  from Bambuddy, the project BamDude grew out of. Keys you already have keep
+  working exactly as before — through `X-API-Key` and through
+  `Authorization: Bearer` alike — so nothing needs to be re-issued; only keys
+  created from now on look different.
+
 ### Added
 
 - **Camera capture is worker-only.** Built-in and external live views, snapshots,

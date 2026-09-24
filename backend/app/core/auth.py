@@ -1060,6 +1060,22 @@ async def get_current_active_user(current_user: Annotated[User, Depends(get_curr
     return current_user
 
 
+# New keys carry BamDude's own prefix. ``bb_`` is Bambuddy's, inherited with the
+# fork: only a key's hash is stored and the key itself is shown once, so a key
+# issued before the change cannot be re-issued under the new prefix and keeps
+# working in whatever integration holds it. Validation never reads the prefix
+# (the whole key is verified against each hash); it only tells a Bearer key from
+# a session JWT, and ``is_api_key_token`` is the one place that asks.
+API_KEY_PREFIX = "bd_"
+LEGACY_API_KEY_PREFIXES = ("bb_",)
+_API_KEY_PREFIXES = (API_KEY_PREFIX, *LEGACY_API_KEY_PREFIXES)
+
+
+def is_api_key_token(token: str | None) -> bool:
+    """True when a Bearer credential is an API key rather than a session JWT."""
+    return bool(token) and token.startswith(_API_KEY_PREFIXES)
+
+
 def generate_api_key() -> tuple[str, str, str]:
     """Generate a new API key.
 
@@ -1070,7 +1086,7 @@ def generate_api_key() -> tuple[str, str, str]:
             - key_prefix: First 8 characters for display purposes
     """
     # Generate a secure random API key (32 bytes = 64 hex characters)
-    full_key = f"bb_{secrets.token_urlsafe(32)}"
+    full_key = f"{API_KEY_PREFIX}{secrets.token_urlsafe(32)}"
     key_hash = get_password_hash(full_key)
     key_prefix = full_key[:8] + "..." if len(full_key) > 8 else full_key
     return full_key, key_hash, key_prefix
@@ -1623,7 +1639,7 @@ def require_admin():
     Administrators (rather than by flipping the legacy role) still passes.
 
     Resolution goes through ``get_current_user`` (JWT only), which means an
-    API key — presented via ``X-API-Key`` or ``Bearer bb_...`` — never
+    API key — presented via ``X-API-Key`` or ``Bearer bd_...`` — never
     satisfies this dependency: keys carry no user identity, so they can't be
     admin. Layer this **on top of** ``RequirePermission(...)`` on privileged
     user/group-management writes (upstream Bambuddy security-hardening #1) so
@@ -1652,7 +1668,7 @@ def require_permission(*permissions: str | Permission):
     """Dependency factory that requires user to have ALL specified permissions.
 
     Accepts both JWT tokens (via Authorization: Bearer header) and API keys
-    (via X-API-Key header or Authorization: Bearer bb_xxx).
+    (via X-API-Key header or Authorization: Bearer bd_xxx; ``is_api_key_token``).
 
     API keys bypass the per-resource permission check (legacy behavior); their
     access is instead narrowed through the API-key-specific ``can_queue`` /
@@ -1695,8 +1711,8 @@ def require_permission(*permissions: str | Permission):
                 raise credentials_exception
 
             token = credentials.credentials
-            # Check if it's an API key (starts with bb_)
-            if token.startswith("bb_"):
+            # Check if it's an API key (bd_, or Bambuddy-era bb_)
+            if is_api_key_token(token):
                 api_key = await _validate_api_key(db, token)
                 if api_key:
                     await authorize_api_key(db, api_key, perm_strings)
@@ -1770,11 +1786,11 @@ def require_energy_cost_update():
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-            # API-key path — X-API-Key header OR ``Bearer bb_xxx``.
+            # API-key path — X-API-Key header OR a Bearer API key.
             api_key_value: str | None = None
             if x_api_key:
                 api_key_value = x_api_key
-            elif credentials is not None and credentials.credentials.startswith("bb_"):
+            elif credentials is not None and is_api_key_token(credentials.credentials):
                 api_key_value = credentials.credentials
 
             if api_key_value is not None:
@@ -1858,7 +1874,7 @@ def require_any_permission(*permissions: str | Permission):
                 raise credentials_exception
 
             token = credentials.credentials
-            if token.startswith("bb_"):
+            if is_api_key_token(token):
                 api_key = await _validate_api_key(db, token)
                 if api_key:
                     await authorize_api_key(db, api_key, perm_strings, require_any=True)
@@ -2004,7 +2020,7 @@ def require_ownership_permission(
     - User with ``all_permission`` can modify any item
     - User with ``own_permission`` can only modify items where created_by_id == user.id
     - Ownerless items (created_by_id = null) require ``all_permission``
-    - API keys (via X-API-Key header or Bearer bb_xxx) get full access (can_modify_all=True)
+    - API keys (via X-API-Key header or Bearer bd_xxx) get full access (can_modify_all=True)
 
     Returns:
         A dependency function that returns (user, can_modify_all).
@@ -2038,8 +2054,8 @@ def require_ownership_permission(
             # Check for Bearer token (could be JWT or API key)
             if credentials is not None:
                 token = credentials.credentials
-                # Check if it's an API key (starts with bb_)
-                if token.startswith("bb_"):
+                # Check if it's an API key (bd_, or Bambuddy-era bb_)
+                if is_api_key_token(token):
                     api_key = await _validate_api_key(db, token)
                     if api_key:
                         await authorize_api_key(db, api_key, [all_perm])

@@ -11144,7 +11144,9 @@ async def auth_middleware(request, call_next):
     x_api_key = request.headers.get("X-API-Key")
 
     # Check for API key auth first
-    if x_api_key or (auth_header and auth_header.startswith("Bearer bb_")):
+    from backend.app.core.auth import is_api_key_token
+
+    if x_api_key or (auth_header and auth_header.startswith("Bearer ") and is_api_key_token(auth_header[7:])):
         # API key authentication - let the request through to be validated by route handler
         # API keys are validated per-route since they have different permission levels
         return await call_next(request)

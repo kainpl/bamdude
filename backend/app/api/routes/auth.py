@@ -36,6 +36,7 @@ from backend.app.core.auth import (
     get_user_by_email,
     get_user_by_username,
     has_any_admin,
+    is_api_key_token,
     is_jti_revoked,
     refresh_cookie_secure_flag,
     resolve_apikey_owner,
@@ -873,7 +874,7 @@ async def get_current_user_info(
     """Get current user information.
 
     Accepts JWT tokens (via Authorization: Bearer header) and API keys
-    (via X-API-Key header or Authorization: Bearer bb_xxx). API keys report
+    (via X-API-Key header or Authorization: Bearer bd_xxx). API keys report
     their owner's identity and the permissions the key can actually exercise —
     see ``_api_key_to_user_response``.
     """
@@ -889,8 +890,8 @@ async def get_current_user_info(
     # Check for Bearer token (could be JWT or API key)
     if credentials is not None:
         token = credentials.credentials
-        # Check if it's an API key (starts with bb_)
-        if token.startswith("bb_"):
+        # Check if it's an API key (bd_, or Bambuddy-era bb_)
+        if is_api_key_token(token):
             api_key = await _validate_api_key(db, token)
             if api_key:
                 return await _api_key_to_user_response(db, api_key)

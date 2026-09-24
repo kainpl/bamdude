@@ -71,7 +71,7 @@ Each `mNNN_*.py` has `version`, `name`, `async def upgrade(conn)` (DDL), optiona
 
 ## Key Invariants
 
-**Auth always-on.** Every endpoint via `RequirePermission(Permission.X)`. Setup-gate middleware returns `503 setup_required` until `POST /auth/setup` creates admin (whitelist: `/auth/status`, `/auth/setup`, `/system/health`). API keys (`X-API-Key` / `Bearer bb_...`) bypass JWT but satisfy perms. Recovery: `python -m backend.app.cli reset_admin`.
+**Auth always-on.** Every endpoint via `RequirePermission(Permission.X)`. Setup-gate middleware returns `503 setup_required` until `POST /auth/setup` creates admin (whitelist: `/auth/status`, `/auth/setup`, `/system/health`). API keys (`X-API-Key` / `Bearer bd_...`) bypass JWT but satisfy perms. New keys are `bd_…`; Bambuddy's `bb_…` stays accepted forever (only the hash is stored, so an issued key cannot be renamed). The prefix only tells a Bearer key from a JWT, and `core/auth.is_api_key_token` is the one place that asks — `tests/unit/test_api_key_prefix_is_asked_in_one_place.py` fails on a hand-written `startswith("bb_")`. Recovery: `python -m backend.app.cli reset_admin`.
 
 **JWT + sliding refresh.** Access JWT has `jti` + `iat` (1h TTL); `/logout` revokes via `auth_ephemeral_tokens`. Password change stamps `user.password_changed_at` — older `iat` rejected. Refresh: SHA-256-hashed, HttpOnly + SameSite=Lax + Path=/api/v1/auth (`bamdude_refresh`), Secure auto from scheme, rotating with `family_id`; reuse collapses family. Frontend auto-retries 401 via `/auth/refresh` (coalesced).
 
