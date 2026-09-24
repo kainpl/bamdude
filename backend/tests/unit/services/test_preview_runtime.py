@@ -12,7 +12,7 @@ from dataclasses import replace
 import pytest
 
 from backend.app.services.preview_artifacts import describe, disk, get, put
-from backend.app.services.preview_protocol import Command, PreviewError
+from backend.app.services.preview_protocol import ACTIVE_SECONDS, Command, PreviewError
 from backend.app.services.preview_runtime import PreviewRuntime
 
 
@@ -512,12 +512,13 @@ async def test_broker_loss_preserves_received_checkpoint(local_runtime, tmp_path
         archive.writestr("Metadata/plate_1.gcode", "G1 X1\n")
 
     async def stop_after_checkpoint():
-        for _ in range(1500):
-            if list((local_runtime.staging / "main").glob("*/checkpoint.3mf")):
-                await disk(local_runtime.broker.stop)
-                return
-            await asyncio.sleep(0.01)
-        pytest.fail("main did not receive checkpoint")
+        try:
+            async with asyncio.timeout(ACTIVE_SECONDS):
+                while not list((local_runtime.staging / "main").glob("*/checkpoint.3mf")):
+                    await asyncio.sleep(0.05)
+        except TimeoutError:
+            pytest.fail("main did not receive checkpoint within the preview deadline")
+        await disk(local_runtime.broker.stop)
 
     stopper = asyncio.create_task(stop_after_checkpoint())
     async with local_runtime.attempt(
