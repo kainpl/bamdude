@@ -129,6 +129,12 @@ PUBLIC_ROUTES: dict[str, tuple[str, str]] = {
     "/api/v1/monitor/kiosk/forecast": ("monitor-token", "aggregate queue forecast via scoped Bearer"),
     # Token-in-the-path downloads for slicer protocol handlers.
     "/api/v1/archives/{archive_id}/dl/{token}/{filename}": ("slicer-token", "bambustudioopen:// download"),
+    # The source 3MF beside it: a segment of its own, and so a pattern of its own
+    # — without one, "Open source 3MF in slicer" was 401 on every install.
+    "/api/v1/archives/{archive_id}/source-dl/{token}/{filename}": (
+        "slicer-token",
+        "bambustudioopen:// download of the source 3MF",
+    ),
     "/api/v1/library/files/{file_id}/dl/{token}/{filename}": ("slicer-token", "orcaslicer:// download"),
     # The Obico ML service fetches a frame by one-shot nonce.
     "/api/v1/obico/cached-frame/{nonce}": ("nonce", "Obico frame by 32-byte single-use nonce"),

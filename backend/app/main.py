@@ -10994,6 +10994,11 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # (bambustudioopen://, orcaslicer://) cannot send auth headers. These
     # endpoints validate a short-lived download token in the URL path instead.
     re.compile(r"^/api/v1/archives/\d+/dl/[^/]+/[^/]+$"),
+    # The source 3MF beside it has a segment of its own, and so needs a
+    # pattern of its own: without it the slicer's header-less request was 401'd
+    # here, before the route's token check ran — "Open source 3MF in slicer"
+    # could not work on any install (upstream #3029).
+    re.compile(r"^/api/v1/archives/\d+/source-dl/[^/]+/[^/]+$"),
     re.compile(r"^/api/v1/library/files/\d+/dl/[^/]+/[^/]+$"),
     # 2FA + OIDC endpoints consumed by the login page before the user has a
     # JWT. /2fa/verify trades a pre-auth token for a JWT and /2fa/email/send

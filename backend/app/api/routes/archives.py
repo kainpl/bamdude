@@ -1532,13 +1532,15 @@ async def download_archive_for_slicer(
 ):
     """Download 3MF file using a slicer download token.
 
-    Token-authenticated (no auth headers needed). The token is short-lived
-    and single-use, created by POST /{archive_id}/slicer-token.
+    Token-authenticated (no auth headers needed). The token is short-lived and
+    archive-bound, created by POST /{archive_id}/slicer-token, and redeemable
+    for the rest of its TTL rather than once — the slicer is a separate process
+    that may fetch the URL more than once (upstream #3029).
     Filename is at the end of the URL so slicers can detect the file format.
     """
     from backend.app.core.auth import verify_slicer_download_token
 
-    if not await verify_slicer_download_token(token, "archive", archive_id):
+    if not await verify_slicer_download_token(token, "archive", archive_id, single_use=False):
         raise HTTPException(403, "Invalid or expired download token")
 
     service = ArchiveService(db)
@@ -3584,12 +3586,15 @@ async def download_source_3mf_for_slicer_with_token(
 ):
     """Download source 3MF using a slicer download token.
 
-    Token-authenticated (no auth headers needed). The token is short-lived
-    and single-use, created by POST /{archive_id}/source-slicer-token.
+    Token-authenticated (no auth headers needed). The token is short-lived and
+    archive-bound, created by POST /{archive_id}/source-slicer-token, and
+    redeemable for the rest of its TTL (upstream #3029). Reachable without a
+    session only through its own ``/source-dl/`` pattern in
+    ``main.PUBLIC_API_PATTERNS``.
     """
     from backend.app.core.auth import verify_slicer_download_token
 
-    if not await verify_slicer_download_token(token, "source", archive_id):
+    if not await verify_slicer_download_token(token, "source", archive_id, single_use=False):
         raise HTTPException(403, "Invalid or expired download token")
 
     result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))

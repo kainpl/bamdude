@@ -78,6 +78,14 @@
 
 ### Fixed
 
+- **"Open source 3MF in slicer" works, and "Open in slicer" no longer fails
+  when the slicer fetches the file twice.** The source 3MF download was
+  refused before its one-time link was even checked, so it never worked with
+  sign-in enabled — which is every install. And each open-in-slicer link was
+  spent by the first request, while Bambu Studio retries a failed download
+  and other tools can fetch the same address, so the slicer could be refused
+  the file it had just been sent to. Links now stay valid for their five
+  minutes and still open only the file they were made for.
 - **A print with no 3MF in its archive can receive its timelapse and a Fusion
   360 design file again.** H2-series and P2S printers keep a job sent from the
   slicer on their internal storage, where it cannot be downloaded, so the

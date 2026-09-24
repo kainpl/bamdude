@@ -5564,13 +5564,15 @@ async def download_library_file_for_slicer(
 ):
     """Download a library file using a slicer download token.
 
-    Token-authenticated (no auth headers needed). The token is short-lived
-    and single-use, created by POST /files/{file_id}/slicer-token.
+    Token-authenticated (no auth headers needed). The token is short-lived and
+    file-bound, created by POST /files/{file_id}/slicer-token, and redeemable
+    for the rest of its TTL rather than once — the slicer is a separate process
+    that may fetch the URL more than once (upstream #3029).
     Filename is at the end of the URL so slicers can detect the file format.
     """
     from backend.app.core.auth import verify_slicer_download_token
 
-    if not await verify_slicer_download_token(token, "library", file_id):
+    if not await verify_slicer_download_token(token, "library", file_id, single_use=False):
         raise HTTPException(status_code=403, detail="Invalid or expired download token")
 
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
