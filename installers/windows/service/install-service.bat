@@ -83,7 +83,7 @@ REM Upgrade an existing service's grace BEFORE the first stop as well.
 "%NSSM%" remove BamDude confirm 2>nul
 
 REM --loop asyncio: uvicorn[standard] auto-selects uvloop, which can truncate VP FTP uploads (#1896).
-"%NSSM%" install BamDude "%PYTHON%" "-m uvicorn backend.app.main:app --host 0.0.0.0 --port %PORT% --loop asyncio"
+"%NSSM%" install BamDude "%PYTHON%" "-m uvicorn backend.app.main:app --host 0.0.0.0 --port %PORT% --loop asyncio --timeout-graceful-shutdown 15"
 if errorlevel 1 (
     echo [install-service] nssm install failed
     exit /b 1

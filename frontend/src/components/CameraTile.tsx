@@ -4,6 +4,7 @@ import { AlertTriangle, Expand, VideoOff, WifiOff } from 'lucide-react';
 import { getAuthToken, withStreamToken } from '../api/client';
 import { formatDuration } from '../utils/date';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { useConnection } from '../contexts/ConnectionContext';
 import { sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
 import { CameraSnapshotImage } from './CameraSnapshotImage';
 
@@ -95,6 +96,19 @@ export function CameraTile({
   const [bust, setBust] = useState(0);
   const [errored, setErrored] = useState(false);
   const lastModeRef = useRef<CameraTileMode>(mode);
+  const { isConnected: serverConnected, showOfflineIndicator } = useConnection();
+  const wasOfflineRef = useRef(showOfflineIndicator);
+
+  useEffect(() => {
+    // A browser can keep the last decoded MJPEG frame after the server closes
+    // the stream, without firing img.onerror. Restart that image when the
+    // shared server connection returns instead of showing a stale frame.
+    if (wasOfflineRef.current && !showOfflineIndicator && serverConnected && mode === 'live') {
+      setErrored(false);
+      setBust((b) => b + 1);
+    }
+    wasOfflineRef.current = showOfflineIndicator;
+  }, [mode, serverConnected, showOfflineIndicator]);
 
   // Tell the backend to release its MJPEG transcoder when this tile stops
   // being live — either by unmounting or by transitioning to snapshot/paused.
@@ -221,6 +235,13 @@ export function CameraTile({
           style={{ transform }}
           onError={() => setErrored(true)}
         />
+      )}
+
+      {mode === 'live' && showOfflineIndicator && (
+        <div role="status" className="pointer-events-none absolute inset-x-2 top-9 z-20 flex items-center justify-center gap-1.5 rounded bg-black/80 px-2 py-1 text-xs text-amber-300">
+          <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span>{t('common.reconnecting')}</span>
+        </div>
       )}
 
       {/* Status chip (top-left) */}

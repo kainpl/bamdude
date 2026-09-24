@@ -422,7 +422,7 @@ class AnalysisRuntime:
         try:
             await self.retire()
         except Exception:
-            logger.warning("3MF analysis worker ownership uncertain; staging retained")
+            logger.exception("3MF analysis worker ownership uncertain; staging retained")
         if self.nc:
             await self.nc.close()
         if not self.uncertain and hasattr(self, "staging") and not self.slot.locked():

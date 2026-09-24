@@ -66,16 +66,19 @@ sudo() {{ return 0; }}
         assert "\nKillMode=mixed\n" in unit
         assert "\nTimeoutStopSec=90\n" in unit
         assert unit.count("TimeoutStopSec=") == 1
+        assert "--loop asyncio --timeout-graceful-shutdown 15" in unit
     else:
         plist = plistlib.loads(output.read_bytes())
         assert plist["ExitTimeOut"] == 90
         assert not plist.get("AbandonProcessGroup", False)
+        assert plist["ProgramArguments"][-4:] == ["--loop", "asyncio", "--timeout-graceful-shutdown", "15"]
 
 
 def test_manual_systemd_template_matches_installer():
     unit = (ROOT / "deploy/bamdude.service").read_text(encoding="utf-8")
     assert "\nKillMode=mixed\n" in unit
     assert "\nTimeoutStopSec=90\n" in unit
+    assert "--loop asyncio --timeout-graceful-shutdown 15" in unit
 
 
 def test_nssm_grace_is_unconditional_and_precedes_upgrade_stop():
@@ -86,6 +89,7 @@ def test_nssm_grace_is_unconditional_and_precedes_upgrade_stop():
     block = script.split('"%NSSM%" set BamDude AppEnvironmentExtra', 1)[1].split("REM embedded-service:", 1)[0]
     assert f"\n{setting}\n" in block
     assert not re.search(r"^\s*if\b", block, re.M | re.I)
+    assert "--loop asyncio --timeout-graceful-shutdown 15" in script
     uninstall = (ROOT / "installers/windows/service/uninstall-service.bat").read_text(encoding="utf-8")
     assert uninstall.index(setting) < uninstall.index('"%NSSM%" stop BamDude')
     installer = (ROOT / "installers/windows/bamdude.iss").read_text(encoding="utf-8")
@@ -99,6 +103,7 @@ def test_docker_expansion_shell_execs_application():
     command = json.loads(re.search(r"^CMD (\[.*\])$", dockerfile, re.M).group(1))
     assert command[:2] == ["sh", "-c"]
     assert command[2].startswith("exec uvicorn ")
+    assert "--loop asyncio --timeout-graceful-shutdown 15" in command[2]
     assert "stop_grace_period: 60s" in (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
 

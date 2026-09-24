@@ -4,6 +4,15 @@ import { act, fireEvent, screen } from '@testing-library/react';
 import { render } from '../utils';
 import { CameraTile } from '../../components/CameraTile';
 import { printerSource } from '../../utils/cameraSource';
+import { ConnectionProvider, useConnection } from '../../contexts/ConnectionContext';
+
+function ServerConnectionToggle() {
+  const { setIsConnected } = useConnection();
+  return <>
+    <button onClick={() => setIsConnected(false)}>Disconnect server</button>
+    <button onClick={() => setIsConnected(true)}>Reconnect server</button>
+  </>;
+}
 
 // The shared render() util mounts AuthProvider, which fires an async
 // /auth/me probe on mount. Each test absorbs that settle with a single
@@ -49,6 +58,27 @@ describe('CameraTile', () => {
     const img = screen.getByAltText('X1C-Lab') as HTMLImageElement;
     expect(img.src).toContain('/api/v1/printers/42/camera/stream');
     expect(img.src).toContain('fps=8');
+  });
+
+  it('marks a previously loaded live frame stale while the server is down and reloads it on reconnect', async () => {
+    render(<ConnectionProvider>
+      <CameraTile source={printerSource(42)} name="Live" mode="live" snapshotIntervalMs={5000} connected />
+      <ServerConnectionToggle />
+    </ConnectionProvider>);
+    await flushMicrotasks();
+    const image = screen.getByAltText('Live') as HTMLImageElement;
+    fireEvent.load(image);
+    const before = image.src;
+
+    fireEvent.click(screen.getByText('Disconnect server'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(screen.getByRole('status')).toHaveTextContent('Reconnecting');
+    // A decoded MJPEG image may never fire onerror after the connection drops.
+    expect(screen.getByAltText('Live')).toBe(image);
+
+    fireEvent.click(screen.getByText('Reconnect server'));
+    expect(screen.queryByRole('status')).toBeNull();
+    expect((screen.getByAltText('Live') as HTMLImageElement).src).not.toBe(before);
   });
 
   it('displays completed snapshots and refreshes without replacing the image element', async () => {

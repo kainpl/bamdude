@@ -34,7 +34,7 @@ Environment="PATH=INSTALL_PATH/venv/bin:/usr/local/bin:/usr/bin:/bin"
 # Server configuration
 # --loop asyncio: uvicorn[standard] auto-selects uvloop, whose SSL layer can
 # silently truncate VP FTP uploads on a ragged EOF (#1896). Match the Dockerfile.
-ExecStart=INSTALL_PATH/venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000} --loop asyncio
+ExecStart=INSTALL_PATH/venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000} --loop asyncio --timeout-graceful-shutdown 15
 
 # Restart policy
 Restart=on-failure

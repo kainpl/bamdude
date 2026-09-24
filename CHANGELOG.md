@@ -12,7 +12,11 @@
   independent live streams are released concurrently, while an unresponsive
   worker is still forcibly reaped without delaying recovery. Live viewers are
   detached before the worker stops, avoiding a spurious fan-out crash report
-  during an ordinary server shutdown.
+  during an ordinary server shutdown. Native and container launchers now bound
+  the wait for open live streams to 15 seconds, so an abandoned browser tab
+  cannot prevent the camera worker and the rest of the server from stopping.
+  Camera-wall tiles now mark a server disconnect even if the browser keeps the
+  last MJPEG frame, then reopen the stream when the server reconnects.
 - **3MF filament analysis has its own local service.** A shared embedded NATS
   broker carries bounded results from a reusable, supervised parser process;
   the source archive remains a local read-only file. Repeated browser polls
