@@ -69,12 +69,30 @@ def test_normalize_filament_type():
 def test_derive_chamber_target_max_across_slots():
     printer = _make_printer("H2D")
     targets = {"PLA": 0, "PA": 50, "DEFAULT": 0}
-    with patch.object(preheat.printer_manager, "get_status", return_value=_make_state(ams=_ams("PLA Basic", "PA-CF"))):
-        # PA-CF isn't in the map → falls to DEFAULT (0); PLA→0; but PA-CF normalises to
-        # "PA-CF" which is absent so 0, PLA→0 → best 0. Add PA to prove max.
-        assert _derive_chamber_target(printer, targets) == 0
+    with patch.object(preheat.printer_manager, "get_status", return_value=_make_state(ams=_ams("PLA Basic", "PETG"))):
+        assert _derive_chamber_target(printer, targets) == 0  # PLA→0, PETG not mapped → DEFAULT 0
     with patch.object(preheat.printer_manager, "get_status", return_value=_make_state(ams=_ams("PLA", "PA"))):
         assert _derive_chamber_target(printer, targets) == 50  # PA's 50 is binding over PLA's 0
+
+
+@pytest.mark.parametrize(
+    ("tray_type", "chamber"),
+    [
+        ("ASA-GF", 45),  # no row of its own → ASA's, not the 0 of an unknown type
+        ("ABS-GF", 45),
+        ("ASA-AERO", 45),
+        ("PA-CF", 55),  # its own row still wins over PA's 50
+        ("PETG-CF", 40),  # …and over PETG's 0
+        ("PLA-AERO", 0),
+        ("PPS-CF", 0),  # a base with no row falls to DEFAULT as before
+    ],
+)
+def test_a_filled_or_foamed_type_takes_its_base_materials_chamber(tray_type, chamber):
+    """Upstream #2902: the slot says ``ASA-GF`` since the type keeps its own name,
+    and the bundled map lists base materials. The full type is tried first."""
+    targets = {k.upper(): v for k, v in preheat.DEFAULT_PREHEAT_FILAMENT_TARGETS.items()}
+    with patch.object(preheat.printer_manager, "get_status", return_value=_make_state(ams=_ams(tray_type))):
+        assert _derive_chamber_target(_make_printer("H2D"), targets) == chamber
 
 
 def test_derive_chamber_target_no_ams_is_zero():

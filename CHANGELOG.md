@@ -101,6 +101,19 @@
 
 ### Fixed
 
+- **A spool of PLA Aero, a carbon- or glass-filled filament, or one without a
+  filament profile no longer drops off the slot it was just assigned to.** The
+  slot is configured with the type of the spool's filament profile — `PLA-AERO`
+  for Bambu PLA Aero, or plain `ASA` from the generic profile for an ASA-GF
+  spool that has none — while the check that keeps an assignment compared the
+  slot with the spool's material field, so the first AMS report after the
+  assignment looked like a different spool and the link was removed. It now
+  accepts exactly the type the assignment wrote.
+- **Preheat gives a filled or foamed filament its base material's chamber
+  temperature.** A slot with ASA-GF, ASA Aero or ABS-GF had no row of its own
+  in the chamber-target map and fell to "Other" — 0 °C, no chamber phase.
+  It now takes ASA's or ABS's row; a type listed on its own, such as PETG-CF
+  or PA-CF, keeps its own value.
 - **"Open source 3MF in slicer" works, and "Open in slicer" no longer fails
   when the slicer fetches the file twice.** The source 3MF download was
   refused before its one-time link was even checked, so it never worked with

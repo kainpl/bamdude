@@ -221,7 +221,13 @@ def _derive_chamber_target(printer: Printer, targets: dict[str, int]) -> int:
             normalised = _normalize_filament_type(tray.get("tray_type") or "")
             if not normalised:
                 continue
-            target = targets.get(normalised, targets.get("DEFAULT", 0))
+            # A filled or foamed variant with no row of its own wants its base
+            # material's chamber: ASA-GF is ASA and needs ASA's 45 °C, not the 0
+            # an unknown type falls to. The full type is tried first, so PETG-CF
+            # and PA-CF keep their own hotter rows (upstream #2902).
+            target = targets.get(normalised)
+            if target is None:
+                target = targets.get(normalised.split("-")[0], targets.get("DEFAULT", 0))
             if target > best:
                 best = target
     return best

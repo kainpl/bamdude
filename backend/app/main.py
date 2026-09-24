@@ -2486,11 +2486,20 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             continue
                         # Fingerprint mismatch - but check if tray now matches the
                         # assigned spool (e.g. auto-configure changed the tray).
+                        # The fingerprint is the slot BEFORE our publish, so this
+                        # is the check every fresh non-RFID assignment passes
+                        # through — and "matches the spool" means the type WE
+                        # wrote, which the slot plan decides (family type, or the
+                        # generic's), not the material column (#2902).
                         spool = assignment.spool
                         if spool:
+                            from backend.app.api.routes.inventory import tray_types_written_for
+
                             spool_color = (spool.rgba or "FFFFFFFF").upper()
-                            spool_type = (spool.material or "").upper()
-                            if _colors_similar(cur_color, spool_color) and cur_type.upper() == spool_type:
+                            spool_types = await tray_types_written_for(
+                                db, spool, printer_id, assignment.ams_id, assignment.tray_id
+                            )
+                            if _colors_similar(cur_color, spool_color) and cur_type.upper() in spool_types:
                                 # Tray was reconfigured to match the spool - update fingerprint
                                 logger.info(
                                     "Auto-unlink: spool %d AMS%d-T%d - fingerprint mismatch but tray matches spool, updating fp",

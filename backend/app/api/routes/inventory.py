@@ -142,6 +142,56 @@ async def _safe_autolink(db: AsyncSession, spool: Spool) -> None:
 FILAMENT_COLORS_API = "https://filamentcolors.xyz/api"
 
 
+async def spool_slot_plan(db: AsyncSession, spool: Spool, printer_id: int, ams_id: int, tray_id: int):
+    """What the assign path publishes for ``spool`` on this slot, before the
+    printer's backup-compatibility projection.
+
+    One computation for the two readers that must agree: the publish in
+    :func:`apply_spool_to_slot_via_mqtt`, and ``on_ams_change`` asking whether a
+    slot now shows what we wrote (:func:`tray_types_written_for`). Raises
+    ``ValueError`` when no family is resolvable — then nothing was published.
+    """
+    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.slot_assignment import build_slot_assignment
+    from backend.app.utils.slot_nozzle import slot_nozzle
+
+    state = printer_manager.get_status(printer_id)
+    return await build_slot_assignment(
+        db,
+        spool=spool,
+        # ⚠️ The model lives in the manager's model cache, NOT on PrinterInfo
+        # (name + serial only) — ``info.model`` was an AttributeError on every
+        # call; only mocks (auto-attributes) kept it green.
+        printer_model=printer_manager.get_model(printer_id),
+        # The nozzle THIS slot feeds picks the preset — not "the printer's" first.
+        nozzle_diameter=slot_nozzle(state, ams_id, tray_id).diameter,
+        supports_user_preset=bool(getattr(state, "support_user_preset", False)),
+    )
+
+
+async def tray_types_written_for(
+    db: AsyncSession, spool: Spool, printer_id: int, ams_id: int, tray_id: int
+) -> set[str]:
+    """Every ``tray_type`` the assign path can have put in this slot for ``spool``, upper-cased.
+
+    The slot gets the type the slot plan chose — the family's filament type, or
+    the generic family's when the spool has none — which is often NOT the
+    material column: ``PLA-AERO`` for a spool saying PLA, ``ASA`` (Generic ASA)
+    for an ``ASA-GF`` spool without a family. Comparing the tray with the
+    material alone unlinked such a spool on the first AMS push after its
+    assignment (upstream #2902). The material stays in the set: it is what the
+    publish falls back to when the plan names no type.
+    """
+    material = spool.material or ""
+    written = {material.upper()}
+    try:
+        plan = await spool_slot_plan(db, spool, printer_id, ams_id, tray_id)
+    except ValueError:
+        return written
+    written.add((plan.tray_type or material).upper())
+    return written
+
+
 async def apply_spool_to_slot_via_mqtt(
     *,
     db: AsyncSession,
@@ -195,21 +245,11 @@ async def apply_spool_to_slot_via_mqtt(
     # accepted for signature stability but no longer consulted — the family
     # model does not reuse a foreign tray id.
     from backend.app.services.ams_backup_compatibility import kprofile_allowed, live_tray_for
-    from backend.app.services.slot_assignment import build_slot_assignment
     from backend.app.services.slot_assignment_publish import publish_projected_slot
 
-    # ⚠️ The model lives in the manager's model cache, NOT on PrinterInfo
-    # (name + serial only) — ``info.model`` was an AttributeError on every
-    # call; only mocks (auto-attributes) kept it green.
     supports_user_preset = bool(getattr(state, "support_user_preset", False))
     printer_model = printer_manager.get_model(printer_id)
-    plan = await build_slot_assignment(
-        db,
-        spool=spool,
-        printer_model=printer_model,
-        nozzle_diameter=nozzle_diameter,
-        supports_user_preset=supports_user_preset,
-    )
+    plan = await spool_slot_plan(db, spool, printer_id, ams_id, tray_id)
     for note in plan.warnings:
         logger.info("Spool assign: %s", note)
 
