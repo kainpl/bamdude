@@ -175,10 +175,13 @@ async def resolve_raw(db: AsyncSession, raw: str | None, *, owner_user_id: int |
         if fam:
             logger.warning("filament_identity: legacy GFS->GF fallback used for %r", raw)
             return _from_system_family(fam)
-    generic = catalog.generic_family_for_material(value)
-    if generic:
-        logger.warning("filament_identity: material-name fallback %r -> %s", raw, generic.filament_id)
-        return replace(_from_system_family(generic), origin="legacy")
+    # A bare material name: a family of THAT material only (upstream #2902) —
+    # this answer is what a spool save persists as its family, so Generic PLA
+    # for "PLA Aero" would have been stored as the spool's identity for good.
+    family = catalog.family_for_material(value)
+    if family:
+        logger.warning("filament_identity: material-name fallback %r -> %s", raw, family.filament_id)
+        return replace(_from_system_family(family), origin="legacy")
     return _UNKNOWN
 
 

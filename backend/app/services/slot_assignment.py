@@ -49,6 +49,22 @@ def _candidate_printer_names(printer_model: str | None, nozzle_diameter: str) ->
     ]
 
 
+def _stand_in(material: str) -> tuple[catalog.CatalogFamily | None, str]:
+    """The system profile a slot is told about for ``material``, and the type it gets.
+
+    The slot is configured from the spool, so its type is the spool's (upstream
+    #2902). A family of exactly that type answers when the catalogue has one —
+    its type is then the catalogue's spelling ("PLA Aero" → PLA-AERO). When it
+    has none ("ASA-GF"), the base material's generic lends the profile, for its
+    preset and temperatures, and the type is written as the spool gives it: the
+    old answer took the generic's type too, and the slot said ASA.
+    """
+    family = catalog.family_for_material(material)
+    if family is not None:
+        return family, family.filament_type or material.strip()
+    return catalog.generic_family_for_material(material), material.strip()
+
+
 def _pick_preset(family_id: str, candidates: list[str]) -> catalog.CatalogPreset | None:
     presets = catalog.presets_for_family(family_id)
     for preset in presets:
@@ -92,24 +108,24 @@ async def build_slot_assignment(
         resolved = await resolve_tray(db, family_id) if family_id else None
     fam_type = (resolved.filament_type if resolved and resolved.family else None) or (material_override or "")
 
-    # No family (or unknown) -> generic of the material, warning-logged.
+    # No family -> a system profile for the spool's material, warning-logged.
+    # ⚠️ The TYPE is the spool's: only the profile is borrowed (_stand_in).
     if not resolved or not resolved.family:
-        generic = catalog.generic_family_for_material(material_override or "")
-        if generic is None:
+        stand_in, fam_type = _stand_in(material_override or "")
+        if stand_in is None:
             raise ValueError(f"no filament family resolvable (family_id={family_id!r}, material={material_override!r})")
-        warnings.append(f"family unresolved; using generic {generic.filament_id}")
-        family_id = generic.filament_id
-        fam_type = generic.filament_type or fam_type
+        warnings.append(f"family unresolved; using {stand_in.filament_id} for {fam_type!r}")
+        family_id = stand_in.filament_id
     else:
         family_id = resolved.family.filament_id
 
     # support_user_preset gate (spec A §5.2): P* only when the device says so.
+    # The same rule as above: the id is replaced, the family's type stays.
     if family_id.startswith("P") and not supports_user_preset:
-        generic = catalog.generic_family_for_material(fam_type or material_override or "")
-        if generic is not None:
-            warnings.append(f"printer does not support user presets; degraded {family_id} -> {generic.filament_id}")
-            family_id = generic.filament_id
-            fam_type = generic.filament_type or fam_type
+        stand_in, fam_type = _stand_in(fam_type or material_override or "")
+        if stand_in is not None:
+            warnings.append(f"printer does not support user presets; degraded {family_id} -> {stand_in.filament_id}")
+            family_id = stand_in.filament_id
 
     candidates = _candidate_printer_names(printer_model, nozzle_diameter)
     preset = catalog.preset_for_setting_id(preset_setting_id) if preset_setting_id else None

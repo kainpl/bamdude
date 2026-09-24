@@ -104,11 +104,24 @@
 - **A spool of PLA Aero, a carbon- or glass-filled filament, or one without a
   filament profile no longer drops off the slot it was just assigned to.** The
   slot is configured with the type of the spool's filament profile — `PLA-AERO`
-  for Bambu PLA Aero, or plain `ASA` from the generic profile for an ASA-GF
-  spool that has none — while the check that keeps an assignment compared the
-  slot with the spool's material field, so the first AMS report after the
-  assignment looked like a different spool and the link was removed. It now
-  accepts exactly the type the assignment wrote.
+  for Bambu PLA Aero, `PLA` for a spool without a profile whose material reads
+  "PLA Matte" — while the check that keeps an assignment compared the slot with
+  the spool's material field, so the first AMS report after the assignment
+  looked like a different spool and the link was removed. It now accepts
+  exactly the type the assignment wrote.
+- **A spool without a filament profile keeps its own filament type on the
+  slot.** Such a spool — in Spoolman, one without a linked K-profile — used to be
+  configured with the generic profile of its base material, and the slot took
+  that profile's type: PLA Aero became plain PLA, ASA-GF became ASA. The queue
+  matches spools to plates by that type, so a PLA plate could be sent to foaming
+  filament and a PLA Aero plate found no slot; AMS Backup could also group the
+  spool with ordinary filament of the same colour. The slot now gets a profile
+  of exactly the spool's type — the generic one where it exists, otherwise the
+  catalogue's own, such as Bambu PLA Aero. For a type no profile exists for
+  (ASA-GF), the base material's generic profile supplies the temperatures and
+  the slot keeps the type as the spool gives it. A material written as `PLA+`,
+  "PLA Matte" or "PolyTerra PLA" is recognised as PLA, where `PLA+` used to leave
+  the slot unconfigured.
 - **Preheat gives a filled or foamed filament its base material's chamber
   temperature.** A slot with ASA-GF, ASA Aero or ABS-GF had no row of its own
   in the chamber-target map and fell to "Other" — 0 °C, no chamber phase.

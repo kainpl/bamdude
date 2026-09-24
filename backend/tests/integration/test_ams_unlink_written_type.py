@@ -5,10 +5,10 @@ configured it, so the first AMS push after the assign always differs from it.
 What saves the link is the second check: the tray now matches the spool. That
 check compared the tray's type with ``spool.material`` — but the type we write
 is the one the slot plan (``build_slot_assignment``) chooses: the family's
-filament type, or the generic family's when the spool has none. For PLA Aero
-that is ``PLA-AERO`` against a material of ``PLA``; for an ASA-GF spool without
-a family it is ``ASA`` (Generic ASA) against ``ASA-GF``. Either way the spool
-was unlinked from the slot it had just been assigned to, on the first push.
+filament type, or the stand-in profile's when the spool has none. For PLA Aero
+that is ``PLA-AERO`` against a material of ``PLA``; for a spool without a family
+whose material reads "PLA Matte" it is ``PLA`` (Generic PLA). Either way the
+spool was unlinked from the slot it had just been assigned to, on the first push.
 """
 
 from contextlib import asynccontextmanager
@@ -95,12 +95,23 @@ async def test_a_spool_whose_family_names_its_own_type_keeps_the_slot(db_session
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_a_spool_without_a_family_keeps_the_slot_its_generic_type_went_to(db_session, printer_factory, main_db):
+async def test_a_spool_without_a_family_keeps_the_slot_its_stand_in_type_went_to(db_session, printer_factory, main_db):
+    printer, spool = await _assign(db_session, printer_factory, material="PLA Matte")
+
+    await _push(printer.id, _slot("PLA"))
+
+    assert await _links(db_session, printer.id) == [(spool.id, "PLA")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_spool_of_a_type_the_catalogue_lacks_keeps_its_own_type(db_session, printer_factory, main_db):
+    """ASA-GF has no family anywhere: Generic ASA lends the profile, the slot says ASA-GF."""
     printer, spool = await _assign(db_session, printer_factory, material="ASA-GF")
 
-    await _push(printer.id, _slot("ASA"))
+    await _push(printer.id, _slot("ASA-GF"))
 
-    assert await _links(db_session, printer.id) == [(spool.id, "ASA")]
+    assert await _links(db_session, printer.id) == [(spool.id, "ASA-GF")]
 
 
 @pytest.mark.asyncio

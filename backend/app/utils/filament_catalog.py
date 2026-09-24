@@ -171,6 +171,10 @@ def generic_family_ids() -> frozenset[str]:
 
 
 def generic_family_for_material(material: str) -> CatalogFamily | None:
+    """The Generic family of a material's BASE — the name cut at the first hyphen
+    or space, so ``PETG-CF`` answers Generic PETG-CF but ``PLA-AERO`` answers
+    Generic PLA. That is a base to inherit from, not the material: a slot is
+    configured through :func:`family_for_material`, which never changes the type."""
     mat = (material or "").strip().upper()
     if not mat:
         return None
@@ -180,6 +184,85 @@ def generic_family_for_material(material: str) -> CatalogFamily | None:
                 if fam.alias.upper() == f"GENERIC {candidate}":
                     return fam
     return None
+
+
+def _all_families() -> list[CatalogFamily]:
+    return [fam for eco in _ECOSYSTEMS for fam in _load(eco).families.values()]
+
+
+@cache
+def _catalog_types() -> frozenset[str]:
+    return frozenset((fam.filament_type or "").upper() for fam in _all_families() if fam.filament_type)
+
+
+def _words(value: str) -> str:
+    return " ".join(value.upper().split())
+
+
+def _family_of_type(filament_type: str) -> CatalogFamily | None:
+    """A system family of exactly ``filament_type``: its Generic one (the plain
+    ``Generic <type>`` before ``Generic <type> Silk``), else the catalogue's own —
+    Bambu Lab first, then by id, so the answer never depends on file order."""
+    same = [fam for fam in _all_families() if (fam.filament_type or "").upper() == filament_type]
+    generics = [fam for fam in same if (fam.vendor or "").strip().lower() == "generic"]
+    if generics:
+        exact = [fam for fam in generics if _words(fam.alias) == f"GENERIC {filament_type}"]
+        return exact[0] if exact else min(generics, key=lambda fam: (len(fam.alias), fam.filament_id))
+    if same:
+        return min(same, key=lambda fam: ((fam.vendor or "").strip().lower() != "bambu lab", fam.filament_id))
+    return None
+
+
+def material_type(material: str) -> str | None:
+    """The catalogue filament type a free-text material name states, or None.
+
+    Adjacent words are joined with a hyphen and the longest join that IS a type
+    wins — "PLA Aero" is PLA-AERO, "PolyTerra PLA" and "PLA Matte" are PLA. The
+    join has to be a type exactly: a hyphenated name the catalogue does not know
+    ("ASA-GF") is not reduced to its base, because the base is another material.
+    A trailing ``+`` is a qualifier, and the routing equivalences apply
+    (PA12-CF is PA-CF), so what this answers is what the queue will compare.
+    """
+    from backend.app.utils.filament_types import canonical_filament_type
+
+    tokens = [token.rstrip("+") for token in _words(material or "").split(" ")]
+    tokens = [token for token in tokens if token]
+    types = _catalog_types()
+    for length in range(len(tokens), 0, -1):
+        for start in range(len(tokens) - length + 1):
+            candidate = canonical_filament_type("-".join(tokens[start : start + length]))
+            if candidate in types:
+                return candidate
+    return None
+
+
+def family_for_material(material: str) -> CatalogFamily | None:
+    """The system family a bare material name stands for — always of THAT material.
+
+    For a spool that names no family (a Spoolman spool without a linked profile,
+    a quick-added or legacy one) the slot still has to be told a profile. The old
+    answer, :func:`generic_family_for_material`, cut the name to its base, so
+    PLA-AERO went out as Generic PLA and the slot said PLA: routing compares that
+    type and nothing else under base-material matching, and AMS Backup groups by
+    the profile (upstream #2902). Here, in order:
+
+    1. a family whose name the material IS (``Generic PETG HF`` for "PETG HF" or
+       "PETG-HF", ``Bambu PLA Aero`` for itself);
+    2. the family of the type the name states (:func:`material_type`) — its
+       Generic one, else the catalogue's own (PLA-AERO → Bambu PLA Aero);
+    3. None — the name is no known type. The caller decides what then; the slot
+       plan keeps the spool's own type and borrows the base's profile.
+    """
+    words = _words(material or "")
+    if not words:
+        return None
+    names = {words, words.replace("-", " ")}
+    names |= {f"GENERIC {name}" for name in names}
+    for fam in _all_families():
+        if _words(fam.alias) in names:
+            return fam
+    filament_type = material_type(words)
+    return _family_of_type(filament_type) if filament_type else None
 
 
 @cache
