@@ -35,6 +35,7 @@ def _client() -> BambuMQTTClient:
     c.serial_number = "01P00A000000000"
     c._sequence_id = 0
     c._kprofile_waiters = {}
+    c._kprofiles_by_nozzle = {}
     c._client = MagicMock()
     c._loop = None
     c.state = MagicMock()

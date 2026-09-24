@@ -108,6 +108,7 @@ from backend.app.services.printer_manager import (
 from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
 from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
 from backend.app.utils.http import build_content_disposition
+from backend.app.utils.kprofile_lookup import build_slot_k_resolver
 from backend.app.utils.printer_configs import is_bed_slinger
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import is_within, limits_for
@@ -1145,15 +1146,10 @@ async def _build_printer_status(
     ams_exists = False
     raw_data = state.raw_data or {}
 
-    # Build K-profile lookup map: cali_idx -> k_value
-    # This allows looking up the calibrated K value for each AMS slot
-    kprofile_map: dict[int, float] = {}
-    for kp in state.kprofiles or []:
-        if kp.slot_id is not None and kp.k_value:
-            try:
-                kprofile_map[kp.slot_id] = float(kp.k_value)
-            except (ValueError, TypeError):
-                pass  # Skip K-profile entries with unparseable values
+    # K value for a slot's bound profile, resolved against the nozzle the slot
+    # feeds. Shared with the WebSocket shaper (printer_state_to_dict) so the two
+    # views of the same card cannot answer differently — see kprofile_lookup.
+    resolve_slot_k = build_slot_k_resolver(state)
 
     # Cached active-cycle drying params (filament + target temp) we sent last;
     # Bambu doesn't echo them on the per-tick AMS push, so the badge needs the
@@ -1179,8 +1175,8 @@ async def _build_printer_status(
                 # Get K value: first try tray's k field, then lookup from K-profiles
                 k_value = tray_data.get("k")
                 cali_idx = tray_data.get("cali_idx")
-                if k_value is None and cali_idx is not None and cali_idx in kprofile_map:
-                    k_value = kprofile_map[cali_idx]
+                if k_value is None:
+                    k_value = resolve_slot_k(cali_idx, int(ams_data.get("id", 0)), int(tray_data.get("id", 0)))
 
                 _tray_cols, _tray_ctype = _tray_colours(tray_data, tray_data.get("tray_color"))
                 # The spool behind an advertised profile, exactly as the
@@ -1302,10 +1298,11 @@ async def _build_printer_status(
             # Get K value: first try tray's k field, then lookup from K-profiles
             vt_k_value = vt_data.get("k")
             vt_cali_idx = vt_data.get("cali_idx")
-            if vt_k_value is None and vt_cali_idx is not None and vt_cali_idx in kprofile_map:
-                vt_k_value = kprofile_map[vt_cali_idx]
-
             tray_id = int(vt_data.get("id", 254))
+            if vt_k_value is None:
+                # External holder: 254 is Ext-L, 255 Ext-R; the resolver takes the 0/1 side.
+                vt_k_value = resolve_slot_k(vt_cali_idx, 255, tray_id - 254)
+
             # The external spool carries the same colour fields as an AMS tray —
             # BS parses them in both places, so a multi-colour spool on the
             # external holder is not a different case.

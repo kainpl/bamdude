@@ -1471,13 +1471,25 @@ async def apply_active_calibration_to_slot(
     if target_k is None or not cache_row.name:
         return False, cache_row
 
+    # The live list holds every nozzle's table at once and ``cali_idx`` is
+    # numbered per nozzle (and per hotend on a dual), so the match is scoped to
+    # the calibration's own nozzle and extruder — an identical name + K in the
+    # other table would otherwise bind that table's index.
     live_match = None
     for kp in client.state.kprofiles or []:
         try:
             kp_k = float(kp.k_value)
+            kp_nozzle = float(kp.nozzle_diameter)
+            kp_extruder = int(kp.extruder_id or 0)
         except (TypeError, ValueError):
             continue
-        if kp.name == cache_row.name and abs(kp_k - float(target_k)) < 1e-6 and kp.filament_id == cache_row.filament_id:
+        if (
+            kp.name == cache_row.name
+            and abs(kp_k - float(target_k)) < 1e-6
+            and kp.filament_id == cache_row.filament_id
+            and abs(kp_nozzle - float(cache_row.nozzle_diameter)) < 0.005
+            and kp_extruder == int(cache_row.extruder_id or 0)
+        ):
             live_match = kp
             break
     if live_match is None:
@@ -1532,6 +1544,20 @@ async def _first_admin_user_id(db: AsyncSession) -> int | None:
     return (await db.execute(stmt)).scalar()
 
 
+def _live_nozzle_diameter(kp) -> float:
+    """A live profile's nozzle diameter as the cache stores it (0.4 when unreadable)."""
+    try:
+        return float(kp.nozzle_diameter or 0.4)
+    except (TypeError, ValueError):
+        return 0.4
+
+
+def _nozzle_key(diameter: float | None) -> float | None:
+    """Diameters compared at the precision they are sold in — a float column
+    and a parsed string must not disagree over 0.4 vs 0.4000000001."""
+    return round(float(diameter), 2) if diameter is not None else None
+
+
 async def sync_printer_kprofiles_to_cache(
     *,
     db: AsyncSession,
@@ -1567,11 +1593,19 @@ async def sync_printer_kprofiles_to_cache(
     # Each one the live-list walk below matches gets discarded from the
     # set; whatever remains was deleted on the printer and gets hard-deleted
     # from our cache after the loop. Printer is the source of truth.
-    stale_ids: set[int] = set(
-        (await db.execute(select(FilamentCalibration.id).where(FilamentCalibration.printer_id == printer_id)))
-        .scalars()
+    cached_diameters: dict[int, float | None] = dict(
+        (
+            await db.execute(
+                select(FilamentCalibration.id, FilamentCalibration.nozzle_diameter).where(
+                    FilamentCalibration.printer_id == printer_id
+                )
+            )
+        )
+        .tuples()
         .all()
     )
+    stale_ids: set[int] = set(cached_diameters)
+    read_diameters = {_nozzle_key(_live_nozzle_diameter(kp)) for kp in live}
 
     touched = 0
     for kp in live:
@@ -1579,10 +1613,7 @@ async def sync_printer_kprofiles_to_cache(
             kp_k = float(kp.k_value)
         except (TypeError, ValueError):
             continue
-        try:
-            kp_nozzle_dia = float(kp.nozzle_diameter or 0.4)
-        except (TypeError, ValueError):
-            kp_nozzle_dia = 0.4
+        kp_nozzle_dia = _live_nozzle_diameter(kp)
         extruder_id = int(getattr(kp, "extruder_id", 0) or 0)
         kp_nozzle_id = getattr(kp, "nozzle_id", None) or getattr(kp, "nozzle_type", None)
         if not kp_nozzle_id and 0 <= extruder_id < len(state_nozzles):
@@ -1673,6 +1704,17 @@ async def sync_printer_kprofiles_to_cache(
                 row_touched = True
             if row_touched:
                 touched += 1
+
+    # Only a nozzle whose table we HOLD can prove a row is gone. The live list
+    # is filed per diameter and holds just the tables this client has read —
+    # the fitted nozzles, plus whatever someone else happened to ask for — so
+    # a row of any other diameter is unknown, not deleted. Before the list was
+    # bucketed, one 0.6 reply here pruned every 0.4 calibration with its spool
+    # links and notes. A diameter that answered with an EMPTY table is not in
+    # ``live`` either, which keeps the rule this prune was written with: an
+    # empty read is ambiguous between "zero profiles" and "not received", and
+    # not worth wiping the cache on.
+    stale_ids = {row_id for row_id in stale_ids if _nozzle_key(cached_diameters[row_id]) in read_diameters}
 
     # Hard prune. Whatever's left in ``stale_ids`` is a cache row the
     # printer no longer carries — delete it and everything keyed to it.

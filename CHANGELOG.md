@@ -78,6 +78,30 @@
 
 ### Fixed
 
+- **Reading one nozzle size's K-profiles no longer deletes the calibrations of
+  every other size.** The printer reports its pressure-advance table one
+  nozzle diameter at a time, and every answer — the nightly Git backup
+  checking 0.2 to 0.8 mm, Bambu Studio asking on the same connection, opening
+  the Profiles page for 0.6 mm — replaced the whole list. The calibration
+  cache then removed everything the latest answer did not contain, together
+  with the spools linked to those calibrations and their notes. Each nozzle
+  size is now kept separately, and a calibration is only removed when its own
+  size's table no longer lists it.
+- **K values on AMS slot cards no longer vanish or show the other nozzle's
+  number.** The card reads a slot's K from that table (H2-series trays do not
+  report it themselves), so it went blank after any answer for another nozzle
+  size, and on a dual-nozzle printer it could show the other hotend's value.
+  The value is now looked up against the nozzle the slot actually feeds, and
+  the card stays empty rather than guessing when that is ambiguous. The fitted
+  nozzles' tables are read as soon as the printer connects, so the card no
+  longer waits for somebody to open the Profiles page.
+- **Applying a spool's calibration to a slot, linking a K-profile on the
+  spool's PA tab, and saving a note on the Profiles page pick the profile of
+  the right nozzle.** Each of these found a profile by its index or its name,
+  both of which repeat across nozzle sizes and hotends, and could bind or
+  annotate the other nozzle's profile — a note saved that way could also fail
+  with a server error. The Calibration History window likewise keeps every
+  nozzle size it has read instead of only the latest.
 - **The jog "up" arrow on an A1 recorded under an alternate model code no
   longer drives the nozzle into the bed.** The printer's own model name decides
   whether the Z direction is reversed for a bed-slinger, and three alternate

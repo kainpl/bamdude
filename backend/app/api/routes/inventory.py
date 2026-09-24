@@ -2115,15 +2115,28 @@ async def _find_or_create_filament_calibration_for_link(db: AsyncSession, p: Spo
     if not client or not client.state.connected or p.cali_idx is None:
         return None
 
+    # The index is looked up inside the table it was picked from: ``cali_idx``
+    # is numbered per nozzle (and per hotend on a dual), and the live list holds
+    # every nozzle's table at once. Another nozzle's entry under the same index
+    # is a different profile, so a miss links nothing rather than that one.
+    try:
+        picked_nozzle = float(p.nozzle_diameter)
+    except (TypeError, ValueError):
+        picked_nozzle = None
     target_kp = None
     for kp in client.state.kprofiles or []:
         try:
             slot = int(kp.slot_id)
+            kp_nozzle = float(kp.nozzle_diameter)
+            kp_extruder = int(kp.extruder_id or 0)
         except (TypeError, ValueError):
             continue
-        if slot == int(p.cali_idx):
-            target_kp = kp
-            break
+        if slot != int(p.cali_idx) or kp_extruder != p.extruder:
+            continue
+        if picked_nozzle is not None and abs(kp_nozzle - picked_nozzle) >= 0.005:
+            continue
+        target_kp = kp
+        break
     if target_kp is None:
         return None
 

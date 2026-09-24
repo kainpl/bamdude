@@ -1865,6 +1865,7 @@ class BambuMQTTClient:
         on_tray_change: Callable[[int, int], None] | None = None,
         on_usage_event: Callable[[str, str | None, int | None, int], None] | None = None,
         on_lights_report: Callable[[bool], None] | None = None,
+        on_kprofile_tables_due: Callable[[list[str]], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -1967,6 +1968,11 @@ class BambuMQTTClient:
         # twice in a row is a no-op.
         self.on_kprofiles_changed = on_kprofiles_changed
         self._last_kprofiles_hash: str | None = None
+        # Fires once per connection with the fitted nozzle diameters, as soon
+        # as a push has named one. printer_manager reads those tables through
+        # ``get_kprofiles`` (awaited replies, retries) — a callback rather than a
+        # publish from here because the MQTT thread cannot await a reply.
+        self.on_kprofile_tables_due = on_kprofile_tables_due
         # Fires once, on the first full MQTT status after a fresh connect,
         # so the startup print-reconciliation sweep can close any archive
         # left at 'printing' by a print that finished while BamDude was
@@ -2056,6 +2062,21 @@ class BambuMQTTClient:
         # correlated by sequence_id" in this class.
         self._sequence_id = STUDIO_SEQ_START
         self._kprofile_waiters: dict[str, tuple[asyncio.Event, str, list | None]] = {}
+        # The printer's calibration table, one bucket per nozzle diameter
+        # (upstream #2854). An ``extrusion_cali_get`` response is the complete
+        # table for ONE diameter, and the printer answers whoever asks —
+        # BambuStudio on the same report topic, the git backup probing
+        # 0.2/0.4/0.6/0.8, the spool dialog asking per fitted nozzle. Assigning
+        # each answer straight to ``state.kprofiles`` let any one of them stand
+        # for the whole printer, and ``sync_printer_kprofiles_to_cache`` then
+        # hard-pruned every other nozzle's calibrations with their spool links
+        # and notes. A response replaces only its own bucket; ``state.kprofiles``
+        # is the union. The history view of the same payload is filed the same way.
+        self._kprofiles_by_nozzle: dict[str, list[KProfile]] = {}
+        self._cali_history_by_nozzle: dict[str, list] = {}
+        # One read of the fitted diameters' tables per connection — see
+        # ``_request_fitted_kprofile_tables``. Re-armed in ``_on_connect``.
+        self._kprofile_tables_requested = False
         # Verdicts on K-profile *writes* (``extrusion_cali_set`` /
         # ``extrusion_cali_del``), keyed by the sequence_id we sent — the printer
         # echoes it back. ``None`` = registered, not yet answered. Filled on the
@@ -2444,6 +2465,9 @@ class BambuMQTTClient:
             # compare against is about to be re-pushed from scratch (upstream
             # #2582). Dropping is silent (no failure event) on purpose.
             self._pending_assignments.clear()
+            # The table may have changed while the link was down: read the
+            # fitted diameters again once this connection's first push names them.
+            self._kprofile_tables_requested = False
             client.subscribe(self.topic_subscribe)
             # Subscribe to request topic for ams_mapping capture (if supported by broker)
             if self._request_topic_supported:
@@ -6327,6 +6351,8 @@ class BambuMQTTClient:
                         if "diameter" in nozzle:
                             self.state.nozzles[idx].nozzle_diameter = str(nozzle["diameter"])
 
+        self._request_fitted_kprofile_tables()
+
         # Normalize vt_tray to list before storing (some firmware sends a dict)
         if "vt_tray" in data and isinstance(data["vt_tray"], dict):
             data["vt_tray"] = [data["vt_tray"]]
@@ -7278,6 +7304,31 @@ class BambuMQTTClient:
         # Note: get_accessories returns stale nozzle data on H2D.
         # The correct nozzle data comes from push_status response.
         return True
+
+    def _request_fitted_kprofile_tables(self) -> None:
+        """Ask for the calibration tables of the fitted nozzles, once per connection.
+
+        Nothing used to read them on connect except the blind 0.4 prime below,
+        so on a printer with any other nozzle the AMS card's K values and the
+        calibration cache waited for somebody to open the Profiles page. H2-series
+        trays carry ``cali_idx`` and no ``k``, so their card showed nothing.
+
+        Gated on a diameter being KNOWN, not on the first push: the first push
+        does not always carry the nozzle fields, and latching there would spend
+        the connection's one attempt on a printer that could not yet say what is
+        fitted. Only the fitted diameters are asked for — one request on a
+        single-nozzle printer, one per distinct diameter on a dual.
+        """
+        if self._kprofile_tables_requested or not self.state.connected or not self.on_kprofile_tables_due:
+            return
+        diameters = list(dict.fromkeys(n.nozzle_diameter for n in self.state.nozzles if n.nozzle_diameter))
+        if not diameters:
+            return
+        self._kprofile_tables_requested = True
+        try:
+            self.on_kprofile_tables_due(diameters)
+        except Exception as e:  # noqa: BLE001 — never into the push that carried the nozzle
+            logger.warning("[%s] on_kprofile_tables_due failed: %s", self.serial_number, e)
 
     def _prime_kprofile_request(self):
         """Send a priming K-profile request on connect.
@@ -8356,7 +8407,14 @@ class BambuMQTTClient:
             except (ValueError, TypeError):
                 # Tolerate malformed rows; keep the rest of the history.
                 pass
-        self.state.extrusion_cali_history = history
+        # Filed per nozzle like the K-profile list of the same payload — the
+        # modal used to show whichever diameter was answered last.
+        if self._file_by_nozzle(
+            self._cali_history_by_nozzle, history, data.get("nozzle_diameter"), lambda h: h.nozzle_diameter
+        ):
+            self.state.extrusion_cali_history = [
+                h for nozzle in sorted(self._cali_history_by_nozzle) for h in self._cali_history_by_nozzle[nozzle]
+            ]
 
     def _handle_extrusion_cali_get_result(self, data: dict) -> None:
         """Parse the X1 auto-cali result batch into ``state.extrusion_cali_results``.
@@ -8432,6 +8490,55 @@ class BambuMQTTClient:
         except Exception as e:  # noqa: BLE001
             logger.warning("[%s] on_kprofiles_changed callback failed: %s", self.serial_number, e)
 
+    @staticmethod
+    def _nozzle_key(value) -> str | None:
+        """One spelling per diameter: ``"0.4"``, ``"0.40"`` and ``0.4`` are one
+        bucket, or the same table would be filed twice and every entry doubled."""
+        if value in (None, ""):
+            return None
+        try:
+            return f"{float(value):g}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _file_by_nozzle(self, buckets: dict[str, list], items: list, response_nozzle, diameter_of) -> bool:
+        """File one response's items under the diameter it describes.
+
+        The envelope's diameter names the table, so that bucket is replaced
+        wholesale — an empty answer empties it — and every other bucket is left
+        alone. Without an envelope diameter the items name their own buckets; an
+        answer that names neither is not attributable and changes nothing.
+        Returns whether anything was filed.
+        """
+        fresh: dict[str, list] = {}
+        key = self._nozzle_key(response_nozzle)
+        if key is not None:
+            fresh[key] = list(items)
+        else:
+            for item in items:
+                fresh.setdefault(self._nozzle_key(diameter_of(item)) or "", []).append(item)
+        if not fresh:
+            return False
+        buckets.update(fresh)
+        return True
+
+    def _store_kprofiles(self, profiles: list[KProfile], response_nozzle) -> None:
+        """File a calibration table under its nozzle and publish the union.
+
+        ``state.kprofiles`` stays a flat list because that is what its readers
+        take; the ones that need a single profile filter it by
+        ``nozzle_diameter`` / ``extruder_id`` (``kprofile_lookup`` for the card,
+        ``apply_active_calibration_to_slot`` for a bind). The change signal is
+        computed over the union, so an empty answer for a nozzle that holds
+        nothing — the backup's 0.8 probe — is not a change.
+        """
+        if not self._file_by_nozzle(self._kprofiles_by_nozzle, profiles, response_nozzle, lambda p: p.nozzle_diameter):
+            return
+        self.state.kprofiles = [
+            kp for nozzle in sorted(self._kprofiles_by_nozzle) for kp in self._kprofiles_by_nozzle[nozzle]
+        ]
+        self._maybe_notify_kprofiles_changed(self.state.kprofiles)
+
     def _handle_kprofile_response(self, data: dict):
         """Handle K-profile response from printer."""
         response_nozzle = data.get("nozzle_diameter")
@@ -8493,8 +8600,15 @@ class BambuMQTTClient:
                         )
                     except (ValueError, TypeError):
                         pass  # Skip malformed K-profile entries; remaining profiles still usable
-            self.state.kprofiles = profiles
-            self._maybe_notify_kprofiles_changed(profiles)
+            self._store_kprofiles(profiles, response_nozzle)
+            # Worth a line: this is the printer answering somebody else, and it
+            # was the quietest way for the card's K values to change under us.
+            logger.debug(
+                "[%s] Adopted unsolicited K-profile table: nozzle=%s, %d profiles",
+                self.serial_number,
+                response_nozzle or "?",
+                len(profiles),
+            )
             return
 
         profiles = []
@@ -8522,10 +8636,11 @@ class BambuMQTTClient:
                 except (ValueError, TypeError) as e:
                     logger.warning("Failed to parse K-profile: %s", e)
 
-        self.state.kprofiles = profiles
-        self._maybe_notify_kprofiles_changed(profiles)
+        self._store_kprofiles(profiles, response_nozzle)
 
         # Deliver to the waiter this frame was correlated to, and only that one.
+        # It gets THIS response's table, not the union: the caller asked about
+        # one diameter and renders exactly that.
         # Captured in a local first to avoid a TOCTOU race: the asyncio thread can
         # drop the entry between the lookup and the .set() call, and MQTT
         # callbacks run on a different thread.

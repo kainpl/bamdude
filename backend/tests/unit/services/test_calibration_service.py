@@ -1247,6 +1247,176 @@ async def test_sync_idempotent_when_already_in_sync(db_session, printer_factory)
     assert touched == 0
 
 
+def _live_kprofile(slot_id: int, k: str, nozzle: str, *, name: str, extruder: int = 0, filament_id: str = "GFG96"):
+    kp = MagicMock(
+        slot_id=slot_id,
+        k_value=k,
+        filament_id=filament_id,
+        extruder_id=extruder,
+        nozzle_diameter=nozzle,
+        nozzle_id=f"HS00-{nozzle}",
+        setting_id="GFSG96",
+    )
+    kp.name = name  # `name` is a MagicMock-reserved kwarg
+    return kp
+
+
+async def _cached_calibration(db_session, printer_id: int, *, nozzle: float, name: str, k: float, extruder: int = 0):
+    from backend.app.models.filament_calibration import FilamentCalibration
+
+    fc = FilamentCalibration(
+        printer_id=printer_id,
+        filament_id="GFG96",
+        filament_setting_id="GFSG96",
+        nozzle_diameter=nozzle,
+        nozzle_volume_type="standard",
+        extruder_id=extruder,
+        pa_k_value=k,
+        cali_mode="pa_line",
+        source="manual",
+        is_active=True,
+        name=name,
+        nozzle_id=f"HS00-{nozzle}",
+    )
+    db_session.add(fc)
+    await db_session.commit()
+    return fc
+
+
+@pytest.mark.asyncio
+async def test_sync_leaves_a_nozzle_it_has_no_table_for_alone(db_session, printer_factory):
+    """The 0.6 table arriving must not prune the 0.4 calibrations.
+
+    The live list used to be whichever response came last, so a reply for one
+    nozzle hard-deleted every other nozzle's calibrations together with the
+    spool links and notes hanging off them.
+    """
+    from sqlalchemy import select
+
+    from backend.app.models.filament_calibration import FilamentCalibration
+    from backend.app.models.kprofile_note import KProfileNote
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_k_profile import SpoolKProfile
+
+    printer = await printer_factory(model="X1C")
+    fc_04 = await _cached_calibration(db_session, printer.id, nozzle=0.4, name="PETG 0.4", k=0.025)
+    spool = Spool(material="PETG", filament_family_id="GFG96")
+    db_session.add(spool)
+    await db_session.commit()
+    db_session.add(
+        SpoolKProfile(spool_id=spool.id, printer_id=printer.id, extruder=0, filament_calibration_id=fc_04.id)
+    )
+    db_session.add(KProfileNote(filament_calibration_id=fc_04.id, note="dry box only"))
+    await db_session.commit()
+
+    client = MagicMock()
+    client.state.connected = True
+    client.state.kprofiles = [_live_kprofile(1, "0.018", "0.6", name="PETG 0.6")]
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        await sync_printer_kprofiles_to_cache(db=db_session, printer_id=printer.id)
+
+    rows = (
+        (await db_session.execute(select(FilamentCalibration).where(FilamentCalibration.printer_id == printer.id)))
+        .scalars()
+        .all()
+    )
+    assert sorted(r.nozzle_diameter for r in rows) == [0.4, 0.6]
+    links = (await db_session.execute(select(SpoolKProfile).where(SpoolKProfile.spool_id == spool.id))).scalars().all()
+    assert [link.filament_calibration_id for link in links] == [fc_04.id]
+    notes = (await db_session.execute(select(KProfileNote))).scalars().all()
+    assert [n.filament_calibration_id for n in notes] == [fc_04.id]
+
+
+@pytest.mark.asyncio
+async def test_sync_still_prunes_what_a_nozzles_own_table_dropped(db_session, printer_factory):
+    """Printer is the source of truth within the table it answered with."""
+    from sqlalchemy import select
+
+    from backend.app.models.filament_calibration import FilamentCalibration
+
+    printer = await printer_factory(model="X1C")
+    kept = await _cached_calibration(db_session, printer.id, nozzle=0.4, name="PETG 0.4", k=0.025)
+    dropped = await _cached_calibration(db_session, printer.id, nozzle=0.4, name="PETG 0.4 right", k=0.03, extruder=1)
+
+    client = MagicMock()
+    client.state.connected = True
+    client.state.kprofiles = [_live_kprofile(1, "0.025", "0.4", name="PETG 0.4")]
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        await sync_printer_kprofiles_to_cache(db=db_session, printer_id=printer.id)
+
+    ids = (
+        (await db_session.execute(select(FilamentCalibration.id).where(FilamentCalibration.printer_id == printer.id)))
+        .scalars()
+        .all()
+    )
+    assert kept.id in ids
+    assert dropped.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_apply_binds_the_index_of_the_calibrations_own_nozzle(db_session, printer_factory):
+    """The live table now holds every nozzle's entries at once, and ``cali_idx``
+    is numbered per nozzle. A 0.6 calibration must bind the 0.6 table's index
+    even when the 0.4 table carries an entry with the same name and K."""
+    printer = await printer_factory(model="X1C")
+    await _cached_calibration(db_session, printer.id, nozzle=0.6, name="PETG", k=0.025)
+
+    client = MagicMock()
+    client.state.connected = True
+    client.state.kprofiles = [
+        _live_kprofile(3, "0.025000", "0.4", name="PETG"),
+        _live_kprofile(5, "0.025000", "0.6", name="PETG"),
+    ]
+    client.extrusion_cali_sel = MagicMock(return_value=(True, "0"))
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        fired, _row = await apply_active_calibration_to_slot(
+            db=db_session,
+            printer_id=printer.id,
+            ams_id=0,
+            slot_id=0,
+            filament_id="GFG96",
+            nozzle_diameter=0.6,
+        )
+
+    assert fired is True
+    assert client.extrusion_cali_sel.call_args.kwargs["cali_idx"] == 5
+
+
+@pytest.mark.asyncio
+async def test_apply_binds_the_index_of_the_calibrations_own_hotend(db_session, printer_factory):
+    printer = await printer_factory(model="H2D")
+    await _cached_calibration(db_session, printer.id, nozzle=0.4, name="PETG", k=0.025, extruder=1)
+
+    client = MagicMock()
+    client.state.connected = True
+    client.state.kprofiles = [
+        _live_kprofile(3, "0.025000", "0.4", name="PETG", extruder=0),
+        _live_kprofile(7, "0.025000", "0.4", name="PETG", extruder=1),
+    ]
+    client.extrusion_cali_sel = MagicMock(return_value=(True, "0"))
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        fired, _row = await apply_active_calibration_to_slot(
+            db=db_session,
+            printer_id=printer.id,
+            ams_id=0,
+            slot_id=0,
+            filament_id="GFG96",
+            nozzle_diameter=0.4,
+            extruder_id=1,
+        )
+
+    assert fired is True
+    assert client.extrusion_cali_sel.call_args.kwargs["cali_idx"] == 7
+
+
 @pytest.mark.asyncio
 async def test_start_flow_rate_stage2_dispatches_with_baseline_override(
     service,

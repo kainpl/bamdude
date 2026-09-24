@@ -25,6 +25,8 @@ def _client() -> BambuMQTTClient:
     c = BambuMQTTClient.__new__(BambuMQTTClient)
     c.serial_number = "01P00A000000000"
     c._kprofile_waiters = {}
+    c._kprofiles_by_nozzle = {}
+    c._cali_history_by_nozzle = {}
     c._last_kprofiles_hash = None
     c.on_kprofiles_changed = None
     c._loop = None

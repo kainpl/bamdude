@@ -44,14 +44,22 @@ async def _resolve_fc_id_for_audit(
     on every existing-profile path), then falls back to the stable
     identity used elsewhere (filament_id + name + pa_k_value).
     """
+    # ``cali_idx`` is numbered per nozzle and per hotend, and the cache keeps
+    # every nozzle's rows — so both lookups are scoped to the profile's own.
+    try:
+        nozzle = float(profile.nozzle_diameter)
+    except (TypeError, ValueError):
+        return None
+    same_nozzle = (
+        FilamentCalibration.printer_id == printer_id,
+        FilamentCalibration.nozzle_diameter.between(nozzle - 0.005, nozzle + 0.005),
+        FilamentCalibration.extruder_id == (profile.extruder_id or 0),
+    )
     cali_idx = getattr(profile, "slot_id", 0) or 0
     if cali_idx > 0:
         row_id = (
             await db.execute(
-                select(FilamentCalibration.id).where(
-                    FilamentCalibration.printer_id == printer_id,
-                    FilamentCalibration.cali_idx == cali_idx,
-                )
+                select(FilamentCalibration.id).where(*same_nozzle, FilamentCalibration.cali_idx == cali_idx)
             )
         ).scalar()
         if row_id:
@@ -68,7 +76,7 @@ async def _resolve_fc_id_for_audit(
     return (
         await db.execute(
             select(FilamentCalibration.id).where(
-                FilamentCalibration.printer_id == printer_id,
+                *same_nozzle,
                 FilamentCalibration.filament_id == filament_id,
                 FilamentCalibration.name == name,
                 FilamentCalibration.pa_k_value == k_value,
@@ -162,10 +170,14 @@ async def get_kprofiles(
             .all()
         )
         # Match by stable identity (name + filament_id + pa_k_value) so a
-        # printer-side reorder of cali_idx doesn't break the lookup.
+        # printer-side reorder of cali_idx doesn't break the lookup — within the
+        # profile's own nozzle and extruder: the cache keeps every nozzle's rows,
+        # and the same name + K calibrated on 0.4 and 0.6 is two profiles.
         for p in profiles:
             try:
                 p_k = float(p.k_value)
+                p_nozzle = float(p.nozzle_diameter)
+                p_extruder = int(p.extruder_id or 0)
             except (TypeError, ValueError):
                 continue
             for fc in rows:
@@ -174,6 +186,8 @@ async def get_kprofiles(
                     and fc.filament_id == p.filament_id
                     and fc.pa_k_value is not None
                     and abs(fc.pa_k_value - p_k) < 1e-6
+                    and abs(fc.nozzle_diameter - p_nozzle) < 0.005
+                    and (fc.extruder_id or 0) == p_extruder
                 ):
                     fc_id_by_cali_idx[int(p.slot_id)] = fc.id
                     break
@@ -536,29 +550,38 @@ async def _resolve_filament_calibration_id(
     if not client or not client.state.connected:
         return None
 
-    target = None
-    for kp in client.state.kprofiles or []:
-        if (kp.setting_id or "") == setting_id_hint:
-            target = kp
-            break
-    if target is None:
+    # The live list holds every nozzle's table, and a preset's setting_id is the
+    # same in each of them — so the hint names one profile only when exactly one
+    # nozzle/hotend carries it. Otherwise it is ambiguous and nothing is chosen.
+    candidates = [kp for kp in client.state.kprofiles or [] if (kp.setting_id or "") == setting_id_hint]
+    if len({(kp.nozzle_diameter, kp.extruder_id) for kp in candidates}) != 1:
         return None
+    target = candidates[0]
     try:
         target_k = float(target.k_value)
+        target_nozzle = float(target.nozzle_diameter)
     except (TypeError, ValueError):
         return None
 
-    fc = (
+    # Scoped to the profile's own nozzle and hotend, and deterministic: the same
+    # name + K on two nozzles is two rows, and a bare scalar_one_or_none raised
+    # on them (a 500) instead of answering.
+    fc_id = (
         await db.execute(
-            select(FilamentCalibration).where(
+            select(FilamentCalibration.id)
+            .where(
                 FilamentCalibration.printer_id == printer_id,
                 FilamentCalibration.filament_id == target.filament_id,
                 FilamentCalibration.name == target.name,
                 FilamentCalibration.pa_k_value == target_k,
+                FilamentCalibration.nozzle_diameter.between(target_nozzle - 0.005, target_nozzle + 0.005),
+                FilamentCalibration.extruder_id == int(target.extruder_id or 0),
             )
+            .order_by(FilamentCalibration.is_active.desc(), FilamentCalibration.id.desc())
+            .limit(1)
         )
     ).scalar_one_or_none()
-    return fc.id if fc else None
+    return fc_id
 
 
 @router.put("/notes", response_model=dict)

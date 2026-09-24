@@ -23,6 +23,7 @@ from backend.app.services.bambu_mqtt import (
     airduct_parts_effective,
     get_stage_name,
 )
+from backend.app.utils.kprofile_lookup import build_slot_k_resolver
 from backend.app.utils.printer_configs import airduct_fan_label, get_device_support_flags, is_bed_slinger
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import limits_for
@@ -65,6 +66,33 @@ async def _sync_kprofiles_for_printer(printer_id: int) -> None:
             await db.commit()
     except Exception as e:  # noqa: BLE001
         logger.warning("Auto-sync/link of K-profiles for printer %s failed: %s", printer_id, e)
+
+
+async def _prime_kprofile_tables(printer_id: int, diameters: list[str]) -> int:
+    """Read the calibration table of each fitted nozzle, once per connection.
+
+    Wired into the client's ``on_kprofile_tables_due``. The replies are filed
+    per diameter by the client and reach the cache through the ordinary
+    ``on_kprofiles_changed`` → :func:`_sync_kprofiles_for_printer` path; this
+    only makes sure they are asked for. ``get_kprofiles`` rather than a bare
+    publish because it waits for the reply and retries — the printer is known
+    to ignore a K-profile request now and then.
+
+    Returns the number of diameters that were read.
+    """
+    client = printer_manager.get_client(printer_id)
+    if client is None or not client.state.connected:
+        return 0
+    read = 0
+    for diameter in diameters:
+        try:
+            profiles = await client.get_kprofiles(nozzle_diameter=diameter, max_retries=2)
+        except Exception as e:  # noqa: BLE001 — costs this nozzle its table, never the connection
+            logger.warning("[Printer %s] Could not read the K-profile table for nozzle %s: %s", printer_id, diameter, e)
+            continue
+        read += 1
+        logger.info("[Printer %s] Read K-profile table for nozzle %s: %d profiles", printer_id, diameter, len(profiles))
+    return read
 
 
 # Models that have a real chamber temperature sensor
@@ -1107,6 +1135,9 @@ class PrinterManager:
             # list actually changed (connect / set / edit / delete / save).
             self._schedule_async(_sync_kprofiles_for_printer(printer_id))
 
+        def on_kprofile_tables_due(diameters: list[str]):
+            self._schedule_async(_prime_kprofile_tables(printer_id, diameters))
+
         def on_skipped_objects_changed(skipped: list):
             self._schedule_async(_record_skipped_as_defective(printer_id, skipped))
 
@@ -1149,6 +1180,7 @@ class PrinterManager:
             on_lights_report=on_lights_report,
             on_tray_change=on_tray_change,
             on_usage_event=on_usage_event,
+            on_kprofile_tables_due=on_kprofile_tables_due,
         )
 
         # Carry print-tracking state across the client recreation so a
@@ -1947,14 +1979,11 @@ def printer_state_to_dict(
     vt_tray = []
     raw_data = state.raw_data or {}
 
-    # Build K-profile lookup map: cali_idx -> k_value
-    kprofile_map: dict[int, float] = {}
-    for kp in state.kprofiles or []:
-        if kp.slot_id is not None and kp.k_value:
-            try:
-                kprofile_map[kp.slot_id] = float(kp.k_value)
-            except (ValueError, TypeError):
-                pass  # Skip K-profile entries with unparseable values
+    # K value for a slot's bound profile. Shared with the REST shaper of the
+    # same card (routes/printers.py) so the two cannot answer differently: this
+    # one used to key on cali_idx alone, which printed whichever nozzle's entry
+    # the table listed last.
+    resolve_slot_k = build_slot_k_resolver(state)
 
     if "ams" in raw_data and isinstance(raw_data["ams"], list):
         for ams_data in raw_data["ams"]:
@@ -1973,8 +2002,8 @@ def printer_state_to_dict(
                 # Get K value: first try tray's k field, then lookup from K-profiles
                 k_value = tray.get("k")
                 cali_idx = tray.get("cali_idx")
-                if k_value is None and cali_idx is not None and cali_idx in kprofile_map:
-                    k_value = kprofile_map[cali_idx]
+                if k_value is None:
+                    k_value = resolve_slot_k(cali_idx, ams_id_int, int(tray.get("id", 0)))
 
                 # P1S / A1 Mini physically-empty-slot signal (#1322
                 # follow-up): for a truly empty slot the firmware sends
@@ -2133,10 +2162,10 @@ def printer_state_to_dict(
             # Get K value for vt_tray
             vt_k_value = vt_data.get("k")
             vt_cali_idx = vt_data.get("cali_idx")
-            if vt_k_value is None and vt_cali_idx is not None and vt_cali_idx in kprofile_map:
-                vt_k_value = kprofile_map[vt_cali_idx]
-
             tray_id = int(vt_data.get("id", 254))
+            if vt_k_value is None:
+                # External holder: 254 is Ext-L, 255 Ext-R; the resolver takes the 0/1 side.
+                vt_k_value = resolve_slot_k(vt_cali_idx, 255, tray_id - 254)
             vt_tray.append(
                 {
                     "id": tray_id,
