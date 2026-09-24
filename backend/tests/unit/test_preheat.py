@@ -181,6 +181,84 @@ async def test_get_preheat_filament_targets_defaults_and_parse():
     assert fallback["PA"] == 50  # malformed → bundled defaults
 
 
+# --- nothing to preheat FOR (upstream #3041, audit D8) -----------------------
+#
+# A 0 derived from the filament map used to skip only the chamber phase: the bed
+# was heated, waited for and held for the full soak — five to seven minutes on
+# every PLA print, buying nothing, since the print's own G-code heats the bed the
+# moment it starts. Every older test ran with soak 0, so the default never showed.
+
+
+async def _run(options, *, model="H2D", airduct_mode=0, feed=None, enabled=True, chamber=20):
+    """The wait loop runs on a real-time deadline (900 s), so a stage that DOES run
+    must find its targets already reached — pass ``chamber`` at or above the target."""
+    client = _make_client()
+    sleep = AsyncMock()
+    with (
+        patch.object(preheat, "_get_bool_setting", AsyncMock(return_value=enabled)),
+        # The PRODUCTION defaults: 900 s max wait, 300 s soak.
+        patch.object(preheat, "_get_int_setting", AsyncMock(side_effect=lambda _d, _k, default: default)),
+        patch.object(preheat, "_get_preheat_filament_targets", AsyncMock(return_value=_TARGETS)),
+        patch.object(preheat.printer_manager, "get_client", return_value=client),
+        patch.object(
+            preheat.printer_manager,
+            "get_status",
+            return_value=_make_state(bed=60, chamber=chamber, airduct_mode=airduct_mode),
+        ),
+        patch.object(preheat.printer_manager, "get_feed_snapshot", return_value=feed or _feed("PLA", "ASA")),
+        patch.object(preheat.asyncio, "sleep", sleep),
+    ):
+        await preheat_and_soak(_make_db(), _make_printer(model), _make_archive(bed_temperature=60), options=options)
+    return client, sleep
+
+
+@pytest.mark.asyncio
+async def test_a_print_whose_filaments_want_no_chamber_skips_the_whole_stage():
+    client, sleep = await _run({"ams_mapping": [0]})  # PLA only
+
+    client.set_bed_temperature.assert_not_called()
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_skip_still_puts_the_airduct_flap_back_to_cooling():
+    """An H2D left sealed in heating mode by the ABS job before would cook the PLA."""
+    client, _sleep = await _run({"ams_mapping": [0]}, airduct_mode=1)
+
+    client.set_airduct_mode.assert_called_once_with("cooling")
+    client.set_bed_temperature.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("model", "airduct_mode"), [("H2D", 0), ("P1S", 1)])
+async def test_the_skip_sends_nothing_when_the_flap_is_already_right_or_absent(model, airduct_mode):
+    client, _sleep = await _run({"ams_mapping": [0]}, model=model, airduct_mode=airduct_mode)
+
+    client.set_airduct_mode.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"ams_mapping": [0], "preheat_chamber_target_override": 0},  # a typed 0: "bed only, please"
+        {"ams_mapping": [0], "preheat_override": "on"},  # forced on for this print
+    ],
+)
+async def test_an_explicit_request_still_heats_the_bed(options):
+    client, _sleep = await _run(options)
+
+    client.set_bed_temperature.assert_called_once_with(60)
+
+
+@pytest.mark.asyncio
+async def test_a_print_that_wants_the_chamber_still_runs_the_stage():
+    client, _sleep = await _run({"ams_mapping": [1]}, chamber=50)  # the ASA
+
+    client.set_bed_temperature.assert_called_once_with(60)
+    client.set_chamber_temperature.assert_called_once_with(45)
+
+
 # --- preheat_and_soak: override resolution ----------------------------------
 
 

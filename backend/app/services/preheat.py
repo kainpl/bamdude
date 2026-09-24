@@ -21,10 +21,14 @@ Resolution order:
      'on' forces the stage on even when the global is off).
   2. Chamber target — explicit per-item override if non-null; else the max of
      ``preheat_filament_targets[normalize(material)]`` across the feeds the job's
-     ``ams_mapping`` names (every AMS slot when it names none); else 0 (skips the
-     chamber phase, keeps bed phase + soak). A PA+PLA print picks PA's 50 — the
-     requirement of a filament the print USES is binding; an ASA merely parked
-     in the AMS is not (upstream #2886).
+     ``ams_mapping`` names (every AMS slot when it names none). A PA+PLA print
+     picks PA's 50 — the requirement of a filament the print USES is binding; an
+     ASA merely parked in the AMS is not (upstream #2886).
+     A 0 out of the filament map SKIPS THE WHOLE STAGE (upstream #3041): nothing
+     wants a chamber, the soak has nothing to condition, and heating the bed here
+     only delays the upload the print's own G-code would overlap. The airduct
+     flap is still put back to cooling. An explicit per-item 0 ("bed and soak, no
+     chamber") and a per-item 'on' keep the bed phase + soak.
   3. Three hardware tiers branch the wait:
      - Chamber heater (H2C/H2D/H2D Pro/H2S/X2D/X1E → ``supports_chamber_heater``):
        ``set_ctt`` to target, then wait for the chamber sensor to reach it (or timeout).
@@ -290,6 +294,29 @@ async def planned_stage_seconds(db: AsyncSession, *, override: str = "inherit") 
     )
 
 
+def _flap_to_cooling(printer: Printer) -> None:
+    """Put the airduct flap back to cooling for a print that wants no chamber heat.
+
+    The full stage does this on its way through; the skip never reaches that
+    code, and an H2D left sealed in heating mode by the ABS job before would
+    cook the PLA that follows. One idempotent command, no waiting, and nothing
+    for ``rollback`` to undo — cooling is where the flap belongs either way.
+    Best-effort like the rest of the stage.
+    """
+    if not supports_airduct(printer.model or ""):
+        return
+    state = printer_manager.get_status(printer.id)
+    if state is not None and getattr(state, "airduct_mode", None) == 0:
+        return
+    client = printer_manager.get_client(printer.id)
+    if client is None:
+        return
+    try:
+        client.set_airduct_mode("cooling")
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning("Preheat-skip airduct cooling failed on printer %s: %s", printer.id, exc)
+
+
 async def preheat_and_soak(
     db: AsyncSession,
     printer: Printer,
@@ -332,6 +359,28 @@ async def preheat_and_soak(
         targets = await _get_preheat_filament_targets(db)
         chamber_target = _derive_chamber_target(printer, targets, opts.get("ams_mapping"))
         chamber_source = "filament-map"
+
+    # Nothing to preheat FOR (upstream #3041; audit D8 — the owner's ruling: a
+    # defect, not the documented behaviour it used to be). A 0 out of the
+    # filament map means the filaments this print uses want no chamber, and
+    # running the stage anyway heated the bed, waited for it and held the full
+    # soak: five to seven minutes on every PLA print, bought nothing — the
+    # print's own G-code heats the bed the moment it starts, so this only moved
+    # that warm-up ahead of the upload instead of overlapping it.
+    #
+    # An explicit request still runs the stage: a typed chamber target of 0
+    # ("bed and soak, no chamber") and a per-print 'on'. Only the automatic
+    # path — the global toggle plus the filament map — short-circuits here.
+    if chamber_target <= 0 and chamber_source == "filament-map" and override != "on":
+        logger.info(
+            "Preheat skipped on printer %s — the filaments this print uses want no chamber, nothing to soak for "
+            "(override=%s model=%s)",
+            printer.id,
+            override,
+            printer.model or "",
+        )
+        _flap_to_cooling(printer)
+        return
 
     bed_target = int(archive.bed_temperature) if archive and archive.bed_temperature else 0
     if bed_target <= 0:

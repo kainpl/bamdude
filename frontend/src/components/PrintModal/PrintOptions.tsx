@@ -247,21 +247,27 @@ export function PrintOptionsPanel({
               ))}
             </div>
             {options.preheat_override !== 'off' && (
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-bambu-gray flex-1">
-                  {t('settings.preheatTargetOverride')}
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  max={MAX_CHAMBER_TEMP_C}
-                  step={1}
-                  value={options.preheat_chamber_target_override ?? ''}
-                  onChange={(e) => handlePreheatTarget(e.target.value)}
-                  placeholder="—"
-                  className="w-16 px-2 py-1 bg-bambu-dark-tertiary border border-bambu-dark-tertiary rounded text-white text-xs text-right focus:outline-none focus:border-bambu-green"
-                />
-              </div>
+              <>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-bambu-gray flex-1">
+                    {t('settings.preheatTargetOverride')}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={MAX_CHAMBER_TEMP_C}
+                    step={1}
+                    value={options.preheat_chamber_target_override ?? ''}
+                    onChange={(e) => handlePreheatTarget(e.target.value)}
+                    placeholder="—"
+                    className="w-16 px-2 py-1 bg-bambu-dark-tertiary border border-bambu-dark-tertiary rounded text-white text-xs text-right focus:outline-none focus:border-bambu-green"
+                  />
+                </div>
+                {/* A typed 0 and a derived 0 do different things (upstream
+                    #3041): the first asks for a bed-only preheat and still runs
+                    the soak, the second skips the stage. Nothing here said so. */}
+                <p className="text-[11px] text-bambu-gray mt-1">{t('settings.preheatTargetOverrideHelp')}</p>
+              </>
             )}
           </div>
         </div>

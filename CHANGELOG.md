@@ -122,6 +122,15 @@
   the slot keeps the type as the spool gives it. A material written as `PLA+`,
   "PLA Matte" or "PolyTerra PLA" is recognised as PLA, where `PLA+` used to leave
   the slot unconfigured.
+- **A print whose filaments want no chamber heat skips preheat entirely.**
+  With preheat on, a PLA, PETG, TPU or PVA print used to skip only the chamber
+  phase and still heat the bed, wait for it and hold the full soak — five to
+  seven minutes before every such print, for nothing: the print's own start
+  code heats the bed anyway, and there was no chamber to condition. It now
+  starts straight away; on printers with an airduct flap the flap is still set
+  back to cooling. A chamber target of exactly 0 typed for one print, or
+  preheat forced on for it, still heats the bed and runs the soak — the print
+  options now say so under the chamber target field.
 - **Preheat heats the chamber for the filaments the print uses, not for every
   spool in the AMS.** The chamber target was the highest one across all loaded
   slots, so a single ASA spool parked beside PLA made every PLA job wait for a
