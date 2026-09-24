@@ -78,6 +78,13 @@
 
 ### Fixed
 
+- **Live printer states and busy-farm refreshes no longer race.** The browser
+  acknowledges a WebSocket bootstrap only after all pre-marker printer states
+  reach its cache; late status chunks cannot overwrite newer patches or write
+  after disconnect. Repeated archive, library and inventory events now mark
+  affected views stale within a bounded window, with active HTTP refreshes
+  paced instead of launched as one burst. Bootstrap logs separate token,
+  socket-open, first-status and cache-commit timings.
 - **Busy farm reads do less repeated work without widening access.** A request
   reuses one complete JWT or API-key authority check across middleware and
   permission gates; revoked or stale JWTs can no longer pass a narrower route
