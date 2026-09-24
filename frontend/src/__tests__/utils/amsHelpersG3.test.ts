@@ -9,7 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { getAmsLabel, resolveSlotNozzleDiameter } from '../../utils/amsHelpers';
+import { getAmsLabel, resolveSlotNozzleDiameter, resolveSlotNozzleFlow } from '../../utils/amsHelpers';
 
 describe('resolveSlotNozzleDiameter', () => {
   it('returns undefined when the printer has not reported nozzle hardware', () => {
@@ -50,6 +50,38 @@ describe('resolveSlotNozzleDiameter', () => {
 
   it('treats an empty diameter string as unknown', () => {
     expect(resolveSlotNozzleDiameter({ nozzles: [{ nozzle_diameter: '' }] }, 0)).toBeUndefined();
+  });
+
+  it('reads the external holder from the extruder it names, not the map', () => {
+    // The map has no entry for the external holder; Ext-L feeds extruder 1.
+    const status = {
+      nozzles: [{ nozzle_diameter: '0.4' }, { nozzle_diameter: '0.8' }],
+      ams_extruder_map: { '0': 0 },
+    };
+    expect(resolveSlotNozzleDiameter(status, 255, 1)).toBe('0.8');
+    expect(resolveSlotNozzleDiameter(status, 255, 0)).toBe('0.4');
+  });
+});
+
+describe('resolveSlotNozzleFlow', () => {
+  const status = {
+    nozzles: [
+      { nozzle_diameter: '0.4', nozzle_flow: 'standard' },
+      { nozzle_diameter: '0.4', nozzle_flow: 'high_flow' },
+    ],
+    ams_extruder_map: { '0': 1, '1': 0 },
+  };
+
+  it('reads the flow of the nozzle the slot feeds', () => {
+    expect(resolveSlotNozzleFlow(status, 0)).toBe('high_flow');
+    expect(resolveSlotNozzleFlow(status, 1)).toBe('standard');
+    expect(resolveSlotNozzleFlow(status, 255, 1)).toBe('high_flow');
+  });
+
+  it('is unknown when the printer reports no flow class', () => {
+    // X1C / P1 / A1 report the nozzle by material name, which carries no flow.
+    expect(resolveSlotNozzleFlow({ nozzles: [{ nozzle_diameter: '0.4', nozzle_flow: '' }] }, 0)).toBeUndefined();
+    expect(resolveSlotNozzleFlow(undefined, 0)).toBeUndefined();
   });
 });
 

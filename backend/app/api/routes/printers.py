@@ -111,6 +111,7 @@ from backend.app.utils.http import build_content_disposition
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
 from backend.app.utils.printer_configs import is_bed_slinger
 from backend.app.utils.printer_storage import storage_capability_for
+from backend.app.utils.slot_nozzle import slot_nozzle
 from backend.app.utils.temperature_limits import is_within, limits_for
 from backend.app.utils.timelapse import capability_for as timelapse_capability_for
 
@@ -4633,24 +4634,7 @@ async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):
             if not assignment or not assignment.spool:
                 return
             spool = assignment.spool
-
-            nozzle_diameter = "0.4"
-            if state.nozzles:
-                nd = state.nozzles[0].nozzle_diameter
-                if nd:
-                    nozzle_diameter = nd
-            try:
-                nozzle_dia_float = float(nozzle_diameter)
-            except (TypeError, ValueError):
-                nozzle_dia_float = 0.4
-            nozzle_vt = str(getattr(state, "nozzle_volume_type", "standard") or "standard")
-
-            slot_extruder = 0
-            if state.ams_extruder_map:
-                if ams_id == 255:
-                    slot_extruder = 1 - slot_id
-                else:
-                    slot_extruder = state.ams_extruder_map.get(str(ams_id)) or 0
+            nozzle = slot_nozzle(state, ams_id, slot_id)
 
             effective_filament_id = await derive_effective_filament_id(
                 spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
@@ -4664,9 +4648,9 @@ async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):
                 ams_id=ams_id,
                 slot_id=slot_id,
                 filament_id=effective_filament_id,
-                nozzle_diameter=nozzle_dia_float,
-                nozzle_volume_type=nozzle_vt,
-                extruder_id=slot_extruder,
+                nozzle_diameter=nozzle.diameter_float,
+                nozzle_volume_type=nozzle.flow_or_standard,
+                extruder_id=nozzle.extruder_or_default,
                 spool_id=spool.id,
             )
             if fired and fc:

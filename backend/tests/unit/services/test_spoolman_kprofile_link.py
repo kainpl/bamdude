@@ -20,12 +20,14 @@ async def _printer(db) -> Printer:
     return printer
 
 
-async def _link(db, printer: Printer, *, filament_id: str, nozzle: float, extruder: int) -> FilamentCalibration:
+async def _link(
+    db, printer: Printer, *, filament_id: str, nozzle: float, extruder: int, flow: str = "standard"
+) -> FilamentCalibration:
     fc = FilamentCalibration(
         printer_id=printer.id,
         filament_id=filament_id,
         nozzle_diameter=nozzle,
-        nozzle_volume_type="standard",
+        nozzle_volume_type=flow,
         extruder_id=extruder,
         cali_mode="pa",
         source="printer_sync",
@@ -79,3 +81,27 @@ async def test_an_unknown_extruder_takes_the_first_nozzle_match(db_session):
     printer = await _printer(db_session)
     await _link(db_session, printer, filament_id="GFL96", nozzle=0.4, extruder=1)
     assert (await _resolve(db_session, printer, extruder=None)).filament_id == "GFL96"
+
+
+@pytest.mark.asyncio
+async def test_the_fitted_flow_type_picks_between_two_links_of_one_nozzle(db_session):
+    """A spool may keep a Standard and a High Flow profile for the same hotend
+    and diameter (BambuStudio's identity), and the fitted nozzle decides."""
+    printer = await _printer(db_session)
+    await _link(db_session, printer, filament_id="GFL96", nozzle=0.4, extruder=0)
+    await _link(db_session, printer, filament_id="GFL97", nozzle=0.4, extruder=0, flow="high_flow")
+
+    async def resolve(flow):
+        return await resolve_spoolman_slot_kprofile(
+            db_session,
+            printer_id=printer.id,
+            spoolman_spool_id=SPOOL_ID,
+            nozzle_diameter=0.4,
+            slot_extruder=0,
+            nozzle_flow=flow,
+        )
+
+    assert (await resolve("high_flow")).filament_id == "GFL97"
+    assert (await resolve("standard")).filament_id == "GFL96"
+    # A printer that does not say which nozzle is fitted still gets a profile.
+    assert (await resolve(None)).filament_id in ("GFL96", "GFL97")

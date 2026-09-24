@@ -331,21 +331,11 @@ async def _apply_calibrations_for_print(
         apply_active_calibration_to_slot,
         derive_effective_filament_id,
     )
+    from backend.app.utils.slot_nozzle import slot_nozzle
 
     state = printer_manager.get_status(printer_id)
     if not state:
         return
-
-    nozzle_diameter = "0.4"
-    if state.nozzles:
-        nd = state.nozzles[0].nozzle_diameter
-        if nd:
-            nozzle_diameter = nd
-    try:
-        nozzle_dia_float = float(nozzle_diameter)
-    except (TypeError, ValueError):
-        nozzle_dia_float = 0.4
-    nozzle_vt = str(getattr(state, "nozzle_volume_type", "standard") or "standard")
 
     ams_raw = (state.raw_data or {}).get("ams", [])
     if isinstance(ams_raw, dict):
@@ -381,10 +371,8 @@ async def _apply_calibrations_for_print(
             if used_global is not None and global_slot not in used_global:
                 continue
             tray_info_idx = tray.get("tray_info_idx") or ""
-
-            slot_extruder = 0
-            if state.ams_extruder_map:
-                slot_extruder = state.ams_extruder_map.get(str(ams_id)) or 0
+            # The nozzle THIS slot feeds — diameter and flow type included.
+            nozzle = slot_nozzle(state, ams_id, slot_id)
 
             assignment_row = (
                 await db.execute(
@@ -411,9 +399,9 @@ async def _apply_calibrations_for_print(
                     ams_id=ams_id,
                     slot_id=slot_id,
                     filament_id=filament_id,
-                    nozzle_diameter=nozzle_dia_float,
-                    nozzle_volume_type=nozzle_vt,
-                    extruder_id=slot_extruder,
+                    nozzle_diameter=nozzle.diameter_float,
+                    nozzle_volume_type=nozzle.flow_or_standard,
+                    extruder_id=nozzle.extruder_or_default,
                     spool_id=spool.id if spool else None,
                 )
             except Exception as e:
@@ -449,6 +437,9 @@ async def _apply_calibrations_for_print(
                 continue
             ext_slot = vt_id - 254  # 254→0, 255→1
             tray_info_idx = vt.get("tray_info_idx") or ""
+            # Ext-L feeds the left hotend on a dual-nozzle printer — it used to
+            # bind as extruder 0 against the right one's diameter.
+            nozzle = slot_nozzle(state, 255, ext_slot)
             assignment_row = (
                 await db.execute(
                     select(SA)
@@ -474,9 +465,9 @@ async def _apply_calibrations_for_print(
                     ams_id=255,
                     slot_id=ext_slot,
                     filament_id=filament_id,
-                    nozzle_diameter=nozzle_dia_float,
-                    nozzle_volume_type=nozzle_vt,
-                    extruder_id=0,
+                    nozzle_diameter=nozzle.diameter_float,
+                    nozzle_volume_type=nozzle.flow_or_standard,
+                    extruder_id=nozzle.extruder_or_default,
                     spool_id=spool.id if spool else None,
                 )
             except Exception as e:

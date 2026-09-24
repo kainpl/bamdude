@@ -39,24 +39,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-
-def slot_extruder(state, ams_id: int, tray_id: int) -> int | None:
-    """The extruder an AMS slot feeds, or None when the printer does not say.
-
-    None on every printer without an extruder map (single-nozzle) and for an
-    AMS the map does not name. The external holder names its side directly:
-    tray 0 is Ext-L (extruder 1), tray 1 is Ext-R (extruder 0).
-    """
-    extruder_map = getattr(state, "ams_extruder_map", None)
-    if not extruder_map:
-        return None
-    if ams_id == 255:
-        return 1 - tray_id if tray_id in (0, 1) else None
-    mapped = extruder_map.get(str(ams_id))
-    try:
-        return int(mapped) if mapped is not None else None
-    except (TypeError, ValueError):
-        return None
+from backend.app.utils.slot_nozzle import slot_extruder
 
 
 def build_slot_k_resolver(state) -> Callable[[int | None, int, int], float | None]:

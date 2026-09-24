@@ -181,24 +181,12 @@ async def apply_spool_to_slot_via_mqtt(
         else spool.material
     )
 
-    nozzle_diameter = "0.4"
-    if state and state.nozzles:
-        nd = state.nozzles[0].nozzle_diameter
-        if nd:
-            nozzle_diameter = nd
-    try:
-        nozzle_dia_float = float(nozzle_diameter)
-    except (TypeError, ValueError):
-        nozzle_dia_float = 0.4
+    # The nozzle THIS slot feeds: its diameter picks the preset below and, with
+    # the flow type, the calibration — not "the printer's" first nozzle.
+    from backend.app.utils.slot_nozzle import slot_nozzle
 
-    # Determine slot's extruder from ams_extruder_map (feeds the K half below)
-    slot_extruder = None
-    if state and state.ams_extruder_map:
-        if ams_id == 255:
-            # External slots: ext-L (tray 0) → extruder 1, ext-R (tray 1) → extruder 0
-            slot_extruder = 1 - tray_id
-        else:
-            slot_extruder = state.ams_extruder_map.get(str(ams_id))
+    nozzle = slot_nozzle(state, ams_id, tray_id)
+    nozzle_diameter = nozzle.diameter
 
     # ONE identity path (spec A §5.2): the family catalog builds the payload —
     # tray_info_idx = the spool's family, versioned setting_id from the
@@ -266,7 +254,6 @@ async def apply_spool_to_slot_via_mqtt(
     effective_filament_id = await derive_effective_filament_id(
         spool=spool, slot_tray_info_idx=effective_tray_info_idx or None, db=db
     )
-    nozzle_vt = str(getattr(state, "nozzle_volume_type", "standard") or "standard")
     if effective_filament_id and kprofile_allowed(projection):
         await apply_active_calibration_to_slot(
             db=db,
@@ -274,9 +261,9 @@ async def apply_spool_to_slot_via_mqtt(
             ams_id=ams_id,
             slot_id=tray_id,
             filament_id=effective_filament_id,
-            nozzle_diameter=nozzle_dia_float,
-            nozzle_volume_type=nozzle_vt,
-            extruder_id=slot_extruder if slot_extruder is not None else 0,
+            nozzle_diameter=nozzle.diameter_float,
+            nozzle_volume_type=nozzle.flow_or_standard,
+            extruder_id=nozzle.extruder_or_default,
             spool_id=spool.id,
         )
 

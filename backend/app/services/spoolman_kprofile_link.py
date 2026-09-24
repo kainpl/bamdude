@@ -28,12 +28,20 @@ async def resolve_spoolman_slot_kprofile(
     spoolman_spool_id: int,
     nozzle_diameter: float,
     slot_extruder: int | None,
+    nozzle_flow: str | None = None,
 ) -> FilamentCalibration | None:
     """The calibration linked to this Spoolman spool that fits this slot, if any.
 
     ``slot_extruder`` is None when the printer reports no extruder map (every
     single-extruder machine): the link still applies, it just cannot be
     preferred over another one.
+
+    ``nozzle_flow`` is the flow type of the nozzle the slot feeds (see
+    ``utils/slot_nozzle``). A spool may hold a Standard AND a High Flow link for
+    one hotend and diameter — BambuStudio's identity for a PA profile — and the
+    fitted nozzle picks between them. It is a preference, not a filter: a spool
+    linked for one flow type only, or a printer that reports no flow class,
+    still gets its profile.
     """
     rows = (
         (
@@ -47,15 +55,19 @@ async def resolve_spoolman_slot_kprofile(
         .scalars()
         .all()
     )
-    exact: FilamentCalibration | None = None
-    fallback: FilamentCalibration | None = None
-    for kp in rows:
-        fc = kp.filament_calibration
-        if not fc or abs(fc.nozzle_diameter - nozzle_diameter) > NOZZLE_TOLERANCE:
-            continue
-        if slot_extruder is not None and kp.extruder == slot_extruder:
-            exact = fc
-            break
-        if fallback is None:
-            fallback = fc
-    return exact or fallback
+    candidates = [
+        (kp, kp.filament_calibration)
+        for kp in rows
+        if kp.filament_calibration
+        and abs(kp.filament_calibration.nozzle_diameter - nozzle_diameter) <= NOZZLE_TOLERANCE
+    ]
+
+    def rank(pair) -> tuple[bool, bool]:
+        kp, fc = pair
+        own_extruder = slot_extruder is not None and kp.extruder == slot_extruder
+        own_flow = bool(nozzle_flow) and (fc.nozzle_volume_type or "standard") == nozzle_flow
+        return own_extruder, own_flow
+
+    # The slot's own hotend first, then its fitted flow; ties keep the stored
+    # order, which is what the first-match loop this replaces answered.
+    return max(candidates, key=rank)[1] if candidates else None

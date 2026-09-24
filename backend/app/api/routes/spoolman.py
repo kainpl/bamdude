@@ -31,6 +31,7 @@ from backend.app.services.spoolman import (
     init_spoolman_client,
 )
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
+from backend.app.utils.slot_nozzle import slot_nozzle
 
 logger = logging.getLogger(__name__)
 
@@ -946,23 +947,11 @@ async def link_spool(
                 # was a non-existent attribute — the hasattr check silently
                 # returned None, defeating every state-based lookup below).
                 state = printer_manager.get_status(p_id)
-                nozzle_diameter = "0.4"
-                if state and state.nozzles:
-                    nd = state.nozzles[0].nozzle_diameter
-                    if nd:
-                        nozzle_diameter = nd
-
-                slot_extruder = 0
-                if state and state.ams_extruder_map:
-                    if a_id == 255:
-                        slot_extruder = 1 - t_id
-                    else:
-                        slot_extruder = state.ams_extruder_map.get(str(a_id)) or 0
-
-                try:
-                    nozzle_dia_float = float(nozzle_diameter)
-                except (TypeError, ValueError):
-                    nozzle_dia_float = 0.4
+                # The nozzle THIS slot feeds — diameter, hotend and flow type.
+                nozzle = slot_nozzle(state, a_id, t_id)
+                nozzle_diameter = nozzle.diameter
+                slot_extruder = nozzle.extruder_or_default
+                nozzle_dia_float = nozzle.diameter_float
 
                 # Pick link by matching nozzle on the joined filament_calibration.
                 matching_fc = await resolve_spoolman_slot_kprofile(
@@ -970,7 +959,8 @@ async def link_spool(
                     printer_id=p_id,
                     spoolman_spool_id=spool_id,
                     nozzle_diameter=nozzle_dia_float,
-                    slot_extruder=slot_extruder,
+                    slot_extruder=nozzle.extruder,
+                    nozzle_flow=nozzle.flow,
                 )
 
                 # ONE identity path (spec A §5.2): the family catalog builds the

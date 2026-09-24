@@ -102,6 +102,16 @@
   annotate the other nozzle's profile — a note saved that way could also fail
   with a server error. The Calibration History window likewise keeps every
   nozzle size it has read instead of only the latest.
+- **K-profiles calibrated on a High Flow nozzle are now applied, and every AMS
+  slot is matched against the nozzle it actually feeds.** The printer reports
+  which flow type is fitted, but the lookup always asked for Standard, so a
+  High Flow calibration (H2D, H2C, H2S, P2S, X2D) was never applied on its own
+  — not when assigning a spool, not before a print, not after an RFID read. On
+  dual-nozzle printers every slot was also matched against the first nozzle's
+  size, and spools assigned by RFID and the left external holder were treated
+  as belonging to the right hotend. Configure Slot now offers only the profiles
+  for the fitted flow type, as Bambu Studio does; profiles from printers that
+  do not record a flow type are still always offered.
 - **A spool's PA tab now holds one K-profile per nozzle size and flow type, as
   Bambu Studio does.** On a printer with two nozzle sizes, profiles that shared
   a number were one checkbox, and saving could re-link the other size's

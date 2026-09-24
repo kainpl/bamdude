@@ -30,6 +30,7 @@ from backend.app.services.printer_manager import printer_manager
 from backend.app.services.slot_assignment import SlotAssignmentPlan, build_slot_assignment
 from backend.app.services.slot_assignment_publish import publish_slot_plan
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
+from backend.app.utils.slot_nozzle import slot_nozzle
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,11 @@ class SlotCandidate:
     # What we must ALREADY have advertised on this slot, reconstructed when the
     # current policy no longer projects it (see ``_recover_advertised``).
     recovered: overlay.OverlayEntry | None = None
+    # The nozzle this slot was projected against — the one IT feeds, which on a
+    # dual-nozzle printer need not be the first. Carried with the candidate so
+    # the K re-push in ``bulk_apply`` reads the state ONCE: asking the manager
+    # again could answer a different device than the one this was built for.
+    nozzle_diameter: str = "0.4"
 
 
 @dataclass
@@ -77,32 +83,6 @@ class SlotWalk:
 
     candidates: list[SlotCandidate] = field(default_factory=list)
     spoolman_deferred: bool = False
-    # The nozzle the walk projected against, carried out so a caller that needs
-    # it (the K re-push in ``bulk_apply``) reads the state ONCE — asking the
-    # manager again could answer a different device than the one these
-    # candidates were built for.
-    nozzle_diameter: str = "0.4"
-
-
-def _nozzle(state) -> str:
-    nozzles = getattr(state, "nozzles", None) or []
-    nd = getattr(nozzles[0], "nozzle_diameter", None) if nozzles else None
-    return nd or "0.4"
-
-
-def _slot_extruder(state, ams_id: int, tray_id: int) -> int | None:
-    """Which extruder feeds this slot — exactly what the two Spoolman assign routes derive.
-
-    None on every printer that reports no map (single-extruder): the K link
-    still applies, it simply cannot be preferred over another one.
-    """
-    extruder_map = getattr(state, "ams_extruder_map", None)
-    if not extruder_map:
-        return None
-    if ams_id == 255:
-        # External: ext-L (tray 0) → extruder 1, ext-R (tray 1) → extruder 0.
-        return 1 - tray_id
-    return extruder_map.get(str(ams_id))
 
 
 async def _spoolman_mode(db) -> bool | None:
@@ -178,10 +158,17 @@ def _slot_loaded(live_tray: dict | None) -> bool:
 async def iter_slot_projections(db, printer) -> SlotWalk:
     policy = BackupCompatibilityPolicy.from_printer(printer)
     state = printer_manager.get_status(printer.id)
-    nozzle = _nozzle(state)
     supports = bool(getattr(state, "support_user_preset", False))
-    common = {"printer_model": printer.model, "nozzle_diameter": nozzle, "supports_user_preset": supports}
-    walk = SlotWalk(nozzle_diameter=nozzle)
+
+    def common_for(ams_id: int, tray_id: int) -> dict:
+        # Per slot: the preset is chosen for the nozzle this slot feeds.
+        return {
+            "printer_model": printer.model,
+            "nozzle_diameter": slot_nozzle(state, ams_id, tray_id).diameter,
+            "supports_user_preset": supports,
+        }
+
+    walk = SlotWalk()
     out = walk.candidates
 
     rows = (
@@ -199,6 +186,7 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
         spool = row.spool
         if spool is None:
             continue
+        common = common_for(row.ams_id, row.tray_id)
         try:
             actual = await build_slot_assignment(db, spool=spool, **common)
         except ValueError as exc:
@@ -223,7 +211,17 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
         )
         label = " ".join(p for p in (f"#{spool.id}", spool.brand or "", spool.material) if p)
         out.append(
-            SlotCandidate(row.ams_id, row.tray_id, "internal", label, projection, live, actual.tray_info_idx, recovered)
+            SlotCandidate(
+                row.ams_id,
+                row.tray_id,
+                "internal",
+                label,
+                projection,
+                live,
+                actual.tray_info_idx,
+                recovered,
+                nozzle_diameter=common["nozzle_diameter"],
+            )
         )
 
     sm_rows = (
@@ -254,10 +252,6 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
             # halved farm for the whole answer.
             walk.spoolman_deferred = True
             sm_rows = []
-        try:
-            nozzle_float = float(nozzle)
-        except (TypeError, ValueError):
-            nozzle_float = 0.4
         for row in sm_rows:
             try:
                 mapped = _map_spoolman_spool(await client.get_spool(row.spoolman_spool_id))
@@ -277,12 +271,15 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
             # the same resolver both Spoolman assign routes use, so a revert
             # republishes the plan the slot actually had and the K re-push
             # carries the id those routes key K off.
+            nozzle = slot_nozzle(state, row.ams_id, row.tray_id)
+            common = common_for(row.ams_id, row.tray_id)
             linked = await resolve_spoolman_slot_kprofile(
                 db,
                 printer_id=printer.id,
                 spoolman_spool_id=row.spoolman_spool_id,
-                nozzle_diameter=nozzle_float,
-                slot_extruder=_slot_extruder(state, row.ams_id, row.tray_id),
+                nozzle_diameter=nozzle.diameter_float,
+                slot_extruder=nozzle.extruder,
+                nozzle_flow=nozzle.flow,
             )
             try:
                 actual = await build_slot_assignment(
@@ -328,6 +325,7 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
                     live,
                     linked.filament_id if linked else actual.tray_info_idx,
                     recovered,
+                    nozzle_diameter=common["nozzle_diameter"],
                 )
             )
 
@@ -452,7 +450,6 @@ def _slot_label(ams_id: int, tray_id: int) -> str:
 async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
     walk = await iter_slot_projections(db, printer)
     candidates = walk.candidates
-    nozzle = walk.nozzle_diameter  # the state the walk read, not a second one
     remembered = overlay.entries_for(printer.id)
     rows: list[dict] = []
     for c in candidates:
@@ -528,7 +525,8 @@ async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
                     tray_id=c.tray_id,
                     cali_idx=live_cali,
                     filament_id=c.kprofile_filament_id,
-                    nozzle_diameter=nozzle,
+                    # The slot's own nozzle, from the state the walk read.
+                    nozzle_diameter=c.nozzle_diameter,
                 )
                 r["kprofile"] = "kept"
             else:

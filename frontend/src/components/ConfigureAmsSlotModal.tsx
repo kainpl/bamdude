@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Loader2, Settings2, CheckCircle2, RotateCcw } from 'lucide-react';
 import { api } from '../api/client';
 import type { KProfile } from '../api/client';
-import { isMatchingCalibration } from './spool-form/utils';
+import { isMatchingCalibration, nozzleFlowFromId } from './spool-form/utils';
 import { Button } from './Button';
 import { Modal } from './Modal';
 import { Select } from './Select';
@@ -57,6 +57,9 @@ interface ConfigureAmsSlotModalProps {
   printerId: number;
   slotInfo: SlotInfo;
   nozzleDiameter?: string;
+  // Flow type of the nozzle this slot feeds (see resolveSlotNozzleFlow);
+  // undefined when the printer does not report one.
+  nozzleFlow?: string;
   printerModel?: string;
   onSuccess?: () => void;
   fullScreen?: boolean;
@@ -166,6 +169,7 @@ export function ConfigureAmsSlotModal({
   printerId,
   slotInfo,
   nozzleDiameter = '0.4',
+  nozzleFlow,
   onSuccess,
   fullScreen,
 }: ConfigureAmsSlotModalProps) {
@@ -366,7 +370,13 @@ export function ConfigureAmsSlotModal({
               subtype: selectedPresetInfo.variant,
             },
             targetFilamentId,
-          ),
+          )
+          // Only the flow type fitted to this slot's nozzle, as BambuStudio
+          // offers them (AMSMaterialsSetting.cpp) — a K measured through a
+          // High Flow nozzle says nothing about a Standard one. A profile whose
+          // table declares no nozzle (X1C) and a printer that reports no flow
+          // both stay unfiltered: silence is not "Standard".
+          && (!nozzleFlow || !p.nozzle_id || nozzleFlowFromId(p.nozzle_id) === nozzleFlow),
         )
       : [];
 
@@ -404,7 +414,7 @@ export function ConfigureAmsSlotModal({
     }
 
     return result;
-  }, [kprofilesData?.profiles, selectedPresetInfo, targetFilamentId, slotInfo.extruderId, slotInfo.caliIdx]);
+  }, [kprofilesData?.profiles, selectedPresetInfo, targetFilamentId, nozzleFlow, slotInfo.extruderId, slotInfo.caliIdx]);
 
   // Pre-select current profile when modal opens, reset when closes
   useEffect(() => {

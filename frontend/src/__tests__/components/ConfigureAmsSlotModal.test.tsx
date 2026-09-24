@@ -344,4 +344,40 @@ describe('ConfigureAmsSlotModal', () => {
       expect(screen.getAllByText(/Sunlu custom blend/).length).toBeGreaterThan(0);
     });
   });
+
+  describe('flow type of the fitted nozzle (upstream e5a18bf5)', () => {
+    // BambuStudio offers a slot only the profiles of the flow type fitted to its
+    // nozzle (AMSMaterialsSetting.cpp); a K measured through a High Flow nozzle
+    // says nothing about a Standard one.
+    const flowProfiles = {
+      profiles: [
+        { name: 'PLA HF', k_value: '0.015', filament_id: 'GFA00', setting_id: '', extruder_id: 0, slot_id: 3, nozzle_id: 'HH00-0.4' },
+        { name: 'PLA Std', k_value: '0.020', filament_id: 'GFA00', setting_id: '', extruder_id: 0, slot_id: 4, nozzle_id: 'HS00-0.4' },
+        // A table that declares no nozzle (X1C) says nothing about flow: kept.
+        { name: 'PLA Any', k_value: '0.022', filament_id: 'GFA00', setting_id: '', extruder_id: 0, slot_id: 5, nozzle_id: '' },
+      ],
+    };
+    const slotInfo = { ...defaultProps.slotInfo, trayInfoIdx: 'GFA00' };
+
+    it('offers only the profiles of the fitted flow type, plus those that declare none', async () => {
+      (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue(flowProfiles);
+      render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} nozzleFlow="high_flow" />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText(/PLA HF/).length).toBeGreaterThan(0);
+      });
+      expect(screen.getAllByText(/PLA Any/).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/PLA Std/)).not.toBeInTheDocument();
+    });
+
+    it('offers every profile when the printer does not report the fitted flow', async () => {
+      (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue(flowProfiles);
+      render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText(/PLA HF/).length).toBeGreaterThan(0);
+      });
+      expect(screen.getAllByText(/PLA Std/).length).toBeGreaterThan(0);
+    });
+  });
 });

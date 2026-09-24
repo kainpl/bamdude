@@ -168,7 +168,7 @@ import type { SequencedFile } from '../components/QueueSequencer';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
-import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter } from '../utils/amsHelpers';
+import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow } from '../utils/amsHelpers';
 import { getPrinterImage, getWifiStrength, hasDoorSensor, mapModelCode } from '../utils/printer';
 import { OpenMonitorButton } from '../features/monitor/OpenMonitorButton';
 import { useMonitorTarget } from '../features/monitor/useMonitorTarget';
@@ -7082,7 +7082,8 @@ function PrinterCard({
           printerId={printer.id}
           slotInfo={configureSlotModal}
           printerModel={mapModelCode(printer.model) || undefined}
-          nozzleDiameter={resolveSlotNozzleDiameter(status, configureSlotModal.amsId)}
+          nozzleDiameter={resolveSlotNozzleDiameter(status, configureSlotModal.amsId, configureSlotModal.extruderId)}
+          nozzleFlow={resolveSlotNozzleFlow(status, configureSlotModal.amsId, configureSlotModal.extruderId)}
           onSuccess={() => {
             // Printer status will update automatically via WebSocket when AMS data changes
             queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });

@@ -240,19 +240,44 @@ export function getEmptySlotKind(
  * the primary nozzle (index 0). Returns undefined when the printer hasn't
  * reported nozzle hardware yet, letting the caller keep its own default.
  * Diameter is the bare decimal string the status carries, e.g. "0.4" / "0.6".
+ *
+ * `extruderId`, when the caller knows it, wins over the map — the external
+ * holder has no map entry and names its side itself (Ext-L = extruder 1).
  */
 export function resolveSlotNozzleDiameter(
-  status: {
-    nozzles?: { nozzle_diameter?: string }[];
-    ams_extruder_map?: Record<string, number>;
-  } | null | undefined,
+  status: SlotNozzleStatus | null | undefined,
   amsId: number,
+  extruderId?: number,
 ): string | undefined {
+  return slotNozzle(status, amsId, extruderId)?.nozzle_diameter || undefined;
+}
+
+/**
+ * The flow type ("standard" / "high_flow" / …) of the nozzle an AMS slot
+ * feeds — the same nozzle `resolveSlotNozzleDiameter` answers for. BambuStudio
+ * offers a slot only the K profiles of that flow type. Undefined when the
+ * printer reports no flow class: X1C / P1 / A1 name the nozzle by material.
+ */
+export function resolveSlotNozzleFlow(
+  status: SlotNozzleStatus | null | undefined,
+  amsId: number,
+  extruderId?: number,
+): string | undefined {
+  return slotNozzle(status, amsId, extruderId)?.nozzle_flow || undefined;
+}
+
+type SlotNozzleStatus = {
+  nozzles?: { nozzle_diameter?: string; nozzle_flow?: string }[];
+  ams_extruder_map?: Record<string, number>;
+};
+
+function slotNozzle(status: SlotNozzleStatus | null | undefined, amsId: number, extruderId?: number) {
   const nozzles = status?.nozzles;
   if (!nozzles || nozzles.length === 0) return undefined;
-  const extruderIdx = status?.ams_extruder_map?.[String(amsId)] ?? 0;
-  const diameter = nozzles[extruderIdx]?.nozzle_diameter || nozzles[0]?.nozzle_diameter;
-  return diameter || undefined;
+  const extruderIdx = extruderId ?? status?.ams_extruder_map?.[String(amsId)] ?? 0;
+  // A hotend that has not reported yet falls back to the main one — for the
+  // diameter and the flow alike, both describe one nozzle.
+  return nozzles[extruderIdx]?.nozzle_diameter ? nozzles[extruderIdx] : nozzles[0];
 }
 
 /**

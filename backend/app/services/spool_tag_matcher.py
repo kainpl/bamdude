@@ -557,23 +557,15 @@ async def auto_assign_spool(
     try:
         client = printer_manager.get_client(printer_id)
         if client:
-            # Apply K-profile if available
-            nozzle_diameter = "0.4"
-            if state and state.nozzles:
-                nd = state.nozzles[0].nozzle_diameter
-                if nd:
-                    nozzle_diameter = nd
-
-            try:
-                nozzle_dia_float = float(nozzle_diameter)
-            except (TypeError, ValueError):
-                nozzle_dia_float = 0.4
-            nozzle_vt = str(getattr(state, "nozzle_volume_type", "standard") or "standard")
-
+            # Apply K-profile if available — against the nozzle THIS slot
+            # feeds. The RFID path used to bind every slot as extruder 0.
             from backend.app.services.calibration_service import (
                 apply_active_calibration_to_slot,
                 derive_effective_filament_id,
             )
+            from backend.app.utils.slot_nozzle import slot_nozzle
+
+            nozzle = slot_nozzle(state, ams_id, tray_id)
 
             effective_filament_id = await derive_effective_filament_id(
                 spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
@@ -586,9 +578,9 @@ async def auto_assign_spool(
                     ams_id=ams_id,
                     slot_id=tray_id,
                     filament_id=effective_filament_id,
-                    nozzle_diameter=nozzle_dia_float,
-                    nozzle_volume_type=nozzle_vt,
-                    extruder_id=0,
+                    nozzle_diameter=nozzle.diameter_float,
+                    nozzle_volume_type=nozzle.flow_or_standard,
+                    extruder_id=nozzle.extruder_or_default,
                     spool_id=spool.id,
                 )
                 if fired and fc:
@@ -614,7 +606,7 @@ async def auto_assign_spool(
                         tray_id=tray_id,
                         cali_idx=live_cali_idx,
                         filament_id=cali_filament_id,
-                        nozzle_diameter=nozzle_diameter,
+                        nozzle_diameter=nozzle.diameter,
                     )
                     logger.info(
                         "No stored K-profile for spool %d on printer %d AMS%d-T%d — preserved live cali_idx=%d",

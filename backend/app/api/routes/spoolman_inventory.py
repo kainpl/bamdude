@@ -1542,25 +1542,13 @@ async def assign_spoolman_slot(
             # K-profile cascade silently skipped state.kprofiles, defaulted
             # nozzle_diameter to 0.4, and left slot_extruder unset.
             state = printer_manager.get_status(body.printer_id)
-            nozzle_diameter = "0.4"
-            if state and state.nozzles:
-                nd = state.nozzles[0].nozzle_diameter
-                if nd:
-                    nozzle_diameter = nd
+            # The nozzle THIS slot feeds — diameter, hotend and flow type.
+            from backend.app.utils.slot_nozzle import slot_nozzle  # noqa: PLC0415
 
-            slot_extruder = None
-            if state and state.ams_extruder_map:
-                if body.ams_id == 255:
-                    # External slots: ext-L (tray 0) → extruder 1, ext-R (tray 1) → extruder 0
-                    # tray_id 0→1, 1→0
-                    slot_extruder = 1 - body.tray_id
-                else:
-                    slot_extruder = state.ams_extruder_map.get(str(body.ams_id))
-
-            try:
-                nozzle_dia_float = float(nozzle_diameter)
-            except (TypeError, ValueError):
-                nozzle_dia_float = 0.4
+            nozzle = slot_nozzle(state, body.ams_id, body.tray_id)
+            nozzle_diameter = nozzle.diameter
+            slot_extruder = nozzle.extruder
+            nozzle_dia_float = nozzle.diameter_float
 
             # Pick link by matching nozzle on the joined filament_calibration.
             matching_fc = await resolve_spoolman_slot_kprofile(
@@ -1569,6 +1557,7 @@ async def assign_spoolman_slot(
                 spoolman_spool_id=body.spoolman_spool_id,
                 nozzle_diameter=nozzle_dia_float,
                 slot_extruder=slot_extruder,
+                nozzle_flow=nozzle.flow,
             )
 
             # ONE identity path (spec A §5.2): the family catalog builds the
