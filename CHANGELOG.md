@@ -78,6 +78,18 @@
 
 ### Fixed
 
+- **Starting a print no longer switches the printer's AMS and print settings
+  off in BamDude.** A printer confirms a print job by echoing the job back, and
+  that echo was read as the printer's own status. The job carries a value that
+  shares a field with the printer's settings, so right after every dispatch —
+  from BamDude or from Bambu Studio — BamDude showed AMS auto-refill,
+  detect-on-insert and remaining-capacity estimation as off, reset the door
+  check, sounds, tangle and clog detection and AI monitoring to off, and took
+  the requested timelapse for the recorder's state. Printers that report these
+  settings continuously corrected themselves a second later; on the P1 and A1
+  families the wrong values stayed until the next full status. The same echo
+  also made a P1 or A1 offer "store sent files", which those printers do not
+  have.
 - **Reading one nozzle size's K-profiles no longer deletes the calibrations of
   every other size.** The printer reports its pressure-advance table one
   nozzle diameter at a time, and every answer — the nightly Git backup

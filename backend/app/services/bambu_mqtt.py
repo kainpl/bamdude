@@ -266,6 +266,28 @@ def is_successful_project_file(print_data: object) -> bool:
     )
 
 
+def is_printer_status_frame(print_data: object) -> bool:
+    """Whether a ``print`` payload is the printer reporting its OWN state.
+
+    The printer echoes a command's fields back in its acknowledgement, on the
+    same report topic and in the same envelope as a status push. A
+    ``project_file`` ack therefore carries what the SENDER put on the wire — the
+    per-job ``cfg`` storage bit and the per-job ``timelapse`` request — and read
+    as telemetry that is our own request coming back as the device's
+    configuration (upstream #3040). Only ``push_status``, and the firmware that
+    omits ``command`` on a status frame, describes the printer.
+
+    ⚠️ Not a blanket "ignore acks": the Printer / AMS Settings echoes of a
+    ``print_option`` command are read deliberately as the confirmation of a set.
+    This gates the fields a command can carry as a REQUEST that differs from the
+    state — ``cfg`` and ``timelapse``.
+    """
+    if not isinstance(print_data, dict):
+        return False
+    command = print_data.get("command")
+    return command is None or command == "push_status"
+
+
 def normalize_am_unit_id(ams_id: int) -> int:
     """Map the A2L AMS-Lite's physical unit id (16) to its normalised id (6).
 
@@ -2972,7 +2994,11 @@ class BambuMQTTClient:
             # fields; P1/A1 use home_flag (above). Each respects its 3 s hold so a
             # just-toggled value isn't clobbered; the named echoes below still
             # override on a fresh set.
-            _cfg_val = print_data.get("cfg")
+            #
+            # ⚠️ Status frames only: a ``project_file`` ack echoes the sender's
+            # per-job ``cfg`` ("4" / "0"), and decoded here it switched every
+            # one of these options OFF after each dispatch (#3040).
+            _cfg_val = print_data.get("cfg") if is_printer_status_frame(print_data) else None
             if _cfg_val is not None:
                 try:
                     _cfg_int = _cfg_val if isinstance(_cfg_val, int) else int(str(_cfg_val), 16)
@@ -3460,7 +3486,10 @@ class BambuMQTTClient:
         if isinstance(xcam, dict):
             self._apply_xcam_support(xcam)
 
-        cfg = _hx(data.get("cfg"))
+        # Status frames only: a ``project_file`` ack carries the sender's per-job
+        # cfg, and read here it declared "store sent files" supported on the P1
+        # and A1 families, which send no cfg of their own (#3040).
+        cfg = _hx(data.get("cfg")) if is_printer_status_frame(data) else None
         if cfg is not None:
             sup["snapshot"] = ((cfg >> 38) & 0x3) in (1, 2)
             # Store-sent-files support: X2D-class printers carry the value at cfg
@@ -5882,7 +5911,13 @@ class BambuMQTTClient:
         # Older builds report the first three under print.ams.{insert,power_on,
         # calibrate_remain}_flag — that path is handled in _handle_ams_data().
         # Respect the 3 s hold-timer in both cases.
-        cfg_raw = data.get("cfg")
+        #
+        # ⚠️ Status frames only. Every ``project_file`` — ours and Bambu
+        # Studio's — carries a per-job ``cfg`` the printer echoes back in its
+        # ack, and it read as "auto-refill, detect-on-insert and remaining
+        # capacity all OFF". It stuck on the families that send cfg only in a
+        # full status dump (P1, A1) (upstream #3040).
+        cfg_raw = data.get("cfg") if is_printer_status_frame(data) else None
         if isinstance(cfg_raw, str) and cfg_raw:
             try:
                 _cfg_int = int(cfg_raw, 16)
@@ -6140,7 +6175,9 @@ class BambuMQTTClient:
                 self.state.door_open = door_open
 
         # Parse timelapse status (recording active during print)
-        if "timelapse" in data:
+        # Status frames only: the project_file ack echoes the timelapse the job
+        # ASKED for, which is a request, not the recorder's state (#3040).
+        if "timelapse" in data and is_printer_status_frame(data):
             logger.debug("[%s] timelapse field: %s", self.serial_number, data["timelapse"])
             self.state.timelapse = data["timelapse"] is True
             # Track if timelapse was ever active during this print
