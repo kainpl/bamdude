@@ -17,6 +17,7 @@ import { Select } from '../components/Select';
 import { Modal } from '../components/Modal';
 import { LdapUserPicker } from '../components/LdapUserPicker';
 import { ZigbeeCoordinatorCard } from '../components/zigbee/ZigbeeCoordinatorCard';
+import { DryingSchedulesCard } from '../components/settings/DryingSchedulesCard';
 import { SensorsSection } from '../components/zigbee/SensorsSection';
 import { SmartPlugCard } from '../components/SmartPlugCard';
 import { AddSmartPlugModal } from '../components/AddSmartPlugModal';
@@ -6261,6 +6262,7 @@ export function SettingsPage() {
 
               </CardContent>
             </Card>
+            {hasPermission('printers:read') && <DryingSchedulesCard />}
           </div>
 
           {/* Right Column (2/3) - Display Name + Spool Catalog + Color Catalog */}

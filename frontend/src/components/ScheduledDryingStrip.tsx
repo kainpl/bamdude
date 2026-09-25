@@ -1,17 +1,11 @@
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Clock, Pause, Play, Repeat, X } from 'lucide-react';
+import { Clock, Pause, Pencil, Play, Repeat, X } from 'lucide-react';
 import { api, type DryingSchedule, type ScheduledDryingRun } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
-import { weekdaysLabel } from '../utils/scheduledDrying';
-
-// One fleet-wide query each: every printer card reads the same lists.
-export const SCHEDULED_DRYINGS_KEY = ['scheduled-dryings'] as const;
-export const DRYING_SCHEDULES_KEY = ['drying-schedules'] as const;
-
-function amsLabel(amsId: number) {
-  return amsId >= 128 ? `HT-${String.fromCharCode(65 + amsId - 128)}` : `AMS-${String.fromCharCode(65 + amsId)}`;
-}
+import { DRYING_SCHEDULES_KEY, SCHEDULED_DRYINGS_KEY, amsLabel, weekdaysLabel } from '../utils/scheduledDrying';
+import { DryingScheduleModal } from './DryingScheduleModal';
 
 function didNotHappen(run: ScheduledDryingRun) {
   return run.status === 'failed' || run.status === 'skipped';
@@ -22,6 +16,7 @@ export function ScheduledDryingStrip({ printerId }: { printerId: number }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
+  const [editing, setEditing] = useState<DryingSchedule | null>(null);
   const { data: runs = [] } = useQuery({
     queryKey: SCHEDULED_DRYINGS_KEY,
     queryFn: () => api.listScheduledDryings(),
@@ -110,6 +105,15 @@ export function ScheduledDryingStrip({ printerId }: { printerId: number }) {
             </span>
             <button
               type="button"
+              onClick={() => setEditing(rule)}
+              aria-label={t('printers.drying.editSchedule')}
+              title={t('printers.drying.editSchedule')}
+              className="shrink-0 hover:text-white"
+            >
+              <Pencil className="w-3 h-3" />
+            </button>
+            <button
+              type="button"
               onClick={() => toggle.mutate(rule)}
               disabled={toggle.isPending}
               aria-label={toggleLabel}
@@ -131,6 +135,7 @@ export function ScheduledDryingStrip({ printerId }: { printerId: number }) {
           </div>
         );
       })}
+      {editing && <DryingScheduleModal rule={editing} onClose={() => setEditing(null)} />}
     </div>
   );
 }

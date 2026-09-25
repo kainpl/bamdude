@@ -3076,6 +3076,18 @@ export default {
     printDryingEnabledDescription: 'Allow auto-drying to keep running during a print on supported hardware (H2D, H2C, H2S, P2S, H2D Pro, X2D, X1C, A2L on recent firmware). Drying temperature is automatically capped 5°C below the idle preset to protect spools.',
     dryingPresets: 'Drying Presets',
     dryingPresetsDescription: 'Temperature and duration per filament type. AMS 2 Pro uses lower temps, AMS-HT supports higher temps.',
+    dryingSchedules: {
+      title: 'Drying schedules',
+      empty: 'No drying schedules yet',
+      hint: 'Schedules are created from the drying popover on a printer card. Times are farm time ({{tz}}).',
+      enabled: 'Enabled',
+      paused: 'paused',
+      columns: {
+        printer: 'Printer',
+        when: 'When',
+        parameters: 'Drying',
+      },
+    },
     dryingFilament: 'Filament',
     humidityThresholds: 'Per-Filament Humidity Thresholds',
     humidityThresholdsDescription: 'Humidity level (%) that triggers auto-drying and alarms, per filament type. Leave a row blank to use the default. Lower is stricter (e.g. Nylon wants drier air than PLA).',

@@ -5090,6 +5090,10 @@ export interface NotificationProvider {
   on_ams_humidity_high: boolean;
   on_ams_temperature_high: boolean;
   on_ams_drying_suspended: boolean;
+  // Scheduled drying
+  on_scheduled_drying_started: boolean;
+  on_scheduled_drying_completed: boolean;
+  on_scheduled_drying_failed: boolean;
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high: boolean;
   on_ams_ht_temperature_high: boolean;
@@ -5161,6 +5165,10 @@ export interface NotificationProviderCreate {
   on_ams_humidity_high?: boolean;
   on_ams_temperature_high?: boolean;
   on_ams_drying_suspended?: boolean;
+  // Scheduled drying
+  on_scheduled_drying_started?: boolean;
+  on_scheduled_drying_completed?: boolean;
+  on_scheduled_drying_failed?: boolean;
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high?: boolean;
   on_ams_ht_temperature_high?: boolean;
@@ -5225,6 +5233,10 @@ export interface NotificationProviderUpdate {
   on_ams_humidity_high?: boolean;
   on_ams_temperature_high?: boolean;
   on_ams_drying_suspended?: boolean;
+  // Scheduled drying
+  on_scheduled_drying_started?: boolean;
+  on_scheduled_drying_completed?: boolean;
+  on_scheduled_drying_failed?: boolean;
   // AMS-HT environmental alarms
   on_ams_ht_humidity_high?: boolean;
   on_ams_ht_temperature_high?: boolean;

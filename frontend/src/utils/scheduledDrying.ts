@@ -1,5 +1,9 @@
 export type DryingStartMode = 'now' | 'delay' | 'at' | 'when_free' | 'repeat';
 
+// One fleet-wide query each: every printer card reads the same lists.
+export const SCHEDULED_DRYINGS_KEY = ['scheduled-dryings'] as const;
+export const DRYING_SCHEDULES_KEY = ['drying-schedules'] as const;
+
 // Monday = bit 0 … Sunday = bit 6, as the backend stores ``weekdays``.
 export const WEEKDAY_BITS = [1, 2, 4, 8, 16, 32, 64];
 export const ALL_WEEKDAYS = 127;
@@ -19,6 +23,11 @@ export function computeStartAfter(
   if (mode === 'at') return opts.at ? new Date(opts.at).toISOString() : undefined;
   if (mode === 'when_free') return null;
   return undefined;
+}
+
+/** "AMS-A" for AMS 0, "HT-A" for AMS-HT 128 — the label the printer card uses. */
+export function amsLabel(amsId: number): string {
+  return amsId >= 128 ? `HT-${String.fromCharCode(65 + amsId - 128)}` : `AMS-${String.fromCharCode(65 + amsId)}`;
 }
 
 export function weekdaysLabel(mask: number, t: (key: string) => string): string {
