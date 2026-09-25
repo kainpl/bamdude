@@ -101,6 +101,20 @@
 
 ### Fixed
 
+- **Importing from MakerWorld on Windows no longer fails with "unable to get
+  local issuer certificate".** MakerWorld often hands the 3MF out as an Amazon
+  S3 link, and that one download checked the certificate against the operating
+  system's store rather than the bundle every other connection uses. Windows
+  fills its store lazily, so on a machine that had not met that Amazon root yet
+  the import failed after everything before it had worked. The download now
+  trusts the same bundle as the rest of BamDude.
+- **An expired Bambu Cloud sign-in is shown as expired on the MakerWorld page.**
+  When Bambu stopped accepting the stored token, the page still read as signed
+  in, and an import failed with Bambu's bare "Please login." — or with advice
+  to open a Settings page that does not exist. The page now says the sign-in
+  has expired, keeps import and print switched off until you sign in again,
+  and a refused request says where to do that: the Profiles page.
+  `GET /makerworld/status` reports it as `sign_in_expired`.
 - **A spool of PLA Aero, a carbon- or glass-filled filament, or one without a
   filament profile no longer drops off the slot it was just assigned to.** The
   slot is configured with the type of the spool's filament profile — `PLA-AERO`
