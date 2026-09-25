@@ -2153,33 +2153,38 @@ class BackgroundDispatchService:
                 # it through the transport would have silently dropped the
                 # configured socket timeout and the retry settings on the path
                 # that already works for every printer with a card.
-                if storage != "external":
-                    uploaded = await transport.upload(Path(upload_file_path), remote_filename, upload_progress_callback)
-                elif ftp_retry_enabled:
-                    uploaded = await with_ftp_retry(
-                        upload_file_async,
-                        printer_ip,
-                        printer_access_code,
-                        upload_file_path,
-                        remote_path,
-                        progress_callback=upload_progress_callback,
-                        socket_timeout=ftp_timeout,
-                        printer_model=printer_model,
-                        max_retries=ftp_retry_count,
-                        retry_delay=ftp_retry_delay,
-                        operation_name=f"Upload for reprint to {printer_name}",
-                        non_retry_exceptions=(DispatchJobCancelled,),
-                    )
-                else:
-                    uploaded = await upload_file_async(
-                        printer_ip,
-                        printer_access_code,
-                        upload_file_path,
-                        remote_path,
-                        progress_callback=upload_progress_callback,
-                        socket_timeout=ftp_timeout,
-                        printer_model=printer_model,
-                    )
+                # The printer may go quiet on MQTT while it takes the file; that is
+                # not a stale session (spec direct-print-silent-cancel §4.2).
+                with printer_manager.transfer_in_progress(job.printer_id):
+                    if storage != "external":
+                        uploaded = await transport.upload(
+                            Path(upload_file_path), remote_filename, upload_progress_callback
+                        )
+                    elif ftp_retry_enabled:
+                        uploaded = await with_ftp_retry(
+                            upload_file_async,
+                            printer_ip,
+                            printer_access_code,
+                            upload_file_path,
+                            remote_path,
+                            progress_callback=upload_progress_callback,
+                            socket_timeout=ftp_timeout,
+                            printer_model=printer_model,
+                            max_retries=ftp_retry_count,
+                            retry_delay=ftp_retry_delay,
+                            operation_name=f"Upload for reprint to {printer_name}",
+                            non_retry_exceptions=(DispatchJobCancelled,),
+                        )
+                    else:
+                        uploaded = await upload_file_async(
+                            printer_ip,
+                            printer_access_code,
+                            upload_file_path,
+                            remote_path,
+                            progress_callback=upload_progress_callback,
+                            socket_timeout=ftp_timeout,
+                            printer_model=printer_model,
+                        )
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
@@ -2841,33 +2846,38 @@ class BackgroundDispatchService:
                 # it through the transport would have silently dropped the
                 # configured socket timeout and the retry settings on the path
                 # that already works for every printer with a card.
-                if storage != "external":
-                    uploaded = await transport.upload(Path(upload_file_path), remote_filename, upload_progress_callback)
-                elif ftp_retry_enabled:
-                    uploaded = await with_ftp_retry(
-                        upload_file_async,
-                        printer_ip,
-                        printer_access_code,
-                        upload_file_path,
-                        remote_path,
-                        progress_callback=upload_progress_callback,
-                        socket_timeout=ftp_timeout,
-                        printer_model=printer_model,
-                        max_retries=ftp_retry_count,
-                        retry_delay=ftp_retry_delay,
-                        operation_name=f"Upload for print to {printer_name}",
-                        non_retry_exceptions=(DispatchJobCancelled,),
-                    )
-                else:
-                    uploaded = await upload_file_async(
-                        printer_ip,
-                        printer_access_code,
-                        upload_file_path,
-                        remote_path,
-                        progress_callback=upload_progress_callback,
-                        socket_timeout=ftp_timeout,
-                        printer_model=printer_model,
-                    )
+                # The printer may go quiet on MQTT while it takes the file; that is
+                # not a stale session (spec direct-print-silent-cancel §4.2).
+                with printer_manager.transfer_in_progress(job.printer_id):
+                    if storage != "external":
+                        uploaded = await transport.upload(
+                            Path(upload_file_path), remote_filename, upload_progress_callback
+                        )
+                    elif ftp_retry_enabled:
+                        uploaded = await with_ftp_retry(
+                            upload_file_async,
+                            printer_ip,
+                            printer_access_code,
+                            upload_file_path,
+                            remote_path,
+                            progress_callback=upload_progress_callback,
+                            socket_timeout=ftp_timeout,
+                            printer_model=printer_model,
+                            max_retries=ftp_retry_count,
+                            retry_delay=ftp_retry_delay,
+                            operation_name=f"Upload for print to {printer_name}",
+                            non_retry_exceptions=(DispatchJobCancelled,),
+                        )
+                    else:
+                        uploaded = await upload_file_async(
+                            printer_ip,
+                            printer_access_code,
+                            upload_file_path,
+                            remote_path,
+                            progress_callback=upload_progress_callback,
+                            socket_timeout=ftp_timeout,
+                            printer_model=printer_model,
+                        )
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)

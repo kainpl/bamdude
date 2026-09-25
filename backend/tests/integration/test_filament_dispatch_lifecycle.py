@@ -51,7 +51,7 @@ def _clear_synthetic_run_bindings():
 @pytest.mark.parametrize("kind", ["print_library_file", "reprint_archive"])
 @pytest.mark.parametrize("owner", ["direct", "queue"])
 @pytest.mark.parametrize(
-    "change", ["upload", "preheat", "calibration", "source", "cancel", "reclaim", "delete", "success"]
+    "change", ["upload", "preheat", "calibration", "source", "cancel", "reclaim", "delete", "success", "silence"]
 )
 async def test_late_refusal_restores_source_and_does_not_count_a_print(
     db_session,
@@ -63,7 +63,12 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
     owner,
     change,
 ):
+    import time
+
     import backend.app.services.background_dispatch as bd
+
+    # "silence" is the 2026-09-24 incident and must START the print like "success".
+    ok = change in {"success", "silence"}
 
     source, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     monkeypatch.setattr(settings, "base_dir", tmp_path)
@@ -127,6 +132,13 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         elif change == "source":
             with Path(source.file_path).open("ab") as stream:
                 stream.write(b"source revision changed")
+        elif change == "silence":
+            # The incident (vault a1-mini-reprint-silently-cancelled-2026-09-25): the
+            # printer goes quiet past the stale timeout mid-upload and a status read
+            # lands meanwhile — the session must survive it.
+            mqtt._last_message_time = time.time() - 2 * mqtt.STALE_TIMEOUT
+            printer_manager.get_status(printer_id)
+            assert mqtt.state.connected, "a stale reconnect mid-upload would empty the feed cache"
         return True
 
     async def preheat(*args, **kwargs):
@@ -193,7 +205,7 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         )
         await service._run_active_job(job)
         assert job.completion_event.is_set()
-        assert bool(job.outcome.get("deferred")) == (change != "success"), job.outcome
+        assert bool(job.outcome.get("deferred")) == (not ok), job.outcome
         refused = change in {"upload", "preheat", "calibration", "source"}
         # A direct refusal is a failed dispatch to the batch — the toast closes as
         # "1 failed" instead of spinning on "Starting prints" (spec
@@ -206,13 +218,13 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
             for call in bd.ws_manager.broadcast.await_args_list
             if ((call.args[0].get("data") or {}).get("recent_event") or {}).get("status") == "deferred"
         ]
-        if change != "success":
+        if not ok:
             assert [event["failed"] for event in finished] == [1 if refused else 0]
         assert service._batch_failed == 0
         assert service._batch_completed == 0  # No UI batch is registered by this direct wrapper harness.
-        if change == "success":
+        if ok:
             assert job.outcome["success"] is True
-    if change == "success":
+    if ok:
         import json
 
         from backend.app.services.filament_policy import restore_routing_source

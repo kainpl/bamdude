@@ -2176,6 +2176,12 @@ class BambuMQTTClient:
         # Timestamp of last stale reconnect - prevents rapid-fire socket closes
         # when the frontend polls status faster than paho can reconnect.
         self._last_stale_reconnect: float = 0.0
+        # File transfers in flight to this printer (spec direct-print-silent-cancel
+        # §4.2). A printer on a weak link goes quiet on MQTT while it swallows a
+        # file; a stale reconnect in that window empties the feed cache with the new
+        # generation and costs a prepared print its start.
+        self._transfers_active: int = 0
+        self._transfer_ended_at: float = 0.0
 
         # Zombie session detection via ams_filament_setting response tracking (#887).
         # The dev-mode probe only runs on first connect; this catches zombie sessions
@@ -2280,12 +2286,30 @@ class BambuMQTTClient:
         """Last received MQTT message, without reconnecting or refreshing it."""
         return self._last_message_time or None
 
+    def begin_transfer(self) -> None:
+        """A file transfer to this printer started: its silence is not staleness until it ends."""
+        self._transfers_active += 1
+
+    def end_transfer(self) -> None:
+        """…and from here silence is counted again — from now, not from the last message before it."""
+        self._transfers_active = max(0, self._transfers_active - 1)
+        self._transfer_ended_at = time.time()
+
     def is_stale(self) -> bool:
-        """Check if the connection is stale (no messages for too long)."""
+        """Check if the connection is stale (no messages for too long).
+
+        ⚠️ Not while a file is being transferred to the printer, and not until a
+        full ``STALE_TIMEOUT`` after it: measured from the last message alone, the
+        first status read after a 100 s upload would reconnect a printer that
+        simply had not spoken yet. A dead socket is still paho's keepalive's to
+        catch — this only defers the reaction to SILENCE.
+        """
         if self._last_message_time == 0:
             return False  # Never received a message yet
-        time_since_last = time.time() - self._last_message_time
-        return time_since_last > self.STALE_TIMEOUT
+        if self._transfers_active:
+            return False
+        reference = max(self._last_message_time, self._transfer_ended_at)
+        return time.time() - reference > self.STALE_TIMEOUT
 
     # Minimum seconds between stale reconnect attempts.  Frontend polls
     # status every few seconds - without a cooldown, each poll would

@@ -6,6 +6,7 @@ import secrets
 import time
 import traceback
 from collections.abc import Callable
+from contextlib import contextmanager
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1661,6 +1662,23 @@ class PrinterManager:
         if printer_id not in self._clients:
             return False
         return self._clients[printer_id].send_drying_command(ams_id, temp, duration, mode, filament, rotate_tray)
+
+    @contextmanager
+    def transfer_in_progress(self, printer_id: int):
+        """Hold the MQTT stale detector off this printer for the length of a file transfer.
+
+        The client is captured on entry: if ``connection_watchdog`` rebuilds the
+        session mid-transfer, the hold is released on the object that took it and
+        never lands on the new one. No client — nothing to hold.
+        """
+        client = self._clients.get(printer_id)
+        if client is not None:
+            client.begin_transfer()
+        try:
+            yield
+        finally:
+            if client is not None:
+                client.end_transfer()
 
     def request_status_update(self, printer_id: int) -> bool:
         """Request a full status update from the printer.
