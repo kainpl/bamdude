@@ -172,6 +172,14 @@
   dries — and is judged — as its base material, nylon under any of its
   spellings (NYLON, PA6, PA11, PA12, PAHT, PPA) as PA; the preheat stage reads
   the chamber target the same way.
+- **AMS slots are no longer offered as places to store a spool.** In
+  Spoolman mode the Storage Location list could show entries like
+  `H2D-1 - AMS A1` or `External Spool` beside real shelves — slot markers an
+  older version wrote into Spoolman's location field, imported back on every
+  sync — and they could not be deleted. The sync now skips them and the ones
+  already in the list are removed, unless a spool here is filed under one.
+  The strings stay on your Spoolman spools; only the list stops offering
+  them. Shelves that merely mention an AMS, like "AMS Drybox", are kept.
 - **Linking a tag another spool already carries answers with that spool.**
   When two active spools held the same tag — nothing stops that: editing a
   spool or adding several at once copies the tag unchecked — linking it to a

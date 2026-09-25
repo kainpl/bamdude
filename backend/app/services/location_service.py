@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -17,6 +18,23 @@ from backend.app.models.spool import Spool
 logger = logging.getLogger(__name__)
 
 DUPLICATE_LOCATION_NAME = "A location with this name already exists"
+
+# AMS residency markers, not storage locations. Older versions wrote the slot a
+# spool was loaded into -- "<printer> - AMS A1", the shape
+# ``SpoolmanClient.convert_ams_slot_to_location`` produces -- straight into
+# Spoolman's ``location`` field. The strings survive on people's Spoolman spools,
+# and importing them offered a printer slot as somewhere to put a spool away. A
+# slot is where a spool is loaded (slot assignments track that), not where it is
+# stored. Narrow on purpose: "AMS Drybox" is somebody's shelf (upstream 537b4d25).
+_AMS_SLOT_LOCATION_RE = re.compile(
+    r"^(?:.+\s-\s)?(?:AMS[- ]HT [A-Z]\d+|AMS [A-Z]\d+|External Spool)$",
+    re.IGNORECASE,
+)
+
+
+def is_ams_slot_location(name: str) -> bool:
+    """True when a location string names a printer slot rather than a storage place."""
+    return bool(_AMS_SLOT_LOCATION_RE.match(name.strip()))
 
 
 def normalize_location_name(name: str) -> str:
@@ -264,7 +282,9 @@ async def sync_locations_from_spoolman(db: AsyncSession, client) -> bool:
     by_key: dict[str, str] = {}
     for raw in names:
         name = (raw or "").strip()
-        if not name:
+        # A slot marker is left on the Spoolman spool (the user's data on the
+        # user's server) but is not offered as a place to store one.
+        if not name or is_ams_slot_location(name):
             continue
         key = location_name_key(name)
         if key not in by_key:
