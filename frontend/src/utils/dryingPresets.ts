@@ -7,11 +7,17 @@ export type DryingPreset = { n3f: number; n3s: number; n3f_hours: number; n3s_ho
 
 // Materials whose AMS spelling differs from the preset table's key. Bambu
 // labels nylon "PA" while its own composites spell the family out, so PA6 and
-// PAHT would otherwise miss a table that has a perfectly good PA row.
+// PAHT would otherwise miss a table that has a perfectly good PA row. PPA is an
+// aromatic polyamide rather than a nylon grade, but it takes up moisture the same
+// way. Mirrors MATERIAL_KEY_ALIASES in backend/app/utils/material_keys.py (a test
+// pins the two together).
 const DRYING_MATERIAL_ALIASES: Record<string, string> = {
   NYLON: 'PA',
   PA6: 'PA',
+  PA11: 'PA',
+  PA12: 'PA',
   PAHT: 'PA',
+  PPA: 'PA',
 };
 
 /**

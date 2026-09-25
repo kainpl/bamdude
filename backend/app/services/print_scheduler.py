@@ -54,6 +54,7 @@ from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, require_source_file
 from backend.app.services.stagger_groups import GroupKey, StaggerGroupResolver, StaggerSplit
 from backend.app.utils.filament_types import canonical_filament_type
+from backend.app.utils.material_keys import resolve_material_key
 
 logger = logging.getLogger(__name__)
 
@@ -1527,8 +1528,8 @@ class PrintScheduler:
             if not tray_type:
                 continue
             # Normalize filament type for preset lookup (e.g., "PLA Basic" -> "PLA")
-            base_type = tray_type.split()[0].upper()
-            preset = presets.get(base_type)
+            base_type = resolve_material_key(tray_type, presets)
+            preset = presets.get(base_type) if base_type else None
             if not preset:
                 continue
 
@@ -1592,8 +1593,8 @@ class PrintScheduler:
             tray_type = str(tray.get("tray_type") or "").strip()
             if not tray_type:
                 continue
-            base_type = tray_type.split()[0].upper()
-            candidates.append(thresholds.get(base_type, default))
+            key = resolve_material_key(tray_type, thresholds)
+            candidates.append(thresholds[key] if key is not None and key != "default" else default)
         if not candidates:
             return default
         return min(candidates)

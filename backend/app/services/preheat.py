@@ -60,6 +60,7 @@ from backend.app.services.printer_manager import (
     supports_chamber_heater,
     supports_chamber_temp,
 )
+from backend.app.utils.material_keys import resolve_material_key
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -212,11 +213,12 @@ def _target_for_type(material: str | None, targets: dict[str, int]) -> int:
     # A filled or foamed variant with no row of its own wants its base
     # material's chamber: ASA-GF is ASA and needs ASA's 45 °C, not the 0 an
     # unknown type falls to. The full type is tried first, so PETG-CF and PA-CF
-    # keep their own hotter rows (upstream #2902).
-    target = targets.get(normalised)
-    if target is None:
-        target = targets.get(normalised.split("-")[0], targets.get("DEFAULT", 0))
-    return target
+    # keep their own hotter rows (upstream #2902); the polyamide spellings
+    # (PA6, PAHT, PPA …) read the PA row through the shared alias map (#3067).
+    key = resolve_material_key(material, targets)
+    if key is None or key == "DEFAULT":
+        return targets.get("DEFAULT", 0)
+    return targets[key]
 
 
 def _used_source_ids(ams_mapping: Any) -> set[int] | None:
