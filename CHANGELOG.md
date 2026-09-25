@@ -186,6 +186,13 @@
   languages — and the notification for a failed print names the reason in
   the system language. Reopening the archive editor on a reason it does not
   recognise no longer blanks it on Save; the text is kept as its own option.
+- **Skip Objects works again after BamDude restarts mid-print.** After a
+  restart the printer card knew no objects for the running print and greyed
+  out its Skip Objects button for the rest of the print — and the button was
+  the only way to open the list that would have reloaded them. The button
+  now stays usable until the list is known (only a print with exactly one
+  object disables it), and the list is taken from the archive of the print
+  that is actually running, never from a leftover one.
 - **The bed temperature is read from the filaments that print.** A plate's
   temperature is stored per filament, and a 0 means that filament cannot use
   the plate; the archive read the first entry, so a project whose first

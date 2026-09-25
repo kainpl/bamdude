@@ -4236,7 +4236,12 @@ async def get_printable_objects(
         # populated ``printable_objects``, but the archive copy already exists.
         # Falls back to an FTP pull from the printer only when no usable archive
         # file is found (the old behaviour, which fails for many slicer prints).
-        if not client.state.printable_objects:
+        # Anchored on the firmware's subtask_id, which it mints per print: the
+        # newest "printing" row could be a leftover whose completion was never
+        # seen, lending its objects to another job. Without an id the archive is
+        # not guessed at — the FTP fallback below asks the printer (upstream cfecfa36).
+        running_subtask = str(getattr(client.state, "subtask_id", "") or "").strip()
+        if not client.state.printable_objects and running_subtask not in ("", "0"):
             try:
                 ar = (
                     (
@@ -4245,6 +4250,7 @@ async def get_printable_objects(
                             .where(
                                 PrintArchive.printer_id == printer_id,
                                 PrintArchive.status == "printing",
+                                PrintArchive.subtask_id == running_subtask,
                                 PrintArchive.file_path != "",
                             )
                             .order_by(PrintArchive.id.desc())

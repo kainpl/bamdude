@@ -4222,23 +4222,37 @@ function PrinterCard({
               <>
                 {/* Current Print or Idle Placeholder */}
                 <div className="mb-4 p-3 bg-bambu-dark rounded-lg relative">
-                  {/* Skip Objects button - top right corner, always visible */}
+                  {/* Skip Objects button - top right corner, always visible.
+                      A running print always has at least one object, so a count of
+                      0 means "not loaded yet" (a restart mid-print), not "nothing to
+                      skip" — and support is unknown then too. Disabling on 0 killed
+                      the only control that opens the modal, whose fetch is what
+                      rebuilds the list (upstream cfecfa36). Exactly one object is
+                      the real nothing-to-skip case. */}
+                  {(() => {
+                    const objectCount = status.printable_objects_count ?? 0;
+                    const printing = status.state === 'RUNNING' || status.state === 'PAUSE';
+                    const canSkipObjects =
+                      printing
+                      && hasPermission('printers:control')
+                      && (objectCount === 0 || (objectCount >= 2 && (status.skip_objects_supported ?? false)));
+                    return (
                   <button
                     onClick={() => setShowSkipObjectsModal(true)}
-                    disabled={!(status.state === 'RUNNING' || status.state === 'PAUSE') || (status.printable_objects_count ?? 0) < 2 || !(status.skip_objects_supported ?? false) || !hasPermission('printers:control')}
+                    disabled={!canSkipObjects}
                     className={`absolute top-2 right-2 p-1.5 rounded transition-colors z-10 ${
-                      (status.state === 'RUNNING' || status.state === 'PAUSE') && (status.printable_objects_count ?? 0) >= 2 && (status.skip_objects_supported ?? false) && hasPermission('printers:control')
+                      canSkipObjects
                         ? 'text-bambu-gray hover:text-white hover:bg-white/10'
                         : 'text-bambu-gray/30 cursor-not-allowed'
                     }`}
                     title={
                       !hasPermission('printers:control')
                         ? t('printers.permission.noControl')
-                        : !(status.state === 'RUNNING' || status.state === 'PAUSE')
+                        : !printing
                           ? t('printers.skipObjects.onlyWhilePrinting')
-                          : (status.printable_objects_count ?? 0) >= 2
-                            ? t('printers.skipObjects.tooltip')
-                            : t('printers.skipObjects.requiresMultiple')
+                          : objectCount === 1
+                            ? t('printers.skipObjects.requiresMultiple')
+                            : t('printers.skipObjects.tooltip')
                     }
                   >
                     <SkipObjectsIcon className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
@@ -4249,6 +4263,8 @@ function PrinterCard({
                       </span>
                     )}
                   </button>
+                    );
+                  })()}
                   <div className="flex gap-3">
                     {/* Cover Image */}
                     <CoverImage
