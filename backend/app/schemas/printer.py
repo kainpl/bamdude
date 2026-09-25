@@ -407,6 +407,9 @@ class FilaSwitchResponse(BaseModel):
     out_extruders: list[int] = []
     stat: int = 0
     info: int = 0
+    # BambuStudio DevFilaSwitch::IsReady — every AMS bound to one of the two
+    # inlets. Until then a load cannot be routed (upstream 9500c046).
+    ready: bool = False
 
 
 class AmsLabelBody(BaseModel):
@@ -522,6 +525,9 @@ class PrinterStatus(BaseModel):
     # regular dual-nozzle printers. Upstream #1162.
     fila_switch: FilaSwitchResponse | None = None
     fila_switch_pending_confirmation: bool = False
+    # Which switch inlet each AMS feeds, {ams_id: "A" | "B"} (upstream 7a42e0a7).
+    # Empty unless a switch is installed.
+    ams_switch_inlet: dict[str, str] = {}
     # Currently loaded tray (global ID): 254 = external spool, 255 = no filament
     tray_now: int = 255
     # Runout / filament-replacement guidance (upstream #2587). Populated only while

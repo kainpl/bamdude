@@ -33,6 +33,45 @@ export function normalizeColorForCompare(color: string | undefined): string {
 }
 
 /**
+ * Which side letter stands for a Filament Track Switch inlet: In-A reads as L,
+ * In-B as R.
+ *
+ * This labels the inlet's position, not the nozzle it feeds — the switch can
+ * route either inlet to either nozzle, and it never reports which pairing is
+ * live. Anywhere this letter is shown next to a hover target, the tooltip names
+ * the inlet outright so the two cannot be confused (upstream 7a42e0a7).
+ */
+export const FTS_INLET_SIDE = { A: 'L', B: 'R' } as const;
+
+/**
+ * Which side indicator, if any, belongs on an AMS card header.
+ *
+ * Three sources, in descending authority:
+ *   1. A Filament Track Switch inlet binding — the AMS feeds both nozzles
+ *      through the switch, so the inlet is the only meaningful label.
+ *   2. A real extruder id from ams_extruder_map.
+ *   3. The AMS unit id, as a last-resort guess for dual-nozzle printers that
+ *      never reported a map. Suppressed when a switch is installed: every unit
+ *      then reports extruder 0xE, so the guess would label AMS 0 "R" and AMS 1
+ *      "L" from nothing but their unit numbers.
+ */
+export function amsSideBadge(
+  amsId: number,
+  amsExtruderMap: Record<string, number>,
+  amsSwitchInlet: Record<string, 'A' | 'B'>,
+  ftsInstalled: boolean,
+): { kind: 'inlet'; inlet: 'A' | 'B' } | { kind: 'nozzle'; side: 'L' | 'R' } | null {
+  const inlet = amsSwitchInlet[String(amsId)];
+  if (inlet) return { kind: 'inlet', inlet };
+
+  const mapped = amsExtruderMap[String(amsId)];
+  const extruderId = mapped !== undefined ? mapped : ftsInstalled ? undefined : amsId >= 128 ? amsId - 128 : amsId;
+  if (extruderId === 1) return { kind: 'nozzle', side: 'L' };
+  if (extruderId === 0) return { kind: 'nozzle', side: 'R' };
+  return null;
+}
+
+/**
  * AMS unit label using the codebase convention: "AMS-A / AMS-B / ..." for
  * regular AMS, "HT-A / HT-B / ..." for AMS-HT (single-tray modules with
  * IDs starting at 128). `trayCount` is required because the type can't be

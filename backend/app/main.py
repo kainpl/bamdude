@@ -1702,6 +1702,32 @@ async def _maybe_notify_printer_offline(printer_id: int) -> None:
         _printer_offline_notify_tasks.pop(printer_id, None)
 
 
+def _fts_status_key(state: PrinterState) -> tuple:
+    """The Filament Track Switch part of the status broadcast dedup key.
+
+    A freshly connected real ``PrinterState`` always carries the default
+    FilaSwitchState; partial snapshots during startup are tolerated — absence
+    means no FTS evidence, never installed. The inlet bindings and readiness are
+    in it because neither lives in the tray part of the key nor in the AMS
+    change-hash (tray fields only, it drives Spoolman sync): without them
+    "Join IN-B" on the printer screen moved nothing on the page (upstream
+    7a42e0a7).
+    """
+    from backend.app.utils.fila_switch import inlet_bindings, switch_ready
+
+    fila_switch = getattr(state, "fila_switch", None)
+    return (
+        getattr(fila_switch, "installed", False),
+        getattr(state, "fts_pending_confirmation", False),
+        tuple(getattr(fila_switch, "in_slots", ())),
+        tuple(getattr(fila_switch, "out_extruders", ())),
+        getattr(fila_switch, "stat", 0),
+        getattr(fila_switch, "info", 0),
+        tuple(sorted(inlet_bindings(state).items())),
+        switch_ready(state),
+    )
+
+
 async def on_printer_status_change(printer_id: int, state: PrinterState):
     """Handle printer status changes - broadcast via WebSocket."""
     # Only broadcast if something meaningful changed (reduce WebSocket spam)
@@ -1778,18 +1804,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if state.ams_backup_groups is not None
         else None
     )
-    # A freshly connected real ``PrinterState`` always carries the default
-    # FilaSwitchState. Keep the status callback compatible with partial state
-    # snapshots during startup: absence means no FTS evidence, never installed.
-    fila_switch = getattr(state, "fila_switch", None)
-    fts_key = (
-        getattr(fila_switch, "installed", False),
-        getattr(state, "fts_pending_confirmation", False),
-        tuple(getattr(fila_switch, "in_slots", ())),
-        tuple(getattr(fila_switch, "out_extruders", ())),
-        getattr(fila_switch, "stat", 0),
-        getattr(fila_switch, "info", 0),
-    )
+    fts_key = _fts_status_key(state)
     status_key = (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:"
         f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:"

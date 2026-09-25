@@ -24,6 +24,7 @@ from backend.app.services.bambu_mqtt import (
     airduct_parts_effective,
     get_stage_name,
 )
+from backend.app.utils.fila_switch import inlet_bindings, switch_ready
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
 from backend.app.utils.printer_configs import airduct_fan_label, get_device_support_flags, is_bed_slinger
 from backend.app.utils.printer_storage import storage_capability_for
@@ -2338,11 +2339,17 @@ def printer_state_to_dict(
                 "out_extruders": list(state.fila_switch.out_extruders),
                 "stat": state.fila_switch.stat,
                 "info": state.fila_switch.info,
+                # BS DevFilaSwitch::IsReady — every AMS bound to an inlet. A load
+                # cannot be routed until it is (utils/fila_switch).
+                "ready": switch_ready(state),
             }
             if state.fila_switch.installed
             else None
         ),
         "fila_switch_pending_confirmation": getattr(state, "fts_pending_confirmation", False) is True,
+        # Which switch inlet each AMS feeds (upstream 7a42e0a7). Always present so
+        # a push that loses the switch clears the page's cached badges.
+        "ams_switch_inlet": inlet_bindings(state),
         # WiFi signal strength
         "wifi_signal": state.wifi_signal,
         "wired_network": state.wired_network,

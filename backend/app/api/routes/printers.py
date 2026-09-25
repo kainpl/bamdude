@@ -108,6 +108,7 @@ from backend.app.services.printer_manager import (
 )
 from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
 from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
+from backend.app.utils.fila_switch import inlet_bindings, switch_ready
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
 from backend.app.utils.printer_configs import is_bed_slinger
@@ -1538,11 +1539,16 @@ async def _build_printer_status(
                 out_extruders=list(state.fila_switch.out_extruders),
                 stat=state.fila_switch.stat,
                 info=state.fila_switch.info,
+                # Computed here as well as in printer_state_to_dict: this is what
+                # the page has before any push, and a default False would tell a
+                # correctly set-up machine its switch is not set up.
+                ready=switch_ready(state),
             )
             if state.fila_switch and state.fila_switch.installed
             else None
         ),
         fila_switch_pending_confirmation=state.fts_pending_confirmation is True,
+        ams_switch_inlet=inlet_bindings(state),
     )
 
 

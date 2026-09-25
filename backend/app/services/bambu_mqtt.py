@@ -1450,6 +1450,13 @@ class PrinterState:
     # Filament Track Switch (FTS) accessory — when installed, AMS info reports
     # bits 8-11 = 0xE (uninitialized) because routing is dynamic. Upstream #1162.
     fila_switch: "FilaSwitchState" = field(default_factory=lambda: FilaSwitchState())
+    # Per-AMS switch-inlet binding as READ from the AMS ``info`` bits 24-27 of
+    # every unit reporting extruder 0xE: {ams_id: "A" | "B"}. Recorded whether or
+    # not a switch is known yet, because the AMS block is parsed before the
+    # switch block on a frame carrying both; ``utils/fila_switch.inlet_bindings``
+    # exposes it only while a switch is installed (without one, 0xE is an
+    # uninitialised unit and those bits mean nothing). Upstream 7a42e0a7.
+    ams_switch_inlet_seen: dict = field(default_factory=dict)
     # Plate dispatched by BamDude for the current print (#1166). Some firmware
     # versions (P1S 01.10.00.00) only put the .3mf filename in
     # ``print.gcode_file``, so the regex used to derive the plate number from
@@ -4606,12 +4613,21 @@ class BambuMQTTClient:
         #   type_id    = get_flag_bits(info, 0, 4)   // bits 0-3: AMS type
         #   extruder_id = get_flag_bits(info, 8, 4)  // bits 8-11: extruder assignment
         # where get_flag_bits uses std::stoull(str, nullptr, 16) - hex parsing.
-        # extruder_id: 0=right/main, 1=left/deputy, 0xE=uninitialized (skip)
+        #   bind_switch_in = get_flag_bits(info, 24, 4)  // bits 24-27: FTS inlet
+        # extruder_id: 0=right/main, 1=left/deputy, 0xE=routing is not fixed
+        #
+        # On a Filament Track Switch machine 0xE is the normal steady state: the
+        # AMS sits on a switch INLET and reaches both nozzles through it, and bits
+        # 24-27 name that inlet — 0 = In-B, 1 = In-A (BS SwitchPos, ordered
+        # B-then-A). Recorded here unconditionally; ``utils/fila_switch`` gates it
+        # on the switch being installed, which this frame may only report later.
+        # A unit back on a real extruder drops its inlet, as BS resets it.
         #
         # Use merged_ams (not ams_list) to avoid partial MQTT updates overwriting
         # the full map. Merge into existing map to preserve entries from prior updates.
 
         ams_extruder_map = dict(self.state.ams_extruder_map) if self.state.ams_extruder_map else {}
+        inlet_seen = dict(self.state.ams_switch_inlet_seen)
         for ams_unit in merged_ams:
             ams_id = ams_unit.get("id")
             info = ams_unit.get("info")
@@ -4622,8 +4638,13 @@ class BambuMQTTClient:
                     # Extract 4 bits starting at bit 8 for extruder assignment
                     extruder_id = (info_val >> 8) & 0xF
                     if extruder_id == 0xE:
-                        # 0xE = uninitialized AMS, skip
+                        inlet = {0: "B", 1: "A"}.get((info_val >> 24) & 0xF)
+                        if inlet is None:
+                            inlet_seen.pop(str(ams_id), None)
+                        else:
+                            inlet_seen[str(ams_id)] = inlet
                         continue
+                    inlet_seen.pop(str(ams_id), None)
                     ams_extruder_map[str(ams_id)] = extruder_id
                     logger.debug(f"[{self.serial_number}] AMS {ams_id} info=0x{info} -> extruder {extruder_id}")
                 except (ValueError, TypeError):
@@ -4632,6 +4653,9 @@ class BambuMQTTClient:
             self.state.raw_data["ams_extruder_map"] = ams_extruder_map
             self.state.ams_extruder_map = ams_extruder_map
             logger.debug("[%s] ams_extruder_map: %s", self.serial_number, ams_extruder_map)
+        if inlet_seen != self.state.ams_switch_inlet_seen:
+            logger.debug("[%s] AMS switch inlets: %s", self.serial_number, inlet_seen)
+            self.state.ams_switch_inlet_seen = inlet_seen
 
         # Create a hash of relevant AMS data to detect changes.
         #

@@ -171,7 +171,7 @@ import type { SequencedFile } from '../components/QueueSequencer';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
-import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow } from '../utils/amsHelpers';
+import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow, FTS_INLET_SIDE, amsSideBadge } from '../utils/amsHelpers';
 import { getPrinterImage, getWifiStrength, hasDoorSensor, mapModelCode } from '../utils/printer';
 import { OpenMonitorButton } from '../features/monitor/OpenMonitorButton';
 import { useMonitorTarget } from '../features/monitor/useMonitorTarget';
@@ -248,14 +248,34 @@ function formatKValue(k: number | null | undefined): string {
 // Nozzle side indicators (Bambu Lab style - square badge with L/R)
 function NozzleBadge({ side }: { side: 'L' | 'R' }) {
   const { mode } = useTheme();
+  const { t } = useTranslation();
   // Light mode: #e7f5e9 (light green), Dark mode: #1a4d2e (dark green)
   const bgColor = mode === 'dark' ? '#1a4d2e' : '#e7f5e9';
   return (
     <span
       className="inline-flex items-center justify-center w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] text-[length:var(--pc-t10,10px)] font-bold rounded"
       style={{ backgroundColor: bgColor, color: '#00ae42' }}
+      title={side === 'L' ? t('common.left') : t('common.right')}
     >
       {side}
+    </span>
+  );
+}
+
+// Filament Track Switch inlet indicator. Same L/R lettering as NozzleBadge but
+// deliberately a different colour, because it means something different: this
+// AMS is plumbed into one switch inlet and reaches BOTH nozzles through it.
+function InletBadge({ inlet, title }: { inlet: 'A' | 'B'; title: string }) {
+  const { mode } = useTheme();
+  const bgColor = mode === 'dark' ? '#1e3a5f' : '#e3f0fb';
+  return (
+    <span
+      className="inline-flex items-center justify-center w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] text-[length:var(--pc-t10,10px)] font-bold rounded"
+      style={{ backgroundColor: bgColor, color: '#3b82f6' }}
+      title={title}
+      data-testid="ams-inlet-badge"
+    >
+      {FTS_INLET_SIDE[inlet]}
     </span>
   );
 }
@@ -2144,6 +2164,23 @@ function PrinterCard({
   const amsExtruderMap = (status?.ams_extruder_map && Object.keys(status.ams_extruder_map).length > 0)
     ? status.ams_extruder_map
     : cachedAmsExtruderMap.current;
+
+  // Same caching for the Filament Track Switch inlet bindings, for the same
+  // reason: a partial MQTT frame briefly empties the map and the badges would
+  // otherwise blink out. Dropped with the switch itself — a stale inlet on a
+  // printer whose switch was removed would outrank its real extruder map.
+  const ftsInstalled = status?.fila_switch?.installed === true;
+  const cachedAmsSwitchInlet = useRef<Record<string, 'A' | 'B'>>({});
+  useEffect(() => {
+    if (status?.ams_switch_inlet && Object.keys(status.ams_switch_inlet).length > 0) {
+      cachedAmsSwitchInlet.current = status.ams_switch_inlet;
+    }
+  }, [status?.ams_switch_inlet]);
+  const amsSwitchInlet = !ftsInstalled
+    ? {}
+    : (status?.ams_switch_inlet && Object.keys(status.ams_switch_inlet).length > 0)
+      ? status.ams_switch_inlet
+      : cachedAmsSwitchInlet.current;
 
   // Cache AMS data to prevent it disappearing on idle/offline printers
   const cachedAmsData = useRef<AMSUnit[]>([]);
@@ -4737,10 +4774,7 @@ function PrinterCard({
                       <div className="grid grid-cols-2 gap-3">
                         {regularAms.map((ams) => {
                         const mappedExtruderId = amsExtruderMap[String(ams.id)];
-                        const normalizedId = ams.id >= 128 ? ams.id - 128 : ams.id;
-                        const extruderId = mappedExtruderId !== undefined ? mappedExtruderId : normalizedId;
-                        const isLeftNozzle = extruderId === 1;
-                        const isRightNozzle = extruderId === 0;
+                        const sideBadge = amsSideBadge(ams.id, amsExtruderMap, amsSwitchInlet, ftsInstalled);
 
                         return (
                           <div key={ams.id} className="p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
@@ -4760,9 +4794,17 @@ function PrinterCard({
                                     {amsLabels?.[ams.id] || getAmsLabel(ams.id, ams.tray.length)}
                                   </span>
                                 </AmsNameHoverCard>
-                                {isDualNozzle && (isLeftNozzle || isRightNozzle) && (
-                                  <NozzleBadge side={isLeftNozzle ? 'L' : 'R'} />
-                                )}
+                                {sideBadge?.kind === 'inlet' ? (
+                                  <InletBadge
+                                    inlet={sideBadge.inlet}
+                                    title={t('printers.amsSwitchInletTooltip', {
+                                      inlet: sideBadge.inlet,
+                                      side: FTS_INLET_SIDE[sideBadge.inlet],
+                                    })}
+                                  />
+                                ) : isDualNozzle && sideBadge?.kind === 'nozzle' ? (
+                                  <NozzleBadge side={sideBadge.side} />
+                                ) : null}
                               </div>
                               {(ams.humidity != null || ams.temp != null) && (
                                 <div className="flex items-center gap-1.5 max-[550px]:flex-col max-[550px]:items-start">
@@ -5258,10 +5300,7 @@ function PrinterCard({
                       {/* HT AMS units - name/badge top, slot left, stats right */}
                       {htAms.map((ams) => {
                         const mappedExtruderId = amsExtruderMap[String(ams.id)];
-                        const normalizedId = ams.id >= 128 ? ams.id - 128 : ams.id;
-                        const extruderId = mappedExtruderId !== undefined ? mappedExtruderId : normalizedId;
-                        const isLeftNozzle = extruderId === 1;
-                        const isRightNozzle = extruderId === 0;
+                        const sideBadge = amsSideBadge(ams.id, amsExtruderMap, amsSwitchInlet, ftsInstalled);
                         const tray = ams.tray[0];
                         const hasFillLevel = tray?.tray_type && tray.remain >= 0;
                         const isEmpty = !tray?.tray_type;
@@ -5421,9 +5460,17 @@ function PrinterCard({
                                   {amsLabels?.[ams.id] || getAmsLabel(ams.id, ams.tray.length)}
                                 </span>
                               </AmsNameHoverCard>
-                              {isDualNozzle && (isLeftNozzle || isRightNozzle) && (
-                                <NozzleBadge side={isLeftNozzle ? 'L' : 'R'} />
-                              )}
+                              {sideBadge?.kind === 'inlet' ? (
+                                <InletBadge
+                                  inlet={sideBadge.inlet}
+                                  title={t('printers.amsSwitchInletTooltip', {
+                                    inlet: sideBadge.inlet,
+                                    side: FTS_INLET_SIDE[sideBadge.inlet],
+                                  })}
+                                />
+                              ) : isDualNozzle && sideBadge?.kind === 'nozzle' ? (
+                                <NozzleBadge side={sideBadge.side} />
+                              ) : null}
                               {/* Drying button for HT AMS. Screen-only models (P1 series)
                                   keep the control but can't be commanded (#2533). */}
                               {(status.supports_drying || !!status.drying_screen_only) && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && hasPermission('printers:control') && (

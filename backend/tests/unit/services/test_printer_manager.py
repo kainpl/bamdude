@@ -881,6 +881,8 @@ class TestPrinterStateToDict:
             "out_extruders": [0, -1],
             "stat": 4,
             "info": 0,
+            # No AMS reported on this stub: nothing to bind, so ready (BS IsReady).
+            "ready": True,
         }
 
     def test_ams_data_parsing(self, mock_state):
