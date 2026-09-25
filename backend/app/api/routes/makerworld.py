@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.api.routes.cloud import get_stored_token, mark_cloud_token_invalid, resolve_api_key_cloud_owner
+from backend.app.api.routes.cloud import get_stored_token, resolve_api_key_cloud_owner
 from backend.app.api.routes.library import save_3mf_bytes_to_library
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
@@ -42,16 +42,17 @@ from backend.app.schemas.makerworld import (
     MakerWorldResolveRequest,
     MakerWorldStatus,
 )
-from backend.app.services.makerworld import (
+from backend.app.services.model_providers import makerworld_provider
+from backend.app.services.model_providers.makerworld.errors import (
     MakerWorldAuthError,
     MakerWorldError,
     MakerWorldForbiddenError,
     MakerWorldNotFoundError,
-    MakerWorldService,
     MakerWorldUnavailableError,
     MakerWorldUrlError,
 )
-from backend.app.services.makerworld_meta import build_meta_dict, download_covers
+from backend.app.services.model_providers.makerworld.meta import build_meta_dict, download_covers
+from backend.app.services.model_providers.makerworld.service import MakerWorldService
 from backend.app.services.product_sync import resync_file_products
 
 logger = logging.getLogger(__name__)
@@ -66,13 +67,10 @@ async def _build_service(db: AsyncSession, user: User | None) -> MakerWorldServi
     stored Bambu Cloud bearer token when available.
 
     Mirrors ``cloud.build_authenticated_cloud`` — the token is entirely
-    optional; anonymous calls (metadata, URL resolution) still work.
+    optional; anonymous calls (metadata, URL resolution) still work. The
+    provider seeds it and wires the rejected-token callback (#2562).
     """
-    token, _email, _region = await get_stored_token(db, user)
-    # Same credential as the cloud service, so a genuine expiry seen here must
-    # invalidate it everywhere - see cloud.mark_cloud_token_invalid (#2562).
-    user_id = user.id if user is not None else None
-    return MakerWorldService(auth_token=token, on_auth_failure=lambda: mark_cloud_token_invalid(user_id))
+    return await makerworld_provider.build_service(db=db, user=user)
 
 
 def _canonical_url(model_id: int, profile_id: int | None = None) -> str:
@@ -134,7 +132,7 @@ async def proxy_thumbnail(
     URLs are content-addressable (filename contains a hash), so the
     aggressive ``immutable`` cache-control is safe.
     """
-    service = MakerWorldService()
+    service = MakerWorldService(thumbnail_hosts=makerworld_provider.thumbnail_hosts())
     try:
         payload, content_type = await service.fetch_thumbnail(url)
     except MakerWorldError as exc:
@@ -184,9 +182,11 @@ async def resolve_url(
     badge and skip a redundant download.
     """
     try:
-        model_id, profile_id = MakerWorldService.parse_url(body.url)
+        ref = makerworld_provider.parse_url(body.url)
     except MakerWorldError as exc:
         raise _map_service_error(exc) from exc
+    model_id = int(ref.external_id)
+    profile_id = int(ref.sub_id) if ref.sub_id else None
 
     # API-keyed callers carry identity on the key, not in current_user — see
     # the /status handler comment and #1777.
@@ -564,7 +564,6 @@ async def redownload_import(
 
     from backend.app.api.routes.library import calculate_file_hash, to_absolute_path
     from backend.app.services.archive import ThreeMFParser
-    from backend.app.services.makerworld_meta import build_meta_dict, download_covers
 
     lib = (await db.execute(LibraryFile.active().where(LibraryFile.id == library_file_id))).scalar_one_or_none()
     if lib is None:

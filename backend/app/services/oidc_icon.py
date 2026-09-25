@@ -6,7 +6,8 @@ Server-side proxy that fetches an admin-supplied icon URL and returns
 ``/api/v1/auth/oidc/providers/{id}/icon`` (same-origin) — avoiding any
 loosening of the strict ``img-src 'self' data: blob:`` CSP.
 
-Pattern mirrors ``services/makerworld.fetch_thumbnail``:
+Pattern mirrors ``MakerWorldService.fetch_thumbnail``
+(``services/model_providers/makerworld/service.py``):
 
 - ``follow_redirects=False`` so the SSRF host allowlist (here:
   ``assert_safe_public_https_url``) isn't bypassed by a 302 to a private

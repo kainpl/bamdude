@@ -10040,7 +10040,7 @@ async def lifespan(app: FastAPI):
     # dedicated 60 s read timeout inside ``download_3mf`` so a slow signed
     # CDN doesn't starve metadata calls. Reused across resolve / status /
     # import / recent so a single page load doesn't open four pools.
-    from backend.app.services.makerworld import (
+    from backend.app.services.model_providers.makerworld.service import (
         set_shared_http_client as _set_shared_makerworld_http_client,
     )
 
@@ -10823,7 +10823,7 @@ async def lifespan(app: FastAPI):
     await _shared_slicer_http_client.aclose()
 
     # Drop the shared MakerWorld HTTP client.
-    from backend.app.services.makerworld import (
+    from backend.app.services.model_providers.makerworld.service import (
         set_shared_http_client as _set_shared_makerworld_http_client_off,
     )
 

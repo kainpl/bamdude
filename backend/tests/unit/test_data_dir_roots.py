@@ -10,7 +10,7 @@ from backend.app.api.routes.projects import get_project_attachments_dir
 from backend.app.api.routes.system import _classify_file, _get_data_dirs, _get_storage_rules
 from backend.app.core.config import settings
 from backend.app.services import backup_files
-from backend.app.services.makerworld_meta import get_makerworld_covers_dir
+from backend.app.services.model_providers.makerworld.meta import get_makerworld_covers_dir
 from backend.app.services.product_files import product_attachments_dir
 
 

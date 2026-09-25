@@ -581,7 +581,7 @@ class LibraryTrashService:
         # m056 — MakerWorld cover JPGs live in a separate dir; FK-CASCADE
         # drops the meta row but the on-disk covers need explicit wipe.
         try:
-            from backend.app.services.makerworld_meta import cleanup_cover_files
+            from backend.app.services.model_providers.makerworld.meta import cleanup_cover_files
 
             cleanup_cover_files(row.id)
         except Exception as e:

@@ -1,4 +1,4 @@
-"""Tests for the MakerWorldService."""
+"""Tests for the MakerWorld provider's service (``model_providers/makerworld``)."""
 
 from __future__ import annotations
 
@@ -8,55 +8,56 @@ from urllib.error import HTTPError, URLError
 import httpx
 import pytest
 
-from backend.app.services.makerworld import (
-    _MAX_3MF_BYTES,
-    MAKERWORLD_API_BASE,
+from backend.app.services.model_providers.makerworld.errors import (
     MakerWorldAuthError,
     MakerWorldForbiddenError,
     MakerWorldNotFoundError,
-    MakerWorldService,
     MakerWorldUnavailableError,
     MakerWorldUrlError,
 )
+from backend.app.services.model_providers.makerworld.http import _MAX_3MF_BYTES, MAKERWORLD_API_BASE
+from backend.app.services.model_providers.makerworld.service import _SIGN_IN_EXPIRED_MESSAGE, MakerWorldService
+from backend.app.services.model_providers.makerworld.url import parse_url
+
+# Bambu's own body for a dead token — the signature ``is_expiry_401`` keys on.
+_EXPIRY_BODY = {"code": 4, "error": "Please login.", "message": ""}
 
 
 class TestParseUrl:
     """MakerWorld URL extraction."""
 
     def test_strips_locale_prefix_and_slug(self):
-        model, profile = MakerWorldService.parse_url(
-            "https://makerworld.com/en/models/1400373-self-watering-seed-starter"
-        )
-        assert model == 1400373
-        assert profile is None
+        ref = parse_url("https://makerworld.com/en/models/1400373-self-watering-seed-starter")
+        assert ref.external_id == "1400373"
+        assert ref.sub_id is None
+        assert ref.source_type == "makerworld"
 
     def test_extracts_profile_id_from_fragment(self):
-        model, profile = MakerWorldService.parse_url("https://makerworld.com/en/models/1400373-slug#profileId-1452154")
-        assert model == 1400373
-        assert profile == 1452154
+        ref = parse_url("https://makerworld.com/en/models/1400373-slug#profileId-1452154")
+        assert ref.external_id == "1400373"
+        assert ref.sub_id == "1452154"
 
     def test_accepts_scheme_omitted(self):
-        model, profile = MakerWorldService.parse_url("makerworld.com/models/999")
-        assert model == 999
-        assert profile is None
+        ref = parse_url("makerworld.com/models/999")
+        assert ref.external_id == "999"
+        assert ref.sub_id is None
 
     def test_accepts_subdomain(self):
         # Defensive: if MakerWorld ever stands up a regional subdomain, still accept it
-        model, _ = MakerWorldService.parse_url("https://www.makerworld.com/en/models/42")
-        assert model == 42
+        assert parse_url("https://www.makerworld.com/en/models/42").external_id == "42"
 
     def test_rejects_non_makerworld_host(self):
         with pytest.raises(MakerWorldUrlError):
-            MakerWorldService.parse_url("https://thingiverse.com/things/123")
+            parse_url("https://thingiverse.com/things/123")
 
     def test_rejects_malformed_url(self):
         # No /models/ segment anywhere in path
         with pytest.raises(MakerWorldUrlError):
-            MakerWorldService.parse_url("https://makerworld.com/en/creators/foo")
+            parse_url("https://makerworld.com/en/creators/foo")
 
     def test_rejects_empty(self):
         with pytest.raises(MakerWorldUrlError):
-            MakerWorldService.parse_url("")
+            parse_url("")
 
 
 class TestApiBase:
@@ -145,16 +146,65 @@ class TestGetDesign:
             await service.get_design(404)
 
     @pytest.mark.asyncio
-    async def test_maps_401_to_auth_error(self, service):
+    async def test_401_without_a_token_says_sign_in_is_required(self, service):
         resp = MagicMock()
         resp.status_code = 401
-        resp.json.return_value = {"code": 1, "error": "Please log in"}
+        resp.json.return_value = _EXPIRY_BODY
         service._client.get.return_value = resp
 
         with pytest.raises(MakerWorldAuthError) as exc_info:
             await service.get_design(1)
-        # Upstream's own message is surfaced to the caller
-        assert "Please log in" in str(exc_info.value)
+        assert str(exc_info.value) == "Signing in to Bambu Cloud is required for /design/1"
+
+    @pytest.mark.asyncio
+    async def test_expiry_401_with_a_token_says_expired_and_records_it_once(self):
+        """Bambu's own body is "Please login." — forwarding it read as a stray
+        prompt on a page that still showed the user as connected (#2562). The
+        message names the state and the page; the credential is flagged dead
+        exactly once per service."""
+        on_auth_failure = AsyncMock()
+        svc = MakerWorldService(
+            client=MagicMock(spec=httpx.AsyncClient), auth_token="tok-abc", on_auth_failure=on_auth_failure
+        )
+        resp = httpx.Response(401, json=_EXPIRY_BODY)
+        svc._client.get = AsyncMock(return_value=resp)
+
+        for _ in range(2):
+            with pytest.raises(MakerWorldAuthError) as exc_info:
+                await svc.get_design(1)
+            assert str(exc_info.value) == _SIGN_IN_EXPIRED_MESSAGE
+        on_auth_failure.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_401_without_the_expiry_signature_does_not_sign_the_token_out(self):
+        """A stray 401 is endpoint noise, not a dead credential: flagging it
+        would sign the user out of the whole cloud integration. The user still
+        sees the expired message — the call did fail on their token."""
+        on_auth_failure = AsyncMock()
+        svc = MakerWorldService(
+            client=MagicMock(spec=httpx.AsyncClient), auth_token="tok-abc", on_auth_failure=on_auth_failure
+        )
+        svc._client.get = AsyncMock(return_value=httpx.Response(401, json={"code": 1, "error": "nope"}))
+
+        with pytest.raises(MakerWorldAuthError) as exc_info:
+            await svc.get_design(1)
+        assert str(exc_info.value) == _SIGN_IN_EXPIRED_MESSAGE
+        on_auth_failure.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_design_is_fetched_once_per_service(self, service):
+        """The import asks for the design in ``get_download`` and again for its
+        metadata row; one request serves both (BamDude memo)."""
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"id": 7, "title": "Benchy"}
+        service._client.get.return_value = resp
+
+        first = await service.get_design(7)
+        second = await service.get_design(7)
+
+        assert first is second
+        assert service._client.get.await_count == 1
 
     @pytest.mark.asyncio
     async def test_maps_403_to_forbidden_with_upstream_reason(self, service):
@@ -252,15 +302,16 @@ class TestGetProfileDownload:
         assert call.kwargs["params"] == {"model_id": "US2bb73b106683e5"}
 
     @pytest.mark.asyncio
-    async def test_maps_401_to_auth_error(self):
+    async def test_maps_401_to_the_expired_message(self):
         svc = self._make_service()
         resp = MagicMock()
         resp.status_code = 401
         resp.json.return_value = {"error": "token expired"}
         svc._client.get.return_value = resp
 
-        with pytest.raises(MakerWorldAuthError):
+        with pytest.raises(MakerWorldAuthError) as exc_info:
             await svc.get_profile_download(1, "M1")
+        assert str(exc_info.value) == _SIGN_IN_EXPIRED_MESSAGE
 
     @pytest.mark.asyncio
     async def test_maps_403_to_forbidden(self):
@@ -332,7 +383,7 @@ class TestDownload3MF:
     async def test_s3_host_delegates_to_urllib_path(self):
         svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient))
         with patch(
-            "backend.app.services.makerworld._download_s3_urllib",
+            "backend.app.services.model_providers.makerworld.service._download_s3_urllib",
             new=AsyncMock(return_value=(b"payload", "file.3mf")),
         ) as mocked:
             payload, filename = await svc.download_3mf(
@@ -430,7 +481,7 @@ class TestS3UrllibDownload:
 
     @pytest.mark.asyncio
     async def test_returns_bytes_and_filename(self):
-        from backend.app.services.makerworld import _download_s3_urllib
+        from backend.app.services.model_providers.makerworld.http import _download_s3_urllib
 
         fake_resp = MagicMock()
         fake_resp.status = 200
@@ -455,7 +506,7 @@ class TestS3UrllibDownload:
         """The ``_NoRedirect`` handler returns ``None`` from ``redirect_request``,
         which makes ``urllib`` raise ``HTTPError`` instead of following. The
         wrapper must surface that as ``MakerWorldUnavailableError``."""
-        from backend.app.services.makerworld import _download_s3_urllib
+        from backend.app.services.model_providers.makerworld.http import _download_s3_urllib
 
         fake_opener = MagicMock()
         fake_opener.open = MagicMock(
@@ -479,7 +530,7 @@ class TestS3UrllibDownload:
 
     @pytest.mark.asyncio
     async def test_non_200_raises_unavailable(self):
-        from backend.app.services.makerworld import _download_s3_urllib
+        from backend.app.services.model_providers.makerworld.http import _download_s3_urllib
 
         fake_resp = MagicMock()
         fake_resp.status = 403
@@ -501,7 +552,7 @@ class TestS3UrllibDownload:
 
     @pytest.mark.asyncio
     async def test_size_cap_enforced(self):
-        from backend.app.services.makerworld import _download_s3_urllib
+        from backend.app.services.model_providers.makerworld.http import _download_s3_urllib
 
         fake_resp = MagicMock()
         fake_resp.status = 200
@@ -524,7 +575,7 @@ class TestS3UrllibDownload:
 
     @pytest.mark.asyncio
     async def test_network_error_mapped_to_unavailable(self):
-        from backend.app.services.makerworld import _download_s3_urllib
+        from backend.app.services.model_providers.makerworld.http import _download_s3_urllib
 
         fake_opener = MagicMock()
         fake_opener.open = MagicMock(side_effect=URLError("dns fail"))
