@@ -1800,7 +1800,8 @@ export default {
       processing: 'Обробляється',
       completed: 'Завершено',
       failed: 'Помилка',
-      cancelled: 'Скасовано'
+      cancelled: 'Скасовано',
+      deferred: 'Не запущено'
     },
     toast: {
       cancellingUpload: 'Скасування завантаження...',

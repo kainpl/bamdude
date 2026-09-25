@@ -1795,7 +1795,8 @@ export default {
       processing: 'Processing',
       completed: 'Completed',
       failed: 'Failed',
-      cancelled: 'Cancelled'
+      cancelled: 'Cancelled',
+      deferred: 'Not started'
     },
     toast: {
       cancellingUpload: 'Cancelling upload...',

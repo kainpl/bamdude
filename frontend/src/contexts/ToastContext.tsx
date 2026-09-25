@@ -18,7 +18,7 @@ interface Toast {
   dispatchData?: DispatchToastData;
 }
 
-type DispatchJobStatus = 'dispatched' | 'processing' | 'completed' | 'failed' | 'cancelled';
+type DispatchJobStatus = 'dispatched' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'deferred';
 
 interface DispatchToastJob {
   jobId: number;
@@ -241,6 +241,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     const statusWeight = (status: DispatchJobStatus) => {
       switch (status) {
         case 'failed':
+        case 'deferred':
           return 0;
         case 'processing':
           return 1;
@@ -344,7 +345,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
           const activeIds = new Set([...dispatchedJobs, ...activeJobs].map((job) => job.jobId));
           const historicalJobs = existingJobs.filter(
-            (job) => !activeIds.has(job.jobId) && ['completed', 'failed', 'cancelled'].includes(job.status)
+            (job) => !activeIds.has(job.jobId) && ['completed', 'failed', 'cancelled', 'deferred'].includes(job.status)
           );
 
           let jobs = [...dispatchedJobs, ...activeJobs, ...historicalJobs];
@@ -588,6 +589,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                           completed: 100,
                           failed: 100,
                           cancelled: 100,
+                          deferred: 100,
                         };
                         const barColorByStatus: Record<DispatchJobStatus, string> = {
                           dispatched: 'bg-bambu-gray/60',
@@ -595,6 +597,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                           completed: 'bg-green-500',
                           failed: 'bg-red-500',
                           cancelled: 'bg-yellow-500',
+                          deferred: 'bg-orange-500',
                         };
                         // Upload byte count reached the total — printer hasn't
                         // yet confirmed receipt (state still 'processing').
