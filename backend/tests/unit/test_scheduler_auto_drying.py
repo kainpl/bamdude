@@ -671,6 +671,47 @@ class TestAmbientDrying(_DryingTestBase):
     @pytest.mark.asyncio
     @patch("backend.app.services.print_scheduler.printer_manager")
     @patch("backend.app.services.print_scheduler.supports_drying", return_value=True)
+    async def test_ambient_leaves_a_unit_a_schedule_reserved(self, mock_sd, mock_pm, scheduler):
+        """A unit a scheduled drying holds is the schedule's: auto-drying never arms it."""
+        state = MagicMock()
+        state.raw_data = {
+            "ams": [
+                {
+                    "id": 0,
+                    "module_type": "n3f",
+                    "dry_time": 0,
+                    "humidity_raw": "75",
+                    "dry_sf_reason": [],
+                    "tray": [{"tray_type": "PLA"}],
+                }
+            ]
+        }
+        state.firmware_version = "01.09.00.00"
+        mock_pm.get_status.return_value = state
+        mock_pm.is_connected.return_value = True
+        mock_pm.get_model.return_value = "X1C"
+        mock_pm.send_drying_command.return_value = True
+
+        scheduler._is_printer_idle = MagicMock(return_value=True)
+        scheduler._scheduled_dry_units = {(1, 0)}
+        db = AsyncMock()
+
+        settings_returns = {
+            "queue_drying_enabled": self._make_setting("false"),
+            "ambient_drying_enabled": self._make_setting("true"),
+            "ams_humidity_fair": self._make_setting("60"),
+            "queue_drying_block": self._make_setting("false"),
+            "drying_presets": None,
+        }
+        db.execute = AsyncMock(side_effect=self._make_db_side_effect(settings_returns))
+
+        await scheduler._check_auto_drying(db, [], set())
+
+        mock_pm.send_drying_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("backend.app.services.print_scheduler.printer_manager")
+    @patch("backend.app.services.print_scheduler.supports_drying", return_value=True)
     async def test_ambient_does_not_dry_below_threshold(self, mock_sd, mock_pm, scheduler):
         """Ambient mode does NOT dry when humidity is below threshold."""
         state = MagicMock()

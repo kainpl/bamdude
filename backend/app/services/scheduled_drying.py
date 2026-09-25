@@ -10,16 +10,22 @@ from __future__ import annotations
 
 import json
 import logging
+import time as monotonic_clock
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.timezones import server_timezone
+from backend.app.i18n import current_language
 from backend.app.models.printer import Printer
 from backend.app.models.scheduled_drying import DryingSchedule, ScheduledDrying
 from backend.app.services import drying_preflight
+from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import find_ams_unit, printer_manager
+from backend.app.utils.ams_drying import is_drying_active
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +34,18 @@ UTC = timezone.utc
 RUN_ACTIVE = ("pending", "running")
 RUN_LISTED = ("pending", "running", "failed", "skipped")
 _DATA = Path(__file__).resolve().parents[1] / "data"
+
+RETENTION_DAYS = 7
+PRUNE_INTERVAL_SECONDS = 60 * 60
+# The printer's report does not show a cycle the instant the command lands.
+START_GRACE_SECONDS = 120
+# A cycle that ended past this share of its duration did its job — the firmware
+# counts down from what it was asked, and a stop in the cooling tail is not a failure.
+COMPLETE_FRACTION = 0.9
+_BUSY_STATES = frozenset({"RUNNING", "PREPARE", "PAUSE"})
+
+_last_prune: float | None = None  # monotonic; None = never, so the first pass after a restart prunes
+_last_running: set[int] = set()  # printers with a running run at the end of the previous pass
 
 
 class DryingRefused(Exception):
@@ -266,8 +284,8 @@ async def update_schedule(db: AsyncSession, schedule_id: int, changes: dict) -> 
     merged = {f: changes[f] if f in changes else getattr(rule, f) for f in _RULE_FIELDS}
     await validate_target(db, rule.printer_id, merged["ams_id"], merged["temp"], merged["duration_hours"])
     _check_rule_times(merged["start_time"], merged["weekdays"], merged["latest_start"])
-    for field in _RULE_FIELDS:
-        setattr(rule, field, merged[field])
+    for name in _RULE_FIELDS:
+        setattr(rule, name, merged[name])
     rule.updated_at = _utcnow()
     # A waiting run carries the old parameters; the next tick re-creates it from
     # the rule. A running one finishes as it started.
@@ -317,3 +335,297 @@ async def forget_printer(db: AsyncSession, printer_id: int, *, archived: bool) -
         await db.execute(delete(ScheduledDrying).where(ScheduledDrying.printer_id == printer_id))
         await db.execute(delete(DryingSchedule).where(DryingSchedule.printer_id == printer_id))
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# The tick — called by PrintScheduler once per pass, in its own session.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TickResult:
+    running_printers: set[int] = field(default_factory=set)
+    reserved_units: set[tuple[int, int]] = field(default_factory=set)
+
+
+def _ams_label(ams_id: int) -> str:
+    return f"HT-{chr(65 + (ams_id - 128))}" if ams_id >= 128 else f"AMS-{chr(65 + ams_id)}"
+
+
+async def _describe(db: AsyncSession, run: ScheduledDrying) -> tuple[str, str]:
+    """(printer name, schedule description) for a notification."""
+    printer = await db.get(Printer, run.printer_id)
+    name = printer.name if printer else f"Printer {run.printer_id}"
+    schedule = ""
+    if run.schedule_id is not None:
+        rule = await db.get(DryingSchedule, run.schedule_id)
+        if rule is not None:
+            schedule = f"↻ {rule.start_time}"
+    return name, schedule
+
+
+async def _notify(db: AsyncSession, kind: str, run: ScheduledDrying) -> None:
+    """Never raises: a provider being down must not undo what the tick just decided."""
+    try:
+        name, schedule = await _describe(db, run)
+        label = _ams_label(run.ams_id)
+        if kind == "started":
+            await notification_service.on_scheduled_drying_started(
+                run.printer_id, name, label, run.filament, run.temp, run.duration_hours, schedule, db
+            )
+        elif kind == "completed":
+            await notification_service.on_scheduled_drying_completed(
+                run.printer_id, name, label, run.temp, run.duration_hours, schedule, db
+            )
+        else:
+            lang = current_language()
+            reason = reason_text(run.reason, lang)
+            if run.detail:
+                reason = f"{reason} ({reason_text(run.detail, lang)})"
+            await notification_service.on_scheduled_drying_failed(run.printer_id, name, label, reason, schedule, db)
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        logger.warning("Scheduled drying %s notification failed for run %s: %s", kind, run.id, exc)
+
+
+async def _prune(db: AsyncSession, now: datetime) -> None:
+    global _last_prune
+    stamp = monotonic_clock.monotonic()
+    if _last_prune is not None and stamp - _last_prune < PRUNE_INTERVAL_SECONDS:
+        return
+    _last_prune = stamp
+    await db.execute(
+        delete(ScheduledDrying).where(
+            ScheduledDrying.status.in_(("completed", "cancelled", "failed", "skipped")),
+            ScheduledDrying.completed_at.is_not(None),
+            ScheduledDrying.completed_at < now - timedelta(days=RETENTION_DAYS),
+        )
+    )
+
+
+async def _materialise(db: AsyncSession, now: datetime) -> None:
+    """Give every enabled rule without a waiting or running run its next one."""
+    tz = server_timezone()
+    rules = (await db.execute(select(DryingSchedule).where(DryingSchedule.enabled.is_(True)))).scalars().all()
+    for rule in rules:
+        active = await db.scalar(
+            select(ScheduledDrying.id)
+            .where(ScheduledDrying.schedule_id == rule.id, ScheduledDrying.status.in_(RUN_ACTIVE))
+            .limit(1)
+        )
+        if active is not None:
+            continue
+        last = await db.scalar(
+            select(ScheduledDrying.start_after)
+            .where(ScheduledDrying.schedule_id == rule.id)
+            .order_by(ScheduledDrying.start_after.desc())
+            .limit(1)
+        )
+        after = max((x for x in (rule.updated_at, last) if x is not None), default=now)
+        try:
+            occurrence = next_occurrence(rule.start_time, rule.weekdays, as_aware_utc(after), tz)
+            deadline = window_end(occurrence, rule.start_time, rule.latest_start, rule.weekdays, tz)
+            # Nights whose window closed while the server was down (or before the
+            # rule existed) are passed over silently — materialising them would
+            # only produce a string of "did not happen" notifications on restart.
+            for _ in range(400):
+                if deadline > as_aware_utc(now):
+                    break
+                occurrence = next_occurrence(rule.start_time, rule.weekdays, occurrence, tz)
+                deadline = window_end(occurrence, rule.start_time, rule.latest_start, rule.weekdays, tz)
+        except ValueError as exc:
+            logger.warning("Drying schedule %s cannot run: %s", rule.id, exc)
+            continue
+        db.add(
+            ScheduledDrying(
+                printer_id=rule.printer_id,
+                ams_id=rule.ams_id,
+                temp=rule.temp,
+                duration_hours=rule.duration_hours,
+                filament=rule.filament,
+                rotate_tray=rule.rotate_tray,
+                schedule_id=rule.id,
+                start_after=to_naive_utc(occurrence),
+                latest_start=to_naive_utc(deadline),
+            )
+        )
+    await db.flush()
+
+
+def _finish(run: ScheduledDrying, status: str, now: datetime, *, reason: str | None = None, detail: str | None = None):
+    run.status = status
+    run.completed_at = now
+    if reason is not None:
+        run.reason = reason
+    if detail is not None:
+        run.detail = detail
+
+
+async def _try_start(
+    db: AsyncSession,
+    run: ScheduledDrying,
+    now: datetime,
+    dispatching_printers: set[int],
+    started: set[tuple[int, int]],
+) -> None:
+    if run.latest_start is not None and run.latest_start <= now:
+        # The last waiting reason becomes the detail: "its start window passed (the printer was printing)".
+        _finish(run, "skipped", now, detail=run.reason, reason="window_passed")
+        await _notify(db, "failed", run)
+        return
+    printer = await db.get(Printer, run.printer_id)
+    if printer is None:
+        return
+    state = printer_manager.get_status(run.printer_id)
+    refusal = drying_preflight.refusal_code(
+        printer.model, state.firmware_version if state else None, require_firmware=state is not None
+    )
+    if refusal is not None:
+        _finish(run, "failed", now, reason=refusal)
+        await _notify(db, "failed", run)
+        return
+    if state is None or not printer_manager.is_connected(run.printer_id):
+        run.reason = "printer_offline"
+        return
+    unit = find_ams_unit(state.raw_data, run.ams_id)
+    if unit is None:
+        run.reason = "ams_not_found"
+        return
+    if run.temp > drying_preflight.max_temp_for_unit(unit):
+        _finish(run, "failed", now, reason="temp_over_limit")
+        await _notify(db, "failed", run)
+        return
+    if is_drying_active(unit) or (run.printer_id, run.ams_id) in started:
+        run.reason = "already_drying"
+        return
+    blocker = drying_preflight.blocker_code(unit)
+    if blocker is not None:
+        run.reason = blocker
+        return
+    if run.printer_id in dispatching_printers or (state.state or "").upper() in _BUSY_STATES:
+        run.reason = "printer_busy"
+        return
+    filament = drying_preflight.resolve_filament(unit, run.filament)
+    if not printer_manager.send_drying_command(
+        run.printer_id,
+        run.ams_id,
+        run.temp,
+        run.duration_hours,
+        mode=1,
+        filament=filament,
+        rotate_tray=run.rotate_tray,
+    ):
+        run.reason = "printer_offline"
+        return
+    run.status, run.started_at, run.reason, run.detail, run.filament = "running", now, None, None, filament
+    started.add((run.printer_id, run.ams_id))
+    await _notify(db, "started", run)
+
+
+async def _follow(db: AsyncSession, run: ScheduledDrying, now: datetime) -> None:
+    if run.started_at is None:
+        run.started_at = now
+        return
+    elapsed = (now - run.started_at).total_seconds()
+    if elapsed < START_GRACE_SECONDS:
+        return
+    state = printer_manager.get_status(run.printer_id)
+    if state is None:
+        return  # offline mid-cycle: decide when it reconnects
+    if is_drying_active(find_ams_unit(state.raw_data, run.ams_id)):
+        return
+    if elapsed >= run.duration_hours * 3600 * COMPLETE_FRACTION:
+        _finish(run, "completed", now)
+        await _notify(db, "completed", run)
+    elif (state.state or "").upper() in _BUSY_STATES:
+        run.status, run.started_at, run.reason = "pending", None, "interrupted"
+    else:
+        _finish(run, "cancelled", now)  # stopped by hand on an idle printer — not a failure
+
+
+def _any_unit_drying(printer_id: int) -> bool:
+    state = printer_manager.get_status(printer_id)
+    return bool(state) and any(is_drying_active(u) for u in (state.raw_data or {}).get("ams") or [])
+
+
+async def tick(
+    db: AsyncSession, *, now: datetime, drying_in_progress: dict[int, float], dispatching_printers: set[int]
+) -> TickResult:
+    """One pass: prune, materialise rules, start what is due, follow what runs, release what ended.
+
+    ``now`` is naive UTC. ``drying_in_progress`` is the scheduler's hold dict,
+    shared with auto-drying: a running run adds its printer, and a printer whose
+    run ended is released only when nothing else dries there.
+    """
+    global _last_running
+    await _prune(db, now)
+    await _materialise(db, now)
+    runs = (
+        (
+            await db.execute(
+                select(ScheduledDrying)
+                .where(ScheduledDrying.status.in_(RUN_ACTIVE))
+                .order_by(ScheduledDrying.start_after.asc().nullsfirst(), ScheduledDrying.id.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    started: set[tuple[int, int]] = set()
+    # Printers whose run was running when the pass began: one that ends during this
+    # pass must be released too, not only one that ended between passes.
+    was_running = {run.printer_id for run in runs if run.status == "running"}
+    for run in runs:
+        if run.status == "running":
+            await _follow(db, run, now)
+        elif run.start_after is None or run.start_after <= now:
+            await _try_start(db, run, now, dispatching_printers, started)
+
+    result = TickResult()
+    for run in runs:
+        due = run.start_after is None or run.start_after <= now
+        if run.status == "running":
+            result.running_printers.add(run.printer_id)
+            result.reserved_units.add((run.printer_id, run.ams_id))
+        elif run.status == "pending" and due:
+            result.reserved_units.add((run.printer_id, run.ams_id))
+    for pid in result.running_printers:
+        drying_in_progress.setdefault(pid, monotonic_clock.monotonic())
+    # Release printers whose run ended — this pass, or through the route between passes —
+    # but only if nothing else is drying on them: the dict is shared with auto-drying.
+    for pid in (_last_running | was_running) - result.running_printers:
+        if not _any_unit_drying(pid):
+            drying_in_progress.pop(pid, None)
+    _last_running = set(result.running_printers)
+    await db.commit()
+    return result
+
+
+async def preempt_for_print(db: AsyncSession, printer_id: int, now: datetime) -> int:
+    """A print is going out on this printer: stop its scheduled cycles; they resume when it is free."""
+    runs = (
+        (
+            await db.execute(
+                select(ScheduledDrying).where(
+                    ScheduledDrying.printer_id == printer_id, ScheduledDrying.status == "running"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for run in runs:
+        printer_manager.send_drying_command(printer_id, run.ams_id, 0, 0, mode=0)
+        elapsed = (now - run.started_at).total_seconds() if run.started_at else 0
+        if elapsed >= run.duration_hours * 3600 * COMPLETE_FRACTION:
+            _finish(run, "completed", now)  # stopped in its cooling tail — it did its job
+            await _notify(db, "completed", run)
+        else:
+            run.status, run.started_at, run.reason = "pending", None, "interrupted"
+    if runs:
+        await db.commit()
+    return len(runs)
+
+
+async def running_printer_ids(db: AsyncSession) -> set[int]:
+    rows = await db.execute(select(ScheduledDrying.printer_id).where(ScheduledDrying.status == "running"))
+    return set(rows.scalars().all())

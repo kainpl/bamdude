@@ -25,7 +25,7 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.schemas.calibration_mode import derive_mode
-from backend.app.services import ams_advertised_overlay as overlay, chamber_history
+from backend.app.services import ams_advertised_overlay as overlay, chamber_history, scheduled_drying
 from backend.app.services.filament_intake import (
     item_descriptor,
     resolve_source_path,
@@ -253,6 +253,13 @@ class PrintScheduler:
         self._power_on_check_interval = 10  # seconds between connection checks
         # Track which printers are currently auto-drying (printer_id -> start timestamp)
         self._drying_in_progress: dict[int, float] = {}
+        # Printers with a running SCHEDULED drying and the (printer, AMS) units a
+        # schedule has reserved — rebuilt by every scheduled-drying tick. Auto-drying
+        # never arms a reserved unit, and never drops the queue hold of a printer
+        # whose scheduled cycle is still running (it may be cooling, dry_time 0).
+        self._scheduled_drying_printers: set[int] = set()
+        self._scheduled_dry_units: set[tuple[int, int]] = set()
+        self._scheduled_holds_seeded = False
         # ⚠️ The units WE armed, as (printer_id, ams_id) — a narrower question
         # than ``_drying_in_progress``, which also adopts a cycle already
         # running when we first look at the printer. Only this set may be
@@ -335,6 +342,8 @@ class PrintScheduler:
         Returns True if this pass dispatched at least one item, so the caller can
         loop again quickly instead of sleeping the full interval (#2555).
         """
+        if not self._scheduled_holds_seeded:
+            await self._seed_scheduled_drying_holds()
         async with async_session() as db:
             # Get all pending items with queue loaded, ordered by queue and position
             from sqlalchemy.orm import selectinload
@@ -366,6 +375,7 @@ class PrintScheduler:
                 # even when the dispatched print was the LAST queued item and no
                 # pending rows remain to drive the full seeding path.
                 busy_seed = await active_claim_printer_ids(db)
+                await self._tick_scheduled_drying(busy_seed)
                 await self._check_auto_drying(db, [], busy_seed)
                 return False
 
@@ -665,6 +675,17 @@ class PrintScheduler:
                     if not dry_through:
                         await self._stop_drying(printer_id)
 
+                # A scheduled cycle yields to the print on EVERY model — even one that
+                # dries through printing: its temperature is the operator's, not the
+                # mid-print cap (spec, owner's decision 6). It resumes when the printer
+                # is free, within its window.
+                if printer_id in self._scheduled_drying_printers:
+                    await scheduled_drying.preempt_for_print(
+                        db, printer_id, datetime.now(timezone.utc).replace(tzinfo=None)
+                    )
+                    self._scheduled_drying_printers.discard(printer_id)
+                    self._drying_in_progress.pop(printer_id, None)
+
                 # Start the print — _start_print spawns a parallel task for the
                 # FTP/dispatch pipeline and returns once the queue row is flipped
                 # to "printing" + the stagger slot is pre-registered. This lets
@@ -699,6 +720,8 @@ class PrintScheduler:
                         awaiting_plate_clear,
                     )
 
+            # Scheduled drying first: the units it reserves are off-limits to auto-drying.
+            await self._tick_scheduled_drying(dispatching_printers)
             # Auto-drying: start drying on idle printers that have no pending queue items
             await self._check_auto_drying(db, items, dispatching_printers)
             return dispatched
@@ -1741,6 +1764,9 @@ class PrintScheduler:
                 if module_type not in ("n3f", "n3s"):
                     logger.debug("Auto-drying: printer %d AMS %d skipped - module_type=%s", pid, ams_id, module_type)
                     continue
+                if (pid, ams_id) in self._scheduled_dry_units:
+                    logger.debug("Auto-drying: printer %d AMS %d skipped - reserved by a schedule", pid, ams_id)
+                    continue
 
                 dry_time = int(ams_data.get("dry_time") or 0)
 
@@ -2058,7 +2084,7 @@ class PrintScheduler:
             if not any_drying:
                 to_remove.append(pid)
         for pid in to_remove:
-            self._drying_in_progress.pop(pid, None)
+            self._release_drying_hold(pid)
 
         # ⚠️ Swept over ITS OWN keys, not over ``_drying_in_progress``:
         # ``_stop_drying`` pops the printer from that dict, so a claim swept
@@ -2110,7 +2136,7 @@ class PrintScheduler:
         """
         state = printer_manager.get_status(printer_id)
         if not state:
-            self._drying_in_progress.pop(printer_id, None)
+            self._release_drying_hold(printer_id)
             return
 
         ams_list = state.raw_data.get("ams", [])
@@ -2132,7 +2158,43 @@ class PrintScheduler:
                 )
                 printer_manager.send_drying_command(printer_id, ams_id, 0, 0, mode=0)
                 self.forget_auto_dry_cycle(printer_id, ams_id)
+        self._release_drying_hold(printer_id)
+
+    def _release_drying_hold(self, printer_id: int) -> None:
+        """Drop a printer's drying hold — unless a scheduled cycle there is still running."""
+        if printer_id in self._scheduled_drying_printers:
+            return
         self._drying_in_progress.pop(printer_id, None)
+
+    async def _seed_scheduled_drying_holds(self) -> None:
+        """After a restart, hold a printer whose scheduled cycle is running BEFORE the
+        first dispatch of the first pass (the tick itself runs after dispatch)."""
+        try:
+            async with async_session() as db:
+                running = await scheduled_drying.running_printer_ids(db)
+        except Exception as exc:  # noqa: BLE001 - never block the queue
+            logger.warning("Scheduled drying: could not restore holds: %s", exc)
+            return
+        self._scheduled_drying_printers = set(running)
+        for pid in running:
+            self._drying_in_progress.setdefault(pid, time.monotonic())
+        self._scheduled_holds_seeded = True
+
+    async def _tick_scheduled_drying(self, dispatching_printers: set[int]) -> None:
+        """Scheduled drying pass — in its own session; a failure here never stops the queue."""
+        try:
+            async with async_session() as db:
+                result = await scheduled_drying.tick(
+                    db,
+                    now=datetime.now(timezone.utc).replace(tzinfo=None),
+                    drying_in_progress=self._drying_in_progress,
+                    dispatching_printers=dispatching_printers,
+                )
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            logger.warning("Scheduled drying tick failed: %s", exc)
+            return
+        self._scheduled_drying_printers = result.running_printers
+        self._scheduled_dry_units = result.reserved_units
 
     async def _get_smart_plugs(self, db: AsyncSession, printer_id: int) -> list[SmartPlug]:
         """Get all smart plugs associated with a printer."""
