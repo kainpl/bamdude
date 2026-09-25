@@ -86,6 +86,60 @@ async def test_create_spool_from_tray_basic(db_session):
     assert spool.data_origin == "rfid_auto"
 
 
+async def _bambu_catalog(db_session, low_temp_weight: int = 250) -> dict[str, int]:
+    """The three shipped "Bambu Lab" rows, High Temp first — the order that
+    made a prefix lookup without ORDER BY answer 216 (upstream #2909)."""
+    from backend.app.models.spool_catalog import SpoolCatalogEntry
+
+    rows = {
+        "Bambu Lab - Plastic High Temp": 216,
+        "Bambu Lab - Plastic Low Temp": low_temp_weight,
+        "Bambu Lab - Plastic White": 253,
+    }
+    ids = {}
+    for name, weight in rows.items():
+        entry = SpoolCatalogEntry(name=name, weight=weight, is_default=True)
+        db_session.add(entry)
+        await db_session.flush()
+        ids[name] = entry.id
+    return ids
+
+
+@pytest.mark.asyncio
+async def test_rfid_spool_takes_the_low_temp_rows_tare(db_session):
+    """A Bambu roll arrives on the Low Temp plastic spool — 250 g, and the row
+    is named on the spool, whatever order the catalogue returns its rows in."""
+    ids = await _bambu_catalog(db_session)
+
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+
+    assert spool.core_weight == 250
+    assert spool.core_weight_catalog_id == ids["Bambu Lab - Plastic Low Temp"]
+
+
+@pytest.mark.asyncio
+async def test_rfid_spool_takes_the_users_measurement_of_that_row(db_session):
+    ids = await _bambu_catalog(db_session, low_temp_weight=247)
+
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+
+    assert spool.core_weight == 247
+    assert spool.core_weight_catalog_id == ids["Bambu Lab - Plastic Low Temp"]
+
+
+@pytest.mark.asyncio
+async def test_rfid_spool_without_that_row_gets_the_documented_default(db_session):
+    from backend.app.models.spool_catalog import SpoolCatalogEntry
+
+    db_session.add(SpoolCatalogEntry(name="Bambu Lab - Plastic High Temp", weight=216, is_default=True))
+    await db_session.flush()
+
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+
+    assert spool.core_weight == 250
+    assert spool.core_weight_catalog_id is None
+
+
 @pytest.mark.asyncio
 async def test_create_spool_from_tray_weight_from_remain(db_session):
     """weight_used is calculated from the AMS remain percentage."""

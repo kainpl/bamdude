@@ -115,6 +115,13 @@
 
 ### Fixed
 
+- **A Bambu Lab RFID spool gets the right empty-spool weight.** A spool
+  added from an RFID tag took whichever "Bambu Lab" row the spool catalogue
+  returned first — usually the 216 g High Temp spool — instead of the 250 g
+  Low Temp spool the rolls ship on, so its gross weight read 34 g light and a
+  weigh-in against it came out 34 g off. New spools take the Low Temp row (or
+  your own measurement of it); spools already added that way are corrected
+  once on upgrade.
 - **The model viewer opens an archive on the plate that was printed.** The
   archive API left the printed plate out of its answer, so a multi-plate
   archive always opened on "All plates" instead of the plate that ran.

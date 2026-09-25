@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 ZERO_TAG_UID = "0000000000000000"
 ZERO_TRAY_UUID = "00000000000000000000000000000000"
 
+# The spool-catalogue row for the reusable plastic spool a Bambu RFID roll
+# ships on, and the tare to assume when that row is absent. The shipped
+# catalogue holds three "Bambu Lab" rows (High Temp 216, Low Temp 250,
+# White 253); this is the one an RFID roll arrives on (upstream #2909).
+BAMBU_PLASTIC_SPOOL_CATALOG_NAME = "Bambu Lab - Plastic Low Temp"
+BAMBU_PLASTIC_SPOOL_CORE_WEIGHT = 250
+
 
 def is_valid_tag(tag_uid: str, tray_uuid: str) -> bool:
     """Check if a tag/UUID pair contains a non-zero, non-empty value."""
@@ -42,7 +49,7 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
     """Create a new Spool inventory entry from AMS tray MQTT data.
 
     Extracts material, subtype, color, temps, and tag info from the tray dict.
-    Looks up core_weight from the spool catalog if a Bambu Lab entry matches.
+    Takes core_weight from the catalogue row that names the Bambu plastic spool.
     """
     from backend.app.models.color_catalog import ColorCatalogEntry
     from backend.app.models.spool_catalog import SpoolCatalogEntry
@@ -134,13 +141,26 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         color_name,
     )
 
-    # Look up core weight from spool catalog
-    core_weight = 250  # Default for Bambu Lab plastic spools
-    cat_result = await db.execute(select(SpoolCatalogEntry).where(SpoolCatalogEntry.name.ilike("Bambu Lab%")).limit(10))
-    for entry in cat_result.scalars().all():
-        # Pick the best match (prefer exact, fallback to first Bambu Lab entry)
-        core_weight = entry.weight
-        break
+    # The tare comes from the catalogue row that NAMES the spool a Bambu roll
+    # ships on (upstream #2909). A "Bambu Lab%" prefix without ORDER BY took
+    # whichever of the three rows came back first — High Temp, 216 g, on
+    # SQLite — and a 34 g-light tare shifts the inventory's gross weight and
+    # the weigh-in check by the same 34 g. A user who corrected that row to
+    # their own measurement gets their value; a missing or renamed row falls
+    # back to the constant, never to another row.
+    core_weight = BAMBU_PLASTIC_SPOOL_CORE_WEIGHT
+    core_weight_catalog_id = None
+    catalog_entry = (
+        await db.execute(
+            select(SpoolCatalogEntry)
+            .where(func.lower(SpoolCatalogEntry.name) == BAMBU_PLASTIC_SPOOL_CATALOG_NAME.lower())
+            .order_by(SpoolCatalogEntry.id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if catalog_entry is not None:
+        core_weight = catalog_entry.weight
+        core_weight_catalog_id = catalog_entry.id
 
     # Resolve the family (the identity every K path reads through) and its
     # display name. The tray id IS the family id, so a spool born from a tag
@@ -183,6 +203,7 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         brand="Bambu Lab",
         label_weight=label_weight,
         core_weight=core_weight,
+        core_weight_catalog_id=core_weight_catalog_id,
         weight_used=weight_used,
         slicer_filament=tray_info_idx or None,
         slicer_filament_name=slicer_filament_name,
