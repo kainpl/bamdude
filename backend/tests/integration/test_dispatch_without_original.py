@@ -544,7 +544,9 @@ async def test_a_payload_this_version_cannot_read_refuses_instead_of_printing_a_
         assert job.outcome["deferred"] is True, job.outcome
         assert job.outcome["reason"]["code"] == "source_unreadable"
         await db_session.refresh(item)
-        assert item.waiting_reason == refusal
+        # A refused direct print is a failed row with the reason and a Retry —
+        # not a waiting one (spec direct-print-silent-cancel §4.1).
+        assert (item.status, item.error_message) == ("failed", refusal)
     else:
         scheduler, spawned = scheduler_with_captured_dispatch(monkeypatch)
         await scheduler.check_queue()
