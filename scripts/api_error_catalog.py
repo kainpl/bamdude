@@ -67,6 +67,20 @@ FORWARDED_EXCEPTIONS = frozenset(
         "SlicerApiUnavailableError",
         "SlicerApiServerError",
         "OIDCIconError",
+        # Model providers (services/model_providers): the routes answer
+        # ``detail=str(exc)`` for every provider error.
+        "ProviderError",
+        "ProviderAuthError",
+        "ProviderForbiddenError",
+        "ProviderNotFoundError",
+        "ProviderUnavailableError",
+        "ProviderUrlError",
+        "MakerWorldError",
+        "MakerWorldAuthError",
+        "MakerWorldForbiddenError",
+        "MakerWorldNotFoundError",
+        "MakerWorldUnavailableError",
+        "MakerWorldUrlError",
     }
 )
 
