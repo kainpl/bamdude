@@ -256,3 +256,28 @@ async def test_unloading_a_held_slot_is_sent(async_client, printer_factory, clie
 
     assert response.status_code == 200, response.text
     assert _published(client)["ams_id"] == 1
+
+
+# ------------------------------------------------------------- AMS preload
+
+
+def test_the_ams_preload_version_is_read_from_fun2(client):
+    """BambuStudio ``ams_preload_version = get_flag_bits_no_border(fun2, 21, 2)``:
+    with preload the firmware parks the outgoing filament at the switch and
+    pre-feeds the next one from the OTHER inlet, which is what makes a split
+    across the two inlets faster (``simulate_filament_change_time``)."""
+    assert client.state.ams_preload_version is None
+
+    client._process_message({"print": {"command": "push_status", "fun2": format(1 << 21, "x")}})
+    assert client.state.ams_preload_version == 1
+
+    client._process_message({"print": {"command": "push_status", "fun2": format(3 << 21 | 1 << 19, "x")}})
+    assert client.state.ams_preload_version == 3
+
+
+def test_the_preload_version_travels_on_the_socket(client):
+    from backend.app.services.printer_manager import printer_state_to_dict
+
+    client._process_message({"print": {"command": "push_status", "fun2": format(1 << 21, "x")}})
+
+    assert printer_state_to_dict(client.state, 1, "X2D")["ams_preload_version"] == 1

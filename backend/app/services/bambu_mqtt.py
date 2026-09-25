@@ -1483,6 +1483,12 @@ class PrinterState:
     # exposes it only while a switch is installed (without one, 0xE is an
     # uninitialised unit and those bits mean nothing). Upstream 7a42e0a7.
     ams_switch_inlet_seen: dict = field(default_factory=dict)
+    # BS ``ams_preload_version`` (``fun2`` bits 21-22); None until a push carries
+    # ``fun2``. With preload (>= 1) the firmware parks the outgoing filament at
+    # the track switch and pre-feeds the next one from the OTHER inlet — what
+    # makes a split across the two inlets faster (print dialog's inlet
+    # recommendation, ``utils/ftsArrangement.ts``).
+    ams_preload_version: int | None = None
     # Plate dispatched by BamDude for the current print (#1166). Some firmware
     # versions (P1S 01.10.00.00) only put the .3mf filename in
     # ``print.gcode_file``, so the regex used to derive the plate number from
@@ -3663,6 +3669,9 @@ class BambuMQTTClient:
             # one (MediaFilePanel.cpp:274) and the send on the other. A machine
             # can have one without the other; never collapse them into one flag.
             sup["model_internal_storage"] = bool((fun2 >> 17) & 1)
+            # Not a print option, but ``fun2`` is decoded only here. BS
+            # ``get_flag_bits_no_border(fun2, 21, 2)`` (DeviceManager.cpp).
+            self.state.ams_preload_version = (fun2 >> 21) & 0b11
 
     def _parse_xcam_data(self, xcam_data):
         """Parse xcam data for camera settings and AI detection options."""

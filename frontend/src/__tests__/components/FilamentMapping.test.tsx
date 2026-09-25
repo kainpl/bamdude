@@ -406,17 +406,27 @@ describe('FilamentMapping — FTS routing', () => {
   });
 });
 
-describe('FilamentMapping — FTS same-inlet advisory', () => {
-  // Bambu's own guidance: a change between two filaments on the SAME switch
-  // inlet retracts the outgoing one all the way back to its AMS before the
-  // incoming one can be fed up the shared tube; across the two inlets it only
-  // retracts as far as the switch. Every filament of a job behind one inlet
-  // means every change takes the slow path — worth a word, never a block.
+describe('FilamentMapping — Filament Track Switch arrangement advice', () => {
+  // BambuStudio's print dialog, ported: the slicer's optimal_assignment says
+  // which filaments belong behind which inlet, and a simulator of the shared
+  // inlet channel says what the current arrangement costs. Advice appears only
+  // when a move would save at least a second (SelectMachineDialog::
+  // update_save_time_hint) — never from a bare "all on one inlet" rule, which
+  // BambuStudio contradicts for a one-hotend print.
   const twoFilamentReqs = {
     filaments: [
       { slot_id: 1, type: 'PLA', color: '#FF0000', used_grams: 20, used_meters: 7, nozzle_id: 0 },
       { slot_id: 2, type: 'PETG', color: '#00FF00', used_grams: 25, used_meters: 8.5, nozzle_id: 1 },
     ],
+    // Filament 1 prints on one hotend, filament 2 on the other.
+    track_switch_plan: {
+      optimal_assignment: [0, 1],
+      filament_sequence: [0, 1],
+      nozzle_sequence: [0, 1],
+      nozzles: [{ id: 0, extruder_id: 0 }, { id: 1, extruder_id: 1 }],
+      load_time: 29,
+      unload_time: 28,
+    },
   };
 
   // Two AMS units, one filament matching in each, so the pick is unambiguous.
@@ -427,9 +437,13 @@ describe('FilamentMapping — FTS same-inlet advisory', () => {
     ],
     fila_switch: installed ? { installed: true, in_slots: [-1, -1], out_extruders: [1, 0], stat: 0, info: 0 } : null,
     ams_switch_inlet: amsSwitchInlet,
+    ams_preload_version: 0,
   } as Partial<PrinterStatus>);
 
-  const renderWith = (amsSwitchInlet: Record<string, 'A' | 'B'>, installed = true) => {
+  const renderWith = (
+    amsSwitchInlet: Record<string, 'A' | 'B'>,
+    { installed = true, reqs = twoFilamentReqs }: { installed?: boolean; reqs?: typeof twoFilamentReqs | { filaments: typeof twoFilamentReqs.filaments } } = {},
+  ) => {
     server.use(
       http.get('/api/v1/printers/:id/spool-assignments', () => HttpResponse.json([])),
       http.get('/api/v1/printers/:id/status', () => HttpResponse.json(createStatus(twoAmsStatus(amsSwitchInlet, installed)))),
@@ -437,7 +451,7 @@ describe('FilamentMapping — FTS same-inlet advisory', () => {
     render(
       <FilamentMapping
         printerId={1}
-        filamentReqs={twoFilamentReqs}
+        filamentReqs={reqs}
         manualMappings={{}}
         onManualMappingChange={() => {}}
         currencySymbol="$"
@@ -447,34 +461,37 @@ describe('FilamentMapping — FTS same-inlet advisory', () => {
     );
   };
 
-  it('warns when every filament for the print is behind one inlet', async () => {
+  const waitForSlots = () => waitFor(() => expect(screen.getAllByText(/Bambu PETG/).length).toBeGreaterThan(0));
+
+  it('names the filament to move and the time it saves', async () => {
+    // Both on IN-A: filament 1 must be pulled back out of the other hotend
+    // before filament 2 can use the shared inlet.
     renderWith({ '0': 'A', '1': 'A' });
-    // Names the inlet, so the operator knows which spool to move.
-    expect(await screen.findByText(/on Filament Track Switch IN-A\./)).toBeInTheDocument();
-    expect(screen.getByText(/same inlet is slower/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Recommended filament arrangement saves/)).toBeInTheDocument();
+    expect(screen.getByText(/Filament 2 → an AMS on IN-B/)).toBeInTheDocument();
   });
 
-  it('stays quiet when the filaments are split across both inlets', async () => {
+  it('stays quiet when the filaments already sit where the slicer suggests', async () => {
     renderWith({ '0': 'A', '1': 'B' });
-    await waitFor(() => {
-      expect(screen.getAllByText(/Bambu PETG/).length).toBeGreaterThan(0);
-    });
-    expect(screen.queryByText(/same inlet is slower/i)).not.toBeInTheDocument();
+    await waitForSlots();
+    expect(screen.queryByText(/Recommended filament arrangement/)).not.toBeInTheDocument();
+  });
+
+  it('stays quiet without the slicer plan, even with everything on one inlet', async () => {
+    renderWith({ '0': 'A', '1': 'A' }, { reqs: { filaments: twoFilamentReqs.filaments } });
+    await waitForSlots();
+    expect(screen.queryByText(/Recommended filament arrangement/)).not.toBeInTheDocument();
   });
 
   it('stays quiet when the bindings are not known', async () => {
     renderWith({});
-    await waitFor(() => {
-      expect(screen.getAllByText(/Bambu PETG/).length).toBeGreaterThan(0);
-    });
-    expect(screen.queryByText(/same inlet is slower/i)).not.toBeInTheDocument();
+    await waitForSlots();
+    expect(screen.queryByText(/Recommended filament arrangement/)).not.toBeInTheDocument();
   });
 
   it('stays quiet once the switch is gone, whatever binding was last seen', async () => {
-    renderWith({ '0': 'A', '1': 'A' }, false);
-    await waitFor(() => {
-      expect(screen.getAllByText(/Bambu PETG/).length).toBeGreaterThan(0);
-    });
-    expect(screen.queryByText(/same inlet is slower/i)).not.toBeInTheDocument();
+    renderWith({ '0': 'A', '1': 'A' }, { installed: false });
+    await waitForSlots();
+    expect(screen.queryByText(/Recommended filament arrangement/)).not.toBeInTheDocument();
   });
 });

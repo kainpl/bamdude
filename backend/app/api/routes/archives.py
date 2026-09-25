@@ -42,6 +42,7 @@ from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope
 from backend.app.services.design_settings import overrides_from_config
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
+from backend.app.services.track_switch_plan import read_track_switch_plan
 from backend.app.utils.archive_paths import find_photo, photos_dir_for
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.threemf_tools import (
@@ -2977,6 +2978,7 @@ async def get_filament_requirements(
         raise HTTPException(404, "Archive file not found")
 
     filaments = []
+    track_switch_plan = None
 
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
@@ -3099,6 +3101,11 @@ async def get_filament_requirements(
                 for filament in filaments:
                     filament["nozzle_id"] = nozzle_mapping.get(filament["slot_id"])
 
+            # The slicer's Filament Track Switch inputs for the print
+            # dialog's inlet recommendation. A separate block, read by the
+            # dialog only — nothing that matches or dispatches reads it.
+            track_switch_plan = read_track_switch_plan(zf, plate_id)
+
     except Exception as e:
         logger.warning("Failed to parse filament requirements from archive %s: %s", archive_id, e)
 
@@ -3110,6 +3117,7 @@ async def get_filament_requirements(
         "filename": archive.filename,
         "plate_id": plate_id,
         "filaments": filaments,
+        "track_switch_plan": track_switch_plan,
     }
 
 

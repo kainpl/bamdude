@@ -123,9 +123,13 @@
   AMS Setup screen — A or B, in blue rather than the nozzle badge's green,
   never L or R, because an inlet can feed either nozzle — and shows nothing
   while the switch is not set up yet. The print dialog's slot list carries
-  the same inlet (its old left/right hint never matched a slot), and warns
-  when every filament a print needs is on one inlet, where each change has to
-  pull the spool back to its AMS first. Both follow the printer screen live.
+  the same inlet (its old left/right hint never matched a slot). Both follow
+  the printer screen live. The print dialog also recommends which filaments
+  to move to which inlet, as Bambu Studio does: it reads the arrangement the
+  slicer worked out from the file, times the current one against it — two
+  filaments on one inlet cannot share its tube, and printers with AMS preload
+  pre-feed only across the two inlets — and speaks up only when a move saves
+  at least a second.
 - **Load and Unload in the AMS slot menu work with a Filament Track Switch, and
   Unload removes the slot you picked.** With the switch fitted, either nozzle
   can be fed from any slot, and a load that did not say which one was quietly

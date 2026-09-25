@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Circle, Check, AlertTriangle, RefreshCw, ChevronDown, ChevronUp, Palette } from 'lucide-react';
+import { Circle, Check, AlertTriangle, RefreshCw, ChevronDown, ChevronUp, Palette, Info } from 'lucide-react';
 import { api } from '../../api/client';
 import { useFilamentMapping } from '../../hooks/useFilamentMapping';
 import { filamentColorMatches, filamentRequirementMatches, filamentTypesCompatible, getGlobalTrayId } from '../../utils/amsHelpers';
 import { getColorName } from '../../utils/colors';
+import { arrangementAdvice, type Inlet } from '../../utils/ftsArrangement';
 import { useFilamentLabels } from './useFilamentLabels';
 import type { FilamentMappingProps } from './types';
 
@@ -139,22 +140,31 @@ export function FilamentMapping({
   const ftsInletForAms = (amsId: number): 'A' | 'B' | null =>
     (ftsInstalled && amsSwitchInlet?.[String(amsId)]) || null;
 
-  // Every filament of this print behind ONE inlet is worth a word. Bambu's own
-  // guidance: a change between two filaments on the same inlet retracts the
-  // old one all the way back to its AMS before the next can be fed up the
-  // shared tube, where a change across the two inlets only retracts as far as
-  // the switch. It advises; it never blocks.
-  const sameInletWarning = useMemo(() => {
-    if (!ftsInstalled || filamentComparison.length < 2) return null;
-    const inlets = new Set<'A' | 'B'>();
+  // Which filament belongs behind which inlet, BambuStudio's way: the slicer's
+  // optimal_assignment against the live mapping, timed by a simulator of the
+  // shared inlet channel (utils/ftsArrangement.ts). Shown only when a move
+  // saves at least a second — a bare "everything on one inlet" rule gave the
+  // opposite of BambuStudio's advice for a one-hotend print. It advises; it
+  // never blocks.
+  const trackSwitchPlan = filamentReqs?.track_switch_plan;
+  const preloadVersion = printerStatus?.ams_preload_version;
+  const arrangement = useMemo(() => {
+    if (!ftsInstalled || !trackSwitchPlan) return null;
+    const mapping = new Map<number, Inlet | null>();
     for (const item of filamentComparison) {
-      if (!item.loaded || item.loaded.isExternal) return null;
-      const inlet = (amsSwitchInlet?.[String(item.loaded.amsId)]) || null;
-      if (!inlet) return null;
-      inlets.add(inlet);
+      const filamentId = (item.slot_id ?? 0) - 1;
+      if (filamentId < 0) return null;
+      const loaded = item.loaded;
+      mapping.set(filamentId, loaded && !loaded.isExternal ? (amsSwitchInlet?.[String(loaded.amsId)] ?? null) : null);
     }
-    return inlets.size === 1 ? [...inlets][0] : null;
-  }, [ftsInstalled, amsSwitchInlet, filamentComparison]);
+    return arrangementAdvice(trackSwitchPlan, mapping, preloadVersion);
+  }, [ftsInstalled, trackSwitchPlan, amsSwitchInlet, filamentComparison, preloadVersion]);
+  const formatSaving = (seconds: number) => {
+    const whole = Math.round(seconds);
+    return whole >= 60
+      ? t('printModal.ftsSaveMinutes', { m: Math.floor(whole / 60), s: whole % 60 })
+      : t('printModal.ftsSaveSeconds', { s: whole });
+  };
 
   // Don't render if no filament requirements
   if (!hasFilamentReqs) {
@@ -240,10 +250,19 @@ export function FilamentMapping({
               <span>{t('printModal.reRead')}</span>
             </button>
           </div>
-          {sameInletWarning && (
-            <div className="flex items-start gap-1.5 rounded border border-yellow-500/40 bg-yellow-500/10 px-2 py-1.5 text-xs text-yellow-700 dark:text-yellow-400">
-              <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
-              <span>{t('printModal.ftsSameInletHint', { inlet: sameInletWarning })}</span>
+          {arrangement && (
+            <div className="flex items-start gap-1.5 rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1.5 text-xs text-blue-700 dark:text-blue-300">
+              <Info className="w-3 h-3 mt-0.5 shrink-0" />
+              <div>
+                <div>{t('printModal.ftsArrangementSaves', { time: formatSaving(arrangement.saveSeconds) })}</div>
+                <ul className="mt-0.5 list-disc pl-4">
+                  {arrangement.moves.map((move) => (
+                    <li key={move.filamentId}>
+                      {t('printModal.ftsArrangementMove', { filament: move.filamentId + 1, inlet: move.inlet })}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
           )}
           {filamentComparison.map((item, idx) => {

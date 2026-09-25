@@ -873,6 +873,22 @@ export type FtsInlet = 'A' | 'B';
 // null when the hotend is fed from nothing. Keyed by extruder id ('0' = right,
 // '1' = left). tray_now cannot answer this: it is one value for the whole
 // printer, so on a dual-nozzle machine it names only one of two loaded hotends.
+// The slicer's Filament Track Switch inputs for one plate, read from the 3MF
+// (backend services/track_switch_plan.py); the print dialog's inlet
+// recommendation (utils/ftsArrangement.ts) runs on it. Null when the file
+// does not carry it.
+export interface TrackSwitchPlan {
+  /** Inlet group per 0-based filament id. */
+  optimal_assignment: number[];
+  /** 0-based filament ids in change order. */
+  filament_sequence: number[];
+  nozzle_sequence: number[];
+  /** Nozzle id → logical extruder id (0-based). */
+  nozzles: { id: number; extruder_id: number }[];
+  load_time: number;
+  unload_time: number;
+}
+
 export interface ExtruderSlot {
   ams_id: number | null;
   slot_id: number | null;
@@ -1017,6 +1033,8 @@ export interface PrinterStatus {
   // Which AMS slot each hotend is fed from. Empty on printers that do not
   // report device.extruder.info.
   extruder_slots?: Record<string, ExtruderSlot>;
+  // BambuStudio ams_preload_version (fun2 bits 21-22); null until reported.
+  ams_preload_version?: number | null;
   // Currently loaded tray (global tray ID, 255 = no filament loaded, 254 = external spool)
   tray_now: number;
   // Runout / filament-replacement guidance. Populated only while PAUSED.
@@ -8932,6 +8950,7 @@ export const api = {
         used_in_plate?: boolean;
         filament_type?: string;
       }>;
+      track_switch_plan?: TrackSwitchPlan | null;
     }>(`/archives/${archiveId}/filament-requirements${qs ? `?${qs}` : ''}`);
   },
   retryArchiveDownload: (archiveId: number) =>
@@ -11623,6 +11642,7 @@ export const api = {
         used_in_plate?: boolean;
         filament_type?: string;
       }>;
+      track_switch_plan?: TrackSwitchPlan | null;
     }>(`/library/files/${fileId}/filament-requirements${qs ? `?${qs}` : ''}`);
   },
 

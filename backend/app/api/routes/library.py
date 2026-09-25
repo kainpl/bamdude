@@ -119,6 +119,7 @@ from backend.app.services.slice_output_check import missing_start_gcode_message,
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.services.threemf_card import CARD_PICTURE_CATEGORIES, ThreeMFCardParser, content_type_for
+from backend.app.services.track_switch_plan import read_track_switch_plan
 from backend.app.utils.filename import (
     MAX_FILENAME_BYTES,
     InvalidFilenameError,
@@ -4860,6 +4861,7 @@ async def get_library_file_filament_requirements(
         return {"file_id": file_id, "filename": lib_file.filename, "plate_id": plate_id, "filaments": []}
 
     filaments = []
+    track_switch_plan = None
 
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
@@ -4997,6 +4999,11 @@ async def get_library_file_filament_requirements(
                 for filament in filaments:
                     filament["nozzle_id"] = nozzle_mapping.get(filament["slot_id"])
 
+            # The slicer's Filament Track Switch inputs for the print
+            # dialog's inlet recommendation. A separate block, read by the
+            # dialog only — nothing that matches or dispatches reads it.
+            track_switch_plan = read_track_switch_plan(zf, plate_id)
+
     except Exception as e:
         logger.warning("Failed to parse filament requirements from library file %s: %s", file_id, e)
 
@@ -5008,6 +5015,7 @@ async def get_library_file_filament_requirements(
         "filename": lib_file.filename,
         "plate_id": plate_id,
         "filaments": filaments,
+        "track_switch_plan": track_switch_plan,
     }
 
 

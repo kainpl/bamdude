@@ -1552,6 +1552,7 @@ async def _build_printer_status(
         # The page's first load reads this before any push: an empty default
         # would let the Load dialog offer a hotend that already holds the slot.
         extruder_slots=extruder_slots_payload(state),
+        ams_preload_version=state.ams_preload_version,
     )
 
 

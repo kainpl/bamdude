@@ -2353,6 +2353,9 @@ def printer_state_to_dict(
         # Which slot each hotend is fed from (upstream 9500c046). Always present:
         # the page shallow-merges pushes, so an absent field would stay stale.
         "extruder_slots": extruder_slots_payload(state),
+        # fun2 bits 21-22; the print dialog's inlet recommendation times the
+        # current arrangement with it (BS ``get_filament_change_gap_time``).
+        "ams_preload_version": state.ams_preload_version,
         # WiFi signal strength
         "wifi_signal": state.wifi_signal,
         "wired_network": state.wired_network,

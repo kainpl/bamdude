@@ -1,4 +1,4 @@
-import type { AutoQueueItem, FilamentRoutingSnapshot, FeedPolicy, CalibrationMode, PrintQueueItem, Printer } from '../../api/client';
+import type { AutoQueueItem, FilamentRoutingSnapshot, FeedPolicy, CalibrationMode, PrintQueueItem, Printer, TrackSwitchPlan } from '../../api/client';
 import type { AutoCalibrationCaps } from '../../utils/printerCapabilities';
 
 /**
@@ -481,6 +481,9 @@ export interface FilamentReqsData {
     /** UI-only matcher policy; never sent as part of the raw 3MF requirement. */
     strict_color_match?: boolean;
   }>;
+  /** The slicer's Filament Track Switch inputs for the plate — the inlet
+   *  recommendation only; nothing that routes or dispatches reads it. */
+  track_switch_plan?: TrackSwitchPlan | null;
 }
 
 /**
