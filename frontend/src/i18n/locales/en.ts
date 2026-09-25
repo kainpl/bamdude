@@ -4456,6 +4456,8 @@ export default {
     clearButton: 'Clear',
     signInRequiredTitle: 'Bambu Cloud sign-in required to download',
     signInRequiredBody: 'You can browse model details anonymously, but MakerWorld requires a Bambu Cloud account to download 3MF files.',
+    signInExpiredTitle: 'Bambu Cloud sign-in expired',
+    signInExpiredBody: 'You are still signed in to BamDude, but Bambu Lab has stopped accepting the stored token, so downloads will fail. Sign in to Bambu Cloud again.',
     openCloudSettings: 'Open Cloud settings',
     untitledModel: 'Untitled model',
     byCreator: 'by {{name}}',

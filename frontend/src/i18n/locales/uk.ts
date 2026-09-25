@@ -4468,6 +4468,8 @@ export default {
     clearButton: 'Очистити',
     signInRequiredTitle: 'Для завантаження потрібен Bambu Cloud',
     signInRequiredBody: 'Перегляд моделі працює без входу, але MakerWorld вимагає акаунт Bambu Cloud для скачування 3MF-файлів.',
+    signInExpiredTitle: 'Вхід у Bambu Cloud протермінувався',
+    signInExpiredBody: 'Ви й далі увійшли в BamDude, але Bambu Lab більше не приймає збережений токен, тож завантаження не вдаватимуться. Увійдіть у Bambu Cloud знову.',
     openCloudSettings: 'Відкрити налаштування Cloud',
     untitledModel: 'Без назви',
     byCreator: 'автор {{name}}',

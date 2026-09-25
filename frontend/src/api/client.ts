@@ -3289,6 +3289,8 @@ export interface BuiltinFilament {
 export interface MakerworldStatus {
   has_cloud_token: boolean;
   can_download: boolean;
+  /** A stored Bambu Cloud token exists but Bambu has rejected it — sign in again. */
+  sign_in_expired?: boolean;
 }
 
 export interface MakerworldAlreadyImportedEntry {

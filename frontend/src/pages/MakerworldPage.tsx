@@ -501,10 +501,14 @@ export function MakerworldPage() {
   const instances = resolved?.instances ?? [];
   const alreadyImported = (resolved?.already_imported_library_ids.length ?? 0) > 0;
 
-  const hasToken = statusQuery.data?.has_cloud_token ?? false;
   // Only block Print Now / Import actions on an import-capable login.
   // Browse/resolve works anonymously.
   const canDownload = statusQuery.data?.can_download ?? false;
+  // A stored token Bambu has rejected downloads nothing, but it isn't "no
+  // token" either — saying "sign in" to someone who believes they already are
+  // is what made this so confusing (#2562). Name the actual state.
+  const signInExpired = statusQuery.data?.sign_in_expired ?? false;
+  const signInTitle = signInExpired ? t('makerworld.signInExpiredTitle') : t('makerworld.signInRequiredTitle');
 
   const coverUrl = useMemo(() => pickString(design, 'coverUrl'), [design]);
   const title = pickString(design, 'title');
@@ -546,17 +550,17 @@ export function MakerworldPage() {
 
       {activeTab === 'import' && (
         <div className="space-y-4 min-w-0">
-      {!hasToken && (
+      {!canDownload && (
         <Card className="border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20">
           <CardContent>
             <div className="flex items-start gap-3 py-2">
               <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
               <div className="text-sm">
                 <p className="font-medium text-amber-900 dark:text-amber-100">
-                  {t('makerworld.signInRequiredTitle')}
+                  {signInTitle}
                 </p>
                 <p className="text-amber-800 dark:text-amber-200 mt-1">
-                  {t('makerworld.signInRequiredBody')}{' '}
+                  {signInExpired ? t('makerworld.signInExpiredBody') : t('makerworld.signInRequiredBody')}{' '}
                   <Link to="/profiles" className="underline">
                     {t('makerworld.openCloudSettings')}
                   </Link>
@@ -840,7 +844,7 @@ export function MakerworldPage() {
                                     profileId,
                                   })
                                 }
-                                title={!canDownload ? t('makerworld.signInRequiredTitle') : undefined}
+                                title={!canDownload ? signInTitle : undefined}
                               >
                                 {isRedownloading ? (
                                   <>
@@ -862,7 +866,7 @@ export function MakerworldPage() {
                             size="sm"
                             disabled={!canImport || !canDownload || isImporting || isPrinting || bulkProgress !== null}
                             onClick={() => importMutation.mutate({ instanceId, profileId })}
-                            title={!canDownload ? t('makerworld.signInRequiredTitle') : undefined}
+                            title={!canDownload ? signInTitle : undefined}
                           >
                             {isImporting ? (
                               <>
@@ -885,7 +889,7 @@ export function MakerworldPage() {
                           size="sm"
                           disabled={!canImport || !canDownload || isImporting || isPrinting || bulkProgress !== null}
                           onClick={() => sliceMutation.mutate({ instanceId, profileId })}
-                          title={!canDownload ? t('makerworld.signInRequiredTitle') : undefined}
+                          title={!canDownload ? signInTitle : undefined}
                         >
                           {isPrinting ? (
                             <>
