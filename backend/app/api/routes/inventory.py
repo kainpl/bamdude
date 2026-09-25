@@ -86,6 +86,7 @@ from backend.app.services.spool_csv import (
     serialize,
 )
 from backend.app.services.spoolman import SpoolmanClient, get_spoolman_client, init_spoolman_client
+from backend.app.services.tag_conflict import tag_already_linked
 from backend.app.utils.filament_remaining import grams_used
 from backend.app.utils.tag_normalization import normalize_tag_uid, normalize_tray_uuid
 
@@ -2778,7 +2779,11 @@ async def link_tag_to_spool(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
-    """Link an RFID tag_uid/tray_uuid to an existing spool."""
+    """Link an RFID tag_uid/tray_uuid to an existing spool.
+
+    A tag another active spool already carries is refused with the shared
+    ``tag_already_linked`` 409 naming that spool (upstream #3110).
+    """
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
     spool = result.scalar_one_or_none()
     if not spool:
@@ -2792,17 +2797,26 @@ async def link_tag_to_spool(
     _validate_tag_input(data.tag_uid, normalized_tag_uid, "tag_uid")
     _validate_tag_input(data.tray_uuid, normalized_tray_uuid, "tray_uuid", exact_len=32)
 
-    # Check for conflicts: tag already linked to another active spool
+    # Check for conflicts: tag already linked to another active spool.
+    #
+    # Ordered, and read with first() rather than scalar_one_or_none(): two active
+    # spools really can carry one tag — neither column has a unique index, PATCH
+    # /spools/{id} writes them unchecked and bulk create copies one payload into
+    # every row. scalar_one_or_none() raised MultipleResultsFound on that, which
+    # reached the caller as a 5xx instead of the 409 owed (upstream #3110).
     if normalized_tag_uid:
         conflict = await db.execute(
-            select(Spool).where(
+            select(Spool)
+            .where(
                 func.upper(Spool.tag_uid) == normalized_tag_uid,
                 Spool.id != spool_id,
                 Spool.archived_at.is_(None),
             )
+            .order_by(Spool.id)
         )
-        if conflict.scalar_one_or_none():
-            raise HTTPException(409, "Tag UID already linked to another active spool")
+        holder = conflict.scalars().first()
+        if holder:
+            raise tag_already_linked("tag_uid", holder.id)
         # Auto-clear from archived spools (tag recycling)
         archived_with_tag = await db.execute(
             select(Spool).where(
@@ -2816,14 +2830,17 @@ async def link_tag_to_spool(
 
     if normalized_tray_uuid:
         conflict = await db.execute(
-            select(Spool).where(
+            select(Spool)
+            .where(
                 func.upper(Spool.tray_uuid) == normalized_tray_uuid,
                 Spool.id != spool_id,
                 Spool.archived_at.is_(None),
             )
+            .order_by(Spool.id)
         )
-        if conflict.scalar_one_or_none():
-            raise HTTPException(409, "Tray UUID already linked to another active spool")
+        holder = conflict.scalars().first()
+        if holder:
+            raise tag_already_linked("tray_uuid", holder.id)
         archived_with_uuid = await db.execute(
             select(Spool).where(
                 func.upper(Spool.tray_uuid) == normalized_tray_uuid,

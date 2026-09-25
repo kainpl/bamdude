@@ -172,6 +172,14 @@
   dries — and is judged — as its base material, nylon under any of its
   spellings (NYLON, PA6, PA11, PA12, PAHT, PPA) as PA; the preheat stage reads
   the chamber target the same way.
+- **Linking a tag another spool already carries answers with that spool.**
+  When two active spools held the same tag — nothing stops that: editing a
+  spool or adding several at once copies the tag unchecked — linking it to a
+  third one failed with a server error instead of a refusal. Both inventory
+  modes now refuse the same way, naming the spool that holds the tag and
+  which identifier (tag UID or tray UUID) collided, with a code API clients
+  can act on; in Spoolman mode a tag edited to something odd in Spoolman
+  itself no longer breaks the check.
 - **Clear RFID Tag works on a Bambu Lab spool.** The button in the spool
   dialog stayed greyed out for a spool linked only by its 32-character tray
   UUID — which in Spoolman mode is every Bambu Lab spool synced from the AMS
