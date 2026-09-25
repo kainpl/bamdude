@@ -192,6 +192,15 @@ class AppSettings(BaseModel):
     ams_temp_fair: float = Field(
         default=35.0, description="Temperature threshold for fair (orange): <= this value, > is red"
     )
+    # Separate from ams_temp_fair on purpose (upstream #2905): the fair band
+    # decides when the AMS card turns amber, this decides when a notification is
+    # sent. 35 °C is a sensible place to change a colour and not to page someone.
+    # None = not set → falls back to ams_temp_fair, so existing installs keep
+    # behaving exactly as before.
+    ams_temp_alarm: float | None = Field(
+        default=None,
+        description="Temperature threshold (°C) for sending an AMS alarm. Unset falls back to ams_temp_fair.",
+    )
     ams_history_retention_days: int = Field(default=30, description="Number of days to keep AMS sensor history data")
     inbox_retention_days: int = Field(
         default=30, ge=1, le=365, description="Number of days to keep in-app inbox notifications"
@@ -726,6 +735,7 @@ class AppSettingsUpdate(BaseModel):
     ams_humidity_fair: int | None = None
     ams_temp_good: float | None = None
     ams_temp_fair: float | None = None
+    ams_temp_alarm: float | None = None
     ams_history_retention_days: int | None = None
     inbox_retention_days: int | None = Field(default=None, ge=1, le=365)
     plug_power_history_retention_days: int | None = Field(default=None, ge=1, le=365)

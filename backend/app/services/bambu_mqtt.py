@@ -24,6 +24,7 @@ import paho.mqtt.client as mqtt
 
 from backend.app.services.hms_actions import HMSAction, get_actions_for_error_code
 from backend.app.services.printer_feed_snapshot import FeedTelemetry, snapshot_from_state
+from backend.app.utils.ams_drying import ACTIVE_DRY_STATUSES
 from backend.app.utils.filename import subtask_name_from_remote_filename
 from backend.app.utils.paho_teardown import retire_paho_client
 from backend.app.utils.printer_models import is_dual_nozzle_model
@@ -393,15 +394,9 @@ def decode_filam_bak_groups(value: object) -> list[list[int]] | None:
 # Nothing below may pass a value from one namespace to the other untranslated;
 # doing exactly that is what the upstream bug was.
 # AMS ``dry_status`` phases in which a reported ``dry_time`` of 0 is NOT the end
-# of a cycle (BS ``DevAms::DryStatus``): Checking, Drying, Cooling.
-#
-# ⚠️ Deliberately NOT BS's ``AmsIsDrying()``, which answers a different question
-# — "should the UI show this unit as drying" — and therefore counts Error(5) and
-# CannotStopHeatOutofControl(6) while excluding Cooling(3). Ours is "has the
-# cycle ENDED", and for that Stopping(4), Error(5) and a stuck heater are all
-# endings, while cooling down is not one yet. Off(0) and PrdTesting(7) are not
-# live phases either.
-_ACTIVE_DRY_STATUSES = frozenset({1, 2, 3})
+# of a cycle — shared with the AMS temperature alarm, so it lives in the leaf
+# ``utils/ams_drying`` (why it is not BS's ``AmsIsDrying()`` is written there).
+_ACTIVE_DRY_STATUSES = ACTIVE_DRY_STATUSES
 
 _RACK_NOZZLE_IDS = frozenset(range(16, 22))
 

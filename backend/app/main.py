@@ -8953,6 +8953,106 @@ _ams_cleanup_counter = 0  # Track recordings to trigger periodic cleanup
 _ams_alarm_cooldown: dict[str, datetime] = {}
 AMS_ALARM_COOLDOWN_MINUTES = 60  # Don't send same alarm more than once per hour
 
+# Per-AMS "drying was live at" latch that holds back the high-temperature alarm
+# through a cycle and the cool-down after it (upstream #1802). A settings row,
+# not a dict beside ``_ams_alarm_cooldown``: a cycle plus its cool-down outlasts
+# a restart, and a restart partway through would resume alarming about heat the
+# user asked for.
+AMS_DRYING_LATCH_KEY = "ams_drying_alarm_latch"
+# Upper bound on that suppression. The latch normally clears as soon as the unit
+# reads at or below the alarm threshold (see ``utils/ams_drying``); the cap only
+# matters for a unit that never does.
+AMS_DRYING_GRACE_MINUTES = 120
+
+
+def _resolve_temp_alarm_threshold(fair_threshold: float, raw_alarm_value: str | None) -> float:
+    """Temperature at which the AMS alarm fires, falling back to the display band.
+
+    ``ams_temp_fair`` decides when the AMS card turns amber; it used to decide
+    when a notification was sent as well, so a room above it made the alarm fire
+    once an hour for as long as the weather lasted — and the only cure was to
+    raise the display band and lose the colour that says the unit is warm
+    (upstream #2905). ``ams_temp_alarm`` is its own threshold now.
+
+    Unset resolves to the fair threshold, so an install that never sets one is
+    unchanged. Settings storage stringifies ``None`` to ``"None"``, which lands in
+    the same branch as any unparseable value. Zero, negatives, NaN and infinity
+    are refused: zero would alarm permanently (more likely a cleared field than a
+    choice), and nothing is ever greater than NaN, which would silence the alarm
+    while looking configured.
+    """
+    import math
+
+    if raw_alarm_value is None:
+        return fair_threshold
+    try:
+        value = float(raw_alarm_value)
+    except (TypeError, ValueError):
+        return fair_threshold
+    if not math.isfinite(value) or value <= 0:
+        return fair_threshold
+    return value
+
+
+async def _load_ams_drying_latch(db) -> dict[str, datetime]:
+    """Read the persisted per-AMS drying latch, dropping entries out of window.
+
+    Anything older than the grace cap would expire on its next visit anyway, so
+    dropping it here stops rows for deleted printers accumulating. Stamps ahead
+    of now (a box whose clock jumped backwards — a Pi with no RTC before NTP)
+    are discarded when wildly future and clamped to now otherwise: suppression is
+    measured as now minus the stamp, so a future one would hold the alarm quiet
+    for the skew on top of the cap. A corrupt row reads as no latch.
+    """
+    import json
+
+    from backend.app.models.settings import Settings
+
+    setting = (await db.execute(select(Settings).where(Settings.key == AMS_DRYING_LATCH_KEY))).scalar_one_or_none()
+    if not setting or not setting.value:
+        return {}
+    try:
+        raw = json.loads(setting.value)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+
+    now = datetime.now(timezone.utc)
+    window = timedelta(minutes=AMS_DRYING_GRACE_MINUTES)
+    latch: dict[str, datetime] = {}
+    for key, value in raw.items():
+        try:
+            stamp = datetime.fromisoformat(str(value))
+        except (ValueError, TypeError):
+            continue
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        if not (now - window <= stamp <= now + window):
+            continue
+        latch[str(key)] = min(stamp, now)
+    return latch
+
+
+async def _save_ams_drying_latch(db, latch: dict[str, datetime]) -> None:
+    """Persist the latch, writing only when it changed.
+
+    Adds to the session without committing — the caller's commit carries it, in
+    the same transaction as the sensor rows that produced it. No row is created
+    on an install that never dries anything.
+    """
+    import json
+
+    from backend.app.models.settings import Settings
+
+    payload = json.dumps({key: stamp.isoformat() for key, stamp in sorted(latch.items())})
+    setting = (await db.execute(select(Settings).where(Settings.key == AMS_DRYING_LATCH_KEY))).scalar_one_or_none()
+    if setting is None:
+        if payload != "{}":
+            db.add(Settings(key=AMS_DRYING_LATCH_KEY, value=payload))
+    elif setting.value != payload:
+        setting.value = payload
+
 
 async def on_print_complete(printer_id: int, data: dict) -> None:
     """Run completion work and always release only its own analysis context.
@@ -9036,7 +9136,7 @@ async def record_ams_history():
 
                 # Get alarm thresholds from settings
                 humidity_threshold = 60.0  # Default: fair threshold
-                temp_threshold = 35.0  # Default: fair threshold
+                temp_fair_threshold = 35.0  # Display band default (ams_temp_fair)
                 result = await db.execute(select(Settings).where(Settings.key == "ams_humidity_fair"))
                 setting = result.scalar_one_or_none()
                 if setting:
@@ -9073,9 +9173,23 @@ async def record_ams_history():
                 setting = result.scalar_one_or_none()
                 if setting:
                     try:
-                        temp_threshold = float(setting.value)
+                        temp_fair_threshold = float(setting.value)
                     except (ValueError, TypeError):
                         pass  # Keep default threshold if stored value is invalid
+                # The alarm has its own threshold (upstream #2905), seeded from
+                # the display band so an install that never set one is unchanged.
+                result = await db.execute(select(Settings).where(Settings.key == "ams_temp_alarm"))
+                setting = result.scalar_one_or_none()
+                temp_alarm_threshold = _resolve_temp_alarm_threshold(
+                    temp_fair_threshold, setting.value if setting else None
+                )
+
+                # Per-AMS drying latch (upstream #1802), loaded once per pass and
+                # written back below only if a unit changed it.
+                from backend.app.utils.ams_drying import is_drying_active, temperature_alarm_suppressed
+
+                drying_latch = await _load_ams_drying_latch(db)
+                drying_latch_before = dict(drying_latch)
 
                 recorded_count = 0
                 for printer in printers:
@@ -9194,8 +9308,31 @@ async def record_ams_history():
                                 except Exception as e:
                                     logger.warning("Failed to send humidity alarm: %s", e)
 
+                        # A drying cycle heats the unit far past the threshold on
+                        # purpose (45 °C for PLA, 65 °C for PETG, up to 85 °C on an
+                        # AMS-HT), so the alarm fired every hour of the cycle and on
+                        # through the cool-down (upstream #1802). Latch on the
+                        # firmware's own drying state and hold until the reading is
+                        # back at the ALARM threshold — the display band would strand
+                        # the latch on a unit that rests above it in a warm room.
+                        # Humidity is left alone: it falls during drying, which is
+                        # the whole point.
+                        latch_key = f"{printer.id}:{ams_id}"
+                        suppress_temp_alarm, new_latch = temperature_alarm_suppressed(
+                            drying_active=is_drying_active(ams_data),
+                            temperature=temperature,
+                            threshold=temp_alarm_threshold,
+                            latched_at=drying_latch.get(latch_key),
+                            now=datetime.now(timezone.utc),
+                            grace_minutes=AMS_DRYING_GRACE_MINUTES,
+                        )
+                        if new_latch is None:
+                            drying_latch.pop(latch_key, None)
+                        else:
+                            drying_latch[latch_key] = new_latch
+
                         # Check temperature alarm (only if above threshold)
-                        if temperature is not None and temperature > temp_threshold:
+                        if temperature is not None and temperature > temp_alarm_threshold and not suppress_temp_alarm:
                             cooldown_key = f"{printer.id}:{ams_id}:temperature"
                             last_alarm = _ams_alarm_cooldown.get(cooldown_key)
                             now = datetime.now(timezone.utc)
@@ -9205,20 +9342,26 @@ async def record_ams_history():
                             ):
                                 _ams_alarm_cooldown[cooldown_key] = now
                                 logger.info(
-                                    f"Sending temperature alarm for {printer.name} {ams_label}: {temperature}°C > {temp_threshold}°C"
+                                    f"Sending temperature alarm for {printer.name} {ams_label}: "
+                                    f"{temperature}°C > {temp_alarm_threshold}°C"
                                 )
                                 try:
                                     # Call different notification method based on AMS type
+                                    # The message quotes the threshold that fired, or it
+                                    # would say "> 35 °C" while firing at 45.
                                     if is_ams_ht:
                                         await notification_service.on_ams_ht_temperature_high(
-                                            printer.id, printer.name, ams_label, temperature, temp_threshold, db
+                                            printer.id, printer.name, ams_label, temperature, temp_alarm_threshold, db
                                         )
                                     else:
                                         await notification_service.on_ams_temperature_high(
-                                            printer.id, printer.name, ams_label, temperature, temp_threshold, db
+                                            printer.id, printer.name, ams_label, temperature, temp_alarm_threshold, db
                                         )
                                 except Exception as e:
                                     logger.warning("Failed to send temperature alarm: %s", e)
+
+                if drying_latch != drying_latch_before:
+                    await _save_ams_drying_latch(db, drying_latch)
 
                 await db.commit()
                 if recorded_count > 0:

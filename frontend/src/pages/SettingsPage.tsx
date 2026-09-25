@@ -1279,6 +1279,7 @@ export function SettingsPage() {
       baseline.ams_humidity_fair !== localSettings.ams_humidity_fair ||
       baseline.ams_temp_good !== localSettings.ams_temp_good ||
       baseline.ams_temp_fair !== localSettings.ams_temp_fair ||
+      (baseline.ams_temp_alarm ?? null) !== (localSettings.ams_temp_alarm ?? null) ||
       baseline.ams_history_retention_days !== localSettings.ams_history_retention_days ||
       // Nullish-fallback so a transient ``undefined`` on either side
       // (stale settings query mid-fetch, fresh install before any
@@ -1397,6 +1398,8 @@ export function SettingsPage() {
         ams_humidity_fair: localSettings.ams_humidity_fair,
         ams_temp_good: localSettings.ams_temp_good,
         ams_temp_fair: localSettings.ams_temp_fair,
+        // An explicit null clears it — omitting the key would keep the old value.
+        ams_temp_alarm: localSettings.ams_temp_alarm ?? null,
         ams_history_retention_days: localSettings.ams_history_retention_days,
         log_retention_days: localSettings.log_retention_days,
         slow_query_ms: localSettings.slow_query_ms,
@@ -5895,6 +5898,42 @@ export function SettingsPage() {
                   </div>
                   <p className="text-xs text-bambu-gray">
                     {t('settings.aboveFairHot')}
+                  </p>
+                  {/* The alarm's own threshold (upstream #2905): Good / Fair colour the
+                      card, this sends the notification. The placeholder shows the Fair
+                      value it falls back to — blank with no hint would read as "no alarm". */}
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">
+                      {t('settings.tempAlarmThreshold')}
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0.5"
+                        max="120"
+                        value={localSettings.ams_temp_alarm ?? ''}
+                        placeholder={String(localSettings.ams_temp_fair ?? 35)}
+                        onChange={(e) => {
+                          const raw = e.target.value.trim();
+                          const parsed = parseFloat(raw);
+                          updateSetting('ams_temp_alarm', raw === '' || Number.isNaN(parsed) ? null : parsed);
+                        }}
+                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      />
+                      <span className="text-bambu-gray">°C</span>
+                    </div>
+                  </div>
+                  {/* Warn rather than clamp: clamping a controlled input mid-keystroke
+                      makes "0.5" untypeable. The backend ignores a non-positive value and
+                      falls back to Fair, so say so. */}
+                  {(localSettings.ams_temp_alarm ?? 1) <= 0 && (
+                    <p className="text-xs text-red-600 dark:text-red-400">
+                      {t('settings.tempAlarmMustBePositive')}
+                    </p>
+                  )}
+                  <p className="text-xs text-bambu-gray">
+                    {t('settings.tempAlarmSeparateFromBand')}
                   </p>
                 </div>
 

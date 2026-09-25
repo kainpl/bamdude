@@ -115,6 +115,17 @@
 
 ### Fixed
 
+- **The AMS temperature alarm no longer fires for heat you asked for, and has
+  its own threshold.** While an AMS dried filament — 45 °C for PLA, 65 °C for
+  PETG, up to 85 °C on an AMS-HT — the alarm, set at the 35 °C amber band,
+  sent a notification every hour of the cycle and on through the cool-down.
+  It now stays quiet while the unit is drying and until it has cooled back to
+  the alarm threshold (at most two hours after the cycle), a hold that
+  survives a restart; a heater that has lost control still alarms. And the
+  alarm no longer has to share the amber band: **Settings → Filament → AMS
+  Display Thresholds → Alarm above** sets the temperature that notifies,
+  so a warm room can turn the card amber without paging you. Left empty, it
+  alarms at the amber band, as before.
 - **A Bambu Lab RFID spool gets the right empty-spool weight.** A spool
   added from an RFID tag took whichever "Bambu Lab" row the spool catalogue
   returned first — usually the 216 g High Temp spool — instead of the 250 g

@@ -2821,6 +2821,9 @@ export interface AppSettings {
   ams_humidity_fair: number;  // <= this is orange, > is red
   ams_temp_good: number;      // <= this is green/blue
   ams_temp_fair: number;      // <= this is orange, > is red
+  // The alarm's own threshold, separate from the display band (upstream
+  // #2905). null = unset — the backend then alarms at ams_temp_fair.
+  ams_temp_alarm?: number | null;
   ams_history_retention_days: number;  // days to keep AMS sensor history
   runout_zero_point_enabled: boolean;  // close a spool at exactly empty on an unambiguous runout
   runout_archive_spool_enabled: boolean;  // after the zero-point closes a spool, also archive it (closed episode only; off by default)

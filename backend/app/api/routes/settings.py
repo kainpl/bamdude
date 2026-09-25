@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import zipfile
 from datetime import datetime
@@ -137,6 +138,17 @@ async def get_settings(
                 "low_stock_threshold",
             ]:
                 settings_dict[setting.key] = float(setting.value)
+            elif setting.key == "ams_temp_alarm":
+                # Nullable float. Storage stringifies None to "None", so it cannot
+                # join the list above — float("None") would take the whole
+                # settings response down with it (upstream #2905). Garbage reads
+                # as unset, the same fallback the alarm itself applies — a
+                # non-finite value too, which JSON could not carry anyway.
+                try:
+                    value = float(setting.value)
+                except (TypeError, ValueError):
+                    value = None
+                settings_dict[setting.key] = value if value is not None and math.isfinite(value) else None
             elif setting.key in [
                 "ams_humidity_good",
                 "ams_humidity_fair",
@@ -394,6 +406,9 @@ _UI_PREFERENCE_FIELDS: tuple[str, ...] = (
     "ams_humidity_fair",
     "ams_temp_good",
     "ams_temp_fair",
+    # ams_temp_alarm deliberately NOT here: this endpoint serves the colour
+    # bands without SETTINGS_READ, and the alarm threshold colours nothing —
+    # only the settings page reads it, behind the settings permissions.
 )
 
 
