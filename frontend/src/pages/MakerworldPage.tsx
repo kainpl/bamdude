@@ -247,6 +247,14 @@ export function MakerworldPage() {
     setSliceModalSource({ kind: 'libraryFile', id: libraryFileId, filename });
   };
 
+  // A MakerWorld call Bambu refused may have just marked the stored token
+  // expired on the backend — re-read the sign-in state so the banner and the
+  // disabled buttons follow at once, not on the next window refocus.
+  const failWith = (fallbackKey: string) => (err: Error) => {
+    queryClient.invalidateQueries({ queryKey: ['makerworld-status'] });
+    showToast(err.message || t(fallbackKey), 'error');
+  };
+
   const resolveMutation = useMutation({
     mutationFn: (url: string) => api.resolveMakerworldUrl(url),
     onSuccess: (data, url) => {
@@ -272,7 +280,7 @@ export function MakerworldPage() {
       }
       setImportsByProfile(seeded);
     },
-    onError: (err: Error) => showToast(err.message || t('makerworld.errors.resolveFailed'), 'error'),
+    onError: failWith('makerworld.errors.resolveFailed'),
   });
 
   // URL-change detection: if the user edits the URL input away from what
@@ -310,7 +318,7 @@ export function MakerworldPage() {
         'success',
       );
     },
-    onError: (err: Error) => showToast(err.message || t('makerworld.errors.downloadFailed'), 'error'),
+    onError: failWith('makerworld.errors.downloadFailed'),
   });
 
   // "Print Now" is a two-step mutation: import to library, then open the
@@ -337,7 +345,7 @@ export function MakerworldPage() {
       }
       showToast(t('makerworld.redownloadSuccess', { filename: data.filename }), 'success');
     },
-    onError: (err: Error) => showToast(err.message || t('makerworld.errors.downloadFailed'), 'error'),
+    onError: failWith('makerworld.errors.downloadFailed'),
   });
 
   const deleteImportMutation = useMutation({
@@ -393,7 +401,7 @@ export function MakerworldPage() {
         await handleOpenInSlicer(data.library_file_id, data.filename, preferredSlicer);
       }
     },
-    onError: (err: Error) => showToast(err.message || t('makerworld.errors.downloadFailed'), 'error'),
+    onError: failWith('makerworld.errors.downloadFailed'),
   });
 
   // Tick while an import is in-flight so we can show "Downloading… (12 s)"
