@@ -304,5 +304,44 @@ describe('EditArchiveModal', () => {
       });
       expect(sentBody!.failure_reason).toBe('cloggedNozzle');
     });
+
+    it('keeps a reason it does not recognise, and saving does not destroy it (upstream #2974)', async () => {
+      // The fallback used to be '' — and the empty selection was then saved over
+      // the stored text, so opening the editor and pressing Save erased it.
+      const user = userEvent.setup();
+      let sentBody: Record<string, unknown> | null = null;
+      server.use(
+        http.patch('/api/v1/archives/:id', async ({ request }) => {
+          sentBody = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ ...mockArchive, ...sentBody });
+        })
+      );
+
+      render(
+        <EditArchiveModal
+          archive={{ ...mockArchive, status: 'failed', failure_reason: 'the belt snapped' }}
+          onClose={mockOnClose}
+        />
+      );
+
+      const select = (await screen.findByLabelText(/failure reason/i)) as HTMLSelectElement;
+      expect(select.value).toBe('the belt snapped');
+      await user.click(screen.getByRole('button', { name: /save/i }));
+      await waitFor(() => expect(sentBody).not.toBeNull());
+      expect(sentBody!.failure_reason).toBe('the belt snapped');
+    });
+
+    it('offers the key the stale and reconnect paths record', async () => {
+      render(
+        <EditArchiveModal
+          archive={{ ...mockArchive, status: 'failed', failure_reason: 'noStatusUpdate' }}
+          onClose={mockOnClose}
+        />
+      );
+
+      const select = (await screen.findByLabelText(/failure reason/i)) as HTMLSelectElement;
+      expect(select.value).toBe('noStatusUpdate');
+      expect(screen.getByRole('option', { name: 'No status update received' })).toBeInTheDocument();
+    });
   });
 });

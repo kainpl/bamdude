@@ -63,6 +63,7 @@ from backend.app.services.queue_source_descriptor import source_storage_state
 from backend.app.services.queue_sources import QueueSourceError
 from backend.app.services.queue_times import plate_metadata_cached, plate_metadata_for_row, plate_picture_for_row
 from backend.app.services.source_io import SourceUnavailable
+from backend.app.utils.failure_reasons import USER_CANCELLED
 from backend.app.utils.printer_models import is_gcode_compatible
 from backend.app.utils.threemf_tools import plate_picture_entry
 
@@ -1237,7 +1238,8 @@ async def stop_queue_item(
         if archive and archive.status == "printing":
             archive.status = "cancelled"
             archive.completed_at = datetime.now(timezone.utc)
-            archive.failure_reason = "Stopped by user (printer was offline)"
+            # A key (upstream #2974); the offline part is the stop path, not a reason.
+            archive.failure_reason = USER_CANCELLED
 
     # User-initiated stop pauses the queue (not idle) so the operator
     # explicitly resumes after inspecting the printer / dealing with the

@@ -402,7 +402,16 @@ async def test_reconcile_never_stamps_a_finish_in_the_future(db_session):
 async def test_reconcile_failed_records_why_the_row_was_closed(db_session):
     archive = await _make_archive(db_session)
     await _reconcile_complete_archive(db_session, archive, status="failed", uncertain=False)
-    assert archive.failure_reason == "Stale - reconciled after reconnect, end time unknown"
+    # One key, not a sentence: the Failure Analysis breakdown groups on it (upstream #2974).
+    assert archive.failure_reason == "noStatusUpdate"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_an_uncertain_cancel_records_the_same_key(db_session):
+    """No end-of-print status ever arrived — the same observation; ``status`` carries the rest."""
+    archive = await _make_archive(db_session)
+    await _reconcile_complete_archive(db_session, archive, status="cancelled", uncertain=True)
+    assert archive.failure_reason == "noStatusUpdate"
 
 
 @pytest.mark.asyncio

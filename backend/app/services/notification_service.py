@@ -1843,7 +1843,10 @@ class NotificationService:
             if archive_data.get("actual_filament_grams"):
                 variables["filament_grams"] = f"{archive_data['actual_filament_grams']:.1f}"
             if status == "failed" and archive_data.get("failure_reason"):
-                variables["reason"] = archive_data["failure_reason"]
+                # Stored as a key (upstream #2974); a notification is read by a person.
+                from backend.app.utils.failure_reasons import reason_label
+
+                variables["reason"] = reason_label(archive_data["failure_reason"])
             if archive_data.get("finish_photo_url"):
                 variables["finish_photo_url"] = archive_data["finish_photo_url"]
 

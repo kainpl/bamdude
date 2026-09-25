@@ -1,0 +1,16 @@
+{
+  "adhesionFailure": "Adhesion failure",
+  "spaghettiDetached": "Spaghetti / Detached",
+  "layerShift": "Layer shift",
+  "cloggedNozzle": "Clogged nozzle",
+  "filamentRunout": "Filament runout",
+  "warping": "Warping",
+  "stringing": "Stringing",
+  "underExtrusion": "Under-extrusion",
+  "powerFailure": "Power failure",
+  "swapModeFailure": "Swap Mode error",
+  "printerError": "Printer error",
+  "userCancelled": "User cancelled",
+  "noStatusUpdate": "No status update received",
+  "other": "Other"
+}

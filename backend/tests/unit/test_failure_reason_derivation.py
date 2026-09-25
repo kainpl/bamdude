@@ -22,30 +22,30 @@ def _hms(short_code: str) -> dict:
 
 class TestCancelledStatuses:
     def test_aborted_yields_user_cancelled(self):
-        assert derive_failure_reason("aborted", []) == "User cancelled"
+        assert derive_failure_reason("aborted", []) == "userCancelled"
 
     def test_cancelled_yields_user_cancelled(self):
-        assert derive_failure_reason("cancelled", []) == "User cancelled"
+        assert derive_failure_reason("cancelled", []) == "userCancelled"
 
     def test_cancelled_ignores_hms(self):
         # Even if the printer also emitted real-looking HMS, "cancelled" wins.
-        assert derive_failure_reason("cancelled", [_hms("0300_4057")]) == "User cancelled"
+        assert derive_failure_reason("cancelled", [_hms("0300_4057")]) == "userCancelled"
 
 
 class TestFailedWithKnownCodes:
     def test_layer_shift_module_0x03(self):
-        assert derive_failure_reason("failed", [_hms("0300_4057")]) == "Layer shift"
+        assert derive_failure_reason("failed", [_hms("0300_4057")]) == "layerShift"
 
     def test_filament_runout_per_slot(self):
-        assert derive_failure_reason("failed", [_hms("0701_8011")]) == "Filament runout"
+        assert derive_failure_reason("failed", [_hms("0701_8011")]) == "filamentRunout"
 
     def test_clogged_nozzle(self):
-        assert derive_failure_reason("failed", [_hms("0300_4006")]) == "Clogged nozzle"
+        assert derive_failure_reason("failed", [_hms("0300_4006")]) == "cloggedNozzle"
 
     def test_first_match_wins(self):
         # Two known codes — return whichever the map yields for the first hit.
         result = derive_failure_reason("failed", [_hms("0300_4057"), _hms("0701_8011")])
-        assert result in {"Layer shift", "Filament runout"}
+        assert result in {"layerShift", "filamentRunout"}
 
 
 class TestFailedWithoutKnownCodes:

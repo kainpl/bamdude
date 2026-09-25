@@ -7867,6 +7867,7 @@ export default {
       swapModeFailure: 'Помилка свап-мода',
       printerError: 'Помилка принтера',
       userCancelled: 'Скасовано користувачем',
+      noStatusUpdate: 'Не надійшло оновлення статусу',
       other: 'Інше'
     },
     // Archive statuses

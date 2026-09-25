@@ -176,6 +176,16 @@
   dries — and is judged — as its base material, nylon under any of its
   spellings (NYLON, PA6, PA11, PA12, PAHT, PPA) as PA; the preheat stage reads
   the chamber target the same way.
+- **A failure reason is counted once, in one language.** The failure
+  breakdown in Statistics counted "User cancelled" and a user-picked "User
+  cancelled" as two reasons, and in Ukrainian one of them stayed English: the
+  backend stored English labels, older archive editors stored the label in
+  the user's language, and the reconnect paths stored English sentences.
+  Every writer now stores the same key, existing archives are converted on
+  update — including databases imported from Bambuddy, in any of its
+  languages — and the notification for a failed print names the reason in
+  the system language. Reopening the archive editor on a reason it does not
+  recognise no longer blanks it on Save; the text is kept as its own option.
 - **An archived print shows the layer height it actually printed at.** The
   archive card and the file details read the layer height from the
   project's settings, which can describe another plate or an earlier

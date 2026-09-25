@@ -14,7 +14,8 @@ import { OrderLinePicker } from './pickers/OrderLinePicker';
 import { invalidateOrderViews } from '../utils/queryInvalidation';
 import { Select } from './Select';
 
-// Keys for failure reasons - translated at render time
+// Keys for failure reasons - translated at render time. The backend stores
+// exactly these (utils/failure_reasons.py; a test pins the two lists).
 const FAILURE_REASON_KEYS = [
   'adhesionFailure',
   'spaghettiDetached',
@@ -28,6 +29,7 @@ const FAILURE_REASON_KEYS = [
   'swapModeFailure',
   'printerError',
   'userCancelled',
+  'noStatusUpdate',
   'other',
 ] as const;
 
@@ -55,10 +57,11 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const [projectLineId, setProjectLineId] = useState<number | null>(archive.project_line_id ?? null);
   const [notes, setNotes] = useState(archive.notes || '');
   const [tags, setTags] = useState(archive.tags || '');
-  // Failure reason is stored as a camelCase key (`filamentRunout`), but earlier
-  // versions of this modal saved the translated label as the value. Reverse-
-  // lookup any legacy translated text against the current locale so the
-  // dropdown pre-selects the right option, then any save converts it forward.
+  // Failure reason is stored as a camelCase key (`filamentRunout`); m186 folded
+  // the historical labels onto the keys. Reverse-lookup any legacy text still
+  // spelled as a label in the current locale, and otherwise KEEP the value as
+  // its own option: falling back to '' used to save the empty selection over
+  // the stored text, so opening the editor and pressing Save erased it (#2974).
   const [failureReason, setFailureReason] = useState(() => {
     const raw = archive.failure_reason || '';
     if (!raw) return '';
@@ -66,8 +69,15 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     const match = FAILURE_REASON_KEYS.find(
       (k) => t(`editArchive.failureReasons.${k}`) === raw,
     );
-    return match || '';
+    return match || raw;
   });
+  // A stored value outside the vocabulary: shown as itself, so it can be kept.
+  const legacyFailureReason =
+    archive.failure_reason && !FAILURE_REASON_KEYS.some(
+      (k) => k === archive.failure_reason || t(`editArchive.failureReasons.${k}`) === archive.failure_reason,
+    )
+      ? archive.failure_reason
+      : null;
   const [errorMessage, setErrorMessage] = useState(archive.error_message || '');
   const [status, setStatus] = useState(archive.status);
   const [quantity, setQuantity] = useState(archive.quantity ?? 1);
@@ -559,6 +569,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
               onChange={(e) => setFailureReason(e.target.value)}
             >
               <option value="">{t('editArchive.selectReason')}</option>
+              {legacyFailureReason && <option value={legacyFailureReason}>{legacyFailureReason}</option>}
               {FAILURE_REASON_KEYS.map((reasonKey) => (
                 <option key={reasonKey} value={reasonKey}>
                   {t(`editArchive.failureReasons.${reasonKey}`)}

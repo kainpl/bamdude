@@ -7792,6 +7792,7 @@ export default {
       swapModeFailure: 'Swap Mode error',
       printerError: 'Printer error',
       userCancelled: 'User cancelled',
+      noStatusUpdate: 'No status update received',
       other: 'Other'
     },
     // Archive statuses

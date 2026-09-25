@@ -150,6 +150,7 @@ from backend.app.services.timelapse_files import (
     read_timelapse_video,
     remove_recording_after_attach,
 )
+from backend.app.utils.failure_reasons import USER_CANCELLED
 from backend.app.utils.filament_remaining import grams_used
 
 
@@ -535,33 +536,38 @@ _user_stopped_printers: dict[int, int | None] = {}
 #      failures.
 # We now match by full short code only — anything not in this map leaves
 # failure_reason=None rather than guessing.
+#
+# Values are KEYS from utils/failure_reasons, not display labels (upstream
+# #2974): the Failure Analysis widget groups on the raw value, so a label here
+# was a second bucket beside the key the editor stores, and could never be
+# translated.
 _HMS_FAILURE_REASONS: dict[str, str] = {
     # Layer shift / step loss
-    "0300_4057": "Layer shift",
-    "0300_4068": "Layer shift",
-    "0300_800C": "Layer shift",
+    "0300_4057": "layerShift",
+    "0300_4068": "layerShift",
+    "0300_800C": "layerShift",
     # Filament runout (printer-side & per-AMS-slot)
-    "0300_8004": "Filament runout",
-    "0700_8011": "Filament runout",
-    "0701_8011": "Filament runout",
-    "0702_8011": "Filament runout",
-    "0703_8011": "Filament runout",
-    "0704_8011": "Filament runout",
-    "0705_8011": "Filament runout",
-    "0706_8011": "Filament runout",
-    "0707_8011": "Filament runout",
-    "07FF_8011": "Filament runout",
+    "0300_8004": "filamentRunout",
+    "0700_8011": "filamentRunout",
+    "0701_8011": "filamentRunout",
+    "0702_8011": "filamentRunout",
+    "0703_8011": "filamentRunout",
+    "0704_8011": "filamentRunout",
+    "0705_8011": "filamentRunout",
+    "0706_8011": "filamentRunout",
+    "0707_8011": "filamentRunout",
+    "07FF_8011": "filamentRunout",
     # Clogged nozzle / extruder
-    "0300_4006": "Clogged nozzle",
-    "0300_8016": "Clogged nozzle",
-    "0300_801C": "Clogged nozzle",
-    "0700_8003": "Clogged nozzle",
-    "0700_8007": "Clogged nozzle",
-    "0700_8013": "Clogged nozzle",
-    "0701_8003": "Clogged nozzle",
-    "0701_8007": "Clogged nozzle",
-    "0701_8013": "Clogged nozzle",
-    "0702_8003": "Clogged nozzle",
+    "0300_4006": "cloggedNozzle",
+    "0300_8016": "cloggedNozzle",
+    "0300_801C": "cloggedNozzle",
+    "0700_8003": "cloggedNozzle",
+    "0700_8007": "cloggedNozzle",
+    "0700_8013": "cloggedNozzle",
+    "0701_8003": "cloggedNozzle",
+    "0701_8007": "cloggedNozzle",
+    "0701_8013": "cloggedNozzle",
+    "0702_8003": "cloggedNozzle",
 }
 
 
@@ -576,14 +582,14 @@ def _hms_short_code(attr: int, code: int | str) -> str:
 
 
 def derive_failure_reason(status: str, hms_errors: list[dict] | None) -> str | None:
-    """Derive a human-readable failure_reason for an archived print.
+    """Derive the failure_reason KEY for an archived print (see utils/failure_reasons).
 
-    Returns "User cancelled" for cancelled/aborted prints; for failed prints,
+    Returns "userCancelled" for cancelled/aborted prints; for failed prints,
     returns the first matching reason from _HMS_FAILURE_REASONS, or None when
     no HMS code matches (don't guess — null is honest).
     """
     if status in ("aborted", "cancelled"):
-        return "User cancelled"
+        return USER_CANCELLED
     if status != "failed":
         return None
     for err in hms_errors or []:

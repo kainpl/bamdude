@@ -125,6 +125,36 @@ class TestNotificationService:
             assert call_args[0][1] == "on_print_complete"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("lang", "stored", "shown"),
+        [
+            ("en", "layerShift", "Layer shift"),
+            ("uk", "layerShift", "Зсув шарів"),
+            ("uk", "the belt snapped", "the belt snapped"),
+        ],
+    )
+    async def test_a_failed_print_names_its_reason_in_words(self, service, mock_provider, mock_db, lang, stored, shown):
+        """failure_reason is a key (upstream #2974); a notification is read by a person (label, system language)."""
+        with (
+            patch.object(service, "_get_providers_for_event", new_callable=AsyncMock, return_value=[mock_provider]),
+            patch.object(service, "_send_to_providers", new_callable=AsyncMock),
+            patch.object(
+                service, "_build_message_from_template", new_callable=AsyncMock, return_value=("T", "M")
+            ) as mock_build,
+            patch("backend.app.utils.failure_reasons.current_language", return_value=lang),
+        ):
+            await service.on_print_complete(
+                printer_id=1,
+                printer_name="Test",
+                status="failed",
+                data={},
+                db=mock_db,
+                archive_data={"failure_reason": stored},
+            )
+
+        assert mock_build.await_args.args[2]["reason"] == shown
+
+    @pytest.mark.asyncio
     async def test_on_print_complete_routes_failed_status(self, service, mock_provider, mock_db):
         """Verify failed status uses on_print_failed field."""
         with (

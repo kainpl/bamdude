@@ -1,0 +1,16 @@
+{
+  "adhesionFailure": "Помилка адгезії",
+  "spaghettiDetached": "Спагеті / Відклеїлось",
+  "layerShift": "Зсув шарів",
+  "cloggedNozzle": "Засмічене сопло",
+  "filamentRunout": "Закінчився філамент",
+  "warping": "Деформація",
+  "stringing": "Нитки",
+  "underExtrusion": "Недоекструзія",
+  "powerFailure": "Збій живлення",
+  "swapModeFailure": "Помилка свап-мода",
+  "printerError": "Помилка принтера",
+  "userCancelled": "Скасовано користувачем",
+  "noStatusUpdate": "Не надійшло оновлення статусу",
+  "other": "Інше"
+}

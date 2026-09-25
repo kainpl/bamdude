@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.utils.failure_reasons import NO_STATUS_UPDATE
 from backend.app.utils.filename import derive_remote_filename
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
@@ -393,10 +394,17 @@ async def _reconcile_complete_archive(
 
         now = datetime.now(timezone.utc)
         archive.status = status
-        if status == "failed" and not archive.failure_reason:
-            archive.failure_reason = "Stale - reconciled after reconnect, end time unknown"
-        elif status == "cancelled" and uncertain and not archive.failure_reason:
-            archive.failure_reason = "Outcome uncertain after reconnect; inspect the printer and plate before resuming"
+        # A key, not a sentence (upstream #2974): both cases observed the same
+        # thing — no end-of-print status ever arrived — and ``status`` already
+        # says whether it was reconciled as failed or as an uncertain cancel.
+        if (
+            status == "failed"
+            and not archive.failure_reason
+            or status == "cancelled"
+            and uncertain
+            and not archive.failure_reason
+        ):
+            archive.failure_reason = NO_STATUS_UPDATE
 
         estimates = analysis.slicer_estimates if analysis is not None else {}
         if archive.print_time_seconds is None and "print_time_seconds" in estimates:
