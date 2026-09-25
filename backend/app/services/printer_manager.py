@@ -1680,6 +1680,27 @@ class PrinterManager:
             if client is not None:
                 client.end_transfer()
 
+    async def confirm_heard_after_transfer(self, printer_id: int, *, timeout: float = 10.0, poll: float = 0.5) -> bool:
+        """Has the printer spoken since its last file transfer ended? Asks, and waits (bounded), if not.
+
+        The stale detector gives a printer a full ``STALE_TIMEOUT`` after an
+        upload before calling silence a dead session, so ``is_connected`` alone
+        cannot tell a printer that has not spoken yet from a session that died
+        during the upload. A full report answers that; nothing within ``timeout``
+        means the caller should reconnect rather than publish into the void.
+        """
+        client = self._clients.get(printer_id)
+        if client is None or not client.silent_since_transfer():
+            return True
+        client.request_status_update()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            await asyncio.sleep(poll)
+            if not client.silent_since_transfer():
+                return True
+        return False
+
     def request_status_update(self, printer_id: int) -> bool:
         """Request a full status update from the printer.
 

@@ -22,6 +22,10 @@ from backend.app.services.source_io import SourceUnavailable
 #: feed report before it is refused (spec direct-print-silent-cancel §4.3).
 FEED_SETTLE_TIMEOUT = 60.0
 FEED_SETTLE_POLL = 1.0
+#: Once the new session's feed looks complete but still differs from the prepared
+#: one, how long to let separately reported facts (the FTS confirmation, a nozzle
+#: diameter, a tag) catch up before handing the difference to ``final_guard``.
+FEED_SETTLE_CONVERGE = 5.0
 
 
 @dataclass(frozen=True)
@@ -280,7 +284,8 @@ async def settle_feed(
     raise_if_cancelled: Callable[[], None] = lambda: None,
     timeout: float = FEED_SETTLE_TIMEOUT,
     poll: float = FEED_SETTLE_POLL,
-) -> None:
+    converge: float = FEED_SETTLE_CONVERGE,
+) -> bool:
     """Before the final check: if the session changed since preparation, wait for its first complete report.
 
     A reconnect mid-upload used to refuse every prepared print, because the new
@@ -290,23 +295,34 @@ async def settle_feed(
     when the content differs, stay ``final_guard``'s. The wait sits BEFORE that
     check, so nothing awaits between a passed check and the publish.
 
-    A healthy printer (same generation, connected) returns at once — no pushall.
+    Returns whether the session changed: whatever was sent to the old one before
+    the wait (the pre-start calibration bind) is the caller's to send again. A
+    healthy printer (same generation, connected) returns ``False`` at once — no
+    pushall.
     """
     if guard is None:
-        return
-    prepared_generation = guard.snapshot_signature[0]
+        return False
+    prepared_generation, prepared_content = guard.snapshot_signature
     snapshot = printer_manager.get_feed_snapshot(printer_id)
     if snapshot.connected and snapshot.generation == prepared_generation:
-        return
+        return False
     printer_manager.request_status_update(printer_id)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    converge_until = None
     while True:
         raise_if_cancelled()
         snapshot = printer_manager.get_feed_snapshot(printer_id)
         if _settled(snapshot, prepared_generation):
-            return
-        if loop.time() >= deadline:
+            if feed_signature(guard.policy, snapshot)[1] == prepared_content:
+                return True
+            # Complete-looking but different: a separately reported fact may still
+            # be on its way. A bounded grace; a real difference is final_guard's.
+            if converge_until is None:
+                converge_until = min(deadline, loop.time() + converge)
+            if loop.time() >= converge_until:
+                return True
+        elif loop.time() >= deadline:
             raise RoutingDeferred(
                 "feed_settle_timeout", revision=revision_for(guard.requirements, guard.policy, snapshot)
             )

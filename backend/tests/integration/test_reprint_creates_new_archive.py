@@ -193,6 +193,13 @@ async def test_reprint_creates_new_archive_and_leaves_source_failed_row_intact(
 
     with (
         patch("backend.app.services.background_dispatch.printer_manager.is_connected", return_value=True),
+        # The MQTT double here never speaks after the (mocked) upload; the
+        # post-upload liveness probe is not what this test is about.
+        patch(
+            "backend.app.services.background_dispatch.printer_manager.confirm_heard_after_transfer",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
         patch(
             "backend.app.services.background_dispatch.printer_manager.ensure_fresh_connection_for_printer",
             new_callable=AsyncMock,

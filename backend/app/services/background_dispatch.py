@@ -630,6 +630,10 @@ class PrintDispatchJob:
     submission_id: str | None = None
     routing_intent: str | None = None
     foreign_claim: bool = False
+    #: Set once ``report_failure_if_unwatched`` has told the operator: the runner's
+    #: ``finally`` reports failures inside its ``try`` and ``_run_active_job``
+    #: reports the ones raised before it — one failure, one message.
+    failure_reported: bool = False
 
 
 async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
@@ -667,6 +671,9 @@ async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
     outcome = job.outcome or {}
     if outcome.get("success") or outcome.get("cancelled") or outcome.get("deferred"):
         return
+    if job.failure_reported:
+        return
+    job.failure_reported = True
 
     try:
         from backend.app.core.database import async_session
@@ -1007,6 +1014,7 @@ class BackgroundDispatchService:
             # useless "Dispatch failed" instead of the reason we wrote. Fill it
             # in here rather than trusting the assumption.
             _record_outcome_error(job, e)
+            await self._close_execution_archive(job, e)
         finally:
             async with self._lock:
                 self._active_jobs.pop(job.id, None)
@@ -1454,7 +1462,13 @@ class BackgroundDispatchService:
             logger.error("Background dispatch job %s failed: %s", job.id, e, exc_info=True)
             _record_outcome_error(job, e)
             await self._release_direct_claim(job, status="failed")
+            await self._close_execution_archive(job, e)
             await self._mark_job_finished(job, failed=True, message=str(e))
+            # A failure raised before the runner's upload ``try`` (printer not
+            # connected, no card, the pre-delete FTP call, archive or patch errors)
+            # never reached its ``finally``, the one place that reported. No-op when
+            # the runner already told the operator.
+            await report_failure_if_unwatched(job)
         finally:
             job.completion_event.set()
             self._job_event.set()
@@ -1558,7 +1572,11 @@ class BackgroundDispatchService:
             # that was not ours to report counts as nothing.
             if failed:
                 self._batch_failed += 1
-            elif not deferred:
+            elif deferred:
+                # Neither completed nor failed: it leaves the batch, as a
+                # cancellation does — or the toast waits for a tally that never adds up.
+                self._batch_total = max(0, self._batch_total - 1)
+            else:
                 self._batch_completed += 1
 
             self._active_jobs.pop(job.id, None)
@@ -2308,11 +2326,19 @@ class BackgroundDispatchService:
                 )
                 # A session that changed during preparation gets to report again
                 # before the final check (spec direct-print-silent-cancel §4.3).
-                await settle_feed(
+                if await settle_feed(
                     job.routing_guard,
                     job.printer_id,
                     raise_if_cancelled=lambda: self._raise_if_cancel_requested(job),
-                )
+                ):
+                    # The session changed: the pre-start K-profile bind above went
+                    # to the old one, so it is sent again on the new one.
+                    await _apply_calibrations_for_print(
+                        db=db,
+                        printer_id=job.printer_id,
+                        ams_mapping=job.options.get("ams_mapping"),
+                        is_calibration=bool(job.options.get("is_calibration")),
+                    )
                 job.routing_guard = await final_guard(job.routing_guard, job.printer_id)
                 await self._verify_routing_claim(db, job)
                 started = printer_manager.start_print(
@@ -3006,11 +3032,19 @@ class BackgroundDispatchService:
                 )
                 # A session that changed during preparation gets to report again
                 # before the final check (spec direct-print-silent-cancel §4.3).
-                await settle_feed(
+                if await settle_feed(
                     job.routing_guard,
                     job.printer_id,
                     raise_if_cancelled=lambda: self._raise_if_cancel_requested(job),
-                )
+                ):
+                    # The session changed: the pre-start K-profile bind above went
+                    # to the old one, so it is sent again on the new one.
+                    await _apply_calibrations_for_print(
+                        db=db,
+                        printer_id=job.printer_id,
+                        ams_mapping=job.options.get("ams_mapping"),
+                        is_calibration=bool(job.options.get("is_calibration")),
+                    )
                 job.routing_guard = await final_guard(job.routing_guard, job.printer_id)
                 await self._verify_routing_claim(db, job)
                 started = printer_manager.start_print(
@@ -3414,7 +3448,12 @@ class BackgroundDispatchService:
         a failed reconnect simply falls through to ``start_print``, which
         then fails through the existing SD-cleanup + rollback path.
         """
-        if printer_manager.is_connected(printer.id):
+        # ``is_connected`` alone is blind for a minute after an upload (the stale
+        # detector's post-transfer grace): a session that died during the upload
+        # still looks live. A printer silent since the upload is asked for a full
+        # report first, and reconnected when it does not answer — the new session
+        # then settles before the final check (spec direct-print-silent-cancel §4.3).
+        if printer_manager.is_connected(printer.id) and await printer_manager.confirm_heard_after_transfer(printer.id):
             return
         logger.info(
             "Dispatch: %s MQTT not live just before start_print — forcing reconnect",
@@ -3435,6 +3474,18 @@ class BackgroundDispatchService:
             await delete_file_async(printer_ip, access_code, remote_path, printer_model=printer_model)
         except Exception:
             pass  # Best-effort - don't fail the error handler
+
+    async def _close_execution_archive(self, job: PrintDispatchJob, exc: BaseException) -> None:
+        """Flip the execution archive of a job that failed outside the runner's ``try``.
+
+        ``archive_print`` commits the row before the storage check and the
+        pre-delete FTP call; a failure between them left it «printing» for a
+        print that never started. Idempotent — only a still-printing row flips.
+        """
+        if job.execution_archive_id is not None:
+            await self._mark_dispatch_archive_terminal(
+                job.execution_archive_id, "failed", str(exc) or exc.__class__.__name__
+            )
 
     @staticmethod
     async def _mark_dispatch_archive_terminal(archive_id: int, status: str, error_message: str) -> None:

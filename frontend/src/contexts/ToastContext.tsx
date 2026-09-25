@@ -462,7 +462,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      if (!hasActiveWork && recentStatus && ['cancelled', 'failed', 'completed', 'idle'].includes(recentStatus)) {
+      if (!hasActiveWork && recentStatus && ['cancelled', 'failed', 'completed', 'deferred', 'idle'].includes(recentStatus)) {
         setToasts((prev) => prev.filter((t) => t.id !== dispatchToastId));
         lastDispatchSummaryRef.current = null;
       }

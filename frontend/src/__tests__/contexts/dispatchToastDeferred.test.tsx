@@ -64,4 +64,21 @@ describe('dispatch toast — a refused job', () => {
 
     expect(await screen.findByText('Not started')).toBeInTheDocument();
   });
+
+  it('goes away when a deferral leaves no work behind', async () => {
+    // A queue job's deferral, or a direct one whose row somebody else took:
+    // counted neither completed nor failed, so the batch never adds up and the
+    // «Starting prints» toast used to stay until the next dispatch event.
+    render(<ToastProvider><div /></ToastProvider>);
+    fire({
+      total: 1, dispatched: 0, processing: 1, completed: 0, failed: 0,
+      active_jobs: [uploading(1, 'pesduke')],
+    });
+    expect(await screen.findByText('ur_2200_a1m.3mf')).toBeInTheDocument();
+    fire({
+      total: 0, dispatched: 0, processing: 0, completed: 0, failed: 0,
+      recent_event: { status: 'deferred', job_id: 1, source_name: 'ur_2200_a1m.3mf', printer_name: 'pesduke', message: REASON },
+    });
+    expect(screen.queryByText('ur_2200_a1m.3mf')).not.toBeInTheDocument();
+  });
 });

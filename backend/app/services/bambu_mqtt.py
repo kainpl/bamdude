@@ -2181,6 +2181,7 @@ class BambuMQTTClient:
         # file; a stale reconnect in that window empties the feed cache with the new
         # generation and costs a prepared print its start.
         self._transfers_active: int = 0
+        self._transfer_started_at: float = 0.0
         self._transfer_ended_at: float = 0.0
 
         # Zombie session detection via ams_filament_setting response tracking (#887).
@@ -2286,14 +2287,27 @@ class BambuMQTTClient:
         """Last received MQTT message, without reconnecting or refreshing it."""
         return self._last_message_time or None
 
+    #: A hold older than this stops hiding silence: a transport that HANGS rather
+    #: than crawls must not switch the stale detector off for good. Far above any
+    #: real upload (a 50 MB file at 30 KB/s is under half an hour).
+    TRANSFER_HOLD_MAX = 45 * 60.0
+
     def begin_transfer(self) -> None:
         """A file transfer to this printer started: its silence is not staleness until it ends."""
+        if self._transfers_active == 0:
+            self._transfer_started_at = time.time()
         self._transfers_active += 1
 
     def end_transfer(self) -> None:
         """…and from here silence is counted again — from now, not from the last message before it."""
-        self._transfers_active = max(0, self._transfers_active - 1)
+        # The end time first: a staleness check on paho's thread landing between
+        # the two writes must not see "no transfer" with the old end time.
         self._transfer_ended_at = time.time()
+        self._transfers_active = max(0, self._transfers_active - 1)
+
+    def silent_since_transfer(self) -> bool:
+        """A transfer to this printer ended and it has said nothing since."""
+        return self._transfer_ended_at > 0 and self._last_message_time < self._transfer_ended_at
 
     def is_stale(self) -> bool:
         """Check if the connection is stale (no messages for too long).
@@ -2306,7 +2320,7 @@ class BambuMQTTClient:
         """
         if self._last_message_time == 0:
             return False  # Never received a message yet
-        if self._transfers_active:
+        if self._transfers_active and time.time() - self._transfer_started_at <= self.TRANSFER_HOLD_MAX:
             return False
         reference = max(self._last_message_time, self._transfer_ended_at)
         return time.time() - reference > self.STALE_TIMEOUT

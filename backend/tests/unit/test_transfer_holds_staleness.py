@@ -85,3 +85,81 @@ def test_the_hold_is_released_when_the_transfer_raises(monkeypatch):
 def test_no_client_is_a_no_op():
     with printer_manager.transfer_in_progress(999_999):
         pass
+
+
+def test_a_hold_older_than_its_cap_stops_hiding_silence():
+    """A transport that hangs rather than crawls must not switch the detector off for ever."""
+    c = _client()
+    c._last_message_time = time.time() - 10 * c.STALE_TIMEOUT
+    c.begin_transfer()
+    c._transfer_started_at = time.time() - c.TRANSFER_HOLD_MAX - 1
+    assert c.is_stale() is True
+
+
+def test_silent_since_the_transfer():
+    c = _client()
+    assert c.silent_since_transfer() is False, "no transfer, nothing to be silent since"
+    c._last_message_time = time.time() - 5
+    c.begin_transfer()
+    c.end_transfer()
+    assert c.silent_since_transfer() is True
+    c._last_message_time = time.time() + 1
+    assert c.silent_since_transfer() is False
+
+
+@pytest.mark.asyncio
+async def test_confirming_a_printer_that_spoke_after_the_upload_asks_nothing(monkeypatch):
+    c = _client()
+    c.begin_transfer()
+    c.end_transfer()
+    c._last_message_time = time.time() + 1
+    c.request_status_update = MagicMock()
+    monkeypatch.setitem(printer_manager._clients, 4244, c)
+    assert await printer_manager.confirm_heard_after_transfer(4244, timeout=0.05, poll=0.01) is True
+    c.request_status_update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_silent_printer_is_asked_and_confirmed_when_it_answers(monkeypatch):
+    c = _client()
+    c._last_message_time = time.time() - 5
+    c.begin_transfer()
+    c.end_transfer()
+
+    def answer():
+        c._last_message_time = time.time() + 1
+
+    c.request_status_update = MagicMock(side_effect=answer)
+    monkeypatch.setitem(printer_manager._clients, 4245, c)
+    assert await printer_manager.confirm_heard_after_transfer(4245, timeout=1, poll=0.01) is True
+    c.request_status_update.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_printer_that_stays_silent_is_not_confirmed(monkeypatch):
+    c = _client()
+    c._last_message_time = time.time() - 5
+    c.begin_transfer()
+    c.end_transfer()
+    c.request_status_update = MagicMock()
+    monkeypatch.setitem(printer_manager._clients, 4246, c)
+    assert await printer_manager.confirm_heard_after_transfer(4246, timeout=0.05, poll=0.01) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("heard,reconnects", [(True, False), (False, True)])
+async def test_the_pre_start_check_reconnects_a_session_silent_since_the_upload(monkeypatch, heard, reconnects):
+    """The post-transfer grace keeps ``is_connected`` true for a minute; a session
+    that died during the upload would otherwise take the start command into the
+    void. Asked, and reconnected when it does not answer (final review, Minor 6)."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from backend.app.services.background_dispatch import BackgroundDispatchService
+
+    monkeypatch.setattr(printer_manager, "is_connected", lambda pid: True)
+    monkeypatch.setattr(printer_manager, "confirm_heard_after_transfer", AsyncMock(return_value=heard))
+    connect = AsyncMock(return_value=True)
+    monkeypatch.setattr(printer_manager, "connect_printer", connect)
+    await BackgroundDispatchService._ensure_live_connection_before_start(SimpleNamespace(id=4247), "pesduke")
+    assert connect.await_count == (1 if reconnects else 0)

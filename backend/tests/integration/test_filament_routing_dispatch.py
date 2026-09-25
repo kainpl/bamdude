@@ -497,10 +497,45 @@ async def test_a_reconnect_that_reports_another_spool_defers(db_session, tmp_pat
     monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
     reconnect(mqtt)
     report_the_spool(mqtt, tray_uuid="ANOTHER-SPOOL")
-    await settle_feed(guard, printer.id, timeout=2, poll=0.01)
+    await settle_feed(guard, printer.id, timeout=2, poll=0.01, converge=0.05)
     with pytest.raises(RoutingDeferred, match="feed_state_changed"):
         await final_guard(guard, printer.id)
     mqtt._client.publish.assert_not_called()
+
+
+async def test_settle_feed_says_whether_the_session_changed(db_session, tmp_path, printer_factory, monkeypatch):
+    """The runner re-binds the pre-start calibration only after a session change."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
+    assert await settle_feed(guard, printer.id, timeout=0.01, poll=0.01) is False
+    reconnect(mqtt)
+    report_the_spool(mqtt)
+    assert await settle_feed(guard, printer.id, timeout=2, poll=0.01) is True
+
+
+async def test_a_new_session_whose_first_report_is_partial_still_keeps_the_job(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """A complete-looking first report can still lack a separately reported fact
+    (here the spool's tag): settle waits a bounded grace for the content to
+    converge instead of refusing one report too early."""
+    item, source, printer, plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
+    reconnect(mqtt)
+    report_the_spool(mqtt, tray_uuid="")
+    asyncio.get_running_loop().call_later(0.05, report_the_spool, mqtt)
+    await settle_feed(guard, printer.id, timeout=2, poll=0.01, converge=1)
+    guard = await final_guard(guard, printer.id)
+    assert printer_manager.start_print(
+        printer.id,
+        source.filename,
+        plate,
+        ams_mapping=guard.plan.mapping,
+        use_ams=guard.plan.use_ams,
+        routing_guard=guard,
+    )
 
 
 async def test_a_reconnect_that_never_reports_defers_with_the_settle_timeout(

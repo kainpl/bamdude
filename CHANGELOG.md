@@ -120,14 +120,20 @@
   last check before it starts, BamDude now says so through your notification
   channels («Job Failed to Start», with the reason), and the job stays in the
   printer's queue as failed with a Retry button instead of looking cancelled.
-  The dispatch panel shows it as «Not started» rather than a raw label, and the
-  batch closes instead of spinning on «Starting prints».
+  The same goes for a direct print that fails before its upload even begins —
+  the printer is not connected, there is no card in it — which used to be
+  reported only to an open browser, and whose print-history entry now closes
+  as failed instead of staying «printing». The dispatch panel shows a refused
+  job as «Not started» rather than a raw label, and the batch closes instead of
+  spinning on «Starting prints».
 - **Uploading a file no longer drops the printer's connection.** A printer on a
   slow link could stop reporting while it received a large file; BamDude took
   the silence for a dead session and reconnected, which then refused the print.
-  Silence during an upload is now expected, and if the connection does get
-  re-established during preparation, the print still starts once the printer
-  reports the same filament as before.
+  Silence during an upload is now expected; right before the start BamDude asks
+  a printer that has been quiet since the upload to report, and reconnects it if
+  it does not answer. If the connection does get re-established during
+  preparation, the print still starts once the printer reports the same
+  filament as before, with its pressure-advance profile sent again.
 - **Importing from MakerWorld on Windows no longer fails with "unable to get
   local issuer certificate".** MakerWorld often hands the 3MF out as an Amazon
   S3 link, and that one download checked the certificate against the operating

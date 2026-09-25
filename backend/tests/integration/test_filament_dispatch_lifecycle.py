@@ -1,5 +1,6 @@
 """Drive both real runners through public owners with only device I/O mocked."""
 
+import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -51,7 +52,8 @@ def _clear_synthetic_run_bindings():
 @pytest.mark.parametrize("kind", ["print_library_file", "reprint_archive"])
 @pytest.mark.parametrize("owner", ["direct", "queue"])
 @pytest.mark.parametrize(
-    "change", ["upload", "preheat", "calibration", "source", "cancel", "reclaim", "delete", "success", "silence"]
+    "change",
+    ["upload", "preheat", "calibration", "source", "cancel", "reclaim", "delete", "success", "silence", "reconnect"],
 )
 async def test_late_refusal_restores_source_and_does_not_count_a_print(
     db_session,
@@ -68,7 +70,7 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
     import backend.app.services.background_dispatch as bd
 
     # "silence" is the 2026-09-24 incident and must START the print like "success".
-    ok = change in {"success", "silence"}
+    ok = change in {"success", "silence", "reconnect"}
 
     source, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     monkeypatch.setattr(settings, "base_dir", tmp_path)
@@ -123,6 +125,17 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
     failure = AsyncMock()
     monkeypatch.setattr("backend.app.services.notification_service.notification_service.on_queue_job_failed", failure)
 
+    def report_again():
+        mqtt._process_message(
+            {
+                "print": {
+                    "command": "push_status",
+                    "ams": {"ams": []},
+                    "vt_tray": {"id": 254, "tray_type": "PLA", "tray_color": "0000FF"},
+                }
+            }
+        )
+
     def mutate():
         mqtt._process_message({"print": {"vt_tray": {"id": 254, "tray_type": "PETG"}}})
 
@@ -139,6 +152,16 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
             mqtt._last_message_time = time.time() - 2 * mqtt.STALE_TIMEOUT
             printer_manager.get_status(printer_id)
             assert mqtt.state.connected, "a stale reconnect mid-upload would empty the feed cache"
+        elif change == "reconnect":
+            # The session DID change mid-upload (spec direct-print-silent-cancel
+            # §4.3): a new generation, an empty feed cache, then the printer's first
+            # full report — the runner settles and starts instead of refusing.
+            from backend.app.services.printer_feed_snapshot import FeedTelemetry
+
+            monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
+            mqtt.state.connection_generation += 1
+            mqtt.state.feed_telemetry = FeedTelemetry()
+            asyncio.get_running_loop().call_later(0.05, report_again)
         return True
 
     async def preheat(*args, **kwargs):
@@ -166,7 +189,8 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
     upload_mock = AsyncMock(side_effect=upload)
     monkeypatch.setattr(bd, "upload_file_async", upload_mock)
     monkeypatch.setattr("backend.app.services.preheat.preheat_and_soak", AsyncMock(side_effect=preheat))
-    monkeypatch.setattr(bd, "_apply_calibrations_for_print", AsyncMock(side_effect=calibration))
+    calibrate = AsyncMock(side_effect=calibration)
+    monkeypatch.setattr(bd, "_apply_calibrations_for_print", calibrate)
     service = BackgroundDispatchService()
     monkeypatch.setattr(service, "_ensure_live_connection_before_start", AsyncMock())
     monkeypatch.setattr(service, "_run_swap_macro_if_needed", AsyncMock())
@@ -238,6 +262,8 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         assert register.call_args.kwargs["ams_mapping"] == [-1, -1, 254]
         withdraw.assert_not_called()
         failure.assert_not_awaited()
+        # The pre-start K-profile bind went to the old session; it is sent again.
+        assert calibrate.await_count == (2 if change == "reconnect" else 1)
         if owner == "direct" and kind == "print_library_file":
             saved = json.loads(item.filament_routing)
             assert saved["source_identity"]["kind"] == "archive"

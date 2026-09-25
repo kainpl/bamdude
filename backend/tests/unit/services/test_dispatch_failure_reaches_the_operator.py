@@ -221,7 +221,74 @@ async def test_a_deferral_whose_row_was_taken_is_not_a_failure(notify, monkeypat
     service = _deferring_service(monkeypatch, released=False)
     job = _job(queue_item_id=5, claim_started_at=object())
 
+    service._batch_total = 1
+
     await service._handle_routing_deferred(job, RoutingDeferred("dispatch_claim_changed"))
 
     notify.assert_not_awaited()
-    assert _finished_event()["failed"] == 0
+    event = _finished_event()
+    assert event["failed"] == 0
+    # Neither completed nor failed, so it leaves the batch — or the toast waits
+    # for a tally that can never add up.
+    assert event["total"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# A direct print that fails BEFORE its upload (printer not connected, no SD card,
+# the pre-delete FTP call, archive/patch errors) never reaches the runner's inner
+# ``finally`` — the one place that reported. Final review of
+# direct-print-silent-cancel, Important 1.
+# --------------------------------------------------------------------------- #
+
+
+def _failing_service(monkeypatch, process):
+    from backend.app.services import background_dispatch as bd
+
+    service = bd.BackgroundDispatchService()
+    monkeypatch.setattr(service, "_process_job", process)
+    monkeypatch.setattr(service, "_release_direct_claim", AsyncMock())
+    monkeypatch.setattr(bd.ws_manager, "broadcast", AsyncMock())
+    terminal = AsyncMock()
+    monkeypatch.setattr(bd.BackgroundDispatchService, "_mark_dispatch_archive_terminal", staticmethod(terminal))
+    return service, terminal
+
+
+@pytest.mark.asyncio
+async def test_a_direct_print_that_fails_before_its_upload_is_announced(notify, monkeypatch):
+    service, _terminal = _failing_service(monkeypatch, AsyncMock(side_effect=RuntimeError("Printer is not connected")))
+    job = _job(queue_item_id=5)
+
+    await service._run_active_job(job)
+
+    notify.assert_awaited_once()
+    assert notify.await_args.kwargs["reason"] == "Printer is not connected"
+
+
+@pytest.mark.asyncio
+async def test_a_failure_the_runner_already_reported_is_not_announced_twice(notify, monkeypatch):
+    """The runner's own ``finally`` reports failures inside its ``try``; the
+    exception then reaches ``_run_active_job`` too — one failure, one message."""
+    job = _job(queue_item_id=5)
+
+    async def runner_that_reported(_job):
+        _job.outcome["error"] = "FTP upload failed"
+        await report_failure_if_unwatched(_job)
+        raise RuntimeError("FTP upload failed")
+
+    service, _terminal = _failing_service(monkeypatch, runner_that_reported)
+
+    await service._run_active_job(job)
+
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_failure_before_the_upload_closes_the_execution_archive(notify, monkeypatch):
+    """``archive_print`` commits the row before the storage check; a refusal there
+    left it «printing» for ever."""
+    service, terminal = _failing_service(monkeypatch, AsyncMock(side_effect=RuntimeError("No SD card in the printer")))
+    job = _job(queue_item_id=5, execution_archive_id=77)
+
+    await service._run_active_job(job)
+
+    terminal.assert_awaited_once_with(77, "failed", "No SD card in the printer")
