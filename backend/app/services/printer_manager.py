@@ -24,7 +24,7 @@ from backend.app.services.bambu_mqtt import (
     airduct_parts_effective,
     get_stage_name,
 )
-from backend.app.utils.fila_switch import inlet_bindings, switch_ready
+from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
 from backend.app.utils.printer_configs import airduct_fan_label, get_device_support_flags, is_bed_slinger
 from backend.app.utils.printer_storage import storage_capability_for
@@ -2350,6 +2350,9 @@ def printer_state_to_dict(
         # Which switch inlet each AMS feeds (upstream 7a42e0a7). Always present so
         # a push that loses the switch clears the page's cached badges.
         "ams_switch_inlet": inlet_bindings(state),
+        # Which slot each hotend is fed from (upstream 9500c046). Always present:
+        # the page shallow-merges pushes, so an absent field would stay stale.
+        "extruder_slots": extruder_slots_payload(state),
         # WiFi signal strength
         "wifi_signal": state.wifi_signal,
         "wired_network": state.wired_network,

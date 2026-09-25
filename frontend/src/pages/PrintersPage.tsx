@@ -171,7 +171,8 @@ import type { SequencedFile } from '../components/QueueSequencer';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
-import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow, FTS_INLET_SIDE, amsSideBadge } from '../utils/amsHelpers';
+import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow, FTS_INLET_SIDE, amsSideBadge, formatSlotLabel } from '../utils/amsHelpers';
+import { FeedDirectionModal } from '../components/FeedDirectionModal';
 import { getPrinterImage, getWifiStrength, hasDoorSensor, mapModelCode } from '../utils/printer';
 import { OpenMonitorButton } from '../features/monitor/OpenMonitorButton';
 import { useMonitorTarget } from '../features/monitor/useMonitorTarget';
@@ -2869,15 +2870,49 @@ function PrinterCard({
   // target slot is empty, so the button stays enabled and the toast surfaces
   // whatever the printer actually reports.
   const amsLoadMutation = useMutation({
-    mutationFn: (trayId: number) => api.amsLoadFilament(printer.id, trayId),
-    onSuccess: () => showToast(t('printers.ams.loadSuccess')),
-    onError: (error: Error) => showToast(error.message || t('printers.ams.loadFailed'), 'error'),
+    mutationFn: ({ trayId, extruderId }: { trayId: number; extruderId?: number }) =>
+      api.amsLoadFilament(printer.id, trayId, extruderId),
+    onSuccess: () => {
+      setFeedDirectionRequest(null);
+      showToast(t('printers.ams.loadSuccess'));
+    },
+    onError: (error: Error) => {
+      setFeedDirectionRequest(null);
+      showToast(error.message || t('printers.ams.loadFailed'), 'error');
+    },
   });
+  // Names the slot, so a dual-nozzle printer unloads the hotend holding it —
+  // not whatever the printer-wide tray_now names (upstream 9500c046).
   const amsUnloadMutation = useMutation({
-    mutationFn: () => api.amsUnloadFilament(printer.id),
+    mutationFn: (trayId: number | undefined) => api.amsUnloadFilament(printer.id, trayId),
     onSuccess: () => showToast(t('printers.ams.unloadSuccess')),
     onError: (error: Error) => showToast(error.message || t('printers.ams.unloadFailed'), 'error'),
   });
+
+  // The pending "which hotend?" question, set only while its dialog is open.
+  // A Filament Track Switch makes both hotends reachable from every AMS slot,
+  // so the load has to name one (upstream 9500c046, BambuStudio's
+  // FeedDirectionDialog).
+  const [feedDirectionRequest, setFeedDirectionRequest] = useState<{
+    trayId: number;
+    amsId: number;
+    slotId: number;
+    slotLabel: string;
+  } | null>(null);
+  const startAmsSlotLoad = (amsId: number, slotId: number) => {
+    const trayId = amsId * 4 + slotId;
+    if (!status?.fila_switch?.installed) {
+      amsLoadMutation.mutate({ trayId });
+      return;
+    }
+    // Nothing can be routed until every AMS sits on an inlet; Studio shows the
+    // same refusal and publishes nothing. The backend refuses too.
+    if (!status.fila_switch.ready) {
+      showToast(t('printers.ams.switchNotReady'), 'warning');
+      return;
+    }
+    setFeedDirectionRequest({ trayId, amsId, slotId, slotLabel: formatSlotLabel(amsId, slotId, false, false) });
+  };
 
   // Plate references state
   const [plateReferences, setPlateReferences] = useState<{
@@ -5126,7 +5161,7 @@ function PrinterCard({
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (!hasPermission('printers:control')) return;
-                                            amsLoadMutation.mutate(ams.id * 4 + slotIdx);
+                                            startAmsSlotLoad(ams.id, slotIdx);
                                             setAmsSlotMenu(null);
                                           }}
                                           disabled={amsLoadMutation.isPending || !hasPermission('printers:control')}
@@ -5144,7 +5179,7 @@ function PrinterCard({
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (!hasPermission('printers:control')) return;
-                                            amsUnloadMutation.mutate();
+                                            amsUnloadMutation.mutate(ams.id * 4 + slotIdx);
                                             setAmsSlotMenu(null);
                                           }}
                                           disabled={amsUnloadMutation.isPending || !hasPermission('printers:control')}
@@ -5881,7 +5916,7 @@ function PrinterCard({
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           if (!hasPermission('printers:control')) return;
-                                          amsLoadMutation.mutate(extTrayId);
+                                          amsLoadMutation.mutate({ trayId: extTrayId });
                                           setAmsSlotMenu(null);
                                         }}
                                         disabled={amsLoadMutation.isPending || !hasPermission('printers:control')}
@@ -5899,7 +5934,7 @@ function PrinterCard({
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           if (!hasPermission('printers:control')) return;
-                                          amsUnloadMutation.mutate();
+                                          amsUnloadMutation.mutate(extTrayId);
                                           setAmsSlotMenu(null);
                                         }}
                                         disabled={amsUnloadMutation.isPending || !hasPermission('printers:control')}
@@ -7134,6 +7169,19 @@ function PrinterCard({
             // Printer status will update automatically via WebSocket when AMS data changes
             queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
           }}
+        />
+      )}
+
+      {/* Which hotend to feed — asked only on a printer with a Filament Track Switch */}
+      {feedDirectionRequest && (
+        <FeedDirectionModal
+          slotLabel={feedDirectionRequest.slotLabel}
+          amsId={feedDirectionRequest.amsId}
+          slotId={feedDirectionRequest.slotId}
+          extruderSlots={status?.extruder_slots ?? {}}
+          isLoading={amsLoadMutation.isPending}
+          onConfirm={(extruderId) => amsLoadMutation.mutate({ trayId: feedDirectionRequest.trayId, extruderId })}
+          onCancel={() => setFeedDirectionRequest(null)}
         />
       )}
 

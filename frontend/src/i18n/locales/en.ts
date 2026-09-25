@@ -930,7 +930,13 @@ export default {
       loadFailed: 'Failed to send load command',
       unloadFailed: 'Failed to send unload command',
       slotUnconfigured: '?',
-      slotUnconfiguredTooltip: 'Spool loaded — slot not configured'
+      slotUnconfiguredTooltip: 'Spool loaded — slot not configured',
+      feedTitle: 'Load {{slot}} to which nozzle?',
+      feedPrompt: 'The Filament Track Switch can route this slot to either hotend. Choose which one to feed.',
+      feedLeft: 'Left nozzle',
+      feedRight: 'Right nozzle',
+      feedAlreadyLoaded: 'Already loaded',
+      switchNotReady: 'The Filament Track Switch is not set up yet. Assign every AMS to an inlet on the printer, then try again.'
     },
     bedJog: {
       title: 'Move build plate',

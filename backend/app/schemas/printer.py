@@ -391,6 +391,19 @@ class AirductFan(BaseModel):
     label: str | None = None  # BambuStudio's own name, verbatim, as the fallback
 
 
+class ExtruderSlotResponse(BaseModel):
+    """Which AMS slot one hotend is fed from (``device.extruder.info[i].snow``).
+
+    ``tray_now`` is one value for the whole printer; on a dual-nozzle machine
+    with both hotends loaded it names only one of them (upstream 9500c046).
+    """
+
+    # None when the hotend is fed from no slot.
+    ams_id: int | None = None
+    slot_id: int | None = None
+    has_filament: bool = False
+
+
 class FilaSwitchResponse(BaseModel):
     """Filament Track Switch (FTS) state — accessory that mediates AMS-to-extruder routing.
 
@@ -528,6 +541,10 @@ class PrinterStatus(BaseModel):
     # Which switch inlet each AMS feeds, {ams_id: "A" | "B"} (upstream 7a42e0a7).
     # Empty unless a switch is installed.
     ams_switch_inlet: dict[str, str] = {}
+    # Which AMS slot each hotend is fed from, keyed by extruder id as a string
+    # ("0" = right/main, "1" = left/deputy). Empty on printers that do not
+    # report ``device.extruder.info`` (upstream 9500c046).
+    extruder_slots: dict[str, ExtruderSlotResponse] = {}
     # Currently loaded tray (global ID): 254 = external spool, 255 = no filament
     tray_now: int = 255
     # Runout / filament-replacement guidance (upstream #2587). Populated only while

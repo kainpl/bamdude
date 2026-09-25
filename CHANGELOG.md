@@ -126,6 +126,17 @@
   the same letter (its old left/right hint never matched a slot), and warns
   when every filament a print needs is on one inlet, where each change has to
   pull the spool back to its AMS first. Both follow the printer screen live.
+- **Load and Unload in the AMS slot menu work with a Filament Track Switch, and
+  Unload removes the slot you picked.** With the switch fitted, either nozzle
+  can be fed from any slot, and a load that did not say which one was quietly
+  dropped by the printer. Load now asks which nozzle to feed, as Bambu Studio
+  does: nothing is preselected, and a nozzle already loaded from that slot is
+  greyed out. While the switch is not set up on the printer, BamDude says so
+  instead of sending a load. Printers without a switch still load in one click.
+  Unload used to act on whichever slot the printer reported as loaded, so on a
+  two-nozzle printer with both nozzles loaded it could empty the wrong one; it
+  now unloads the slot whose menu you used, and says so when no nozzle is loaded
+  from it.
 - **The AMS temperature alarm no longer fires for heat you asked for, and has
   its own threshold.** While an AMS dried filament — 45 °C for PLA, 65 °C for
   PETG, up to 85 °C on an AMS-HT — the alarm, set at the 35 °C amber band,

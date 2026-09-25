@@ -1,4 +1,5 @@
-"""Filament Track Switch: which inlet each AMS feeds, and whether the switch is set up.
+"""Filament Track Switch: which inlet each AMS feeds, whether the switch is set up,
+and which slot each hotend is fed from.
 
 A leaf reader over ``PrinterState`` shared by the status shapers (REST and
 WebSocket), the broadcast key and the load route, so none of them re-derives
@@ -41,3 +42,18 @@ def switch_ready(state: Any) -> bool:
     if not isinstance(units, list):
         return True
     return all(str(unit.get("id")) in bindings for unit in units if isinstance(unit, dict))
+
+
+def extruder_slots_payload(state: Any) -> dict[str, dict]:
+    """``{extruder_id: {ams_id, slot_id, has_filament}}`` — the wire form of
+    ``PrinterState.extruder_slots``, one shape for REST and the socket.
+
+    The Load dialog greys out the hotend already fed from the slot being loaded
+    (BambuStudio's ``FeedDirectionDialog``), which needs this per hotend:
+    ``tray_now`` is one value for the whole printer.
+    """
+    slots = getattr(state, "extruder_slots", None) or {}
+    return {
+        str(ext_id): {"ams_id": slot.ams_id, "slot_id": slot.slot_id, "has_filament": slot.has_filament}
+        for ext_id, slot in sorted(slots.items())
+    }

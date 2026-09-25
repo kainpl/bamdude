@@ -869,6 +869,16 @@ export interface FilaSwitchState {
 // Which FTS inlet an AMS is plumbed into.
 export type FtsInlet = 'A' | 'B';
 
+// Which AMS slot one hotend is fed from (upstream 9500c046). ams_id/slot_id are
+// null when the hotend is fed from nothing. Keyed by extruder id ('0' = right,
+// '1' = left). tray_now cannot answer this: it is one value for the whole
+// printer, so on a dual-nozzle machine it names only one of two loaded hotends.
+export interface ExtruderSlot {
+  ams_id: number | null;
+  slot_id: number | null;
+  has_filament: boolean;
+}
+
 export interface AirductFan {
   part_id: number;      // BambuStudio AIR_FUN index: 2 / 10 = the two aux fans, 3 = chamber/exhaust
   speed: number;        // 0-100 %
@@ -1004,6 +1014,9 @@ export interface PrinterStatus {
   // an entry here reaches BOTH nozzles through the switch, which is why it has
   // no ams_extruder_map entry and must not be badged left or right.
   ams_switch_inlet?: Record<string, FtsInlet>;
+  // Which AMS slot each hotend is fed from. Empty on printers that do not
+  // report device.extruder.info.
+  extruder_slots?: Record<string, ExtruderSlot>;
   // Currently loaded tray (global tray ID, 255 = no filament loaded, 254 = external spool)
   tray_now: number;
   // Runout / filament-replacement guidance. Populated only while PAUSED.
@@ -8004,14 +8017,20 @@ export const api = {
 
   // AMS load/unload (#891) — granular ams_change_filament primitives.
   // tray_id semantics: 0..15 = AMS slot, 254 = external spool / Ext-L, 255 = Ext-R (H2D).
-  amsLoadFilament: (printerId: number, trayId: number) =>
+  // extruderId (0 = right, 1 = left) names the hotend to feed — only on a
+  // printer with a Filament Track Switch, where the backend requires it for an
+  // AMS slot and refuses it everywhere else, as BambuStudio sends it (9500c046).
+  amsLoadFilament: (printerId: number, trayId: number, extruderId?: number) =>
     request<{ success: boolean; tray_id: number }>(
-      `/printers/${printerId}/ams/load?tray_id=${trayId}`,
+      `/printers/${printerId}/ams/load?tray_id=${trayId}` +
+        (extruderId !== undefined ? `&extruder_id=${extruderId}` : ''),
       { method: 'POST' }
     ),
-  amsUnloadFilament: (printerId: number) =>
+  // trayId names the slot to unload — what tells a dual-nozzle printer which
+  // hotend to act on. Omitted: whatever the printer-wide tray_now names.
+  amsUnloadFilament: (printerId: number, trayId?: number) =>
     request<{ success: boolean }>(
-      `/printers/${printerId}/ams/unload`,
+      `/printers/${printerId}/ams/unload` + (trayId !== undefined ? `?tray_id=${trayId}` : ''),
       { method: 'POST' }
     ),
 

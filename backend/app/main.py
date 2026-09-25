@@ -1711,9 +1711,11 @@ def _fts_status_key(state: PrinterState) -> tuple:
     in it because neither lives in the tray part of the key nor in the AMS
     change-hash (tray fields only, it drives Spoolman sync): without them
     "Join IN-B" on the printer screen moved nothing on the page (upstream
-    7a42e0a7).
+    7a42e0a7). Which slot each hotend holds is in it too: it moves on every
+    filament change — one push per toolchange, not a stream — and the Load
+    dialog reads it live (upstream 9500c046).
     """
-    from backend.app.utils.fila_switch import inlet_bindings, switch_ready
+    from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 
     fila_switch = getattr(state, "fila_switch", None)
     return (
@@ -1725,6 +1727,10 @@ def _fts_status_key(state: PrinterState) -> tuple:
         getattr(fila_switch, "info", 0),
         tuple(sorted(inlet_bindings(state).items())),
         switch_ready(state),
+        tuple(
+            (ext, slot["ams_id"], slot["slot_id"], slot["has_filament"])
+            for ext, slot in extruder_slots_payload(state).items()
+        ),
     )
 
 

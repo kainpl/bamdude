@@ -108,7 +108,7 @@ from backend.app.services.printer_manager import (
 )
 from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
 from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
-from backend.app.utils.fila_switch import inlet_bindings, switch_ready
+from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
 from backend.app.utils.printer_configs import is_bed_slinger
@@ -1549,6 +1549,9 @@ async def _build_printer_status(
         ),
         fila_switch_pending_confirmation=state.fts_pending_confirmation is True,
         ams_switch_inlet=inlet_bindings(state),
+        # The page's first load reads this before any push: an empty default
+        # would let the Load dialog offer a hotend that already holds the slot.
+        extruder_slots=extruder_slots_payload(state),
     )
 
 
@@ -4522,12 +4525,35 @@ async def refresh_ams_slot(
     return {"success": True, "message": message}
 
 
+_LOAD_TRAY_ID_ERROR = "tray_id must be 0..15 (AMS slot), 24..27 (A2L AMS-Lite), 254 (external / Ext-L), or 255 (Ext-R)"
+
+
+def _is_valid_load_tray_id(tray_id: int) -> bool:
+    """Whether ``tray_id`` names a slot the load/unload commands can address.
+
+    24-27 are the A2L AMS-Lite slots (normalised unit 6). An AMS-HT unit
+    (128-135) is addressed by its unit id, not ams*4+slot, so these commands
+    cannot name it.
+    """
+    return tray_id in range(16) or tray_id in range(24, 28) or tray_id in (254, 255)
+
+
 @router.post("/{printer_id}/ams/load")
 async def ams_load_filament(
     printer_id: int,
     tray_id: int = Query(
         ...,
         description="0..15 = AMS slot; 24..27 = A2L AMS-Lite; 254 = ext spool / Ext-L; 255 = Ext-R (H2D)",
+    ),
+    extruder_id: int | None = Query(
+        None,
+        ge=0,
+        le=1,
+        description=(
+            "Hotend to feed: 0 = right/main, 1 = left/deputy. Required for an AMS slot on a printer "
+            "with a Filament Track Switch, refused on every other printer — as in BambuStudio, "
+            "which sends the field only with a switch fitted."
+        ),
     ),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
@@ -4539,7 +4565,17 @@ async def ams_load_filament(
     AMS slots, 254 for external spool / left extruder on H2D, 255 for the
     right extruder on H2D dual-nozzle. The printer no-ops gracefully if the
     target slot is empty (matches BambuStudio's UX).
+
+    With a Filament Track Switch the firmware cannot tell which hotend an AMS
+    slot should feed and drops a command that does not say (upstream 9500c046),
+    so the refusals BambuStudio makes in its dialog are made here, where every
+    caller meets them: a switch not yet set up (``DevFilaSwitch::IsReady``), a
+    switch whose presence is not yet confirmed after a reconnect, and a load
+    that names no hotend.
     """
+    if not _is_valid_load_tray_id(tray_id):
+        raise HTTPException(400, _LOAD_TRAY_ID_ERROR)
+
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
@@ -4552,7 +4588,25 @@ async def ams_load_filament(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    if not client.ams_load_filament(tray_id):
+    state = client.state
+    switch_installed = bool(state.fila_switch and state.fila_switch.installed)
+    if tray_id not in (254, 255):
+        if state.fts_pending_confirmation is True:
+            raise HTTPException(
+                409, "Waiting for the printer to confirm whether the Filament Track Switch is still connected"
+            )
+        if switch_installed and not switch_ready(state):
+            raise HTTPException(
+                409, "The Filament Track Switch is not set up yet. Assign every AMS to an inlet on the printer"
+            )
+        if switch_installed and extruder_id is None:
+            raise HTTPException(
+                400, "Choose which hotend to feed: a Filament Track Switch can route the slot to either"
+            )
+    if extruder_id is not None and not switch_installed:
+        raise HTTPException(400, "A hotend can be chosen only on a printer with a Filament Track Switch")
+
+    if not client.ams_load_filament(tray_id, extruder_id=extruder_id):
         raise HTTPException(400, "Failed to send load command")
 
     return {"success": True, "tray_id": tray_id}
@@ -4561,15 +4615,28 @@ async def ams_load_filament(
 @router.post("/{printer_id}/ams/unload")
 async def ams_unload_filament(
     printer_id: int,
+    tray_id: int | None = Query(
+        None,
+        description=(
+            "Slot to unload, same encoding as the load route. On a dual-nozzle printer it says which "
+            "hotend to unload — the printer's single tray_now names only one of two loaded hotends. "
+            "Omit to unload whatever tray_now names."
+        ),
+    ),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
-    """Unload the currently loaded filament (#891).
+    """Unload filament — from the slot named, or the currently loaded one (#891).
 
-    Reads the current `tray_now` from printer state to populate the unload
-    command's source AMS id; nozzle temperature is derived from
-    `state.temperatures` with a PLA-safe fallback when the nozzle is cold.
+    Without ``tray_id`` the source AMS comes from ``tray_now``; with it, from
+    the slot, and on a dual-nozzle printer only a slot some hotend is fed from
+    is unloaded (BambuStudio ``StatusPanel::on_ams_unload``; upstream 9500c046).
+    Nozzle temperature is derived from `state.temperatures` with a PLA-safe
+    fallback when the nozzle is cold.
     """
+    if tray_id is not None and not _is_valid_load_tray_id(tray_id):
+        raise HTTPException(400, _LOAD_TRAY_ID_ERROR)
+
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
@@ -4582,7 +4649,14 @@ async def ams_unload_filament(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    if not client.ams_unload_filament():
+    if not client.state.connected:
+        raise HTTPException(400, "Printer not connected")
+
+    if not client.ams_unload_filament(tray_id):
+        # Connected, so a named slot refused means no hotend holds it — a no-op
+        # the operator can act on, not a fault.
+        if tray_id is not None:
+            raise HTTPException(409, "No hotend is loaded from that slot")
         raise HTTPException(400, "Failed to send unload command")
 
     return {"success": True}
