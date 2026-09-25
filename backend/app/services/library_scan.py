@@ -82,6 +82,9 @@ class _Known:
     file_hash: str | None
     file_size: int | None
     fs_modified_at: datetime | None
+    #: The stored ``has_sliced_gcode`` — ``None`` when the row never got one
+    #: (every row this scan wrote before it asked, upstream #2993).
+    sliced: bool | None = None
 
 
 @dataclass
@@ -103,6 +106,9 @@ class _Prepared:
     content_hash: str | None = None
     thumbnail_path: str | None = None
     file_metadata: dict | None = field(default=None)
+    #: A refresh's new answer to "does this 3MF hold G-code", set only when it
+    #: differs from what the row stores.
+    sliced: bool | None = None
 
 
 # ── The walk ─────────────────────────────────────────────────────────────────
@@ -163,7 +169,7 @@ def _prepare_sync(
         to_relative_path,
     )
     from backend.app.services.archive import ThreeMFParser
-    from backend.app.services.library_helpers import detect_file_type
+    from backend.app.services.library_helpers import SLICED_GCODE_META_KEY, detect_file_type, sliced_gcode_in_3mf
     from backend.app.services.library_ingest import external_hash_is_stale
 
     filepath = (
@@ -205,6 +211,16 @@ def _prepare_sync(
         if stale:
             with contextlib.suppress(OSError):
                 new_hash = calculate_file_hash(filepath)
+        # ⚠️ Re-judged only when the bytes moved or the row never had an answer
+        # — the same "cost no reads on an unchanged mount" rule as the hash.
+        # A row this scan wrote before it asked (upstream #2993) is put right
+        # here: m137 ran before it existed, and startup is no place to walk a
+        # mount.
+        sliced = None
+        if filename.lower().endswith(".3mf") and (stale or known.sliced is None):
+            answer = sliced_gcode_in_3mf(filepath)
+            if answer is not None and answer != known.sliced:
+                sliced = answer
         return _Prepared(
             path=filepath,
             file_path_str=file_path_str,
@@ -216,6 +232,7 @@ def _prepare_sync(
             known_id=known.id,
             new_hash=new_hash,
             mtime_changed=known.fs_modified_at != fs_modified_at,
+            sliced=sliced,
         )
 
     file_type = detect_file_type(filepath.name)
@@ -224,11 +241,16 @@ def _prepare_sync(
     file_metadata = None
 
     if is_3mf_container:
+        # Judged on what it holds, like every other door into the library
+        # (m137): a sliced ``Foo.3mf`` on a mount is not a source project.
+        sliced = sliced_gcode_in_3mf(filepath)
+        if sliced is not None:
+            file_metadata = {SLICED_GCODE_META_KEY: sliced}
         try:
             parser = ThreeMFParser(str(filepath))
             meta = parser.parse()
             if meta:
-                file_metadata = _clean_3mf_metadata(meta)
+                file_metadata = {**_clean_3mf_metadata(meta), **(file_metadata or {})}
             thumb_data = parser.extract_thumbnail()
             if thumb_data:
                 thumb_full = get_library_thumbnails_dir() / f"{uuid.uuid4().hex}.png"
@@ -289,7 +311,11 @@ async def write_batch(
     """
     from backend.app.api.routes.library import _without_print_name
     from backend.app.core.database import async_session
-    from backend.app.services.library_helpers import skip_objects_supported_from_metadata, sync_system_tags
+    from backend.app.services.library_helpers import (
+        SLICED_GCODE_META_KEY,
+        skip_objects_supported_from_metadata,
+        sync_system_tags,
+    )
     from backend.app.services.library_ingest import find_reusable_row
 
     created: list[tuple[int, str]] = []
@@ -312,6 +338,13 @@ async def write_batch(
                     values["file_size"] = item.size
                 if values:
                     await db.execute(update(LibraryFile).where(LibraryFile.id == item.known_id).values(**values))
+                if item.sliced is not None:
+                    # The answer moved, so the tags that gate Print move with it.
+                    row = await db.get(LibraryFile, item.known_id)
+                    if row is not None:
+                        row.file_metadata = {**(row.file_metadata or {}), SLICED_GCODE_META_KEY: item.sliced}
+                        await sync_system_tags(db, row)
+                if values or item.sliced is not None:
                     counters["files_updated"] += 1
                     if item.known_id is not None:
                         refreshed.append(item.known_id)
@@ -641,7 +674,7 @@ async def run_scan(job_id: int) -> None:
                             folder_ids[rel] = child_id
 
             known: dict[str, _Known] = {}
-            for row_id, path, digest, size, mtime in (
+            for row_id, path, digest, size, mtime, sliced in (
                 await db.execute(
                     select(
                         LibraryFile.id,
@@ -649,10 +682,14 @@ async def run_scan(job_id: int) -> None:
                         LibraryFile.file_hash,
                         LibraryFile.file_size,
                         LibraryFile.fs_modified_at,
+                        # The one key, not the whole metadata blob — a plate
+                        # list per row, for every file on the mount, is not
+                        # something a scan needs to hold.
+                        LibraryFile.file_metadata["has_sliced_gcode"].as_boolean(),
                     ).where(LibraryFile.folder_id.in_(list(folder_ids.values())))
                 )
             ).all():
-                known[path] = _Known(id=row_id, file_hash=digest, file_size=size, fs_modified_at=mtime)
+                known[path] = _Known(id=row_id, file_hash=digest, file_size=size, fs_modified_at=mtime, sliced=sliced)
 
             await ensure_folders(db, root, folder, [d for d, _ in tree], folder_ids, counters)
             await db.commit()

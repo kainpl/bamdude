@@ -2588,16 +2588,15 @@ class BackgroundDispatchService:
 
             # Same rule as the reprint runner: the row's name while it exists, the
             # snapshot's after that, and a refusal rather than a hash — which
-            # ``_is_sliced_file`` below would otherwise reject as "not a sliced
-            # file", blaming a 3MF that is perfectly good.
+            # ``_require_sliced_source`` below would otherwise reject as "not a
+            # sliced file", blaming a 3MF that is perfectly good.
             library_filename = lib_file.filename if lib_file else source_display_filename(job.source)
             submission_id = _ensure_submission_id(job)
             remote_filename = derive_remote_filename(library_filename)
-            if not self._is_sliced_file(library_filename):
-                raise RuntimeError("Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
 
             file_path = job.source.path if job.source is not None else Path(settings.base_dir) / lib_file.file_path
             await require_source_file(file_path)
+            await self._require_sliced_source(library_filename, file_path)
 
             printer = await db.scalar(select(Printer).where(Printer.id == job.printer_id))
             if not printer:
@@ -3540,6 +3539,22 @@ class BackgroundDispatchService:
     def _is_sliced_file(filename: str) -> bool:
         lower = filename.lower()
         return lower.endswith(".gcode") or lower.endswith(".gcode.3mf")
+
+    @staticmethod
+    async def _require_sliced_source(filename: str, file_path: Path) -> None:
+        """The last gate before FTP: the name says sliced, or the 3MF holds G-code.
+
+        The name rule stays this runner's own, narrower than the queue's; the
+        content arm is the one every print gate shares (upstream #2993) — a
+        sliced ``Foo.3mf`` the queue accepted must not be refused here. It reads
+        the bytes about to be sent (the job's snapshot when there is one), and
+        the container is opened only when the name has not already settled it.
+        """
+        from backend.app.services.library_helpers import sliced_by_content
+
+        if BackgroundDispatchService._is_sliced_file(filename) or await sliced_by_content(filename, file_path):
+            return
+        raise RuntimeError("Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed.")
 
 
 background_dispatch = BackgroundDispatchService()

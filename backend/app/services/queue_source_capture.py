@@ -122,7 +122,7 @@ def capture_format(path: Path) -> str:
         return FORMAT_GCODE
     if name.endswith(".3mf"):
         return FORMAT_3MF
-    raise HTTPException(400, "Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
+    raise HTTPException(400, "Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed.")
 
 
 def plan_capture(*, archive=None, library_file=None, background: bool = False) -> CaptureRequest:

@@ -11,9 +11,11 @@ hardcoded ``"gcode"`` in slicer-output).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import zipfile
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +27,24 @@ _SLICED_3MF_SUFFIX = ".gcode.3mf"
 # a 3MF is sliced. Written by whoever parses the file; absent on rows that
 # predate it, which the tag rule handles explicitly.
 SLICED_GCODE_META_KEY = "has_sliced_gcode"
+
+
+def sliced_gcode_members(names: Iterable[str]) -> list[str]:
+    """The container members that are sliced G-code, in container order.
+
+    THE rule, for every caller that already holds a ``namelist()`` — the
+    library's classification, the archive's capabilities, plate list and G-code
+    viewer, the virtual printer's ingest. Upstream #2993 is what several copies
+    of it cost: the archive card showed a GCODE badge for a file the library,
+    asking a different question, filed as a source project. A test fails on a
+    second inline copy.
+    """
+    return [n for n in names if n.startswith("Metadata/") and n.endswith(".gcode")]
+
+
+def names_carry_sliced_gcode(names: Iterable[str]) -> bool:
+    """Do these container member names include sliced G-code?"""
+    return bool(sliced_gcode_members(names))
 
 
 def sliced_gcode_in_3mf(path: str | Path) -> bool | None:
@@ -45,10 +65,36 @@ def sliced_gcode_in_3mf(path: str | Path) -> bool | None:
     """
     try:
         with zipfile.ZipFile(str(path), "r") as zf:
-            return any(n.startswith("Metadata/") and n.endswith(".gcode") for n in zf.namelist())
+            return names_carry_sliced_gcode(zf.namelist())
     except (OSError, zipfile.BadZipFile) as e:
         logger.debug("Could not inspect %s for sliced gcode: %s", path, e)
         return None
+
+
+async def sliced_by_content(filename: str, path: str | Path | None, *, file_metadata: dict | None = None) -> bool:
+    """A ``.3mf`` that holds sliced G-code, whatever its name says (upstream #2993).
+
+    The arm every print gate adds BESIDE its own filename rule — never instead
+    of it: ``foo.gcode.3mf`` and ``foo.gcode`` keep passing on the name. A plate
+    exported from the slicer or a print sent through the cloud reaches the
+    library as ``Foo.3mf`` with its G-code intact; the file manager offers Print
+    for it (the ``gcode`` tag follows the content since m137), so the routes
+    behind that button must not refuse it by name.
+
+    The stored answer (``file_metadata["has_sliced_gcode"]``) is believed when
+    there is one — it was written from these bytes. Only when none was ever
+    recorded is the container opened, off the event loop, central directory
+    only. An unreadable file is ``False`` here: a gate that could not look
+    refuses rather than hand the printer bytes it has not seen.
+    """
+    if not filename.lower().endswith(".3mf"):
+        return False
+    known = (file_metadata or {}).get(SLICED_GCODE_META_KEY)
+    if known is not None:
+        return bool(known)
+    if path is None:
+        return False
+    return await asyncio.to_thread(sliced_gcode_in_3mf, path) is True
 
 
 def detect_file_type(filename: str) -> str:
@@ -204,11 +250,11 @@ async def sync_system_tags(db, file) -> list[str]:
     badges say "STL" while every filter says it does not exist is a bug nobody
     reports because nothing looks broken.
 
-    In practice this is always an insert: nothing re-derives ``file_tags`` for
-    an existing file today, and renaming one does not either. It is written as a
-    reconcile anyway, because the m128 backfill calls it and because a future
-    re-derive path would otherwise become a second definition of what a system
-    tag means.
+    Mostly an insert. The one re-derive today is the external-folder scan,
+    when its answer to "does this 3MF hold G-code" changes (upstream #2993);
+    renaming a file does not re-derive. It is written as a reconcile for that,
+    for the m128 backfill, and because a re-derive path of its own would become
+    a second definition of what a system tag means.
 
     Returns the codes, so a caller that needs them does not recompute.
     """

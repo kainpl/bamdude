@@ -25,6 +25,8 @@ from pathlib import Path
 
 import defusedxml.ElementTree as ET
 
+from backend.app.services.library_helpers import names_carry_sliced_gcode
+
 # X1/P1/A1 family default. Matches the slicer's curr_bed_type fallback —
 # a sensible "if we couldn't read it, assume the most common Bambu" guess.
 _DEFAULT_VOLUME = {"x": 256, "y": 256, "z": 256}
@@ -204,7 +206,7 @@ def extract_3mf_capabilities(
         with zipfile.ZipFile(primary_path, "r") as zf:
             names = zf.namelist()
 
-            caps.has_gcode = any(n.startswith("Metadata/") and n.endswith(".gcode") for n in names)
+            caps.has_gcode = names_carry_sliced_gcode(names)
             caps.has_mesh_in_primary = _file_has_mesh_data(zf, names)
 
             slice_colors = _parse_slice_info_colors(zf, names)

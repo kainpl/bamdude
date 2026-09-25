@@ -16,13 +16,17 @@ filename rule rather than be told their files are unsliced.
 
 from __future__ import annotations
 
+import re
 import zipfile
+from pathlib import Path
 
 import pytest
 
 from backend.app.services.library_helpers import (
     SLICED_GCODE_META_KEY,
     compute_file_tags,
+    names_carry_sliced_gcode,
+    sliced_by_content,
     sliced_gcode_in_3mf,
 )
 
@@ -124,3 +128,65 @@ class TestTheFallback:
 
         assert "sliced" in tags
         assert "project" not in tags
+
+
+# -- the print gates' content arm (upstream #2993) ----------------------------
+#
+# ``sliced_by_content`` is what every print gate adds beside its own filename
+# rule, so a sliced ``Foo.3mf`` the file manager offers a Print button for is not
+# refused by the route behind that button. ``names_carry_sliced_gcode`` is the
+# rule itself: the archive side and the library side must never answer it
+# differently — upstream's card showed a GCODE badge for a file its library then
+# filed as a source project.
+
+_SLICED_NAMES = ["3D/3dmodel.model", "Metadata/plate_1.gcode", "Metadata/plate_1.gcode.md5"]
+_SOURCE_NAMES = ["3D/3dmodel.model", "Metadata/model_settings.config"]
+
+
+class TestThePrintGatesContentArm:
+    def test_the_rule_itself(self):
+        assert names_carry_sliced_gcode(_SLICED_NAMES) is True
+        assert names_carry_sliced_gcode(_SOURCE_NAMES) is False
+        # G-code outside Metadata/ is not what a slicer writes nor what the printer runs.
+        assert names_carry_sliced_gcode(["plate_1.gcode"]) is False
+
+    @pytest.mark.asyncio
+    async def test_a_3mf_holding_gcode_is_sliced_whatever_its_name(self, tmp_path):
+        assert await sliced_by_content("lamp.3mf", _make_3mf(tmp_path / "lamp.3mf", sliced=True)) is True
+
+    @pytest.mark.asyncio
+    async def test_a_3mf_without_gcode_is_not(self, tmp_path):
+        assert await sliced_by_content("model.3mf", _make_3mf(tmp_path / "model.3mf", sliced=False)) is False
+
+    @pytest.mark.asyncio
+    async def test_a_stored_answer_is_used_and_the_file_is_not_opened(self, tmp_path):
+        gone = tmp_path / "gone.3mf"
+        assert await sliced_by_content("lamp.3mf", gone, file_metadata={SLICED_GCODE_META_KEY: True}) is True
+        assert await sliced_by_content("lamp.3mf", gone, file_metadata={SLICED_GCODE_META_KEY: False}) is False
+
+    @pytest.mark.asyncio
+    async def test_unreadable_or_pathless_is_not_sliced(self, tmp_path):
+        """No answer is not a yes: a gate refuses rather than send bytes it
+        could not look at."""
+        assert await sliced_by_content("lamp.3mf", tmp_path / "gone.3mf") is False
+        assert await sliced_by_content("lamp.3mf", None) is False
+        (tmp_path / "junk.3mf").write_bytes(b"not a zip")
+        assert await sliced_by_content("junk.3mf", tmp_path / "junk.3mf") is False
+
+    @pytest.mark.asyncio
+    async def test_only_a_3mf_is_judged_by_content(self, tmp_path):
+        """A mesh is never "sliced", whatever sits in it."""
+        assert await sliced_by_content("part.stl", _make_3mf(tmp_path / "part.stl", sliced=True)) is False
+
+    def test_the_rule_has_one_home(self):
+        """Every "does this container hold sliced G-code" question goes through
+        ``names_carry_sliced_gcode``. A second inline copy is how two screens
+        came to disagree about the same file upstream."""
+        backend = Path(__file__).resolve().parents[3] / "app"
+        inline = re.compile(r'startswith\("Metadata/"\)\s+and\s+\w+\.endswith\("\.gcode"\)')
+        offenders = [
+            str(path.relative_to(backend))
+            for path in backend.rglob("*.py")
+            if path.name != "library_helpers.py" and inline.search(path.read_text(encoding="utf-8"))
+        ]
+        assert offenders == []

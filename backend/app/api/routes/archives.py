@@ -41,6 +41,7 @@ from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope
 from backend.app.services.design_settings import overrides_from_config
+from backend.app.services.library_helpers import names_carry_sliced_gcode, sliced_gcode_in_3mf, sliced_gcode_members
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.services.track_switch_plan import read_track_switch_plan
 from backend.app.utils.archive_paths import find_photo, photos_dir_for
@@ -2473,7 +2474,7 @@ async def get_gcode(
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
             # Bambu 3MF files store G-code in Metadata/plate_X.gcode
-            gcode_files = [n for n in zf.namelist() if n.startswith("Metadata/") and n.endswith(".gcode")]
+            gcode_files = sliced_gcode_members(zf.namelist())
             if not gcode_files:
                 # Structured on purpose: the toolpath viewer branches on
                 # ``error`` to show its own "not sliced" state, while the
@@ -2782,8 +2783,9 @@ async def get_archive_plates(
             raw_plates = parse_plates_from_3mf(zf)
             # Same semantic as the fast path — surface whether sliced gcode
             # is actually inside the container so the frontend can skip the
-            # picker for source-only archives.
-            has_gcode = any(n.startswith("Metadata/") and n.endswith(".gcode") for n in zf.namelist())
+            # picker for source-only archives. The library's rule, so the two
+            # cannot disagree about one file (upstream #2993).
+            has_gcode = names_carry_sliced_gcode(zf.namelist())
         for p in raw_plates:
             plates.append(
                 {
@@ -2815,11 +2817,7 @@ def _archive_has_gcode(file_path: Path) -> bool:
     without opening the ZIP, so we need a separate cheap probe to expose
     has_gcode without forcing the slow path to open the file twice.
     """
-    try:
-        with zipfile.ZipFile(file_path, "r") as zf:
-            return any(n.startswith("Metadata/") and n.endswith(".gcode") for n in zf.namelist())
-    except (zipfile.BadZipFile, OSError):
-        return False
+    return sliced_gcode_in_3mf(file_path) is True
 
 
 @router.get("/{archive_id}/plate-objects", response_model=PlateObjectsResponse)

@@ -39,11 +39,13 @@ from backend.app.services import queue_sources
 from backend.app.services.filament_intake import (
     item_descriptor,
     require_source_requirements,
+    resolve_source_path,
     routing_detail,
     source_display_filename,
 )
 from backend.app.services.filament_policy import choices_policy, record_queue_source, serialize_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
+from backend.app.services.library_helpers import sliced_by_content
 from backend.app.services.order_filing import resolve_line_id
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_ops import place_pending_block, queue_scope_lock
@@ -159,9 +161,16 @@ async def add_items_to_printer_queue(
         # dispatcher refuses it too, but by then the item has been sitting
         # pending and the refusal reaches nobody. Held by the bulk library route
         # until that route was replaced by the Schedule dialog; it belongs here,
-        # where every caller passes.
-        if not is_sliced_file(library_file.filename):
-            raise HTTPException(400, "Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
+        # where every caller passes. A sliced 3MF named ``Foo.3mf`` passes on its
+        # contents (upstream #2993) — the file manager offers it Print.
+        if not is_sliced_file(library_file.filename) and not await sliced_by_content(
+            library_file.filename,
+            resolve_source_path(library_file=library_file),
+            file_metadata=library_file.file_metadata,
+        ):
+            raise HTTPException(
+                400, "Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed."
+            )
 
     # Cross-model safety gate (#2578): a G-code 3MF sliced for one model must not
     # be queued to a printer it can't run on. This is the per-printer tier — the
@@ -314,7 +323,9 @@ async def _add_items_from_queue_source(
         validate_print_filename(filename)
     except InvalidFilenameError as exc:
         raise HTTPException(422, routing_detail("source_unreadable")) from exc
-    if not is_sliced_file(filename):
+    # The snapshot keeps the name it was captured under, so a sliced ``Foo.3mf``
+    # is judged on the captured bytes, exactly as the job that owns them was.
+    if not is_sliced_file(filename) and not await sliced_by_content(filename, descriptor.path):
         raise HTTPException(422, routing_detail("source_unreadable"))
 
     # Read only the immutable object, pinned against collection.  The original
@@ -776,8 +787,14 @@ async def add_next_block_to_printer_queue(
             validate_print_filename(library_file.filename)
         except InvalidFilenameError as exc:
             raise HTTPException(400, str(exc)) from exc
-        if not is_sliced_file(library_file.filename):
-            raise HTTPException(400, "Not a sliced file. Only .gcode or .gcode.3mf files can be printed.")
+        if not is_sliced_file(library_file.filename) and not await sliced_by_content(
+            library_file.filename,
+            resolve_source_path(library_file=library_file),
+            file_metadata=library_file.file_metadata,
+        ):
+            raise HTTPException(
+                400, "Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed."
+            )
 
     sliced_for = archive.sliced_for_model if archive else (library_file.file_metadata or {}).get("sliced_for_model")
     if sliced_for and queue.printer_id is not None:
@@ -896,7 +913,7 @@ async def _add_next_block_from_queue_source(
         validate_print_filename(filename)
     except (SourceUnavailable, InvalidFilenameError) as exc:
         raise HTTPException(422, routing_detail("source_unreadable")) from exc
-    if not is_sliced_file(filename):
+    if not is_sliced_file(filename) and not await sliced_by_content(filename, descriptor.path):
         raise HTTPException(422, routing_detail("source_unreadable"))
 
     effective_project_ids = await _effective_project_ids(db, data_items)

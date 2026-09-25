@@ -203,6 +203,15 @@
   and preheat fell back to its configured default. It now takes the highest
   temperature among the filaments the plate actually uses, as Bambu Studio
   does.
+- **A sliced 3MF prints whatever it is called.** A plate exported from the
+  slicer or a print sent through the cloud arrives as `Foo.3mf`, G-code and
+  all. The file manager already recognised it and offered Print, but printing
+  it, queueing it, copying its queue job or dispatching it refused with "Not a
+  sliced file", because each of those checked the name for `.gcode.3mf`. They
+  now also look inside the file; a 3MF without G-code is still refused.
+  External folders now recognise such files too — until now a scan filed them
+  as source projects with no Print button; the next scan of the folder puts
+  the existing ones right.
 - **An archived print shows the layer height it actually printed at.** The
   archive card and the file details read the layer height from the
   project's settings, which can describe another plate or an earlier

@@ -750,7 +750,6 @@ class VirtualPrinterInstance:
         try:
             import hashlib
             import uuid
-            import zipfile
 
             from backend.app.api.routes.library import (
                 get_library_files_dir,
@@ -762,6 +761,7 @@ class VirtualPrinterInstance:
             from backend.app.services.library_helpers import (
                 detect_file_type,
                 skip_objects_supported_from_metadata,
+                sliced_gcode_in_3mf,
                 sync_system_tags,
             )
             from backend.app.services.library_ingest import find_reusable_row
@@ -774,20 +774,19 @@ class VirtualPrinterInstance:
                 # ``detect_file_type`` returns ``"3mf"`` and the row is
                 # tagged as a project, missing the ``sliced`` badge — same
                 # mismatch that hit the printer-FTP import path. Probe the
-                # zip for ``Metadata/plate_*.gcode`` and rewrite the
-                # apparent filename when present, so both the library row
-                # and the on-disk copy end up in the canonical sliced
-                # shape (``{stem}.gcode.3mf``).
+                # zip with the library's one content rule (upstream #2993)
+                # and rewrite the apparent filename when it holds G-code, so
+                # both the library row and the on-disk copy end up in the
+                # canonical sliced shape (``{stem}.gcode.3mf``).
                 detected_source_type: str | None = None
                 lower = filename.lower()
-                if lower.endswith(".3mf") and not lower.endswith(".gcode.3mf"):
-                    try:
-                        with zipfile.ZipFile(str(file_path), "r") as _probe:
-                            if any(n.startswith("Metadata/plate_") and n.endswith(".gcode") for n in _probe.namelist()):
-                                filename = f"{filename[:-4]}.gcode.3mf"
-                                detected_source_type = "sliced"
-                    except (zipfile.BadZipFile, KeyError):
-                        pass
+                if (
+                    lower.endswith(".3mf")
+                    and not lower.endswith(".gcode.3mf")
+                    and sliced_gcode_in_3mf(file_path) is True
+                ):
+                    filename = f"{filename[:-4]}.gcode.3mf"
+                    detected_source_type = "sliced"
 
                 # On-disk extension follows the (possibly promoted) filename
                 # so a row with ``filename = "X.gcode.3mf"`` keeps a

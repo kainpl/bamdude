@@ -488,7 +488,7 @@
   "No valid OTP code found. Request a new one.": "Дійсного коду OTP не знайдено. Запитайте новий.",
   "Not a MakerWorld URL (host={}); expected makerworld.com": "Це не URL MakerWorld (хост={}); очікується makerworld.com",
   "Not a file of this model card": "Це не файл цієї картки моделі",
-  "Not a sliced file. Only .gcode or .gcode.3mf files can be printed.": "Це не нарізаний файл. Друкувати можна лише файли .gcode або .gcode.3mf.",
+  "Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed.": "Це не нарізаний файл. Друкувати можна лише G-code або 3MF, усередині якого є нарізаний G-code.",
   "Not an external folder": "Це не зовнішня тека",
   "Not attachments of '{}': {}": "Не є вкладеннями «{}»: {}",
   "Not authenticated": "Не автентифіковано",

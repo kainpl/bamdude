@@ -94,6 +94,7 @@ from backend.app.services.library_helpers import (
     detect_file_type,
     folder_activity_at,
     skip_objects_supported_from_metadata,
+    sliced_by_content,
     sliced_gcode_in_3mf,
     sync_system_tags,
 )
@@ -5032,7 +5033,8 @@ async def print_library_file(
     The actual send/start work is handled asynchronously by background
     dispatch so the UI can continue immediately.
 
-    Only sliced files (.gcode or .gcode.3mf) can be printed.
+    Only sliced files can be printed: ``.gcode``, ``.gcode.3mf``, or a 3MF that
+    holds sliced G-code whatever it is called (upstream #2993).
     """
     from backend.app.models.printer import Printer
     from backend.app.services.background_dispatch import DispatchEnqueueRejected, background_dispatch
@@ -5056,15 +5058,18 @@ async def print_library_file(
     except InvalidFilenameError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Validate file is sliced
-    if not is_sliced_file(lib_file.filename):
-        raise HTTPException(
-            status_code=400,
-            detail="Not a sliced file. Only .gcode or .gcode.3mf files can be printed.",
-        )
-
     # Get the full file path
     file_path = Path(app_settings.base_dir) / lib_file.file_path
+
+    # Validate file is sliced — by name, or by what the 3MF holds: the file
+    # manager offers Print for a sliced ``Foo.3mf`` (its tag follows the content).
+    if not is_sliced_file(lib_file.filename) and not await sliced_by_content(
+        lib_file.filename, file_path, file_metadata=lib_file.file_metadata
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed.",
+        )
 
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
