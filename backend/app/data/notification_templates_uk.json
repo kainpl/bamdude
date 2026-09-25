@@ -89,6 +89,21 @@
     "title_template": "Автосушіння зупинено",
     "body_template": "{printer} {ams_label}: {cycles} циклів сушіння поспіль завершились на {humidity}%, що все ще вище порога {threshold}%. Теплий AMS показує вищу вологість, ніж холодний, тож цього порога тут не досягти. Автоматичне сушіння для цього юніта призупинено, доки показник не спаде."
   },
+  "scheduled_drying_started": {
+    "name": "Сушку за розкладом розпочато",
+    "title_template": "Сушку розпочато",
+    "body_template": "{printer} {ams_label}: сушку за розкладом розпочато — {filament}, {temp}°C, {hours} год. {schedule}"
+  },
+  "scheduled_drying_completed": {
+    "name": "Сушку за розкладом завершено",
+    "title_template": "Сушку завершено",
+    "body_template": "{printer} {ams_label}: сушку за розкладом завершено ({hours} год, {temp}°C). {schedule}"
+  },
+  "scheduled_drying_failed": {
+    "name": "Сушка за розкладом не відбулась",
+    "title_template": "Сушка не відбулась",
+    "body_template": "{printer} {ams_label}: сушка за розкладом не відбулась — {reason}. {schedule}"
+  },
   "ams_temperature_high": {
     "name": "Висока температура AMS",
     "title_template": "Попередження температури AMS",

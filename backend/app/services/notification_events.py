@@ -59,6 +59,9 @@ EVENT_CATALOG: dict[str, EventMeta] = {
     "ams_humidity_high": _e("error", "ams"),
     "ams_ht_humidity_high": _e("error", "ams"),
     "ams_drying_suspended": _e("warning", "ams"),
+    "scheduled_drying_started": _e("info", "ams"),
+    "scheduled_drying_completed": _e("info", "ams"),
+    "scheduled_drying_failed": _e("warning", "ams"),
     # queue
     "queue_job_failed": _e("error", "queue"),
     "queue_job_skipped": _e("warning", "queue"),

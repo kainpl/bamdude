@@ -68,6 +68,11 @@ PROVIDER_EVENT_DEFAULTS: dict[str, bool] = {
     "on_ams_humidity_high": False,
     "on_ams_temperature_high": False,
     "on_ams_drying_suspended": True,
+    # A nightly schedule would send two a night per AMS: off by default. The
+    # failure reports a drying the operator asked for that did not happen.
+    "on_scheduled_drying_started": False,
+    "on_scheduled_drying_completed": False,
+    "on_scheduled_drying_failed": True,
     "on_ams_ht_humidity_high": False,
     "on_ams_ht_temperature_high": False,
     "on_sensor_threshold": False,

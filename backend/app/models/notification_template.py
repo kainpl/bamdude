@@ -135,6 +135,24 @@ DEFAULT_TEMPLATES = [
         ),
     },
     {
+        "event_type": "scheduled_drying_started",
+        "name": "Scheduled Drying Started",
+        "title_template": "Drying started",
+        "body_template": "{printer} {ams_label}: scheduled drying started — {filament}, {temp}°C for {hours} h. {schedule}",
+    },
+    {
+        "event_type": "scheduled_drying_completed",
+        "name": "Scheduled Drying Finished",
+        "title_template": "Drying finished",
+        "body_template": "{printer} {ams_label}: scheduled drying finished ({hours} h at {temp}°C). {schedule}",
+    },
+    {
+        "event_type": "scheduled_drying_failed",
+        "name": "Scheduled Drying Failed",
+        "title_template": "Drying did not happen",
+        "body_template": "{printer} {ams_label}: scheduled drying did not happen — {reason}. {schedule}",
+    },
+    {
         "event_type": "ams_temperature_high",
         "name": "AMS Temperature High",
         "title_template": "AMS Temperature Alert",

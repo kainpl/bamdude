@@ -26,6 +26,9 @@ DEFAULT_NOTIFY_EVENTS = [
     # as "still drying", which is exactly how the reported re-arm loop went
     # unnoticed for two days — so an unconfigured chat hears it too.
     "ams_drying_suspended",
+    # Reports that a drying the operator scheduled did not happen — the same
+    # reasoning as ams_drying_suspended: silence would read as "it dried".
+    "scheduled_drying_failed",
 ]
 
 # All available notification event types
@@ -57,6 +60,10 @@ ALL_NOTIFY_EVENTS = [
     # Reports that auto-drying has STOPPED acting, so it joins the defaults —
     # a chat that has never been configured still needs to hear this one.
     "ams_drying_suspended",
+    # Scheduled drying (only the failure joins the defaults above).
+    "scheduled_drying_started",
+    "scheduled_drying_completed",
+    "scheduled_drying_failed",
     # Zigbee sensor alerts (cycle A). Five here against two provider columns on
     # purpose: the column says whether at all, the chat says which ones — which
     # is m045's whole position. Deliberately NOT in DEFAULT_NOTIFY_EVENTS:

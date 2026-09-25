@@ -61,6 +61,9 @@ class NotificationProviderBase(BaseModel):
     on_ams_humidity_high: bool = Field(default=False, description="Notify when AMS humidity exceeds threshold")
     on_ams_temperature_high: bool = Field(default=False, description="Notify when AMS temperature exceeds threshold")
     on_ams_drying_suspended: bool = Field(default=True, description="Notify when auto-drying gives up on an AMS unit")
+    on_scheduled_drying_started: bool = Field(default=False, description="Notify when a scheduled drying starts")
+    on_scheduled_drying_completed: bool = Field(default=False, description="Notify when a scheduled drying finishes")
+    on_scheduled_drying_failed: bool = Field(default=True, description="Notify when a scheduled drying does not happen")
 
     # Event triggers - AMS-HT environmental alarms
     on_ams_ht_humidity_high: bool = Field(default=False, description="Notify when AMS-HT humidity exceeds threshold")
@@ -170,6 +173,9 @@ class NotificationProviderUpdate(BaseModel):
     on_ams_humidity_high: bool | None = None
     on_ams_temperature_high: bool | None = None
     on_ams_drying_suspended: bool | None = None
+    on_scheduled_drying_started: bool | None = None
+    on_scheduled_drying_completed: bool | None = None
+    on_scheduled_drying_failed: bool | None = None
 
     # Event triggers - AMS-HT environmental alarms
     on_ams_ht_humidity_high: bool | None = None

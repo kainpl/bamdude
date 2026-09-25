@@ -77,3 +77,51 @@ async def upgrade(conn):
     await conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_scheduled_dryings_printer ON scheduled_dryings (printer_id)"
     )
+
+
+_EVENT_TYPES = ("scheduled_drying_started", "scheduled_drying_completed", "scheduled_drying_failed")
+
+
+async def seed(session_factory):
+    """The three notification templates, localised to the system language as m143 does.
+
+    Inserting English on a ``language='uk'`` install would leave English copy
+    until the startup reconcile catches up, and a notification firing in that
+    window would go out in the wrong language.
+    """
+    import json
+    from pathlib import Path
+
+    from sqlalchemy import select
+
+    from backend.app.models.notification_template import DEFAULT_TEMPLATES, NotificationTemplate
+    from backend.app.models.settings import Settings
+
+    async with session_factory() as session:
+        lang_row = await session.execute(select(Settings.value).where(Settings.key == "language"))
+        lang = (lang_row.scalar_one_or_none() or "en").strip().lower()
+        localised_all: dict = {}
+        if lang and lang != "en":
+            path = Path(__file__).resolve().parents[1] / "data" / f"notification_templates_{lang}.json"
+            try:
+                if path.is_file():
+                    localised_all = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 - a missing translation must not fail the upgrade
+                logger.warning("m184: could not read %s templates", lang, exc_info=True)
+
+        for event_type in _EVENT_TYPES:
+            existing = await session.execute(
+                select(NotificationTemplate.id).where(NotificationTemplate.event_type == event_type)
+            )
+            if existing.scalar_one_or_none() is not None:
+                continue
+            default = next((t for t in DEFAULT_TEMPLATES if t["event_type"] == event_type), None)
+            if default is None:
+                logger.warning("m184: no default template for %s — skipping seed", event_type)
+                continue
+            values = dict(default)
+            localised = localised_all.get(event_type)
+            if isinstance(localised, dict):
+                values.update({k: v for k, v in localised.items() if k in ("name", "title_template", "body_template")})
+            session.add(NotificationTemplate(**values))
+        await session.commit()

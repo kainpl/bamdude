@@ -2499,6 +2499,50 @@ class NotificationService:
             variables=variables,
         )
 
+    async def _send_scheduled_drying(self, event: str, printer_id: int, printer_name: str, variables: dict, db):
+        providers = await self._get_providers_for_event(db, f"on_{event}", printer_id)
+        if not providers:
+            return
+        title, message = await self._build_message_from_template(db, event, variables)
+        await self._send_to_providers(
+            providers, title, message, db, event, printer_id, printer_name, variables=variables
+        )
+
+    async def on_scheduled_drying_started(
+        self, printer_id, printer_name, ams_label, filament, temp, hours, schedule, db: AsyncSession
+    ):
+        """A scheduled AMS drying has started (spec 60-specs/scheduled-drying-spec)."""
+        variables = {
+            "printer": printer_name,
+            "ams_label": ams_label,
+            "filament": str(filament),
+            "temp": str(temp),
+            "hours": str(hours),
+            "schedule": schedule,
+        }
+        await self._send_scheduled_drying("scheduled_drying_started", printer_id, printer_name, variables, db)
+
+    async def on_scheduled_drying_completed(
+        self, printer_id, printer_name, ams_label, temp, hours, schedule, db: AsyncSession
+    ):
+        """A scheduled AMS drying ran its course."""
+        variables = {
+            "printer": printer_name,
+            "ams_label": ams_label,
+            "temp": str(temp),
+            "hours": str(hours),
+            "schedule": schedule,
+        }
+        await self._send_scheduled_drying("scheduled_drying_completed", printer_id, printer_name, variables, db)
+
+    async def on_scheduled_drying_failed(self, printer_id, printer_name, ams_label, reason, schedule, db: AsyncSession):
+        """A scheduled AMS drying did not happen — window passed, unsupported, over the unit's limit.
+
+        On by default: the operator asked for it, and silence would read as "it dried".
+        """
+        variables = {"printer": printer_name, "ams_label": ams_label, "reason": reason, "schedule": schedule}
+        await self._send_scheduled_drying("scheduled_drying_failed", printer_id, printer_name, variables, db)
+
     async def on_ams_temperature_high(
         self,
         printer_id: int,
