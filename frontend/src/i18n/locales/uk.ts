@@ -822,7 +822,7 @@ export default {
     },
     totalPrintHours: 'Годин друку',
     activeNozzle: 'Активне: сопло {{nozzle}}',
-    amsSwitchInletTooltip: 'Перемикач тракту філаменту IN-{{inlet}} ({{side}}) — подає на обидва сопла',
+    amsSwitchInletTooltip: 'Перемикач тракту філаменту, вхід IN-{{inlet}} — подає на обидва сопла',
     nozzleRack: 'Стійка сопел',
     nozzleDocked: 'Закріплене',
     nozzleMounted: 'Встановлене',

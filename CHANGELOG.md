@@ -120,10 +120,10 @@
   nozzles, so the printer reports no nozzle for it, and the card fell back to
   the unit number: AMS A was badged R and AMS B L for no reason, and a third
   unit got nothing. The card now shows the inlet set on the printer's Manual
-  AMS Setup screen — L for IN-A, R for IN-B, in blue rather than the nozzle
-  badge's green, with a tooltip that names the inlet — and shows nothing
+  AMS Setup screen — A or B, in blue rather than the nozzle badge's green,
+  never L or R, because an inlet can feed either nozzle — and shows nothing
   while the switch is not set up yet. The print dialog's slot list carries
-  the same letter (its old left/right hint never matched a slot), and warns
+  the same inlet (its old left/right hint never matched a slot), and warns
   when every filament a print needs is on one inlet, where each change has to
   pull the spool back to its AMS first. Both follow the printer screen live.
 - **Load and Unload in the AMS slot menu work with a Filament Track Switch, and

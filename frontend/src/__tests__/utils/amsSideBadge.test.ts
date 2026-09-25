@@ -6,7 +6,7 @@
  * nothing but their numbers.
  */
 import { describe, it, expect } from 'vitest';
-import { amsSideBadge, FTS_INLET_SIDE } from '../../utils/amsHelpers';
+import { amsSideBadge } from '../../utils/amsHelpers';
 
 describe('amsSideBadge', () => {
   it('names the inlet when the AMS is bound to one', () => {
@@ -20,9 +20,5 @@ describe('amsSideBadge', () => {
   it('falls back to the unit id only without a switch', () => {
     expect(amsSideBadge(128, {}, {}, false)).toEqual({ kind: 'nozzle', side: 'R' });
     expect(amsSideBadge(1, {}, {}, true)).toBeNull();
-  });
-
-  it('letters In-A as L and In-B as R', () => {
-    expect(FTS_INLET_SIDE).toEqual({ A: 'L', B: 'R' });
   });
 });

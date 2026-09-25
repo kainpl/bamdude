@@ -100,11 +100,11 @@ describe('FilamentMapping — FTS routing', () => {
     });
     expect(screen.getByText(/Bambu PETG/)).toBeInTheDocument();
 
-    // Each slot is badged for the switch INLET its AMS is plumbed into, using
-    // the same L-for-In-A lettering as the printer card. Both slots are in
-    // AMS 0, which is on In-A (upstream 7a42e0a7).
-    expect(screen.getByText(/Bambu PETG/).textContent).toMatch(/\[L\]/);
-    expect(screen.getByText(/Bambu PLA/).textContent).toMatch(/\[L\]/);
+    // Each slot is badged with the switch INLET its AMS is plumbed into — its
+    // own letter, never a nozzle side: an inlet reaches both nozzles. Both
+    // slots are in AMS 0, which is on IN-A (upstream 7a42e0a7).
+    expect(screen.getByText(/Bambu PETG/).textContent).toMatch(/\[IN-A\]/);
+    expect(screen.getByText(/Bambu PLA/).textContent).toMatch(/\[IN-A\]/);
   });
 
   it('does not badge slots whose AMS has no inlet binding yet', async () => {

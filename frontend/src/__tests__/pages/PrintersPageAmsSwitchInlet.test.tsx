@@ -9,9 +9,8 @@
  * The card used to fall through to the AMS unit id in that case, which quietly
  * labelled AMS 0 "R" and AMS 1 "L" from nothing but their unit numbers, gave a
  * third unit no badge at all, and was wrong for every one of them. It now shows
- * the inlet the printer's own "Manual AMS Setup" screen assigned — lettered L
- * for In-A and R for In-B, with the tooltip naming the inlet outright so the
- * letter is not mistaken for a claim about which nozzle the AMS feeds.
+ * the inlet the printer's own "Manual AMS Setup" screen assigned, lettered A or
+ * B as on the switch — an inlet reaches both nozzles, so no L/R.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
@@ -124,22 +123,21 @@ describe('PrintersPage — AMS card side badge with a Filament Track Switch', ()
     expect(screen.getAllByTitle(/Filament Track Switch IN-B/).length).toBe(2);
   });
 
-  it('letters In-A as L and In-B as R, and names the inlet in the tooltip', async () => {
+  it('letters each badge with its inlet, A or B, never a nozzle side', async () => {
     renderWith({
       fila_switch: FTS_INSTALLED,
       ams_switch_inlet: { '0': 'A', '1': 'B', '2': 'B' },
     });
 
-    // The letter is familiar; the tooltip carries what it actually means, since
-    // an AMS behind the switch reaches both nozzles and "L" is the inlet's
-    // position rather than the nozzle it feeds.
+    // An inlet feeds BOTH nozzles; only the outlets are fixed (OUT-A left,
+    // OUT-B right). An L or R on an inlet would read as a nozzle, so the badge
+    // carries the inlet's own letter, as the switch and BambuStudio name it.
     const inA = await screen.findByTitle(/IN-A/);
-    expect(inA.textContent).toBe('L');
-    expect(inA.title).toMatch(/\(L\)/);
+    expect(inA.textContent).toBe('A');
     expect(inA.title).toMatch(/both nozzles/i);
+    expect(inA.title).not.toMatch(/\([LR]\)/);
     for (const inB of screen.getAllByTitle(/IN-B/)) {
-      expect(inB.textContent).toBe('R');
-      expect(inB.title).toMatch(/\(R\)/);
+      expect(inB.textContent).toBe('B');
     }
   });
 

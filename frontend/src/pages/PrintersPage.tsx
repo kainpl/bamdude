@@ -171,7 +171,7 @@ import type { SequencedFile } from '../components/QueueSequencer';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
-import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow, FTS_INLET_SIDE, amsSideBadge, formatSlotLabel } from '../utils/amsHelpers';
+import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow, amsSideBadge, formatSlotLabel } from '../utils/amsHelpers';
 import { FeedDirectionModal } from '../components/FeedDirectionModal';
 import { getPrinterImage, getWifiStrength, hasDoorSensor, mapModelCode } from '../utils/printer';
 import { OpenMonitorButton } from '../features/monitor/OpenMonitorButton';
@@ -263,9 +263,10 @@ function NozzleBadge({ side }: { side: 'L' | 'R' }) {
   );
 }
 
-// Filament Track Switch inlet indicator. Same L/R lettering as NozzleBadge but
-// deliberately a different colour, because it means something different: this
-// AMS is plumbed into one switch inlet and reaches BOTH nozzles through it.
+// Filament Track Switch inlet indicator: the inlet's own letter, A or B, as the
+// switch and BambuStudio ("Filament Inlet A") name it. Never L / R — an inlet
+// reaches BOTH nozzles through the switch; only its outlets are fixed (OUT-A
+// left, OUT-B right). A different colour from NozzleBadge for the same reason.
 function InletBadge({ inlet, title }: { inlet: 'A' | 'B'; title: string }) {
   const { mode } = useTheme();
   const bgColor = mode === 'dark' ? '#1e3a5f' : '#e3f0fb';
@@ -276,7 +277,7 @@ function InletBadge({ inlet, title }: { inlet: 'A' | 'B'; title: string }) {
       title={title}
       data-testid="ams-inlet-badge"
     >
-      {FTS_INLET_SIDE[inlet]}
+      {inlet}
     </span>
   );
 }
@@ -4832,10 +4833,7 @@ function PrinterCard({
                                 {sideBadge?.kind === 'inlet' ? (
                                   <InletBadge
                                     inlet={sideBadge.inlet}
-                                    title={t('printers.amsSwitchInletTooltip', {
-                                      inlet: sideBadge.inlet,
-                                      side: FTS_INLET_SIDE[sideBadge.inlet],
-                                    })}
+                                    title={t('printers.amsSwitchInletTooltip', { inlet: sideBadge.inlet })}
                                   />
                                 ) : isDualNozzle && sideBadge?.kind === 'nozzle' ? (
                                   <NozzleBadge side={sideBadge.side} />
@@ -5498,10 +5496,7 @@ function PrinterCard({
                               {sideBadge?.kind === 'inlet' ? (
                                 <InletBadge
                                   inlet={sideBadge.inlet}
-                                  title={t('printers.amsSwitchInletTooltip', {
-                                    inlet: sideBadge.inlet,
-                                    side: FTS_INLET_SIDE[sideBadge.inlet],
-                                  })}
+                                  title={t('printers.amsSwitchInletTooltip', { inlet: sideBadge.inlet })}
                                 />
                               ) : isDualNozzle && sideBadge?.kind === 'nozzle' ? (
                                 <NozzleBadge side={sideBadge.side} />

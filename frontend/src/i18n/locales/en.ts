@@ -810,7 +810,7 @@ export default {
     },
     totalPrintHours: 'Print Hours',
     activeNozzle: 'Active: {{nozzle}} nozzle',
-    amsSwitchInletTooltip: 'Filament Track Switch IN-{{inlet}} ({{side}}) — feeds both nozzles',
+    amsSwitchInletTooltip: 'Filament Track Switch IN-{{inlet}} — feeds both nozzles',
     nozzleRack: 'Nozzle Rack',
     nozzleDocked: 'Docked',
     nozzleMounted: 'Mounted',

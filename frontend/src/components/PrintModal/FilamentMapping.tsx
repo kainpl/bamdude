@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Circle, Check, AlertTriangle, RefreshCw, ChevronDown, ChevronUp, Palette } from 'lucide-react';
 import { api } from '../../api/client';
 import { useFilamentMapping } from '../../hooks/useFilamentMapping';
-import { filamentColorMatches, filamentRequirementMatches, filamentTypesCompatible, getGlobalTrayId, FTS_INLET_SIDE } from '../../utils/amsHelpers';
+import { filamentColorMatches, filamentRequirementMatches, filamentTypesCompatible, getGlobalTrayId } from '../../utils/amsHelpers';
 import { getColorName } from '../../utils/colors';
 import { useFilamentLabels } from './useFilamentLabels';
 import type { FilamentMappingProps } from './types';
@@ -329,11 +329,11 @@ export function FilamentMapping({
                       // FTS badge: which switch inlet this slot's AMS feeds. Not a
                       // nozzle — the slot reaches both through the switch — but it
                       // decides whether a change to the next filament is the fast
-                      // cross-inlet one or the slow same-inlet one. Same L/R the
-                      // printer card uses; not translated, they are the letters on
-                      // the machine.
+                      // cross-inlet one or the slow same-inlet one. The inlet's own
+                      // name, as on the switch — never L / R, which would read as a
+                      // nozzle. Not translated: IN-A / IN-B are printed on the machine.
                       const ftsInlet = f.isExternal ? null : ftsInletForAms(f.amsId);
-                      const ftsBadge = ftsInlet == null ? '' : ` [${FTS_INLET_SIDE[ftsInlet]}]`;
+                      const ftsBadge = ftsInlet == null ? '' : ` [IN-${ftsInlet}]`;
                       return (
                         <option
                           key={f.globalTrayId}
