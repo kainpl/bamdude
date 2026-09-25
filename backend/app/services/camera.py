@@ -39,6 +39,19 @@ logger = logging.getLogger(__name__)
 # Obico-vs-snapshot pair from the report.
 _inflight_captures: dict[str, "asyncio.Task[CameraCaptureResult]"] = {}
 
+# Caps how many printers can be mid-capture at once across the whole farm.
+# The per-IP coalescing above only stops *duplicate* callers for the SAME
+# printer from opening a second connection — it does nothing when N DIFFERENT
+# printers are each captured once, which is exactly what a camera wall/kiosk
+# view polling every tile on the same interval does. Each chamber-image capture
+# is a fresh TLS handshake (see ``read_chamber_image_frame``); the handshake's
+# crypto work is synchronous CPU time on the single asyncio event loop, so two
+# dozen of them landing in the same tick serialize there and stall every other
+# coroutine — HTTP requests, WebSocket broadcasts, MQTT callbacks — for as long
+# as the burst takes. Bounding concurrency turns one long stall into several
+# short ones instead, at the cost of a small amount of queuing.
+_capture_concurrency = asyncio.Semaphore(6)
+
 
 def capture_in_flight(ip_address: str) -> bool:
     """True iff a one-shot capture for this IP is running right now.
@@ -276,14 +289,19 @@ def _create_chamber_auth_payload(access_code: str) -> bytes:
 
 
 def _create_ssl_context() -> ssl.SSLContext:
-    """Create an SSL context for chamber image connection.
+    """Build the (shared, cached) SSL context for chamber image connections.
 
     Bambu printers use self-signed certificates, so we disable verification.
+    Holds no per-call or per-printer state, so one instance is reused for
+    every connection instead of rebuilding it on every single capture.
     """
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     return ctx
+
+
+_chamber_ssl_context = _create_ssl_context()
 
 
 async def read_chamber_image_frame(
@@ -304,7 +322,7 @@ async def read_chamber_image_frame(
         JPEG image data or None if failed
     """
     port = 6000
-    ssl_context = _create_ssl_context()
+    ssl_context = _chamber_ssl_context
 
     try:
         # Connect with SSL
@@ -377,7 +395,7 @@ async def generate_chamber_image_stream(
     Returns a connected reader or None if connection failed.
     """
     port = 6000
-    ssl_context = _create_ssl_context()
+    ssl_context = _chamber_ssl_context
 
     try:
         reader, writer = await asyncio.wait_for(
@@ -608,11 +626,12 @@ async def _capture_camera_frame_with_provenance_uncoalesced(
     timeout: int,
 ) -> CameraCaptureResult:
     """Run the socket-owning capture and annotate a successful fresh frame."""
-    return await capture_result(
-        _capture_camera_frame_bytes_uncoalesced(ip_address, access_code, model, timeout),
-        "chamber_image" if is_chamber_image_model(model) else "rtsp",
-        ip_address,
-    )
+    async with _capture_concurrency:
+        return await capture_result(
+            _capture_camera_frame_bytes_uncoalesced(ip_address, access_code, model, timeout),
+            "chamber_image" if is_chamber_image_model(model) else "rtsp",
+            ip_address,
+        )
 
 
 async def _capture_camera_frame_bytes_uncoalesced(
