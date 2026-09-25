@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed
+
+- **A large farm's web UI could stall for seconds at a time, and the stall got worse the more printers you added.** The in-print frame banking that keeps a picture ready for the finish-photo notification opens a fresh TLS connection to the printer's camera on every capture, with no limit on how many printers could be captured at once; with two dozen printers each running their own independent ~25s banking cycle, several would occasionally land within the same second and stall the single event loop that also serves the dashboard and every WebSocket update, for up to several seconds at a time — confirmed on a production farm via its own event-loop-lag instrumentation. Capture concurrency is now capped farm-wide, and the camera's TLS context is built once instead of on every single capture. Separately, the printer dashboard no longer re-renders its entire card grid on every single printer's status update unless the list is actually sorted by status/ETA — a farm of two dozen printers made that far more frequent than it used to be.
+
 ## [0.6.1] - 2026-09-21
 
 Stable 0.6.1 release. Images: `ghcr.io/kainpl/bamdude:0.6.1` / `kainpl/bamdude:0.6.1` (`:latest` tracks this).
