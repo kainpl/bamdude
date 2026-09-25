@@ -38,6 +38,12 @@ _storage_usage_cache: dict | None = None
 _storage_usage_cache_ts: float | None = None
 _storage_usage_lock = asyncio.Lock()
 
+# /system/info is polled every 30 s by every open System page; the archive
+# figure moves with prints, not with page refreshes.
+ARCHIVE_SIZE_CACHE_SECONDS = 60
+_archive_size_cache: tuple[Path, float, int] | None = None  # (directory, monotonic time, bytes)
+_archive_size_lock = asyncio.Lock()
+
 
 def get_directory_size(path: Path) -> int:
     """Calculate total size of a directory in bytes."""
@@ -398,6 +404,40 @@ def _scan_storage_usage() -> dict:
     }
 
 
+def _measure_archive_size(archive_dir: Path) -> int:
+    # exists() belongs on the worker too: on a stalled mount it blocks like the walk.
+    return get_directory_size(archive_dir) if archive_dir.exists() else 0
+
+
+def _fresh_archive_size(archive_dir: Path) -> int | None:
+    cached = _archive_size_cache
+    if cached and cached[0] == archive_dir and time.monotonic() - cached[1] < ARCHIVE_SIZE_CACHE_SECONDS:
+        return cached[2]
+    return None
+
+
+async def _get_archive_size_cached(archive_dir: Path) -> int:
+    """Archive size without pausing the event loop.
+
+    The archive is a tree of every print's 3MF and pictures; ``rglob`` + ``stat``
+    over it ran inside the request and paused the whole process on each System
+    page refresh, once per open tab. Walk it on a worker thread, once for all
+    concurrent callers, and reuse the answer for ``ARCHIVE_SIZE_CACHE_SECONDS``.
+    """
+    global _archive_size_cache
+
+    size = _fresh_archive_size(archive_dir)
+    if size is not None:
+        return size
+    async with _archive_size_lock:
+        size = _fresh_archive_size(archive_dir)
+        if size is not None:
+            return size
+        size = await asyncio.to_thread(_measure_archive_size, archive_dir)
+        _archive_size_cache = (archive_dir, time.monotonic(), size)
+        return size
+
+
 async def _get_storage_usage_cached(refresh: bool, max_age_seconds: int) -> dict:
     global _storage_usage_cache
     global _storage_usage_cache_ts
@@ -483,28 +523,36 @@ async def get_system_info(
         or 0
     )
 
-    # Connected printers
-    connected_printers = []
-    for printer_id, client in printer_manager._clients.items():
-        state = client.state
-        if state and state.connected:
-            # Get printer name and model from database
-            result = await db.execute(select(Printer.name, Printer.model).where(Printer.id == printer_id))
-            row = result.first()
-            name = row[0] if row else f"Printer {printer_id}"
-            model = row[1] if row else "unknown"
-            connected_printers.append(
-                {
-                    "id": printer_id,
-                    "name": name,
-                    "state": state.state,
-                    "model": model,
-                }
-            )
+    # Connected printers — snapshot the live clients before awaiting, then name
+    # them in one query rather than one per printer.
+    connected = [
+        (printer_id, client.state)
+        for printer_id, client in list(printer_manager._clients.items())
+        if client.state and client.state.connected
+    ]
+    names: dict[int, tuple[str, str | None]] = {}
+    if connected:
+        result = await db.execute(
+            select(Printer.id, Printer.name, Printer.model).where(Printer.id.in_([pid for pid, _ in connected]))
+        )
+        names = {row.id: (row.name, row.model) for row in result}
+    connected_printers = [
+        {
+            "id": printer_id,
+            "name": names[printer_id][0] if printer_id in names else f"Printer {printer_id}",
+            "state": state.state,
+            "model": names[printer_id][1] if printer_id in names else "unknown",
+        }
+        for printer_id, state in connected
+    ]
 
-    # Storage info
+    # Storage info and the CPU sample, both off the event loop: the archive
+    # walk touches every file, and cpu_percent(interval=0.1) sleeps 100 ms.
     archive_dir = settings.archive_dir
-    archive_size = get_directory_size(archive_dir) if archive_dir.exists() else 0
+    archive_size, cpu_percent = await asyncio.gather(
+        _get_archive_size_cached(archive_dir),
+        asyncio.to_thread(psutil.cpu_percent, interval=0.1),
+    )
 
     # Database size, per backend. Statting ``bamdude.db`` is right only on
     # SQLite; on PostgreSQL that file does not exist, so this field reported
@@ -633,7 +681,7 @@ async def get_system_info(
         "cpu": {
             "count": psutil.cpu_count(),
             "count_logical": psutil.cpu_count(logical=True),
-            "percent": psutil.cpu_percent(interval=0.1),
+            "percent": cpu_percent,
         },
     }
 

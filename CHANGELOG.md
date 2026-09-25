@@ -92,6 +92,14 @@
 
 ### Fixed
 
+- **The Information page no longer pauses BamDude while it refreshes.** Every
+  30 seconds, each open Information page made the server measure the archive
+  by visiting every archived file, and sample the CPU with a 100 ms wait —
+  both on the loop that also serves printer control, the WebSocket and every
+  other request, so a large archive stalled all of them. Both now run on a
+  worker thread; the archive is measured once for all open pages and the
+  figure is reused for up to a minute. Connected printers on the page are
+  named with one database query instead of one per printer.
 - **Live printer states and busy-farm refreshes no longer race.** The browser
   acknowledges a WebSocket bootstrap only after all pre-marker printer states
   reach its cache; late status chunks cannot overwrite newer patches or write
