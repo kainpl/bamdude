@@ -2,6 +2,20 @@
 
 ### Added
 
+- **Lighter farm monitoring in the browser.** The queue badge reads compact
+  counts instead of every queued job, and shows `!` rather than a false zero when
+  a count cannot be read. Queue and Printers cards share one set of active queue
+  reads, and an Issues section loads its rows, page by page, only when opened —
+  **Delete all** first loads the complete list, then asks about exactly those
+  jobs. The printer-status fallback of every card on a page now goes out as one
+  batched request per interval, and a printer whose live state just arrived
+  waits for its own turn. A hidden tab sends no farm reads, even when queue
+  events arrive — it catches up once when shown — and a quick switch back to a
+  fresh tab rereads nothing. After a network drop the live connection retries
+  with growing delays of up to 30 seconds. Background reads are bounded and
+  cancelled when no longer needed; printing commands stay immediate and are
+  never retried automatically. On a synthetic 50-printer farm, one open Queue
+  tab made about nine in ten fewer requests over ten quiet minutes.
 - **Camera capture is worker-only.** Built-in and external live views, snapshots,
   connection tests, background photos and Virtual Printer camera passthrough
   use one supervised local worker; there is no inline fallback. A failed camera

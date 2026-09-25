@@ -1530,6 +1530,7 @@ export default {
   // Queue page
   queue: {
     title: 'Черга друку',
+    summaryUnavailable: 'Лічильник черги недоступний. Відкрийте чергу для подробиць.',
     addToQueue: 'Додати до черги',
     source: {
       external: 'Зовнішній',
@@ -1703,7 +1704,13 @@ export default {
     },
     issues: {
       header: 'Проблеми ({{count}})',
+      summaryLoading: 'Перевіряємо проблеми в черзі…',
+      summaryUnavailable: 'Лічильник проблем недоступний.',
       deleteAll: 'Видалити все ({{count}})',
+      deleteAllStart: 'Видалити все…',
+      cancelLoading: 'Скасувати завантаження',
+      loadMore: 'Завантажити ще проблеми',
+      loadError: 'Не вдалося завантажити проблеми. Повторити',
       deleteAllTitle: 'Прибрати проблеми з черги',
       deleteAllMessage: 'Прибрати з черги {{printer}} — невдалих: {{failed}}, скасованих: {{cancelled}}? Пропущені лишаються. Історія друків і лічильники нижче не змінюються.',
       deleteAllConfirm: 'Видалити',

@@ -140,6 +140,20 @@ class PrintQueueItemUpdate(FilamentRoutingChoices):
     nozzle_mapping: list[int] | None = None
 
 
+class QueueSummaryGroup(BaseModel):
+    queue_id: int
+    printer_id: int | None
+    pending_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    cancelled_count: int = 0
+
+
+class QueueSummaryResponse(BaseModel):
+    pending_count: int
+    groups: list[QueueSummaryGroup]
+
+
 class PrintQueueItemResponse(BaseModel):
     filament_routing: dict | None = None
     id: int
@@ -258,6 +272,11 @@ class PrintQueueItemResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class QueueIssuesResponse(BaseModel):
+    items: list[PrintQueueItemResponse]
+    next_cursor: int | None = None
 
 
 class PrintQueueReorderItem(BaseModel):

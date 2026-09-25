@@ -15,7 +15,7 @@ vi.mock('../../contexts/ToastContext', () => ({ useToast: () => ({ showToast: mo
 vi.mock('../../contexts/ConnectionContext', () => ({ useConnection: () => ({ setIsConnected: mocks.setConnected }) }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
-import { useWebSocket } from '../../hooks/useWebSocket';
+import { useWebSocket, wsReconnectDelay } from '../../hooks/useWebSocket';
 
 class Socket {
   static readonly CONNECTING = 0;
@@ -66,6 +66,106 @@ function statuses(socket: Socket, count = 20) {
 }
 
 describe('WebSocket cache and lifecycle contract', () => {
+  it('uses bounded exponential reconnect delays with jitter', () => {
+    expect([0, 1, 2, 3, 4].map(attempt => wsReconnectDelay(attempt, 1)))
+      .toEqual([3000, 6000, 12000, 24000, 30000]);
+    expect(wsReconnectDelay(0, 0)).toBe(2250);
+  });
+
+  it('holds hidden farm invalidations until one visible catch-up', async () => {
+    const { socket } = await mounted();
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    const key = ['queue', 'summary'];
+    client.setQueryData(key, 'old');
+    const read = vi.fn().mockResolvedValue('new');
+    const observer = new QueryObserver(client, {
+      queryKey: key, queryFn: read, staleTime: Infinity,
+      refetchOnWindowFocus: false, refetchOnReconnect: false,
+    });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      act(() => { for (let index = 0; index < 100; index += 1) socket.emit({ type: 'queue_changed' }); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+      expect(read).not.toHaveBeenCalled();
+      expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+      visibility.mockReturnValue('visible');
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+      await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(client.getQueryData(key)).toBe('new');
+    } finally {
+      visibility.mockRestore();
+      unsubscribe();
+    }
+  });
+
+  it('does not refetch a fresh farm summary on a quick Alt+Tab', async () => {
+    await mounted();
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    const key = ['queue', 'summary'];
+    client.setQueryData(key, 'fresh');
+    const read = vi.fn().mockResolvedValue('new');
+    const observer = new QueryObserver(client, { queryKey: key, queryFn: read, staleTime: Infinity, refetchOnWindowFocus: false });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      visibility.mockRestore();
+      unsubscribe();
+    }
+  });
+
+  it('turns 100 queue events during a slow farm read into one follow-up read', async () => {
+    const { socket } = await mounted();
+    const key = ['queue', 'all', 'pending'];
+    let finishFirst!: (value: string) => void;
+    const read = vi.fn()
+      .mockImplementationOnce(() => new Promise<string>(resolve => { finishFirst = resolve; }))
+      .mockResolvedValue('fresh');
+    const observer = new QueryObserver(client, {
+      queryKey: key, queryFn: read, refetchOnWindowFocus: false, refetchOnReconnect: false,
+    });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      expect(read).toHaveBeenCalledTimes(1);
+      act(() => { for (let index = 0; index < 100; index += 1) socket.emit({ type: 'queue_changed', printer_id: (index % 50) + 1 }); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+      // The slow read is neither cancelled nor joined by a second one.
+      expect(read).toHaveBeenCalledTimes(1);
+      await act(async () => { finishFirst('old'); await Promise.resolve(); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(client.getQueryData(key)).toBe('fresh');
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(read).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('answers a simultaneous visible and online resume with one farm read', async () => {
+    await mounted();
+    const key = ['queue', 'summary'];
+    client.setQueryData(key, 'old', { updatedAt: Date.now() - 60_000 });
+    const read = vi.fn().mockResolvedValue('new');
+    const observer = new QueryObserver(client, {
+      queryKey: key, queryFn: read, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false,
+    });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+        window.dispatchEvent(new Event('online'));
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(client.getQueryData(key)).toBe('new');
+    } finally {
+      unsubscribe();
+    }
+  });
   it.each([50, 100, 500])('commits a %i-printer bootstrap before ACK', async count => {
     const { socket } = await mounted();
     act(() => {

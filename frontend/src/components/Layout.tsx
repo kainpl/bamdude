@@ -15,7 +15,7 @@ import { useQuery, useQueries } from '@tanstack/react-query';
 import { api, supportApi, type Permission } from '../api/client';
 import { getIconByName } from './IconPicker';
 import { useIsSidebarCompact } from '../hooks/useIsSidebarCompact';
-import { usePendingQueueItems } from '../hooks/useQueueItems';
+import { useAutoQueuePendingSummary, useQueueSummary } from '../hooks/useQueueItems';
 import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
 import { useUnknownTagPrompt } from '../hooks/useUnknownTagPrompt';
 import { useInboxUnreadCount } from '../hooks/useInboxUnreadCount';
@@ -313,25 +313,16 @@ export function Layout() {
     refetchOnWindowFocus: true,
   });
 
-  // The badge's pending list is the SHARED one (`hooks/useQueueItems`), not a
-  // private query. This component is mounted on every page, so its own
-  // `['queue', 'pending']` entry meant an order page or the Queue page held two
-  // cache entries and two polls for one answer — and the two could disagree for
-  // as long as their intervals differed. The shared hook owns the cadence.
-  const { data: queueItems } = usePendingQueueItems();
-  // Auto-queue work not yet routed to a printer. The badge shows the *total*
-  // amount of waiting work — the split between "queued on a printer" and
-  // "awaiting routing" is what the Queue page's stats bar is for; there is no
-  // room for two numbers here, and a badge that ignored the staging area read
-  // as an empty queue while a whole batch waited.
-  const { data: unassignedAutoItems } = useQuery({
-    queryKey: ['auto-queue', 'pending'],
-    queryFn: () => api.getAutoQueue('pending'),
-    staleTime: 5 * 1000,
-    refetchInterval: 5 * 1000,
-    refetchOnWindowFocus: true,
-  });
-  const pendingQueueCount = (queueItems?.length ?? 0) + (unassignedAutoItems?.length ?? 0);
+  // The shell needs counts, never full queue rows. Keep each permission domain
+  // separate: a read-own queue user may not read the auto queue at all.
+  const canReadQueue = !authEnabled || (!!user && (hasPermission('queue:read_all') || hasPermission('queue:read_own')));
+  const canReadAutoQueue = !authEnabled || (!!user && hasPermission('queue:read'));
+  const { data: queueSummary, isError: queueSummaryError } = useQueueSummary(canReadQueue);
+  const { data: autoQueueSummary, isError: autoQueueSummaryError } = useAutoQueuePendingSummary(canReadAutoQueue);
+  const queueBadgeUnavailable = queueSummaryError || autoQueueSummaryError;
+  const pendingQueueCount = (canReadQueue && !queueSummary) || (canReadAutoQueue && !autoQueueSummary)
+    ? null
+    : (queueSummary?.pending_count ?? 0) + (autoQueueSummary?.pending_count ?? 0);
 
   // The inbox belongs to whoever holds the permission; with auth off nothing is gated.
   const inboxVisible = !authEnabled || hasPermission('notifications:inbox');
@@ -340,16 +331,16 @@ export function Layout() {
   // Check if any printer with pending queue items needs plate clearing
   const queuePrinterIds = useMemo(() => {
     const ids = new Set<number>();
-    queueItems?.forEach(item => {
-      if (item.printer_id) ids.add(item.printer_id);
+    queueSummary?.groups.forEach(group => {
+      if (group.pending_count > 0 && group.printer_id) ids.add(group.printer_id);
     });
     return Array.from(ids);
-  }, [queueItems]);
+  }, [queueSummary]);
 
   const printerStatusQueries = useQueries({
     queries: queuePrinterIds.map(id => ({
       queryKey: ['printerStatus', id],
-      queryFn: () => api.getPrinterStatus(id),
+      queryFn: ({ signal }) => api.getPrinterStatus(id, signal),
       staleTime: 30 * 1000, // WebSocket keeps this warm
     })),
   });
@@ -1040,9 +1031,9 @@ export function Layout() {
                 if (!navItem) return null;
 
                 const { to, icon: Icon, labelKey } = navItem;
-                const showQueueBadge = id === 'queue' && pendingQueueCount > 0;
+                const showQueueBadge = id === 'queue' && (queueBadgeUnavailable || (pendingQueueCount ?? 0) > 0);
                 const showInboxBadge = id === 'notifications' && unreadCount > 0;
-                const badgeCount = showQueueBadge ? pendingQueueCount : showInboxBadge ? unreadCount : 0;
+                const badgeCount = showQueueBadge ? (queueBadgeUnavailable ? '!' : pendingQueueCount) : showInboxBadge ? unreadCount : 0;
                 const showBadge = showQueueBadge || showInboxBadge;
                 const showClearPlateDot = id === 'printers' && needsClearPlate;
 
@@ -1117,8 +1108,8 @@ export function Layout() {
                           <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-yellow-500 rounded-full border-2 border-bambu-dark-secondary" />
                         )}
                         {showBadge && (
-                          <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-bold rounded-full bg-yellow-500 text-black">
-                            {badgeCount > 99 ? '99+' : badgeCount}
+                          <span title={queueBadgeUnavailable && id === 'queue' ? t('queue.summaryUnavailable') : undefined} className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-bold rounded-full bg-yellow-500 text-black">
+                            {typeof badgeCount === 'number' && badgeCount > 99 ? '99+' : badgeCount}
                           </span>
                         )}
                       </div>

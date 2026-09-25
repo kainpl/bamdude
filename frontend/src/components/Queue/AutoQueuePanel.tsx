@@ -9,6 +9,7 @@ import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type D
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { api } from '../../api/client';
+import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay } from '../../api/farmReadBudget';
 import type { AutoQueueItem } from '../../api/client';
 import { PrintModal } from '../PrintModal';
 import { partitionDroppedFiles, dropRejectionKey } from '../../utils/printableDrop';
@@ -57,9 +58,13 @@ export function AutoQueuePanel() {
   const dragCounterRef = useRef(0);
 
   const { data: items } = useQuery({
+    ...farmQueryResumeOptions,
     queryKey: ['auto-queue', 'pending,failed'],
-    queryFn: () => api.getAutoQueue('pending,failed'),
-    refetchInterval: 15000,
+    queryFn: ({ signal }) => farmRead('auto-queue-pending-failed', signal,
+      owned => api.getAutoQueue('pending,failed', undefined, { signal: owned })),
+    refetchInterval: query => farmPollInterval(15_000, query),
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
   });
 
   // Archive-backed terminal totals — the auto_queue_items row is deleted
@@ -67,9 +72,12 @@ export function AutoQueuePanel() {
   // on print_archives.from_auto_queue. Mirrors the per-printer queue card
   // footer.
   const { data: stats } = useQuery({
+    ...farmQueryResumeOptions,
     queryKey: ['auto-queue', 'stats'],
-    queryFn: () => api.getAutoQueueStats(),
-    refetchInterval: 15000,
+    queryFn: ({ signal }) => farmRead('auto-queue-stats', signal, owned => api.getAutoQueueStats(owned)),
+    refetchInterval: query => farmPollInterval(15_000, query),
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
   });
 
   // Shortest-job-first overrides manual positions entirely — with it on, a

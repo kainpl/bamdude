@@ -5,6 +5,68 @@ import { createPrinterStatusBatcher } from '../../api/printerStatusBatch';
 const row = (id: number, progress = 1) => ({ id, progress, connected: true } as PrinterStatus);
 
 describe('fleet status REST reads', () => {
+  it('drops a cancelled waiter before flush without cancelling its neighbours', async () => {
+    const one = vi.fn(async (id: number) => row(id));
+    const many = vi.fn(async (ids: number[]) => Object.fromEntries(ids.map(id => [id, row(id)])));
+    const batch = createPrinterStatusBatcher(one, many, () => new Error('missing'));
+    const controller = new AbortController();
+    const cancelled = batch.get(1, controller.signal);
+    const others = Promise.all([batch.get(2), batch.get(3)]);
+    controller.abort();
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    expect((await others).map(item => item.id)).toEqual([2, 3]);
+    expect(many).toHaveBeenCalledTimes(1);
+    expect(many.mock.calls[0][0]).toEqual([2, 3]);
+  });
+
+  it('does not abort shared transport for one cancelled waiter after send', async () => {
+    let finish!: (rows: Record<string, PrinterStatus>) => void;
+    let transportSignal: AbortSignal | undefined;
+    const many = vi.fn((_ids: number[], signal?: AbortSignal) => {
+      transportSignal = signal;
+      return new Promise<Record<string, PrinterStatus>>(resolve => { finish = resolve; });
+    });
+    const batch = createPrinterStatusBatcher(async id => row(id), many, () => new Error('missing'));
+    const controller = new AbortController();
+    const cancelled = batch.get(1, controller.signal);
+    const neighbour = batch.get(2);
+    await vi.waitFor(() => expect(many).toHaveBeenCalledTimes(1));
+    controller.abort();
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    expect(transportSignal?.aborted).toBe(false);
+    finish({ 1: row(1), 2: row(2) });
+    expect((await neighbour).id).toBe(2);
+  });
+
+  it('aborts transport when its final waiter cancels', async () => {
+    let transportSignal: AbortSignal | undefined;
+    const one = vi.fn((_id: number, signal?: AbortSignal) => {
+      transportSignal = signal;
+      return new Promise<PrinterStatus>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
+    const batch = createPrinterStatusBatcher(one, async () => ({}), () => new Error('missing'));
+    const controller = new AbortController();
+    const result = batch.get(1, controller.signal);
+    await vi.waitFor(() => expect(one).toHaveBeenCalledTimes(1));
+    controller.abort();
+    await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+    expect(transportSignal?.aborted).toBe(true);
+  });
+
+  it('rejects an old-session result before it can enter the new session cache', async () => {
+    let epoch = 1;
+    let finish!: (rows: Record<string, PrinterStatus>) => void;
+    const many = vi.fn(() => new Promise<Record<string, PrinterStatus>>(resolve => { finish = resolve; }));
+    const batch = createPrinterStatusBatcher(async id => row(id), many, () => new Error('missing'), () => epoch);
+    const old = Promise.allSettled([batch.get(1), batch.get(2)]);
+    await vi.waitFor(() => expect(many).toHaveBeenCalledTimes(1));
+    epoch = 2;
+    finish({ 1: row(1), 2: row(2) });
+    expect((await old).map(result => result.status)).toEqual(['rejected', 'rejected']);
+  });
+
   it('turns 50 simultaneous reads into one request and keeps duplicates independent', async () => {
     const one = vi.fn(async (id: number) => row(id));
     const many = vi.fn(async (ids: number[]) => Object.fromEntries(ids.map(id => [id, row(id)])));

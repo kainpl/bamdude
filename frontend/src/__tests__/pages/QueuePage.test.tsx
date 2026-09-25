@@ -90,6 +90,7 @@ describe('QueuePage', () => {
     server.use(
       http.get('/api/v1/queues/', () => HttpResponse.json(mockQueues)),
       http.get('/api/v1/queue/', () => HttpResponse.json(mockPendingItems)),
+      http.get('/api/v1/queue/summary', () => HttpResponse.json({ pending_count: 0, groups: [] })),
       http.get('/api/v1/printers/', () => HttpResponse.json([])),
       // The filter takes its options from the locations themselves now, so a
       // parent with nothing directly on it is still selectable.
@@ -178,8 +179,10 @@ describe('QueuePage', () => {
       let batches = 0;
       server.use(
         http.get('/api/v1/queues/', () => HttpResponse.json(fleet)),
-        http.get('/api/v1/printers/status/batch', () => {
-          batches++;
+        http.get('/api/v1/printers/status/batch', ({ request }) => {
+          // Earlier tests may leave a queued status read in the module-level
+          // batcher; count only this test's full-fleet prefetch.
+          if (new URL(request.url).searchParams.getAll('ids').length === fleet.length) batches++;
           return HttpResponse.json(Object.fromEntries(fleet.map(queue => [queue.printer_id, { connected: true, state: 'IDLE' }])));
         }),
       );
@@ -384,12 +387,22 @@ describe('QueuePage', () => {
      * for the first printer's queue, or both cards would render the same job and
      * every lookup below would find it twice.
      */
-    const byStatus = (rows: Record<string, unknown[]>) =>
-      http.get('/api/v1/queue/', ({ request }) => {
+    const byStatus = (rows: Record<string, unknown[]>) => {
+      const issues = [...(rows.failed ?? []), ...(rows.skipped ?? []), ...(rows.cancelled ?? [])] as Array<{ id: number }>;
+      server.use(
+        http.get('/api/v1/queue/summary', () => HttpResponse.json({ pending_count: rows.pending?.length ?? 0, groups: [{
+          queue_id: 1, printer_id: 1, pending_count: rows.pending?.length ?? 0,
+          failed_count: rows.failed?.length ?? 0, skipped_count: rows.skipped?.length ?? 0,
+          cancelled_count: rows.cancelled?.length ?? 0,
+        }] })),
+        http.get('/api/v1/queue/issues', () => HttpResponse.json({ items: issues.sort((a, b) => a.id - b.id), next_cursor: null })),
+      );
+      return http.get('/api/v1/queue/', ({ request }) => {
         const params = new URL(request.url).searchParams;
-        if (params.get('queue_id') !== '1') return HttpResponse.json([]);
+        if (params.get('queue_id') && params.get('queue_id') !== '1') return HttpResponse.json([]);
         return HttpResponse.json(rows[params.get('status') ?? 'pending'] ?? []);
       });
+    };
 
     it('marks each state with its own explanation, and says nothing when there is none', async () => {
       server.use(

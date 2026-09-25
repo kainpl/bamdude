@@ -36,7 +36,7 @@ export function FilamentMapping({
   // Fetch printer status
   const { data: printerStatus } = useQuery({
     queryKey: ['printer-status', printerId],
-    queryFn: () => api.getPrinterStatus(printerId),
+    queryFn: ({ signal }) => api.getPrinterStatus(printerId, signal),
     enabled: !!printerId,
   });
 

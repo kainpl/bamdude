@@ -6,6 +6,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { setAuthToken, getAuthToken, api, supportApi } from '../../api/client';
+import { farmReadBudget } from '../../api/farmReadBudget';
 
 // Mock localStorage
 const localStorageMock = {
@@ -468,6 +469,74 @@ describe('sendForm recovers from an expired access token', () => {
         status: 413,
         message: 'An import may be at most 1 bytes',
       });
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});
+
+describe('Background read error metadata', () => {
+  it('preserves Retry-After for the single TanStack retry policy', async () => {
+    server.use(http.get('/api/v1/queue/summary', () =>
+      HttpResponse.json({ detail: 'busy' }, { status: 429, headers: { 'Retry-After': '7' } })));
+    await expect(api.getQueueSummary()).rejects.toMatchObject({ status: 429, retryAfterMs: 7000 });
+  });
+});
+
+describe('abortable queue reads', () => {
+  it('sends a failing queue command once, outside the background read budget', async () => {
+    let deletes = 0;
+    server.use(http.delete('/api/v1/queue/:id', () => {
+      deletes += 1;
+      return HttpResponse.json({ detail: 'busy' }, { status: 503 });
+    }));
+    const started = farmReadBudget.snapshot().started;
+    await expect(api.removeFromQueue(5)).rejects.toMatchObject({ status: 503 });
+    expect(deletes).toBe(1);
+    expect(farmReadBudget.snapshot().started).toBe(started);
+  });
+
+  it('does not fetch a read whose caller was already cancelled', async () => {
+    const originalFetch = global.fetch;
+    const fetchSpy = vi.fn();
+    global.fetch = fetchSpy;
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      await expect(api.getQueueSummary({ signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('does not retry after a shared auth refresh if its own read was cancelled', async () => {
+    const originalFetch = global.fetch;
+    let finishRefresh!: (response: Response) => void;
+    const refreshResponse = new Promise<Response>(resolve => { finishRefresh = resolve; });
+    let reads = 0;
+    let refreshes = 0;
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('/auth/refresh')) {
+        refreshes++;
+        return refreshResponse;
+      }
+      if (String(url).includes('/queue/summary')) {
+        reads++;
+        return Promise.resolve(new Response(JSON.stringify({ detail: 'Could not validate credentials' }), { status: 401 }));
+      }
+      return originalFetch(url);
+    });
+    try {
+      setAuthToken('stale-token');
+      const controller = new AbortController();
+      const result = api.getQueueSummary({ signal: controller.signal });
+      for (let i = 0; i < 20 && refreshes === 0; i++) await Promise.resolve();
+      expect(refreshes).toBe(1);
+      controller.abort();
+      finishRefresh(new Response(JSON.stringify({ access_token: 'fresh-token' }), { status: 200 }));
+      await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+      expect(reads).toBe(1);
     } finally {
       global.fetch = originalFetch;
     }

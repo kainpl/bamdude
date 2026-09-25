@@ -93,6 +93,7 @@ export const ORDER_VIEW_KEYS = [
 export function invalidateQueueViews(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: ['queues'] });
   qc.invalidateQueries({ queryKey: ['queue'] });
+  qc.invalidateQueries({ queryKey: ['auto-queue', 'summary'] });
   qc.invalidateQueries({ queryKey: ['queue-forecast'] });
 }
 

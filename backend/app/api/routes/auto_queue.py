@@ -44,6 +44,7 @@ from backend.app.schemas.auto_queue import (
     AutoQueueItemCreate,
     AutoQueueItemResponse,
     AutoQueueItemUpdate,
+    AutoQueuePendingSummaryResponse,
     AutoQueueRebalanceRequest,
     AutoQueueReorder,
     AutoQueueStatsResponse,
@@ -284,6 +285,16 @@ async def list_auto_queue(
     stmt = stmt.order_by(AutoQueueItem.position)
     result = await db.execute(stmt)
     return [_to_response(item) for item in result.scalars().all()]
+
+
+@router.get("/summary", response_model=AutoQueuePendingSummaryResponse)
+async def auto_queue_pending_summary(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
+):
+    """Count unassigned work without loading rows or archive-backed history."""
+    count = await db.scalar(select(func.count(AutoQueueItem.id)).where(AutoQueueItem.status == "pending"))
+    return AutoQueuePendingSummaryResponse(pending_count=int(count or 0))
 
 
 @router.get("/stats", response_model=AutoQueueStatsResponse)

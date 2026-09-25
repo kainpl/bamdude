@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import { Clock, Calendar, ChevronRight, Loader2, CircleCheck, RotateCcw } from 'lucide-react';
 import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -9,6 +9,7 @@ import { useToast } from '../contexts/ToastContext';
 import { formatRelativeTime } from '../utils/date';
 import { usePlateDefects } from '../hooks/usePlateDefects';
 import { PlateDefectsRow } from './PlateDefectsRow';
+import { usePrinterQueueRows } from '../hooks/FarmQueueScope';
 
 interface PrinterQueueWidgetProps {
   printerId: number;
@@ -25,11 +26,7 @@ export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear
   const { t } = useTranslation();
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
-  const { data: queue } = useQuery({
-    queryKey: ['queue', printerId, 'pending'],
-    queryFn: () => api.getQueue(printerId, 'pending'),
-    refetchInterval: 30000,
-  });
+  const { data: queue } = usePrinterQueueRows(printerId, 'pending');
 
   const gateArmed = requirePlateClear && (printerState === 'FINISH' || printerState === 'FAILED') && !!awaitingPlateClear;
   // Split into auto-dispatchable vs staged (manual_start) items. Read up here

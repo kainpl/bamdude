@@ -176,7 +176,7 @@ describe('useWebSocket hook', () => {
     globalThis.WebSocket = originalWebSocket;
   });
 
-  it('refreshes the affected queue immediately after auto-queue promotion', async () => {
+  it('coalesces the affected queue reads after auto-queue promotion', async () => {
     const { useWebSocket } = await import('../../hooks/useWebSocket');
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
     renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
@@ -188,12 +188,13 @@ describe('useWebSocket hook', () => {
     });
 
     await waitFor(() => {
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 42] });
-    });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 'all'] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queues'] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue-forecast'] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['auto-queue'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 42], refetchType: 'none' });
+    }, { timeout: 5000 });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 'all'], refetchType: 'none' });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 'summary'], refetchType: 'none' });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queues'], refetchType: 'none' });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue-forecast'], refetchType: 'none' });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['auto-queue'], refetchType: 'none' });
   });
 
   it('refreshes the inbox when an item lands', async () => {

@@ -4,6 +4,7 @@ import { Link } from 'react-router';
 import { Clock, Layers, ListTodo, Package } from 'lucide-react';
 import { api, withStreamToken } from '../../api/client';
 import type { PrintQueueItem } from '../../api/client';
+import { farmStatusPollInterval } from '../../api/farmReadBudget';
 import { useOrderDetail } from '../../hooks/useOrderDetail';
 import { usePendingQueueItems, usePrintingQueueItems } from '../../hooks/useQueueItems';
 import { useQueueRowPicture } from '../../hooks/useQueueRowPicture';
@@ -171,9 +172,9 @@ function CurrentPrintInfoCard({ item, timeFormat, lineName }: CurrentPrintInfoCa
   const { t } = useTranslation();
   const { data: status } = useQuery({
     queryKey: ['printerStatus', item.printer_id],
-    queryFn: () => api.getPrinterStatus(item.printer_id as number),
+    queryFn: ({ signal }) => api.getPrinterStatus(item.printer_id as number, signal),
     enabled: item.printer_id != null,
-    refetchInterval: 5000,
+    refetchInterval: query => farmStatusPollInterval(5000, query),
   });
 
   const name =

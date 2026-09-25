@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import event
 
+from backend.app.api.routes.auto_queue import auto_queue_pending_summary
 from backend.app.api.routes.inventory import spool_picker
+from backend.app.api.routes.print_queue import queue_issues, queue_summary
+from backend.app.models.auto_queue import AutoQueueItem
+from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.spool import Spool
@@ -19,6 +23,28 @@ from backend.tests.integration.test_printer_status_batch_postgres import test_en
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 pytest.importorskip("embedded_postgres")
+
+
+@pytest.mark.asyncio
+async def test_compact_queue_reads_on_postgres(db_session, printer_factory):
+    printer = await printer_factory()
+    db_session.add(PrinterQueue(id=printer.id, printer_id=printer.id))
+    db_session.add_all(
+        [
+            PrintQueueItem(queue_id=printer.id, position=1, status="pending"),
+            PrintQueueItem(queue_id=printer.id, position=2, status="failed"),
+            AutoQueueItem(position=1, status="pending"),
+        ]
+    )
+    await db_session.commit()
+
+    summary = await queue_summary(db_session, (None, True))
+    assert summary.pending_count == 1
+    assert summary.groups[0].failed_count == 1
+    issues = await queue_issues(printer.id, None, 50, db_session, (None, True))
+    assert len(issues.items) == 1
+    assert issues.items[0].status == "failed"
+    assert (await auto_queue_pending_summary(db_session, None)).pending_count == 1
 
 
 async def test_virtual_batch_sql_on_postgres(db_session, printer_factory, archive_factory, monkeypatch):

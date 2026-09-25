@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Check, Copy, FileBox, Printer as PrinterIcon } from 'lucide-react';
 
 import { api } from '../api/client';
+import { farmQueryResumeOptions } from '../api/farmReadBudget';
 import type { PrinterQueue } from '../api/client';
 import { Button } from './Button';
 import { Modal } from './Modal';
@@ -57,7 +58,7 @@ export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueue
   const [pickedItems, setPickedItems] = useState<Set<number>>(() => new Set(copyableIndexes));
   const [pickedPrinters, setPickedPrinters] = useState<Set<number>>(new Set());
 
-  const { data: queues } = useQuery({ queryKey: ['queues'], queryFn: api.getQueues });
+  const { data: queues } = useQuery({ ...farmQueryResumeOptions, queryKey: ['queues'], queryFn: ({ signal }) => api.getQueues({ signal }) });
   const targets = useMemo(() => copyTargets(queues, source), [queues, source]);
 
   // Shares its keys with the cards on the page behind, so this costs no extra
@@ -66,8 +67,7 @@ export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueue
   const statuses = useQueries({
     queries: targets.map((queue) => ({
       queryKey: ['printerStatus', queue.printer_id],
-      queryFn: () => api.getPrinterStatus(queue.printer_id),
-      refetchInterval: 10_000,
+      queryFn: ({ signal }: { signal: AbortSignal }) => api.getPrinterStatus(queue.printer_id, signal),
     })),
   });
   const statusOf = (printerId: number) => statuses[targets.findIndex((queue) => queue.printer_id === printerId)]?.data;
@@ -77,7 +77,7 @@ export function CopyQueueModal({ source, items, onCancel, onConfirm }: CopyQueue
   // for «free at», the server's forecast (the stats bar's query, so cached
   // whenever the dialog opens from the queue page).
   const [{ sortBy, sortAsc }] = useState(readStoredQueueSort);
-  const { data: forecast } = useQuery({ queryKey: ['queue-forecast'], queryFn: api.getQueueForecast, enabled: sortBy === 'freeAt' });
+  const { data: forecast } = useQuery({ ...farmQueryResumeOptions, queryKey: ['queue-forecast'], queryFn: ({ signal }) => api.getQueueForecast(signal), enabled: sortBy === 'freeAt' });
   const forecastRows = useMemo(() => forecastById(forecast), [forecast]);
   const sortedTargets = useMemo(
     () => sortQueues(targets, sortBy, sortAsc, { statusOf, forecastOf: (printerId) => forecastRows.get(printerId) }),

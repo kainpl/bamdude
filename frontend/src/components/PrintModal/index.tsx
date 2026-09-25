@@ -10,6 +10,7 @@ import type {
   SpoolAssignment,
 } from '../../api/client';
 import { api, macrosApi } from '../../api/client';
+import { farmQueryResumeOptions } from '../../api/farmReadBudget';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '../Button';
 import { ConfirmModal } from '../ConfirmModal';
@@ -460,8 +461,9 @@ export function PrintModal({
   // Per-printer queues — needed to BADGE printers whose queue is paused in the
   // add-to-queue picker. Only fetched / used in add-to-queue mode.
   const { data: queues } = useQuery({
+    ...farmQueryResumeOptions,
     queryKey: ['queues'],
-    queryFn: api.getQueues,
+    queryFn: ({ signal }) => api.getQueues({ signal }),
     enabled: mode === 'add-to-queue',
   });
 
@@ -515,7 +517,7 @@ export function PrintModal({
   const timelapseStatuses = useQueries({
     queries: (isAutoMode ? [] : selectedPrinters).map((id) => ({
       queryKey: ['printerStatus', id],
-      queryFn: () => api.getPrinterStatus(id),
+      queryFn: ({ signal }: { signal: AbortSignal }) => api.getPrinterStatus(id, signal),
       staleTime: 5000,
     })),
   });
@@ -853,7 +855,7 @@ export function PrintModal({
   // Only fetch printer status when single printer selected (for filament mapping)
   const { data: printerStatus, isSuccess: printerStatusLoaded, isError: printerStatusFailed } = useQuery({
     queryKey: ['printer-status', effectivePrinterId],
-    queryFn: () => api.getPrinterStatus(effectivePrinterId!),
+    queryFn: ({ signal }) => api.getPrinterStatus(effectivePrinterId!, signal),
     enabled: !!effectivePrinterId,
   });
 

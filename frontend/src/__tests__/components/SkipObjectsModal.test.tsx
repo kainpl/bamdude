@@ -87,4 +87,22 @@ describe('SkipObjectsModal — picking on the plate', () => {
     const plateImages = screen.queryAllByRole('img');
     expect(plateImages.length).toBeLessThanOrEqual(1);
   });
+
+  it('refreshes objects when a repeat print has a different archive identity', async () => {
+    let reads = 0;
+    server.use(http.get('/api/v1/printers/:id/print/objects', () => {
+      reads += 1;
+      return HttpResponse.json(reads === 1 ? OBJECTS : {
+        ...OBJECTS,
+        objects: [{ ...OBJECTS.objects[0], id: 22, name: 'new-run-part' }],
+      });
+    }));
+
+    const { rerender } = render(<SkipObjectsModal printerId={1} archiveId={5} isOpen onClose={vi.fn()} />);
+    await waitFor(() => expect(marker('bracket-left')).toBeInTheDocument());
+    rerender(<SkipObjectsModal printerId={1} archiveId={6} isOpen onClose={vi.fn()} />);
+    await waitFor(() => expect(marker('new-run-part')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'bracket-left' })).toBeNull();
+    expect(reads).toBe(2);
+  });
 });

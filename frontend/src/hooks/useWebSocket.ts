@@ -14,6 +14,10 @@ import { prioritizeLiveStatusEntries } from '../utils/liveStatusPriority';
 // can fix without a fresh login (which remounts this provider anyway). Treat it
 // as terminal so we don't respawn the /auth/ws-token loop.
 const WS_CLOSE_UNAUTHORIZED = 4401;
+export function wsReconnectDelay(attempt: number, random = Math.random()): number {
+  const ceiling = Math.min(30_000, 3_000 * 2 ** Math.min(attempt, 4));
+  return Math.round(ceiling * (0.75 + 0.25 * random));
+}
 const STATUS_CACHE_APPLY_CHUNK_SIZE = 10;
 type DebouncedQueryKey = readonly unknown[];
 type DirtyPrefix = { key: DebouncedQueryKey; first: number; last: number; generation: number };
@@ -21,6 +25,21 @@ type InvalidationJob = { query: Query; generation: number };
 type RunningInvalidation = { query: Query; startedGeneration: number };
 type StatusPatch = { data: Record<string, unknown>; revision: number };
 type StatusBarrier = { target: Map<number, number>; ack: () => void };
+
+/** Only farm reads participate in our resume policy. Other screens retain
+ * TanStack's ordinary stale-on-focus behaviour (notably Inventory). */
+function farmResumeAgeMs(key: readonly unknown[]): number | null {
+  switch (key[0]) {
+    case 'queue': return key[1] === 'issues' ? 30_000 : 10_000;
+    case 'auto-queue': return key[1] === 'summary' ? 5_000 : 15_000;
+    case 'queues': return 15_000;
+    case 'queue-forecast': return 30_000;
+    case 'usage-projection': return 30_000;
+    case 'printableObjects': return 5_000;
+    case 'printerStatus': return 30_000;
+    default: return null;
+  }
+}
 
 /** Prefixes become stale at min(last event + debounce, first event + maxWait).
  * Only active exact queries then enter the paced HTTP lane; these constants
@@ -55,6 +74,7 @@ interface WebSocketMessage {
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
+  const reconnectFailuresRef = useRef(0);
   // Set true by the effect cleanup so a close event fired *during* unmount
   // can't schedule a reconnect after the provider is gone (the old code closed
   // the socket, whose ws.onclose then set a *fresh* reconnect timeout — a
@@ -213,7 +233,7 @@ export function useWebSocket() {
     } catch (err) {
       if (disposedRef.current || generation !== generationRef.current) return;
       // A 401/403 from the token mint is an AUTH decision, not a transient
-      // blip — retrying just hammers /auth/ws-token every 3s forever:
+      // blip — retrying forever would hammer /auth/ws-token:
       //   401 — the JWT expired. ``request()`` already cleared it and
       //         dispatched ``bamdude:auth-invalidated``, so AuthContext is
       //         redirecting to /login and this provider is about to unmount.
@@ -221,7 +241,7 @@ export function useWebSocket() {
       //         WEBSOCKET_CONNECT. They stay logged in; live updates simply
       //         degrade to the REST polling the query cache already does.
       // Either way: do NOT reconnect. A network/5xx error is not auth — keep
-      // the existing 3s backoff so a transient outage recovers (auth-disabled
+      // bounded exponential backoff so a transient outage recovers (auth-disabled
       // deployments never reach the ws-token gate).
       const status = err instanceof ApiError ? err.status : 0;
       if (status === 401 || status === 403) {
@@ -232,7 +252,7 @@ export function useWebSocket() {
       }
       reconnectTimeoutRef.current = window.setTimeout(() => {
         connect();
-      }, 3000);
+      }, wsReconnectDelay(reconnectFailuresRef.current++));
       return;
     } finally {
       if (generation === generationRef.current) connectingRef.current = false;
@@ -312,6 +332,7 @@ export function useWebSocket() {
             target: new Map(receivedStatusRef.current),
             ack: () => {
               if (disposedRef.current || owner !== generationRef.current || epoch !== statusEpochRef.current || wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
+              reconnectFailuresRef.current = 0;
               ws.send(JSON.stringify({
                 type: 'initial_status_applied', bootstrap_id: message.bootstrap_id,
                 connect_ms: Math.round(performance.now() - connectStarted),
@@ -330,6 +351,7 @@ export function useWebSocket() {
         // it's keepalive plumbing, not user-visible state.
         if (message.type === 'pong') {
           clearPongTimeout();
+          reconnectFailuresRef.current = 0;
           return;
         }
         // Handle printer_status directly (already throttled) to avoid queue delays
@@ -369,15 +391,15 @@ export function useWebSocket() {
       // Don't reconnect after an auth rejection (4401) or once the provider has
       // unmounted — both would just respawn the /auth/ws-token loop. A 4401 is
       // terminal (needs a fresh login, which remounts us); every other close
-      // code is treated as a network drop and gets the 3s reconnect.
+      // code is treated as a network drop and gets bounded backoff.
       if (disposedRef.current || event.code === WS_CLOSE_UNAUTHORIZED) {
         return;
       }
 
-      // Reconnect after 3 seconds
+      // A healthy pong/bootstrap resets the sequence; onopen alone does not.
       reconnectTimeoutRef.current = window.setTimeout(() => {
         connect();
-      }, 3000);
+      }, wsReconnectDelay(reconnectFailuresRef.current++));
     };
 
     ws.onerror = (error) => {
@@ -436,6 +458,7 @@ export function useWebSocket() {
         invalidationJobsRef.current.delete(hash);
         continue;
       }
+      if (document.visibilityState === 'hidden' && farmResumeAgeMs(query.queryKey) !== null) continue;
       if (query.state.fetchStatus !== 'idle') continue;
       invalidationJobsRef.current.delete(hash);
       invalidationRunningRef.current.set(hash, { query, startedGeneration: dirtyGenerationRef.current });
@@ -458,7 +481,9 @@ export function useWebSocket() {
         });
       break;
     }
-    const hasReadyJob = Array.from(invalidationJobsRef.current.values()).some(job => job.query.state.fetchStatus === 'idle');
+    const hasReadyJob = Array.from(invalidationJobsRef.current.values()).some(job =>
+      job.query.state.fetchStatus === 'idle'
+      && !(document.visibilityState === 'hidden' && farmResumeAgeMs(job.query.queryKey) !== null));
     if (hasReadyJob && invalidationReadsRef.current < INVALIDATION_MAX_ACTIVE_READS && invalidationRunnerRef.current === null) {
       invalidationRunnerRef.current = window.setTimeout(() => {
         invalidationRunnerRef.current = null;
@@ -573,13 +598,13 @@ export function useWebSocket() {
         break;
 
       case 'print_start':
-        // Refetch printer status immediately when print starts to get printable_objects_count
+        // Printer status needs the REST-only object count; coalesce it with
+        // queue effects instead of starting a hidden-tab HTTP read.
         if (message.printer_id !== undefined) {
-          queryClient.invalidateQueries({ queryKey: ['printerStatus', message.printer_id] });
+          debouncedInvalidate(['printerStatus', message.printer_id]);
           // Update queue data (status, current print)
           debouncedInvalidate('queues');
-          queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
-          queryClient.invalidateQueries({ queryKey: ['queue-forecast'] });
+          debouncedInvalidate(['queue', message.printer_id], ['queue', 'all'], ['queue', 'summary'], 'queue-forecast');
         }
         break;
 
@@ -589,12 +614,9 @@ export function useWebSocket() {
         // affected card plus farm-wide aggregate views immediately; polling is
         // the disconnected-socket fallback, not the primary update path.
         if (message.printer_id !== undefined) {
-          queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
+          debouncedInvalidate(['queue', message.printer_id]);
         }
-        queryClient.invalidateQueries({ queryKey: ['queue', 'all'] });
-        queryClient.invalidateQueries({ queryKey: ['queues'] });
-        queryClient.invalidateQueries({ queryKey: ['queue-forecast'] });
-        queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
+        debouncedInvalidate(['queue', 'all'], ['queue', 'summary'], 'queues', 'queue-forecast', 'auto-queue');
         break;
 
       case 'stagger_changed':
@@ -671,8 +693,7 @@ export function useWebSocket() {
         // Update queue data (counters, status, pending items)
         debouncedInvalidate('queues');
         if (message.printer_id !== undefined) {
-          queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
-          queryClient.invalidateQueries({ queryKey: ['queue-forecast'] });
+          debouncedInvalidate(['queue', message.printer_id], ['queue', 'all'], ['queue', 'summary'], 'queue-forecast');
           // Calibration wizard's active-session list + bound session query
           // need to refetch immediately after a print-complete so the
           // running-step page picks up the lazy-reconciled status flip
@@ -700,7 +721,7 @@ export function useWebSocket() {
         // Refresh printer status so the new pause_* fields land in the UI
         // without waiting for the next polling tick.
         if (message.printer_id !== undefined) {
-          queryClient.invalidateQueries({ queryKey: ['printerStatus', message.printer_id] });
+          debouncedInvalidate(['printerStatus', message.printer_id]);
         }
         break;
       }
@@ -719,7 +740,7 @@ export function useWebSocket() {
           : `${remSec}s`;
         showToast(t('printers.toast.printResumedEvent', { printer: printerName, duration: pausedFor }), 'success');
         if (message.printer_id !== undefined) {
-          queryClient.invalidateQueries({ queryKey: ['printerStatus', message.printer_id] });
+          debouncedInvalidate(['printerStatus', message.printer_id]);
         }
         break;
       }
@@ -989,9 +1010,9 @@ export function useWebSocket() {
     // (b) confidence that the WS socket is still alive — browsers can
     // silently kill long-idle sockets without firing onclose.
     //
-    // Refresh only mounted queries + send an immediate ping. Refetching all
-    // inactive pages here used to create an HTTP storm after every Alt+Tab.
-    // The existing 10 s
+    // Refresh only mounted farm resources whose own age budget expired (or
+    // which were marked dirty while hidden); TanStack still owns stale-only
+    // focus refresh for unrelated pages. The existing 10 s
     // pong-timeout watchdog inside connect() handles the "no pong came
     // back" case — if the socket was killed in the background, the
     // watchdog detects it within ~10 s and triggers the standard
@@ -1002,8 +1023,9 @@ export function useWebSocket() {
       // A suspended browser may dispatch visibility before its overdue timers.
       // Consume the existing deadline now; do not restart its firstDirty clock.
       if (pendingInvalidations.current.size > 0) flushDueInvalidations();
-      // Preserve the existing focus refresh for unrelated active views, but
-      // don't start a second read for a query already owned by our dirty lane.
+      // No blanket active invalidation: that made a quick Alt+Tab refetch
+      // perfectly fresh data. Only the mounted farm keys below need our
+      // stricter 5/10/15/30-second resume budgets.
       const wsOwnedHashes = new Set([
         ...invalidationJobsRef.current.keys(),
         ...invalidationRunningRef.current.keys(),
@@ -1013,12 +1035,22 @@ export function useWebSocket() {
           wsOwnedHashes.add(query.queryHash);
         }
       }
-      queryClient.invalidateQueries({
-        type: 'active', predicate: query => !wsOwnedHashes.has(query.queryHash),
-      }, { cancelRefetch: false });
+      const due: DebouncedQueryKey[] = [];
+      for (const query of queryClient.getQueryCache().findAll({ type: 'active' })) {
+        const age = farmResumeAgeMs(query.queryKey);
+        if (age === null || query.queryKey[0] === 'printerStatus'
+          || wsOwnedHashes.has(query.queryHash) || query.isDisabled()
+          || query.state.fetchStatus !== 'idle') continue;
+        if (query.state.isInvalidated || query.state.error !== null
+          || query.state.dataUpdatedAt === 0
+          || Date.now() - query.state.dataUpdatedAt >= age) due.push(query.queryKey);
+      }
+      if (due.length) debouncedInvalidate(...due);
+      pumpInvalidationJobs();
       sendPingRef.current?.();
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('online', onVisibilityChange);
 
     return () => {
       // Mark disposed BEFORE closing so the ws.onclose triggered by close()
@@ -1029,6 +1061,7 @@ export function useWebSocket() {
       connectingRef.current = false;
       clearTimeout(initTimer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('online', onVisibilityChange);
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
@@ -1056,7 +1089,7 @@ export function useWebSocket() {
         socket.close();
       }
     };
-  }, [connect, queryClient, flushDueInvalidations, resetStatusWork]);
+  }, [connect, queryClient, flushDueInvalidations, debouncedInvalidate, pumpInvalidationJobs, resetStatusWork]);
 
   const sendMessage = useCallback((message: Record<string, unknown>) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

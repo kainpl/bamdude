@@ -2,7 +2,7 @@
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from backend.app.models.print_queue import PrintQueueItem
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
@@ -144,6 +144,80 @@ class TestPrintQueueAPI:
         response = await async_client.get("/api/v1/queue/")
         assert response.status_code == 200
         assert isinstance(response.json(), list)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_summary_empty_is_a_successful_zero(self, async_client: AsyncClient):
+        response = await async_client.get("/api/v1/queue/summary")
+        assert response.status_code == 200, response.text
+        assert response.json() == {"pending_count": 0, "groups": []}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_summary_counts_queue_rows_not_archive_history(
+        self, async_client: AsyncClient, queue_item_factory, archive_factory
+    ):
+        pending = await queue_item_factory(archive_id=None)
+        await queue_item_factory(queue_id=pending.queue_id, archive_id=None, status="failed")
+        await queue_item_factory(queue_id=pending.queue_id, archive_id=None, status="skipped")
+        await queue_item_factory(queue_id=pending.queue_id, archive_id=None, status="cancelled")
+        await archive_factory(status="failed")  # Not a queue issue.
+
+        response = await async_client.get("/api/v1/queue/summary")
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "pending_count": 1,
+            "groups": [
+                {
+                    "queue_id": pending.queue_id,
+                    "printer_id": pending.queue_id,
+                    "pending_count": 1,
+                    "failed_count": 1,
+                    "skipped_count": 1,
+                    "cancelled_count": 1,
+                }
+            ],
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_summary_is_one_grouped_select_for_many_rows(self, db_session, printer_factory):
+        from backend.app.api.routes.print_queue import queue_summary
+
+        _printer, queue = await printer_factory()
+        db_session.add_all(PrintQueueItem(queue_id=queue.id, position=index, status="pending") for index in range(100))
+        await db_session.commit()
+        statements = []
+
+        def count_select(_conn, _cursor, statement, _params, _context, _many):
+            if statement.lstrip().upper().startswith("SELECT"):
+                statements.append(statement)
+
+        event.listen(db_session.bind.sync_engine, "before_cursor_execute", count_select)
+        try:
+            result = await queue_summary(db_session, (None, True))
+        finally:
+            event.remove(db_session.bind.sync_engine, "before_cursor_execute", count_select)
+        assert result.pending_count == 100
+        assert len(statements) == 1, statements
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_issues_are_bounded_and_stably_paginated(self, async_client: AsyncClient, queue_item_factory):
+        first = await queue_item_factory(archive_id=None, status="failed")
+        second = await queue_item_factory(queue_id=first.queue_id, archive_id=None, status="skipped")
+        third = await queue_item_factory(queue_id=first.queue_id, archive_id=None, status="cancelled")
+        await queue_item_factory(queue_id=first.queue_id, archive_id=None, status="pending")
+
+        page1 = await async_client.get(f"/api/v1/queue/issues?queue_id={first.queue_id}&limit=2")
+        assert page1.status_code == 200, page1.text
+        assert [item["id"] for item in page1.json()["items"]] == [first.id, second.id]
+        assert page1.json()["next_cursor"] == second.id
+
+        page2 = await async_client.get(f"/api/v1/queue/issues?queue_id={first.queue_id}&limit=2&cursor={second.id}")
+        assert page2.status_code == 200, page2.text
+        assert [item["id"] for item in page2.json()["items"]] == [third.id]
+        assert page2.json()["next_cursor"] is None
 
     @pytest.mark.asyncio
     @pytest.mark.integration

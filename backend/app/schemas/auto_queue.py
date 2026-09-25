@@ -238,3 +238,7 @@ class AutoQueueStatsResponse(BaseModel):
     failed_count: int
     cancelled_count: int
     total_count: int
+
+
+class AutoQueuePendingSummaryResponse(BaseModel):
+    pending_count: int

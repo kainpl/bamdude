@@ -5,8 +5,9 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import event
 
-from backend.app.core.auth import create_access_token
+from backend.app.core.auth import create_access_token, generate_api_key
 from backend.app.core.permissions import Permission
+from backend.app.models.api_key import APIKey
 from backend.app.models.group import Group
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
@@ -15,6 +16,101 @@ from backend.app.services import queue_virtual
 from backend.app.services.print_run_binding import bind_print_run, discard_print_run
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.asyncio
+async def test_compact_queue_permission_denial_is_not_an_empty_summary(async_client, db_session):
+    user = User(username="summary-no-read", password_hash="x", role="user", is_active=True)
+    db_session.add(user)
+    await db_session.commit()
+    headers = {"Authorization": f"Bearer {create_access_token({'sub': user.username})}"}
+    assert (await async_client.get("/api/v1/queue/summary", headers=headers)).status_code == 403
+    assert (await async_client.get("/api/v1/queue/issues?queue_id=1", headers=headers)).status_code == 403
+    assert (await async_client.get("/api/v1/auto-queue/summary", headers=headers)).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_compact_queue_reads_preserve_legacy_queue_identity_and_archived_rows(
+    async_client, db_session, printer_factory
+):
+    printer = await printer_factory()
+    printer.archived = True
+    legacy_queue_id = printer.id + 1000
+    db_session.add(PrinterQueue(id=legacy_queue_id, printer_id=printer.id))
+    db_session.add(PrintQueueItem(queue_id=legacy_queue_id, position=1, status="failed"))
+    await db_session.commit()
+
+    summary = await async_client.get("/api/v1/queue/summary")
+    assert summary.status_code == 200, summary.text
+    assert summary.json()["groups"] == [
+        {
+            "queue_id": legacy_queue_id,
+            "printer_id": printer.id,
+            "pending_count": 0,
+            "failed_count": 1,
+            "skipped_count": 0,
+            "cancelled_count": 0,
+        }
+    ]
+    issues = await async_client.get(f"/api/v1/queue/issues?queue_id={legacy_queue_id}")
+    assert issues.status_code == 200, issues.text
+    assert len(issues.json()["items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_compact_queue_reads_keep_read_own_scope(async_client, db_session, printer_factory):
+    group = Group(name="summary-own-only", permissions=[Permission.QUEUE_READ_OWN.value])
+    user = User(username="summary-own-reader", password_hash="x", role="user", is_active=True)
+    user.groups.append(group)
+    db_session.add(user)
+    printer = await printer_factory()
+    db_session.add(PrinterQueue(id=printer.id, printer_id=printer.id))
+    await db_session.flush()
+    mine = PrintQueueItem(queue_id=printer.id, position=1, status="failed", created_by_id=user.id)
+    foreign = PrintQueueItem(queue_id=printer.id, position=2, status="failed")
+    db_session.add_all([mine, foreign])
+    await db_session.commit()
+
+    headers = {"Authorization": f"Bearer {create_access_token({'sub': user.username})}"}
+    summary = await async_client.get("/api/v1/queue/summary", headers=headers)
+    assert summary.status_code == 200, summary.text
+    assert summary.json()["groups"][0]["failed_count"] == 1
+    issues = await async_client.get(f"/api/v1/queue/issues?queue_id={printer.id}", headers=headers)
+    assert issues.status_code == 200, issues.text
+    assert [row["id"] for row in issues.json()["items"]] == [mine.id]
+    # The auto summary has the separate QUEUE_READ permission, not read_own.
+    assert (await async_client.get("/api/v1/auto-queue/summary", headers=headers)).status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("can_read_status", [True, False])
+async def test_compact_queue_reads_follow_the_api_key_scope(async_client, db_session, printer_factory, can_read_status):
+    printer = await printer_factory()
+    db_session.add(PrinterQueue(id=printer.id, printer_id=printer.id))
+    db_session.add(PrintQueueItem(queue_id=printer.id, position=1, status="failed"))
+    raw, key_hash, key_prefix = generate_api_key()
+    db_session.add(
+        APIKey(
+            name=f"summary-{key_prefix}",
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            enabled=True,
+            can_read_status=can_read_status,
+        )
+    )
+    await db_session.commit()
+
+    # A bb_ bearer replaces the fixture's default admin JWT for this request.
+    headers = {"Authorization": f"Bearer {raw}"}
+    paths = ("/api/v1/queue/summary", f"/api/v1/queue/issues?queue_id={printer.id}", "/api/v1/auto-queue/summary")
+    responses = [await async_client.get(path, headers=headers) for path in paths]
+    if not can_read_status:
+        # A refused scope is a refusal, never a successful empty count.
+        assert [response.status_code for response in responses] == [403, 403, 403]
+        return
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert responses[0].json()["groups"][0]["failed_count"] == 1
+    assert len(responses[1].json()["items"]) == 1
 
 
 @pytest.mark.asyncio
