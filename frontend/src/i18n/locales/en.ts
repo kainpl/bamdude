@@ -1537,6 +1537,7 @@ export default {
   // Queue page
   queue: {
     title: 'Print Queue',
+    summaryUnavailable: 'Queue count unavailable. Open the queue for details.',
     addToQueue: 'Add to Queue',
     source: {
       external: 'External',
@@ -1703,7 +1704,13 @@ export default {
     },
     issues: {
       header: 'Issues ({{count}})',
+      summaryLoading: 'Checking queue issues…',
+      summaryUnavailable: 'Issue count unavailable.',
       deleteAll: 'Delete all ({{count}})',
+      deleteAllStart: 'Delete all…',
+      cancelLoading: 'Cancel loading',
+      loadMore: 'Load more issues',
+      loadError: 'Could not load issues. Retry',
       deleteAllTitle: 'Clear issues from the queue',
       deleteAllMessage: 'Remove from the queue of {{printer}} — failed: {{failed}}, cancelled: {{cancelled}}? Skipped jobs stay. Print history and the counters below are not affected.',
       deleteAllConfirm: 'Delete',

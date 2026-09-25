@@ -3,10 +3,15 @@
 Tests the full request/response cycle for /api/v1/system/ endpoints.
 """
 
+import asyncio
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import event
+
+from backend.app.api.routes import system as system_routes
 
 
 class TestSystemAPI:
@@ -514,3 +519,132 @@ class TestDatabaseSizeAcrossBackends:
         assert category == "database"
         assert matches(tmp_path / "postgres" / "18" / "base" / "1" / "2619")
         assert not matches(tmp_path / "archives" / "x.3mf")
+
+
+def _fake_host(mock_psutil) -> None:
+    mock_psutil.disk_usage.return_value = MagicMock(
+        total=500000000000, used=250000000000, free=250000000000, percent=50.0
+    )
+    mock_psutil.virtual_memory.return_value = MagicMock(
+        total=16000000000, available=8000000000, used=8000000000, percent=50.0
+    )
+    mock_psutil.boot_time.return_value = 1700000000.0
+    mock_psutil.Process.return_value.create_time.return_value = 1700000000.0
+    mock_psutil.cpu_count.return_value = 4
+    mock_psutil.cpu_percent.return_value = 25.0
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+class TestSystemInfoStaysOffTheEventLoop:
+    """The System page polls /system/info every 30 s from every open tab."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_archive_size_cache(self, monkeypatch):
+        monkeypatch.setattr(system_routes, "_archive_size_cache", None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_archive_walk_and_cpu_sample_run_off_the_event_loop(self, async_client, monkeypatch, tmp_path):
+        seen = {}
+
+        def walk(path):
+            seen["walk_on_loop"] = _on_event_loop()
+            return 4096
+
+        def cpu_percent(interval=None):
+            seen["cpu_on_loop"] = _on_event_loop()
+            seen["cpu_interval"] = interval
+            return 25.0
+
+        monkeypatch.setattr(system_routes, "get_directory_size", walk)
+        monkeypatch.setattr(system_routes.settings, "archive_dir", tmp_path, raising=False)
+        with patch("backend.app.api.routes.system.psutil") as mock_psutil:
+            _fake_host(mock_psutil)
+            mock_psutil.cpu_percent.side_effect = cpu_percent
+            response = await async_client.get("/api/v1/system/info")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["storage"]["archive_size_bytes"] == 4096
+        assert response.json()["cpu"]["percent"] == 25.0
+        assert seen == {"walk_on_loop": False, "cpu_on_loop": False, "cpu_interval": 0.1}
+
+    @pytest.mark.asyncio
+    async def test_concurrent_callers_share_one_walk_and_reuse_it_briefly(self, monkeypatch, tmp_path):
+        calls = []
+
+        def walk(path):
+            calls.append(path)
+            time.sleep(0.2)
+            return 1234
+
+        monkeypatch.setattr(system_routes, "get_directory_size", walk)
+        sizes = await asyncio.gather(*(system_routes._get_archive_size_cached(tmp_path) for _ in range(5)))
+        assert sizes == [1234] * 5
+        assert calls == [tmp_path]
+
+        # Within the cache window a refresh from another tab walks nothing.
+        assert await system_routes._get_archive_size_cached(tmp_path) == 1234
+        assert calls == [tmp_path]
+
+        # A different archive directory is never answered from the old one.
+        other = tmp_path / "moved"
+        other.mkdir()
+        assert await system_routes._get_archive_size_cached(other) == 1234
+        assert calls == [tmp_path, other]
+
+        # Once the window has passed, the next caller walks again.
+        monkeypatch.setattr(system_routes, "ARCHIVE_SIZE_CACHE_SECONDS", 0)
+        assert await system_routes._get_archive_size_cached(other) == 1234
+        assert calls == [tmp_path, other, other]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_archive_directory_is_zero_without_a_walk(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(system_routes, "get_directory_size", MagicMock(side_effect=AssertionError("walked")))
+        assert await system_routes._get_archive_size_cached(tmp_path / "absent") == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_connected_printers_are_named_in_one_query(self, async_client, printer_factory, test_engine):
+        alpha = await printer_factory(name="Alpha", model="X1C")
+        beta = await printer_factory(name="Beta", model="P1S")
+
+        def client(connected, state="IDLE"):
+            return MagicMock(state=MagicMock(connected=connected, state=state))
+
+        statements = []
+
+        def count(_conn, _cursor, statement, _params, _context, _many):
+            if "FROM printers" in statement and "printers.name" in statement:
+                statements.append(statement)
+
+        event.listen(test_engine.sync_engine, "before_cursor_execute", count)
+        try:
+            with (
+                patch("backend.app.api.routes.system.psutil") as mock_psutil,
+                patch("backend.app.api.routes.system.printer_manager") as mock_pm,
+            ):
+                _fake_host(mock_psutil)
+                mock_pm._clients = {
+                    alpha.id: client(True, "RUNNING"),
+                    beta.id: client(True),
+                    9999: client(True),
+                    12345: client(False),
+                }
+                response = await async_client.get("/api/v1/system/info")
+        finally:
+            event.remove(test_engine.sync_engine, "before_cursor_execute", count)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["printers"]["connected_list"] == [
+            {"id": alpha.id, "name": "Alpha", "state": "RUNNING", "model": "X1C"},
+            {"id": beta.id, "name": "Beta", "state": "IDLE", "model": "P1S"},
+            {"id": 9999, "name": "Printer 9999", "state": "IDLE", "model": "unknown"},
+        ]
+        assert len(statements) == 1

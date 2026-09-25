@@ -140,13 +140,16 @@ describe('invalidateQueueViews', () => {
     // WebSocket print events and a 30 s interval, so queueing a plate left the
     // one figure the page exists to show a full interval behind.
     const qc = new QueryClient();
-    seed(qc, [['queues'], ['queue', 3, 'pending'], ['queue-forecast'], ['projects']]);
+    seed(qc, [['queues'], ['queue', 3, 'pending'], ['queue', 'all', 'pending'], ['queue', 'summary'], ['auto-queue', 'summary'], ['queue-forecast'], ['projects']]);
 
     invalidateQueueViews(qc);
 
     expect(stale(qc, ['queues'])).toBe(true);
     // The prefix: a mutation on one printer moves the whole farm's makespan.
     expect(stale(qc, ['queue', 3, 'pending'])).toBe(true);
+    expect(stale(qc, ['queue', 'all', 'pending'])).toBe(true);
+    expect(stale(qc, ['queue', 'summary'])).toBe(true);
+    expect(stale(qc, ['auto-queue', 'summary'])).toBe(true);
     expect(stale(qc, ['queue-forecast'])).toBe(true);
     // Not an order mutation — the order views are none of its business.
     expect(stale(qc, ['projects'])).toBe(false);

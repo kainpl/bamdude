@@ -176,7 +176,7 @@ describe('useWebSocket hook', () => {
     globalThis.WebSocket = originalWebSocket;
   });
 
-  it('refreshes the affected queue immediately after auto-queue promotion', async () => {
+  it('coalesces the affected queue reads after auto-queue promotion', async () => {
     const { useWebSocket } = await import('../../hooks/useWebSocket');
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
     renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
@@ -188,12 +188,13 @@ describe('useWebSocket hook', () => {
     });
 
     await waitFor(() => {
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 42] });
-    });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 'all'] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queues'] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue-forecast'] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['auto-queue'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 42], refetchType: 'none' });
+    }, { timeout: 5000 });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 'all'], refetchType: 'none' });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 'summary'], refetchType: 'none' });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queues'], refetchType: 'none' });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue-forecast'], refetchType: 'none' });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['auto-queue'], refetchType: 'none' });
   });
 
   it('refreshes the inbox when an item lands', async () => {
@@ -454,13 +455,13 @@ describe('useWebSocket hook', () => {
         });
       });
 
-      // Advance timers to trigger debounced invalidation (3000ms delay + 500ms between each)
+      // Advance beyond the dirty deadline; active reads are paced separately.
       await act(async () => {
         vi.advanceTimersByTime(4000);
       });
 
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archives'] });
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archiveStats'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archives'], refetchType: 'none' });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archiveStats'], refetchType: 'none' });
 
       vi.useRealTimers();
       vi.unstubAllGlobals();
@@ -491,13 +492,13 @@ describe('useWebSocket hook', () => {
         });
       });
 
-      // Advance timers to trigger debounced invalidation (3000ms delay + 500ms between each)
+      // Advance beyond the dirty deadline; active reads are paced separately.
       await act(async () => {
         vi.advanceTimersByTime(4000);
       });
 
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archives'] });
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archiveStats'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archives'], refetchType: 'none' });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archiveStats'], refetchType: 'none' });
 
       vi.useRealTimers();
       vi.unstubAllGlobals();
@@ -532,11 +533,8 @@ describe('useWebSocket hook', () => {
         });
       });
 
-      // The burst is `debounce + one stagger per key`, and the keys are
-      // `ORDER_VIEW_KEYS` plus `project-timeline`. ⚠️ DERIVED, never a
-      // literal: the list grows, and the day `order-filament` /
-      // `orders-filament` joined it a hard-coded 10 s window fell 500 ms short
-      // of the last key and this test went red for no defect at all.
+      // Stale marks occur together at the dirty deadline; active reads are
+      // paced. Keep the window derived from the shared key list.
       const keyCount = ORDER_VIEW_KEYS.length + 1; // + 'project-timeline'
       await act(async () => {
         vi.advanceTimersByTime(
@@ -551,7 +549,7 @@ describe('useWebSocket hook', () => {
         'customer',
         'projects',
       ]) {
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: [key] });
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: [key], refetchType: 'none' });
       }
 
       vi.useRealTimers();
@@ -588,7 +586,7 @@ describe('useWebSocket hook', () => {
         vi.advanceTimersByTime(4000);
       });
 
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archives'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archives'], refetchType: 'none' });
 
       vi.useRealTimers();
       vi.unstubAllGlobals();
@@ -714,14 +712,14 @@ describe('useWebSocket hook', () => {
         });
       });
 
-      // One stagger step per key, plus one to clear the last.
+      // Allow the deadline and a paced-read window.
       await act(async () => {
         vi.advanceTimersByTime(INVALIDATION_DEBOUNCE_MS + 4 * INVALIDATION_STAGGER_MS);
       });
 
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'] });
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-slot-assignments'] });
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-inventory-spools'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spool-assignments'], refetchType: 'none' });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-slot-assignments'], refetchType: 'none' });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-inventory-spools'], refetchType: 'none' });
 
       vi.useRealTimers();
       vi.unstubAllGlobals();
@@ -750,7 +748,7 @@ describe('useWebSocket hook', () => {
       });
 
       for (const queryKey of forecastQueryKeys) {
-        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey });
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey, refetchType: 'none' });
       }
 
       vi.useRealTimers();
@@ -887,19 +885,17 @@ describe('useWebSocket hook', () => {
       const ws = await waitForWs();
       act(() => ws.open());
 
-      // ⚠️ Everything other than printer_status goes through the message
-      // queue, which used to stall with processingRef stuck true — messages
-      // then piled up unbounded until the tab was shown again.
+      // Ordinary domain messages remain synchronous even in a hidden tab.
       act(() => {
         ws.simulateMessage({ type: 'print_complete', printer_id: 1, data: {} });
       });
 
-      // 3s debounce, then the 500ms-apart stagger.
+      // 3s dirty deadline; active reads would then enter the paced lane.
       await act(async () => {
         vi.advanceTimersByTime(4000);
       });
 
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archives'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archives'], refetchType: 'none' });
       expect(rafSpy).not.toHaveBeenCalled();
     });
   });

@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import func, inspect as sa_inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import lazyload, load_only, selectinload
 
 from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequirePermission, require_ownership_permission
@@ -22,6 +22,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.queue_source import FORMAT_GCODE, STATE_READY, QueueSource
 from backend.app.models.user import User
@@ -39,6 +40,9 @@ from backend.app.schemas.print_queue import (
     PrintQueueNextBatchCreate,
     PrintQueueReorder,
     QueueCopySourceProfile,
+    QueueIssuesResponse,
+    QueueSummaryGroup,
+    QueueSummaryResponse,
 )
 from backend.app.services import farm_forecast, queue_sources
 from backend.app.services.filament_intake import (
@@ -313,6 +317,72 @@ async def get_queue_forecast(
     return FarmForecastOut.of(now, farm)
 
 
+@router.get("/summary", response_model=QueueSummaryResponse)
+async def queue_summary(
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(Permission.QUEUE_READ_ALL, Permission.QUEUE_READ_OWN)
+    ),
+):
+    """Small badge/issue counts from real visible queue rows, not archive history."""
+    user, can_read_all = auth_result
+    stmt = (
+        select(PrintQueueItem.queue_id, PrinterQueue.printer_id, PrintQueueItem.status, func.count(PrintQueueItem.id))
+        .outerjoin(PrinterQueue, PrinterQueue.id == PrintQueueItem.queue_id)
+        .where(PrintQueueItem.status.in_(("pending", "failed", "skipped", "cancelled")))
+        .group_by(PrintQueueItem.queue_id, PrinterQueue.printer_id, PrintQueueItem.status)
+        .order_by(PrintQueueItem.queue_id)
+    )
+    if user is not None and not can_read_all:
+        stmt = stmt.where(PrintQueueItem.created_by_id == user.id)
+
+    groups: dict[int, QueueSummaryGroup] = {}
+    for queue_id, printer_id, status, count in (await db.execute(stmt)).all():
+        group = groups.setdefault(queue_id, QueueSummaryGroup(queue_id=queue_id, printer_id=printer_id))
+        setattr(group, f"{status}_count", int(count))
+    return QueueSummaryResponse(
+        pending_count=sum(group.pending_count for group in groups.values()), groups=list(groups.values())
+    )
+
+
+@router.get("/issues", response_model=QueueIssuesResponse)
+async def queue_issues(
+    queue_id: int = Query(..., description="Printer queue ID"),
+    cursor: int | None = Query(None, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(Permission.QUEUE_READ_ALL, Permission.QUEUE_READ_OWN)
+    ),
+):
+    """Bounded, id-ordered issue details; virtual printing rows never appear."""
+    user, can_read_all = auth_result
+    stmt = (
+        select(PrintQueueItem)
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue_source),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.library_file),
+            selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.project),
+        )
+        .where(PrintQueueItem.queue_id == queue_id)
+        .where(PrintQueueItem.status.in_(("failed", "skipped", "cancelled")))
+        .order_by(PrintQueueItem.id)
+        .limit(limit + 1)
+    )
+    if cursor is not None:
+        stmt = stmt.where(PrintQueueItem.id > cursor)
+    if user is not None and not can_read_all:
+        stmt = stmt.where(PrintQueueItem.created_by_id == user.id)
+    rows = (await db.execute(stmt)).scalars().all()
+    return QueueIssuesResponse(
+        items=[_enrich_response(item) for item in rows[:limit]],
+        next_cursor=rows[limit - 1].id if len(rows) > limit else None,
+    )
+
+
 @router.get("/", response_model=list[PrintQueueItemResponse])
 async def list_queue(
     request: Request,
@@ -333,7 +403,9 @@ async def list_queue(
         .options(
             selectinload(PrintQueueItem.archive),
             selectinload(PrintQueueItem.queue_source),
-            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.queue)
+            .selectinload(PrinterQueue.printer)
+            .options(load_only(Printer.id, Printer.name), lazyload(Printer.tags), lazyload(Printer.location)),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
             selectinload(PrintQueueItem.project),
@@ -360,24 +432,18 @@ async def list_queue(
     # (external / direct-dispatch prints).  Skipped when the caller
     # filtered by a specific non-matching status.
     if not status or status == "printing":
-        from backend.app.services.queue_virtual import build_virtual_current_print
+        from backend.app.services.queue_virtual import build_virtual_current_prints
 
-        # Find which queue ids to scan — either the requested one or all
-        # queues that showed up in the result set, plus queues that had
-        # no items at all (need a separate query for those).
-        if queue_id is not None:
-            target_queue_ids = [queue_id]
-        else:
-            all_queues = (await db.execute(select(PrinterQueue))).scalars().all()
-            target_queue_ids = [q.id for q in all_queues if key_scope is None or q.id in key_scope]
-
-        for q_id in target_queue_ids:
-            queue_row = (await db.execute(select(PrinterQueue).where(PrinterQueue.id == q_id))).scalar_one_or_none()
-            if queue_row is None:
-                continue
-            virtual = await build_virtual_current_print(db, queue_row.printer_id)
-            if virtual:
-                enriched.insert(0, virtual)
+        virtual = await build_virtual_current_prints(
+            db,
+            queue_id=queue_id,
+            viewer_id=user.id if user is not None and not can_read_all else None,
+        )
+        # A key restricted to some printers sees only their current prints
+        # (inv-api-key-printer-scope-in-the-gate); a queue's id is its printer's.
+        if key_scope is not None:
+            virtual = [row for row in virtual if row["queue_id"] in key_scope]
+        enriched = virtual + enriched
 
     return enriched
 

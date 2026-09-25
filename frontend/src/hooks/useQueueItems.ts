@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
-import type { PrintQueueItem } from '../api/client';
+import type { AutoQueuePendingSummary, PrintQueueItem, QueueSummary } from '../api/client';
+import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay } from '../api/farmReadBudget';
 
 /**
  * The farm-wide queue, as ONE query per status.
@@ -16,33 +17,49 @@ import type { PrintQueueItem } from '../api/client';
  * reason: a second opinion about how often the queue changes is how two panels
  * of the same screen end up disagreeing about what is on a printer.
  *
- * ⚠️ **Pending polls at the badge's cadence, not the Queue page's.** The
- * sidebar badge is mounted on EVERY screen and is the only sign of waiting work
- * a page that shows no queue gives — it used to have its own 5 s query, and
- * folding it into this one at 30 s would have made every other screen a
- * half-minute slower to notice a print was queued. Ten seconds is the
- * compromise the whole app now shares; `printing` was already there.
- *
- * What it costs, said plainly: every open tab now asks for the pending list
- * three times as often as the Queue page's old 30 s — one request per tab per
- * ten seconds, against a list that is usually short. What it buys is one cache
- * entry instead of two and one answer instead of two disagreeing ones. The
- * badge's focus refetch is suppressed too, and by the app's own settings rather
- * than by anything removed here: `utils/appQueryClient` gives every query a
- * 60 s `staleTime`, and TanStack refetches on focus only what is STALE — a list
- * this hook re-polls every ten seconds never is. So the first refresh after
- * coming back to a tab is up to ten seconds away rather than immediate — the
- * same ten seconds, from the other end.
+ * The sidebar now reads only compact summaries. Full pending/printing rows
+ * belong to mounted fleet screens; an isolated printer card keeps a scoped
+ * fallback. The 10 s interval is the screen's disconnected-WS safety poll,
+ * not a reason for the shell to download all queued jobs.
  */
 const PENDING_POLL_MS = 10_000;
 const PRINTING_POLL_MS = 10_000;
 
+/** Sidebar and closed issue headers need counts, not the complete queue rows. */
+export function useQueueSummary(enabled = true, poll = true) {
+  return useQuery<QueueSummary>({
+    ...farmQueryResumeOptions,
+    queryKey: ['queue', 'summary'],
+    queryFn: ({ signal }) => farmRead('queue-summary', signal, owned => api.getQueueSummary({ signal: owned })),
+    enabled,
+    refetchInterval: poll ? query => farmPollInterval(10_000, query) : false,
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
+  });
+}
+
+export function useAutoQueuePendingSummary(enabled = true) {
+  return useQuery<AutoQueuePendingSummary>({
+    ...farmQueryResumeOptions,
+    queryKey: ['auto-queue', 'summary'],
+    queryFn: ({ signal }) => farmRead('auto-queue-summary', signal, owned => api.getAutoQueuePendingSummary({ signal: owned })),
+    enabled,
+    refetchInterval: query => farmPollInterval(5_000, query),
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
+  });
+}
+
 /** Everything waiting, farm-wide. */
-export function usePendingQueueItems() {
+export function usePendingQueueItems(enabled = true) {
   return useQuery<PrintQueueItem[]>({
+    ...farmQueryResumeOptions,
     queryKey: ['queue', 'all', 'pending'],
-    queryFn: () => api.getQueue(undefined, 'pending'),
-    refetchInterval: PENDING_POLL_MS,
+    queryFn: ({ signal }) => farmRead('queue-all-pending', signal, owned => api.getQueue(undefined, 'pending', { signal: owned })),
+    enabled,
+    refetchInterval: query => farmPollInterval(PENDING_POLL_MS, query),
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
   });
 }
 
@@ -51,10 +68,14 @@ export function usePendingQueueItems() {
  * synthesises for external / direct prints, which is what lets a timeline (and
  * an order's queue panel) show a job nobody queued through BamDude.
  */
-export function usePrintingQueueItems() {
+export function usePrintingQueueItems(enabled = true) {
   return useQuery<PrintQueueItem[]>({
+    ...farmQueryResumeOptions,
     queryKey: ['queue', 'all', 'printing'],
-    queryFn: () => api.getQueue(undefined, 'printing'),
-    refetchInterval: PRINTING_POLL_MS,
+    queryFn: ({ signal }) => farmRead('queue-all-printing', signal, owned => api.getQueue(undefined, 'printing', { signal: owned })),
+    enabled,
+    refetchInterval: query => farmPollInterval(PRINTING_POLL_MS, query),
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
   });
 }

@@ -8,7 +8,8 @@ import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
-import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName, spoolDisplayNameMatches } from '../utils/spoolName';
+import { useAuth } from '../contexts/AuthContext';
+import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName } from '../utils/spoolName';
 import { filterSpoolsByQuery } from '../utils/inventorySearch';
 import { getSwatchStyle } from '../utils/colors';
 
@@ -42,11 +43,14 @@ interface AssignSpoolModalProps {
 
 export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, trayInfo, spoolmanEnabled, currentSpool }: AssignSpoolModalProps) {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const [selectedSpoolId, setSelectedSpoolId] = useState<number | null>(null);
   const [selectedSpoolmanSpoolId, setSelectedSpoolmanSpoolId] = useState<number | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [pickerPage, setPickerPage] = useState(1);
   const [disableFiltering, setDisableFiltering] = useState(false);
   const [pendingAssignId, setPendingAssignId] = useState<number | null>(null);
   const [showMismatchConfirm, setShowMismatchConfirm] = useState(false);
@@ -70,30 +74,55 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     setSelectedSpoolmanSpoolId(null);
   }, [disableFiltering]);
 
+  useEffect(() => {
+    setSelectedSpoolId(null);
+    setSelectedSpoolmanSpoolId(null);
+    setPickerPage(1);
+  }, [spoolmanEnabled, printerId, amsId, trayId, currentSpool?.id]);
+
   // Reset filtering when modal opens
   useEffect(() => {
     if (isOpen) {
       setDisableFiltering(false);
       setReplacementPrompt(null);
+      setPickerPage(1);
     }
   }, [isOpen]);
 
-  // Unique cache key — different consumers of `['inventory-spools']` call
-  // `getSpools()` with different `includeArchived` arguments, but they
-  // all share the same key. React Query treats them as one query and
-  // serves whichever response landed first, so a sibling component
-  // priming the cache with the archived-excluded payload makes the picker
-  // miss spools that *are* archived OR (more subtly) miss any spool that
-  // wasn't yet present when the sibling ran its initial fetch. The picker
-  // gets its own key + a fetch-everything call so this consumer is never
-  // at the mercy of someone else's cache state. Archived spools are then
-  // explicitly excluded client-side because the backend rejects archived
-  // assignments anyway, so listing them would only let the user click a
-  // button that fails.
-  const { data: spools, isLoading } = useQuery({
-    queryKey: ['inventory-spools', 'assign-modal'],
-    queryFn: () => api.getSpools(true),
-    enabled: isOpen && !spoolmanEnabled,
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchFilter);
+      setPickerPage(1);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchFilter]);
+
+  useEffect(() => setPickerPage(1), [disableFiltering, trayInfo?.type, trayInfo?.profile]);
+
+  // The server applies the assignment/tray/search predicates before paging.
+  const { data: spoolPage, isLoading } = useQuery({
+    queryKey: ['inventory-spools', 'assign-modal', 'local', printerId, amsId, trayId,
+      trayInfo?.type, trayInfo?.profile, disableFiltering,
+      currentSpool?.source === 'inventory' ? currentSpool.id : null, debouncedSearch, pickerPage],
+    queryFn: ({ signal }) => api.getSpoolPicker({
+      printer_id: printerId,
+      ams_id: amsId,
+      tray_id: trayId,
+      tray_material: trayInfo?.type || '',
+      tray_profile: trayInfo?.profile || '',
+      q: debouncedSearch,
+      show_all: disableFiltering,
+      replacing_spool_id: currentSpool?.source === 'inventory' ? currentSpool.id : undefined,
+      page: pickerPage,
+    }, signal),
+    enabled: isOpen && !spoolmanEnabled && hasPermission('inventory:read'),
+  });
+  const spools = spoolPage?.items;
+  const { data: selectedSpoolRecord } = useQuery({
+    queryKey: ['inventory-spools', 'selected', selectedSpoolId],
+    queryFn: () => api.getSpool(selectedSpoolId!),
+    enabled: isOpen && !spoolmanEnabled && selectedSpoolId !== null && hasPermission('inventory:read'),
+    retry: false,
   });
 
   const { data: assignments } = useQuery({
@@ -159,7 +188,8 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // name it reports must be the name the list showed, from the same template.
   const spoolDisplayTemplate = settings?.spool_display_template || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
   const pickedDisplayName = (id: number, list: InventorySpool[] | undefined) => {
-    const picked = list?.find((spool: InventorySpool) => spool.id === id);
+    const picked = list?.find((spool: InventorySpool) => spool.id === id)
+      ?? (selectedSpoolRecord?.id === id ? selectedSpoolRecord : undefined);
     return picked ? formatSpoolDisplayName(picked, spoolDisplayTemplate) : `#${id}`;
   };
 
@@ -182,6 +212,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         return filtered;
       });
       queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory-spools', 'assign-modal'] });
       showToast(
         currentSpool
           ? // A replace over a slot whose filament is not loaded is still a
@@ -305,58 +336,9 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     && !(currentSpool?.source === 'inventory' && spool.id === currentSpool.id)
   );
 
-  // The replaced spool is a fourth reason a row can be missing, and the only
-  // one the counter below could not name: its assignment is THIS slot, which
-  // `assignedSpoolIds` deliberately skips, so it is counted by neither of the
-  // other two terms and the numbers would add up to fewer removals than were
-  // actually made. Counted only when it is genuinely the row that went (a
-  // spool that is also archived is already explained by that term).
-  const replacedFromList = (spools || []).filter((spool: InventorySpool) =>
-    currentSpool?.source === 'inventory'
-    && spool.id === currentSpool.id
-    && !spool.archived_at
-    && !assignedSpoolIds.has(spool.id)
-  ).length;
-
-  // Stage 1: Filter by tray profile match (unless disabled).
-  // Show a spool if EITHER the slicer profile matches exactly (qualifier stripped)
-  // OR the material overlaps with the tray's material (partial-match both directions
-  // — "PLA" spool accepts a "PLA Basic" slot and vice versa). Manually-added inventory
-  // spools typically have no slicer_filament_name; gating on strict profile equality
-  // alone hid them even when the material matched (upstream #1047).
-  const profileFilteredSpools = (!disableFiltering && (trayInfo?.profile || trayInfo?.type))
-    ? availableSpools?.filter((spool: InventorySpool) => {
-        const spoolProfile = stripProfileQualifier(
-          normalizeValue(spool.slicer_filament_name) || normalizeValue(spool.slicer_filament)
-        );
-        const trayProfile = stripProfileQualifier(normalizeValue(trayInfo?.profile));
-        const spoolMaterial = normalizeValue(spool.material);
-        const trayMaterial = normalizeValue(trayInfo?.type);
-        if (trayProfile && spoolProfile && spoolProfile === trayProfile) return true;
-        if (trayMaterial && spoolMaterial) {
-          return (
-            spoolMaterial === trayMaterial ||
-            trayMaterial.includes(spoolMaterial) ||
-            spoolMaterial.includes(trayMaterial)
-          );
-        }
-        // Neither side has filterable info on whatever dimension remains — show it.
-        return !spoolProfile && !spoolMaterial;
-      })
-    : availableSpools;
-
-  // Stage 2: tokenised substring search over the synthesised display name
-  // (same template as the inventory table) plus the spool's DB id as a prefix
-  // token. Lets the operator type "SUN Bl" and match "SUNLU PETG Black"
-  // without knowing which individual field the substring lives in, and also
-  // type a bare "42" to jump straight to spool #42 even when the configured
-  // display template doesn't include {id}. (`spoolDisplayTemplate` is resolved
-  // above the mutations — the success toast names the picked spool with it.)
-  const filteredSpools = profileFilteredSpools?.filter((spool: InventorySpool) => {
-    if (!searchFilter) return true;
-    const haystack = `${spool.id} ${formatSpoolDisplayName(spool, spoolDisplayTemplate)}`;
-    return spoolDisplayNameMatches(haystack, searchFilter);
-  });
+  // The local predicate and tokenised search ran before pagination on the
+  // server. Reapply only safety checks against assignments changed while open.
+  const filteredSpools = availableSpools;
 
   // The Spoolman list, filtered in ONE place (it is read twice below — for the
   // "is there anything to show" gate and for the rows): archived spools are
@@ -387,14 +369,24 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     }
   };
 
-  const handleAssign = () => {
+  const handleAssign = async () => {
     if (selectedSpoolmanSpoolId !== null) {
       fireAssign({ spoolmanId: selectedSpoolmanSpoolId });
       return;
     }
     if (!selectedSpoolId) return;
-    const selectedSpool = spools?.find((spool: InventorySpool) => spool.id === selectedSpoolId);
-    if (!selectedSpool) {
+    let selectedSpool: InventorySpool;
+    try {
+      selectedSpool = await queryClient.fetchQuery({
+        queryKey: ['inventory-spools', 'selected', selectedSpoolId],
+        queryFn: () => api.getSpool(selectedSpoolId),
+        staleTime: 0,
+      });
+    } catch {
+      showToast(t('inventory.assignFailed'), 'error');
+      return;
+    }
+    if (!selectedSpool || selectedSpool.archived_at) {
       showToast(t('inventory.assignFailed'), 'error');
       return;
     }
@@ -439,8 +431,20 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     fireAssign({ spoolId: selectedSpoolId });
   };
 
-  const handleConfirmMismatch = () => {
+  const handleConfirmMismatch = async () => {
     if (!pendingAssignId) return;
+    try {
+      const current = await queryClient.fetchQuery({
+        queryKey: ['inventory-spools', 'selected', pendingAssignId],
+        queryFn: () => api.getSpool(pendingAssignId),
+        staleTime: 0,
+      });
+      if (current.archived_at) throw new Error('archived');
+    } catch {
+      showToast(t('inventory.assignFailed'), 'error');
+      setShowMismatchConfirm(false);
+      return;
+    }
     fireAssign({ spoolId: pendingAssignId });
     setShowMismatchConfirm(false);
     setPendingAssignId(null);
@@ -539,35 +543,38 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
               </div>
             ) : availableSpools && availableSpools.length === 0 ? (
               <div className="text-center py-8 text-bambu-gray">
-                <p>{t('inventory.noAvailableSpools')}</p>
-                {/* Diagnostic counter — when the picker is empty, having
-                    the raw fetch / filter counts visible makes a
-                    "spool I expected to see is missing" report
-                    immediately answerable: if `total fetched` is 0 the
-                    backend / cache returned nothing; if it's > 0 then
-                    the archived / assigned-elsewhere filter ate the
-                    spool and the toggle is the right escape hatch.
-                    Every reason a row is gone gets a term, replace mode's
-                    own exclusion included, or the numbers explain fewer
-                    removals than were made. */}
-                {spools && (
+                <p>{t(searchFilter.trim() ? 'inventory.noSpoolsMatch' : 'inventory.noAvailableSpools')}</p>
+                {spoolPage && (
                   <p className="text-[10px] mt-2 opacity-60">
-                    {spools.length} fetched · {spools.filter(s => s.archived_at).length} archived ·{' '}
-                    {spools.filter(s => assignedSpoolIds.has(s.id)).length} assigned to other slots
-                    {replacedFromList > 0 && ` · ${replacedFromList} being replaced`}
+                    {t('common.pageOf', { page: pickerPage, total: spoolPage.meta.last_page })}
+                    {' · '}{spoolPage.meta.total} {t('common.total')}
                   </p>
                 )}
               </div>
             ) : (
               <div className="text-center py-8 text-bambu-gray">
                 <p>{t('inventory.noSpoolsMatch')}</p>
-                {availableSpools && (
+                {spoolPage && (
                   <p className="text-[10px] mt-2 opacity-60">
-                    {availableSpools.length} unassigned spools — {availableSpools.length - (filteredSpools?.length ?? 0)} filtered by tray match.
+                    {t('common.pageOf', { page: pickerPage, total: spoolPage.meta.last_page })}
                   </p>
                 )}
               </div>
             ))}
+
+            {!spoolmanEnabled && spoolPage && spoolPage.meta.last_page > 1 && (
+              <div className="flex items-center justify-between gap-3 text-xs text-bambu-gray">
+                <button type="button" disabled={pickerPage <= 1} onClick={() => setPickerPage(page => page - 1)}
+                  className="disabled:opacity-40 hover:text-white">
+                  {t('common.previousPage')}
+                </button>
+                <span>{t('common.pageOf', { page: pickerPage, total: spoolPage.meta.last_page })}</span>
+                <button type="button" disabled={pickerPage >= spoolPage.meta.last_page}
+                  onClick={() => setPickerPage(page => page + 1)} className="disabled:opacity-40 hover:text-white">
+                  {t('common.nextPage')}
+                </button>
+              </div>
+            )}
 
             {spoolmanEnabled && (
               <>

@@ -3,6 +3,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, Monitor, Box, Maximize2, AlertTriangle } from 'lucide-react';
 import { api, withStreamToken } from '../api/client';
+import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay, farmStatusPollInterval } from '../api/farmReadBudget';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { ConfirmModal } from './ConfirmModal';
@@ -37,9 +38,10 @@ interface SkipObjectsModalProps {
   printerId: number;
   isOpen: boolean;
   onClose: () => void;
+  archiveId?: number | null;
 }
 
-export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModalProps) {
+export function SkipObjectsModal({ printerId, isOpen, onClose, archiveId }: SkipObjectsModalProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
@@ -48,16 +50,21 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
 
   const { data: status } = useQuery({
     queryKey: ['printerStatus', printerId],
-    queryFn: () => api.getPrinterStatus(printerId),
-    refetchInterval: 30000,
+    queryFn: ({ signal }) => api.getPrinterStatus(printerId, signal),
+    refetchInterval: query => farmStatusPollInterval(30_000, query),
     enabled: isOpen,
   });
+  const currentRun = archiveId !== undefined ? archiveId : status?.current_archive_id ?? null;
 
   const { data: objectsData, refetch: refetchObjects } = useQuery({
-    queryKey: ['printableObjects', printerId],
-    queryFn: () => api.getPrintableObjects(printerId),
+    ...farmQueryResumeOptions,
+    queryKey: ['printableObjects', printerId, currentRun ?? 'unbound'],
+    queryFn: ({ signal }) => farmRead(`objects-${printerId}-${currentRun ?? 'unbound'}`, signal,
+      owned => api.getPrintableObjects(printerId, owned)),
     enabled: isOpen,
-    refetchInterval: isOpen ? 5000 : false,
+    refetchInterval: isOpen ? query => farmPollInterval(5000, query) : false,
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
   });
 
   const skipObjectsMutation = useMutation({

@@ -26,6 +26,21 @@ from backend.tests.unit.services.test_product_composition import counting_statem
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_pending_summary_counts_only_unassigned_rows(async_client: AsyncClient, db_session):
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    db_session.add_all(
+        [AutoQueueItem(status="pending"), AutoQueueItem(status="pending"), AutoQueueItem(status="assigned")]
+    )
+    await db_session.commit()
+
+    response = await async_client.get("/api/v1/auto-queue/summary")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"pending_count": 2}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_post_auto_queue_with_archive_returns_200_and_includes_archive_name(
     async_client: AsyncClient, db_session, tmp_path
 ):

@@ -7,6 +7,7 @@ import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, Spo
 import { Button } from './Button';
 import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 import type { SpoolFormData, PrinterWithCalibrations, ColorPreset, SpoolFormMode } from './spool-form/types';
 import { defaultFormData, spoolDetailsRequired, validateForm, SPOOLMAN_LINKED_FIELDS } from './spool-form/types';
 import { calibrationSelectionKey, extractBrandsFromPresets, fetchPrinterCalibrations, loadRecentColors, normalizeSlicerCodeToFilamentId, parsePresetName, parseProfileSelectionKey, profileSelectionKey, resolveTargetFilamentId, saveRecentColor } from './spool-form/utils';
@@ -62,6 +63,7 @@ export function SpoolFormModal({
   spoolsQueryKey = ['inventory-spools'],
 }: SpoolFormModalProps) {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
   const headingId = useId();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -627,19 +629,13 @@ export function SpoolFormModal({
     enabled: isOpen && isEditing && spoolmanMode,
   });
 
-  // B.8 — collect categories already in use for the autocomplete <datalist>.
-  const { data: allSpoolsForCategories } = useQuery({
-    queryKey: ['spools'],
-    queryFn: () => api.getSpools(false),
-    enabled: isOpen,
+  // B.8 — server-side distinct active categories; no full spool ORM list.
+  const { data: categoryFacets } = useQuery({
+    queryKey: ['inventory-spools', 'facets', 'active'],
+    queryFn: () => api.getSpoolFacets('active'),
+    enabled: isOpen && hasPermission('inventory:read'),
   });
-  const knownCategories = useMemo(() => {
-    const set = new Set<string>();
-    for (const s of allSpoolsForCategories || []) {
-      if (s.category) set.add(s.category);
-    }
-    return Array.from(set).sort();
-  }, [allSpoolsForCategories]);
+  const knownCategories = categoryFacets?.categories ?? [];
 
   // Resolve a legacy P-preset's family (via cloud base_id) so an old-style
   // spool derives its filament_family_id at submit. Shares the react-query

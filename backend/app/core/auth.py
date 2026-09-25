@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
+import weakref
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
+from typing import Annotated, Any
 
 import jwt
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -26,6 +29,23 @@ from backend.app.models.settings import Settings
 from backend.app.models.user import User
 
 logger = logging.getLogger(__name__)
+
+_api_key_gates: weakref.WeakKeyDictionary[Any, tuple[asyncio.BoundedSemaphore, asyncio.BoundedSemaphore]] = (
+    weakref.WeakKeyDictionary()
+)
+_api_key_tasks: set[asyncio.Task] = set()
+
+
+def _key_gates() -> tuple[asyncio.BoundedSemaphore, asyncio.BoundedSemaphore]:
+    loop = asyncio.get_running_loop()
+    gates = _api_key_gates.get(loop)
+    if gates is None:
+        # Allow a normal 10-operator burst to wait behind four physical hash
+        # workers; beyond that, reject quickly instead of growing futures.
+        gates = (asyncio.BoundedSemaphore(16), asyncio.BoundedSemaphore(4))
+        _api_key_gates[loop] = gates
+    return gates
+
 
 # Password hashing
 # Use pbkdf2_sha256 instead of bcrypt to avoid 72-byte limit and passlib initialization issues
@@ -950,35 +970,228 @@ async def has_any_admin(db: AsyncSession) -> bool:
         return False
 
 
-async def _validate_api_key(db: AsyncSession, api_key_value: str) -> APIKey | None:
-    """Validate an API key and return the APIKey object if valid, None otherwise.
+class APIKeyValidationFailure(Exception):
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
 
-    This is an internal helper used by auth functions to check API keys.
-    """
-    try:
-        result = await db.execute(select(APIKey).where(APIKey.enabled.is_(True)))
-        api_keys = result.scalars().all()
 
-        for api_key in api_keys:
-            if verify_password(api_key_value, api_key.key_hash):
-                # Check expiration
-                if api_key.expires_at:
-                    expires = api_key.expires_at
-                    if expires.tzinfo is None:
-                        expires = expires.replace(tzinfo=timezone.utc)
-                    if expires < datetime.now(timezone.utc):
-                        return None  # Expired
-                # Update last_used timestamp
-                api_key.last_used = datetime.now(timezone.utc)
-                await db.commit()
-                return api_key
-    except Exception as e:
-        logger.warning("API key validation error: %s", e)
+@dataclass(frozen=True)
+class APIKeyAuthority:
+    key: APIKey
+    owner: User | None
+    owner_required: bool
+    scope_flags: frozenset[str]
+    owner_permissions: frozenset[str]
+    owner_is_admin: bool
+    energy_cost_allowed: bool
+
+
+def _match_api_key(credential: str, candidates: list[tuple[int, str]]) -> tuple[int, str] | None:
+    for key_id, key_hash in candidates:
+        if verify_password(credential, key_hash):
+            return key_id, key_hash
     return None
+
+
+async def _scan_api_key(credential: str, candidates: list[tuple[int, str]]) -> tuple[int, str] | None:
+    admission, workers = _key_gates()
+    # An overload must not build an unbounded queue of executor futures.
+    if admission.locked():
+        raise APIKeyValidationFailure("overloaded")
+    await admission.acquire()
+    try:
+        try:
+            await asyncio.wait_for(workers.acquire(), timeout=2)
+        except TimeoutError as exc:
+            raise APIKeyValidationFailure("overloaded") from exc
+        try:
+            # resolve_api_key_authority shields its owner task. A disconnected
+            # client cannot release this slot while the physical thread runs.
+            return await asyncio.to_thread(_match_api_key, credential, candidates)
+        finally:
+            workers.release()
+    finally:
+        admission.release()
+
+
+async def _validate_api_key_authority(credential: str) -> APIKeyAuthority:
+    # The hash thread gets only immutable scalar data and never holds a DB
+    # checkout. A second short transaction rechecks the winner's authority.
+    async with async_session() as db:
+        rows = await db.execute(select(APIKey.id, APIKey.key_hash).where(APIKey.enabled.is_(True)))
+        candidates = [(key_id, key_hash) for key_id, key_hash in rows.all()]
+
+    winner = await _scan_api_key(credential, candidates)
+    if winner is None:
+        raise APIKeyValidationFailure("invalid")
+    key_id, key_hash = winner
+    async with async_session() as db:
+        row = await db.execute(
+            select(APIKey).where(APIKey.id == key_id, APIKey.key_hash == key_hash, APIKey.enabled.is_(True))
+        )
+        api_key = row.scalar_one_or_none()
+        if api_key is None:
+            raise APIKeyValidationFailure("invalid")
+        if api_key.expires_at:
+            expires = api_key.expires_at
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires < datetime.now(timezone.utc):
+                raise APIKeyValidationFailure("expired")
+        owner = None
+        if api_key.user_id is not None:
+            row = await db.execute(select(User).where(User.id == api_key.user_id).options(selectinload(User.groups)))
+            owner = row.scalar_one_or_none()
+        api_key.last_used = datetime.now(timezone.utc)
+        await db.commit()
+        return APIKeyAuthority(
+            key=api_key,
+            owner=owner,
+            owner_required=api_key.user_id is not None,
+            scope_flags=frozenset(
+                scope for scope in set(_APIKEY_SCOPE_BY_PERMISSION.values()) if getattr(api_key, scope, False)
+            ),
+            owner_permissions=frozenset(owner.get_permissions()) if owner is not None else frozenset(),
+            owner_is_admin=owner.is_admin if owner is not None else False,
+            energy_cost_allowed=bool(api_key.can_update_energy_cost),
+        )
+
+
+async def resolve_api_key_authority(request: Request | None, credential: str) -> APIKeyAuthority:
+    cache = None if request is None else getattr(request.state, "_api_key_authority_tasks", None)
+    if request is not None and cache is None:
+        cache = {}
+        request.state._api_key_authority_tasks = cache
+    task = None if cache is None else cache.get(credential)
+    if task is None:
+        task = asyncio.create_task(_validate_api_key_authority(credential))
+        _api_key_tasks.add(task)
+
+        def done(completed: asyncio.Task) -> None:
+            _api_key_tasks.discard(completed)
+            if not completed.cancelled():
+                completed.exception()  # consume if the requester disconnected
+
+        task.add_done_callback(done)
+        if cache is not None:
+            cache[credential] = task
+    return await asyncio.shield(task)
+
+
+async def _validate_api_key(db: AsyncSession, api_key_value: str, request: Request | None = None) -> APIKey | None:
+    """Compatibility adapter; validation owns its own short transactions."""
+    try:
+        return (await resolve_api_key_authority(request, api_key_value)).key
+    except APIKeyValidationFailure as exc:
+        if exc.reason == "overloaded":
+            raise HTTPException(status_code=503, detail="API key validation is busy") from exc
+        return None
+
+
+async def _api_key_authority_or_none(request: Request | None, credential: str) -> APIKeyAuthority | None:
+    try:
+        return await resolve_api_key_authority(request, credential)
+    except APIKeyValidationFailure as exc:
+        if exc.reason == "overloaded":
+            raise HTTPException(status_code=503, detail="API key validation is busy") from exc
+        return None
+
+
+class JWTValidationFailure(Exception):
+    """A credential failure; adapters retain their existing HTTP vocabulary."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+@dataclass(frozen=True)
+class JWTAuthority:
+    """Request-local, fully checked authority plus a detached compatibility user."""
+
+    user: User
+    permissions: frozenset[str]
+    is_admin: bool
+
+    def has_all(self, *permissions: str) -> bool:
+        return self.is_admin or all(permission in self.permissions for permission in permissions)
+
+    def has_any(self, *permissions: str) -> bool:
+        return self.is_admin or any(permission in self.permissions for permission in permissions)
+
+
+async def _validate_jwt_authority(token: str) -> JWTAuthority:
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError as exc:
+        raise JWTValidationFailure("expired") from exc
+    except JWTError as exc:
+        raise JWTValidationFailure("invalid") from exc
+    username = payload.get("sub")
+    if not isinstance(username, str) or not username:
+        raise JWTValidationFailure("invalid")
+
+    async with async_session() as db:
+        jti = payload.get("jti")
+        if jti and await is_jti_revoked(jti, db):
+            raise JWTValidationFailure("revoked")
+        user = await get_user_by_username(db, username)
+        if user is None:
+            raise JWTValidationFailure("missing_user")
+        if not user.is_active:
+            raise JWTValidationFailure("inactive")
+        if not _is_token_fresh(payload.get("iat"), user):
+            raise JWTValidationFailure("stale")
+        # Capture authority while groups are loaded and the read session is
+        # still open. The compatibility User is detached when the session exits.
+        return JWTAuthority(user, frozenset(user.get_permissions()), user.is_admin)
+
+
+async def resolve_jwt_authority(request: Request | None, token: str) -> JWTAuthority:
+    """Validate once per credential per request, never across requests."""
+    if request is None:
+        return await _validate_jwt_authority(token)
+    cache = getattr(request.state, "_jwt_authority_tasks", None)
+    if cache is None:
+        cache = {}
+        request.state._jwt_authority_tasks = cache
+    task = cache.get(token)
+    if task is None:
+        task = asyncio.create_task(_validate_jwt_authority(token))
+        cache[token] = task
+    return await asyncio.shield(task)
+
+
+async def finish_request_auth(request: Request) -> None:
+    """Reap any in-flight auth work when an HTTP request is cancelled."""
+    cache = getattr(request.state, "_jwt_authority_tasks", None)
+    if cache:
+        pending = [task for task in cache.values() if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        cache.clear()
+    # A key hash may still be executing after client cancellation. Its task is
+    # tracked by _api_key_tasks until the thread really finishes; do not cancel
+    # it or free a worker slot early.
+    key_cache = getattr(request.state, "_api_key_authority_tasks", None)
+    if key_cache:
+        key_cache.clear()
+
+
+def _credentials_exception() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 async def get_current_user_optional(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+    request: Request = None,
 ) -> User | None:
     """Get the current authenticated user from JWT token, or None if not authenticated.
 
@@ -990,69 +1203,31 @@ async def get_current_user_optional(
         return None
 
     try:
-        token = credentials.credentials
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            return None
-    except JWTError:
+        return (await resolve_jwt_authority(request, credentials.credentials)).user
+    except JWTValidationFailure:
         return None
-
-    jti = payload.get("jti")
-    async with async_session() as db:
-        # Reuse this one session for the revocation check too, so each request
-        # makes a single pooled checkout instead of two (#2572).
-        if jti and await is_jti_revoked(jti, db):
-            return None
-        user = await get_user_by_username(db, username)
-        if user is None or not user.is_active:
-            return None
-        if not _is_token_fresh(payload.get("iat"), user):
-            return None
-        return user
 
 
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+    request: Request = None,
 ) -> User:
     """Get the current authenticated user from JWT token.
 
     §18.4: rejects revoked ``jti`` values and tokens issued before the user's
     last password change (``iat < password_changed_at``).
     """
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
     if credentials is None:
-        raise credentials_exception
+        raise _credentials_exception()
     try:
-        token = credentials.credentials
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-
-    jti = payload.get("jti")
-    async with async_session() as db:
-        # Reuse this one session for the revocation check too, so each request
-        # makes a single pooled checkout instead of two (#2572).
-        if jti and await is_jti_revoked(jti, db):
-            raise credentials_exception
-        user = await get_user_by_username(db, username)
-        if user is None:
-            raise credentials_exception
-        if not user.is_active:
+        return (await resolve_jwt_authority(request, credentials.credentials)).user
+    except JWTValidationFailure as exc:
+        if exc.reason == "inactive":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User account is disabled",
-            )
-        if not _is_token_fresh(payload.get("iat"), user):
-            raise credentials_exception
-        return user
+            ) from exc
+        raise _credentials_exception() from exc
 
 
 async def get_current_active_user(current_user: Annotated[User, Depends(get_current_user)]) -> User:
@@ -1096,6 +1271,7 @@ async def get_api_key(
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
     x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     db: AsyncSession = Depends(get_db),
+    request: Request = None,
 ) -> APIKey:
     """Get and validate API key from request headers.
 
@@ -1113,32 +1289,15 @@ async def get_api_key(
             detail="API key required. Provide 'X-API-Key' header or 'Authorization: Bearer <key>'",
         )
 
-    # Get all API keys and check them
-    result = await db.execute(select(APIKey).where(APIKey.enabled.is_(True)))
-    api_keys = result.scalars().all()
-
-    for api_key in api_keys:
-        # Check if key matches (verify against hash)
-        if verify_password(api_key_value, api_key.key_hash):
-            # Check expiration
-            if api_key.expires_at:
-                expires = api_key.expires_at
-                if expires.tzinfo is None:
-                    expires = expires.replace(tzinfo=timezone.utc)
-                if expires < datetime.now(timezone.utc):
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="API key has expired",
-                    )
-            # Update last_used timestamp
-            api_key.last_used = datetime.now(timezone.utc)
-            await db.commit()
-            return api_key
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid API key",
-    )
+    try:
+        return (await resolve_api_key_authority(request, api_key_value)).key
+    except APIKeyValidationFailure as exc:
+        if exc.reason == "overloaded":
+            raise HTTPException(status_code=503, detail="API key validation is busy") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key has expired" if exc.reason == "expired" else "Invalid API key",
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1474,14 +1633,31 @@ async def authorize_api_key(
     perm_strings: list[str],
     *,
     require_any: bool = False,
+    authority: APIKeyAuthority | None = None,
 ) -> None:
     """Resolve the key's owner and run the full permission gate. Raises 403.
 
     The single entry point for every route-level gate: resolving the owner and
     then forgetting to use it is exactly the drift this exists to prevent.
     """
-    owner = await resolve_apikey_owner(db, api_key)
-    _check_apikey_permissions(api_key, perm_strings, owner=owner, require_any=require_any)
+    if authority is None:
+        owner = await resolve_apikey_owner(db, api_key)
+    else:
+        owner = authority.owner
+        if authority.owner_required and (owner is None or not owner.is_active):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="API key owner is deactivated or no longer exists",
+            )
+    _check_apikey_permissions(
+        api_key,
+        perm_strings,
+        owner=owner,
+        require_any=require_any,
+        scope_flags=authority.scope_flags if authority is not None else None,
+        owner_permissions=authority.owner_permissions if authority is not None else None,
+        owner_is_admin=authority.owner_is_admin if authority is not None else False,
+    )
 
 
 def _check_apikey_permissions(
@@ -1490,6 +1666,9 @@ def _check_apikey_permissions(
     *,
     owner: User | None = None,
     require_any: bool = False,
+    scope_flags: frozenset[str] | None = None,
+    owner_permissions: frozenset[str] | None = None,
+    owner_is_admin: bool = False,
 ) -> None:
     """Raise 403 unless ``api_key`` is allowed to use ``perm_strings``.
 
@@ -1520,17 +1699,25 @@ def _check_apikey_permissions(
     last_failure: HTTPException | None = None
     for perm_str in perm_strings:
         scope_attr = _resolve_apikey_scope(perm_str)
+        scope_granted = scope_attr is not None and (
+            scope_attr in scope_flags if scope_flags is not None else bool(getattr(api_key, scope_attr, False))
+        )
+        owner_granted = (
+            owner_is_admin or perm_str in owner_permissions
+            if owner_permissions is not None
+            else owner is None or owner.has_permission(perm_str)
+        )
         if scope_attr is None:
             failure: HTTPException | None = HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="API keys cannot be used for administrative operations",
             )
-        elif not getattr(api_key, scope_attr, False):
+        elif not scope_granted:
             failure = HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"API key does not have '{scope_attr}' permission",
             )
-        elif owner is not None and not owner.has_permission(perm_str):
+        elif owner is not None and not owner_granted:
             failure = HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"API key owner does not have '{perm_str}' permission",
@@ -1693,12 +1880,12 @@ def require_permission(*permissions: str | Permission):
         async with async_session() as db:
             # Check for API key first (X-API-Key header)
             if x_api_key:
-                api_key = await _validate_api_key(db, x_api_key)
-                if api_key:
+                key_authority = await _api_key_authority_or_none(request, x_api_key)
+                if key_authority:
                     # GHSA-r2qv-8222-hqg3: gate on the key's scope flags instead
                     # of allowing any valid key unconditionally.
-                    await authorize_api_key(db, api_key, perm_strings)
-                    await enforce_printer_scope(db, request, api_key)
+                    await authorize_api_key(db, key_authority.key, perm_strings, authority=key_authority)
+                    await enforce_printer_scope(db, request, key_authority.key)
                     return None  # API key valid + scoped, allow access
 
             credentials_exception = HTTPException(
@@ -1713,10 +1900,10 @@ def require_permission(*permissions: str | Permission):
             token = credentials.credentials
             # Check if it's an API key (bd_, or Bambuddy-era bb_)
             if is_api_key_token(token):
-                api_key = await _validate_api_key(db, token)
-                if api_key:
-                    await authorize_api_key(db, api_key, perm_strings)
-                    await enforce_printer_scope(db, request, api_key)
+                key_authority = await _api_key_authority_or_none(request, token)
+                if key_authority:
+                    await authorize_api_key(db, key_authority.key, perm_strings, authority=key_authority)
+                    await enforce_printer_scope(db, request, key_authority.key)
                     return None  # API key valid + scoped, allow access
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1724,25 +1911,17 @@ def require_permission(*permissions: str | Permission):
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
-            # Otherwise treat as JWT
             try:
-                payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-                username: str = payload.get("sub")
-                if username is None:
-                    raise credentials_exception
-            except JWTError:
-                raise credentials_exception
+                authority = await resolve_jwt_authority(request, token)
+            except JWTValidationFailure as exc:
+                raise credentials_exception from exc
 
-            user = await get_user_by_username(db, username)
-            if user is None or not user.is_active:
-                raise credentials_exception
-
-            if not user.has_all_permissions(*perm_strings):
+            if not authority.has_all(*perm_strings):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Missing required permissions: {', '.join(perm_strings)}",
                 )
-            return user
+            return authority.user
 
     return permission_checker
 
@@ -1778,8 +1957,9 @@ def require_energy_cost_update():
     async def permission_checker(
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+        request: Request = None,
     ) -> User | None:
-        async with async_session() as db:
+        async with async_session():
             credentials_exception = HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials",
@@ -1794,8 +1974,8 @@ def require_energy_cost_update():
                 api_key_value = credentials.credentials
 
             if api_key_value is not None:
-                api_key = await _validate_api_key(db, api_key_value)
-                if api_key is None:
+                key_authority = await _api_key_authority_or_none(request, api_key_value)
+                if key_authority is None:
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="Invalid API key",
@@ -1806,8 +1986,9 @@ def require_energy_cost_update():
                 # the way the general gate is: this door exists precisely
                 # because no user permission maps to it (SETTINGS_UPDATE stays
                 # denied for keys even when the owner is an administrator).
-                await resolve_apikey_owner(db, api_key)
-                if not api_key.can_update_energy_cost:
+                if key_authority.owner_required and (key_authority.owner is None or not key_authority.owner.is_active):
+                    raise HTTPException(403, "API key owner is deactivated or no longer exists")
+                if not key_authority.energy_cost_allowed:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="API key does not have 'update_energy_cost' permission",
@@ -1819,22 +2000,15 @@ def require_energy_cost_update():
                 raise credentials_exception
 
             try:
-                payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-                username: str = payload.get("sub")
-                if username is None:
-                    raise credentials_exception
-            except JWTError:
-                raise credentials_exception
-
-            user = await get_user_by_username(db, username)
-            if user is None or not user.is_active:
-                raise credentials_exception
-            if not user.has_all_permissions(Permission.SETTINGS_UPDATE.value):
+                authority = await resolve_jwt_authority(request, credentials.credentials)
+            except JWTValidationFailure as exc:
+                raise credentials_exception from exc
+            if not authority.has_all(Permission.SETTINGS_UPDATE.value):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Missing required permissions: {Permission.SETTINGS_UPDATE.value}",
                 )
-            return user
+            return authority.user
 
     return permission_checker
 
@@ -1857,11 +2031,13 @@ def require_any_permission(*permissions: str | Permission):
     ) -> User | None:
         async with async_session() as db:
             if x_api_key:
-                api_key = await _validate_api_key(db, x_api_key)
-                if api_key:
+                key_authority = await _api_key_authority_or_none(request, x_api_key)
+                if key_authority:
                     # GHSA-r2qv-8222-hqg3: require at least one requested scope.
-                    await authorize_api_key(db, api_key, perm_strings, require_any=True)
-                    await enforce_printer_scope(db, request, api_key)
+                    await authorize_api_key(
+                        db, key_authority.key, perm_strings, require_any=True, authority=key_authority
+                    )
+                    await enforce_printer_scope(db, request, key_authority.key)
                     return None
 
             credentials_exception = HTTPException(
@@ -1875,10 +2051,12 @@ def require_any_permission(*permissions: str | Permission):
 
             token = credentials.credentials
             if is_api_key_token(token):
-                api_key = await _validate_api_key(db, token)
-                if api_key:
-                    await authorize_api_key(db, api_key, perm_strings, require_any=True)
-                    await enforce_printer_scope(db, request, api_key)
+                key_authority = await _api_key_authority_or_none(request, token)
+                if key_authority:
+                    await authorize_api_key(
+                        db, key_authority.key, perm_strings, require_any=True, authority=key_authority
+                    )
+                    await enforce_printer_scope(db, request, key_authority.key)
                     return None
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1887,23 +2065,16 @@ def require_any_permission(*permissions: str | Permission):
                 )
 
             try:
-                payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-                username: str = payload.get("sub")
-                if username is None:
-                    raise credentials_exception
-            except JWTError:
-                raise credentials_exception
+                authority = await resolve_jwt_authority(request, token)
+            except JWTValidationFailure as exc:
+                raise credentials_exception from exc
 
-            user = await get_user_by_username(db, username)
-            if user is None or not user.is_active:
-                raise credentials_exception
-
-            if not user.has_any_permission(*perm_strings):
+            if not authority.has_any(*perm_strings):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Missing any of the required permissions: {', '.join(perm_strings)}",
                 )
-            return user
+            return authority.user
 
     return permission_checker
 
@@ -2039,16 +2210,16 @@ def require_ownership_permission(
         async with async_session() as db:
             # Check for API key first (X-API-Key header)
             if x_api_key:
-                api_key = await _validate_api_key(db, x_api_key)
-                if api_key:
+                key_authority = await _api_key_authority_or_none(request, x_api_key)
+                if key_authority:
                     # GHSA-r2qv-8222-hqg3: previously any valid key received
                     # (None, True) — a "queue-only" key could delete any user's
                     # archives / library files / queue items. OWN and ALL map to
                     # the same scope flag, so gating on ``all_perm`` is correct;
                     # keys have no per-row ownership identity so a passing key
                     # keeps can_modify_all=True.
-                    await authorize_api_key(db, api_key, [all_perm])
-                    await enforce_printer_scope(db, request, api_key)
+                    await authorize_api_key(db, key_authority.key, [all_perm], authority=key_authority)
+                    await enforce_printer_scope(db, request, key_authority.key)
                     return None, True
 
             # Check for Bearer token (could be JWT or API key)
@@ -2056,10 +2227,10 @@ def require_ownership_permission(
                 token = credentials.credentials
                 # Check if it's an API key (bd_, or Bambuddy-era bb_)
                 if is_api_key_token(token):
-                    api_key = await _validate_api_key(db, token)
-                    if api_key:
-                        await authorize_api_key(db, api_key, [all_perm])
-                        await enforce_printer_scope(db, request, api_key)
+                    key_authority = await _api_key_authority_or_none(request, token)
+                    if key_authority:
+                        await authorize_api_key(db, key_authority.key, [all_perm], authority=key_authority)
+                        await enforce_printer_scope(db, request, key_authority.key)
                         return None, True
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -2067,35 +2238,15 @@ def require_ownership_permission(
                         headers={"WWW-Authenticate": "Bearer"},
                     )
 
-                # Otherwise treat as JWT
                 try:
-                    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-                    username: str = payload.get("sub")
-                    if username is None:
-                        raise HTTPException(
-                            status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail="Could not validate credentials",
-                            headers={"WWW-Authenticate": "Bearer"},
-                        )
-                except JWTError:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Could not validate credentials",
-                        headers={"WWW-Authenticate": "Bearer"},
-                    )
+                    authority = await resolve_jwt_authority(request, token)
+                except JWTValidationFailure as exc:
+                    raise _credentials_exception() from exc
 
-                user = await get_user_by_username(db, username)
-                if user is None or not user.is_active:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Could not validate credentials",
-                        headers={"WWW-Authenticate": "Bearer"},
-                    )
-
-                if user.has_permission(all_perm):
-                    return user, True
-                if user.has_permission(own_perm):
-                    return user, False
+                if authority.has_all(all_perm):
+                    return authority.user, True
+                if authority.has_all(own_perm):
+                    return authority.user, False
 
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,

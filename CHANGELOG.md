@@ -25,6 +25,20 @@
 
 ### Added
 
+- **Lighter farm monitoring in the browser.** The queue badge reads compact
+  counts instead of every queued job, and shows `!` rather than a false zero when
+  a count cannot be read. Queue and Printers cards share one set of active queue
+  reads, and an Issues section loads its rows, page by page, only when opened —
+  **Delete all** first loads the complete list, then asks about exactly those
+  jobs. The printer-status fallback of every card on a page now goes out as one
+  batched request per interval, and a printer whose live state just arrived
+  waits for its own turn. A hidden tab sends no farm reads, even when queue
+  events arrive — it catches up once when shown — and a quick switch back to a
+  fresh tab rereads nothing. After a network drop the live connection retries
+  with growing delays of up to 30 seconds. Background reads are bounded and
+  cancelled when no longer needed; printing commands stay immediate and are
+  never retried automatically. On a synthetic 50-printer farm, one open Queue
+  tab made about nine in ten fewer requests over ten quiet minutes.
 - **Camera capture is worker-only.** Built-in and external live views, snapshots,
   connection tests, background photos and Virtual Printer camera passthrough
   use one supervised local worker; there is no inline fallback. A failed camera
@@ -273,6 +287,30 @@
   logged with the printer's serial. The MQTT relay and the MQTT smart-plug
   connection shut down the same way, so a stuck broker no longer holds up a
   service stop.
+- **The Information page no longer pauses BamDude while it refreshes.** Every
+  30 seconds, each open Information page made the server measure the archive
+  by visiting every archived file, and sample the CPU with a 100 ms wait —
+  both on the loop that also serves printer control, the WebSocket and every
+  other request, so a large archive stalled all of them. Both now run on a
+  worker thread; the archive is measured once for all open pages and the
+  figure is reused for up to a minute. Connected printers on the page are
+  named with one database query instead of one per printer.
+- **Live printer states and busy-farm refreshes no longer race.** The browser
+  acknowledges a WebSocket bootstrap only after all pre-marker printer states
+  reach its cache; late status chunks cannot overwrite newer patches or write
+  after disconnect. Repeated archive, library and inventory events now mark
+  affected views stale within a bounded window, with active HTTP refreshes
+  paced instead of launched as one burst. Bootstrap logs separate token,
+  socket-open, first-status and cache-commit timings.
+- **Busy farm reads do less repeated work without widening access.** A request
+  reuses one complete JWT or API-key authority check across middleware and
+  permission gates; revoked or stale JWTs can no longer pass a narrower route
+  check. API-key hashing runs outside the server event loop with bounded
+  concurrency. Queue lists batch virtual-print lookups, keep them visible only
+  to their archive owner, and no longer fetch printer tags and locations to
+  show a printer name. Local spool pickers search and page on the server;
+  display-name previews, form categories and AMS family colours read only the
+  data they need. Spoolman lists are unchanged.
 - **The AMS drying panel on the printer card opens again.** Since 0.6.0 a
   click on the flame did nothing visible: the panel opened beyond the edge of
   the card and was cut off by it. It now opens next to its button and scrolls

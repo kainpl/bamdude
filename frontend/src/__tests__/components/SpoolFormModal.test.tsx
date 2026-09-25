@@ -18,6 +18,8 @@ vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
   getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
+    getCurrentUser: vi.fn().mockResolvedValue({ id: 1, username: 'admin', is_admin: true, permissions: [] }),
+    getSpoolFacets: vi.fn().mockResolvedValue({ categories: [] }),
     getFilamentFamilies: vi.fn().mockResolvedValue([]),
     triggerFilamentPresetSync: vi.fn().mockResolvedValue({ queued: true }),
     getSettings: vi.fn().mockResolvedValue({}),

@@ -8,6 +8,7 @@ import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
 import { PrinterTagsSelect } from '../components/PrinterTagsSelect';
 import { PrinterTagChip } from '../components/PrinterTagChip';
 import { UsageProjection } from '../components/UsageProjection';
+import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay, farmStatusPollInterval } from '../api/farmReadBudget';
 import { CardSizeSwitch } from '../components/CardSizeSwitch';
 import { readStoredCardSize } from '../utils/cardSize';
 import { LoadingBlock } from '../components/LoadingBlock';
@@ -139,6 +140,8 @@ import { MQTTDebugModal } from '../components/MQTTDebugModal';
 import { CalibrationModal } from '../components/CalibrationModal';
 import { HMSErrorModal, filterKnownHMSErrors, hmsBrief } from '../components/HMSErrorModal';
 import { PrinterQueueWidget } from '../components/PrinterQueueWidget';
+import { FarmQueueScope, usePrinterQueueRows } from '../hooks/FarmQueueScope';
+import { usePendingQueueItems, usePrintingQueueItems } from '../hooks/useQueueItems';
 import { usePlateDefects } from '../hooks/usePlateDefects';
 import { PlateDefectsRow } from '../components/PlateDefectsRow';
 import { AMSHistoryModal } from '../components/AMSHistoryModal';
@@ -1544,7 +1547,6 @@ function AiDetectionBadge({ printerId }: { printerId: number }) {
     queryKey: ['obicoPrinterStatus'],
     queryFn: api.getObicoPrinterStatus,
     staleTime: 10_000,
-    refetchInterval: 30_000,
     retry: false,
   });
 
@@ -2028,8 +2030,8 @@ function PrinterCard({
 
   const { data: status } = useQuery({
     queryKey: ['printerStatus', printer.id],
-    queryFn: () => api.getPrinterStatus(printer.id),
-    refetchInterval: 30000, // Fallback polling, WebSocket handles real-time
+    queryFn: ({ signal }) => api.getPrinterStatus(printer.id, signal),
+    refetchInterval: query => farmStatusPollInterval(30_000, query), // Fallback polling, WebSocket handles real-time
   });
 
   // Check if any macros match this printer (for showing/hiding Macros menu item)
@@ -2227,16 +2229,14 @@ function PrinterCard({
   });
 
   // Fetch queue count for this printer
-  const { data: queueItems } = useQuery({
-    queryKey: ['queue', printer.id, 'pending'],
-    queryFn: () => api.getQueue(printer.id, 'pending'),
-  });
+  const { data: queueItems } = usePrinterQueueRows(printer.id, 'pending');
   const queueCount = queueItems?.length ?? 0;
 
   // Pull this printer's summary counters off the global queues list. Shared
   // react-query key with QueuePage means no extra network on visits that
   // already hydrated the cache.
   const { data: printerQueues } = useQuery({
+    ...farmQueryResumeOptions,
     queryKey: ['queues'],
     queryFn: api.getQueues,
     staleTime: 15000,
@@ -2244,11 +2244,7 @@ function PrinterCard({
   const printerQueue = printerQueues?.find(q => q.printer_id === printer.id);
 
   // Fetch currently printing queue item to show who started it (Issue #206)
-  const { data: printingQueueItems } = useQuery({
-    queryKey: ['queue', printer.id, 'printing'],
-    queryFn: () => api.getQueue(printer.id, 'printing'),
-    enabled: status?.state === 'RUNNING',
-  });
+  const { data: printingQueueItems } = usePrinterQueueRows(printer.id, 'printing', status?.state === 'RUNNING' || status?.state === 'PAUSE');
 
   // Fetch reprint user info (for prints started via Reprint, not queue - Issue #206)
   const { data: reprintUser } = useQuery({
@@ -2284,12 +2280,7 @@ function PrinterCard({
   // dedupes, zero extra network. We only need to know whether the widget will
   // be rendering its green "Clear & Start Next" CTA so we can hide our yellow
   // duplicate while it's visible.
-  const { data: pendingQueue } = useQuery({
-    queryKey: ['queue', printer.id, 'pending'],
-    queryFn: () => api.getQueue(printer.id, 'pending'),
-    refetchInterval: 30000,
-    enabled: status?.connected === true,
-  });
+  const pendingQueue = status?.connected === true ? queueItems : undefined;
   const hasAutoDispatchableQueue = (pendingQueue ?? []).some(i => !i.manual_start);
   const greenClearCtaVisible =
     needsPlateClear
@@ -2782,10 +2773,16 @@ function PrinterCard({
     && (status?.printable_objects_count ?? 0) >= 2
     && (status?.skip_objects_supported ?? false);
   const { data: objectsData } = useQuery({
-    queryKey: ['printableObjects', printer.id],
-    queryFn: () => api.getPrintableObjects(printer.id),
+    ...farmQueryResumeOptions,
+    queryKey: ['printableObjects', printer.id, activeArchiveId ?? 'unbound'],
+    queryFn: ({ signal }) => farmRead(`objects-${printer.id}-${activeArchiveId ?? 'unbound'}`, signal,
+      owned => api.getPrintableObjects(printer.id, owned)),
     enabled: showSkipObjectsModal || isPrintingWithObjects,
-    refetchInterval: showSkipObjectsModal ? 5000 : (isPrintingWithObjects ? 30000 : false), // 5s when modal open, 30s otherwise
+    refetchInterval: showSkipObjectsModal
+      ? query => farmPollInterval(5000, query)
+      : isPrintingWithObjects ? query => farmPollInterval(30000, query) : false,
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
   });
 
   // State for tracking which AMS slot is being refreshed
@@ -4067,7 +4064,7 @@ function PrinterCard({
                     </div>
                     {/* Filament so far — the same line the expanded card shows
                         under the file name; it polls only while printing. */}
-                    <UsageProjection printerId={printer.id} printing />
+                    <UsageProjection printerId={printer.id} printing archiveId={status.current_archive_id} />
                   </>
                 ) : (
                   <>
@@ -4175,6 +4172,7 @@ function PrinterCard({
                           <UsageProjection
                             printerId={printer.id}
                             printing={status.state === 'RUNNING' || status.state === 'PAUSE'}
+                            archiveId={status.current_archive_id}
                           />
                         </>
                       ) : (
@@ -6934,6 +6932,7 @@ function PrinterCard({
       <SkipObjectsModal
         printerId={printer.id}
         isOpen={showSkipObjectsModal}
+        archiveId={activeArchiveId}
         onClose={() => setShowSkipObjectsModal(false)}
       />
 
@@ -8705,8 +8704,8 @@ export function EditPrinterModal({
 function usePrinterOfflineStatus(printerId: number) {
   const { data: status } = useQuery({
     queryKey: ['printerStatus', printerId],
-    queryFn: () => api.getPrinterStatus(printerId),
-    refetchInterval: 30000,
+    queryFn: ({ signal }) => api.getPrinterStatus(printerId, signal),
+    refetchInterval: query => farmStatusPollInterval(30_000, query),
   });
   return !status?.connected;
 }
@@ -8896,6 +8895,17 @@ export function PrintersPage() {
   const { data: printers, isLoading } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
+  });
+
+  // One owner for the AI badge across the whole grid. Fifty badges with the
+  // same query key were still fifty independently scheduled 30 s intervals.
+  useQuery({
+    queryKey: ['obicoPrinterStatus'],
+    queryFn: api.getObicoPrinterStatus,
+    enabled: (printers?.length ?? 0) > 0,
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+    retry: false,
   });
 
   // Cameras that belong to no printer. Shared cache key with the location
@@ -9400,10 +9410,13 @@ export function PrintersPage() {
   // as the queue page's stats bar simulates it) — fetched only while that
   // order is picked; nothing else on this page reads it.
   const { data: farmForecast } = useQuery({
+    ...farmQueryResumeOptions,
     queryKey: ['queue-forecast'],
-    queryFn: api.getQueueForecast,
-    refetchInterval: 30_000,
+    queryFn: ({ signal }) => farmRead('queue-forecast', signal, owned => api.getQueueForecast(owned)),
+    refetchInterval: query => farmPollInterval(30_000, query),
     enabled: sortBy === 'freeAt',
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
   });
   const forecastRows = useMemo(() => forecastById(farmForecast), [farmForecast]);
 
@@ -9416,8 +9429,8 @@ export function PrintersPage() {
   const statusQueries = useQueries({
     queries: (printers ?? []).map((printer) => ({
       queryKey: ['printerStatus', printer.id],
-      queryFn: () => api.getPrinterStatus(printer.id),
-      refetchInterval: 30000,
+      queryFn: ({ signal }) => api.getPrinterStatus(printer.id, signal),
+      refetchInterval: (query: Parameters<typeof farmStatusPollInterval>[1]) => farmStatusPollInterval(30_000, query),
     })),
   });
   const statusByPrinter = useMemo(() => {
@@ -9510,6 +9523,12 @@ export function PrintersPage() {
 
     return sorted;
   }, [filteredPrinters, sortBy, sortAsc, statusByPrinter, forecastRows]);
+
+  // A fleet view owns one active-row read per status. A filtered single card
+  // keeps scoped reads so it does not transfer an entire large farm's rows.
+  const ownsFarmQueueRows = pageView === 'cards' && !monitorTarget && sortedPrinters.length >= 5;
+  const { data: farmPendingRows } = usePendingQueueItems(ownsFarmQueueRows);
+  const { data: farmPrintingRows } = usePrintingQueueItems(ownsFarmQueueRows);
 
   // Modifier-aware single-printer selection. Behaves like a file-manager:
   //
@@ -9899,6 +9918,7 @@ export function PrintersPage() {
   );
 
   return (
+    <FarmQueueScope rows={ownsFarmQueueRows ? { pending: farmPendingRows, printing: farmPrintingRows } : null}>
     <div className="p-4">
       {/* Header section: title with PrinterIcon + StatusSummaryBar (upstream PR #1203). */}
       {monitorTarget && <Button size="sm" variant="outline" onClick={clearMonitorTarget}>{t('monitor.clearTarget', { id: monitorTarget })}</Button>}
@@ -10207,5 +10227,6 @@ export function PrintersPage() {
         />
       )}
     </div>
+    </FarmQueueScope>
   );
 }

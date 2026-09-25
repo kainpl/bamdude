@@ -50,8 +50,8 @@ describe('OrderQueue', () => {
 
     await waitFor(() => expect(getQueue).toHaveBeenCalledTimes(2));
     // The exact call shape the queue page uses — no printer, one status each.
-    expect(getQueue).toHaveBeenCalledWith(undefined, 'pending');
-    expect(getQueue).toHaveBeenCalledWith(undefined, 'printing');
+    expect(getQueue).toHaveBeenCalledWith(undefined, 'pending', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(getQueue).toHaveBeenCalledWith(undefined, 'printing', expect.objectContaining({ signal: expect.any(AbortSignal) }));
 
     const keys = client
       .getQueryCache()

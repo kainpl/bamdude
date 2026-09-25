@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState, type DragEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   DndContext,
@@ -55,6 +55,7 @@ import { LibraryPickerModal } from './LibraryPickerModal';
 import { QueueSequencer } from './QueueSequencer';
 import type { SequencedFile } from './QueueSequencer';
 import { api, withStreamToken } from '../api/client';
+import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay, farmStatusPollInterval } from '../api/farmReadBudget';
 import type { PrinterQueue, PrintQueueItem, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
 import { useAuth } from '../contexts/AuthContext';
@@ -69,6 +70,7 @@ import { invalidateQueueViews } from '../utils/queryInvalidation';
 import { usePlateDefects } from '../hooks/usePlateDefects';
 import { PlateDefectsRow } from './PlateDefectsRow';
 import { QueueSourceIndicator } from './QueueSourceIndicator';
+import { usePrinterQueueRows, useQueueSummarySnapshot } from '../hooks/FarmQueueScope';
 
 interface QueueCardProps {
   queue: PrinterQueue;
@@ -157,46 +159,24 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
   });
   const timeFormat = (settings?.time_format ?? 'system') as 'system' | '12h' | '24h';
 
-  // Fetch pending items
-  const { data: pendingItems } = useQuery({
-    queryKey: ['queue', queue.printer_id, 'pending'],
-    queryFn: () => api.getQueue(queue.printer_id, 'pending'),
-    refetchInterval: 30000,
-  });
+  // The queue page owns farm-wide active rows. Standalone cards retain a
+  // scoped fallback instead of fetching the whole farm for one printer.
+  const { data: pendingItems } = usePrinterQueueRows(queue.printer_id, 'pending');
 
-  // Fetch failed + skipped items for the "Issues" section (retry / unskip).
-  // Combined into one query to avoid double-requests; server returns them
-  // in creation order — we slice in the client.
-  const { data: failedItems } = useQuery({
-    queryKey: ['queue', queue.printer_id, 'failed'],
-    queryFn: () => api.getQueue(queue.printer_id, 'failed'),
-    refetchInterval: 30000,
-  });
-  const { data: skippedItems } = useQuery({
-    queryKey: ['queue', queue.printer_id, 'skipped'],
-    queryFn: () => api.getQueue(queue.printer_id, 'skipped'),
-    refetchInterval: 30000,
-  });
-  const { data: cancelledItems } = useQuery({
-    queryKey: ['queue', queue.printer_id, 'cancelled'],
-    queryFn: () => api.getQueue(queue.printer_id, 'cancelled'),
-    refetchInterval: 30000,
-  });
+  const { data: queueSummary, isError: queueSummaryError, isPending: queueSummaryPending } = useQueueSummarySnapshot();
+  const issueCounts = queueSummary?.groups.find(group => group.queue_id === queue.id);
+  const issueCount = (issueCounts?.failed_count ?? 0) + (issueCounts?.skipped_count ?? 0) + (issueCounts?.cancelled_count ?? 0);
 
   // Fetch printing item (real or virtual) — used to get source badge for
   // external / direct-dispatch prints.  Virtual items have is_virtual=true.
-  const { data: printingItems } = useQuery({
-    queryKey: ['queue', queue.printer_id, 'printing'],
-    queryFn: () => api.getQueue(queue.printer_id, 'printing'),
-    refetchInterval: 10000,
-  });
+  const { data: printingItems } = usePrinterQueueRows(queue.printer_id, 'printing');
   const currentItem = printingItems?.[0];
 
   // Fetch printer status
   const { data: status } = useQuery({
     queryKey: ['printerStatus', queue.printer_id],
-    queryFn: () => api.getPrinterStatus(queue.printer_id),
-    refetchInterval: 5000,
+    queryFn: ({ signal }) => api.getPrinterStatus(queue.printer_id, signal),
+    refetchInterval: query => farmStatusPollInterval(5000, query),
   });
 
   // Pause/Resume queue mutation
@@ -1073,11 +1053,10 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
         )}
 
         {/* Issues section — failed + cancelled + skipped items with retry / unskip */}
-        {((failedItems?.length ?? 0) > 0 || (skippedItems?.length ?? 0) > 0 || (cancelledItems?.length ?? 0) > 0) && (
+        {issueCount > 0 && (
           <IssuesSection
-            failedItems={failedItems ?? []}
-            cancelledItems={cancelledItems ?? []}
-            skippedItems={skippedItems ?? []}
+            queueId={queue.id}
+            issueCount={issueCount}
             queueKey={['queue', queue.printer_id]}
             printerName={queue.printer_name ?? String(queue.printer_id)}
             hasPermission={hasPermission}
@@ -1085,6 +1064,8 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
             t={t}
           />
         )}
+        {queueSummaryError && !queueSummary && <p className="text-xs text-red-400">{t('queueCard.issues.summaryUnavailable')}</p>}
+        {queueSummaryPending && !queueSummary && <p className="text-xs text-bambu-gray">{t('queueCard.issues.summaryLoading')}</p>}
 
         {/* Footer counters — clickable shortcut to archives filtered by this printer */}
         <Link
@@ -1530,9 +1511,8 @@ function PendingItemRow({
 
 
 interface IssuesSectionProps {
-  failedItems: PrintQueueItem[];
-  cancelledItems: PrintQueueItem[];
-  skippedItems: PrintQueueItem[];
+  queueId: number;
+  issueCount: number;
   queueKey: (string | number)[];
   printerName: string;
   hasPermission: (perm: Permission) => boolean;
@@ -1552,9 +1532,8 @@ interface IssuesSectionProps {
  * deferred live work and are never part of it.
  */
 function IssuesSection({
-  failedItems,
-  cancelledItems,
-  skippedItems,
+  queueId,
+  issueCount,
   queueKey,
   printerName,
   hasPermission,
@@ -1564,8 +1543,31 @@ function IssuesSection({
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const [open, setOpen] = useState(false);
+  const [loadingAll, setLoadingAll] = useState(false);
+  const bulkLoadRef = useRef<AbortController | null>(null);
+  useEffect(() => () => bulkLoadRef.current?.abort(), []);
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: queueKey });
+  const details = useInfiniteQuery({
+    ...farmQueryResumeOptions,
+    queryKey: ['queue', 'issues', queueId],
+    queryFn: ({ pageParam, signal }) => farmRead(`queue-issues-${queueId}-${pageParam ?? 'first'}`, signal,
+      owned => api.getQueueIssues(queueId, { cursor: pageParam ?? undefined, limit: 50, signal: owned })),
+    initialPageParam: null as number | null,
+    getNextPageParam: page => page.next_cursor,
+    enabled: open,
+    refetchInterval: open ? query => farmPollInterval(30_000, query) : false,
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
+  });
+  const issueItems = details.data?.pages.flatMap(page => page.items) ?? [];
+  const failedItems = issueItems.filter(item => item.status === 'failed');
+  const cancelledItems = issueItems.filter(item => item.status === 'cancelled');
+  const skippedItems = issueItems.filter(item => item.status === 'skipped');
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: queueKey });
+    invalidateQueueViews(queryClient);
+  };
 
   const retryMutation = useMutation({
     mutationFn: (id: number) => api.retryQueueItem(id),
@@ -1592,12 +1594,8 @@ function IssuesSection({
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
-  // Only the rows this user may delete — the server's own ownership rule
-  // (canModify: *_all, or *_own on rows they created; ownerless needs *_all),
-  // so the count on the button is what actually goes.
-  const deletableFailed = failedItems.filter(item => canModify('queue', 'delete', item.created_by_id));
-  const deletableCancelled = cancelledItems.filter(item => canModify('queue', 'delete', item.created_by_id));
-  const deletableIds = [...deletableFailed, ...deletableCancelled].map(item => item.id);
+  // The bulk action fetches every page before asking for confirmation. A
+  // partial rendered page must never masquerade as "all".
   // Frozen at the click: the lists refetch behind the open dialog, and a row
   // that failed after the operator looked must not ride along unseen.
   const [confirmDeleteAll, setConfirmDeleteAll] = useState<{
@@ -1626,40 +1624,75 @@ function IssuesSection({
     },
   });
 
-  const total = failedItems.length + cancelledItems.length + skippedItems.length;
+  const loadAllForDelete = async () => {
+    bulkLoadRef.current?.abort();
+    const controller = new AbortController();
+    bulkLoadRef.current = controller;
+    setLoadingAll(true);
+    try {
+      const rows: PrintQueueItem[] = [];
+      let cursor: number | undefined;
+      do {
+        const page = await api.getQueueIssues(queueId, { cursor, limit: 100, signal: controller.signal });
+        rows.push(...page.items);
+        cursor = page.next_cursor ?? undefined;
+      } while (cursor !== undefined);
+      if (controller.signal.aborted) return;
+      const failed = rows.filter(item => item.status === 'failed' && canModify('queue', 'delete', item.created_by_id));
+      const cancelled = rows.filter(item => item.status === 'cancelled' && canModify('queue', 'delete', item.created_by_id));
+      if (failed.length + cancelled.length === 0) {
+        showToast(t('queueCard.toast.issuesNoneRemoved'), 'info');
+        return;
+      }
+      setConfirmDeleteAll({
+        ids: [...failed, ...cancelled].map(item => item.id),
+        failed: failed.length,
+        cancelled: cancelled.length,
+      });
+    } catch (error) {
+      if (!controller.signal.aborted) showToast((error as Error).message, 'error');
+    } finally {
+      if (bulkLoadRef.current === controller) {
+        bulkLoadRef.current = null;
+        setLoadingAll(false);
+      }
+    }
+  };
   const canUpdate = hasPermission('queue:update_all');
 
   return (
     <div className="space-y-1 pt-1">
       <div className="flex items-center gap-1">
         <button
-          onClick={() => setOpen(v => !v)}
+          onClick={() => {
+            if (open) bulkLoadRef.current?.abort();
+            setOpen(v => !v);
+          }}
           className="flex-1 flex items-center gap-1 text-xs text-bambu-gray hover:text-white transition-colors"
         >
           {open ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
           <AlertCircle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
-          <span>{t('queueCard.issues.header', { count: total })}</span>
+          <span>{t('queueCard.issues.header', { count: issueCount })}</span>
         </button>
-        {deletableIds.length > 0 && (
+        {(hasPermission('queue:delete_all') || hasPermission('queue:delete_own')) && issueCount > 0 && (
           <button
             onClick={(e) => {
               e.stopPropagation();
-              setConfirmDeleteAll({
-                ids: deletableIds,
-                failed: deletableFailed.length,
-                cancelled: deletableCancelled.length,
-              });
+              if (loadingAll) bulkLoadRef.current?.abort();
+              else void loadAllForDelete();
             }}
             disabled={deleteAllMutation.isPending}
             className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] text-red-700 dark:text-red-400 hover:bg-red-500/20 disabled:opacity-50"
           >
             <Trash2 className="w-3 h-3" />
-            {t('queueCard.issues.deleteAll', { count: deletableIds.length })}
+            {loadingAll ? t('queueCard.issues.cancelLoading') : t('queueCard.issues.deleteAllStart')}
           </button>
         )}
       </div>
       {open && (
         <div className="space-y-1">
+          {details.isPending && <p className="text-xs text-bambu-gray">{t('common.loading')}</p>}
+          {details.isError && <button onClick={() => void details.refetch()} className="text-xs text-red-400">{t('queueCard.issues.loadError')}</button>}
           {failedItems.map(item => {
             const name = item.archive_name || item.library_file_name || `File #${item.archive_id || item.library_file_id}`;
             return (
@@ -1771,6 +1804,11 @@ function IssuesSection({
               </div>
             );
           })}
+          {details.hasNextPage && (
+            <button onClick={() => void details.fetchNextPage()} disabled={details.isFetchingNextPage} className="text-xs text-bambu-green">
+              {details.isFetchingNextPage ? t('common.loading') : t('queueCard.issues.loadMore')}
+            </button>
+          )}
         </div>
       )}
       {confirmDeleteAll && (

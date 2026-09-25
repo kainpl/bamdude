@@ -5,9 +5,8 @@
  * to one bulk-delete call.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { screen, waitFor, fireEvent, act } from '@testing-library/react';
-import { focusManager } from '@tanstack/react-query';
-import { http, HttpResponse } from 'msw';
+import { screen, waitFor, fireEvent } from '@testing-library/react';
+import { delay, http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { QueueCard } from '../../components/QueueCard';
@@ -82,10 +81,27 @@ function signInAs(username: string, id: number, permissions: string[]) {
 }
 
 function mockQueue(byStatus: Record<string, unknown[]>) {
+  const issues = Object.values(byStatus).flat() as Array<{ id: number; status: string }>;
   server.use(
     http.get('/api/v1/queue/', ({ request }) => {
       const status = new URL(request.url).searchParams.get('status') ?? '';
       return HttpResponse.json(byStatus[status] ?? []);
+    }),
+    http.get('/api/v1/queue/summary', () => HttpResponse.json({
+      pending_count: 0,
+      groups: [{
+        queue_id: 7, printer_id: 7, pending_count: 0,
+        failed_count: byStatus.failed?.length ?? 0,
+        cancelled_count: byStatus.cancelled?.length ?? 0,
+        skipped_count: byStatus.skipped?.length ?? 0,
+      }],
+    })),
+    http.get('/api/v1/queue/issues', ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      const cursor = Number(params.get('cursor') ?? 0);
+      const limit = Number(params.get('limit') ?? 50);
+      const selected = issues.filter(item => item.id > cursor).sort((a, b) => a.id - b.id);
+      return HttpResponse.json({ items: selected.slice(0, limit), next_cursor: selected.length > limit ? selected[limit - 1].id : null });
     }),
     http.get('/api/v1/printers/7/status', () => HttpResponse.json({ state: 'IDLE' })),
   );
@@ -116,10 +132,56 @@ describe('QueueCard Issues — Delete all', () => {
     posted = answerBulkDelete((ids) => ({ deleted_count: ids.length, skipped_count: 0 }));
   });
 
+  it('keeps issue rows unloaded while closed, then pages the open section', async () => {
+    const many = Array.from({ length: 55 }, (_, index) => ({ ...row(index + 1, 'failed'), archive_name: `Issue ${index + 1}` }));
+    mockQueue({ failed: many });
+    let detailReads = 0;
+    server.use(http.get('/api/v1/queue/issues', ({ request }) => {
+      detailReads++;
+      const params = new URL(request.url).searchParams;
+      const cursor = Number(params.get('cursor') ?? 0);
+      const limit = Number(params.get('limit') ?? 50);
+      const selected = many.filter(item => item.id > cursor);
+      return HttpResponse.json({ items: selected.slice(0, limit), next_cursor: selected.length > limit ? selected[limit - 1].id : null });
+    }));
+    renderCard();
+    const header = await screen.findByText('Issues (55)');
+    expect(detailReads).toBe(0);
+    fireEvent.click(header);
+    expect(await screen.findByText('Issue 50')).toBeInTheDocument();
+    expect(screen.queryByText('Issue 55')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more issues' }));
+    expect(await screen.findByText('Issue 55')).toBeInTheDocument();
+    expect(detailReads).toBe(2);
+  });
+
+  it('loads every page before freezing bulk-delete IDs', async () => {
+    mockQueue({ failed: Array.from({ length: 101 }, (_, index) => row(index + 1, 'failed')) });
+    renderCard();
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete all…' }));
+    expect(await screen.findByRole('dialog')).toHaveTextContent('failed: 101, cancelled: 0?');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(posted).toEqual([Array.from({ length: 101 }, (_, index) => index + 1)]));
+  });
+
+  it('cannot open confirmation or write after cancelling a slow bulk load', async () => {
+    server.use(http.get('/api/v1/queue/issues', async () => {
+      await delay(150);
+      return HttpResponse.json({ items: [row(1, 'failed')], next_cursor: null });
+    }));
+    renderCard();
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete all…' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel loading' }));
+    await screen.findByRole('button', { name: 'Delete all…' });
+    await delay(200);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(posted).toEqual([]);
+  });
+
   it('counts failed and cancelled but not skipped, asks, then sends exactly those ids', async () => {
     renderCard();
 
-    const button = await screen.findByRole('button', { name: 'Delete all (3)' });
+    const button = await screen.findByRole('button', { name: 'Delete all…' });
     fireEvent.click(button);
 
     // Counts stand after labels, never before a noun: two numbers in one
@@ -138,7 +200,7 @@ describe('QueueCard Issues — Delete all', () => {
     mockQueue({ cancelled: [row(3, 'cancelled')] });
     renderCard();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete all (1)' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete all…' }));
 
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveTextContent('failed: 0, cancelled: 1?');
@@ -148,7 +210,7 @@ describe('QueueCard Issues — Delete all', () => {
   it('does not open or close the section', async () => {
     renderCard();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete all (3)' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete all…' }));
 
     // The rows only render while the section is open; it starts collapsed.
     expect(screen.queryByText('W49699__upd_plate_1')).toBeNull();
@@ -165,7 +227,7 @@ describe('QueueCard Issues — Delete all', () => {
     renderCard();
 
     await screen.findByText('user:op');
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete all (1)' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete all…' }));
     expect(await screen.findByRole('dialog')).toHaveTextContent('failed: 1, cancelled: 0?');
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
 
@@ -173,31 +235,13 @@ describe('QueueCard Issues — Delete all', () => {
   });
 
   it('confirms what it showed, even if the list moved while the dialog was open', async () => {
-    let failedServed = 0;
-    let failed = [row(1, 'failed'), row(2, 'failed')];
-    server.use(
-      http.get('/api/v1/queue/', ({ request }) => {
-        const status = new URL(request.url).searchParams.get('status') ?? '';
-        if (status === 'failed') {
-          failedServed += 1;
-          return HttpResponse.json(failed);
-        }
-        return HttpResponse.json(status === 'cancelled' ? [row(3, 'cancelled')] : []);
-      }),
-    );
     renderCard();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete all (3)' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete all…' }));
     await screen.findByRole('dialog');
 
-    // A new failure lands and the lists refetch behind the open dialog.
-    failed = [...failed, row(5, 'failed')];
-    const before = failedServed;
-    act(() => {
-      focusManager.setFocused(false);
-      focusManager.setFocused(true);
-    });
-    await waitFor(() => expect(failedServed).toBeGreaterThan(before));
+    // A later response differs, but the confirmation retains its frozen IDs.
+    mockQueue({ failed: [row(1, 'failed'), row(2, 'failed'), row(5, 'failed')], cancelled: [row(3, 'cancelled')] });
 
     expect(screen.getByRole('dialog')).toHaveTextContent('failed: 2, cancelled: 1?');
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
@@ -208,7 +252,7 @@ describe('QueueCard Issues — Delete all', () => {
     posted = answerBulkDelete(() => ({ deleted_count: 2, skipped_count: 1 }));
     renderCard();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete all (3)' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete all…' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
 
     expect(await screen.findByText('2 removed')).toBeInTheDocument();
@@ -219,7 +263,7 @@ describe('QueueCard Issues — Delete all', () => {
     posted = answerBulkDelete(() => ({ deleted_count: 0, skipped_count: 3 }));
     renderCard();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete all (3)' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete all…' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
 
     expect(await screen.findByText('Nothing removed — the jobs changed or were removed meanwhile')).toBeInTheDocument();
@@ -230,7 +274,7 @@ describe('QueueCard Issues — Delete all', () => {
     posted = answerBulkDelete(() => HttpResponse.json({ detail: 'The queue is busy' }, { status: 500 }));
     renderCard();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete all (3)' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete all…' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
 
     expect(await screen.findByText('The queue is busy')).toBeInTheDocument();

@@ -219,7 +219,7 @@ export function PrinterSelector({
   const statusQueries = useQueries({
     queries: activePrinters.map((printer) => ({
       queryKey: ['printerStatus', printer.id],
-      queryFn: () => api.getPrinterStatus(printer.id),
+      queryFn: ({ signal }: { signal: AbortSignal }) => api.getPrinterStatus(printer.id, signal),
       staleTime: 5000,
     })),
   });

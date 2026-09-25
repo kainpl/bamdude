@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { Printer as PrinterIcon, ListTodo, AlertTriangle, Timer, Shuffle } from 'lucide-react';
 import { api, type PrinterQueue } from '../../api/client';
+import { farmQueryResumeOptions } from '../../api/farmReadBudget';
 
 interface Props {
   queues: PrinterQueue[] | undefined;
@@ -39,7 +40,8 @@ function formatDuration(totalSeconds: number): string {
 export function QueueStatsBar({ queues, unassignedCount }: Props) {
   const { t } = useTranslation();
 
-  const { data: forecast } = useQuery({ queryKey: ['queue-forecast'], queryFn: api.getQueueForecast, refetchInterval: 30_000 });
+  // QueuePage owns the 30 s refresh; this is only a second observer.
+  const { data: forecast } = useQuery({ ...farmQueryResumeOptions, queryKey: ['queue-forecast'], queryFn: ({ signal }) => api.getQueueForecast(signal) });
 
   const stats = useMemo(() => {
     const printing = queues?.filter(q => q.status === 'printing').length ?? 0;

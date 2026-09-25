@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { UsageProjection } from '../../components/UsageProjection';
+import { api } from '../../api/client';
 
 vi.mock('../../api/client', () => ({
   api: {
@@ -53,5 +54,45 @@ describe('UsageProjection', () => {
   it('renders nothing for an idle printer', () => {
     const { container } = renderWithQuery(<UsageProjection printerId={1} printing={false} />);
     expect(container.firstChild).toBeNull();
+  });
+
+  it('does not show the prior run when the same printer starts a new archive', async () => {
+    const priorRun = await api.getUsageProjection(1);
+    let finishNewRun!: (value: typeof priorRun) => void;
+    vi.mocked(api.getUsageProjection)
+      .mockResolvedValueOnce(priorRun)
+      .mockImplementationOnce(() => new Promise((resolve) => { finishNewRun = resolve; }));
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <UsageProjection printerId={1} printing archiveId={5} />
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId('usage-projection');
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <UsageProjection printerId={1} printing archiveId={6} />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByTestId('usage-projection')).toBeNull();
+    finishNewRun({ ...priorRun, archive_id: 6 });
+    await screen.findByTestId('usage-projection');
+  });
+
+  it('stays blank until a late archive attaches, then shows that run only', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (archiveId: number | null) => <QueryClientProvider client={client}>
+      <UsageProjection printerId={1} printing archiveId={archiveId} />
+    </QueryClientProvider>;
+    const view = render(tree(null));
+    expect(screen.queryByTestId('usage-projection')).toBeNull();
+    view.rerender(tree(5));
+    await screen.findByTestId('usage-projection');
+    view.rerender(<QueryClientProvider client={client}>
+      <UsageProjection printerId={1} printing={false} archiveId={5} />
+    </QueryClientProvider>);
+    expect(screen.queryByTestId('usage-projection')).toBeNull();
   });
 });

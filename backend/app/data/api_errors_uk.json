@@ -32,6 +32,7 @@
   "API key owner does not have '{}' permission": "Власник API-ключа не має дозволу «{}»",
   "API key owner is deactivated or no longer exists": "Власника API-ключа деактивовано або він більше не існує",
   "API key required. Provide 'X-API-Key' header or 'Authorization: Bearer <key>'": "Потрібен API-ключ. Передайте заголовок «X-API-Key» або «Authorization: Bearer <key>»",
+  "API key validation is busy": "Перевірка API-ключів перевантажена. Повторіть запит пізніше",
   "API keys cannot be used for administrative operations": "API-ключі не можна використовувати для адміністративних операцій",
   "API keys cannot be used for unspecified permissions": "API-ключі не можна використовувати для невизначених дозволів",
   "Access code is required when enabling": "Код доступу обовʼязковий при увімкненні",

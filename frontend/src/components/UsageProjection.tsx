@@ -2,11 +2,14 @@ import { useQuery } from '@tanstack/react-query';
 import { Droplets, Split } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
+import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay } from '../api/farmReadBudget';
 
 interface Props {
   printerId: number;
   /** Gate the polling on the parent's live state — no requests for idle printers. */
   printing: boolean;
+  /** Archive identity, not filename: repeat prints must not reuse old usage. */
+  archiveId?: number | null;
 }
 
 /**
@@ -14,17 +17,22 @@ interface Props {
  * computes it from the usage journal + per-layer G-code cumulative and writes
  * nothing — the books are written once, at completion.
  */
-export function UsageProjection({ printerId, printing }: Props) {
+export function UsageProjection({ printerId, printing, archiveId }: Props) {
   const { t } = useTranslation();
   const { data } = useQuery({
-    queryKey: ['usage-projection', printerId],
-    queryFn: () => api.getUsageProjection(printerId),
+    ...farmQueryResumeOptions,
+    queryKey: ['usage-projection', printerId, archiveId ?? 'unbound'],
+    queryFn: ({ signal }) => farmRead(`usage-${printerId}-${archiveId ?? 'unbound'}`, signal,
+      owned => api.getUsageProjection(printerId, owned)),
     enabled: printing,
-    refetchInterval: 30_000,
+    refetchInterval: query => farmPollInterval(30_000, query),
     staleTime: 25_000,
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
   });
 
-  if (!printing || !data?.active || !data.slots?.length) return null;
+  if (!printing || !data?.active || !data.slots?.length
+    || (archiveId !== undefined && (archiveId === null || data.archive_id !== archiveId))) return null;
 
   const total = data.slots.reduce((sum, s) => sum + s.consumed_g, 0);
   const estimate = data.slots.reduce((sum, s) => sum + s.estimate_g, 0);

@@ -10,7 +10,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import String, and_, case, cast, delete, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -1080,7 +1080,11 @@ _SPOOL_IDS_CAP = 50_000
 
 
 def _spool_to_list_item(
-    s: Spool, *, include_k_profiles: bool = False, archived_printer_ids: set[int] | None = None
+    s: Spool,
+    *,
+    include_k_profiles: bool = False,
+    archived_printer_ids: set[int] | None = None,
+    k_profile_count_override: int | None = None,
 ) -> SpoolListItem:
     """Slim list-row projection — every ``SpoolListItem`` field, built
     explicitly (never ``model_validate(s)``: ``k_profile_count`` has no
@@ -1089,10 +1093,9 @@ def _spool_to_list_item(
     implicit lazy load, so touching an unloaded relationship here would raise,
     not silently N+1.
 
-    ``include_k_profiles`` (task 4, 2026-08-29): serialize the full
-    ``k_profiles`` array too — the cards-view opt-in (see
-    ``SpoolListItem``'s docstring). The rows are eager-loaded regardless, so
-    this is a serialization-only switch, never an extra query."""
+    ``include_k_profiles`` (task 4, 2026-08-29) serializes the full profile
+    array. The assignment picker passes a scalar count override so its bounded
+    page never hydrates profile/calibration ORM rows."""
     # ⚠️ A K-profile on an ARCHIVED printer is history, not an option. Archiving
     # retires a machine and hides it everywhere while keeping its history, so a
     # spool calibrated on it still carries the link — and showing it here reads
@@ -1104,11 +1107,12 @@ def _spool_to_list_item(
     #
     # ``None`` means the caller did not ask the question (single-spool reads,
     # where the full set is the point) and everything is kept.
-    visible_k_profiles = (
-        s.k_profiles
-        if archived_printer_ids is None
-        else [kp for kp in s.k_profiles if kp.printer_id not in archived_printer_ids]
-    )
+    if k_profile_count_override is not None:
+        visible_k_profiles = []
+    elif archived_printer_ids is None:
+        visible_k_profiles = s.k_profiles
+    else:
+        visible_k_profiles = [kp for kp in s.k_profiles if kp.printer_id not in archived_printer_ids]
     return SpoolListItem(
         id=s.id,
         material=s.material,
@@ -1151,7 +1155,7 @@ def _spool_to_list_item(
         archived_at=s.archived_at,
         created_at=s.created_at,
         updated_at=s.updated_at,
-        k_profile_count=len(visible_k_profiles),
+        k_profile_count=k_profile_count_override if k_profile_count_override is not None else len(visible_k_profiles),
         k_profiles=(
             [SpoolKProfileResponse.model_validate(kp) for kp in visible_k_profiles] if include_k_profiles else None
         ),
@@ -1481,6 +1485,155 @@ async def spool_facets(
     filters = await inventory_service.build_spool_filters(db, archived=archived)
     facets = await inventory_service.spool_facets(db, filters=filters)
     return SpoolFacetsResponse(**facets)
+
+
+class SpoolFamilyColor(BaseModel):
+    hex_color: str
+    color_name: str
+
+
+@router.get("/spools/family-colors", response_model=list[SpoolFamilyColor])
+async def spool_family_colors(
+    filament_family_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> list[SpoolFamilyColor]:
+    """Only the active, distinct local spool colours for one exact family ID."""
+    # The old UI iterated the default spool ordering, then kept the first
+    # colour name for each hex. Preserve that representative, not MIN(name).
+    hex_color = func.upper(func.substr(Spool.rgba, 1, 6))
+    ranked = (
+        select(
+            hex_color.label("hex_color"),
+            Spool.color_name.label("color_name"),
+            Spool.material.label("material"),
+            Spool.brand.label("brand"),
+            Spool.id.label("spool_id"),
+            func.row_number()
+            .over(
+                partition_by=hex_color,
+                order_by=(Spool.material, Spool.brand, Spool.color_name, Spool.id),
+            )
+            .label("rank"),
+        )
+        .where(
+            Spool.archived_at.is_(None),
+            Spool.filament_family_id == filament_family_id,
+            Spool.rgba.isnot(None),
+            func.length(Spool.rgba) > 0,
+        )
+        .subquery()
+    )
+    rows = await db.execute(
+        select(ranked.c.hex_color, ranked.c.color_name)
+        .where(ranked.c.rank == 1)
+        .order_by(ranked.c.material, ranked.c.brand, ranked.c.color_name, ranked.c.spool_id)
+    )
+    return [SpoolFamilyColor(hex_color=f"#{color}", color_name=name or "") for color, name in rows.all()]
+
+
+@router.get("/spools/picker", response_model=SpoolListPage)
+async def spool_picker(
+    printer_id: int,
+    ams_id: int,
+    tray_id: int,
+    tray_material: str = "",
+    tray_profile: str = "",
+    q: str = "",
+    show_all: bool = False,
+    replacing_spool_id: int | None = None,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> SpoolListPage:
+    """Server-filtered local assignment picker; legacy spool list is unchanged."""
+    filters = [Spool.archived_at.is_(None)]
+    if replacing_spool_id is not None:
+        filters.append(Spool.id != replacing_spool_id)
+
+    if not show_all:
+        other_slot = (
+            select(SpoolAssignment.id)
+            .where(
+                SpoolAssignment.spool_id == Spool.id,
+                or_(
+                    SpoolAssignment.printer_id != printer_id,
+                    SpoolAssignment.ams_id != ams_id,
+                    SpoolAssignment.tray_id != tray_id,
+                ),
+            )
+            .exists()
+        )
+        filters.append(~other_slot)
+        profile = tray_profile.split("@", 1)[0].strip().upper()
+        material = tray_material.strip().upper()
+        if profile or material:
+            spool_profile = func.upper(
+                func.trim(
+                    func.coalesce(func.nullif(func.trim(Spool.slicer_filament_name), ""), Spool.slicer_filament, "")
+                )
+            )
+            spool_material = func.upper(func.trim(func.coalesce(Spool.material, "")))
+            checks = [and_(spool_profile == "", spool_material == "")]
+            if profile:
+                # Match the old split('@')[0].trim() exactly, including any
+                # number of spaces before the qualifier. The position
+                # function is the only dialect-specific part of this read.
+                at_pos = (
+                    func.strpos(spool_profile, "@")
+                    if db.get_bind().dialect.name == "postgresql"
+                    else func.instr(spool_profile, "@")
+                )
+                checks.append(
+                    case(
+                        (at_pos > 0, func.trim(func.substr(spool_profile, 1, at_pos - 1))),
+                        else_=spool_profile,
+                    )
+                    == profile
+                )
+            if material:
+                checks.append(
+                    and_(
+                        spool_material != "",
+                        or_(
+                            spool_material == material,
+                            spool_material.contains(material, autoescape=True),
+                            literal(material).contains(spool_material),
+                        ),
+                    )
+                )
+            filters.append(or_(*checks))
+
+    if q.strip():
+        display = inventory_service.display_name_expr(await inventory_service.spool_display_template(db))
+        haystack = cast(Spool.id, String) + literal(" ") + (display if display is not None else literal(""))
+        for token in q.strip().split():
+            escaped = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            filters.append(haystack.ilike(f"%{escaped}%", escape="\\"))
+
+    total = await inventory_service.count_spools(db, filters=filters)
+    spools = await inventory_service.list_spools(
+        db, filters=filters, limit=per_page, offset=(page - 1) * per_page, load_k_profiles=False
+    )
+    profile_counts: dict[int, int] = {}
+    if spools:
+        rows = await db.execute(
+            select(SpoolKProfile.spool_id, func.count(SpoolKProfile.id))
+            .join(Printer, Printer.id == SpoolKProfile.printer_id)
+            .where(SpoolKProfile.spool_id.in_([spool.id for spool in spools]), Printer.archived.is_(False))
+            .group_by(SpoolKProfile.spool_id)
+        )
+        profile_counts = dict(rows.all())
+    return SpoolListPage(
+        items=[_spool_to_list_item(s, k_profile_count_override=profile_counts.get(s.id, 0)) for s in spools],
+        meta=PaginationMeta(
+            total=total,
+            current_page=page,
+            per_page=per_page,
+            last_page=max(1, math.ceil(total / per_page)),
+        ),
+    )
 
 
 @router.get("/stats", response_model=InventoryStatsResponse)

@@ -4,7 +4,9 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Calendar, LayoutGrid } from 'lucide-react';
 import { api } from '../api/client';
-import { usePendingQueueItems, usePrintingQueueItems } from '../hooks/useQueueItems';
+import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay } from '../api/farmReadBudget';
+import { usePendingQueueItems, usePrintingQueueItems, useQueueSummary } from '../hooks/useQueueItems';
+import { FarmQueueScope } from '../hooks/FarmQueueScope';
 import { compareLocationNames } from '../utils/locationOrder';
 import { readStoredQueueSort, sortQueues, type QueueSortOption } from '../utils/queueOrder';
 import { forecastById, type EtaStatus } from '../utils/etaSort';
@@ -134,9 +136,12 @@ export function QueuePage() {
 
   // Fetch all printer queues
   const { data: queues, isLoading } = useQuery({
+    ...farmQueryResumeOptions,
     queryKey: ['queues'],
-    queryFn: api.getQueues,
-    refetchInterval: 15000,
+    queryFn: ({ signal }) => farmRead('queues', signal, owned => api.getQueues({ signal: owned })),
+    refetchInterval: query => farmPollInterval(15_000, query),
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
   });
 
   // Queue cards use the same printerStatus key as the Printers page. Start
@@ -146,7 +151,7 @@ export function QueuePage() {
     for (const queue of queues ?? []) {
       void queryClient.prefetchQuery({
         queryKey: ['printerStatus', queue.printer_id],
-        queryFn: () => api.getPrinterStatus(queue.printer_id),
+        queryFn: ({ signal }) => api.getPrinterStatus(queue.printer_id, signal),
       });
     }
   }, [queues, queryClient]);
@@ -154,7 +159,14 @@ export function QueuePage() {
   // The server's per-printer «free at» — what the queue-aware sort orders by.
   // The stats bar holds the same query, so this is a second observer of one
   // fetch, not a second fetch.
-  const { data: forecast } = useQuery({ queryKey: ['queue-forecast'], queryFn: api.getQueueForecast, refetchInterval: 30_000 });
+  const { data: forecast } = useQuery({
+    ...farmQueryResumeOptions,
+    queryKey: ['queue-forecast'],
+    queryFn: ({ signal }) => farmRead('queue-forecast', signal, owned => api.getQueueForecast(owned)),
+    refetchInterval: query => farmPollInterval(30_000, query),
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
+  });
   const forecastRows = useMemo(() => forecastById(forecast), [forecast]);
 
   // Fetch all pending items - used by stats bar + "All" view + Timeline.
@@ -164,14 +176,19 @@ export function QueuePage() {
   // Auto-queue work still waiting to be routed. Shares its key with the nav
   // badge so TanStack serves both from one request.
   const { data: unassignedAutoItems } = useQuery({
+    ...farmQueryResumeOptions,
     queryKey: ['auto-queue', 'pending'],
-    queryFn: () => api.getAutoQueue('pending'),
-    refetchInterval: 30000,
+    queryFn: ({ signal }) => farmRead('auto-queue-pending', signal,
+      owned => api.getAutoQueue('pending', undefined, { signal: owned })),
+    refetchInterval: query => farmPollInterval(30_000, query),
+    retry: farmReadRetry,
+    retryDelay: farmReadRetryDelay,
   });
 
   // Fetch all printing items (real + virtual external/direct) so Timeline
   // can lay out the "now" slot even for prints initiated outside BamDude.
   const { data: allPrintingItems } = usePrintingQueueItems();
+  const queueSummaryResult = useQueueSummary(true, false);
 
   // Combined list for Timeline — pending + printing.  Printing items (real
   // + virtual) anchor each lane's "currently running" slot.
@@ -322,6 +339,7 @@ export function QueuePage() {
   );
 
   return (
+    <FarmQueueScope rows={{ pending: allPendingItems, printing: allPrintingItems, summary: queueSummaryResult.data, summaryError: queueSummaryResult.isError, summaryPending: queueSummaryResult.isPending }}>
     <div className="p-4">
       {monitorTarget && <Button size="sm" variant="outline" onClick={clearMonitorTarget}>{t('monitor.clearTarget', { id: monitorTarget })}</Button>}
       {/* Header: title + inline toolbar (search / filters / view modes) */}
@@ -503,5 +521,6 @@ export function QueuePage() {
         />
       )}
     </div>
+    </FarmQueueScope>
   );
 }

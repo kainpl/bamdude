@@ -14,9 +14,11 @@ import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateMetadata, P
 import type { MonitorSnapshot, MonitorView } from '../features/monitor/types';
 import { isMonitorKioskLocation } from '../features/monitor/location';
 import { createPrinterStatusBatcher } from './printerStatusBatch';
+import { farmRead, farmReadBudget } from './farmReadBudget';
 
 export class ApiError extends Error {
   status: number;
+  retryAfterMs?: number;
   /**
    * The machine-readable refusal code, when the server sent one.
    *
@@ -29,11 +31,12 @@ export class ApiError extends Error {
    * server-side anyway.
    */
   code?: string;
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, code?: string, retryAfterMs?: number) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -43,6 +46,7 @@ const API_BASE = '/api/v1';
 
 // Auth token storage
 let authToken: string | null = localStorage.getItem('auth_token');
+let authEpoch = 0;
 
 // Proactive-refresh plumbing — see ``scheduleProactiveRefresh`` below.
 const REFRESH_SAFETY_MS = 60_000;
@@ -56,7 +60,7 @@ let proactiveRefreshTimer: number | null = null;
  * verify the signature — that's the server's job — we only need ``exp``
  * to schedule a proactive refresh before the token dies.
  */
-function decodeJwt(token: string): { exp?: number; iat?: number } | null {
+function decodeJwt(token: string): { exp?: number; iat?: number; sub?: string } | null {
   try {
     const payload = token.split('.')[1];
     if (!payload) return null;
@@ -127,6 +131,11 @@ function scheduleProactiveRefresh() {
 }
 
 export function setAuthToken(token: string | null) {
+  if ((authToken === null) !== (token === null)
+    || (authToken && token && decodeJwt(authToken)?.sub !== decodeJwt(token)?.sub)) {
+    authEpoch++;
+    farmReadBudget.reset();
+  }
   authToken = token;
   if (token) {
     localStorage.setItem('auth_token', token);
@@ -437,8 +446,9 @@ function formatErrorDetail(detail: unknown, status: number): string {
  * a definitive AUTH decision (stop) against a transient 5xx/network blip
  * (retry), and `InventoryPage` keys 404/503 handling off `err.status`.
  */
-async function handleErrorResponse(response: Response, __isRetry: boolean): Promise<void> {
+async function handleErrorResponse(response: Response, __isRetry: boolean, signal?: AbortSignal): Promise<void> {
   const error = await response.json().catch(() => ({}));
+  signal?.throwIfAborted();
   const message = formatErrorDetail(error.detail, response.status);
   const code = refusalCode(error.detail);
 
@@ -447,6 +457,7 @@ async function handleErrorResponse(response: Response, __isRetry: boolean): Prom
     if (refreshable) {
       // Try to refresh once. Coalesced across concurrent 401s.
       const ok = await refreshAccessToken();
+      signal?.throwIfAborted();
       if (ok) return;
       // Refresh failed (no cookie, replay detected, refresh expired, etc.)
       // — fall through to the invalidated-session path below.
@@ -466,7 +477,12 @@ async function handleErrorResponse(response: Response, __isRetry: boolean): Prom
     }
   }
 
-  throw new ApiError(message, response.status, code);
+  const retryAfter = response.headers.get('retry-after');
+  const seconds = retryAfter === null ? NaN : Number(retryAfter);
+  const retryAfterMs = Number.isFinite(seconds) && seconds >= 0
+    ? seconds * 1000
+    : retryAfter ? Math.max(0, Date.parse(retryAfter) - Date.now()) : undefined;
+  throw new ApiError(message, response.status, code, Number.isFinite(retryAfterMs) ? retryAfterMs : undefined);
 }
 
 /**
@@ -503,6 +519,7 @@ async function request<T>(
   options: RequestInit = {},
   __isRetry = false,
 ): Promise<T> {
+  options.signal?.throwIfAborted();
   // Pre-emptive refresh: if the access token is past or within
   // REFRESH_SAFETY_MS of expiry, await a refresh BEFORE issuing the request
   // so it goes out with a fresh token. Avoids the 401 burst that sprays the
@@ -514,6 +531,7 @@ async function request<T>(
   // call coalesces with this one).
   if (authToken && !__isRetry && isTokenNearExpiry()) {
     await refreshAccessToken();
+    options.signal?.throwIfAborted();
   }
 
   const headers: Record<string, string> = {
@@ -548,17 +566,22 @@ async function request<T>(
 
   if (!response.ok) {
     // Either throws, or says "refreshed — send it again".
-    await handleErrorResponse(response, __isRetry);
+    options.signal?.throwIfAborted();
+    await handleErrorResponse(response, __isRetry, options.signal ?? undefined);
+    options.signal?.throwIfAborted();
     return request<T>(endpoint, options, true);
   }
 
   // Handle empty responses (204 No Content, etc.)
+  options.signal?.throwIfAborted();
   const contentLength = response.headers.get('content-length');
   if (response.status === 204 || contentLength === '0') {
     return undefined as T;
   }
 
-  return await response.json();
+  const data = await response.json();
+  options.signal?.throwIfAborted();
+  return data as T;
 }
 
 // Printer types
@@ -4614,6 +4637,26 @@ export interface PrinterQueue {
   updated_at: string;
 }
 
+export interface QueueSummaryGroup {
+  queue_id: number;
+  printer_id: number | null;
+  pending_count: number;
+  failed_count: number;
+  skipped_count: number;
+  cancelled_count: number;
+}
+
+export interface QueueSummary {
+  pending_count: number;
+  /** A missing group in a successful summary means zero rows for that queue. */
+  groups: QueueSummaryGroup[];
+}
+
+export interface QueueIssuesPage {
+  items: PrintQueueItem[];
+  next_cursor: number | null;
+}
+
 export interface PrintQueueBulkUpdate {
   item_ids: number[];
   queue_id?: number | null;
@@ -4768,6 +4811,10 @@ export interface AutoQueueStats {
   failed_count: number;
   cancelled_count: number;
   total_count: number;
+}
+
+export interface AutoQueuePendingSummary {
+  pending_count: number;
 }
 
 export interface AutoQueueItemCreate {
@@ -5479,8 +5526,8 @@ export interface InventorySpool {
 
 // ── Server-driven spool list (task 4, 2026-08-29 server-driven-lists) ────────
 // Params for the paged GET /inventory/spools surface (tasks 1-3). Consumed
-// only by getSpoolsPaged / getSpoolGroupsPaged / getSpoolIds below — every
-// other consumer stays on the legacy flat `getSpools`.
+// by paged inventory and bounded local pickers; legacy flat getSpools remains
+// available for scripts and callers that intentionally need the whole list.
 export interface SpoolListParams {
   /** ⚠️ ALWAYS send this from tab-scoped UI: the paged branch ignores the
    *  legacy `include_archived` entirely, and omitting `archived` means "both
@@ -7322,9 +7369,17 @@ export interface UsageProjection {
 }
 
 const printerStatusReads = createPrinterStatusBatcher(
-  id => request<PrinterStatus>(`/printers/${id}/status`, { signal: AbortSignal.timeout(15_000) }),
-  ids => request<Record<string, PrinterStatus>>(`/printers/status/batch?${ids.map(id => `ids=${id}`).join('&')}`, { signal: AbortSignal.timeout(15_000) }),
+  (id, signal) => {
+    return farmRead(`printer-status:${id}`, signal, owned => request<PrinterStatus>(`/printers/${id}/status`, { signal: owned }));
+  },
+  (ids, signal) => {
+    return farmRead(`printer-status-batch:${ids.join(',')}`, signal, owned =>
+      request<Record<string, PrinterStatus>>(`/printers/status/batch?${ids.map(id => `ids=${id}`).join('&')}`, { signal: owned }));
+  },
   () => new ApiError('Printer not found', 404),
+  () => authEpoch,
+  // Grid-aligned card fallbacks fire a millisecond apart; one batch per tick.
+  20,
 );
 
 // Only tracks outstanding reads; never stores a second status cache.
@@ -7573,7 +7628,7 @@ export const api = {
 
   // Printers
   getPrinters: () => request<Printer[]>('/printers/'),
-  getUsageProjection: (id: number) => request<UsageProjection>(`/printers/${id}/usage-projection`),
+  getUsageProjection: (id: number, signal?: AbortSignal) => request<UsageProjection>(`/printers/${id}/usage-projection`, { signal }),
   // Includes archived (soft-retired) printers — used by the Settings restore
   // section and the Archives history filter. A separate method (not a param on
   // getPrinters) so the many bare `queryFn: api.getPrinters` call sites keep
@@ -7864,7 +7919,7 @@ export const api = {
     ),
 
   // Skip Objects
-  getPrintableObjects: (printerId: number) =>
+  getPrintableObjects: (printerId: number, signal?: AbortSignal) =>
     request<{
       objects: Array<{ id: number; name: string; x: number | null; y: number | null; norm?: boolean; skipped: boolean; marker: { x: number; y: number } }>;
       total: number;
@@ -7874,7 +7929,7 @@ export const api = {
       // True when not one object could be located in the plate's colour map, so
       // every marker came from the grid fallback rather than the real layout.
       positions_approximate?: boolean;
-    }>(`/printers/${printerId}/print/objects`),
+    }>(`/printers/${printerId}/print/objects`, { signal }),
 
   /** Start or stop recording this printer's MQTT traffic to a file.
    *
@@ -9313,11 +9368,19 @@ export const api = {
     }),
 
   // Print Queue
-  getQueue: (queueId?: number, status?: string) => {
+  getQueue: (queueId?: number, status?: string, options?: { signal?: AbortSignal }) => {
     const params = new URLSearchParams();
     if (queueId) params.set('queue_id', String(queueId));
     if (status) params.set('status', status);
-    return request<PrintQueueItem[]>(`/queue/?${params}`);
+    return request<PrintQueueItem[]>(`/queue/?${params}`, { signal: options?.signal });
+  },
+  getQueueSummary: (options?: { signal?: AbortSignal }) =>
+    request<QueueSummary>('/queue/summary', { signal: options?.signal }),
+  getQueueIssues: (queueId: number, options?: { cursor?: number; limit?: number; signal?: AbortSignal }) => {
+    const params = new URLSearchParams({ queue_id: String(queueId) });
+    if (options?.cursor !== undefined) params.set('cursor', String(options.cursor));
+    if (options?.limit !== undefined) params.set('limit', String(options.limit));
+    return request<QueueIssuesPage>(`/queue/issues?${params}`, { signal: options?.signal });
   },
   getQueueItem: (id: number) => request<PrintQueueItem>(`/queue/${id}`),
   /**
@@ -9363,7 +9426,7 @@ export const api = {
   removeFromQueue: (id: number) =>
     request<{ message: string }>(`/queue/${id}`, { method: 'DELETE' }),
   getStaggerState: () => request<StaggerState>('/queue/stagger-state'),
-  getQueueForecast: () => request<FarmForecast>('/queue/forecast'),
+  getQueueForecast: (signal?: AbortSignal) => request<FarmForecast>('/queue/forecast', { signal }),
   // Queue item commands
   reorderQueueItem: (id: number, direction: 'up' | 'down') =>
     request<{ moved: number; direction: string; block_size: number }>(
@@ -9439,12 +9502,12 @@ export const api = {
     }),
 
   // Auto Queue — single global router-queue above per-printer queues
-  getAutoQueue: (status?: 'pending' | 'assigned' | 'cancelled' | 'failed' | 'pending,failed', batchId?: string) => {
+  getAutoQueue: (status?: 'pending' | 'assigned' | 'cancelled' | 'failed' | 'pending,failed', batchId?: string, options?: { signal?: AbortSignal }) => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     if (batchId) params.set('batch_id', batchId);
     const qs = params.toString();
-    return request<AutoQueueItem[]>(`/auto-queue/${qs ? `?${qs}` : ''}`);
+    return request<AutoQueueItem[]>(`/auto-queue/${qs ? `?${qs}` : ''}`, { signal: options?.signal });
   },
   previewAutoQueueRouting: (data: { archive_id?: number; library_file_id?: number; plate_ids: number[];
     target_location_id?: number | null; feed_policy?: FeedPolicy; force_color_match: boolean;
@@ -9455,7 +9518,9 @@ export const api = {
     targets: PrinterRoutingTarget[]; feed_policy?: FeedPolicy; force_color_match: boolean;
     allow_base_material_match: boolean; filament_overrides?: AutoQueueFilamentOverride[] }) =>
     request<PrinterRoutingPreview>('/auto-queue/printer-routing-preview', { method: 'POST', body: JSON.stringify(data) }),
-  getAutoQueueStats: () => request<AutoQueueStats>('/auto-queue/stats'),
+  getAutoQueueStats: (signal?: AbortSignal) => request<AutoQueueStats>('/auto-queue/stats', { signal }),
+  getAutoQueuePendingSummary: (options?: { signal?: AbortSignal }) =>
+    request<AutoQueuePendingSummary>('/auto-queue/summary', { signal: options?.signal }),
   getAutoQueueItem: (id: number) => request<AutoQueueItem>(`/auto-queue/${id}`),
   addToAutoQueue: (data: AutoQueueItemCreate) =>
     request<AutoQueueItem>('/auto-queue/', {
@@ -9520,8 +9585,8 @@ export const api = {
     }),
 
   // Printer Queues (queue-level operations)
-  getQueues: () =>
-    request<PrinterQueue[]>('/queues/'),
+  getQueues: (options?: { signal?: AbortSignal }) =>
+    request<PrinterQueue[]>('/queues/', { signal: options?.signal }),
   updateQueue: (queueId: number, data: { status?: 'idle' | 'paused'; is_paused?: boolean; auto_distribute_eligible?: boolean }) =>
     request<PrinterQueue>(`/queues/${queueId}`, {
       method: 'PATCH',
@@ -9983,10 +10048,8 @@ export const api = {
   // Inventory
   // ⚠️ LEGACY flat list — signature and shape pinned (task 4, 2026-08-29
   // server-driven-lists). Never send `page` from here: `page` flips the
-  // endpoint to the `{items, meta}` envelope. Four consumers depend on
-  // exactly this flat full shape (re-grepped 2026-08-29):
-  //   AssignSpoolModal.tsx, ConfigureAmsSlotModal.tsx,
-  //   SpoolDisplayNameSettings.tsx, SpoolFormModal.tsx.
+  // endpoint to the `{items, meta}` envelope. Keep the legacy response for
+  // existing clients; local UI helpers use bounded projections below.
   // InventoryPage itself now rides the paged fns below.
   getSpools: (includeArchived = false) =>
     request<InventorySpool[]>(`/inventory/spools?include_archived=${includeArchived}`),
@@ -10007,6 +10070,21 @@ export const api = {
   /** Distinct dropdown values under one archived tab (task 2). */
   getSpoolFacets: (archived?: 'active' | 'archived') =>
     request<SpoolFacets>(`/inventory/spools/facets${archived ? `?archived=${archived}` : ''}`),
+  getSpoolFamilyColors: (filamentFamilyId: string) =>
+    request<{ hex_color: string; color_name: string }[]>(
+      `/inventory/spools/family-colors?filament_family_id=${encodeURIComponent(filamentFamilyId)}`,
+    ),
+  getSpoolPicker: (params: {
+    printer_id: number; ams_id: number; tray_id: number;
+    tray_material?: string; tray_profile?: string; q?: string;
+    show_all?: boolean; replacing_spool_id?: number; page: number;
+  }, signal?: AbortSignal) => {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') query.set(key, String(value));
+    });
+    return request<SpoolListPage>(`/inventory/spools/picker?${query}`, { signal });
+  },
   /** The stats bar, aggregated server-side (task 5). Farm-wide and
    *  unfiltered — the memo it replaced read the whole feed, not the filter. */
   getInventoryStats: () => request<InventoryStats>('/inventory/stats'),

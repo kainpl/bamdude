@@ -20,10 +20,10 @@ from backend.app.core.auth import (
     REFRESH_TOKEN_COOKIE_PATH,
     REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER,
     SECRET_KEY,
+    JWTValidationFailure,
     Permission,
     RequireAnyPermission,
     RequirePermission,
-    _is_token_fresh,
     _validate_api_key,
     apikey_effective_permissions,
     authenticate_user,
@@ -37,9 +37,9 @@ from backend.app.core.auth import (
     get_user_by_username,
     has_any_admin,
     is_api_key_token,
-    is_jti_revoked,
     refresh_cookie_secure_flag,
     resolve_apikey_owner,
+    resolve_jwt_authority,
     resolve_session_max_hours,
     revoke_all_refresh_tokens_for_user,
     revoke_jti,
@@ -870,6 +870,7 @@ async def get_current_user_info(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
     x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     db: AsyncSession = Depends(get_db),
+    request: Request = None,
 ):
     """Get current user information.
 
@@ -878,12 +879,9 @@ async def get_current_user_info(
     their owner's identity and the permissions the key can actually exercise —
     see ``_api_key_to_user_response``.
     """
-    import jwt
-    from jwt.exceptions import PyJWTError as JWTError
-
     # Check for API key via X-API-Key header
     if x_api_key:
-        api_key = await _validate_api_key(db, x_api_key)
+        api_key = await _validate_api_key(db, x_api_key, request)
         if api_key:
             return await _api_key_to_user_response(db, api_key)
 
@@ -892,7 +890,7 @@ async def get_current_user_info(
         token = credentials.credentials
         # Check if it's an API key (bd_, or Bambuddy-era bb_)
         if is_api_key_token(token):
-            api_key = await _validate_api_key(db, token)
+            api_key = await _validate_api_key(db, token, request)
             if api_key:
                 return await _api_key_to_user_response(db, api_key)
             raise HTTPException(
@@ -901,50 +899,15 @@ async def get_current_user_info(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # Otherwise treat as JWT
         try:
-            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-            username: str = payload.get("sub")
-            if username is None:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Could not validate credentials",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-        except JWTError:
+            authority = await resolve_jwt_authority(request, token)
+        except JWTValidationFailure as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials",
                 headers={"WWW-Authenticate": "Bearer"},
-            )
-
-        jti = payload.get("jti")
-        # Reuse the session already open below for the revocation check, so this
-        # request makes a single pooled checkout instead of two (#2572).
-        if jti and await is_jti_revoked(jti, db):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-        user = await get_user_by_username(db, username)
-        if user is None or not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        if not _is_token_fresh(payload.get("iat"), user):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        # Reload with groups for proper permission calculation
-        result = await db.execute(select(User).where(User.id == user.id).options(selectinload(User.groups)))
-        user = result.scalar_one()
-        return _user_to_response(user)
+            ) from exc
+        return _user_to_response(authority.user)
 
     # No credentials provided
     raise HTTPException(

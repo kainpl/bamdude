@@ -813,18 +813,16 @@ describe('InventoryPage — the Forecast tab is not a second list (final review,
     expect(screen.queryByRole('button', { name: /Export CSV/ })).toBeNull();
   });
 
-  it('a plain visit fires no PAGE-LESS full array either — that shape is modal-gated (F9)', async () => {
-    // `GET /inventory/spools?include_archived=false` answers a bare full
-    // array. It carries no `all=true`, so the full-set guard above is blind to
-    // it — which is exactly where the last full download could hide. Its only
-    // caller left is SpoolFormModal's category datalist, and a modal is not a
-    // visit.
+  it('neither a visit nor the spool form downloads a page-less full array', async () => {
+    // The category datalist now uses the active facets already shared with
+    // the page. Opening the form must not revive the legacy full spool array.
     render(<InventoryPageRouter />);
     await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
     expect(legacyArrayRequests()).toEqual([]);
 
     fireEvent.click(screen.getByRole('button', { name: /Add Spool/ }));
-    await waitFor(() => expect(legacyArrayRequests().length).toBe(1));
-    expect(legacyArrayRequests()[0].searchParams.has('page')).toBe(false);
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Add Spool/ })).toBeInTheDocument());
+    expect(facetsRequests.some((url) => url.searchParams.get('archived') === 'active')).toBe(true);
+    expect(legacyArrayRequests()).toEqual([]);
   });
 });

@@ -142,13 +142,51 @@ describe('PrintersPage', () => {
   });
 
   describe('rendering', () => {
+    it('keeps usage and skipped-count demand during PAUSE without opening the object modal', async () => {
+      const paused = {
+        ...mockPrinterStatus, state: 'PAUSE', current_archive_id: 5,
+        current_print: 'repeat.3mf', subtask_name: 'repeat.3mf',
+        printable_objects_count: 2, skip_objects_supported: true,
+      };
+      let objectReads = 0;
+      server.use(
+        http.get('/api/v1/printers/:id/status', ({ params }) =>
+          HttpResponse.json(params.id === '1' ? paused : mockPrinterStatus)),
+        http.get('/api/v1/printers/status/batch', ({ request }) =>
+          HttpResponse.json(Object.fromEntries(new URL(request.url).searchParams.getAll('ids').map(id =>
+            [id, id === '1' ? paused : mockPrinterStatus])))),
+        http.get('/api/v1/printers/1/usage-projection', () => HttpResponse.json({
+          active: true, archive_id: 5, slots: [{ slot_id: 1, type: 'PLA', color: '#ff0000', estimate_g: 100, consumed_g: 10, segments: [] }],
+        })),
+        http.get('/api/v1/printers/1/print/objects', () => {
+          objectReads += 1;
+          return HttpResponse.json({ objects: [], total: 2, skipped_count: 1, is_printing: true, bbox_all: null });
+        }),
+      );
+      render(<PrintersPage />);
+      await screen.findByTestId('usage-projection');
+      await waitFor(() => expect(objectReads).toBeGreaterThan(0));
+      expect(screen.getByTitle('Skip objects')).toHaveTextContent('1');
+      expect(screen.queryByText('Skip Objects')).not.toBeInTheDocument();
+    });
+
     it('keeps a large fleet virtualized while the REST status snapshot is held back', async () => {
       const fleet = Array.from({ length: 50 }, (_, i) => ({ ...mockPrinters[0], id: i + 1, name: `Farm printer ${i + 1}` }));
       let release!: () => void;
       const held = new Promise<void>(resolve => { release = resolve; });
       let requests = 0;
+      const usageReads: string[] = [];
+      const objectReads: string[] = [];
       server.use(
         http.get('/api/v1/printers/', () => HttpResponse.json(fleet)),
+        http.get('/api/v1/printers/:id/usage-projection', ({ params }) => {
+          usageReads.push(String(params.id));
+          return HttpResponse.json({ active: false });
+        }),
+        http.get('/api/v1/printers/:id/print/objects', ({ params }) => {
+          objectReads.push(String(params.id));
+          return HttpResponse.json({ objects: [], total: 0, skipped_count: 0, is_printing: true, bbox_all: null });
+        }),
         http.get('/api/v1/printers/status/batch', async ({ request }) => {
           requests++;
           await held;
@@ -171,6 +209,8 @@ describe('PrintersPage', () => {
         await waitFor(() => {
           expect(screen.queryByText('Farm printer 50')).not.toBeInTheDocument();
         });
+        const aiStatus = cache.getQueryCache().find({ queryKey: ['obicoPrinterStatus'] });
+        expect(aiStatus?.observers.filter(observer => observer.options.refetchInterval === 30_000)).toHaveLength(1);
         act(() => {
           for (let id = 1; id <= 50; id++) {
             // Same key and shape written by useWebSocket; the hook's 50-printer
@@ -178,10 +218,15 @@ describe('PrintersPage', () => {
             cache.setQueryData(['printerStatus', id], {
               ...mockPrinterStatus, state: 'RUNNING', progress: 42,
               current_print: `LiveJob-${id}`, subtask_name: `LiveJob-${id}`,
+              current_archive_id: id, printable_objects_count: 2, skip_objects_supported: true,
             });
           }
         });
         await screen.findByText('LiveJob-1');
+        await waitFor(() => expect(usageReads).toContain('1'));
+        await waitFor(() => expect(objectReads).toContain('1'));
+        // jsdom's zero-sized viewport and progressive mounting can visit
+        // later rows; browser-layout demand needs the F5 browser probe.
         expect(cache.getQueryState(['printerStatus', 50])?.fetchStatus).toBe('fetching');
       } finally {
         release();

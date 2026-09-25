@@ -56,6 +56,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
       queryClient.invalidateQueries({ queryKey: ['spool-usage', spoolId] });
       // Clear-all returns each row's weight to the spool, so refresh the list too.
       invalidateSpoolViews(queryClient);
+      queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
       showToast(t('inventory.historyCleared'), 'success');
     },
   });
@@ -67,6 +68,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['spool-usage', spoolId] });
       invalidateSpoolViews(queryClient);
+      queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
       showToast(t('inventory.usageRecordDeleted'), 'success');
     },
   });

@@ -3,6 +3,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Settings2, CheckCircle2, RotateCcw } from 'lucide-react';
 import { api } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import type { KProfile } from '../api/client';
 import { isMatchingCalibration, nozzleFlowFromId } from './spool-form/utils';
 import { Button } from './Button';
@@ -174,6 +175,7 @@ export function ConfigureAmsSlotModal({
   fullScreen,
 }: ConfigureAmsSlotModalProps) {
   const { t } = useTranslation();
+  const { hasPermission } = useAuth();
   const headingId = useId();
   const [selectedPresetId, setSelectedPresetId] = useState<string>('');
 
@@ -198,11 +200,11 @@ export function ConfigureAmsSlotModal({
   // Fetch local presets
   // Fetch built-in filament names (static fallback)
   // Fetch K profiles
-  // Non-archived spools — the colour palette source for the picked family.
-  const { data: spoolsData } = useQuery({
-    queryKey: ['spools'],
-    queryFn: () => api.getSpools(false),
-    enabled: isOpen,
+  // Only distinct colours for this exact family, not every inventory spool.
+  const { data: familyColors } = useQuery({
+    queryKey: ['inventory-spools', 'family-colors', selectedPresetId],
+    queryFn: () => api.getSpoolFamilyColors(selectedPresetId!),
+    enabled: isOpen && !!selectedPresetId && hasPermission('inventory:read'),
     staleTime: 30_000,
   });
 
@@ -331,19 +333,12 @@ export function ConfigureAmsSlotModal({
   // user's own non-archived spools linked to that family. The global colour
   // catalog listed every colour ever sold — far too many, mostly irrelevant.
   const catalogColors = useMemo(() => {
-    if (!selectedPresetId || !spoolsData) return [];
-    const seen = new Set<string>();
-    const out: { id: string; hex_color: string; color_name: string }[] = [];
-    for (const spool of spoolsData) {
-      const fid = spool.filament_family_id;
-      if (fid !== selectedPresetId) continue;
-      const hex = (spool.rgba || '').slice(0, 6).toUpperCase();
-      if (!hex || seen.has(hex)) continue;
-      seen.add(hex);
-      out.push({ id: hex, hex_color: `#${hex}`, color_name: spool.color_name || '' });
-    }
-    return out;
-  }, [selectedPresetId, spoolsData]);
+    return (familyColors ?? []).map(color => ({
+      id: color.hex_color.slice(1),
+      hex_color: color.hex_color,
+      color_name: color.color_name,
+    }));
+  }, [familyColors]);
 
   // The selected id IS the family id — the same identity the printer's
   // K-profile table uses. No conversion, no cloud detail round-trip.

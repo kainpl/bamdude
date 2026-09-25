@@ -13,6 +13,7 @@ vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
   getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
+    getCurrentUser: vi.fn().mockResolvedValue({ id: 1, username: 'admin', is_admin: true, permissions: [] }),
     triggerFilamentPresetSync: vi.fn().mockResolvedValue({ queued: true }),
     getFilamentFamilies: vi.fn().mockResolvedValue([
       { filament_id: 'GFG99', ecosystem: 'bambu', alias: 'Generic PETG', vendor: 'Generic', filament_type: 'PETG', origin: 'system' },
@@ -20,6 +21,7 @@ vi.mock('../../api/client', () => ({
       { filament_id: 'P122e532', ecosystem: 'bambu', alias: 'test PETG Basic', vendor: 'test', filament_type: 'PETG', origin: 'cloud_bambu' },
     ]),
     getSpools: vi.fn().mockResolvedValue([]),
+    getSpoolFamilyColors: vi.fn().mockResolvedValue([]),
     getCloudSettings: vi.fn(),
     getKProfiles: vi.fn(),
     configureAmsSlot: vi.fn(),

@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 import uuid
 
@@ -14,8 +15,15 @@ router = APIRouter()
 
 # 4401 mirrors the "unauthorised" application close code convention for
 # WebSockets (private-use range 4000-4999 per RFC 6455). The SPA distinguishes
-# it from a network drop and refetches a token instead of retrying the old one.
+# it from a network drop and stops reconnecting until a fresh login remounts it.
 _WS_CLOSE_UNAUTHORIZED = 4401
+
+
+def _bounded_client_ms(value: object) -> int | float | None:
+    """Accept only finite, bounded client-reported timing values."""
+    if type(value) not in (int, float) or not 0 <= value <= 300_000:
+        return None
+    return value if math.isfinite(value) else None
 
 
 @router.websocket("/ws")
@@ -107,13 +115,16 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
                 if data.get("bootstrap_id") == bootstrap_id:
                     # Log once. Values from a browser are untrusted and never
                     # interpolated as arbitrary text, payloads or URLs.
-                    client_ms = data.get("connect_ms")
-                    client_ms = client_ms if type(client_ms) in (int, float) and 0 <= client_ms <= 300_000 else None
+                    client_ms = _bounded_client_ms(data.get("connect_ms"))
                     logger.info(
-                        "WebSocket bootstrap applied: id=%s server_elapsed=%.3fs client_connect_ms=%s printers=%s",
+                        "WebSocket bootstrap applied: id=%s server_elapsed=%.3fs client_connect_ms=%s token_ms=%s socket_open_ms=%s first_status_ms=%s marker_to_cache_ms=%s printers=%s",
                         bootstrap_id,
                         time.monotonic() - started,
                         client_ms,
+                        _bounded_client_ms(data.get("token_ms")),
+                        _bounded_client_ms(data.get("socket_open_ms")),
+                        _bounded_client_ms(data.get("first_status_ms")),
+                        _bounded_client_ms(data.get("marker_to_cache_ms")),
                         len(statuses),
                     )
                     ack_pending = False
