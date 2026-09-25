@@ -1,6 +1,8 @@
 """Read-only dispatch preflight and a synchronous guard at the MQTT boundary."""
 
+import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 
 from backend.app.models.queue_source import FORMAT_GCODE
@@ -15,6 +17,11 @@ from backend.app.services.filament_requirements import probe_identity, revision_
 from backend.app.services.filament_routing import RoutingDeferred, fingerprint, resolve_filament_routing
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.source_io import SourceUnavailable
+
+#: How long a prepared attempt waits for a reconnected printer's first complete
+#: feed report before it is refused (spec direct-print-silent-cancel §4.3).
+FEED_SETTLE_TIMEOUT = 60.0
+FEED_SETTLE_POLL = 1.0
 
 
 @dataclass(frozen=True)
@@ -251,6 +258,61 @@ async def ranked_feed(db, printer_id, policy, prefer_lowest=None):
     return snapshot, prefer_lowest, source_priority
 
 
+def _settled(snapshot, prepared_generation: int) -> bool:
+    """A NEW session whose feed is complete — evidence gathered from scratch.
+
+    The client empties the feed cache with every new generation, so a complete
+    feed here can only have come from reports on this session.
+    """
+    return (
+        snapshot.connected
+        and snapshot.generation != prepared_generation
+        and snapshot.ams_known
+        and snapshot.external_known
+        and not snapshot.incomplete
+    )
+
+
+async def settle_feed(
+    guard,
+    printer_id: int,
+    *,
+    raise_if_cancelled: Callable[[], None] = lambda: None,
+    timeout: float = FEED_SETTLE_TIMEOUT,
+    poll: float = FEED_SETTLE_POLL,
+) -> None:
+    """Before the final check: if the session changed since preparation, wait for its first complete report.
+
+    A reconnect mid-upload used to refuse every prepared print, because the new
+    session starts with an empty feed cache (2026-09-24, two A1 mini). Now the
+    attempt asks for a full report and waits — bounded — so ``final_guard`` can
+    compare the FRESH feed with the prepared one. The comparison, and the refusal
+    when the content differs, stay ``final_guard``'s. The wait sits BEFORE that
+    check, so nothing awaits between a passed check and the publish.
+
+    A healthy printer (same generation, connected) returns at once — no pushall.
+    """
+    if guard is None:
+        return
+    prepared_generation = guard.snapshot_signature[0]
+    snapshot = printer_manager.get_feed_snapshot(printer_id)
+    if snapshot.connected and snapshot.generation == prepared_generation:
+        return
+    printer_manager.request_status_update(printer_id)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        raise_if_cancelled()
+        snapshot = printer_manager.get_feed_snapshot(printer_id)
+        if _settled(snapshot, prepared_generation):
+            return
+        if loop.time() >= deadline:
+            raise RoutingDeferred(
+                "feed_settle_timeout", revision=revision_for(guard.requirements, guard.policy, snapshot)
+            )
+        await asyncio.sleep(poll)
+
+
 async def final_guard(guard, printer_id):
     """Refresh after all preparatory awaits. A different complete plan needs a new attempt."""
     if guard is None:
@@ -267,10 +329,14 @@ async def final_guard(guard, printer_id):
     result = resolve_filament_routing(guard.requirements, guard.policy, snapshot, exact_model=guard.exact_model)
     if result.plan is None:
         raise RoutingDeferred(result.reason or "feed_state_changed", revision=revision, params=result.params)
-    # Do not adopt a new baseline after a reconnect or a topology change during
-    # preparation. The signature ignores remain (and variant under ON), not
-    # physical identity. Checking only chosen-source fingerprints lost generation.
-    if feed_signature(guard.policy, snapshot) != guard.snapshot_signature:
+    # A reconnect alone is not a changed feed once the new session has reported
+    # the same CONTENT from scratch (spec direct-print-silent-cancel §4.3): the
+    # cache empties with the generation, so equal content here is fresh evidence,
+    # and the plan fingerprint carries no generation. Anything physical that moved
+    # — a tag, a material, a colour, the topology, completeness — still defers.
+    # The signature ignores remain (and variant under ON), never physical
+    # identity. The synchronous publish boundary keeps the strict comparison.
+    if feed_signature(guard.policy, snapshot)[1] != guard.snapshot_signature[1]:
         raise RoutingDeferred("feed_state_changed", revision=revision)
     # Keep the prepared assignment if it remains valid. Remain-only updates
     # cannot select another spool after calibration/colour attribution ran.

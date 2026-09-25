@@ -1,5 +1,6 @@
 """Synthetic files, real intake/distributor/preflight/MQTT serialization; no printer I/O."""
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -21,8 +22,9 @@ from backend.app.services.bambu_mqtt import BambuMQTTClient
 from backend.app.services.filament_deferred import defer_claim
 from backend.app.services.filament_intake import read_item_requirements
 from backend.app.services.filament_policy import deserialize_policy, queue_policy
-from backend.app.services.filament_preflight import final_guard, preflight_item
+from backend.app.services.filament_preflight import final_guard, preflight_item, settle_feed
 from backend.app.services.filament_routing import RoutingDeferred, fingerprint
+from backend.app.services.printer_feed_snapshot import FeedTelemetry
 from backend.app.services.printer_manager import printer_manager
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
@@ -440,22 +442,117 @@ async def test_the_same_retag_still_stops_the_job_when_the_option_is_off(
         await final_guard(guard, printer.id)
 
 
+def reconnect(mqtt):
+    """What BambuMQTTClient does on a new session: a new generation AND an empty
+    feed cache — together, always (``bambu_mqtt`` resets both in one place). The
+    test this replaced bumped the generation alone, a state the client never produces."""
+    mqtt.state.connection_generation += 1
+    mqtt.state.feed_telemetry = FeedTelemetry()
+
+
+def report_the_spool(mqtt, **change):
+    """The printer's first full report on the new session — the same spool unless told otherwise."""
+    tray = {
+        "id": 254,
+        "tray_type": "PLA",
+        "tray_color": "0000FF",
+        "tray_info_idx": "GFA00",
+        "tray_uuid": "THE-SPOOL",
+        **change,
+    }
+    mqtt._process_message({"print": {"command": "push_status", "ams": {"ams": []}, "vt_tray": tray}})
+
+
 @pytest.mark.parametrize("allow_base_material_match", [True, False])
-async def test_reconnect_during_preparation_cannot_be_rebaselined(
+async def test_a_reconnect_that_reports_the_same_feed_keeps_the_prepared_job(
     db_session, tmp_path, printer_factory, monkeypatch, allow_base_material_match
 ):
-    item, _, printer, _, mqtt = await a_routed_job(
-        db_session,
-        tmp_path,
-        printer_factory,
-        monkeypatch,
-        allow_base_material_match=allow_base_material_match,
+    """Spec direct-print-silent-cancel §4.3 (A05): fresh evidence, same content — start."""
+    item, source, printer, plate, mqtt = await a_routed_job(
+        db_session, tmp_path, printer_factory, monkeypatch, allow_base_material_match=allow_base_material_match
     )
     guard = await preflight_item(db_session, item, printer.id)
-    mqtt.state.connection_generation += 1
+    # The real pushall would publish through the same mocked client and spoil the
+    # «published once» assertion below; the report it provokes is replayed by hand.
+    monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
+    reconnect(mqtt)
+    asyncio.get_running_loop().call_later(0.05, report_the_spool, mqtt)
+    await settle_feed(guard, printer.id, timeout=2, poll=0.01)
+    guard = await final_guard(guard, printer.id)
+    assert printer_manager.start_print(
+        printer.id,
+        source.filename,
+        plate,
+        ams_mapping=guard.plan.mapping,
+        use_ams=guard.plan.use_ams,
+        routing_guard=guard,
+    )
+    mqtt._client.publish.assert_called_once()
+
+
+async def test_a_reconnect_that_reports_another_spool_defers(db_session, tmp_path, printer_factory, monkeypatch):
+    """A06: the new session says something else is loaded — a new attempt, never a swapped plan."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
+    reconnect(mqtt)
+    report_the_spool(mqtt, tray_uuid="ANOTHER-SPOOL")
+    await settle_feed(guard, printer.id, timeout=2, poll=0.01)
     with pytest.raises(RoutingDeferred, match="feed_state_changed"):
         await final_guard(guard, printer.id)
     mqtt._client.publish.assert_not_called()
+
+
+async def test_a_reconnect_that_never_reports_defers_with_the_settle_timeout(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """A07: silence after the reconnect is a refusal in words, not a hang."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    reconnect(mqtt)
+    asked = MagicMock(return_value=True)
+    monkeypatch.setattr(printer_manager, "request_status_update", asked)
+    with pytest.raises(RoutingDeferred, match="feed_settle_timeout"):
+        await settle_feed(guard, printer.id, timeout=0.05, poll=0.01)
+    asked.assert_called_once_with(printer.id)
+
+
+async def test_the_final_guard_alone_never_authorises_an_empty_new_session(
+    db_session, tmp_path, printer_factory, monkeypatch
+):
+    """Without the wait the new session has proved nothing yet — still a refusal."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    reconnect(mqtt)
+    with pytest.raises(RoutingDeferred, match="feed_state_unavailable"):
+        await final_guard(guard, printer.id)
+
+
+async def test_a_healthy_printer_does_not_wait(db_session, tmp_path, printer_factory, monkeypatch):
+    """A08: same generation — no pushall, no sleep."""
+    item, _source, printer, _plate, _mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    asked = MagicMock(return_value=True)
+    monkeypatch.setattr(printer_manager, "request_status_update", asked)
+    await settle_feed(guard, printer.id, timeout=0.01, poll=0.01)
+    asked.assert_not_called()
+
+
+async def test_settle_feed_honours_a_cancel(db_session, tmp_path, printer_factory, monkeypatch):
+    """The Cancel button works during the wait."""
+    item, _source, printer, _plate, mqtt = await a_routed_job(db_session, tmp_path, printer_factory, monkeypatch)
+    guard = await preflight_item(db_session, item, printer.id)
+    monkeypatch.setattr(printer_manager, "request_status_update", MagicMock(return_value=True))
+    reconnect(mqtt)
+
+    class Cancelled(Exception):
+        pass
+
+    def raise_if_cancelled():
+        raise Cancelled
+
+    with pytest.raises(Cancelled):
+        await settle_feed(guard, printer.id, raise_if_cancelled=raise_if_cancelled, timeout=2, poll=0.01)
 
 
 async def test_edit_echoing_mapping_keeps_original_pin_evidence(

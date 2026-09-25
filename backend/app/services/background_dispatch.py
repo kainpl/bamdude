@@ -41,7 +41,7 @@ from backend.app.services.bambu_ftp import (
     with_ftp_retry,
 )
 from backend.app.services.filament_intake import item_descriptor, routing_detail, source_display_filename
-from backend.app.services.filament_preflight import final_guard, preflight_item
+from backend.app.services.filament_preflight import final_guard, preflight_item, settle_feed
 from backend.app.services.filament_routing import RoutingDeferred
 from backend.app.services.gcode_patcher import GcodeInjectionSpec
 from backend.app.services.printer_files.factory import transport_for
@@ -2306,6 +2306,13 @@ class BackgroundDispatchService:
                     plate_id,
                     job.options.get("nozzle_mapping"),
                 )
+                # A session that changed during preparation gets to report again
+                # before the final check (spec direct-print-silent-cancel §4.3).
+                await settle_feed(
+                    job.routing_guard,
+                    job.printer_id,
+                    raise_if_cancelled=lambda: self._raise_if_cancel_requested(job),
+                )
                 job.routing_guard = await final_guard(job.routing_guard, job.printer_id)
                 await self._verify_routing_claim(db, job)
                 started = printer_manager.start_print(
@@ -2996,6 +3003,13 @@ class BackgroundDispatchService:
                     upload_file_path,
                     plate_id,
                     job.options.get("nozzle_mapping"),
+                )
+                # A session that changed during preparation gets to report again
+                # before the final check (spec direct-print-silent-cancel §4.3).
+                await settle_feed(
+                    job.routing_guard,
+                    job.printer_id,
+                    raise_if_cancelled=lambda: self._raise_if_cancel_requested(job),
                 )
                 job.routing_guard = await final_guard(job.routing_guard, job.printer_id)
                 await self._verify_routing_claim(db, job)
