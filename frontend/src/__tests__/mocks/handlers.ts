@@ -89,6 +89,9 @@ const mockPrinters = [
 ];
 
 export const handlers = [
+  // Scheduled drying: every printer card reads these two fleet-wide lists.
+  http.get('/api/v1/scheduled-dryings', () => HttpResponse.json([])),
+  http.get('/api/v1/drying-schedules', () => HttpResponse.json({ server_timezone: 'UTC', schedules: [] })),
   // Default successful routing fixture. Behaviour tests override this endpoint
   // with explicit backend verdicts; the mock does not implement a second solver.
   http.post('/api/v1/auto-queue/printer-routing-preview', async ({ request }) => {

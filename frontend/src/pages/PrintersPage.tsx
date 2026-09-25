@@ -98,7 +98,7 @@ import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken, DEFAULT_BAC
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration, formatTimeOnly, parseUTCDate } from '../utils/date';
-import type { Printer, PrinterCreate, PrinterStatus, AirductFan, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind } from '../api/client';
+import type { Printer, PrinterCreate, PrinterStatus, AirductFan, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind, ScheduledDryingInput, DryingScheduleInput } from '../api/client';
 import { backupCompatibilityPatch } from './printersEditPayload';
 
 // Source of truth for Spoolman ↔ AMS slot binding (upstream PR #1241).
@@ -186,6 +186,9 @@ import {
   setExternalSpoolHidden as persistExternalSpoolHidden,
 } from '../utils/printerCardPrefs';
 import { resolveDryingPresetKey, type DryingPreset } from '../utils/dryingPresets';
+import { dryingBlockedKey } from '../utils/dryingBlockers';
+import { ALL_WEEKDAYS, WEEKDAY_BITS, WEEKDAY_NAMES, computeStartAfter, type DryingStartMode } from '../utils/scheduledDrying';
+import { DRYING_SCHEDULES_KEY, SCHEDULED_DRYINGS_KEY, ScheduledDryingStrip } from '../components/ScheduledDryingStrip';
 
 // AMS drying popover dimensions — w-[240px] on the popover, estimated height
 // covers header + filament select + temp slider + duration + rotate-tray
@@ -1942,6 +1945,14 @@ function PrinterCard({
   const [dryingTemp, setDryingTemp] = useState(50);
   const [dryingDuration, setDryingDuration] = useState(4);
   const [dryingRotateTray, setDryingRotateTray] = useState(false);
+  // When the drying starts: now (the immediate command), or a scheduled run /
+  // rule the backend's scheduled-drying tick starts later.
+  const [dryingMode, setDryingMode] = useState<DryingStartMode>('now');
+  const [dryingDelayHours, setDryingDelayHours] = useState(3);
+  const [dryingAt, setDryingAt] = useState('');
+  const [dryingRepeatTime, setDryingRepeatTime] = useState('01:00');
+  const [dryingWeekdays, setDryingWeekdays] = useState(ALL_WEEKDAYS);
+  const [dryingLatest, setDryingLatest] = useState('');
   // The popover is portalled into body (the card's content-visibility would
   // clip it) and placed in DOCUMENT coordinates, so the page's own scroll
   // carries it with its card like the bed-jog menu — nothing chases the button
@@ -2518,6 +2529,27 @@ function PrinterCard({
       queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
     },
     onError: (error: Error) => showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
+  });
+
+  const { data: dryingSchedules } = useQuery({
+    queryKey: DRYING_SCHEDULES_KEY,
+    queryFn: () => api.listDryingSchedules(),
+  });
+  const onDryingScheduled = () => {
+    queryClient.invalidateQueries({ queryKey: SCHEDULED_DRYINGS_KEY });
+    queryClient.invalidateQueries({ queryKey: DRYING_SCHEDULES_KEY });
+    setDryingPopoverAmsId(null);
+    showToast(t('printers.drying.scheduled'), 'success');
+  };
+  const scheduleDryingMutation = useMutation({
+    mutationFn: (body: ScheduledDryingInput) => api.createScheduledDrying(body),
+    onSuccess: onDryingScheduled,
+    onError: (error: Error) => showToast(error.message || t('printers.drying.scheduleFailed'), 'error'),
+  });
+  const createDryingRuleMutation = useMutation({
+    mutationFn: (body: DryingScheduleInput) => api.createDryingSchedule(body),
+    onSuccess: onDryingScheduled,
+    onError: (error: Error) => showToast(error.message || t('printers.drying.scheduleFailed'), 'error'),
   });
 
   const stopDryingMutation = useMutation({
@@ -4888,6 +4920,7 @@ function PrinterCard({
                                           setDryingTemp(preset[moduleType] || preset.n3f);
                                           setDryingDuration(moduleType === 'n3s' ? preset.n3s_hours : preset.n3f_hours);
                                           setDryingRotateTray(false);
+                                          setDryingMode('now');
                                           setDryingPopoverModuleType(ams.module_type);
                                           setDryingPopoverAmsId(ams.id);
                                           dryingTriggerRef.current = e.currentTarget as HTMLElement;
@@ -4901,7 +4934,7 @@ function PrinterCard({
                                             ? 'bg-bambu-dark-tertiary/30 text-bambu-gray/50 cursor-not-allowed'
                                             : 'bg-bambu-dark-tertiary/50 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
                                       }`}
-                                      title={status.drying_screen_only ? t('printers.drying.screenOnly') : ams.dry_time > 0 ? t('printers.drying.stop') : ams.dry_sf_reason?.length ? t('printers.drying.powerRequired') : t('printers.drying.start')}
+                                      title={status.drying_screen_only ? t('printers.drying.screenOnly') : ams.dry_time > 0 ? t('printers.drying.stop') : ams.dry_sf_reason?.length ? t(dryingBlockedKey(ams.dry_sf_reason)) : t('printers.drying.start')}
                                     >
                                       <Flame className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />
                                     </button>
@@ -5522,6 +5555,7 @@ function PrinterCard({
                                         setDryingTemp(preset[moduleType] || preset.n3f);
                                         setDryingDuration(moduleType === 'n3s' ? preset.n3s_hours : preset.n3f_hours);
                                         setDryingRotateTray(false);
+                                        setDryingMode('now');
                                         setDryingPopoverModuleType(ams.module_type);
                                         setDryingPopoverAmsId(ams.id);
                                         dryingTriggerRef.current = e.currentTarget as HTMLElement;
@@ -6072,6 +6106,9 @@ function PrinterCard({
                 </div>
               );
             })()}
+
+            {/* Scheduled drying — what waits, runs or was missed, and the rules */}
+            {viewMode === 'expanded' && <ScheduledDryingStrip printerId={printer.id} />}
           </>
         )}
 
@@ -7331,6 +7368,101 @@ function PrinterCard({
                     <span>24h</span>
                   </div>
                 </div>
+                {/* When — now, or a scheduled run / rule the backend starts later */}
+                <div>
+                  <label className="text-[length:var(--pc-t10,10px)] text-bambu-gray mb-1 block">{t('printers.drying.when')}</label>
+                  <div className="flex flex-wrap gap-1">
+                    {(['now', 'delay', 'at', 'when_free', 'repeat'] as const).map(mode => (
+                      <button
+                        key={mode}
+                        type="button"
+                        aria-pressed={dryingMode === mode}
+                        onClick={() => setDryingMode(mode)}
+                        className={`px-1.5 py-0.5 rounded text-[length:var(--pc-t10,10px)] border transition-colors ${
+                          dryingMode === mode
+                            ? 'border-amber-500/60 bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                            : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                        }`}
+                      >
+                        {t(`printers.drying.mode.${mode}`)}
+                      </button>
+                    ))}
+                  </div>
+                  {dryingMode === 'delay' && (
+                    <div className="flex items-center justify-between mt-2">
+                      <label htmlFor="drying-delay-hours" className="text-[length:var(--pc-t10,10px)] text-bambu-gray">{t('printers.drying.delayHours')}</label>
+                      <input
+                        id="drying-delay-hours"
+                        type="number"
+                        min={1}
+                        max={48}
+                        value={dryingDelayHours}
+                        onChange={e => setDryingDelayHours(Math.min(48, Math.max(1, Number(e.target.value) || 1)))}
+                        className="w-12 px-1 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-[length:var(--pc-t11,11px)] text-center focus:outline-none focus:border-amber-500/50"
+                      />
+                    </div>
+                  )}
+                  {dryingMode === 'at' && (
+                    <div className="mt-2">
+                      <label htmlFor="drying-start-at" className="text-[length:var(--pc-t10,10px)] text-bambu-gray mb-1 block">{t('printers.drying.startAt')}</label>
+                      <input
+                        id="drying-start-at"
+                        type="datetime-local"
+                        value={dryingAt}
+                        onChange={e => setDryingAt(e.target.value)}
+                        className="w-full px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs focus:outline-none focus:border-amber-500/50"
+                      />
+                    </div>
+                  )}
+                  {dryingMode === 'repeat' && (() => {
+                    const serverTz = dryingSchedules?.server_timezone;
+                    const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                    return (
+                      <div className="mt-2 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <label htmlFor="drying-repeat-time" className="text-[length:var(--pc-t10,10px)] text-bambu-gray">{t('printers.drying.repeatAt')}</label>
+                          <input
+                            id="drying-repeat-time"
+                            type="time"
+                            value={dryingRepeatTime}
+                            onChange={e => setDryingRepeatTime(e.target.value)}
+                            className="px-1.5 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-[length:var(--pc-t11,11px)] focus:outline-none focus:border-amber-500/50"
+                          />
+                        </div>
+                        <div className="flex gap-0.5">
+                          {WEEKDAY_BITS.map((bit, index) => (
+                            <button
+                              key={bit}
+                              type="button"
+                              aria-pressed={(dryingWeekdays & bit) !== 0}
+                              onClick={() => setDryingWeekdays(mask => mask ^ bit)}
+                              className={`flex-1 py-0.5 rounded text-[length:var(--pc-t9,9px)] border transition-colors ${
+                                dryingWeekdays & bit
+                                  ? 'border-amber-500/60 bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                                  : 'border-bambu-dark-tertiary text-bambu-gray/60 hover:text-white'
+                              }`}
+                            >
+                              {t(`printers.drying.weekdayShort.${WEEKDAY_NAMES[index]}`)}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <label htmlFor="drying-latest" className="text-[length:var(--pc-t10,10px)] text-bambu-gray">{t('printers.drying.notLaterThan')}</label>
+                          <input
+                            id="drying-latest"
+                            type="time"
+                            value={dryingLatest}
+                            onChange={e => setDryingLatest(e.target.value)}
+                            className="px-1.5 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-[length:var(--pc-t11,11px)] focus:outline-none focus:border-amber-500/50"
+                          />
+                        </div>
+                        {serverTz && serverTz !== browserTz && (
+                          <p className="text-[length:var(--pc-t9,9px)] text-bambu-gray/70">{t('printers.drying.farmTime', { tz: serverTz })}</p>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
                 {/* Rotate tray — unavailable while a tray in this AMS is loaded */}
                 <label
                   className={`flex items-center gap-2 ${anyTrayLoaded ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
@@ -7350,15 +7482,51 @@ function PrinterCard({
               <div className="shrink-0 px-3 pt-2.5 pb-3">
                 <button
                   onClick={() => {
-                    if (dryingPopoverAmsId !== null) {
-                      startDryingMutation.mutate({ amsId: dryingPopoverAmsId, temp: dryingTemp, duration: dryingDuration, filament: dryingFilament, rotateTray: dryingRotateTray && !anyTrayLoaded });
+                    if (dryingPopoverAmsId === null) return;
+                    const rotateTray = dryingRotateTray && !anyTrayLoaded;
+                    if (dryingMode === 'now') {
+                      startDryingMutation.mutate({ amsId: dryingPopoverAmsId, temp: dryingTemp, duration: dryingDuration, filament: dryingFilament, rotateTray });
+                      return;
                     }
+                    const target = {
+                      printer_id: printer.id,
+                      ams_id: dryingPopoverAmsId,
+                      temp: dryingTemp,
+                      duration_hours: dryingDuration,
+                      filament: dryingFilament,
+                      rotate_tray: rotateTray,
+                    };
+                    if (dryingMode === 'repeat') {
+                      createDryingRuleMutation.mutate({
+                        ...target,
+                        start_time: dryingRepeatTime,
+                        weekdays: dryingWeekdays,
+                        latest_start: dryingLatest || null,
+                        enabled: true,
+                      });
+                      return;
+                    }
+                    scheduleDryingMutation.mutate({
+                      ...target,
+                      start_after: computeStartAfter(dryingMode, { delayHours: dryingDelayHours, at: dryingAt }, new Date()) ?? null,
+                    });
                   }}
-                  disabled={startDryingMutation.isPending}
+                  disabled={
+                    startDryingMutation.isPending
+                    || scheduleDryingMutation.isPending
+                    || createDryingRuleMutation.isPending
+                    // An empty "At time" would otherwise go out as "when free".
+                    || (dryingMode === 'at' && !dryingAt)
+                    || (dryingMode === 'repeat' && (!dryingRepeatTime || dryingWeekdays === 0))
+                  }
                   data-testid="drying-start-confirm"
                   className="w-full py-1.5 bg-amber-500 hover:bg-amber-400 text-white text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
                 >
-                  {startDryingMutation.isPending ? t('printers.drying.startingDrying') : t('printers.drying.start')}
+                  {dryingMode === 'now'
+                    ? (startDryingMutation.isPending ? t('printers.drying.startingDrying') : t('printers.drying.start'))
+                    : dryingMode === 'repeat'
+                      ? t('printers.drying.createSchedule')
+                      : t('printers.drying.schedule')}
                 </button>
               </div>
             </div>

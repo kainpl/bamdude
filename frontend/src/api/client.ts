@@ -895,6 +895,59 @@ export interface ExtruderSlot {
   has_filament: boolean;
 }
 
+// Scheduled AMS drying — mirrors backend/app/schemas/scheduled_drying.py.
+export interface ScheduledDryingRun {
+  id: number;
+  printer_id: number;
+  ams_id: number;
+  temp: number;
+  duration_hours: number;
+  filament: string;
+  rotate_tray: boolean;
+  schedule_id: number | null;
+  start_after: string | null;
+  latest_start: string | null;
+  status: 'pending' | 'running' | 'completed' | 'cancelled' | 'failed' | 'skipped';
+  reason: string | null;
+  detail: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface DryingSchedule {
+  id: number;
+  printer_id: number;
+  ams_id: number;
+  temp: number;
+  duration_hours: number;
+  filament: string;
+  rotate_tray: boolean;
+  start_time: string;
+  weekdays: number;
+  latest_start: string | null;
+  enabled: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface DryingScheduleList {
+  server_timezone: string;
+  schedules: DryingSchedule[];
+}
+
+export type DryingScheduleInput = Omit<DryingSchedule, 'id' | 'created_at' | 'updated_at'>;
+
+export interface ScheduledDryingInput {
+  printer_id: number;
+  ams_id: number;
+  temp: number;
+  duration_hours: number;
+  filament: string;
+  rotate_tray: boolean;
+  start_after: string | null;
+}
+
 export interface AirductFan {
   part_id: number;      // BambuStudio AIR_FUN index: 2 / 10 = the two aux fans, 3 = chamber/exhaust
   speed: number;        // 0-100 %
@@ -7967,6 +8020,20 @@ export const api = {
       `/printers/${printerId}/drying/stop?ams_id=${amsId}`,
       { method: 'POST' }
     ),
+  listScheduledDryings: (printerId?: number) =>
+    request<ScheduledDryingRun[]>(`/scheduled-dryings${printerId !== undefined ? `?printer_id=${printerId}` : ''}`),
+  createScheduledDrying: (body: ScheduledDryingInput) =>
+    request<ScheduledDryingRun>('/scheduled-dryings', { method: 'POST', body: JSON.stringify(body) }),
+  cancelScheduledDrying: (id: number) =>
+    request<{ status: string; id: number }>(`/scheduled-dryings/${id}`, { method: 'DELETE' }),
+  listDryingSchedules: (printerId?: number) =>
+    request<DryingScheduleList>(`/drying-schedules${printerId !== undefined ? `?printer_id=${printerId}` : ''}`),
+  createDryingSchedule: (body: DryingScheduleInput) =>
+    request<DryingSchedule>('/drying-schedules', { method: 'POST', body: JSON.stringify(body) }),
+  updateDryingSchedule: (id: number, body: Partial<DryingScheduleInput>) =>
+    request<DryingSchedule>(`/drying-schedules/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteDryingSchedule: (id: number) =>
+    request<{ status: string; id: number }>(`/drying-schedules/${id}`, { method: 'DELETE' }),
 
   // Skip Objects
   getPrintableObjects: (printerId: number, signal?: AbortSignal) =>
