@@ -274,3 +274,20 @@ def all_printer_names(ecosystem: str = "bambu") -> list[str]:
     for preset in _load(ecosystem).presets_by_setting.values():
         names.update(preset.compatible_printers)
     return sorted(names)
+
+
+@cache
+def printers_for_preset_suffix(suffix: str, ecosystem: str = "bambu") -> frozenset[str]:
+    """The printer profiles a preset named "… @<suffix>" is made for.
+
+    A slicer preset names its printer after an "@" — "Bambu PLA Basic @BBL A1M",
+    "… @BBL X2D 0.4 nozzle" — and a user preset saved from one keeps the same
+    suffix. The catalogue's own presets carrying that suffix say which printers
+    it means. Empty when no system preset uses it.
+    """
+    wanted = f"@{suffix.strip()}".casefold()
+    printers: set[str] = set()
+    for preset in _load(ecosystem).presets_by_name.values():
+        if preset.name.casefold().endswith(wanted):
+            printers.update(preset.compatible_printers)
+    return frozenset(printers)

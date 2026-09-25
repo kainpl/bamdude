@@ -5,6 +5,11 @@ setting_id from the catalog, temps from the preset for THIS printer,
 cols/ctype for multi-colour, NO tray_sub_brands. Custom (P*) families are
 gated on the device's support_user_preset flag and degrade to the generic
 family of the same type, loudly.
+
+A spool configured with the user's own cloud preset sends that preset — the
+variant made for THIS printer model and nozzle when it has one (audit D2,
+upstream a7b56333, done without their per-model override table: the mirrors
+already say which printer each variant is for).
 """
 
 from __future__ import annotations
@@ -14,7 +19,13 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.services.filament_identity import resolve_spool, resolve_tray
+from backend.app.services.filament_identity import (
+    bambu_preset_id,
+    chosen_user_preset,
+    resolve_spool,
+    resolve_tray,
+    user_preset_siblings,
+)
 from backend.app.utils import filament_catalog as catalog
 from backend.app.utils.printer_models import PRINTER_MODEL_MAP
 
@@ -71,6 +82,50 @@ def _pick_preset(family_id: str, candidates: list[str]) -> catalog.CatalogPreset
         if any(name in preset.compatible_printers for name in candidates):
             return preset
     return presets[0] if presets else None
+
+
+def _user_preset_printers(row) -> set[str]:
+    """The printer profiles a user preset was made for, as far as it says.
+
+    Its parent first (``base_ref``: the system preset's setting id for a Bambu
+    mirror, its name for an Orca one) — structural, where a name is typed. Then
+    the "@<printer>" part of its own name: a printer profile outright
+    ("@Bambu Lab X2D 0.4 nozzle", how the slicer names a created filament) or a
+    preset suffix the catalogue's presets share ("@BBL A1M").
+    """
+    base = (row.base_ref or "").strip()
+    if base:
+        parent = catalog.preset_for_setting_id(base) or catalog.preset_by_name(base, row.ecosystem or "bambu")
+        if parent is not None and parent.compatible_printers:
+            return {p.casefold() for p in parent.compatible_printers}
+    name = row.name or ""
+    if "@" not in name:
+        return set()
+    suffix = name.split("@", 1)[1].strip()
+    if suffix.casefold() in {p.casefold() for p in catalog.all_printer_names()}:
+        return {suffix.casefold()}
+    return {p.casefold() for p in catalog.printers_for_preset_suffix(suffix)}
+
+
+def _fits(row, candidates: list[str]) -> bool | None:
+    """Is this user preset made for the printer? ``None`` when nothing says."""
+    printers = _user_preset_printers(row)
+    if not printers or not candidates:
+        return None
+    return bool(printers & {c.casefold() for c in candidates})
+
+
+async def _user_preset_for_printer(db: AsyncSession, chosen, candidates: list[str]):
+    """The user preset to tell THIS printer about, or ``None`` (audit D2).
+
+    The chosen one when it is made for this printer or nothing says it is not;
+    else its one unambiguous sibling made for it; else none — the caller falls
+    back to the family's system preset for the printer, as for any spool.
+    """
+    if _fits(chosen, candidates) is not False:
+        return chosen
+    siblings = [row for row in await user_preset_siblings(db, chosen) if _fits(row, candidates)]
+    return siblings[0] if len(siblings) == 1 else None
 
 
 async def build_slot_assignment(
@@ -132,25 +187,46 @@ async def build_slot_assignment(
     if preset is None:
         preset = _pick_preset(family_id, candidates)
 
-    # setting_id precedence: an explicit request > the identity's own (a
-    # mirrored cloud preset keeps its PFUS/uuid — the #1815 guarantee) > the
-    # catalog preset picked for this printer.
+    # The user's own preset the spool was configured with (audit D2). The spool
+    # form stores the family beside it and the resolver answers through the
+    # family, so without this the chosen preset never reached a slot: a custom
+    # filament went out with no preset and 200–240 °C, a tweaked copy of a system
+    # preset with the system one. Only where the printer takes user presets, and
+    # only while it is still of the family the slot is configured with.
+    chosen = await chosen_user_preset(db, spool) if spool is not None and supports_user_preset else None
+    if chosen is not None and chosen.family_filament_id != family_id:
+        chosen = None
+    user_pick = await _user_preset_for_printer(db, chosen, candidates) if chosen is not None else None
+
+    # setting_id precedence: an explicit request > the user preset made for this
+    # printer > the identity's own (a legacy spool whose only link is a mirror —
+    # not once that mirror was judged above, or a preset for another model would
+    # come straight back) > the catalog preset picked for this printer.
+    identity_setting_id = resolved.setting_id if resolved and chosen is None else None
     setting_id = (
         (preset_setting_id or None)
-        or (resolved.setting_id if resolved else None)
+        or (bambu_preset_id(user_pick) if user_pick is not None else None)
+        or identity_setting_id
         or (preset.setting_id if preset else None)
         or ""
     )
+    # Temperatures follow the preset named: the user preset's own when it is the
+    # one sent; the chosen one's as the last word before the defaults when no
+    # preset of this printer could be named — they describe the filament.
     temp_min = (
         temp_overrides[0]
+        or (user_pick.nozzle_temp_min if user_pick is not None else None)
         or (preset.nozzle_temp_min if preset else None)
         or (resolved.nozzle_temp_min if resolved else None)
+        or (chosen.nozzle_temp_min if chosen is not None else None)
         or 200
     )
     temp_max = (
         temp_overrides[1]
+        or (user_pick.nozzle_temp_max if user_pick is not None else None)
         or (preset.nozzle_temp_max if preset else None)
         or (resolved.nozzle_temp_max if resolved else None)
+        or (chosen.nozzle_temp_max if chosen is not None else None)
         or 240
     )
 

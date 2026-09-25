@@ -185,6 +185,80 @@ async def resolve_raw(db: AsyncSession, raw: str | None, *, owner_user_id: int |
     return _UNKNOWN
 
 
+def bambu_preset_id(row: UserFilamentPreset) -> str | None:
+    """The id a Bambu printer knows this mirror by, or ``None``.
+
+    A cloud mirror of the Bambu ecosystem is its ``PFUS…`` cloud id; a local
+    preset has one only once it was pushed to the Bambu cloud. An Orca profile's
+    uuid names nothing a printer can resolve.
+    """
+    if row.source == "cloud_bambu":
+        return row.cloud_id or None
+    if row.source == "local":
+        return row.pushed_cloud_id or None
+    return None
+
+
+async def chosen_user_preset(db: AsyncSession, spool) -> UserFilamentPreset | None:
+    """The user's own preset this spool was configured with, when it has a Bambu id.
+
+    ``slicer_filament`` holds what the spool form picked. A system preset or an
+    Orca profile is not a user preset in this sense and answers ``None`` — the
+    slot builder already picks the system variant per printer, and nothing
+    about an Orca uuid reaches a printer.
+    """
+    value = (getattr(spool, "slicer_filament", None) or "").strip()
+    if not value or catalog.preset_for_setting_id(value):
+        return None
+    row = (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.cloud_id == value))).scalars().first()
+    if row is None:
+        row = (
+            (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.pushed_cloud_id == value)))
+            .scalars()
+            .first()
+        )
+    if row is None and value.isdigit():
+        row = (
+            (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.local_preset_id == int(value))))
+            .scalars()
+            .first()
+        )
+    return row if row is not None and bambu_preset_id(row) else None
+
+
+def preset_stem(name: str | None) -> str:
+    """A preset's name without the "@<printer>" part a slicer adds per model."""
+    return (name or "").split("@", 1)[0].strip().casefold()
+
+
+async def user_preset_siblings(db: AsyncSession, row: UserFilamentPreset) -> list[UserFilamentPreset]:
+    """The same user preset made for other printers.
+
+    ⚠️ Same family is not enough: a system family such as Generic PETG holds the
+    user's presets for several different products. A sibling also carries the
+    same name once its "@<printer>" part is removed, belongs to the same owner
+    and has a Bambu id — anything looser would put one spool's tuning on another.
+    """
+    rows = (
+        (
+            await db.execute(
+                select(UserFilamentPreset).where(
+                    UserFilamentPreset.family_filament_id == row.family_filament_id,
+                    UserFilamentPreset.id != row.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    stem = preset_stem(row.name)
+    return [
+        r
+        for r in rows
+        if r.owner_user_id == row.owner_user_id and preset_stem(r.name) == stem and bambu_preset_id(r) is not None
+    ]
+
+
 async def resolve_spool(db: AsyncSession, spool) -> ResolvedFilament:
     """Family link -> RFID -> legacy string (spec A §5.1 precedence)."""
     family_id = getattr(spool, "filament_family_id", None)
