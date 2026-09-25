@@ -23,7 +23,10 @@ import pytest
 from fastapi import HTTPException
 
 from backend.app.api.routes.printer_settings import _guard_purify_air
-from backend.app.api.routes.printers import _AMS_DRY_MAX_TEMP, _AMS_DRY_MAX_TEMP_FALLBACK
+from backend.app.services.drying_preflight import (
+    AMS_DRY_MAX_TEMP as _AMS_DRY_MAX_TEMP,
+    AMS_DRY_MAX_TEMP_FALLBACK as _AMS_DRY_MAX_TEMP_FALLBACK,
+)
 
 
 class TestTheDryingCeilingIsPerUnit:

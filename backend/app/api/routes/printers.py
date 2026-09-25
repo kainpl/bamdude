@@ -57,7 +57,7 @@ from backend.app.schemas.printer import (
     WaitingPrintOut,
 )
 from backend.app.schemas.timelapse import TimelapseStorage
-from backend.app.services import ams_advertised_overlay, archive_parts
+from backend.app.services import ams_advertised_overlay, archive_parts, drying_preflight
 from backend.app.services.ams_backup_compatibility import NAMESPACE as AMS_BACKUP_COMPAT_NAMESPACE
 from backend.app.services.ams_backup_compatibility_apply import bulk_apply, forget_printer_rebuild
 from backend.app.services.archive import find_archive_for_sd_file, parse_plates_from_3mf, sd_stem
@@ -2564,21 +2564,9 @@ async def get_printer_storage(
 
 # The P1 firmware acks ``ams_filament_drying`` with result: success and then ignores
 # it — Bambu's own P1 manual says drying "may only be controlled from the P1S screen"
-# (#2533). Refuse the command rather than let the caller believe it landed.
-_DRYING_SCREEN_ONLY_DETAIL = "This printer only supports AMS drying from its own screen"
-
-# Maximum drying temperature per AMS unit type — BS ``AMSDryControl.cpp``:
-#   { N3F, 45, 65, "AMS2" }, { N3S, 45, 85, "AMS-S" }
-# Keyed by the module-name prefix the printer reports (``_AMS_MODULE_PREFIXES``).
-#
-# Only the AMS HT reaches 85; the fallback is the lower one, which is also what
-# ``PrintersPage.tsx`` has always offered (``moduleType === 'n3s' ? 85 : 65``).
-# The backend was the flat 45-85, so the two disagreed about the same unit and
-# the more permissive answer was the one an API key got. Erring low costs a
-# retry once the module name arrives; erring high drives a spool twenty degrees
-# past what its unit is rated for.
-_AMS_DRY_MAX_TEMP = {"n3f": 65, "n3s": 85}
-_AMS_DRY_MAX_TEMP_FALLBACK = 65
+# (#2533). Refuse the command rather than let the caller believe it landed. The
+# refusal texts and the per-unit temperature ceiling live in
+# ``services/drying_preflight.py``, shared with scheduled drying.
 
 
 @router.post("/{printer_id}/drying/start")
@@ -2601,9 +2589,13 @@ async def start_drying(
     # Server-side guard: reject if this model/firmware doesn't support drying
     live_state = printer_manager.get_status(printer_id)
     firmware = live_state.firmware_version if live_state else None
-    if drying_screen_only(printer.model):
-        raise HTTPException(400, _DRYING_SCREEN_ONLY_DETAIL)
-    if not supports_drying(printer.model, firmware):
+    # Literal sentences, not ``drying_preflight.*_DETAIL``: the API-error catalog
+    # scanner reads a raise site's own text; a test pins both constants to the
+    # catalog so the two cannot drift.
+    refusal = drying_preflight.refusal_code(printer.model, firmware)
+    if refusal == "screen_only":
+        raise HTTPException(400, "This printer only supports AMS drying from its own screen")
+    if refusal == "unsupported":
         raise HTTPException(400, "Drying not supported for this printer model or firmware version")
 
     # Per-unit ceiling, not one flat range. BS ``AMSDryControl.cpp`` keeps a
@@ -2618,9 +2610,8 @@ async def start_drying(
     # (see ``_AMS_MODULE_PREFIXES``): "n3f" / "n3s" / "ams".
     target_ams = find_ams_unit(live_state.raw_data if live_state else None, ams_id)
 
-    module_type = str((target_ams or {}).get("module_type") or "").lower()
-    max_temp = _AMS_DRY_MAX_TEMP.get(module_type, _AMS_DRY_MAX_TEMP_FALLBACK)
-    if temp < 45 or temp > max_temp:
+    max_temp = drying_preflight.max_temp_for_unit(target_ams)
+    if temp < drying_preflight.AMS_DRY_MIN_TEMP or temp > max_temp:
         raise HTTPException(400, f"Temperature must be 45-{max_temp}°C for this AMS unit")
     if duration < 1 or duration > 24:
         raise HTTPException(400, "Duration must be 1-24 hours")
@@ -2634,15 +2625,7 @@ async def start_drying(
         if blocker is not None:
             raise HTTPException(409, blocker[1])
 
-        if not filament:
-            for tray in target_ams.get("tray") or []:
-                tray_type = tray.get("tray_type")
-                if tray_type:
-                    filament = str(tray_type)
-                    break
-
-    if not filament:
-        filament = "PLA"
+    filament = drying_preflight.resolve_filament(target_ams, filament)
 
     success = printer_manager.send_drying_command(
         printer_id, ams_id, temp, duration, mode=1, filament=filament, rotate_tray=rotate_tray
@@ -2668,7 +2651,7 @@ async def stop_drying(
     # Screen-only models ignore stop just as they ignore start — a cycle running on a
     # P1S was started at the printer and has to be ended there too (#2533).
     if drying_screen_only(printer.model):
-        raise HTTPException(400, _DRYING_SCREEN_ONLY_DETAIL)
+        raise HTTPException(400, "This printer only supports AMS drying from its own screen")
 
     success = printer_manager.send_drying_command(printer_id, ams_id, temp=0, duration=0, mode=0)
     if not success:

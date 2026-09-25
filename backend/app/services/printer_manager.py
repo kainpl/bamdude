@@ -548,26 +548,41 @@ DRYING_BLOCKING_REASONS: dict[int, str] = {
 }
 
 
+# Power (1, 8) and filament at the AMS outlet (3) need the operator to go and do
+# something; the other blockers clear on their own.
+_POWER_BLOCKER_CODES = frozenset({1, 8})
+_RETRACT_BLOCKER_CODE = 3
+
+
 def first_drying_blocking_reason(ams_unit: dict | None) -> tuple[int, str] | None:
-    """Return the first blocking reason in an AMS unit's ``dry_sf_reason`` list.
+    """Return the blocking reason to report for an AMS unit's ``dry_sf_reason`` list.
 
     Returns ``(code, message)`` when at least one known blocker code is present,
-    or ``None`` when the AMS is free to start drying. Unknown / malformed codes
-    are skipped (fail-open) so a future firmware addition doesn't break existing
-    clients that haven't been updated — they'll just see a regular drying-start
-    error instead of a human-readable one.
+    or ``None`` when the AMS is free to start drying. When several are present
+    the choice is by priority — power, then filament at the outlet, then the
+    first known code — not whichever the firmware listed first: naming an
+    actionable one is more use, and the manual route, the scheduler and the
+    button's tooltip must describe one blocked AMS the same way (upstream
+    d37ce94f). Unknown / malformed codes are skipped (fail-open) so a future
+    firmware addition doesn't break existing clients — they'll just see a
+    regular drying-start error instead of a human-readable one.
     """
     if not ams_unit:
         return None
+    codes: list[int] = []
     for raw in ams_unit.get("dry_sf_reason") or []:
         try:
             code = int(raw)
         except (TypeError, ValueError):
             continue
-        message = DRYING_BLOCKING_REASONS.get(code)
-        if message:
-            return code, message
-    return None
+        if code in DRYING_BLOCKING_REASONS:
+            codes.append(code)
+    if not codes:
+        return None
+    chosen = next((c for c in codes if c in _POWER_BLOCKER_CODES), None)
+    if chosen is None:
+        chosen = _RETRACT_BLOCKER_CODE if _RETRACT_BLOCKER_CODE in codes else codes[0]
+    return chosen, DRYING_BLOCKING_REASONS[chosen]
 
 
 def find_ams_unit(raw_data: dict | None, ams_id: int) -> dict | None:
