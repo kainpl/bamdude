@@ -1,4 +1,4 @@
-import { useState, useEffect, useId, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
+import { useState, useEffect, useId, useLayoutEffect, useMemo, useRef, useCallback, memo } from 'react';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { WindowVirtualGrid } from '../components/WindowVirtualGrid';
 import { ZigbeeStatusBadge } from '../components/zigbee/ZigbeeStatusBadge';
@@ -1773,7 +1773,7 @@ function buildCardScaleStyle(cardSize: number): React.CSSProperties {
 const COMPACT_SHADOW_WARNING = '0 0 0 1px rgba(245, 158, 11, 0.45), 0 4px 18px rgba(245, 158, 11, 0.28)';
 const COMPACT_SHADOW_ERROR = '0 0 0 1px rgba(239, 68, 68, 0.5), 0 4px 18px rgba(239, 68, 68, 0.32)';
 
-function PrinterCard({
+const PrinterCard = memo(function PrinterCard({
   printer,
   hideIfDisconnected,
   maintenanceInfo,
@@ -2202,12 +2202,16 @@ function PrinterCard({
     refetchInterval: 10000, // 10 seconds for real-time power display
   });
 
-  // Fetch queue count for this printer
-  const { data: queueItems } = useQuery({
+  // Fetch this printer's pending queue — feeds both the queue-count badge
+  // below and (further down) the compact "next queued" strip. Deliberately
+  // NOT gated on status?.connected: the badge must still show for a
+  // disconnected printer with pending items.
+  const { data: pendingQueue } = useQuery({
     queryKey: ['queue', printer.id, 'pending'],
     queryFn: () => api.getQueue(printer.id, 'pending'),
+    refetchInterval: 30000,
   });
-  const queueCount = queueItems?.length ?? 0;
+  const queueCount = pendingQueue?.length ?? 0;
 
   // Pull this printer's summary counters off the global queues list. Shared
   // react-query key with QueuePage means no extra network on visits that
@@ -2256,16 +2260,10 @@ function PrinterCard({
   // over nothing — then the button only ever answered "nothing is waiting".
   // An older backend does not send the field; then the button stays as before.
   const repeatAvailable = status?.repeat_available !== false;
-  // Share the same queue query PrinterQueueWidget already uses — react-query
-  // dedupes, zero extra network. We only need to know whether the widget will
-  // be rendering its green "Clear & Start Next" CTA so we can hide our yellow
-  // duplicate while it's visible.
-  const { data: pendingQueue } = useQuery({
-    queryKey: ['queue', printer.id, 'pending'],
-    queryFn: () => api.getQueue(printer.id, 'pending'),
-    refetchInterval: 30000,
-    enabled: status?.connected === true,
-  });
+  // Shares the pendingQueue query declared above with PrinterQueueWidget's
+  // key — react-query dedupes, zero extra network. We only need to know
+  // whether the widget will be rendering its green "Clear & Start Next" CTA
+  // so we can hide our yellow duplicate while it's visible.
   const hasAutoDispatchableQueue = (pendingQueue ?? []).some(i => !i.manual_start);
   const greenClearCtaVisible =
     needsPlateClear
@@ -7240,7 +7238,7 @@ function PrinterCard({
       })()}
     </Card>
   );
-}
+});
 
 function MacrosPanel({
   printer,
@@ -8926,6 +8924,16 @@ export function PrintersPage() {
     return DRYING_PRESETS;
   }, [settings?.drying_presets]);
 
+  // Same value for every card — hoisted out of renderRegularPrinterCard so it
+  // isn't rebuilt as a fresh object on every render of every printer, which
+  // would defeat PrinterCard's React.memo for all of them at once.
+  const amsThresholds = useMemo(() => settings ? {
+    humidityGood: Number(settings.ams_humidity_good) || 40,
+    humidityFair: Number(settings.ams_humidity_fair) || 60,
+    tempGood: Number(settings.ams_temp_good) || 28,
+    tempFair: Number(settings.ams_temp_fair) || 35,
+  } : undefined, [settings]);
+
   // Close embedded cameras if mode changes to 'window'
   useEffect(() => {
     if (settings?.camera_view_mode === 'window' && embeddedCamera !== null) {
@@ -9042,25 +9050,53 @@ export function PrintersPage() {
     },
   });
 
-  // Helper to find assignment for a specific slot
-  const getAssignment = (printerId: number, amsId: number | string, trayId: number | string): SpoolAssignment | undefined => {
+  // Stable handler identities for PrinterCard's callback props — an inline
+  // arrow at the JSX call site would be a fresh function every render and
+  // defeat the card's React.memo.
+  const handleUnassignSpoolmanSpool = useCallback(
+    (spoolId: number) => unassignSpoolmanMutation.mutate(spoolId),
+    [unassignSpoolmanMutation],
+  );
+  const handleUnassignSpool = useCallback(
+    (pid: number, aid: number, tid: number) =>
+      unassignMutation.mutate({ printerId: pid, amsId: aid, trayId: tid }),
+    [unassignMutation],
+  );
+  const handleOpenEmbeddedCamera = useCallback(
+    (id: number, name: string) => setEmbeddedCamera({ kind: 'printer', id, name }),
+    [],
+  );
+  const handleExpandPrinter = useCallback((id: number) => setExpandedPrinterId(id), []);
+
+  // Helper to find assignment for a specific slot. Memoised (rather than a
+  // plain function) so it has a stable identity across renders — it's handed
+  // to every PrinterCard as the onGetAssignment prop, and a fresh function
+  // every render would defeat that card's React.memo.
+  const getAssignment = useCallback((printerId: number, amsId: number | string, trayId: number | string): SpoolAssignment | undefined => {
     return spoolAssignments?.find(
       (a) => a.printer_id === printerId && a.ams_id === Number(amsId) && a.tray_id === Number(trayId)
     );
-  };
+  }, [spoolAssignments]);
 
-  // Create a map of printer_id -> maintenance info for quick lookup
-  const maintenanceByPrinter = maintenanceOverview?.reduce(
-    (acc, overview) => {
-      acc[overview.printer_id] = {
-        due_count: overview.due_count,
-        warning_count: overview.warning_count,
-        total_print_hours: overview.total_print_hours,
-      };
-      return acc;
-    },
-    {} as Record<number, PrinterMaintenanceInfo>
-  ) || {};
+  // Create a map of printer_id -> maintenance info for quick lookup. Memoised
+  // for the same reason as ``smartPlugByPrinter`` below — without this, the
+  // fallback ``|| {}`` allocates a fresh object every render, which defeats
+  // PrinterCard's React.memo for every printer that has a maintenance entry.
+  const maintenanceByPrinter = useMemo(
+    () =>
+      maintenanceOverview?.reduce(
+        (acc, overview) => {
+          acc[overview.printer_id] = {
+            due_count: overview.due_count,
+            warning_count: overview.warning_count,
+            total_print_hours: overview.total_print_hours,
+          };
+          return acc;
+        },
+        {} as Record<number, PrinterMaintenanceInfo>
+      ) || {},
+    [maintenanceOverview],
+  );
 
   // Create a map of printer_id -> smart plug. Memoised so the reference is
   // stable across renders when ``smartPlugs`` doesn't change — without this,
@@ -9242,7 +9278,12 @@ export function PrintersPage() {
 
   // Increment version counter whenever a printerStatus cache entry is updated so
   // filteredPrinters re-computes reactively on WebSocket-driven status changes (#852).
+  // Only the status-filter branch of filteredPrinters actually reads this
+  // version (see below) — subscribing unconditionally means every printer's
+  // status tick re-renders the whole page even when no status filter is
+  // active, so the subscription is gated the same way.
   useEffect(() => {
+    if (statusFilter === 'all') return;
     const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
       if (
         event.type === 'updated' &&
@@ -9253,7 +9294,7 @@ export function PrintersPage() {
       }
     });
     return unsubscribe;
-  }, [queryClient]);
+  }, [queryClient, statusFilter]);
 
   // From the locations themselves rather than from the printers on screen: a
   // parent with no printers directly on it must still be selectable.
@@ -9365,18 +9406,34 @@ export function PrintersPage() {
   // sort orders rerun as their data arrives; a cache read alone cannot do that
   // because `queryClient` itself never changes identity.
   const orderReadsStatus = sortBy === 'status' || sortBy === 'eta' || sortBy === 'freeAt';
+  // The queries themselves stay unconditional (every printer, every render):
+  // this is what preloads the whole fleet's status through the shared batcher
+  // (api/printerStatusBatch.ts) in one request, including printers not yet
+  // progressively mounted as cards, and what the status filter's direct cache
+  // reads rely on staying warm. What must NOT be unconditional is reacting to
+  // it: without `combine`, this page-level useQueries re-renders the whole
+  // page (recomputing sortedPrinters/groupedPrinters) on every single
+  // printer's WebSocket status tick, even when nothing sorts by status.
+  // `combine` returns a value react-query deep-equality-compares against the
+  // previous one (queriesObserver's replaceEqualDeep) and only re-renders the
+  // component when that comparison actually differs — returning the same
+  // `null` every time some sort other than status/eta/freeAt is active makes
+  // this observer inert for render purposes while the underlying per-printer
+  // queries keep fetching and updating the QueryClient cache exactly as
+  // before.
   const statusQueries = useQueries({
     queries: (printers ?? []).map((printer) => ({
       queryKey: ['printerStatus', printer.id],
       queryFn: () => api.getPrinterStatus(printer.id),
       refetchInterval: 30000,
     })),
+    combine: (results) => (orderReadsStatus ? results.map((r) => r.data as EtaStatus | undefined) : null),
   });
   const statusByPrinter = useMemo(() => {
     const map = new Map<number, EtaStatus | undefined>();
-    if (!orderReadsStatus) return map;
+    if (!orderReadsStatus || !statusQueries) return map;
     printers?.forEach((printer, i) => {
-      map.set(printer.id, statusQueries[i]?.data as EtaStatus | undefined);
+      map.set(printer.id, statusQueries[i]);
     });
     return map;
   }, [orderReadsStatus, printers, statusQueries]);
@@ -9826,25 +9883,20 @@ export function PrintersPage() {
       spoolmanSpools={spoolmanSpoolsData}
       spoolmanSlotAssignments={spoolmanSlotAssignments}
       spoolmanLoading={spoolmanLoading}
-      onUnassignSpoolmanSpool={(spoolId) => unassignSpoolmanMutation.mutate(spoolId)}
+      onUnassignSpoolmanSpool={handleUnassignSpoolmanSpool}
       onGetAssignment={getAssignment}
-      onUnassignSpool={(pid, aid, tid) => unassignMutation.mutate({ printerId: pid, amsId: aid, trayId: tid })}
-      amsThresholds={settings ? {
-        humidityGood: Number(settings.ams_humidity_good) || 40,
-        humidityFair: Number(settings.ams_humidity_fair) || 60,
-        tempGood: Number(settings.ams_temp_good) || 28,
-        tempFair: Number(settings.ams_temp_fair) || 35,
-      } : undefined}
+      onUnassignSpool={handleUnassignSpool}
+      amsThresholds={amsThresholds}
       timeFormat={settings?.time_format || 'system'}
       dateFormat={settings?.date_format || 'system'}
       cameraViewMode={settings?.camera_view_mode || 'window'}
-      onOpenEmbeddedCamera={(id, name) => setEmbeddedCamera({ kind: 'printer', id, name })}
+      onOpenEmbeddedCamera={handleOpenEmbeddedCamera}
       checkPrinterFirmware={settings?.check_printer_firmware !== false}
       useSlicerApi={settings?.use_slicer_api ?? false}
       dryingPresets={effectiveDryingPresets}
       isSelected={selectedPrinterIds.has(printer.id)}
       onSelect={handleSelectPrinter}
-      onExpand={(id) => setExpandedPrinterId(id)}
+      onExpand={handleExpandPrinter}
       spoolDisplayTemplate={settings?.spool_display_template || undefined}
       virtualized={virtualized}
     />
