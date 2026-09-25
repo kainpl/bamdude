@@ -16,7 +16,7 @@ The backfill is **strictly best-effort**:
   the loop only writes rows that don't have a meta entry yet.
 
 Cover images are downloaded via the shared
-``services/makerworld_meta.download_covers`` helper that the live import
+``services/model_providers/makerworld/meta.download_covers`` helper that the live import
 flow also uses, so both paths produce identical on-disk layout under
 ``<archive_dir>/library/makerworld-covers/<library_file_id>-{cover,variant}.<ext>``.
 """
@@ -124,11 +124,15 @@ async def seed(session_factory):
     re-fetches design + instances from MakerWorld, downloads covers, and
     INSERTs a meta row. Per-row failures are logged + swallowed.
     """
-    # Late imports keep migration discovery dependency-light.
+    # Late imports keep migration discovery dependency-light. The MakerWorld
+    # paths were updated 2026-09-25 when it moved into services/model_providers/
+    # (upstream #2845) — the owner chose editing these lines over keeping
+    # re-export shims at the old paths. Behaviour unchanged.
     from backend.app.models.library import LibraryFile
     from backend.app.models.library_file_makerworld_meta import LibraryFileMakerworldMeta
-    from backend.app.services.makerworld import MakerWorldError, MakerWorldService
-    from backend.app.services.makerworld_meta import build_meta_dict, download_covers
+    from backend.app.services.model_providers.makerworld.errors import MakerWorldError
+    from backend.app.services.model_providers.makerworld.meta import build_meta_dict, download_covers
+    from backend.app.services.model_providers.makerworld.service import MakerWorldService
 
     async with session_factory() as session:
         result = await session.execute(
