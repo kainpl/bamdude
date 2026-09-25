@@ -1079,10 +1079,14 @@ export function SpoolFormModal({
       <div className="flex gap-2 p-4 border-t border-bambu-dark-tertiary flex-shrink-0">
         {isEditing && (
           <div className="flex gap-2 mr-auto">
+            {/* Either identifier counts as "tagged": a Bambu Lab spool is linked by
+                its 32-char tray UUID and has no tag_uid — in Spoolman mode that is
+                every Bambu spool, since the tag is split by length. The payload
+                clears both fields in both inventory modes (upstream #3109). */}
             <Button
               variant="secondary"
               onClick={() => deleteTagMutation.mutate()}
-              disabled={isPending || !spool?.tag_uid}
+              disabled={isPending || !(spool?.tag_uid || spool?.tray_uuid)}
             >
               <Tag className="w-4 h-4" />
               {t('inventory.clearRfid', 'Clear RFID Tag')}

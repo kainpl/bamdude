@@ -172,6 +172,11 @@
   dries — and is judged — as its base material, nylon under any of its
   spellings (NYLON, PA6, PA11, PA12, PAHT, PPA) as PA; the preheat stage reads
   the chamber target the same way.
+- **Clear RFID Tag works on a Bambu Lab spool.** The button in the spool
+  dialog stayed greyed out for a spool linked only by its 32-character tray
+  UUID — which in Spoolman mode is every Bambu Lab spool synced from the AMS
+  — so the tag could only be removed in Spoolman itself. Either identifier
+  now enables it, and clearing still removes both.
 - **The drying button names what actually blocks drying.** It always asked
   for the AMS power adapter, even when the unit was refusing because filament
   sat at its outlet. It now names the power adapter first, then the filament

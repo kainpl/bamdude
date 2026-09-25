@@ -594,3 +594,30 @@ describe('SpoolFormModal PA profiles per nozzle', () => {
     ]);
   });
 });
+
+describe('SpoolFormModal Clear RFID Tag (upstream #3109)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // A Bambu Lab spool is linked by its 32-char tray UUID and carries no tag_uid;
+  // in Spoolman mode that is every Bambu spool synced from the AMS.
+  const uuidOnly: InventorySpool = { ...existingSpool, tag_uid: null, tray_uuid: 'A1B2C3D4E5F60718293A4B5C6D7E8F90' };
+
+  it('is enabled for a spool linked by its tray UUID alone, and clears both identifiers', async () => {
+    render(<SpoolFormModal isOpen={true} onClose={vi.fn()} spool={uuidOnly} currencySymbol="$" />);
+    const clear = await screen.findByRole('button', { name: /clear rfid tag/i });
+    expect(clear).toBeEnabled();
+
+    fireEvent.click(clear);
+
+    await waitFor(() => expect(api.updateSpool).toHaveBeenCalledTimes(1));
+    const [, payload] = vi.mocked(api.updateSpool).mock.calls[0];
+    expect(payload).toMatchObject({ tag_uid: null, tray_uuid: null });
+  });
+
+  it('stays disabled for a spool with no identifier at all', async () => {
+    render(<SpoolFormModal isOpen={true} onClose={vi.fn()} spool={existingSpool} currencySymbol="$" />);
+    expect(await screen.findByRole('button', { name: /clear rfid tag/i })).toBeDisabled();
+  });
+});
