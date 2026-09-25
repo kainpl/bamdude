@@ -1,6 +1,7 @@
 """Tests for the /makerworld/* route handlers.
 
-Mocks ``MakerWorldService`` so tests don't hit the real MakerWorld API. We
+Stubs MakerWorld below the service's interface so tests don't hit the real
+API while ``resolve`` / ``get_download`` / ``download`` run as shipped. We
 still cover: URL validation, metadata passthrough, already-imported detection,
 source-URL-based dedupe on import, auto-creation of the MakerWorld default
 folder, canonical URL shape, filename basenaming, and the ``/recent-imports``
@@ -10,18 +11,39 @@ listing endpoint.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
-from backend.app.api.routes.makerworld import _canonical_url
 from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.services.model_providers import makerworld_provider
+from backend.app.services.model_providers.base import ProviderResourceRef
+from backend.app.services.model_providers.makerworld.errors import MakerWorldUnavailableError
+from backend.app.services.model_providers.makerworld.service import MakerWorldService
+
+
+def _canonical_url(model_id: int, profile_id: int | None = None) -> str:
+    return makerworld_provider.canonical_url(
+        ProviderResourceRef(
+            source_type="makerworld",
+            external_id=str(model_id),
+            sub_id=str(profile_id) if profile_id else None,
+        )
+    )
 
 
 def _fake_service(**stubs):
-    """Build an AsyncMock MakerWorldService with the given async method stubs."""
-    svc = AsyncMock()
+    """A real ``MakerWorldService`` whose MakerWorld calls are the given stubs.
+
+    The interface methods the routes call (``resolve``, ``get_download``,
+    ``download``, ``get_status``) run as shipped on top of the stubbed
+    low-level ones. Unstubbed: an empty instance list, no covers.
+    """
+    svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient), auth_token="tok")
     svc.close = AsyncMock()
+    svc.get_design_instances = AsyncMock(return_value={"hits": []})
+    svc.fetch_thumbnail = AsyncMock(side_effect=MakerWorldUnavailableError("no covers in this test"))
     for name, value in stubs.items():
         if callable(value) and not isinstance(value, AsyncMock):
             setattr(svc, name, AsyncMock(side_effect=value))
@@ -50,6 +72,8 @@ def _default_manifest(name: str = "benchy.3mf"):
 
 
 class TestCanonicalUrl:
+    """The dedupe key's shape — owned by the provider (``url.canonical_url``)."""
+
     """Unit test the dedupe-key builder directly — regressions break dedupe
     silently so it's worth pinning the exact shape."""
 
@@ -70,7 +94,7 @@ class TestStatus:
         assert resp.status_code == 200
         body = resp.json()
         # Fresh in-memory DB has no stored token, so can_download must be false
-        assert body == {"has_cloud_token": False, "can_download": False}
+        assert body == {"has_cloud_token": False, "can_download": False, "sign_in_expired": False}
 
 
 class TestResolve:
@@ -81,7 +105,8 @@ class TestResolve:
             json={"url": "https://thingiverse.com/thing/1"},
         )
         assert resp.status_code == 400
-        assert "makerworld" in resp.json()["detail"].lower()
+        # The registry routes a URL to its provider; nobody serves this host.
+        assert resp.json()["detail"].startswith("No registered model provider supports")
 
     @pytest.mark.asyncio
     async def test_happy_path_returns_design_and_instances(self, async_client):
@@ -1044,7 +1069,7 @@ class TestApiKeyCloudOwner:
         del async_client.headers["Authorization"]
         try:
             with patch(
-                "backend.app.api.routes.makerworld.get_stored_token",
+                "backend.app.services.model_providers.makerworld.provider.get_stored_token",
                 new=AsyncMock(side_effect=self._fake_token),
             ):
                 resp = await async_client.get("/api/v1/makerworld/status", headers={"X-API-Key": raw})
@@ -1052,7 +1077,7 @@ class TestApiKeyCloudOwner:
             self._restore_admin_jwt(async_client)
 
         assert resp.status_code == 200, resp.text
-        assert resp.json() == {"has_cloud_token": True, "can_download": True}
+        assert resp.json() == {"has_cloud_token": True, "can_download": True, "sign_in_expired": False}
 
     @pytest.mark.asyncio
     async def test_status_no_token_for_non_cloud_key(self, async_client):
@@ -1065,7 +1090,7 @@ class TestApiKeyCloudOwner:
         del async_client.headers["Authorization"]
         try:
             with patch(
-                "backend.app.api.routes.makerworld.get_stored_token",
+                "backend.app.services.model_providers.makerworld.provider.get_stored_token",
                 new=AsyncMock(side_effect=self._fake_token),
             ):
                 resp = await async_client.get("/api/v1/makerworld/status", headers={"X-API-Key": raw})
@@ -1073,7 +1098,7 @@ class TestApiKeyCloudOwner:
             self._restore_admin_jwt(async_client)
 
         assert resp.status_code == 200, resp.text
-        assert resp.json() == {"has_cloud_token": False, "can_download": False}
+        assert resp.json() == {"has_cloud_token": False, "can_download": False, "sign_in_expired": False}
 
     @pytest.mark.asyncio
     async def test_import_attributes_created_by_to_key_owner(self, async_client, db_session):

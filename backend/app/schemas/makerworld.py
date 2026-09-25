@@ -80,6 +80,13 @@ class MakerWorldImportRequest(BaseModel):
         description="Retained for backwards compatibility; no longer used by the download flow.",
     )
     folder_id: int | None = Field(default=None, description="Target library folder; null = root")
+    source_type: str = Field(
+        default="makerworld",
+        description=(
+            "The model provider this import comes from. Only 'makerworld' is registered today; "
+            "an unknown value is refused with 400 before anything is written."
+        ),
+    )
 
 
 class MakerWorldRecentImport(BaseModel):
@@ -157,3 +164,7 @@ class MakerWorldStatus(BaseModel):
 
     has_cloud_token: bool = Field(description="Whether the caller's account has a stored Bambu Cloud token")
     can_download: bool = Field(description="Shortcut: has_cloud_token AND it looks valid. Downloads require it.")
+    sign_in_expired: bool = Field(
+        default=False,
+        description="The stored Bambu Cloud token exists but Bambu has rejected it — sign in again.",
+    )

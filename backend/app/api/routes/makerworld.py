@@ -8,23 +8,33 @@ MakerWorld's whole search UI.
 Search/browse endpoints are intentionally NOT exposed: the public-facing
 ``design/search`` endpoint returns empty results from server-originated
 requests.
+
+The routes reach the site only through the model-provider seam
+(``services/model_providers``, upstream #2845): the registry picks the
+provider for a pasted URL or a named ``source_type``, the descriptor owns the
+URL shape, the folder name and the permissions, and a per-request
+``ProviderService`` does the network work. The endpoints, their shapes and
+the import history / meta / covers stay MakerWorld's — a second site gets
+its own storage and UI when it arrives.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import Response
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.api.routes.cloud import get_stored_token, resolve_api_key_cloud_owner
+from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.api.routes.library import save_3mf_bytes_to_library
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequirePermission, require_permission, security
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.library import LibraryFile, LibraryFolder
@@ -42,14 +52,17 @@ from backend.app.schemas.makerworld import (
     MakerWorldResolveRequest,
     MakerWorldStatus,
 )
-from backend.app.services.model_providers import makerworld_provider
-from backend.app.services.model_providers.makerworld.errors import (
-    MakerWorldAuthError,
-    MakerWorldError,
-    MakerWorldForbiddenError,
-    MakerWorldNotFoundError,
-    MakerWorldUnavailableError,
-    MakerWorldUrlError,
+from backend.app.services.model_providers import makerworld_provider, registry
+from backend.app.services.model_providers.base import (
+    ModelProvider,
+    ProviderAuthError,
+    ProviderError,
+    ProviderForbiddenError,
+    ProviderNotFoundError,
+    ProviderResourceRef,
+    ProviderService,
+    ProviderUnavailableError,
+    ProviderUrlError,
 )
 from backend.app.services.model_providers.makerworld.meta import build_meta_dict, download_covers
 from backend.app.services.model_providers.makerworld.service import MakerWorldService
@@ -59,54 +72,131 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/makerworld", tags=["makerworld"])
 
-_SOURCE_TYPE = "makerworld"
+_SOURCE_TYPE = makerworld_provider.source_type
 
 
-async def _build_service(db: AsyncSession, user: User | None) -> MakerWorldService:
-    """Construct a per-request MakerWorldService seeded with the caller's
-    stored Bambu Cloud bearer token when available.
+def _provider_for_url(url: str) -> ModelProvider:
+    """The registered provider that claims *url* — a pasted link for a host
+    nobody serves is a client-input problem, a 400."""
+    provider = registry.find_for_url(url)
+    if provider is None:
+        raise HTTPException(status_code=400, detail=f"No registered model provider supports {url!r}")
+    return provider
 
-    Mirrors ``cloud.build_authenticated_cloud`` — the token is entirely
-    optional; anonymous calls (metadata, URL resolution) still work. The
-    provider seeds it and wires the rejected-token callback (#2562).
+
+def _provider_for_source(source_type: str) -> ModelProvider:
+    """The registered provider with this ``source_type``.
+
+    Import names a resource by id, not by URL, so the source type is all
+    there is to route on. The detail is built here: ``str(KeyError)`` is the
+    repr of its argument and would ship the quotes to the client.
     """
-    return await makerworld_provider.build_service(db=db, user=user)
+    try:
+        return registry.get(source_type)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"No model provider registered for source_type {source_type!r}"
+        ) from exc
 
 
-def _canonical_url(model_id: int, profile_id: int | None = None) -> str:
-    """Build a stable source_url we use for dedupe.
+async def _authorize_for_provider(
+    provider: ModelProvider,
+    permission: Permission | None,
+    route_permission: Permission,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+    x_api_key: str | None,
+) -> None:
+    """Apply *provider*'s own permission on top of the route's.
 
-    Dedupe is keyed per *plate* (profile) rather than per model, since the
-    ``/iot-service/.../profile/{profileId}`` download returns a specific
-    plate — not the full multi-plate zip — so two different plates of the
-    same design should become two separate library entries. Canonical
-    shape uses the locale-free path with the ``#profileId-`` fragment so
-    all URL variants of the same plate still collapse (e.g. ``/en/models/
-    123-slug?from=search#profileId-456`` and ``/de/models/123#profileId-
-    456`` both map to ``https://makerworld.com/models/123#profileId-
-    456``). Plate-less imports (legacy or whole-design) keep the old
-    model-only shape for backwards compatibility with existing rows.
+    The route already checked ``route_permission`` (MakerWorld's — every
+    endpoint names its permission). Which provider a request uses is known
+    only once the body is read (``source_type`` on import, the pasted URL on
+    resolve), so a provider whose permission differs is checked here: a
+    second model site is never imported under MakerWorld's permission
+    (upstream #2845). A provider that declares none is refused rather than
+    read as unrestricted.
     """
-    if profile_id:
-        return f"https://makerworld.com/models/{model_id}#profileId-{profile_id}"
-    return f"https://makerworld.com/models/{model_id}"
+    if permission is None:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Model provider {provider.source_type!r} declares no permission for this operation",
+        )
+    if permission == route_permission:
+        return
+    await require_permission(permission)(request=request, credentials=credentials, x_api_key=x_api_key)
 
 
-def _map_service_error(exc: MakerWorldError) -> HTTPException:
-    """Translate service exceptions into HTTP responses."""
-    if isinstance(exc, MakerWorldUrlError):
+async def _build_service(
+    db: AsyncSession,
+    provider: ModelProvider,
+    current_user: User | None,
+    api_key_cloud_owner: User | None = None,
+) -> ProviderService:
+    """One per-request service, built by *provider*.
+
+    Identity (JWT user, else the API key's owner, else the ownerless global
+    token) and credential seeding live in ``provider.build_service`` — the
+    routes never re-implement them.
+    """
+    return await provider.build_service(db=db, user=current_user, api_key_owner=api_key_cloud_owner)
+
+
+def _map_service_error(exc: ProviderError) -> HTTPException:
+    """Translate provider service exceptions into HTTP responses."""
+    if isinstance(exc, ProviderUrlError):
         return HTTPException(status_code=400, detail=str(exc))
-    if isinstance(exc, MakerWorldAuthError):
+    if isinstance(exc, ProviderAuthError):
         return HTTPException(status_code=401, detail=str(exc))
-    if isinstance(exc, MakerWorldForbiddenError):
-        # 403 forwards MakerWorld's own refusal message (content-gated,
+    if isinstance(exc, ProviderForbiddenError):
+        # 403 forwards the site's own refusal message (content-gated,
         # region-locked, requires points, etc.) — UI surfaces it verbatim.
         return HTTPException(status_code=403, detail=str(exc))
-    if isinstance(exc, MakerWorldNotFoundError):
+    if isinstance(exc, ProviderNotFoundError):
         return HTTPException(status_code=404, detail=str(exc))
-    if isinstance(exc, MakerWorldUnavailableError):
+    if isinstance(exc, ProviderUnavailableError):
         return HTTPException(status_code=502, detail=str(exc))
-    return HTTPException(status_code=500, detail=f"MakerWorld error: {exc}")
+    return HTTPException(status_code=500, detail=f"Model provider error: {exc}")
+
+
+async def _fetch_makerworld_meta(
+    service: MakerWorldService,
+    *,
+    library_file_id: int,
+    model_id: int,
+    profile_id: int | None,
+    variant_url: str,
+) -> dict[str, Any]:
+    """Everything a ``LibraryFileMakerworldMeta`` row holds for one plate —
+    the design (already fetched by ``get_download``; memoised in the
+    service), the instance list, and the two covers written to disk."""
+    design = await service.get_design(model_id)
+    envelope = await service.get_design_instances(model_id)
+    instances = envelope.get("hits") if isinstance(envelope.get("hits"), list) else []
+    variant_cover_url: str | None = None
+    for inst in instances or []:
+        if isinstance(inst, dict) and inst.get("profileId") == profile_id:
+            cov = inst.get("cover")
+            if isinstance(cov, str):
+                variant_cover_url = cov
+            break
+    alphanumeric_model_id = design.get("modelId") if isinstance(design.get("modelId"), str) else None
+    meta_dict = build_meta_dict(
+        library_file_id=library_file_id,
+        design=design,
+        instances=instances or [],
+        profile_id=profile_id,
+        variant_url=variant_url,
+        model_id_alphanumeric=alphanumeric_model_id,
+    )
+    cover_url = design.get("coverUrl") if isinstance(design.get("coverUrl"), str) else None
+    cover_rel, variant_cover_rel = await download_covers(
+        service,
+        library_file_id=library_file_id,
+        cover_url=cover_url,
+        variant_cover_url=variant_cover_url,
+    )
+    return {**meta_dict, "cover_path": cover_rel, "variant_cover_path": variant_cover_rel}
 
 
 @router.get("/thumbnail")
@@ -125,8 +215,8 @@ async def proxy_thumbnail(
     placeholders). The thumbnails being proxied are MakerWorld's *public*
     CDN — any visitor to makerworld.com can fetch them without auth — so no
     data is exposed. The SSRF guard inside ``fetch_thumbnail`` restricts
-    the upstream host to the MakerWorld CDN allowlist, so this can't be
-    abused as a generic open proxy. Whitelisted in ``auth_middleware`` so
+    the upstream host to the provider's declared CDN allowlist, so this can't
+    be abused as a generic open proxy. Whitelisted in ``auth_middleware`` so
     the always-on auth gate doesn't 401 the proxied image fetch.
 
     URLs are content-addressable (filename contains a hash), so the
@@ -135,7 +225,7 @@ async def proxy_thumbnail(
     service = MakerWorldService(thumbnail_hosts=makerworld_provider.thumbnail_hosts())
     try:
         payload, content_type = await service.fetch_thumbnail(url)
-    except MakerWorldError as exc:
+    except ProviderError as exc:
         raise _map_service_error(exc) from exc
     finally:
         await service.close()
@@ -152,7 +242,7 @@ async def proxy_thumbnail(
 @router.get("/status", response_model=MakerWorldStatus)
 async def get_status(
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.MAKERWORLD_VIEW),
+    current_user: User | None = RequirePermission(makerworld_provider.view_permission),
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Report whether the caller can import 3MFs (needs a Bambu Cloud token).
@@ -161,19 +251,32 @@ async def get_status(
     User via ``resolve_api_key_cloud_owner`` when the key carries the
     cloud-access scope, so ``has_cloud_token`` reflects the owning user's
     stored token rather than always reporting ``False`` (#1777).
+
+    ``sign_in_expired`` is the provider's ``credential_rejected``: a stored
+    token Bambu has refused. It is its own state — "sign in" said to someone
+    who believes they already are was the confusion #2562 fixed.
     """
-    cloud_token_user = current_user or api_key_cloud_owner
-    token, _email, _region = await get_stored_token(db, cloud_token_user)
-    has_token = bool(token)
-    return MakerWorldStatus(has_cloud_token=has_token, can_download=has_token)
+    service = await _build_service(db, makerworld_provider, current_user, api_key_cloud_owner)
+    try:
+        status = await service.get_status(db)
+    finally:
+        await service.close()
+    return MakerWorldStatus(
+        has_cloud_token=status.authenticated,
+        can_download=status.can_download,
+        sign_in_expired=status.credential_rejected,
+    )
 
 
 @router.post("/resolve", response_model=MakerWorldResolvedModel)
 async def resolve_url(
     body: MakerWorldResolveRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.MAKERWORLD_VIEW),
+    current_user: User | None = RequirePermission(makerworld_provider.view_permission),
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
     """Resolve a MakerWorld URL to full model metadata + plate list.
 
@@ -181,68 +284,30 @@ async def resolve_url(
     exist for the same model URL, so the UI can show an "Already imported"
     badge and skip a redundant download.
     """
+    provider = _provider_for_url(body.url)
+    await _authorize_for_provider(
+        provider, provider.view_permission, makerworld_provider.view_permission, request, credentials, x_api_key
+    )
     try:
-        ref = makerworld_provider.parse_url(body.url)
-    except MakerWorldError as exc:
+        ref = provider.parse_url(body.url)
+    except ProviderError as exc:
         raise _map_service_error(exc) from exc
     model_id = int(ref.external_id)
     profile_id = int(ref.sub_id) if ref.sub_id else None
 
-    # API-keyed callers carry identity on the key, not in current_user — see
-    # the /status handler comment and #1777.
-    cloud_token_user = current_user or api_key_cloud_owner
-    service = await _build_service(db, cloud_token_user)
+    service = await _build_service(db, provider, current_user, api_key_cloud_owner)
     try:
-        design = await service.get_design(model_id)
-        instances_envelope = await service.get_design_instances(model_id)
-    except MakerWorldError as exc:
+        # The provider merges MakerWorld's per-instance printer compatibility
+        # into the instance list (A.44) — the route passes it through.
+        resolved = await service.resolve(ref)
+    except ProviderError as exc:
         raise _map_service_error(exc) from exc
     finally:
         await service.close()
 
-    # MakerWorld's instances payload is ``{"total": N, "hits": [...]}``; callers
-    # only care about the hits, and we normalise the null case to an empty list
-    # so the frontend doesn't have to handle null vs [] both ways.
-    instances = instances_envelope.get("hits") or []
-    if not isinstance(instances, list):
-        instances = []
-
-    # /instances/hits omits the per-instance printer compatibility info that
-    # /design.instances[].extention.modelInfo carries (compatibility +
-    # otherCompatibility). Merge it in so the frontend can show "this
-    # instance was sliced for A1" + "also marked compatible with: H2D, P1S,
-    # …" before the user picks one — without that, every instance row looks
-    # identical in the UI and users blindly pick the first one regardless of
-    # whether it matches their printer. (A.44 — per-instance MakerWorld
-    # compat merge; also folds in A.43.4's per-instance compat surfacing.)
-    design_instances = design.get("instances") or []
-    if isinstance(design_instances, list):
-        compat_by_id = {}
-        for di in design_instances:
-            if not isinstance(di, dict):
-                continue
-            iid = di.get("id")
-            if iid is None:
-                continue
-            ext = (di.get("extention") or {}).get("modelInfo") or {}
-            compat_by_id[iid] = {
-                "compatibility": ext.get("compatibility"),
-                "otherCompatibility": ext.get("otherCompatibility"),
-            }
-        for inst in instances:
-            if not isinstance(inst, dict):
-                continue
-            iid = inst.get("id")
-            extra = compat_by_id.get(iid)
-            if extra:
-                inst["compatibility"] = extra["compatibility"]
-                inst["otherCompatibility"] = extra["otherCompatibility"]
-
-    # Find every library row whose source_url is either the model-level
-    # canonical URL (legacy whole-model imports) or any plate-level URL
-    # (``...#profileId-{n}``) under this model. The frontend surfaces this
-    # to mark imported plates in the instance picker.
-    model_prefix = _canonical_url(model_id)
+    # Every library row that belongs to this model — the provider's
+    # ``source_url_filter`` owns what "belongs" means (the whole-model key
+    # plus every ``#profileId-{n}`` plate key for MakerWorld).
     existing_q = await db.execute(
         select(
             LibraryFile.id,
@@ -250,20 +315,17 @@ async def resolve_url(
             LibraryFile.folder_id,
             LibraryFile.filename,
         ).where(
-            (LibraryFile.source_url == model_prefix) | (LibraryFile.source_url.like(f"{model_prefix}#profileId-%")),
+            provider.source_url_filter(LibraryFile.source_url, str(model_id)),
             LibraryFile.deleted_at.is_(None),
         )
     )
     already_imported_rows = list(existing_q.all())
     already_imported = [row[0] for row in already_imported_rows]
 
-    # Build the per-variant dedupe map by re-parsing the source_url. The
-    # ``#profileId-N`` fragment is appended by ``_canonical_url`` — pulling
-    # it out here keeps the route as the only place that needs to know
-    # the URL shape (the frontend can stay shape-agnostic).
-    import re as _re
-
-    profile_re = _re.compile(rf"^{_re.escape(model_prefix)}#profileId-(\d+)$")
+    # Per-plate dedupe map for the instance picker, keyed by the plate's
+    # profile id as a string (JSON has no int keys). Each row's key comes back
+    # through the provider's own URL parser.
+    model_key = provider.canonical_url(ProviderResourceRef(source_type=provider.source_type, external_id=str(model_id)))
     already_imported_by_profile: dict[str, MakerWorldAlreadyImportedEntry] = {}
     for lib_id, src, folder_id_val, filename_val in already_imported_rows:
         entry = MakerWorldAlreadyImportedEntry(
@@ -271,22 +333,24 @@ async def resolve_url(
             folder_id=folder_id_val,
             filename=filename_val,
         )
-        if src == model_prefix:
+        if src == model_key:
             # Legacy whole-model import — keep under the conventional "0"
             # bucket so the frontend can surface a "this model was imported
             # before any plate was promoted" badge.
             already_imported_by_profile.setdefault("0", entry)
             continue
-        m = profile_re.match(src or "")
-        if m:
-            # str keys: JSON doesn't allow int dict keys.
-            already_imported_by_profile.setdefault(m.group(1), entry)
+        try:
+            row_ref = provider.parse_url(src or "")
+        except ProviderError:
+            continue
+        if row_ref.sub_id:
+            already_imported_by_profile.setdefault(row_ref.sub_id, entry)
 
     return MakerWorldResolvedModel(
         model_id=model_id,
         profile_id=profile_id,
-        design=design,
-        instances=instances,
+        design=resolved.design,
+        instances=resolved.instances,
         already_imported_library_ids=already_imported,
         already_imported_by_profile_id=already_imported_by_profile,
     )
@@ -295,9 +359,12 @@ async def resolve_url(
 @router.post("/import", response_model=MakerWorldImportResponse)
 async def import_instance(
     body: MakerWorldImportRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.MAKERWORLD_IMPORT),
+    current_user: User | None = RequirePermission(makerworld_provider.import_permission),
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
     """Download a specific MakerWorld instance (plate configuration) and save
     the 3MF into the library.
@@ -306,6 +373,15 @@ async def import_instance(
     was imported before, that existing LibraryFile is returned and no new
     download happens.
     """
+    # The provider first: an unknown ``source_type`` is a 400 before the
+    # default folder gets auto-created as a side effect, and the permission
+    # that applies on top of the route's is the resolved provider's.
+    provider = _provider_for_source(body.source_type)
+    await _authorize_for_provider(
+        provider, provider.import_permission, makerworld_provider.import_permission, request, credentials, x_api_key
+    )
+
+    effective_folder: LibraryFolder | None
     if body.folder_id is not None:
         # Eager-load .products so save_3mf_bytes_to_library's
         # inherit_folder_products() doesn't trip async lazy-load.
@@ -322,111 +398,60 @@ async def import_instance(
                 status_code=403,
                 detail="Cannot import into a read-only external folder",
             )
-        effective_folder: LibraryFolder | None = target_folder
+        effective_folder = target_folder
+    elif provider.default_folder_name is None:
+        # A provider without a default folder imports into the library root
+        # rather than minting a NULL-named folder.
+        effective_folder = None
     else:
-        # Default destination: a dedicated top-level "MakerWorld" folder. Keeps
-        # imports out of the library root so power users can still organise
-        # manually in subfolders, and auto-creates the folder on the first
-        # import so users don't have to set it up themselves.
-        mw_folder_q = await db.execute(
+        # Default destination: the provider's dedicated top-level folder
+        # ("MakerWorld"). Keeps imports out of the library root so power users
+        # can still organise manually in subfolders, and auto-creates the
+        # folder on the first import so users don't have to set it up.
+        default_folder_q = await db.execute(
             select(LibraryFolder).where(
-                LibraryFolder.name == "MakerWorld",
+                LibraryFolder.name == provider.default_folder_name,
                 LibraryFolder.parent_id.is_(None),
                 LibraryFolder.is_external.is_(False),
             )
         )
-        mw_folder = mw_folder_q.scalar_one_or_none()
-        if mw_folder is None:
-            mw_folder = LibraryFolder(name="MakerWorld", parent_id=None)
-            db.add(mw_folder)
+        default_folder = default_folder_q.scalar_one_or_none()
+        if default_folder is None:
+            default_folder = LibraryFolder(name=provider.default_folder_name, parent_id=None)
+            db.add(default_folder)
             await db.flush()
-        effective_folder = mw_folder
+        effective_folder = default_folder
 
     # API-keyed callers carry identity on the key, not in current_user — see
     # the /status handler comment and #1777. The same resolved user is reused
     # for created_by_id on save_3mf_bytes_to_library below so the library row
     # is attributed to the key's owner rather than NULL.
     cloud_token_user = current_user or api_key_cloud_owner
-    service = await _build_service(db, cloud_token_user)
-
-    # YASTL#51's iot-service endpoint needs the *alphanumeric* modelId
-    # (e.g. "US2bb73b106683e5"), not the integer design id from /models/{N}.
-    # Fetch design metadata to resolve it, and — in the same call — pick a
-    # default profileId from the response if the frontend didn't specify one.
+    service = await _build_service(db, provider, current_user, api_key_cloud_owner)
+    # One close for the whole request: the meta row and the covers below reuse
+    # this service after the 3MF is saved.
     try:
-        design = await service.get_design(body.model_id)
-    except MakerWorldError as exc:
-        await service.close()
-        raise _map_service_error(exc) from exc
-
-    alphanumeric_model_id = design.get("modelId")
-    if not isinstance(alphanumeric_model_id, str) or not alphanumeric_model_id:
-        await service.close()
-        raise HTTPException(
-            status_code=502,
-            detail="MakerWorld design metadata missing the modelId field",
+        ref = ProviderResourceRef(
+            source_type=provider.source_type,
+            external_id=str(body.model_id),
+            sub_id=str(body.profile_id) if body.profile_id else None,
         )
+        # MakerWorld's iot-service needs the alphanumeric modelId and a plate;
+        # ``get_download`` resolves both (the first plate when none was named)
+        # and hands the chosen one back in ``info.ref``.
+        try:
+            info = await service.get_download(ref)
+        except ProviderError as exc:
+            raise _map_service_error(exc) from exc
+        profile_id = int(info.ref.sub_id) if info.ref.sub_id else None
+        # Canonical URL includes the plate so each plate gets its own library
+        # entry (see ``ModelProvider.canonical_url``).
+        source_url = provider.canonical_url(info.ref)
 
-    profile_id = body.profile_id
-    if profile_id is None:
-        for instance in design.get("instances") or []:
-            pid = instance.get("profileId")
-            if isinstance(pid, int) and pid > 0:
-                profile_id = pid
-                break
-        if profile_id is None:
-            try:
-                envelope = await service.get_design_instances(body.model_id)
-            except MakerWorldError as exc:
-                await service.close()
-                raise _map_service_error(exc) from exc
-            for hit in envelope.get("hits") or []:
-                pid = hit.get("profileId")
-                if isinstance(pid, int) and pid > 0:
-                    profile_id = pid
-                    break
-        if profile_id is None:
-            await service.close()
-            raise HTTPException(
-                status_code=502,
-                detail="MakerWorld returned no instances for this model",
-            )
-
-    # Canonical URL includes profile_id so each plate gets its own library
-    # entry (see ``_canonical_url`` docstring).
-    source_url = _canonical_url(body.model_id, profile_id)
-
-    try:
-        manifest = await service.get_profile_download(profile_id, alphanumeric_model_id)
-    except MakerWorldError as exc:
-        await service.close()
-        raise _map_service_error(exc) from exc
-
-    signed_url = manifest.get("url")
-    # Basename-strip any path components from the upstream filename so a
-    # malicious response (``name: "../../evil.3mf"``) can't persist a suspect
-    # string into the library row or the UI. On-disk storage uses a UUID
-    # filename regardless (see library.py), so this is defence-in-depth.
-    raw_name = manifest.get("name")
-    if isinstance(raw_name, str) and raw_name.strip():
-        # MakerWorld emits percent-encoded names (`%20` for spaces, etc.)
-        # because the same string round-trips through HTTP URLs in the
-        # CDN download path. Decode before persisting so the library
-        # row, the slice toast, and every later UI surface show the
-        # human-readable form.
-        suggested_name = os.path.basename(unquote(raw_name.strip())) or f"makerworld-{body.model_id}.3mf"
-    else:
-        suggested_name = f"makerworld-{body.model_id}.3mf"
-    if not signed_url or not isinstance(signed_url, str):
-        await service.close()
-        raise HTTPException(status_code=502, detail="MakerWorld did not return a download URL")
-
-    # Dedupe check upfront so we don't burn bandwidth re-downloading.
-    if source_url:
+        # Dedupe check upfront so we don't burn bandwidth re-downloading.
         existing_q = await db.execute(LibraryFile.active().where(LibraryFile.source_url == source_url).limit(1))
         existing_row = existing_q.scalar_one_or_none()
         if existing_row is not None:
-            await service.close()
             return MakerWorldImportResponse(
                 library_file_id=existing_row.id,
                 filename=existing_row.filename,
@@ -435,82 +460,62 @@ async def import_instance(
                 was_existing=True,
             )
 
-    try:
-        file_bytes, download_filename = await service.download_3mf(signed_url)
-    except MakerWorldError as exc:
-        await service.close()
-        raise _map_service_error(exc) from exc
-    # NOTE: service stays open here — the post-import meta block below
-    # reuses it for /instances + cover downloads, then closes it itself.
-
-    # Prefer the server-provided human-readable filename; the signed URL's
-    # path ends in a UUID that's not meaningful to users. Decode the
-    # fallback path-tail too — same percent-encoding round-trip applies
-    # there as on the manifest-supplied name.
-    filename = suggested_name if suggested_name.endswith(".3mf") else unquote(download_filename)
-
-    result = await save_3mf_bytes_to_library(
-        db,
-        content=file_bytes,
-        filename=filename,
-        folder=effective_folder,
-        created_by_id=cloud_token_user.id if cloud_token_user else None,
-        source_type=_SOURCE_TYPE,
-        source_url=source_url,
-    )
-    # ⚠️ ``result.file`` may be a row this import did not create — either the
-    # same source_url was imported before, or another row already holds these
-    # exact bytes. Both mean the metadata work below has already been done.
-    library_file = result.file
-    was_existing = result.outcome != "created"
-
-    # Stash detailed MakerWorld metadata + download covers locally. Reuses
-    # the same service instance so we don't make a third client. Wrapped
-    # in a separate try so a meta failure never breaks the import — the
-    # 3MF is already on disk and the LibraryFile row is committed.
-    if not was_existing:
         try:
-            envelope = await service.get_design_instances(body.model_id)
-            instances = envelope.get("hits") if isinstance(envelope.get("hits"), list) else []
-            variant_cover_url: str | None = None
-            for inst in instances or []:
-                if isinstance(inst, dict) and inst.get("profileId") == profile_id:
-                    cov = inst.get("cover")
-                    if isinstance(cov, str):
-                        variant_cover_url = cov
-                    break
-            meta_dict = build_meta_dict(
-                library_file_id=library_file.id,
-                design=design,
-                instances=instances or [],
-                profile_id=profile_id,
-                variant_url=source_url,
-                model_id_alphanumeric=alphanumeric_model_id,
-            )
-            cover_url = design.get("coverUrl") if isinstance(design.get("coverUrl"), str) else None
-            cover_rel, variant_cover_rel = await download_covers(
-                service,
-                library_file_id=library_file.id,
-                cover_url=cover_url,
-                variant_cover_url=variant_cover_url,
-            )
-            db.add(
-                LibraryFileMakerworldMeta(
-                    **meta_dict,
-                    cover_path=cover_rel,
-                    variant_cover_path=variant_cover_rel,
+            download = await service.download(info)
+        except ProviderError as exc:
+            raise _map_service_error(exc) from exc
+
+        # Basename-strip any path components from the upstream filename so a
+        # malicious response (``name: "../../evil.3mf"``) can't persist a
+        # suspect string into the library row or the UI. On-disk storage uses
+        # a UUID filename regardless (see library.py), so this is
+        # defence-in-depth. MakerWorld emits percent-encoded names (`%20` for
+        # spaces, etc.) because the same string round-trips through HTTP URLs
+        # in the CDN download path — decode before persisting so every UI
+        # surface shows the human-readable form.
+        raw_name = info.suggested_filename
+        if isinstance(raw_name, str) and raw_name.strip():
+            suggested_name = os.path.basename(unquote(raw_name.strip())) or f"makerworld-{body.model_id}.3mf"
+        else:
+            suggested_name = f"makerworld-{body.model_id}.3mf"
+        # Prefer the server-provided human-readable filename; the signed URL's
+        # path ends in a UUID that's not meaningful to users.
+        filename = suggested_name if suggested_name.endswith(".3mf") else unquote(download.filename)
+
+        result = await save_3mf_bytes_to_library(
+            db,
+            content=download.file_bytes,
+            filename=filename,
+            folder=effective_folder,
+            created_by_id=cloud_token_user.id if cloud_token_user else None,
+            source_type=provider.source_type,
+            source_url=source_url,
+        )
+        # ⚠️ ``result.file`` may be a row this import did not create — either
+        # the same source_url was imported before, or another row already
+        # holds these exact bytes. Both mean the metadata work below has
+        # already been done.
+        library_file = result.file
+        was_existing = result.outcome != "created"
+
+        # MakerWorld's meta row + locally stored covers (m056 — MakerWorld's
+        # own table). A meta failure never breaks the import: the 3MF is
+        # already on disk and the LibraryFile row is committed.
+        if not was_existing and provider is makerworld_provider:
+            try:
+                meta = await _fetch_makerworld_meta(
+                    service,
+                    library_file_id=library_file.id,
+                    model_id=body.model_id,
+                    profile_id=profile_id,
+                    variant_url=source_url,
                 )
-            )
-            await db.commit()
-        except Exception as exc:
-            logger.warning("MakerWorld meta save failed for library_file_id=%s: %s", library_file.id, exc)
-            await db.rollback()
-        finally:
-            # close the service before returning — original code closed
-            # it before save_3mf_bytes_to_library, but we now need it for
-            # cover downloads, so the close moves here.
-            await service.close()
-    else:
+                db.add(LibraryFileMakerworldMeta(**meta))
+                await db.commit()
+            except Exception as exc:
+                logger.warning("MakerWorld meta save failed for library_file_id=%s: %s", library_file.id, exc)
+                await db.rollback()
+    finally:
         await service.close()
 
     return MakerWorldImportResponse(
@@ -547,7 +552,7 @@ def _row_to_recent_import(row: LibraryFile, meta: LibraryFileMakerworldMeta | No
 async def redownload_import(
     library_file_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.MAKERWORLD_IMPORT),
+    current_user: User | None = RequirePermission(makerworld_provider.import_permission),
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Re-download a previously imported MakerWorld variant — overwrites
@@ -559,7 +564,6 @@ async def redownload_import(
     Import again is a no-op; users who actually want fresh bytes (the
     creator pushed an update on MakerWorld) come through this endpoint.
     """
-    import re as _re
     from pathlib import Path
 
     from backend.app.api.routes.library import calculate_file_hash, to_absolute_path
@@ -574,66 +578,27 @@ async def redownload_import(
             detail="This library file is not a MakerWorld import",
         )
 
-    # Parse model_id + (optional) profile_id back out of the canonical URL.
-    # _canonical_url is the only producer of this shape, so the regex is
-    # stable.
-    match = _re.match(
-        r"^https://makerworld\.com/models/(\d+)(?:#profileId-(\d+))?$",
-        lib.source_url,
-    )
-    if not match:
+    # The row's ``source_url`` is the provider's canonical key; its own parser
+    # reads the model and (for a per-plate row) the plate back out. A legacy
+    # whole-model row has no plate — ``get_download`` takes the design's first.
+    try:
+        ref = makerworld_provider.parse_url(lib.source_url)
+    except ProviderError as exc:
         raise HTTPException(
             status_code=400,
             detail=f"Unparseable MakerWorld source_url: {lib.source_url!r}",
-        )
-    model_id = int(match.group(1))
-    profile_id = int(match.group(2)) if match.group(2) else None
+        ) from exc
+    model_id = int(ref.external_id)
 
-    # API-keyed callers carry identity on the key, not in current_user — see
-    # the /status handler comment and #1777.
-    cloud_token_user = current_user or api_key_cloud_owner
-    service = await _build_service(db, cloud_token_user)
+    service = await _build_service(db, makerworld_provider, current_user, api_key_cloud_owner)
     try:
         try:
-            design = await service.get_design(model_id)
-        except MakerWorldError as exc:
+            info = await service.get_download(ref)
+            download = await service.download(info)
+        except ProviderError as exc:
             raise _map_service_error(exc) from exc
-
-        alphanumeric_model_id = design.get("modelId")
-        if not isinstance(alphanumeric_model_id, str) or not alphanumeric_model_id:
-            raise HTTPException(
-                status_code=502,
-                detail="MakerWorld design metadata missing the modelId field",
-            )
-
-        if profile_id is None:
-            # Legacy whole-model rows have no profile_id in the URL. Pick
-            # the first available variant (same fallback the import-path
-            # uses) so we still get fresh bytes.
-            for instance in design.get("instances") or []:
-                pid = instance.get("profileId")
-                if isinstance(pid, int) and pid > 0:
-                    profile_id = pid
-                    break
-            if profile_id is None:
-                raise HTTPException(
-                    status_code=502,
-                    detail="MakerWorld returned no instances for this model",
-                )
-
-        try:
-            manifest = await service.get_profile_download(profile_id, alphanumeric_model_id)
-        except MakerWorldError as exc:
-            raise _map_service_error(exc) from exc
-
-        signed_url = manifest.get("url")
-        if not signed_url or not isinstance(signed_url, str):
-            raise HTTPException(status_code=502, detail="MakerWorld did not return a download URL")
-
-        try:
-            file_bytes, _download_filename = await service.download_3mf(signed_url)
-        except MakerWorldError as exc:
-            raise _map_service_error(exc) from exc
+        profile_id = int(info.ref.sub_id) if info.ref.sub_id else None
+        file_bytes = download.file_bytes
 
         # Overwrite the existing file on disk. We deliberately keep
         # ``lib.file_path`` + ``lib.filename`` unchanged so any external
@@ -666,54 +631,27 @@ async def redownload_import(
         await db.flush()
         await resync_file_products(db, lib.id)
 
-        # Refresh meta row + covers. We reuse the open ``service`` for
-        # the /instances call + cover downloads.
+        # Refresh meta row + covers through the same open service.
         try:
-            envelope = await service.get_design_instances(model_id)
-            instances = envelope.get("hits") if isinstance(envelope.get("hits"), list) else []
-            variant_cover_url: str | None = None
-            for inst in instances or []:
-                if isinstance(inst, dict) and inst.get("profileId") == profile_id:
-                    cov = inst.get("cover")
-                    if isinstance(cov, str):
-                        variant_cover_url = cov
-                    break
-            meta_dict = build_meta_dict(
-                library_file_id=lib.id,
-                design=design,
-                instances=instances or [],
-                profile_id=profile_id,
-                variant_url=lib.source_url,
-                model_id_alphanumeric=alphanumeric_model_id,
-            )
-            cover_url = design.get("coverUrl") if isinstance(design.get("coverUrl"), str) else None
-            cover_rel, variant_cover_rel = await download_covers(
+            meta = await _fetch_makerworld_meta(
                 service,
                 library_file_id=lib.id,
-                cover_url=cover_url,
-                variant_cover_url=variant_cover_url,
+                model_id=model_id,
+                profile_id=profile_id,
+                variant_url=lib.source_url,
             )
-
             existing_meta = (
                 await db.execute(
                     select(LibraryFileMakerworldMeta).where(LibraryFileMakerworldMeta.library_file_id == lib.id)
                 )
             ).scalar_one_or_none()
             if existing_meta is None:
-                db.add(
-                    LibraryFileMakerworldMeta(
-                        **meta_dict,
-                        cover_path=cover_rel,
-                        variant_cover_path=variant_cover_rel,
-                    )
-                )
+                db.add(LibraryFileMakerworldMeta(**meta))
             else:
-                for k, v in meta_dict.items():
+                for k, v in meta.items():
                     if k == "library_file_id":
                         continue
                     setattr(existing_meta, k, v)
-                existing_meta.cover_path = cover_rel
-                existing_meta.variant_cover_path = variant_cover_rel
         except Exception as exc:  # noqa: BLE001
             logger.warning("redownload: meta refresh failed for library_file_id=%s: %s", lib.id, exc)
 
@@ -735,7 +673,7 @@ async def redownload_import(
 async def recent_imports(
     limit: int = 10,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.MAKERWORLD_VIEW),
+    current_user: User | None = RequirePermission(makerworld_provider.view_permission),
 ):
     """Last N MakerWorld imports, newest first.
 
@@ -770,7 +708,7 @@ async def list_imports(
     search: str | None = Query(None, description="Match against filename / meta title / author"),
     sort_by: str = Query("date-desc", description="One of date-desc / date-asc / name-asc / name-desc"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.MAKERWORLD_VIEW),
+    _: User | None = RequirePermission(makerworld_provider.view_permission),
 ):
     """Paginated, searchable, sortable MakerWorld import history.
 
@@ -865,7 +803,7 @@ async def list_imports(
 async def get_makerworld_meta(
     library_file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.MAKERWORLD_VIEW),
+    _: User | None = RequirePermission(makerworld_provider.view_permission),
 ):
     """Get the MakerWorld metadata row for a library file."""
     meta = (
