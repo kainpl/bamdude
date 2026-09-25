@@ -229,6 +229,33 @@ class TestArchivesAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    @pytest.mark.parametrize("quantity", [-1, 10_001])
+    async def test_a_quantity_outside_its_range_is_refused(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session, quantity
+    ):
+        """It feeds order totals: a negative would subtract from them (upstream 30e530a8)."""
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+
+        response = await async_client.patch(f"/api/v1/archives/{archive.id}", json={"quantity": quantity})
+
+        assert response.status_code == 422, response.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_quantity_of_zero_is_accepted(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id)
+
+        response = await async_client.patch(f"/api/v1/archives/{archive.id}", json={"quantity": 0})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["quantity"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_update_archive_notes(self, async_client: AsyncClient, archive_factory, printer_factory, db_session):
         """Verify archive notes can be updated."""
         printer = await printer_factory()

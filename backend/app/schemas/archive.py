@@ -53,6 +53,10 @@ class ArchiveBase(BaseModel):
 
 
 class ArchiveUpdate(ArchiveBase):
+    # Bounded where it is written, not on the base the responses share: it feeds
+    # order totals, and a negative would subtract from them (upstream 30e530a8).
+    # 0 is legal; a ruined plate is still recorded as defects here.
+    quantity: int | None = Field(None, ge=0, le=10_000)
     printer_id: int | None = None
     project_id: int | None = None
     # The order line this print is for; validated against ``project_id``.

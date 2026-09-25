@@ -186,6 +186,9 @@
   languages — and the notification for a failed print names the reason in
   the system language. Reopening the archive editor on a reason it does not
   recognise no longer blanks it on Save; the text is kept as its own option.
+- **The archive API refuses an impossible item count.** Editing an archive
+  through the API accepted a negative number of printed items, which would
+  have subtracted from an order's completed count. It now takes 0 to 10 000.
 - **Skip Objects works again after BamDude restarts mid-print.** After a
   restart the printer card knew no objects for the running print and greyed
   out its Skip Objects button for the rest of the print — and the button was
