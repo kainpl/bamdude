@@ -98,6 +98,9 @@ export interface DesignOverride {
   key: string;
   value: unknown;
   printer_coupled: boolean;
+  /** Layer height and first layer height ARE the picked process preset: also
+   *  offered, never pre-selected (upstream 7e77bf58). Absent on older responses. */
+  preset_defining?: boolean;
 }
 
 /** Read-only plate object preview — GET /{library|archives}/…/plate-objects.

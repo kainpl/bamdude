@@ -31,6 +31,7 @@ import {
 } from '../utils/presetPickerUtils';
 import { useSlicerHealth, type SlicerKind } from '../hooks/useSlicerHealth';
 import { useIsWideLayout } from '../hooks/useIsWideLayout';
+import { defaultDesignKeys } from '../lib/slicerSettings';
 import { Select } from './Select';
 import {
   EMPTY_COMPATIBILITY_INDEX,
@@ -870,7 +871,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // Pre-tick design intent once the source's list arrives; machine-coupled keys
   // wait for the user to opt in.
   useEffect(() => {
-    setDesignKeys(new Set(designOverrides.filter((o) => !o.printer_coupled).map((o) => o.key)));
+    setDesignKeys(defaultDesignKeys(designOverrides));
   }, [designOverrides]);
 
   // The toggle is offered only when the source carries embedded settings (a
@@ -1500,6 +1501,14 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                               title={t('slice.designSettingsPrinterCoupledHint')}
                             >
                               {t('slice.designSettingsPrinterCoupled')}
+                            </span>
+                          )}
+                          {!o.printer_coupled && o.preset_defining && (
+                            <span
+                              className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"
+                              title={t('slice.designSettingsOverridesPresetHint')}
+                            >
+                              {t('slice.designSettingsOverridesPreset')}
                             </span>
                           )}
                         </span>

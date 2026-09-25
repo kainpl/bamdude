@@ -53,6 +53,9 @@ class DesignOverride(NamedTuple):
     key: str
     value: Any
     printer_coupled: bool
+    # The keys that ARE the picked process preset (see _PRESET_DEFINING):
+    # offered like printer-coupled ones, never pre-selected (upstream 7e77bf58).
+    preset_defining: bool = False
 
 
 # Process keys whose sane value depends on the machine, not on the design intent.
@@ -91,6 +94,20 @@ _PRINTER_COUPLED_SUBSTRINGS: tuple[str, ...] = (
     "_temperature",
     "temperature_",
 )
+
+
+# Process keys whose value IS the preset the user picked: "0.08mm High Quality"
+# is not a name with a layer height attached, the layer height is what the
+# preset is — and so is the first layer it starts on. Pre-selecting the file's
+# value would undo an explicit pick: the 0.08 preset for a MakerWorld file whose
+# designer moved layer height to 0.2 sliced at 0.2 under a dropdown reading 0.08.
+# The designer's value stays on offer, one tick away.
+_PRESET_DEFINING: frozenset[str] = frozenset({"layer_height", "initial_layer_print_height"})
+
+
+def is_preset_defining(key: str) -> bool:
+    """Whether this key is the identity of the picked process preset."""
+    return key in _PRESET_DEFINING
 
 
 def is_printer_coupled(key: str) -> bool:
@@ -159,7 +176,14 @@ def overrides_from_config(config: Any) -> list[DesignOverride]:
             # Listed as changed but absent from the flattened config — nothing
             # to carry. Seen with keys the slicer renamed between versions.
             continue
-        overrides.append(DesignOverride(key=key, value=config[key], printer_coupled=is_printer_coupled(key)))
+        overrides.append(
+            DesignOverride(
+                key=key,
+                value=config[key],
+                printer_coupled=is_printer_coupled(key),
+                preset_defining=is_preset_defining(key),
+            )
+        )
 
     overrides.sort(key=lambda o: o.key)
     return overrides

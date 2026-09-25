@@ -156,3 +156,24 @@ class TestReadingFromAFile:
             zf.writestr("3D/3dmodel.model", "<model/>")
 
         assert extract_design_process_overrides(buf.getvalue()) == []
+
+
+class TestThePickedPresetWins:
+    """Layer height IS the process preset ("0.08mm High Quality"); carrying the file's
+    over an explicit pick sliced at 0.2 under a dropdown reading 0.08 (upstream 7e77bf58)."""
+
+    def test_layer_heights_are_preset_defining(self) -> None:
+        overrides = overrides_from_config(
+            _config(
+                ["layer_height;initial_layer_print_height;wall_loops", "", ""],
+                layer_height="0.2",
+                initial_layer_print_height="0.3",
+                wall_loops="5",
+            )
+        )
+        flags = {o.key: o.preset_defining for o in overrides}
+        assert flags == {"initial_layer_print_height": True, "layer_height": True, "wall_loops": False}
+
+    def test_the_flag_reaches_the_wire(self) -> None:
+        (only,) = overrides_from_config(_config(["layer_height", "", ""], layer_height="0.2"))
+        assert only._asdict()["preset_defining"] is True

@@ -176,6 +176,18 @@
   dries — and is judged — as its base material, nylon under any of its
   spellings (NYLON, PA6, PA11, PA12, PAHT, PPA) as PA; the preheat stage reads
   the chamber target the same way.
+- **An archived print shows the layer height it actually printed at.** The
+  archive card and the file details read the layer height from the
+  project's settings, which can describe another plate or an earlier
+  process — a print running at 0.08 mm was archived as 0.2 mm, beside a
+  correct layer count from the same file. The printed plate's own G-code now
+  decides; a source 3MF without G-code keeps the project value.
+- **Picking a layer-height preset is no longer undone by the file.** When a
+  file's designer changed the layer height, re-slicing with "0.08mm High
+  Quality" still sliced at the file's 0.2, because every design setting that
+  was not machine-tuned started ticked. Layer height and first-layer height
+  are now offered with an **overrides preset** badge — showing the preset's
+  own value beside the file's — and left unticked.
 - **A spool the AMS adds by RFID is drawn like one you add by hand.** The
   auto-added spool took only the colour name from the colour catalogue, not
   the extra colour stops and effect the same row gives a hand-added spool,

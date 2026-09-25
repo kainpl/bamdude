@@ -486,3 +486,17 @@ describe('SlicerSettingsPanel — the picked preset\'s values', () => {
     expect(screen.queryByText(/Showing slicer defaults/)).not.toBeInTheDocument();
   });
 });
+
+describe('SlicerSettingsPanel — a file value that would override the picked preset', () => {
+  const sourceOverrides: DesignOverride[] = [
+    { key: 'layer_height', value: '0.2', printer_coupled: false, preset_defining: true },
+  ];
+
+  it('names the conflict instead of calling it just "from file" (upstream 7e77bf58)', async () => {
+    const user = userEvent.setup();
+    await renderPanel({}, { sourceOverrides, initialSelected: [] });
+    await user.click(screen.getByRole('button', { name: 'Expert' }));
+    await user.type(screen.getByPlaceholderText('Search settings'), 'layer height');
+    await waitFor(() => expect(screen.getAllByText('overrides preset').length).toBeGreaterThan(0));
+  });
+});

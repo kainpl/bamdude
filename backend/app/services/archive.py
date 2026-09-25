@@ -285,6 +285,17 @@ def swap_plate_suffix(name: str | None, target_plate: int) -> str | None:
     return f"{base}{separator}{target_plate}"
 
 
+# How much of a plate's G-code to scan. The header block ends in the first
+# kilobyte; the CONFIG_BLOCK after it is alphabetical and carries layer_height
+# 14-25 KB in (Bambu Studio and OrcaSlicer alike), so 4 KB could only ever see
+# the header (upstream 7e77bf58). The read decompresses on demand.
+_GCODE_SCAN_BYTES = 64 * 1024
+
+# Anchored to the line start so a key merely ENDING in layer_height
+# (independent_support_layer_height) cannot answer.
+_GCODE_LAYER_HEIGHT_RE = re.compile(r"^;\s*layer_height\s*=\s*([\d.]+)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
 class ThreeMFParser:
     """Parser for Bambu Lab 3MF files."""
 
@@ -526,11 +537,23 @@ class ThreeMFParser:
                 if preferred is not None:
                     gcode_path = preferred
             with zf.open(gcode_path) as f:
-                header = f.read(4096).decode("utf-8", errors="ignore")
+                header = f.read(_GCODE_SCAN_BYTES).decode("utf-8", errors="ignore")
 
             layers = read_total_layers(zf, gcode_path)
             if layers is not None:
                 self.metadata["total_layers"] = layers
+
+            # The plate's G-code is what the printer executes; project_settings
+            # records the PROJECT, and a multi-plate or re-sliced export can leave
+            # it describing another plate or an earlier process. Where both are
+            # present, the G-code decides. A source 3MF has no G-code and keeps
+            # the project value.
+            match = _GCODE_LAYER_HEIGHT_RE.search(header)
+            if match:
+                try:
+                    self.metadata["layer_height"] = float(match.group(1))
+                except ValueError:
+                    pass  # malformed: keep what project_settings gave
 
             # Look for printer_model in gcode header (fallback if not found in slice_info)
             # Format: "; printer_model = Bambu Lab X1 Carbon" or "; printer_model = X1C"

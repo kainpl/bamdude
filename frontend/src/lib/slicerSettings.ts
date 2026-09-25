@@ -10,10 +10,19 @@
  * serialises through the schema, never by guessing from the JavaScript type.
  */
 
+import type { DesignOverride } from '../types/plates';
 import type { ProcessOption, ProcessSchema, SettingValue } from '../types/slicerSettings';
 
 /** Option types whose config value is a per-extruder vector. */
 const VECTOR_TYPES = new Set(['coBools', 'coFloats', 'coFloatsOrPercents']);
+
+/** Which of a file's own settings start ticked when the slice dialog opens.
+ *  Machine-coupled keys stay off until the user opts in, and so do the keys that
+ *  define the picked preset: pre-ticking a file's 0.2 layer height sliced it over
+ *  an explicitly picked 0.08 preset while the dropdown still read 0.08. */
+export function defaultDesignKeys(overrides: DesignOverride[]): Set<string> {
+  return new Set(overrides.filter((o) => !o.printer_coupled && !o.preset_defining).map((o) => o.key));
+}
 
 export const isVectorOption = (option: ProcessOption): boolean => VECTOR_TYPES.has(option.type);
 
