@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.calibration_session import CalibrationSession
 from backend.app.models.maintenance import PrinterMaintenance
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.scheduled_drying import DryingSchedule, ScheduledDrying
 from backend.app.models.smart_plug import SmartPlug
 
 _STATE_ATTR = "api_key_printer_ids"
@@ -177,6 +178,14 @@ async def _calibration_session(db: AsyncSession, raw: str) -> set[int]:
     return await _printer_of(db, CalibrationSession, raw)
 
 
+async def _scheduled_drying_run(db: AsyncSession, raw: str) -> set[int]:
+    return await _printer_of(db, ScheduledDrying, raw)
+
+
+async def _drying_schedule(db: AsyncSession, raw: str) -> set[int]:
+    return await _printer_of(db, DryingSchedule, raw)
+
+
 async def _dispatch_job(_db: AsyncSession, raw: str) -> set[int]:
     from backend.app.services.background_dispatch import background_dispatch
 
@@ -192,6 +201,8 @@ _PATH_RESOLVERS: tuple[tuple[str, str, Callable[[AsyncSession, str], Awaitable[s
     ("/api/v1/maintenance/items/", "item_id", _maintenance_item),
     ("/api/v1/calibration/sessions/", "session_id", _calibration_session),
     ("/api/v1/background-dispatch/", "job_id", _dispatch_job),
+    ("/api/v1/scheduled-dryings/", "run_id", _scheduled_drying_run),
+    ("/api/v1/drying-schedules/", "schedule_id", _drying_schedule),
 )
 
 

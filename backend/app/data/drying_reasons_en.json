@@ -1,0 +1,14 @@
+{
+  "printer_offline": "the printer was offline",
+  "printer_busy": "the printer was printing",
+  "already_drying": "the AMS was already drying",
+  "ams_not_found": "the AMS was not found",
+  "blocked_power": "the AMS needs its power adapter",
+  "blocked_filament_at_outlet": "filament was at the AMS outlet",
+  "blocked_other": "the AMS could not start drying",
+  "interrupted": "a print interrupted it",
+  "window_passed": "its start window passed",
+  "screen_only": "this printer dries only from its own screen",
+  "unsupported": "this printer's firmware cannot dry",
+  "temp_over_limit": "the temperature is above this AMS's limit"
+}

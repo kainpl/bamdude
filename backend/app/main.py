@@ -73,6 +73,7 @@ from backend.app.api.routes import (
     printers,
     products,
     projects,
+    scheduled_drying as scheduled_drying_routes,
     settings as settings_routes,
     slice_jobs,
     slicer_pipelines,
@@ -11629,6 +11630,7 @@ app.include_router(mfa.router, prefix=app_settings.api_prefix)
 app.include_router(users.router, prefix=app_settings.api_prefix)
 app.include_router(groups.router, prefix=app_settings.api_prefix)
 app.include_router(printers.router, prefix=app_settings.api_prefix)
+app.include_router(scheduled_drying_routes.router, prefix=app_settings.api_prefix)
 app.include_router(hms_routes.router, prefix=app_settings.api_prefix)
 app.include_router(printer_locations.router, prefix=app_settings.api_prefix)
 app.include_router(printer_tags.router, prefix=app_settings.api_prefix)

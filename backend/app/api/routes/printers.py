@@ -57,7 +57,7 @@ from backend.app.schemas.printer import (
     WaitingPrintOut,
 )
 from backend.app.schemas.timelapse import TimelapseStorage
-from backend.app.services import ams_advertised_overlay, archive_parts, drying_preflight
+from backend.app.services import ams_advertised_overlay, archive_parts, drying_preflight, scheduled_drying
 from backend.app.services.ams_backup_compatibility import NAMESPACE as AMS_BACKUP_COMPAT_NAMESPACE
 from backend.app.services.ams_backup_compatibility_apply import bulk_apply, forget_printer_rebuild
 from backend.app.services.archive import find_archive_for_sd_file, parse_plates_from_3mf, sd_stem
@@ -753,6 +753,9 @@ async def archive_printer(
         cancelled = cancel_result.rowcount or 0
 
     await db.commit()
+    # Its scheduled dryings go the way of its queue: what waits is cancelled, its
+    # rules are paused — reversible, like the archive itself.
+    await scheduled_drying.forget_printer(db, printer_id, archived=True)
     await db.refresh(printer)
     printer_manager.disconnect_printer(printer_id)
     # The advertised-profile overlay and the once-per-process rebuild mark are
@@ -929,6 +932,8 @@ async def delete_printer(
     # other child row above.
     await delete_links_for_printer(db, printer_id)
 
+    # SQLite runs no FK actions: its drying rules and runs go in code.
+    await scheduled_drying.forget_printer(db, printer_id, archived=False)
     await db.delete(printer)
     await db.commit()
 

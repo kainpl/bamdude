@@ -1,0 +1,14 @@
+{
+  "printer_offline": "принтер був офлайн",
+  "printer_busy": "принтер друкував",
+  "already_drying": "AMS уже сушила",
+  "ams_not_found": "AMS не знайдено",
+  "blocked_power": "AMS потрібен блок живлення",
+  "blocked_filament_at_outlet": "філамент був на виході AMS",
+  "blocked_other": "AMS не змогла почати сушіння",
+  "interrupted": "його перервав друк",
+  "window_passed": "минуло вікно старту",
+  "screen_only": "цей принтер сушить лише з власного екрана",
+  "unsupported": "прошивка принтера не вміє сушити",
+  "temp_over_limit": "температура вища за межу цієї AMS"
+}

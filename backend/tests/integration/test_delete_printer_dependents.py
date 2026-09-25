@@ -310,8 +310,10 @@ def test_every_fk_to_printers_is_accounted_for():
     # rather than through the bulk list — listing them in
     # ``PRINTER_CASCADE_MODELS`` would put a second writer on a table whose
     # whole point is having exactly one. ``test_printer_tag_routes`` covers
-    # that the rows actually go.
-    by_owning_service = {"printer_tag_links"}
+    # that the rows actually go. Scheduled drying's two tables likewise go through
+    # ``scheduled_drying.forget_printer`` —
+    # ``test_scheduled_drying_rows_go_with_the_printer`` below proves it.
+    by_owning_service = {"printer_tag_links", "drying_schedules", "scheduled_dryings"}
 
     unhandled = set()
     for table in Base.metadata.tables.values():
@@ -335,3 +337,20 @@ def test_every_fk_to_printers_is_accounted_for():
         "table rather than by the bulk list, add the table to by_owning_service above and name the "
         "test that proves the rows actually go."
     )
+
+
+@pytest.mark.asyncio
+async def test_scheduled_drying_rows_go_with_the_printer(async_client: AsyncClient, printer_factory, db_session):
+    from backend.app.models.scheduled_drying import DryingSchedule, ScheduledDrying
+
+    printer = await printer_factory(model="X1C")
+    printer_id = printer.id
+    db_session.add(DryingSchedule(printer_id=printer_id, ams_id=0, temp=55, duration_hours=8, start_time="01:00"))
+    db_session.add(ScheduledDrying(printer_id=printer_id, ams_id=0, temp=55, duration_hours=8))
+    await db_session.commit()
+
+    response = await async_client.delete(f"/api/v1/printers/{printer_id}?delete_archives=true")
+
+    assert response.status_code == 200, response.text
+    assert (await db_session.execute(select(DryingSchedule))).first() is None
+    assert (await db_session.execute(select(ScheduledDrying))).first() is None

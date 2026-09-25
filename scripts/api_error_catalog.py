@@ -67,6 +67,8 @@ FORWARDED_EXCEPTIONS = frozenset(
         "SlicerApiUnavailableError",
         "SlicerApiServerError",
         "OIDCIconError",
+        # services/scheduled_drying: the routes answer ``detail=str(exc)``.
+        "DryingRefused",
         # Model providers (services/model_providers): the routes answer
         # ``detail=str(exc)`` for every provider error.
         "ProviderError",
