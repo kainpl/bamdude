@@ -333,3 +333,21 @@ class TestLists:
         response = await async_client.get("/api/v1/queue/", headers=_as(keys["only_a"]))
 
         assert {i["id"] for i in response.json()} == {items[a.id].id}
+
+    async def test_and_their_scheduled_dryings(self, async_client, db_session, farm):
+        from backend.app.models.scheduled_drying import DryingSchedule, ScheduledDrying
+
+        a, b, *_, keys = farm
+        for printer in (a, b):
+            db_session.add(ScheduledDrying(printer_id=printer.id, ams_id=0, temp=55, duration_hours=8))
+            db_session.add(
+                DryingSchedule(printer_id=printer.id, ams_id=0, temp=55, duration_hours=8, start_time="01:00")
+            )
+        await db_session.commit()
+
+        runs = await async_client.get("/api/v1/scheduled-dryings", headers=_as(keys["only_a"]))
+        rules = await async_client.get("/api/v1/drying-schedules", headers=_as(keys["only_a"]))
+
+        assert runs.status_code == 200, runs.text
+        assert {r["printer_id"] for r in runs.json()} == {a.id}
+        assert {r["printer_id"] for r in rules.json()["schedules"]} == {a.id}

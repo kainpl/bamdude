@@ -1134,6 +1134,11 @@ export default {
       resumeSchedule: 'Відновити розклад',
       deleteSchedule: 'Видалити розклад',
       editSchedule: 'Змінити розклад',
+      scheduleNext: 'Запланувати наступну сушку',
+      scheduleTitle: 'Запланувати сушку',
+      dryingNow: 'Ця AMS зараз сушить',
+      deleteScheduleConfirm: 'Видалити цей розклад сушки? Сушка, що йде зараз, завершиться; нічого нового з нього не плануватиметься.',
+      cancelRunningConfirm: 'Зупинити цю сушку за розкладом зараз? AMS перестане гріти.',
       // Теперішній час: картка показує запуск, що ще чекає. Минулий час
       // сповіщень — у drying_reasons_*.json.
       reason: {
@@ -1149,6 +1154,7 @@ export default {
         screen_only: 'цей принтер сушить лише з власного екрана',
         unsupported: 'прошивка принтера не вміє сушити',
         temp_over_limit: 'температура вища за межу цієї AMS',
+        not_started: 'AMS так і не почала сушіння',
       },
     },
     // Filaments section

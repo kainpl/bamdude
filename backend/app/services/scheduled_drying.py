@@ -44,8 +44,15 @@ START_GRACE_SECONDS = 120
 COMPLETE_FRACTION = 0.9
 _BUSY_STATES = frozenset({"RUNNING", "PREPARE", "PAUSE"})
 
+# A cycle the unit never reported running within this long after the command is
+# "did not start", not "stopped by hand" — the operator was told it started.
+START_CONFIRM_SECONDS = 15 * 60
+
 _last_prune: float | None = None  # monotonic; None = never, so the first pass after a restart prunes
 _last_running: set[int] = set()  # printers with a running run at the end of the previous pass
+# Runs whose unit has been seen drying. In memory on purpose: after a restart a run
+# older than START_CONFIRM_SECONDS is judged as before (stopped early = cancelled).
+_seen_active: set[int] = set()
 
 
 class DryingRefused(Exception):
@@ -140,19 +147,20 @@ async def validate_target(db: AsyncSession, printer_id: int, ams_id: int, temp: 
     if printer is None:
         raise DryingRefused("Printer not found", 404)
     state = printer_manager.get_status(printer_id)
-    refusal = drying_preflight.refusal_code(
-        printer.model, state.firmware_version if state else None, require_firmware=state is not None
-    )
+    # Firmware "when known": a printer that is offline or has not reported yet is
+    # judged by its model now and checked again before its run starts.
+    firmware = state.firmware_version if state else None
+    refusal = drying_preflight.refusal_code(printer.model, firmware, require_firmware=bool(firmware))
     if refusal == "screen_only":
         raise DryingRefused(drying_preflight.SCREEN_ONLY_DETAIL)
     if refusal == "unsupported":
         raise DryingRefused(drying_preflight.UNSUPPORTED_DETAIL)
     if not 1 <= duration_hours <= 24:
         raise DryingRefused("Duration must be 1-24 hours")
-    # An offline printer's unit is unknown: the lower fallback ceiling applies now,
+    # An unreported unit is held to the ceiling its id implies (AMS-HT from 128),
     # and the run is checked against the real unit again before it starts.
     unit = find_ams_unit(state.raw_data if state else None, ams_id)
-    max_temp = drying_preflight.max_temp_for_unit(unit)
+    max_temp = drying_preflight.max_temp_for(unit, ams_id)
     if temp < drying_preflight.AMS_DRY_MIN_TEMP or temp > max_temp:
         raise DryingRefused(f"Temperature must be 45-{max_temp}°C for this AMS unit")
     return printer
@@ -282,17 +290,47 @@ async def update_schedule(db: AsyncSession, schedule_id: int, changes: dict) -> 
     if rule is None:
         raise DryingRefused("Drying schedule not found", 404)
     merged = {f: changes[f] if f in changes else getattr(rule, f) for f in _RULE_FIELDS}
-    await validate_target(db, rule.printer_id, merged["ams_id"], merged["temp"], merged["duration_hours"])
+    # Pausing, renaming the filament or moving the time asks nothing of the printer:
+    # only a new target is checked against it, so an offline printer's rule stays editable.
+    if any(merged[f] != getattr(rule, f) for f in ("ams_id", "temp", "duration_hours")):
+        await validate_target(db, rule.printer_id, merged["ams_id"], merged["temp"], merged["duration_hours"])
     _check_rule_times(merged["start_time"], merged["weekdays"], merged["latest_start"])
+    timing_changed = merged["start_time"] != rule.start_time or merged["weekdays"] != rule.weekdays
     for name in _RULE_FIELDS:
         setattr(rule, name, merged[name])
     rule.updated_at = _utcnow()
-    # A waiting run carries the old parameters; the next tick re-creates it from
-    # the rule. A running one finishes as it started.
-    await _drop_pending_runs(db, schedule_id)
+    if timing_changed or not rule.enabled:
+        # A different night (or none): the next tick materialises from now.
+        await _drop_pending_runs(db, schedule_id)
+    else:
+        # Same night: the waiting run keeps its occurrence and takes the new
+        # parameters — an edit inside tonight's window must not move it to tomorrow.
+        await _refresh_pending_runs(db, rule)
+    # A running run finishes as it started.
     await db.commit()
     await db.refresh(rule)
     return rule
+
+
+async def _refresh_pending_runs(db: AsyncSession, rule: DryingSchedule) -> None:
+    runs = (
+        (
+            await db.execute(
+                select(ScheduledDrying).where(
+                    ScheduledDrying.schedule_id == rule.id, ScheduledDrying.status == "pending"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    tz = server_timezone()
+    for run in runs:
+        run.ams_id, run.temp, run.duration_hours = rule.ams_id, rule.temp, rule.duration_hours
+        run.filament, run.rotate_tray = rule.filament, rule.rotate_tray
+        if run.start_after is not None:
+            end = window_end(as_aware_utc(run.start_after), rule.start_time, rule.latest_start, rule.weekdays, tz)
+            run.latest_start = to_naive_utc(end)
 
 
 async def delete_schedule(db: AsyncSession, schedule_id: int) -> None:
@@ -306,10 +344,11 @@ async def delete_schedule(db: AsyncSession, schedule_id: int) -> None:
     await db.commit()
 
 
-async def forget_printer(db: AsyncSession, printer_id: int, *, archived: bool) -> None:
+async def forget_printer(db: AsyncSession, printer_id: int, *, archived: bool, commit: bool = True) -> None:
     """Archived: cancel what waits, disable the rules. Deleted: remove both (SQLite runs no FK actions).
 
-    A running cycle is stopped either way.
+    A running cycle is stopped either way. ``commit=False`` for a caller whose own
+    transaction this is part of — the printer's delete commits once, at its end.
     """
     running = (
         (
@@ -334,7 +373,8 @@ async def forget_printer(db: AsyncSession, printer_id: int, *, archived: bool) -
     else:
         await db.execute(delete(ScheduledDrying).where(ScheduledDrying.printer_id == printer_id))
         await db.execute(delete(DryingSchedule).where(DryingSchedule.printer_id == printer_id))
-    await db.commit()
+    if commit:
+        await db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -470,21 +510,25 @@ async def _try_start(
     if run.latest_start is not None and run.latest_start <= now:
         # The last waiting reason becomes the detail: "its start window passed (the printer was printing)".
         _finish(run, "skipped", now, detail=run.reason, reason="window_passed")
+        logger.info("Scheduled drying: run %s on printer %s skipped — its window passed", run.id, run.printer_id)
         await _notify(db, "failed", run)
         return
     printer = await db.get(Printer, run.printer_id)
     if printer is None:
         return
     state = printer_manager.get_status(run.printer_id)
-    refusal = drying_preflight.refusal_code(
-        printer.model, state.firmware_version if state else None, require_firmware=state is not None
-    )
+    # ⚠️ Reachability first. A client exists from the moment it is created, before
+    # the printer says anything — no firmware, no AMS — and after every reconnect:
+    # judged as it stands, that empty state read as "firmware cannot dry".
+    if state is None or not printer_manager.is_connected(run.printer_id) or not state.raw_data:
+        run.reason = "printer_offline"
+        return
+    firmware = state.firmware_version
+    refusal = drying_preflight.refusal_code(printer.model, firmware, require_firmware=bool(firmware))
     if refusal is not None:
         _finish(run, "failed", now, reason=refusal)
+        logger.info("Scheduled drying: run %s on printer %s refused (%s)", run.id, run.printer_id, refusal)
         await _notify(db, "failed", run)
-        return
-    if state is None or not printer_manager.is_connected(run.printer_id):
-        run.reason = "printer_offline"
         return
     unit = find_ams_unit(state.raw_data, run.ams_id)
     if unit is None:
@@ -492,7 +536,13 @@ async def _try_start(
         return
     if run.temp > drying_preflight.max_temp_for_unit(unit):
         _finish(run, "failed", now, reason="temp_over_limit")
+        logger.info("Scheduled drying: run %s on printer %s above the unit's ceiling", run.id, run.printer_id)
         await _notify(db, "failed", run)
+        return
+    # Busy before the AMS: a printing printer reports its own blocker code (0), and
+    # "the printer was printing" is what the operator needs to read.
+    if run.printer_id in dispatching_printers or (state.state or "").upper() in _BUSY_STATES:
+        run.reason = "printer_busy"
         return
     if is_drying_active(unit) or (run.printer_id, run.ams_id) in started:
         run.reason = "already_drying"
@@ -500,9 +550,6 @@ async def _try_start(
     blocker = drying_preflight.blocker_code(unit)
     if blocker is not None:
         run.reason = blocker
-        return
-    if run.printer_id in dispatching_printers or (state.state or "").upper() in _BUSY_STATES:
-        run.reason = "printer_busy"
         return
     filament = drying_preflight.resolve_filament(unit, run.filament)
     if not printer_manager.send_drying_command(
@@ -518,7 +565,32 @@ async def _try_start(
         return
     run.status, run.started_at, run.reason, run.detail, run.filament = "running", now, None, None, filament
     started.add((run.printer_id, run.ams_id))
+    # The heater is on: nothing later in this pass may roll that back into "pending",
+    # or the next pass would start the same cycle a second time.
+    await db.commit()
+    logger.info(
+        "Scheduled drying: started run %s on printer %s AMS %s (%s °C, %s h)",
+        run.id,
+        run.printer_id,
+        run.ams_id,
+        run.temp,
+        run.duration_hours,
+    )
     await _notify(db, "started", run)
+
+
+async def _yield_to_print(db: AsyncSession, run: ScheduledDrying, now: datetime) -> None:
+    """A print has the printer: stop the cycle; it resumes after the print, within its window."""
+    printer_manager.send_drying_command(run.printer_id, run.ams_id, 0, 0, mode=0)
+    elapsed = (now - run.started_at).total_seconds() if run.started_at else 0
+    _seen_active.discard(run.id)
+    if elapsed >= run.duration_hours * 3600 * COMPLETE_FRACTION:
+        _finish(run, "completed", now)  # stopped in its cooling tail — it did its job
+        logger.info("Scheduled drying: run %s on printer %s done (stopped for a print)", run.id, run.printer_id)
+        await _notify(db, "completed", run)
+    else:
+        run.status, run.started_at, run.reason = "pending", None, "interrupted"
+        logger.info("Scheduled drying: run %s on printer %s yields to a print", run.id, run.printer_id)
 
 
 async def _follow(db: AsyncSession, run: ScheduledDrying, now: datetime) -> None:
@@ -529,17 +601,39 @@ async def _follow(db: AsyncSession, run: ScheduledDrying, now: datetime) -> None
     if elapsed < START_GRACE_SECONDS:
         return
     state = printer_manager.get_status(run.printer_id)
-    if state is None:
-        return  # offline mid-cycle: decide when it reconnects
-    if is_drying_active(find_ams_unit(state.raw_data, run.ams_id)):
+    # Offline, or back but not reported yet: "not reported" is not "not drying" —
+    # decide when the unit is seen again, and keep holding the printer meanwhile.
+    if state is None or not printer_manager.is_connected(run.printer_id):
+        return
+    unit = find_ams_unit(state.raw_data, run.ams_id)
+    if unit is None:
+        return
+    printing = (state.state or "").upper() in _BUSY_STATES
+    if is_drying_active(unit):
+        _seen_active.add(run.id)
+        if printing:
+            # A print that did not come through the queue — Print now, the printer's
+            # screen, the slicer — takes the printer the same way (owner's decision 6).
+            await _yield_to_print(db, run, now)
         return
     if elapsed >= run.duration_hours * 3600 * COMPLETE_FRACTION:
+        _seen_active.discard(run.id)
         _finish(run, "completed", now)
+        logger.info("Scheduled drying: run %s on printer %s completed", run.id, run.printer_id)
         await _notify(db, "completed", run)
-    elif (state.state or "").upper() in _BUSY_STATES:
+    elif printing:
+        _seen_active.discard(run.id)
         run.status, run.started_at, run.reason = "pending", None, "interrupted"
+        logger.info("Scheduled drying: run %s on printer %s interrupted by a print", run.id, run.printer_id)
+    elif run.id not in _seen_active and elapsed < START_CONFIRM_SECONDS:
+        # Accepted, never begun: the operator was told it started, so say it did not.
+        _finish(run, "failed", now, reason="not_started")
+        logger.info("Scheduled drying: run %s on printer %s never started", run.id, run.printer_id)
+        await _notify(db, "failed", run)
     else:
+        _seen_active.discard(run.id)
         _finish(run, "cancelled", now)  # stopped by hand on an idle printer — not a failure
+        logger.info("Scheduled drying: run %s on printer %s stopped early — cancelled", run.id, run.printer_id)
 
 
 def _any_unit_drying(printer_id: int) -> bool:
@@ -614,13 +708,7 @@ async def preempt_for_print(db: AsyncSession, printer_id: int, now: datetime) ->
         .all()
     )
     for run in runs:
-        printer_manager.send_drying_command(printer_id, run.ams_id, 0, 0, mode=0)
-        elapsed = (now - run.started_at).total_seconds() if run.started_at else 0
-        if elapsed >= run.duration_hours * 3600 * COMPLETE_FRACTION:
-            _finish(run, "completed", now)  # stopped in its cooling tail — it did its job
-            await _notify(db, "completed", run)
-        else:
-            run.status, run.started_at, run.reason = "pending", None, "interrupted"
+        await _yield_to_print(db, run, now)
     if runs:
         await db.commit()
     return len(runs)

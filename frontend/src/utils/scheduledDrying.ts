@@ -25,6 +25,21 @@ export function computeStartAfter(
   return undefined;
 }
 
+function canonicalZone(tz: string): string {
+  // Through the same Intl both sides: Europe/Kiev and Europe/Kyiv are one zone.
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: tz }).resolvedOptions().timeZone;
+  } catch {
+    return tz;
+  }
+}
+
+/** Does the browser sit in another zone than the farm whose clock the schedules follow? */
+export function farmZoneDiffers(serverTz?: string | null): boolean {
+  if (!serverTz) return false;
+  return canonicalZone(serverTz) !== canonicalZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
+}
+
 /** "AMS-A" for AMS 0, "HT-A" for AMS-HT 128 — the label the printer card uses. */
 export function amsLabel(amsId: number): string {
   return amsId >= 128 ? `HT-${String.fromCharCode(65 + amsId - 128)}` : `AMS-${String.fromCharCode(65 + amsId)}`;

@@ -40,8 +40,8 @@ async def upgrade(conn):
                 latest_start VARCHAR(5),
                 enabled BOOLEAN NOT NULL DEFAULT {true},
                 created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-                created_at {stamp} DEFAULT CURRENT_TIMESTAMP,
-                updated_at {stamp} DEFAULT CURRENT_TIMESTAMP
+                created_at {stamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at {stamp} NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
@@ -63,7 +63,7 @@ async def upgrade(conn):
                 reason VARCHAR(40),
                 detail TEXT,
                 created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-                created_at {stamp} DEFAULT CURRENT_TIMESTAMP,
+                created_at {stamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 started_at {stamp},
                 completed_at {stamp}
             )

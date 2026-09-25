@@ -48,6 +48,17 @@ def max_temp_for_unit(unit: dict | None) -> int:
     return AMS_DRY_MAX_TEMP.get(module_type, AMS_DRY_MAX_TEMP_FALLBACK)
 
 
+def max_temp_for(unit: dict | None, ams_id: int) -> int:
+    """The unit's ceiling; when the unit is not reported, the one its id implies.
+
+    AMS-HT units are numbered from 128 — an offline AMS-HT must not be held to
+    the AMS 2 Pro's 65 °C. The real unit is checked again before a run starts.
+    """
+    if unit is not None:
+        return max_temp_for_unit(unit)
+    return AMS_DRY_MAX_TEMP["n3s"] if ams_id >= 128 else AMS_DRY_MAX_TEMP_FALLBACK
+
+
 def blocker_code(unit: dict | None) -> str | None:
     """The waiting-reason code for this unit's blocker, by the same priority as the route."""
     blocker = first_drying_blocking_reason(unit)

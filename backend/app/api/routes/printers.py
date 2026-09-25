@@ -933,7 +933,7 @@ async def delete_printer(
     await delete_links_for_printer(db, printer_id)
 
     # SQLite runs no FK actions: its drying rules and runs go in code.
-    await scheduled_drying.forget_printer(db, printer_id, archived=False)
+    await scheduled_drying.forget_printer(db, printer_id, archived=False, commit=False)
     await db.delete(printer)
     await db.commit()
 

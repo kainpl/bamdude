@@ -187,7 +187,7 @@ import {
 } from '../utils/printerCardPrefs';
 import { resolveDryingPresetKey, type DryingPreset } from '../utils/dryingPresets';
 import { dryingBlockedKey } from '../utils/dryingBlockers';
-import { ALL_WEEKDAYS, DRYING_SCHEDULES_KEY, SCHEDULED_DRYINGS_KEY, WEEKDAY_BITS, WEEKDAY_NAMES, computeStartAfter, type DryingStartMode } from '../utils/scheduledDrying';
+import { ALL_WEEKDAYS, DRYING_SCHEDULES_KEY, SCHEDULED_DRYINGS_KEY, WEEKDAY_BITS, WEEKDAY_NAMES, computeStartAfter, farmZoneDiffers, type DryingStartMode } from '../utils/scheduledDrying';
 import { ScheduledDryingStrip } from '../components/ScheduledDryingStrip';
 
 // AMS drying popover dimensions — w-[240px] on the popover, estimated height
@@ -195,7 +195,7 @@ import { ScheduledDryingStrip } from '../components/ScheduledDryingStrip';
 // toggle + buttons. Over-estimating is fine (flip-above kicks in slightly
 // earlier); under-estimating leaves the popover clipped off the bottom (#1447).
 const DRYING_POPOVER_WIDTH = 240;
-const DRYING_POPOVER_ESTIMATED_HEIGHT = 320;
+const DRYING_POPOVER_ESTIMATED_HEIGHT = 460;
 // How long to wait after a drying command is acked before declaring that the AMS
 // never actually started (#2533). Generous: a unit runs its own pre-checks first.
 const DRY_START_CONFIRM_MS = 30_000;
@@ -1968,6 +1968,33 @@ function PrinterCard({
     });
     setDryingPopoverPos({ top: pos.top + window.scrollY, left: pos.left + window.scrollX, viewportTop: pos.top });
   }, []);
+  // The flame opens the popover in every state but screen-only: a unit that is
+  // drying or blocked right now can still be scheduled — only "Now" is off then.
+  const openDryingPopover = (ams: AMSUnit, trigger: HTMLElement) => {
+    const firstTray = ams.tray.find(tr => tr.tray_type);
+    const filType = resolveDryingPresetKey(firstTray?.tray_type, dryingPresets);
+    // Only reachable if a custom preset set dropped PLA itself.
+    const preset = dryingPresets[filType] ?? DRYING_PRESETS['PLA'];
+    const moduleType = ams.module_type as 'n3f' | 'n3s';
+    setDryingFilament(filType);
+    setDryingTemp(preset[moduleType] || preset.n3f);
+    setDryingDuration(moduleType === 'n3s' ? preset.n3s_hours : preset.n3f_hours);
+    setDryingRotateTray(false);
+    // Drying now: plan the next cycle on a schedule. Blocked now: go as soon as it can.
+    setDryingMode(ams.dry_time > 0 ? 'repeat' : ams.dry_sf_reason?.length ? 'when_free' : 'now');
+    setDryingPopoverModuleType(ams.module_type);
+    setDryingPopoverAmsId(ams.id);
+    dryingTriggerRef.current = trigger;
+    placeDryingPopover(trigger);
+  };
+  const dryingButtonTitle = (ams: AMSUnit) =>
+    status?.drying_screen_only
+      ? t('printers.drying.screenOnly')
+      : ams.dry_time > 0
+        ? t('printers.drying.scheduleNext')
+        : ams.dry_sf_reason?.length
+          ? t(dryingBlockedKey(ams.dry_sf_reason))
+          : t('printers.drying.start');
   useEffect(() => {
     if (dryingPopoverAmsId === null) return;
     const onResize = () => {
@@ -4904,37 +4931,24 @@ function PrinterCard({
                                       commanded: it stays disabled and says why (#2533). */}
                                   {(status.supports_drying || !!status.drying_screen_only) && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && hasPermission('printers:control') && (
                                     <button
-                                      disabled={!!status.drying_screen_only || !!(ams.dry_sf_reason?.length && ams.dry_time === 0)}
+                                      disabled={!!status.drying_screen_only}
                                       onClick={(e) => {
-                                        if (ams.dry_time > 0) {
-                                          stopDryingMutation.mutate(ams.id);
-                                        } else if (dryingPopoverAmsId === ams.id) {
+                                        if (dryingPopoverAmsId === ams.id) {
                                           setDryingPopoverAmsId(null);
                                         } else {
-                                          const firstTray = ams.tray.find(t => t.tray_type);
-                                          const filType = resolveDryingPresetKey(firstTray?.tray_type, dryingPresets);
-                                          // Only reachable if a custom preset set dropped PLA itself.
-                                          const preset = dryingPresets[filType] ?? DRYING_PRESETS['PLA'];
-                                          const moduleType = ams.module_type as 'n3f' | 'n3s';
-                                          setDryingFilament(filType);
-                                          setDryingTemp(preset[moduleType] || preset.n3f);
-                                          setDryingDuration(moduleType === 'n3s' ? preset.n3s_hours : preset.n3f_hours);
-                                          setDryingRotateTray(false);
-                                          setDryingMode('now');
-                                          setDryingPopoverModuleType(ams.module_type);
-                                          setDryingPopoverAmsId(ams.id);
-                                          dryingTriggerRef.current = e.currentTarget as HTMLElement;
-                                          placeDryingPopover(e.currentTarget as HTMLElement);
+                                          openDryingPopover(ams, e.currentTarget as HTMLElement);
                                         }
                                       }}
                                       className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[length:var(--pc-t9,9px)] transition-colors ${
                                         ams.dry_time > 0
                                           ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
-                                          : status.drying_screen_only || ams.dry_sf_reason?.length
+                                          : status.drying_screen_only
                                             ? 'bg-bambu-dark-tertiary/30 text-bambu-gray/50 cursor-not-allowed'
-                                            : 'bg-bambu-dark-tertiary/50 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
+                                            : ams.dry_sf_reason?.length
+                                              ? 'bg-bambu-dark-tertiary/30 text-bambu-gray/50 hover:text-white'
+                                              : 'bg-bambu-dark-tertiary/50 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
                                       }`}
-                                      title={status.drying_screen_only ? t('printers.drying.screenOnly') : ams.dry_time > 0 ? t('printers.drying.stop') : ams.dry_sf_reason?.length ? t(dryingBlockedKey(ams.dry_sf_reason)) : t('printers.drying.start')}
+                                      title={dryingButtonTitle(ams)}
                                     >
                                       <Flame className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />
                                     </button>
@@ -5541,25 +5555,10 @@ function PrinterCard({
                                   <button
                                     disabled={!!status.drying_screen_only}
                                     onClick={(e) => {
-                                      if (ams.dry_time > 0) {
-                                        stopDryingMutation.mutate(ams.id);
-                                      } else if (dryingPopoverAmsId === ams.id) {
+                                      if (dryingPopoverAmsId === ams.id) {
                                         setDryingPopoverAmsId(null);
                                       } else {
-                                        const firstTray = ams.tray.find(t => t.tray_type);
-                                        const filType = resolveDryingPresetKey(firstTray?.tray_type, dryingPresets);
-                                        // Only reachable if a custom preset set dropped PLA itself.
-                                        const preset = dryingPresets[filType] ?? DRYING_PRESETS['PLA'];
-                                        const moduleType = ams.module_type as 'n3f' | 'n3s';
-                                        setDryingFilament(filType);
-                                        setDryingTemp(preset[moduleType] || preset.n3f);
-                                        setDryingDuration(moduleType === 'n3s' ? preset.n3s_hours : preset.n3f_hours);
-                                        setDryingRotateTray(false);
-                                        setDryingMode('now');
-                                        setDryingPopoverModuleType(ams.module_type);
-                                        setDryingPopoverAmsId(ams.id);
-                                        dryingTriggerRef.current = e.currentTarget as HTMLElement;
-                                        placeDryingPopover(e.currentTarget as HTMLElement);
+                                        openDryingPopover(ams, e.currentTarget as HTMLElement);
                                       }
                                     }}
                                     className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[length:var(--pc-t9,9px)] transition-colors ${
@@ -5569,7 +5568,7 @@ function PrinterCard({
                                           ? 'bg-bambu-dark-tertiary/30 text-bambu-gray/50 cursor-not-allowed'
                                           : 'bg-bambu-dark-tertiary/50 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
                                     }`}
-                                    title={status.drying_screen_only ? t('printers.drying.screenOnly') : ams.dry_time > 0 ? t('printers.drying.stop') : t('printers.drying.start')}
+                                    title={dryingButtonTitle(ams)}
                                   >
                                     <Flame className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />
                                   </button>
@@ -7253,6 +7252,14 @@ function PrinterCard({
         // option in that case so we don't send a command the printer will refuse.
         const targetAms = amsData.find(a => a.id === dryingPopoverAmsId);
         const anyTrayLoaded = targetAms?.tray?.some(tr => tr.state === 11) ?? false;
+        // Why "Now" cannot run on this unit right now; the other modes wait for it.
+        const nowBlocked = !targetAms
+          ? null
+          : targetAms.dry_time > 0
+            ? t('printers.drying.dryingNow')
+            : targetAms.dry_sf_reason?.length
+              ? t(dryingBlockedKey(targetAms.dry_sf_reason))
+              : null;
         // Portalled into body: the coordinates are document-relative, outside
         // the card's content-visibility clipping. Inside the card, the popover
         // opened off its edge and was invisible.
@@ -7284,7 +7291,9 @@ function PrinterCard({
               {/* Header */}
               <div className="shrink-0 flex items-center gap-2 px-3 py-2.5 border-b border-bambu-dark-tertiary">
                 <Flame className="w-[var(--pc-i35,0.875rem)] h-[var(--pc-i35,0.875rem)] text-amber-600 dark:text-amber-400" />
-                <span className="text-xs text-white font-medium">{t('printers.drying.start')}</span>
+                <span className="text-xs text-white font-medium">
+                  {dryingMode === 'now' ? t('printers.drying.start') : t('printers.drying.scheduleTitle')}
+                </span>
               </div>
               {/* Body */}
               <div className="px-3 py-2.5 space-y-2.5 overflow-y-auto min-h-0">
@@ -7377,17 +7386,22 @@ function PrinterCard({
                         key={mode}
                         type="button"
                         aria-pressed={dryingMode === mode}
+                        disabled={mode === 'now' && !!nowBlocked}
+                        title={mode === 'now' && nowBlocked ? nowBlocked : undefined}
                         onClick={() => setDryingMode(mode)}
                         className={`px-1.5 py-0.5 rounded text-[length:var(--pc-t10,10px)] border transition-colors ${
                           dryingMode === mode
                             ? 'border-amber-500/60 bg-amber-500/15 text-amber-600 dark:text-amber-400'
                             : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white'
-                        }`}
+                        } disabled:opacity-40 disabled:cursor-not-allowed`}
                       >
                         {t(`printers.drying.mode.${mode}`)}
                       </button>
                     ))}
                   </div>
+                  {nowBlocked && (
+                    <p className="mt-1 text-[length:var(--pc-t9,9px)] text-amber-600 dark:text-amber-400">{nowBlocked}</p>
+                  )}
                   {dryingMode === 'delay' && (
                     <div className="flex items-center justify-between mt-2">
                       <label htmlFor="drying-delay-hours" className="text-[length:var(--pc-t10,10px)] text-bambu-gray">{t('printers.drying.delayHours')}</label>
@@ -7416,7 +7430,6 @@ function PrinterCard({
                   )}
                   {dryingMode === 'repeat' && (() => {
                     const serverTz = dryingSchedules?.server_timezone;
-                    const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
                     return (
                       <div className="mt-2 space-y-2">
                         <div className="flex items-center justify-between gap-2">
@@ -7456,7 +7469,7 @@ function PrinterCard({
                             className="px-1.5 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-[length:var(--pc-t11,11px)] focus:outline-none focus:border-amber-500/50"
                           />
                         </div>
-                        {serverTz && serverTz !== browserTz && (
+                        {farmZoneDiffers(serverTz) && (
                           <p className="text-[length:var(--pc-t9,9px)] text-bambu-gray/70">{t('printers.drying.farmTime', { tz: serverTz })}</p>
                         )}
                       </div>
@@ -7515,6 +7528,7 @@ function PrinterCard({
                     startDryingMutation.isPending
                     || scheduleDryingMutation.isPending
                     || createDryingRuleMutation.isPending
+                    || (dryingMode === 'now' && !!nowBlocked)
                     // An empty "At time" would otherwise go out as "when free".
                     || (dryingMode === 'at' && !dryingAt)
                     || (dryingMode === 'repeat' && (!dryingRepeatTime || dryingWeekdays === 0))

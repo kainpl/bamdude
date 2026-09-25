@@ -116,19 +116,26 @@
   now, after a delay, at a set time, as soon as the printer is free, or on a
   repeating schedule — chosen weekdays at a time of day, with an optional
   "not later than" that closes the window. Schedules run in the farm's time,
-  and the dialog says so when your browser is in another time zone. A
-  scheduled cycle waits while its printer prints, is stopped by a print that
-  goes out on that printer and resumes afterwards if its window is still
-  open; whether the queue waits for a scheduled cycle is the same **Block
-  queue until drying completes** switch that governs auto-drying, and
-  auto-drying leaves a unit alone while a schedule holds it. The printer card
-  lists what is planned — when a run starts, why it is still waiting, a run
-  that did not happen and why — with cancel, pause, edit and delete, and
-  Settings → Filament shows every schedule of the farm in one table. Three new
-  notifications — scheduled drying started, finished, did not happen — the
-  last one on by default, since a missed night otherwise looks like a dried
-  spool. A schedule's missed nights while BamDude was down are skipped
-  quietly rather than reported one by one on restart.
+  and the dialog says so when your browser is in another time zone. The
+  button stays usable while the unit is drying or cannot start right now —
+  it opens with only **Now** switched off, so the next cycle can be planned;
+  Stop stays on the drying bar. A scheduled cycle waits while its printer
+  prints or is offline, is stopped by any print that starts on that printer —
+  from the queue, **Print now**, the printer's screen or the slicer — and
+  resumes afterwards if its window is still open; whether the queue waits for
+  a scheduled cycle is the same **Block queue until drying completes** switch
+  that governs auto-drying, and auto-drying leaves a unit alone while a
+  schedule holds it. The printer card lists what is planned — when a run
+  starts, why it is still waiting, a run that did not happen and why — and
+  Settings → Filament shows every schedule of the farm in one table; changing
+  them takes printer control, and deleting a schedule or stopping a running
+  cycle asks first. Three new notifications — scheduled drying started,
+  finished, did not happen (including an AMS that accepted the command and
+  never began) — the last one on by default for new notification providers
+  and for Telegram chats that keep the default selection; a provider or chat
+  with its own selection gets it by ticking it there. A schedule's missed
+  nights while BamDude was down are skipped quietly rather than reported one
+  by one on restart.
 
 ### Fixed
 
@@ -165,11 +172,11 @@
   dries — and is judged — as its base material, nylon under any of its
   spellings (NYLON, PA6, PA11, PA12, PAHT, PPA) as PA; the preheat stage reads
   the chamber target the same way.
-- **A drying button that cannot start names the actual reason.** It always
-  asked for the AMS power adapter, even when the unit was refusing because
-  filament sat at its outlet. It now names the power adapter first, then the
-  filament at the outlet, then anything else — the same order the server uses
-  when it refuses a drying command.
+- **The drying button names what actually blocks drying.** It always asked
+  for the AMS power adapter, even when the unit was refusing because filament
+  sat at its outlet. It now names the power adapter first, then the filament
+  at the outlet, then anything else — the same order the server uses when it
+  refuses a drying command.
 - **The AMS temperature alarm no longer fires for heat you asked for, and has
   its own threshold.** While an AMS dried filament — 45 °C for PLA, 65 °C for
   PETG, up to 85 °C on an AMS-HT — the alarm, set at the 35 °C amber band,

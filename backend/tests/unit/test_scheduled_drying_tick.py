@@ -18,6 +18,7 @@ NOW = datetime(2026, 9, 25, 22, 0)  # naive UTC = 01:00 Kyiv
 def _fresh_module_state():
     sd._last_running = set()
     sd._last_prune = None
+    sd._seen_active = set()
     yield
 
 
@@ -189,3 +190,133 @@ async def test_preempt_puts_a_running_run_back_to_pending(db_session, printer_fa
     await db_session.refresh(row)
     assert (row.status, row.reason, row.started_at) == ("pending", "interrupted", None)
     pm.send_drying_command.assert_called_with(printer.id, 0, 0, 0, mode=0)
+
+
+# ------------------------------------------------ review fixes (whole-branch review)
+
+
+def _no_report():
+    """A printer whose client exists but has reported nothing: the state before the first push."""
+    return SimpleNamespace(state="IDLE", firmware_version=None, raw_data={})
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_printer_waits_instead_of_failing(db_session, printer_factory, pm):
+    printer = await printer_factory(model="X1C")
+    pm.is_connected.return_value = False
+    pm.get_status.return_value = _no_report()
+    row = await _run(db_session, printer)
+    await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
+    await db_session.refresh(row)
+    assert (row.status, row.reason) == ("pending", "printer_offline")
+    pm.notifier.on_scheduled_drying_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_printer_that_has_not_reported_yet_waits(db_session, printer_factory, pm):
+    """The first seconds after a (re)connect: connected, no firmware, no AMS yet."""
+    printer = await printer_factory(model="X1C")
+    pm.get_status.return_value = _no_report()
+    row = await _run(db_session, printer)
+    await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
+    await db_session.refresh(row)
+    assert (row.status, row.reason) == ("pending", "printer_offline")
+    pm.send_drying_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_running_run_survives_a_printer_that_has_not_reported(db_session, printer_factory, pm):
+    """Not reported is not "not drying": the run and the queue hold stay."""
+    printer = await printer_factory(model="X1C")
+    pm.is_connected.return_value = False
+    pm.get_status.return_value = _no_report()
+    row = await _run(db_session, printer, status="running", started_at=NOW - timedelta(hours=1))
+    holds = {printer.id: 1.0}
+    await sd.tick(db_session, now=NOW, drying_in_progress=holds, dispatching_printers=set())
+    await db_session.refresh(row)
+    assert row.status == "running"
+    assert printer.id in holds
+
+
+@pytest.mark.asyncio
+async def test_a_print_started_elsewhere_takes_the_cycle_back(db_session, printer_factory, pm):
+    """Print now, the printer's screen, the slicer: any print, not only a queue dispatch."""
+    printer = await printer_factory(model="X1C")
+    pm.get_status.return_value = SimpleNamespace(
+        state="RUNNING", firmware_version="01.11.00.00", raw_data={"ams": [_unit(dry_time=300)]}
+    )
+    row = await _run(db_session, printer, status="running", started_at=NOW - timedelta(hours=1))
+    await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
+    await db_session.refresh(row)
+    assert (row.status, row.started_at) == ("pending", None)
+    pm.send_drying_command.assert_called_with(printer.id, 0, 0, 0, mode=0)
+
+
+@pytest.mark.asyncio
+async def test_a_cycle_that_never_started_is_a_reported_failure(db_session, printer_factory, pm):
+    printer = await printer_factory(model="X1C")
+    row = await _run(db_session, printer, status="running", started_at=NOW - timedelta(minutes=5))
+    await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
+    await db_session.refresh(row)
+    assert (row.status, row.reason) == ("failed", "not_started")
+    pm.notifier.on_scheduled_drying_failed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_cycle_seen_drying_then_stopped_early_is_a_silent_cancel(db_session, printer_factory, pm):
+    printer = await printer_factory(model="X1C")
+    row = await _run(db_session, printer, status="running", started_at=NOW - timedelta(minutes=5))
+    pm.get_status.return_value = SimpleNamespace(
+        state="IDLE", firmware_version="01.11.00.00", raw_data={"ams": [_unit(dry_time=400)]}
+    )
+    await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
+    pm.get_status.return_value = SimpleNamespace(
+        state="IDLE", firmware_version="01.11.00.00", raw_data={"ams": [_unit()]}
+    )
+    await sd.tick(db_session, now=NOW + timedelta(minutes=1), drying_in_progress={}, dispatching_printers=set())
+    await db_session.refresh(row)
+    assert row.status == "cancelled"
+    pm.notifier.on_scheduled_drying_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_printing_printer_waits_as_busy_whatever_the_ams_reports(db_session, printer_factory, pm):
+    printer = await printer_factory(model="X1C")
+    pm.get_status.return_value = SimpleNamespace(
+        state="RUNNING", firmware_version="01.11.00.00", raw_data={"ams": [_unit(reasons=[0])]}
+    )
+    row = await _run(db_session, printer)
+    await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
+    await db_session.refresh(row)
+    assert row.reason == "printer_busy"
+
+
+@pytest.mark.asyncio
+async def test_a_started_run_is_committed_before_the_pass_goes_on(db_session, printer_factory, pm):
+    """A later failure in the same pass must not roll back a cycle the printer is already running."""
+    first = await printer_factory(model="X1C")
+    second = await printer_factory(model="X1C")
+    started = await _run(db_session, first, start_after=NOW - timedelta(minutes=2))
+    await _run(db_session, second, start_after=NOW - timedelta(minutes=1))
+    healthy = pm.get_status.return_value
+
+    def status(pid):
+        if pid == second.id:
+            raise RuntimeError("database is locked")
+        return healthy
+
+    pm.get_status.side_effect = status
+    with pytest.raises(RuntimeError):
+        await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
+    await db_session.rollback()
+    await db_session.refresh(started)
+    assert started.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_the_tick_says_what_it_did(db_session, printer_factory, pm, caplog):
+    printer = await printer_factory(model="X1C")
+    await _run(db_session, printer)
+    with caplog.at_level("INFO", logger="backend.app.services.scheduled_drying"):
+        await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
+    assert any("started" in r.getMessage() and f"printer {printer.id}" in r.getMessage() for r in caplog.records)

@@ -680,9 +680,16 @@ class PrintScheduler:
                 # mid-print cap (spec, owner's decision 6). It resumes when the printer
                 # is free, within its window.
                 if printer_id in self._scheduled_drying_printers:
-                    await scheduled_drying.preempt_for_print(
-                        db, printer_id, datetime.now(timezone.utc).replace(tzinfo=None)
-                    )
+                    # Its own session, like the tick: a failure here must not leave the
+                    # queue's session unusable for the print it is about to start.
+                    try:
+                        async with async_session() as drying_db:
+                            await scheduled_drying.preempt_for_print(
+                                drying_db, printer_id, datetime.now(timezone.utc).replace(tzinfo=None)
+                            )
+                    except Exception as exc:  # noqa: BLE001 - the print must not depend on drying
+                        # The tick's follow sees the print and takes the cycle back.
+                        logger.warning("Scheduled drying: preemption failed on printer %d: %s", printer_id, exc)
                     self._scheduled_drying_printers.discard(printer_id)
                     self._drying_in_progress.pop(printer_id, None)
 
@@ -1641,7 +1648,8 @@ class PrintScheduler:
         if not queue_drying_enabled and not ambient_drying_enabled:
             # Stop active drying on all printers if both features disabled
             if self._drying_in_progress:
-                for pid in list(self._drying_in_progress):
+                # A scheduled cycle's hold is the schedule's: nothing of ours to stop there.
+                for pid in [p for p in self._drying_in_progress if p not in self._scheduled_drying_printers]:
                     logger.info("Auto-drying: printer %d - stopping, auto-drying disabled", pid)
                     await self._stop_drying(pid)
             return
@@ -1669,7 +1677,7 @@ class PrintScheduler:
         # (But skip this short-circuit when print_drying_enabled is on — busy printers
         # may still be eligible for mid-print drying regardless of queue state.)
         if not ambient_drying_enabled and not printers_with_scheduled and not print_drying_enabled:
-            for pid in list(self._drying_in_progress):
+            for pid in [p for p in self._drying_in_progress if p not in self._scheduled_drying_printers]:
                 logger.info("Auto-drying: printer %d - stopping, no scheduled prints in queue", pid)
                 await self._stop_drying(pid)
             return
@@ -1724,7 +1732,7 @@ class PrintScheduler:
             if not mid_print:
                 # In queue-only mode, only dry printers that have scheduled prints
                 if not ambient_drying_enabled and pid not in printers_with_scheduled:
-                    if self._drying_in_progress.get(pid):
+                    if self._drying_in_progress.get(pid) and pid not in self._scheduled_drying_printers:
                         logger.info("Auto-drying: printer %d - stopping, no scheduled prints for this printer", pid)
                         await self._stop_drying(pid)
                     logger.debug("Auto-drying: printer %d skipped - no scheduled prints", pid)

@@ -1,6 +1,6 @@
 /** Scheduling a drying from the AMS popover (spec §UI). */
 import { describe, it, expect } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
@@ -82,5 +82,35 @@ describe('PrintersPage — scheduling a drying', () => {
   it('names the actual blocker', async () => {
     mount({ dry_sf_reason: [3] });
     expect(await screen.findByTitle(/Retract the filament at the AMS outlet/)).toBeInTheDocument();
+  });
+});
+
+describe('PrintersPage — scheduling while the unit cannot dry now', () => {
+  it('a blocked unit still opens the popover; only "Now" is off', async () => {
+    const posted = mount({ dry_sf_reason: [3] });
+    fireEvent.click(await screen.findByTitle(/Retract the filament at the AMS outlet/));
+    const popover = await screen.findByTestId('ams-drying-popover');
+    expect(within(popover).getByRole('button', { name: 'Now' })).toBeDisabled();
+    fireEvent.click(within(popover).getByTestId('drying-start-confirm'));
+    await waitFor(() => expect(posted.map((p) => p.path)).toEqual(['run']));
+    expect((posted[0].body as { start_after: string | null }).start_after).toBeNull();
+  });
+
+  it('a drying unit opens the popover to plan the next cycle', async () => {
+    const posted = mount({ dry_time: 120 });
+    fireEvent.click(await screen.findByTitle('Schedule the next drying'));
+    const popover = await screen.findByTestId('ams-drying-popover');
+    expect(within(popover).getByRole('button', { name: 'Now' })).toBeDisabled();
+    fireEvent.click(within(popover).getByRole('button', { name: 'Repeat' }));
+    fireEvent.click(within(popover).getByTestId('drying-start-confirm'));
+    await waitFor(() => expect(posted.map((p) => p.path)).toEqual(['rule']));
+  });
+
+  it('the header says it schedules when it does', async () => {
+    mount();
+    fireEvent.click(await screen.findByTitle('Start Drying'));
+    const popover = await screen.findByTestId('ams-drying-popover');
+    fireEvent.click(within(popover).getByRole('button', { name: 'After delay' }));
+    expect(within(popover).getByText('Schedule drying')).toBeInTheDocument();
   });
 });

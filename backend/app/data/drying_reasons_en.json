@@ -10,5 +10,6 @@
   "window_passed": "its start window passed",
   "screen_only": "this printer dries only from its own screen",
   "unsupported": "this printer's firmware cannot dry",
-  "temp_over_limit": "the temperature is above this AMS's limit"
+  "temp_over_limit": "the temperature is above this AMS's limit",
+  "not_started": "the AMS never started drying"
 }

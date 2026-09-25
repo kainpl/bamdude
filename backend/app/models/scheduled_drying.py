@@ -5,12 +5,18 @@ DELETE, so removing a printer deletes its rules and runs in code
 (``scheduled_drying.forget_printer``); the FK actions are PostgreSQL's backstop.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
+
+
+def _utcnow() -> datetime:
+    # Stamped in Python, in UTC: a PostgreSQL whose TimeZone is not UTC would write
+    # local time through CURRENT_TIMESTAMP, and the tick reads updated_at as UTC.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class DryingSchedule(Base):
@@ -33,8 +39,10 @@ class DryingSchedule(Base):
     latest_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, server_default=func.now(), onupdate=_utcnow, nullable=False
+    )
 
     __table_args__ = (Index("ix_drying_schedules_printer", "printer_id"),)
 
@@ -63,7 +71,7 @@ class ScheduledDrying(Base):
     reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, server_default=func.now(), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

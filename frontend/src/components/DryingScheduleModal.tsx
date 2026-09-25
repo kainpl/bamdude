@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Repeat } from 'lucide-react';
 import { api, type DryingSchedule, type DryingScheduleInput } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
@@ -10,6 +10,7 @@ import {
   WEEKDAY_BITS,
   WEEKDAY_NAMES,
   amsLabel,
+  farmZoneDiffers,
 } from '../utils/scheduledDrying';
 import { Button } from './Button';
 import { Modal } from './Modal';
@@ -34,6 +35,9 @@ export function DryingScheduleModal({
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
+  // The list the caller already holds, from the cache: only its zone is read here.
+  const { data: schedules } = useQuery({ queryKey: DRYING_SCHEDULES_KEY, queryFn: () => api.listDryingSchedules() });
+  const serverTz = schedules?.server_timezone;
   const ceiling = maxTemp ?? (rule.ams_id >= 128 ? 85 : 65);
   const [startTime, setStartTime] = useState(rule.start_time);
   const [weekdays, setWeekdays] = useState(rule.weekdays);
@@ -157,6 +161,9 @@ export function DryingScheduleModal({
             className={`${INPUT} w-20 text-center`}
           />
         </div>
+        {farmZoneDiffers(serverTz) && (
+          <p className="text-xs text-bambu-gray/70">{t('printers.drying.farmTime', { tz: serverTz })}</p>
+        )}
         <label className="flex items-center gap-2 cursor-pointer">
           <input
             type="checkbox"

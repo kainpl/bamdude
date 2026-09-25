@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from backend.app.schemas.print_queue import UTCDatetime
 
@@ -49,7 +49,8 @@ class DryingScheduleCreate(BaseModel):
     rotate_tray: bool = False
     # "HH:MM", server time.
     start_time: str
-    weekdays: int = 127
+    # Monday = bit 0 … Sunday = bit 6. 0 reaches the writer, which says to pick a day.
+    weekdays: int = Field(127, ge=0, le=127)
     latest_start: str | None = None
     enabled: bool = True
 
@@ -61,9 +62,17 @@ class DryingScheduleUpdate(BaseModel):
     filament: str | None = Field(None, max_length=50)
     rotate_tray: bool | None = None
     start_time: str | None = None
-    weekdays: int | None = None
+    weekdays: int | None = Field(None, ge=0, le=127)
     latest_start: str | None = None
     enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def _only_latest_start_may_be_cleared(self):
+        # Absent = unchanged; an explicit null is a value, and only "not later than" has an empty one.
+        for name in self.model_fields_set:
+            if name != "latest_start" and getattr(self, name) is None:
+                raise ValueError(f"{name} cannot be null")
+        return self
 
 
 class DryingScheduleResponse(BaseModel):

@@ -3,8 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Clock, Pause, Pencil, Play, Repeat, X } from 'lucide-react';
 import { api, type DryingSchedule, type ScheduledDryingRun } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { DRYING_SCHEDULES_KEY, SCHEDULED_DRYINGS_KEY, amsLabel, weekdaysLabel } from '../utils/scheduledDrying';
+import { ConfirmModal } from './ConfirmModal';
 import { DryingScheduleModal } from './DryingScheduleModal';
 
 function didNotHappen(run: ScheduledDryingRun) {
@@ -15,8 +17,13 @@ function didNotHappen(run: ScheduledDryingRun) {
 export function ScheduledDryingStrip({ printerId }: { printerId: number }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
+  // Everyone who sees the card sees what is planned; changing it is printers:control.
+  const canControl = hasPermission('printers:control');
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<DryingSchedule | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<DryingSchedule | null>(null);
+  const [confirmStop, setConfirmStop] = useState<ScheduledDryingRun | null>(null);
   const { data: runs = [] } = useQuery({
     queryKey: SCHEDULED_DRYINGS_KEY,
     queryFn: () => api.listScheduledDryings(),
@@ -29,13 +36,27 @@ export function ScheduledDryingStrip({ printerId }: { printerId: number }) {
     queryClient.invalidateQueries({ queryKey: DRYING_SCHEDULES_KEY });
   };
   const onError = (error: Error) => showToast(error.message || t('printers.drying.scheduleFailed'), 'error');
-  const cancel = useMutation({ mutationFn: (id: number) => api.cancelScheduledDrying(id), onSuccess: refresh, onError });
+  const cancel = useMutation({
+    mutationFn: (id: number) => api.cancelScheduledDrying(id),
+    onSuccess: () => {
+      setConfirmStop(null);
+      refresh();
+    },
+    onError,
+  });
   const toggle = useMutation({
     mutationFn: (rule: DryingSchedule) => api.updateDryingSchedule(rule.id, { enabled: !rule.enabled }),
     onSuccess: refresh,
     onError,
   });
-  const remove = useMutation({ mutationFn: (id: number) => api.deleteDryingSchedule(id), onSuccess: refresh, onError });
+  const remove = useMutation({
+    mutationFn: (id: number) => api.deleteDryingSchedule(id),
+    onSuccess: () => {
+      setConfirmDelete(null);
+      refresh();
+    },
+    onError,
+  });
 
   const mine = runs.filter((r) => r.printer_id === printerId);
   const myRules = (rules?.schedules ?? []).filter((r) => r.printer_id === printerId);
@@ -57,6 +78,11 @@ export function ScheduledDryingStrip({ printerId }: { printerId: number }) {
       : t('printers.drying.runWhenFree');
     return run.reason ? `${when} · ${t('printers.drying.waiting', { reason: reasonText(run.reason) })}` : when;
   };
+  // A running cycle is heating an AMS: stopping it asks first. Waiting and missed runs do not.
+  const onRunButton = (run: ScheduledDryingRun) => {
+    if (run.status === 'running') setConfirmStop(run);
+    else cancel.mutate(run.id);
+  };
 
   return (
     <div data-testid="scheduled-drying-strip" className="mt-2 space-y-1 text-[length:var(--pc-t10,10px)]">
@@ -75,16 +101,18 @@ export function ScheduledDryingStrip({ printerId }: { printerId: number }) {
             <span className="min-w-0 flex-1 truncate">
               {amsLabel(run.ams_id)} · {runText(run)}
             </span>
-            <button
-              type="button"
-              onClick={() => cancel.mutate(run.id)}
-              disabled={cancel.isPending}
-              aria-label={label}
-              title={label}
-              className="shrink-0 hover:opacity-70 disabled:opacity-50"
-            >
-              <X className="w-3 h-3" />
-            </button>
+            {canControl && (
+              <button
+                type="button"
+                onClick={() => onRunButton(run)}
+                disabled={cancel.isPending}
+                aria-label={label}
+                title={label}
+                className="shrink-0 hover:opacity-70 disabled:opacity-50"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
           </div>
         );
       })}
@@ -103,39 +131,64 @@ export function ScheduledDryingStrip({ printerId }: { printerId: number }) {
               {rule.latest_start ? `–${rule.latest_start}` : ''} · {amsLabel(rule.ams_id)} · {rule.temp}°C ×{' '}
               {rule.duration_hours} {t('printers.drying.hours')}
             </span>
-            <button
-              type="button"
-              onClick={() => setEditing(rule)}
-              aria-label={t('printers.drying.editSchedule')}
-              title={t('printers.drying.editSchedule')}
-              className="shrink-0 hover:text-white"
-            >
-              <Pencil className="w-3 h-3" />
-            </button>
-            <button
-              type="button"
-              onClick={() => toggle.mutate(rule)}
-              disabled={toggle.isPending}
-              aria-label={toggleLabel}
-              title={toggleLabel}
-              className="shrink-0 hover:text-white disabled:opacity-50"
-            >
-              {rule.enabled ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-            </button>
-            <button
-              type="button"
-              onClick={() => remove.mutate(rule.id)}
-              disabled={remove.isPending}
-              aria-label={t('printers.drying.deleteSchedule')}
-              title={t('printers.drying.deleteSchedule')}
-              className="shrink-0 hover:text-white disabled:opacity-50"
-            >
-              <X className="w-3 h-3" />
-            </button>
+            {canControl && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setEditing(rule)}
+                  aria-label={t('printers.drying.editSchedule')}
+                  title={t('printers.drying.editSchedule')}
+                  className="shrink-0 hover:text-white"
+                >
+                  <Pencil className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggle.mutate(rule)}
+                  disabled={toggle.isPending}
+                  aria-label={toggleLabel}
+                  title={toggleLabel}
+                  className="shrink-0 hover:text-white disabled:opacity-50"
+                >
+                  {rule.enabled ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(rule)}
+                  aria-label={t('printers.drying.deleteSchedule')}
+                  title={t('printers.drying.deleteSchedule')}
+                  className="shrink-0 hover:text-white"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </>
+            )}
           </div>
         );
       })}
       {editing && <DryingScheduleModal rule={editing} onClose={() => setEditing(null)} />}
+      {confirmDelete && (
+        <ConfirmModal
+          title={t('printers.drying.deleteSchedule')}
+          message={t('printers.drying.deleteScheduleConfirm')}
+          confirmText={t('printers.drying.deleteSchedule')}
+          variant="danger"
+          isLoading={remove.isPending}
+          onConfirm={() => remove.mutate(confirmDelete.id)}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+      {confirmStop && (
+        <ConfirmModal
+          title={t('printers.drying.cancelScheduled')}
+          message={t('printers.drying.cancelRunningConfirm')}
+          confirmText={t('printers.drying.cancelScheduled')}
+          variant="warning"
+          isLoading={cancel.isPending}
+          onConfirm={() => cancel.mutate(confirmStop.id)}
+          onCancel={() => setConfirmStop(null)}
+        />
+      )}
     </div>
   );
 }

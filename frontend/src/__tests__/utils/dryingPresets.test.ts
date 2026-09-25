@@ -87,8 +87,12 @@ describe('wiring', () => {
   const PAGE = readFileSync('src/pages/PrintersPage.tsx', 'utf8');
 
   it('both drying popovers seed through the resolver', () => {
+    // One opener for the AMS 2 Pro and the AMS-HT flame alike; it seeds through the resolver.
     const uses = PAGE.split('resolveDryingPresetKey(firstTray?.tray_type, dryingPresets)').length - 1;
-    expect(uses).toBe(2);
+    expect(uses).toBe(1);
+    expect(PAGE).toContain('const openDryingPopover = (ams: AMSUnit, trigger: HTMLElement) => {');
+    const opens = PAGE.split('openDryingPopover(ams, e.currentTarget as HTMLElement)').length - 1;
+    expect(opens).toBe(2);
   });
 
   it('no popover still upper-cases the raw tray type by hand', () => {

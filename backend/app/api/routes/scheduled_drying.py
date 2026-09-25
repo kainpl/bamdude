@@ -4,10 +4,11 @@ The routes only read the two tables; every write goes through
 ``services/scheduled_drying.py``, the tables' one writer.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -33,6 +34,7 @@ def _refused(exc: sd.DryingRefused) -> HTTPException:
 
 @router.get("/scheduled-dryings", response_model=list[ScheduledDryingResponse])
 async def list_runs(
+    request: Request,
     printer_id: int | None = None,
     _: User | None = RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
@@ -41,6 +43,9 @@ async def list_runs(
     query = select(ScheduledDrying).where(ScheduledDrying.status.in_(sd.RUN_LISTED))
     if printer_id is not None:
         query = query.where(ScheduledDrying.printer_id == printer_id)
+    scope = key_printer_scope(request)
+    if scope is not None:
+        query = query.where(ScheduledDrying.printer_id.in_(scope))
     query = query.order_by(ScheduledDrying.start_after.asc().nullsfirst(), ScheduledDrying.id.asc())
     return list((await db.execute(query)).scalars().all())
 
@@ -71,6 +76,7 @@ async def cancel_run(
 
 @router.get("/drying-schedules", response_model=DryingScheduleList)
 async def list_schedules(
+    request: Request,
     printer_id: int | None = None,
     _: User | None = RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
@@ -78,6 +84,9 @@ async def list_schedules(
     query = select(DryingSchedule)
     if printer_id is not None:
         query = query.where(DryingSchedule.printer_id == printer_id)
+    scope = key_printer_scope(request)
+    if scope is not None:
+        query = query.where(DryingSchedule.printer_id.in_(scope))
     rows = (await db.execute(query.order_by(DryingSchedule.printer_id, DryingSchedule.start_time))).scalars().all()
     return {"server_timezone": getattr(server_timezone(), "key", None) or "UTC", "schedules": list(rows)}
 

@@ -33,3 +33,17 @@ async def test_a_restart_restores_the_hold_before_the_first_dispatch():
     ):
         await scheduler._seed_scheduled_drying_holds()
     assert 3 in scheduler._drying_in_progress and 3 in scheduler._scheduled_drying_printers
+
+
+@pytest.mark.asyncio
+async def test_disabled_auto_drying_leaves_a_scheduled_hold_alone():
+    """Otherwise it "stops" (and logs) the scheduled printer every 30 s all night."""
+    from unittest.mock import MagicMock
+
+    scheduler = PrintScheduler()
+    scheduler._drying_in_progress = {7: 1.0}
+    scheduler._scheduled_drying_printers = {7}
+    scheduler._stop_drying = AsyncMock()
+    scheduler._get_bool_setting = AsyncMock(return_value=False)
+    await scheduler._check_auto_drying(MagicMock(), [], set())
+    scheduler._stop_drying.assert_not_awaited()

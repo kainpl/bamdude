@@ -1120,6 +1120,11 @@ export default {
       resumeSchedule: 'Resume schedule',
       deleteSchedule: 'Delete schedule',
       editSchedule: 'Edit schedule',
+      scheduleNext: 'Schedule the next drying',
+      scheduleTitle: 'Schedule drying',
+      dryingNow: 'This AMS is drying now',
+      deleteScheduleConfirm: 'Delete this drying schedule? A cycle running now finishes; nothing more is planned from it.',
+      cancelRunningConfirm: 'Stop this scheduled drying now? The AMS stops heating.',
       // Present tense: the card shows a run that is still waiting. The
       // notification's past-tense sentences live in drying_reasons_*.json.
       reason: {
@@ -1135,6 +1140,7 @@ export default {
         screen_only: 'this printer dries only from its own screen',
         unsupported: "this printer's firmware cannot dry",
         temp_over_limit: "the temperature is above this AMS's limit",
+        not_started: 'the AMS never started drying',
       },
     },
     // Filaments section

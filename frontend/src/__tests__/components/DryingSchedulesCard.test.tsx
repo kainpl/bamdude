@@ -42,3 +42,33 @@ describe('DryingSchedulesCard', () => {
     expect(await screen.findByText(/no drying schedules yet/i)).toBeInTheDocument();
   });
 });
+
+describe('DryingSchedulesCard — permissions and the farm clock', () => {
+  it('a viewer sees the table without controls', async () => {
+    server.use(
+      http.get('/api/v1/auth/me', () =>
+        HttpResponse.json({
+          id: 2, username: 'viewer', role: 'user', is_active: true, is_admin: false,
+          groups: [{ id: 3, name: 'Viewers' }], permissions: ['printers:read'], created_at: '2024-01-01T00:00:00Z',
+        })),
+      http.get('/api/v1/printers/', () => HttpResponse.json([{ id: 1, name: 'Farm X1C', model: 'X1C' }])),
+      http.get('/api/v1/drying-schedules', () => HttpResponse.json({ server_timezone: 'UTC', schedules: [rule] })),
+    );
+    render(<DryingSchedulesCard />);
+    expect(await screen.findByText('Farm X1C')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('button', { name: /edit schedule/i })).toBeNull());
+    expect(screen.queryByRole('button', { name: /delete schedule/i })).toBeNull();
+  });
+
+  it('the edit dialog says the time is the farm\'s when the browser is elsewhere', async () => {
+    server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([{ id: 1, name: 'Farm X1C', model: 'X1C' }])),
+      http.get('/api/v1/drying-schedules', () =>
+        HttpResponse.json({ server_timezone: 'Pacific/Chatham', schedules: [rule] })),
+    );
+    render(<DryingSchedulesCard />);
+    fireEvent.click(await screen.findByRole('button', { name: /edit schedule/i }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/Farm time \(Pacific\/Chatham\)/)).toBeInTheDocument();
+  });
+});

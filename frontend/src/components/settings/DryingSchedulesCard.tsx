@@ -3,17 +3,22 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pause, Pencil, Play, Trash2 } from 'lucide-react';
 import { api, type DryingSchedule } from '../../api/client';
+import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { DRYING_SCHEDULES_KEY, SCHEDULED_DRYINGS_KEY, amsLabel, weekdaysLabel } from '../../utils/scheduledDrying';
 import { Card, CardContent, CardHeader } from '../Card';
+import { ConfirmModal } from '../ConfirmModal';
 import { DryingScheduleModal } from '../DryingScheduleModal';
 
 /** Every drying rule of the farm in one table (Settings → Filament). Rules are created from a printer card. */
 export function DryingSchedulesCard() {
   const { t } = useTranslation();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
+  const canControl = hasPermission('printers:control');
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<DryingSchedule | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<DryingSchedule | null>(null);
   const { data: printers = [] } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters });
   const { data } = useQuery({ queryKey: DRYING_SCHEDULES_KEY, queryFn: () => api.listDryingSchedules() });
 
@@ -27,7 +32,14 @@ export function DryingSchedulesCard() {
     onSuccess: refresh,
     onError,
   });
-  const remove = useMutation({ mutationFn: (id: number) => api.deleteDryingSchedule(id), onSuccess: refresh, onError });
+  const remove = useMutation({
+    mutationFn: (id: number) => api.deleteDryingSchedule(id),
+    onSuccess: () => {
+      setConfirmDelete(null);
+      refresh();
+    },
+    onError,
+  });
 
   const printerName = (id: number) => printers.find((p) => p.id === id)?.name ?? `#${id}`;
   const rules = data?.schedules ?? [];
@@ -82,6 +94,7 @@ export function DryingSchedulesCard() {
                         </div>
                       </td>
                       <td className="py-1.5">
+                        {canControl && (
                         <div className="flex items-center justify-end gap-1.5 text-bambu-gray">
                           <button
                             type="button"
@@ -104,15 +117,15 @@ export function DryingSchedulesCard() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => remove.mutate(rule.id)}
-                            disabled={remove.isPending}
+                            onClick={() => setConfirmDelete(rule)}
                             aria-label={t('printers.drying.deleteSchedule')}
                             title={t('printers.drying.deleteSchedule')}
-                            className="p-1 hover:text-red-400 disabled:opacity-50"
+                            className="p-1 hover:text-red-400"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -126,6 +139,17 @@ export function DryingSchedulesCard() {
         </p>
       </CardContent>
       {editing && <DryingScheduleModal rule={editing} onClose={() => setEditing(null)} />}
+      {confirmDelete && (
+        <ConfirmModal
+          title={t('printers.drying.deleteSchedule')}
+          message={t('printers.drying.deleteScheduleConfirm')}
+          confirmText={t('printers.drying.deleteSchedule')}
+          variant="danger"
+          isLoading={remove.isPending}
+          onConfirm={() => remove.mutate(confirmDelete.id)}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
     </Card>
   );
 }
