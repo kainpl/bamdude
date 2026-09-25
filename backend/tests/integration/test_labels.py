@@ -12,6 +12,8 @@ Pinned here:
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -161,3 +163,40 @@ class TestInventoryLabels:
         # one of the renderer's separate text rows on the box template, so
         # we don't expect it anywhere in the PDF either.)
         assert b"ZNeverPicked" not in resp.content, "Backend fallback chain must NOT win when display_name is provided"
+
+
+class TestStartingPosition:
+    """Start a sheet at an unused cell (upstream #2879); refused off a sheet or past its end."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_sheet_accepts_a_starting_position(self, async_client: AsyncClient, spool_factory):
+        a = await spool_factory()
+        b = await spool_factory(color_name="Black", rgba="0E0E0EFF")
+        resp = await async_client.post(
+            "/api/v1/inventory/labels",
+            json={"spools": [{"id": a.id}, {"id": b.id}], "template": "avery_5160", "starting_position": 30},
+        )
+        assert resp.status_code == 200, resp.text
+        assert len(re.findall(rb"/Type\s*/Page[^s]", resp.content)) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_position_past_the_sheet_is_refused(self, async_client: AsyncClient, spool_factory):
+        a = await spool_factory()
+        resp = await async_client.post(
+            "/api/v1/inventory/labels",
+            json={"spools": [{"id": a.id}], "template": "avery_5160", "starting_position": 31},
+        )
+        assert resp.status_code == 422, resp.text
+        assert "30" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_position_off_a_sheet_is_refused(self, async_client: AsyncClient, spool_factory):
+        a = await spool_factory()
+        resp = await async_client.post(
+            "/api/v1/inventory/labels",
+            json={"spools": [{"id": a.id}], "template": "box_62x29", "starting_position": 2},
+        )
+        assert resp.status_code == 422, resp.text

@@ -463,3 +463,45 @@ describe('when a label printer is set up', () => {
     expect(screen.queryByText(/How should these print/i)).not.toBeInTheDocument();
   });
 });
+
+describe('starting a half-used sheet (upstream #2879)', () => {
+  const START = /Starting position/i;
+
+  it('starts the sheet at the cell you give', async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+
+    await choose(PAPER, /Avery L7160/);
+    await choose(DESIGN, /Box label 40 × 30/);
+    fireEvent.change(screen.getByLabelText(START), { target: { value: '5' } });
+    press();
+
+    await waitFor(() => {
+      expect(api.printSpoolLabels).toHaveBeenCalledWith(
+        expect.objectContaining({ template_id: 7, sheet_id: 4, starting_position: 5 }),
+      );
+    });
+  });
+
+  it('will not print past the last cell of the sheet', async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+
+    await choose(PAPER, /Avery L7160/);
+    await choose(DESIGN, /Box label 40 × 30/);
+    fireEvent.change(screen.getByLabelText(START), { target: { value: '22' } });
+
+    expect(screen.getByRole('button', { name: /^Print$/ })).toBeDisabled();
+    expect(screen.getByText(/1–21/)).toBeInTheDocument();
+  });
+
+  it('asks nothing when printing one label per page', async () => {
+    show();
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    expect(screen.queryByLabelText(START)).toBeNull();
+    press();
+    await waitFor(() => expect(api.printSpoolLabels).toHaveBeenCalled());
+    expect(vi.mocked(api.printSpoolLabels).mock.calls[0][0]).not.toHaveProperty('starting_position');
+  });
+});

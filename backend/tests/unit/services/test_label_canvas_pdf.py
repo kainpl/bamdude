@@ -266,3 +266,51 @@ def test_a_two_colour_spool_gets_one_band_per_colour():
     assert fills(["FF3300"]) == 1
     assert fills(["FF3300", "FFFFFF"]) == 2
     assert fills(["FF3300", "FFFFFF", "0000FF"]) == 3
+
+
+def _avery_5160() -> LabelSheetSpec:
+    return LabelSheetSpec(
+        name="Avery 5160",
+        page_size="letter",
+        cell_width_mm=66.675,
+        cell_height_mm=25.4,
+        cols=3,
+        rows=10,
+        margin_top_mm=12.7,
+        margin_left_mm=4.76,
+        gap_x_mm=3.175,
+        gap_y_mm=0.0,
+    )
+
+
+def test_a_sheet_can_start_at_an_unused_position(monkeypatch):
+    """A half-used sheet (upstream #2879): the first label goes to the chosen cell, the rest follow."""
+    from backend.app.services import label_renderer as lr
+
+    seen: list[tuple[float, float]] = []
+    real = lr.PdfCanvas
+
+    class Spy(real):
+        def __init__(self, c, *, origin_mm, page_height_pt):
+            seen.append(origin_mm)
+            super().__init__(c, origin_mm=origin_mm, page_height_pt=page_height_pt)
+
+    monkeypatch.setattr(lr, "PdfCanvas", Spy)
+    sheet = _avery_5160()
+    spec = _spec(_text(), width_mm=66.675, height_mm=25.4)
+    lr.render_template_sheet_pdf(spec, [CONTEXT] * 2, sheet, starting_position=5)
+
+    # Position 5 on a 3-wide sheet is row 2, column 2; position 6 beside it.
+    step_x = sheet.cell_width_mm + sheet.gap_x_mm
+    assert seen[0] == (sheet.margin_left_mm + step_x, sheet.margin_top_mm + sheet.cell_height_mm)
+    assert seen[1] == (sheet.margin_left_mm + 2 * step_x, sheet.margin_top_mm + sheet.cell_height_mm)
+
+
+def test_the_offset_applies_to_the_first_page_only():
+    spec = _spec(_text(), width_mm=66.675, height_mm=25.4)
+    # Position 30 leaves one cell on page one: two spools need two pages.
+    pdf, _ = render_template_sheet_pdf(spec, [CONTEXT] * 2, _avery_5160(), starting_position=30)
+    assert len(re.findall(rb"/Type\s*/Page[^s]", pdf)) == 2
+    # And 31 spools from position 1 still fit in two.
+    pdf, _ = render_template_sheet_pdf(spec, [CONTEXT] * 31, _avery_5160(), starting_position=1)
+    assert len(re.findall(rb"/Type\s*/Page[^s]", pdf)) == 2

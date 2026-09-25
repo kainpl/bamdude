@@ -7014,6 +7014,8 @@ export default {
       selectedCount: 'обрано {{count}}',
       monochrome: 'Монохромний (чорно-білий принтер)',
       monochromeHint: 'Прибирає зразок кольору; рядок з hex усе одно несе колір',
+      startingPosition: 'Стартова позиція',
+      startingPositionHint: 'Перша вільна мітка на аркуші, рядок за рядком: 1–{{max}}',
       sendToDevice: 'Або надіслати на принтер на столі',
       route: {
         title: 'Як це друкувати?',

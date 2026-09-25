@@ -6036,6 +6036,9 @@ export interface SpoolLabelRequest {
    *  somebody placed, and rearranging them behind their back would be worse
    *  than the gap. */
   monochrome?: boolean;
+  /** First free cell of a half-used sheet, 1-based, row by row (upstream #2879).
+   *  Only with a sheet; the server refuses it past the sheet's last cell. */
+  starting_position?: number;
 }
 
 export interface SpoolUsageRecord {

@@ -136,6 +136,10 @@
   with its own selection gets it by ticking it there. A schedule's missed
   nights while BamDude was down are skipped quietly rather than reported one
   by one on restart.
+- **A half-used sheet of labels can go back into the printer.** With a
+  sheet chosen, the print dialog asks for a **Starting position** — the first
+  free label, counted row by row — and the first page starts there, every
+  later page at the top. The API takes it as `starting_position`.
 
 ### Fixed
 

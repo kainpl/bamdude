@@ -170,6 +170,9 @@ export function LabelTemplatePickerModal({
   // question is never asked and the driver is simply what happens.
   const [route, setRoute] = useState<PrintRoute | null>(null);
   const [sheetId, setSheetId] = useState<number | null>(null);
+  // The first free cell of a half-used sheet (upstream #2879). Kept as the
+  // typed text so an emptied field is not silently read as 0 or 1.
+  const [startInput, setStartInput] = useState('1');
   const [deviceTemplateId, setDeviceTemplateId] = useState<number | null>(null);
   // ⚠️ Separate from the device one, because null means different things:
   // here it is 'nothing chosen yet' and there it is 'match the loaded stock'.
@@ -286,6 +289,7 @@ export function LabelTemplatePickerModal({
       setSending(null);
       setRoute(null);
       setSheetId(null);
+      setStartInput('1');
       setDeviceTemplateId(null);
       setDriverTemplateId(null);
     }
@@ -423,6 +427,11 @@ export function LabelTemplatePickerModal({
   ];
 
   const driverReady = driverTemplateId !== null && !driverOptions.find((o) => o.id === driverTemplateId)?.complaint;
+  const cellsPerSheet = sheet ? sheet.cols * sheet.rows : null;
+  const startPosition = Number(startInput);
+  const startValid =
+    cellsPerSheet === null ||
+    (Number.isInteger(startPosition) && startPosition >= 1 && startPosition <= cellsPerSheet);
 
   async function sendToDevice(device: LabelDevice) {
     if (noSelection || sending !== null) return;
@@ -466,6 +475,7 @@ export function LabelTemplatePickerModal({
       spools,
       template_id: templateId,
       ...(sheetId !== null ? { sheet_id: sheetId } : {}),
+      ...(sheetId !== null && startPosition > 1 ? { starting_position: startPosition } : {}),
       monochrome,
     };
     try {
@@ -748,9 +758,42 @@ export function LabelTemplatePickerModal({
               label={t('inventory.labels.sheet.label')}
               options={paperOptions}
               value={sheetId}
-              onChange={setSheetId}
+              onChange={(id) => {
+                setSheetId(id);
+                setStartInput('1');
+              }}
               disabled={pending !== null}
             />
+          )}
+
+          {/* A half-used sheet: where the first label goes. Only a sheet has cells. */}
+          {effectiveRoute === 'driver' && cellsPerSheet !== null && (
+            <div className="flex items-center gap-3">
+              <label htmlFor="label-starting-position" className="text-sm text-white whitespace-nowrap">
+                {t('inventory.labels.startingPosition')}
+              </label>
+              <input
+                id="label-starting-position"
+                type="number"
+                min={1}
+                max={cellsPerSheet}
+                step={1}
+                value={startInput}
+                onChange={(event) => setStartInput(event.target.value)}
+                disabled={pending !== null}
+                aria-invalid={!startValid}
+                aria-describedby="label-starting-position-hint"
+                className={`w-20 px-2 py-1 bg-bambu-dark border rounded text-white text-sm focus:outline-none ${
+                  startValid ? 'border-bambu-dark-tertiary focus:border-bambu-green' : 'border-red-500'
+                }`}
+              />
+              <span
+                id="label-starting-position-hint"
+                className={`text-xs ${startValid ? 'text-bambu-gray' : 'text-red-400'}`}
+              >
+                {t('inventory.labels.startingPositionHint', { max: cellsPerSheet })}
+              </span>
+            </div>
           )}
 
           {designs.length === 0 ? (
@@ -769,7 +812,7 @@ export function LabelTemplatePickerModal({
                 />
                 <Button
                   className="w-full"
-                  disabled={noSelection || pending !== null || !driverReady}
+                  disabled={noSelection || pending !== null || !driverReady || !startValid}
                   onClick={() => driverTemplateId !== null && handlePick(driverTemplateId)}
                 >
                   {pending !== null && <Loader2 className="w-4 h-4 animate-spin" />}

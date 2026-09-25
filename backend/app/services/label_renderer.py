@@ -764,9 +764,20 @@ def render_template_pdf(spec: LabelTemplateSpec, contexts: list[dict[str, str]])
 
 
 def render_template_sheet_pdf(
-    spec: LabelTemplateSpec, contexts: list[dict[str, str]], sheet: LabelSheetSpec
+    spec: LabelTemplateSpec,
+    contexts: list[dict[str, str]],
+    sheet: LabelSheetSpec,
+    *,
+    starting_position: int = 1,
 ) -> tuple[bytes, list[str]]:
-    """The same label repeated across a page of stock."""
+    """The same label repeated across a page of stock.
+
+    ``starting_position`` (1-based, row by row) is the first free cell of a
+    half-used sheet: the first page starts there, every later page at cell 1
+    (upstream #2879). The route checks the range; out of range here is a bug.
+    """
+    if not 1 <= starting_position <= sheet.per_page:
+        raise ValueError(f"starting_position {starting_position} is outside 1..{sheet.per_page}")
     page_w, page_h = _page_size(sheet.page_size)
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=(page_w, page_h))
@@ -774,9 +785,11 @@ def render_template_sheet_pdf(
 
     warnings: list[str] = []
     per_page = sheet.per_page
-    for start in range(0, max(len(contexts), 1), per_page):
-        chunk = contexts[start : start + per_page]
-        for index, context in enumerate(chunk):
+    start = 0
+    offset = starting_position - 1
+    while True:
+        chunk = contexts[start : start + per_page - offset]
+        for index, context in enumerate(chunk, start=offset):
             row, col = divmod(index, sheet.cols)
             origin = (
                 sheet.margin_left_mm + col * (sheet.cell_width_mm + sheet.gap_x_mm),
@@ -787,6 +800,11 @@ def render_template_sheet_pdf(
                 if warning not in warnings:
                     warnings.append(warning)
         c.showPage()
+        start += len(chunk)
+        offset = 0
+        # An empty batch still gets its one (empty) page, as before.
+        if start >= len(contexts):
+            break
 
     c.save()
     return buf.getvalue(), warnings

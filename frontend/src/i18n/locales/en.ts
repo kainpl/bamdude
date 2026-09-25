@@ -6934,6 +6934,8 @@ export default {
       selectedCount: '{{count}} selected',
       monochrome: 'Monochrome (black & white printer)',
       monochromeHint: 'Drops the colour swatch; the hex line still carries the colour',
+      startingPosition: 'Starting position',
+      startingPositionHint: 'First free label on the sheet, row by row: 1–{{max}}',
       sendToDevice: 'Or send it to a printer on a desk',
       route: {
         title: 'How should these print?',

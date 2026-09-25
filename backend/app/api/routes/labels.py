@@ -105,6 +105,9 @@ class LabelRequest(BaseModel):
     # Black-and-white thermal printers: drop the colour swatch (prints as a
     # muddy grey block) and leave the text where it is (#1870).
     monochrome: bool = False
+    #: The first free cell of a half-used sheet, 1-based, row by row (upstream
+    #: #2879). Only a sheet has cells; the range is checked once the paper is known.
+    starting_position: int = Field(1, ge=1)
 
     @model_validator(mode="after")
     def _exactly_one_way_of_naming_a_design(self) -> LabelRequest:
@@ -309,17 +312,28 @@ def _stream_pdf(pdf: bytes, filename: str, warnings: list[str]) -> StreamingResp
     return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf", headers=headers)
 
 
+def _check_starting_position(body: LabelRequest, sheet: LabelSheetSpec | None) -> None:
+    """A starting cell exists only on a sheet, and only up to the sheet's last one."""
+    if body.starting_position == 1:
+        return
+    if sheet is None:
+        raise HTTPException(422, "A starting position applies only to a sheet of labels")
+    if body.starting_position > sheet.per_page:
+        raise HTTPException(422, f"The starting position must be between 1 and {sheet.per_page} on this sheet")
+
+
 def _render(
     spec: LabelTemplateSpec,
     sheet: LabelSheetSpec | None,
     contexts: list[dict[str, str]],
     *,
     monochrome: bool,
+    starting_position: int = 1,
 ) -> tuple[bytes, list[str]]:
     if monochrome:
         spec = _without_swatches(spec)
     if sheet is not None:
-        return render_template_sheet_pdf(spec, contexts, sheet)
+        return render_template_sheet_pdf(spec, contexts, sheet, starting_position=starting_position)
     return render_template_pdf(spec, contexts)
 
 
@@ -337,6 +351,7 @@ async def render_local_inventory_labels(
 ) -> StreamingResponse:
     """Render labels for spools in the local inventory."""
     spec, sheet = await _resolve_design(db, body)
+    _check_starting_position(body, sheet)
 
     requested_ids = [entry.id for entry in body.spools]
     name_overrides = {entry.id: entry.display_name for entry in body.spools}
@@ -363,7 +378,7 @@ async def render_local_inventory_labels(
             context = _apply_naming_template(context, naming)
         contexts.append(context)
 
-    pdf, warnings = _render(spec, sheet, contexts, monochrome=body.monochrome)
+    pdf, warnings = _render(spec, sheet, contexts, monochrome=body.monochrome, starting_position=body.starting_position)
     return _stream_pdf(pdf, _filename(spec, sheet), warnings)
 
 
@@ -382,6 +397,7 @@ async def render_spoolman_labels(
     Spoolman gains a bulk filter.
     """
     spec, sheet = await _resolve_design(db, body)
+    _check_starting_position(body, sheet)
 
     spoolman_on = (await get_setting(db, "spoolman_enabled") or "").lower() == "true"
     if not spoolman_on:
@@ -416,5 +432,5 @@ async def render_spoolman_labels(
             context = _apply_naming_template(context, naming)
         contexts.append(context)
 
-    pdf, warnings = _render(spec, sheet, contexts, monochrome=body.monochrome)
+    pdf, warnings = _render(spec, sheet, contexts, monochrome=body.monochrome, starting_position=body.starting_position)
     return _stream_pdf(pdf, _filename(spec, sheet, prefix="spoolman-"), warnings)
