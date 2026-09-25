@@ -176,6 +176,12 @@
   dries — and is judged — as its base material, nylon under any of its
   spellings (NYLON, PA6, PA11, PA12, PAHT, PPA) as PA; the preheat stage reads
   the chamber target the same way.
+- **A spool the AMS adds by RFID is drawn like one you add by hand.** The
+  auto-added spool took only the colour name from the colour catalogue, not
+  the extra colour stops and effect the same row gives a hand-added spool,
+  so a gradient or silk roll drew as a flat disc. It now takes all three,
+  and where the catalogue has no effect, the subtype supplies one when it
+  names a finish — Wood, Silk, Sparkle, Gradient, Dual Color and the like.
 - **AMS slots are no longer offered as places to store a spool.** In
   Spoolman mode the Storage Location list could show entries like
   `H2D-1 - AMS A1` or `External Spool` beside real shelves — slot markers an

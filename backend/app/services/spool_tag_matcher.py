@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
+from backend.app.utils.filament_effects import effect_from_subtype
 from backend.app.utils.filament_remaining import grams_used
 from backend.app.utils.tag_normalization import (
     normalize_tag_uid as _normalize_tag_uid,
@@ -105,6 +106,8 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
     # OpenTag tags) deterministic across SQLite + PostgreSQL. Upstream #1227.
     rgba = tray_color if tray_color else None
     color_name = None
+    extra_colors = None
+    effect_type = None
 
     # Transparent filament (#1545): the AMS reports alpha=00 for clear spools.
     # Skip the catalog lookup — the catalog stores only RGB, so 000000 would
@@ -129,6 +132,11 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         entry = cat_result.scalar_one_or_none()
         if entry:
             color_name = entry.color_name
+            # The same row the spool form's colour picker reads, and it hands
+            # both of these to a spool added by hand — so a roll the AMS
+            # identified must not be drawn flatter than one typed in (b38022ec).
+            extra_colors = entry.extra_colors
+            effect_type = entry.effect_type
 
     # If tray_id_name is a human-readable name (no "-" code), fall back to it.
     if not color_name and tray_id_name and "-" not in tray_id_name:
@@ -140,6 +148,13 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         rgba,
         color_name,
     )
+
+    # Where the catalogue carries no effect — the shipped one carries none — the
+    # subtype says how the roll is drawn: it comes from what the printer reports,
+    # and "Wood", "Silk", "Gradient" are values of both vocabularies. A subtype
+    # that names no effect (Basic, Tough, CF) leaves it empty (upstream b38022ec).
+    if effect_type is None:
+        effect_type = effect_from_subtype(subtype)
 
     # The tare comes from the catalogue row that NAMES the spool a Bambu roll
     # ships on (upstream #2909). A "Bambu Lab%" prefix without ORDER BY took
@@ -200,6 +215,8 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         subtype=subtype,
         color_name=color_name,
         rgba=rgba,
+        extra_colors=extra_colors,
+        effect_type=effect_type,
         brand="Bambu Lab",
         label_weight=label_weight,
         core_weight=core_weight,

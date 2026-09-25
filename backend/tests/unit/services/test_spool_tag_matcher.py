@@ -994,3 +994,67 @@ async def test_link_tag_derives_the_family_from_the_spools_own_code(db_session):
 
     assert spool.slicer_filament == "GFSG99_00"
     assert spool.filament_family_id == "GFG99"
+
+
+# -- how the auto-added spool is drawn (upstream b38022ec) ------------------
+
+
+@pytest.mark.asyncio
+async def test_the_catalogue_rows_swatch_travels_with_its_name(db_session):
+    """The same row the spool form's colour picker hands over: name, extra colours, effect."""
+    from backend.app.models.color_catalog import ColorCatalogEntry
+
+    db_session.add(
+        ColorCatalogEntry(
+            manufacturer="Bambu Lab",
+            color_name="Dawn Radiance",
+            hex_color="#FFFFFF",
+            material="PLA Basic",
+            extra_colors="FF8800,FFD700",
+            effect_type="gradient",
+        )
+    )
+    await db_session.commit()
+
+    spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
+
+    assert (spool.color_name, spool.extra_colors, spool.effect_type) == ("Dawn Radiance", "FF8800,FFD700", "gradient")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sub_brands", "effect"),
+    [
+        ("PLA Silk+", "silk"),
+        ("PLA Wood", "wood"),
+        ("PLA Sparkle", "sparkle"),
+        ("PLA Matte", "matte"),
+        ("PLA Basic", None),
+        ("PLA-CF", None),
+    ],
+)
+async def test_without_a_catalogue_effect_the_subtype_draws_the_spool(db_session, sub_brands, effect):
+    spool = await create_spool_from_tray(db_session, {**SAMPLE_TRAY, "tray_sub_brands": sub_brands})
+    assert spool.effect_type == effect
+
+
+@pytest.mark.asyncio
+async def test_a_gradient_colour_code_draws_as_a_gradient(db_session):
+    """The M*/T* colour codes upgrade the subtype; the effect follows it."""
+    spool = await create_spool_from_tray(db_session, {**SAMPLE_TRAY, "tray_id_name": "A00-M0"})
+    assert (spool.subtype, spool.effect_type) == ("Gradient", "gradient")
+
+
+def test_the_backend_effect_list_is_the_frontends():
+    """One vocabulary: a value the form cannot show is not one the server may write."""
+    import re
+    from pathlib import Path
+
+    from backend.app.utils.filament_effects import EFFECT_TYPES
+
+    source = (Path(__file__).resolve().parents[4] / "frontend/src/components/filamentSwatchHelpers.ts").read_text(
+        encoding="utf-8"
+    )
+    # The type ends at the first line that ENDS in ";" — its comments carry semicolons of their own.
+    block = re.search(r"export type FilamentEffect\s*=([\s\S]*?);[ \t]*\r?\n", source).group(1)
+    assert set(re.findall(r"'([a-z-]+)'", block)) == set(EFFECT_TYPES)
