@@ -129,3 +129,99 @@ async def test_an_unreachable_provider_does_not_replace_the_real_error(notify):
     job = _job(outcome={"success": False, "archive_id": None, "error": "FTP upload failed", "cancelled": False})
 
     await report_failure_if_unwatched(job)  # must not raise
+
+
+# --------------------------------------------------------------------------- #
+# A refused direct print (spec direct-print-silent-cancel §4.1). The reprint of
+# 2026-09-24 was refused at the final guard after its upload and nobody heard:
+# ``report_failure_if_unwatched`` skipped every deferral, and it runs before the
+# refusal is put into words anyway.
+# --------------------------------------------------------------------------- #
+
+
+class _NullSession:
+    """The handler's own session, with nothing behind it — the writers it calls are stubbed."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def commit(self):
+        return None
+
+
+def _deferring_service(monkeypatch, *, released: bool):
+    from backend.app.services import background_dispatch as bd
+
+    service = bd.BackgroundDispatchService()
+    monkeypatch.setattr(bd, "async_session", _NullSession)
+    monkeypatch.setattr("backend.app.services.filament_deferred.abort_execution_archive", AsyncMock())
+    monkeypatch.setattr("backend.app.services.filament_deferred.defer_claim", AsyncMock(return_value=released))
+    monkeypatch.setattr("backend.app.services.print_scheduler.scheduler.release_prepared_dispatch", AsyncMock())
+    monkeypatch.setattr(bd.ws_manager, "broadcast", AsyncMock())
+    return service
+
+
+def _finished_event() -> dict:
+    """The batch state broadcast by ``_mark_job_finished`` — the tallies reset to 0
+    right after it once the batch is empty, so the broadcast is where they are read."""
+    from backend.app.services import background_dispatch as bd
+
+    return bd.ws_manager.broadcast.await_args.args[0]["data"]
+
+
+@pytest.mark.asyncio
+async def test_a_deferral_is_left_to_the_deferral_handler(notify):
+    """The runner's ``finally`` runs before the refusal is put into words; the
+    announcement belongs to ``_handle_routing_deferred``, or the operator would
+    read a machine code."""
+    job = _job(outcome={"success": False, "archive_id": None, "error": "feed_state_unavailable", "deferred": True})
+
+    await report_failure_if_unwatched(job)
+
+    notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_direct_deferral_is_announced_with_its_sentence(notify, monkeypatch):
+    from backend.app.services.filament_routing import RoutingDeferred
+
+    service = _deferring_service(monkeypatch, released=True)
+    job = _job(queue_item_id=5, claim_started_at=object())
+
+    await service._handle_routing_deferred(job, RoutingDeferred("feed_state_unavailable"))
+
+    notify.assert_awaited_once()
+    reason = notify.await_args.kwargs["reason"]
+    assert reason == job.outcome["reason"]["message"]
+    assert reason != "feed_state_unavailable", "a sentence, not the machine code"
+    assert _finished_event()["failed"] == 1, "the batch closes as one failed, not a spinning toast"
+
+
+@pytest.mark.asyncio
+async def test_a_rowless_direct_deferral_is_still_announced(notify, monkeypatch):
+    """No claim row to release is not a reason to stay silent."""
+    from backend.app.services.filament_routing import RoutingDeferred
+
+    service = _deferring_service(monkeypatch, released=False)
+    job = _job(queue_item_id=None)
+
+    await service._handle_routing_deferred(job, RoutingDeferred("feed_state_changed"))
+
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_deferral_whose_row_was_taken_is_not_a_failure(notify, monkeypatch):
+    """The operator cancelled it, another attempt reclaimed it, or it was deleted."""
+    from backend.app.services.filament_routing import RoutingDeferred
+
+    service = _deferring_service(monkeypatch, released=False)
+    job = _job(queue_item_id=5, claim_started_at=object())
+
+    await service._handle_routing_deferred(job, RoutingDeferred("dispatch_claim_changed"))
+
+    notify.assert_not_awaited()
+    assert _finished_event()["failed"] == 0

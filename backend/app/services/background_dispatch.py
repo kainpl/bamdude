@@ -654,6 +654,10 @@ async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
     ⚠️ Cancellations are not failures. The operator who pressed Cancel does not
     need to be told what they just did.
 
+    ⚠️ Deferrals are skipped HERE, not ignored: ``announce_not_started`` reports a
+    refused direct print from ``_handle_routing_deferred``, where the reason
+    exists as a sentence.
+
     Never raises: this runs on the way out of a dispatch that has already gone
     wrong, and a notification provider being unreachable must not replace the
     real error with its own.
@@ -678,6 +682,34 @@ async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
             )
     except Exception as exc:  # noqa: BLE001 — reporting a failure must not raise a second one
         logger.warning("Could not announce the failed dispatch of %s: %s", job.source_name, exc)
+
+
+async def announce_not_started(job: PrintDispatchJob, reason: str) -> None:
+    """Tell the operator a direct print was refused before it started.
+
+    ⚠️ Not ``report_failure_if_unwatched``: that one runs in the runner's
+    ``finally``, before ``_handle_routing_deferred`` has put the refusal into
+    words — it would announce ``feed_state_unavailable`` instead of a sentence.
+    This runs where the sentence exists, for the one kind of job nobody else
+    will report: a direct print, which never starts on its own after a refusal
+    (spec direct-print-silent-cancel §4.1; the 2026-09-24 reprint that nobody
+    heard about).
+
+    Never raises: a provider being unreachable must not replace the refusal.
+    """
+    try:
+        from backend.app.services.notification_service import notification_service
+
+        async with async_session() as db:
+            await notification_service.on_queue_job_failed(
+                job_name=job.source_name,
+                printer_id=job.printer_id,
+                printer_name=job.printer_name,
+                reason=reason,
+                db=db,
+            )
+    except Exception as exc:  # noqa: BLE001 — reporting a refusal must not raise a second error
+        logger.warning("Could not announce the refused dispatch of %s: %s", job.source_name, exc)
 
 
 @dataclass(slots=True)
@@ -1522,11 +1554,11 @@ class BackgroundDispatchService:
 
     async def _mark_job_finished(self, job: PrintDispatchJob, *, failed: bool, message: str, deferred: bool = False):
         async with self._lock:
-            if deferred:
-                pass
-            elif failed:
+            # A refused direct print is a failed dispatch to the batch; a deferral
+            # that was not ours to report counts as nothing.
+            if failed:
                 self._batch_failed += 1
-            else:
+            elif not deferred:
                 self._batch_completed += 1
 
             self._active_jobs.pop(job.id, None)
@@ -1776,7 +1808,13 @@ class BackgroundDispatchService:
             await scheduler.release_prepared_dispatch(job.printer_id)
         logger.info("Dispatch %s deferred before publish: %s", job.id, exc.reason)
         if not job.awaited_by_scheduler:
-            await self._mark_job_finished(job, failed=False, message=reason["message"], deferred=True)
+            # Only when THIS attempt still owned its row (or had none): a row the
+            # operator cancelled, another attempt reclaimed or somebody deleted is
+            # not a failure to report — and not one to count.
+            not_started = released or job.queue_item_id is None
+            await self._mark_job_finished(job, failed=not_started, message=reason["message"], deferred=True)
+            if not_started:
+                await announce_not_started(job, reason["message"])
 
     async def _strict_stagger_refuses(self, printer_id: int) -> bool:
         """Strict mode on AND this printer's group(s) have no free slot right now.

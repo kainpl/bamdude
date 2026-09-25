@@ -45,18 +45,23 @@ async def defer_claim(
     if item is None or started_at is None:
         return False
     source_failed = not direct and reason in SOURCE_FAILURES
+    # A refused direct print never starts on its own (no future autostart), so its
+    # row is a failure with a Retry — not «cancelled», which reads as the operator's
+    # own act (spec direct-print-silent-cancel §4.1).
+    terminal = direct or source_failed
+    message = routing_detail(reason)["message"]
     values = {
-        "status": "cancelled" if direct else "failed" if source_failed else "pending",
+        "status": "failed" if terminal else "pending",
         "started_at": None,
-        "completed_at": datetime.now(timezone.utc) if direct or source_failed else None,
-        "waiting_reason": None if source_failed else routing_detail(reason)["message"],
-        "waiting_reason_code": None if direct or source_failed else "filament_unavailable",
-        "waiting_reason_checked_at": None if direct or source_failed else datetime.now(timezone.utc),
-        "error_message": routing_detail(reason)["message"] if source_failed else None,
+        "completed_at": datetime.now(timezone.utc) if terminal else None,
+        "waiting_reason": None if terminal else message,
+        "waiting_reason_code": None if terminal else "filament_unavailable",
+        "waiting_reason_checked_at": None if terminal else datetime.now(timezone.utc),
+        "error_message": message if terminal else None,
     }
     if restore_source:
         values.update(archive_id=source_archive_id, library_file_id=source_library_file_id)
-    if source_failed:
+    if terminal:
         # This preparation never published a print, so there is no physical
         # failure for the next item's require_previous_success gate.
         values["gate_acknowledged"] = True

@@ -39,6 +39,7 @@
   "dispatch_claim_changed": "This dispatch attempt no longer owns the queue item.",
   "source_read_forbidden": "You do not have permission to read this source.",
   "feed_state_unavailable": "Waiting for current AMS and external feed configuration.",
+  "feed_settle_timeout": "The printer did not report its filament state in time after a reconnect, so the print was not started. Retry once the printer is back online.",
   "source_copy_busy": "The queue is already copying files. Try again in a moment.",
   "source_spool_replaced": "A restore replaced the saved queue files. Try again.",
   "source_invalid": "The source file is not a readable sliced file.",

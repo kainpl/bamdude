@@ -194,6 +194,20 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         await service._run_active_job(job)
         assert job.completion_event.is_set()
         assert bool(job.outcome.get("deferred")) == (change != "success"), job.outcome
+        refused = change in {"upload", "preheat", "calibration", "source"}
+        # A direct refusal is a failed dispatch to the batch — the toast closes as
+        # "1 failed" instead of spinning on "Starting prints" (spec
+        # direct-print-silent-cancel §4.1). A row somebody else took counts nothing.
+        # ⚠️ Read off the broadcast, not the service: the batch tallies reset to 0
+        # right after it once the batch is empty — which is also why the counters
+        # themselves always read 0 here.
+        finished = [
+            call.args[0]["data"]
+            for call in bd.ws_manager.broadcast.await_args_list
+            if ((call.args[0].get("data") or {}).get("recent_event") or {}).get("status") == "deferred"
+        ]
+        if change != "success":
+            assert [event["failed"] for event in finished] == [1 if refused else 0]
         assert service._batch_failed == 0
         assert service._batch_completed == 0  # No UI batch is registered by this direct wrapper harness.
         if change == "success":
@@ -228,7 +242,9 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
     if change in {"cancel", "reclaim"}:
         assert item.status == ("cancelled" if change == "cancel" else "printing")
     elif change != "delete":
-        assert item.status == ("pending" if owner == "queue" else "cancelled"), item.error_message
+        assert item.status == ("pending" if owner == "queue" else "failed"), item.error_message
+        if owner == "direct":
+            assert item.error_message and item.gate_acknowledged is True
         assert (item.archive_id, item.library_file_id) == (archive_id, library_id)
     rows = (await db_session.execute(select(PrintArchive).order_by(PrintArchive.id))).scalars().all()
     execution = [a for a in rows if a.id != archive_id]
@@ -242,7 +258,12 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
     assert Path(source.file_path).exists()
     assert upload_mock.await_count == 1
     mqtt._client.publish.assert_not_called()
-    failure.assert_not_awaited()
+    if owner == "direct" and change in {"upload", "preheat", "calibration", "source"}:
+        # Announced once, in words — the silent cancellation of 2026-09-24.
+        failure.assert_awaited_once()
+        assert failure.await_args.kwargs["reason"] == job.outcome["reason"]["message"]
+    else:
+        failure.assert_not_awaited()
     register.assert_called_once()
     assert register.call_args.kwargs["ams_mapping"] == [-1, -1, 254]
     withdraw.assert_called_once()
