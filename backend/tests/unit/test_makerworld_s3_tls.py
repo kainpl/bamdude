@@ -143,6 +143,8 @@ class TestS3TrustStore:
 
     @pytest.mark.asyncio
     async def test_context_is_loaded_from_certifi(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        monkeypatch.delenv("SSL_CERT_DIR", raising=False)
         """Point certifi at a bundle holding one throwaway root; the opener's
         context must trust exactly that root and nothing else. Proves the CAs
         come from certifi rather than the system store."""
@@ -170,6 +172,53 @@ class TestS3TrustStore:
         context = capture.https_handler()._context
         assert context.verify_mode == ssl.CERT_REQUIRED
         assert context.check_hostname is True
+
+    @pytest.mark.asyncio
+    async def test_ssl_cert_file_wins_as_it_does_for_httpx(self, tmp_path, monkeypatch):
+        """An operator behind a TLS-inspecting proxy points ``SSL_CERT_FILE`` at
+        its CA; httpx honours it, and so did urllib's default context before
+        the certifi pin. The S3 hop must keep trusting what everything else
+        trusts, or it alone fails."""
+        ca_pem = tmp_path / "proxy-ca.pem"
+        common_name = _write_test_ca(ca_pem)
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca_pem))
+        monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+
+        capture = _OpenerCapture()
+        with _patched_opener(capture):
+            await mw._download_s3_urllib(S3_URL, "benchy.3mf")
+
+        loaded = capture.https_handler()._context.get_ca_certs()
+        assert len(loaded) == 1
+        assert common_name in [value for rdn in loaded[0]["subject"] for _, value in rdn]
+
+    def test_ssl_cert_dir_is_used_when_no_file_is_set(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
+        made = []
+        real = ssl.create_default_context
+
+        def spy(*args, **kwargs):
+            made.append(kwargs)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(mw.ssl, "create_default_context", spy)
+        mw._s3_ssl_context()
+
+        assert made == [{"capath": str(tmp_path)}]
+
+    def test_certifi_is_a_declared_dependency(self):
+        """``http.py`` imports certifi directly; leaning on httpx to pull it in
+        would stop the whole app from starting if a future httpx dropped it
+        (upstream declared it in #2562 for exactly that reason)."""
+        from pathlib import Path
+
+        requirements = Path(__file__).resolve().parents[3] / "requirements.txt"
+        names = {
+            line.split("#")[0].strip().split(">")[0].split("=")[0].split("<")[0].strip().lower()
+            for line in requirements.read_text(encoding="utf-8").splitlines()
+        }
+        assert "certifi" in names
 
     def test_real_context_trusts_the_certifi_bundle(self):
         """Sanity-check the un-mocked helper against the shipped bundle: it must

@@ -132,7 +132,10 @@ class MakerWorldService(ProviderService):
         self._auth_token = auth_token
         self._user = user
         # BamDude: one design fetch per request. The import asks for it in
-        # ``get_download`` and again for the metadata row + covers.
+        # ``get_download`` and again for the metadata row + covers. It lives as
+        # long as the service: one per request, except m056's backfill, which
+        # keeps one service for its whole run — one design per imported model,
+        # bounded by the install's MakerWorld imports.
         self._designs: dict[int, dict[str, Any]] = {}
 
     async def close(self) -> None:
@@ -558,8 +561,12 @@ class MakerWorldService(ProviderService):
         # metadata endpoints), so we insist upstream resolve the asset
         # directly. A redirect response surfaces as ``MakerWorldUnavailable``
         # below.
+        # BamDude: the CDN serves public images — it gets the client headers but
+        # never the Bambu bearer (``_headers()`` adds it when signed in, and the
+        # import's cover downloads run on the signed-in service). Same rule as
+        # the 3MF download's ``cdn_headers``.
         try:
-            response = await self._client.get(url, headers=self._headers(), timeout=20.0, follow_redirects=False)
+            response = await self._client.get(url, headers=dict(_CLIENT_HEADERS), timeout=20.0, follow_redirects=False)
         except httpx.TimeoutException as exc:
             raise MakerWorldUnavailableError(f"Thumbnail request timed out: {exc}") from exc
         except httpx.HTTPError as exc:

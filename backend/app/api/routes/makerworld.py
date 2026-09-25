@@ -80,7 +80,7 @@ def _provider_for_url(url: str) -> ModelProvider:
     nobody serves is a client-input problem, a 400."""
     provider = registry.find_for_url(url)
     if provider is None:
-        raise HTTPException(status_code=400, detail=f"No registered model provider supports {url!r}")
+        raise HTTPException(status_code=400, detail=f"This link is not from a supported model site: {url!r}")
     return provider
 
 

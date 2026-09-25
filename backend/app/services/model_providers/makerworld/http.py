@@ -13,6 +13,7 @@ live value, matching ``bambu_cloud`` / ``orca_cloud`` / ``slicer_api``.
 from __future__ import annotations
 
 import asyncio
+import os
 import ssl
 
 import certifi
@@ -94,7 +95,18 @@ def _s3_ssl_context() -> ssl.SSLContext:
     the app already trusts. Built per call rather than at import so a certifi
     refresh doesn't require a restart; construction is cheap relative to the
     download that follows.
+
+    BamDude: "what the rest of the app trusts" includes ``SSL_CERT_FILE`` /
+    ``SSL_CERT_DIR`` — httpx (``trust_env``) reads them before certifi, and an
+    operator behind a TLS-inspecting proxy points them at its CA. Same order
+    here, or the S3 hop alone would fail on such a network.
     """
+    cert_file = os.environ.get("SSL_CERT_FILE")
+    if cert_file:
+        return ssl.create_default_context(cafile=cert_file)
+    cert_dir = os.environ.get("SSL_CERT_DIR")
+    if cert_dir:
+        return ssl.create_default_context(capath=cert_dir)
     return ssl.create_default_context(cafile=certifi.where())
 
 

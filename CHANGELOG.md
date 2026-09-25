@@ -107,14 +107,20 @@
   system's store rather than the bundle every other connection uses. Windows
   fills its store lazily, so on a machine that had not met that Amazon root yet
   the import failed after everything before it had worked. The download now
-  trusts the same bundle as the rest of BamDude.
+  trusts the same bundle as the rest of BamDude — including a CA you point
+  `SSL_CERT_FILE` or `SSL_CERT_DIR` at behind a TLS-inspecting proxy.
 - **An expired Bambu Cloud sign-in is shown as expired on the MakerWorld page.**
   When Bambu stopped accepting the stored token, the page still read as signed
   in, and an import failed with Bambu's bare "Please login." — or with advice
   to open a Settings page that does not exist. The page now says the sign-in
   has expired, keeps import and print switched off until you sign in again,
-  and a refused request says where to do that: the Profiles page.
-  `GET /makerworld/status` reports it as `sign_in_expired`.
+  and a refused request says where to do that: the Profiles page. When the
+  expiry is discovered by the import you just clicked, the page switches to
+  that state at once. `GET /makerworld/status` reports it as `sign_in_expired`.
+- **MakerWorld cover downloads no longer carry your Bambu Cloud token.** The
+  covers fetched during an import went to MakerWorld's public image CDN with
+  the signed-in token attached; the token now goes to Bambu's API only, as the
+  3MF download already did.
 - **A spool of PLA Aero, a carbon- or glass-filled filament, or one without a
   filament profile no longer drops off the slot it was just assigned to.** The
   slot is configured with the type of the spool's filament profile — `PLA-AERO`

@@ -114,7 +114,23 @@ class TestRegistryRouting:
         resp = await async_client.post("/api/v1/makerworld/resolve", json={"url": "https://www.printables.com/model/1"})
 
         assert resp.status_code == 400, resp.text
-        assert resp.json()["detail"].startswith("No registered model provider supports")
+        assert resp.json()["detail"] == (
+            "This link is not from a supported model site: 'https://www.printables.com/model/1'"
+        )
+
+    @pytest.mark.parametrize(
+        "url",
+        ["http://169.254.169.254/latest/meta-data/x.jpg", "http://127.0.0.1/x.jpg", "https://evil.example/x.png"],
+    )
+    async def test_the_thumbnail_proxy_refuses_other_hosts(self, async_client, monkeypatch, url):
+        outbound = MagicMock(spec=httpx.AsyncClient)
+        monkeypatch.setattr("backend.app.services.model_providers.makerworld.service._shared_http_client", outbound)
+
+        resp = await async_client.get("/api/v1/makerworld/thumbnail", params={"url": url})
+
+        assert resp.status_code == 400, resp.text
+        assert "non-MakerWorld host" in resp.json()["detail"]
+        outbound.get.assert_not_called()
 
 
 class _GatedProvider(ModelProvider):

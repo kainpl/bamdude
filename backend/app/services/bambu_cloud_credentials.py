@@ -95,15 +95,16 @@ def _normalise_region(region: str | None) -> str:
 async def get_stored_token(db: AsyncSession, user: User | None = None) -> tuple[str | None, str | None, str]:
     """Get stored cloud token, email, and region.
 
-    When a user is provided (auth enabled), returns that user's per-user credentials.
-    When user is None (auth disabled), falls back to global Settings table.
+    When a user is provided, returns that user's per-user credentials.
+    When user is None (an API key without an owner), falls back to the global
+    Settings table.
     Region defaults to ``"global"`` when unset (including for rows that predate
     the ``cloud_region`` column).
     """
     if user is not None:
         return user.cloud_token, user.cloud_email, _normalise_region(user.cloud_region)
 
-    # Fallback: global storage (auth disabled)
+    # Fallback: global storage (no owning user)
     result = await db.execute(
         select(Settings).where(Settings.key.in_([CLOUD_TOKEN_KEY, CLOUD_EMAIL_KEY, CLOUD_REGION_KEY]))
     )

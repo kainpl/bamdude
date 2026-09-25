@@ -72,8 +72,6 @@ def _default_manifest(name: str = "benchy.3mf"):
 
 
 class TestCanonicalUrl:
-    """The dedupe key's shape — owned by the provider (``url.canonical_url``)."""
-
     """Unit test the dedupe-key builder directly — regressions break dedupe
     silently so it's worth pinning the exact shape."""
 
@@ -106,7 +104,7 @@ class TestResolve:
         )
         assert resp.status_code == 400
         # The registry routes a URL to its provider; nobody serves this host.
-        assert resp.json()["detail"].startswith("No registered model provider supports")
+        assert resp.json()["detail"].startswith("This link is not from a supported model site")
 
     @pytest.mark.asyncio
     async def test_happy_path_returns_design_and_instances(self, async_client):

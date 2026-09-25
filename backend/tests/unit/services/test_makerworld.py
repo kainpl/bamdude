@@ -653,6 +653,24 @@ class TestFetchThumbnail:
         assert content_type == "image/jpeg"
 
     @pytest.mark.asyncio
+    async def test_the_bambu_bearer_is_not_sent_to_the_cdn(self):
+        """Cover downloads during an import run on the signed-in service; the
+        CDN serves public images and gets the User-Agent only — the same rule
+        the 3MF download already follows."""
+        svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient), auth_token="tok-abc")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "image/png"}
+        resp.content = b"\x89PNG"
+        svc._client.get = AsyncMock(return_value=resp)
+
+        await svc.fetch_thumbnail("https://makerworld.bblmw.com/makerworld/model/X/cover.png")
+
+        headers = svc._client.get.call_args.kwargs["headers"]
+        assert "Authorization" not in headers
+        assert headers["User-Agent"].startswith("BamDude/")
+
+    @pytest.mark.asyncio
     async def test_infers_mime_from_extension_when_cdn_lies(self, service):
         """MakerWorld's CDN returns application/octet-stream for real PNG/JPG
         files. Relying on upstream content-type alone would fail every
