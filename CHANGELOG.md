@@ -186,6 +186,13 @@
   languages — and the notification for a failed print names the reason in
   the system language. Reopening the archive editor on a reason it does not
   recognise no longer blanks it on Save; the text is kept as its own option.
+- **The bed temperature is read from the filaments that print.** A plate's
+  temperature is stored per filament, and a 0 means that filament cannot use
+  the plate; the archive read the first entry, so a project whose first
+  filament was not the one printing recorded the wrong temperature or none,
+  and preheat fell back to its configured default. It now takes the highest
+  temperature among the filaments the plate actually uses, as Bambu Studio
+  does.
 - **An archived print shows the layer height it actually printed at.** The
   archive card and the file details read the layer height from the
   project's settings, which can describe another plate or an earlier

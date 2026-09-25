@@ -727,10 +727,17 @@ class ThreeMFParser:
         """
         bed_type = (data.get("curr_bed_type") or "").strip().lower()
         key = self._BED_TEMP_KEY_BY_TYPE.get(bed_type)
+        # The printed plate's filaments (1-based slots, from slice_info, parsed
+        # first). Called on the class by some tests, hence the getattr.
+        used = {
+            int(slot["slot_id"])
+            for slot in (getattr(self, "metadata", None) or {}).get("filament_slots") or []
+            if isinstance(slot, dict) and slot.get("slot_id")
+        }
 
         if key:
             for candidate in (f"{key}_initial_layer", key):
-                value = self._as_int(data.get(candidate))
+                value = ThreeMFParser._plate_temperature(data.get(candidate), used)
                 if value:  # 0 means "this plate is not heated" — keep looking
                     return value
 
@@ -738,9 +745,32 @@ class ThreeMFParser:
         temps = [
             t
             for k in self._BED_TEMP_KEY_BY_TYPE.values()
-            for t in (self._as_int(data.get(f"{k}_initial_layer")), self._as_int(data.get(k)))
+            for t in (
+                ThreeMFParser._plate_temperature(data.get(f"{k}_initial_layer"), used),
+                ThreeMFParser._plate_temperature(data.get(k), used),
+            )
             if t
         ]
+        return max(temps) if temps else None
+
+    @staticmethod
+    def _plate_temperature(val, used: set[int]) -> int | None:
+        """The bed temperature one plate key asks for (upstream c001f596).
+
+        The key holds one entry per filament, and 0 means that filament cannot
+        print on this plate. The bed has one temperature, so the print runs at
+        the highest its filaments ask for — Bambu Studio's
+        ``get_highest_bed_temperature`` takes the max over the filaments the
+        slice uses. Entry 0 alone stored another filament's value, or a 0.
+        Without the used filaments (no slice_info), every entry counts.
+        """
+        if not isinstance(val, list):
+            return ThreeMFParser._as_int(val)
+        entries = [val[i - 1] for i in sorted(used) if 0 < i <= len(val)] if used else val
+        # An array shorter than the slot numbers (one entry per extruder on some
+        # exports) cannot be indexed by filament: read all of it rather than none.
+        entries = entries or val
+        temps = [t for t in (ThreeMFParser._as_int(entry) for entry in entries) if t is not None]
         return max(temps) if temps else None
 
     def _parse_3dmodel(self, zf: zipfile.ZipFile):

@@ -110,3 +110,50 @@ def test_values_survive_the_shapes_slicers_actually_write():
     assert parse("not a number") is None
     # A bool is an int in Python; letting it through would record True as 1 °C.
     assert parse(True) is None
+
+
+# -- the per-filament array: the highest USED entry (upstream c001f596) ------
+#
+# A plate-temperature key holds one entry per filament, and a 0 means that
+# filament cannot print on this plate. The bed has one temperature, so the print
+# runs at the highest its filaments ask for — BambuStudio's
+# ``GCode::get_highest_bed_temperature`` takes the max over the filaments the
+# slice uses. Taking entry 0 stored the wrong plate's value (or none) whenever
+# the first filament was not the one printing.
+
+
+def _parser_with_used(used_slots: list[int] | None) -> ThreeMFParser:
+    parser = ThreeMFParser("unused.3mf")
+    if used_slots is not None:
+        parser.metadata["filament_slots"] = [{"slot_id": slot} for slot in used_slots]
+    return parser
+
+
+TEXTURED = {"curr_bed_type": "Textured PEI Plate"}
+
+
+def test_the_highest_entry_of_the_used_filaments():
+    data = {**TEXTURED, "textured_plate_temp_initial_layer": ["55", "0", "65"]}
+    assert _parser_with_used([1, 3])._bed_temperature_from(data) == 65
+
+
+def test_an_unused_filament_does_not_heat_the_bed():
+    data = {**TEXTURED, "textured_plate_temp_initial_layer": ["55", "0", "65"]}
+    assert _parser_with_used([1])._bed_temperature_from(data) == 55
+
+
+def test_a_zero_first_entry_no_longer_hides_the_plates_temperature():
+    """Filament 1 cannot print on this plate; filament 2 is the one printing."""
+    data = {**TEXTURED, "textured_plate_temp_initial_layer": ["0", "60"], "textured_plate_temp": ["0", "55"]}
+    assert _parser_with_used([2])._bed_temperature_from(data) == 60
+
+
+def test_without_the_used_filaments_every_entry_counts():
+    data = {**TEXTURED, "textured_plate_temp_initial_layer": ["55", "70"]}
+    assert _parser_with_used(None)._bed_temperature_from(data) == 70
+
+
+def test_an_array_too_short_for_the_slot_numbers_is_read_whole():
+    """One entry per extruder on some exports: slot 3 cannot index it, and must not blank it."""
+    data = {**TEXTURED, "textured_plate_temp_initial_layer": ["65"]}
+    assert _parser_with_used([3])._bed_temperature_from(data) == 65
