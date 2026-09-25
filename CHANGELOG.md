@@ -115,6 +115,9 @@
 
 ### Fixed
 
+- **The model viewer opens an archive on the plate that was printed.** The
+  archive API left the printed plate out of its answer, so a multi-plate
+  archive always opened on "All plates" instead of the plate that ran.
 - **A print that could not be started no longer disappears silently.** When a
   Reprint, a print from the library or one sent from Telegram is refused at the
   last check before it starts, BamDude now says so through your notification

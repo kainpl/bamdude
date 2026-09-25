@@ -169,6 +169,10 @@ def archive_to_response(
         "bed_type": archive.bed_type,
         "nozzle_temperature": archive.nozzle_temperature,
         "sliced_for_model": archive.sliced_for_model,
+        # The plate that ran (m038). A key this dict leaves out falls back to
+        # the schema's default — every archive read ``null`` and the model
+        # viewer never pre-selected the printed plate (upstream #2796).
+        "plate_index": archive.plate_index,
         "status": archive.status,
         "started_at": archive.started_at,
         "completed_at": archive.completed_at,
