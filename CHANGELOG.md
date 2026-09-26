@@ -172,6 +172,12 @@
 
 ### Fixed
 
+- **Per-print energy is read from the plug that actually meters the printer.**
+  With several plugs on a printer, the one marked as its power source was read
+  even when it had no energy counter, and the print got no energy figure. The
+  start now takes the first plug in that order that reports a counter, and the
+  end reads the same plug, so two meters never make one figure. The Smart Plugs
+  tab also counts a plug that answers but measures nothing as online.
 - **A queue job that failed on a printer fault names a code you can look up.**
   A fault reported through the printer's HMS list carries its alert level in
   the code, and the failure reason read `[0500_24038]` — no such code, and no

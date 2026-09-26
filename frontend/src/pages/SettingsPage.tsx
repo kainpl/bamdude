@@ -73,6 +73,7 @@ import { PrinterTagsCard } from '../components/settings/PrinterTagsCard';
 import { CloudLinkSettings } from '../components/settings/CloudLinkSettings';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
 import { adoptUntouchedServerChanges } from '../utils/settingsReconcile';
+import { summarizePlugEnergy } from '../utils/plugEnergySummary';
 
 const validTabs = ['general', 'slicing', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
@@ -504,33 +505,9 @@ export function SettingsPage() {
         })
       );
 
-      // Aggregate energy data
-      let totalPower = 0;
-      let totalToday = 0;
-      let totalYesterday = 0;
-      let totalLifetime = 0;
-      let reachableCount = 0;
-
-      for (const { plug, status } of statuses) {
-        // For MQTT plugs, consider reachable if we have power data
-        const hasMqttData = plug.plug_type === 'mqtt' && (status?.energy?.power != null);
-        const isReachable = (status?.reachable || hasMqttData) && status?.energy;
-
-        if (isReachable) {
-          reachableCount++;
-          if (status.energy?.power != null) totalPower += status.energy.power;
-          if (status.energy?.today != null) totalToday += status.energy.today;
-          if (status.energy?.yesterday != null) totalYesterday += status.energy.yesterday;
-          if (status.energy?.total != null) totalLifetime += status.energy.total;
-        }
-      }
-
+      // Online = answers; energy is summed from those that meter (upstream #2859).
       return {
-        totalPower,
-        totalToday,
-        totalYesterday,
-        totalLifetime,
-        reachableCount,
+        ...summarizePlugEnergy(statuses),
         totalPlugs: smartPlugs.filter(p => p.enabled).length,
       };
     },

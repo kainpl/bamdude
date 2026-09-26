@@ -790,7 +790,23 @@ async def _record_print_energy(archive_id: int, printer_id: int, *, approximate:
                 logger.info("[ENERGY-BG] No start kWh recorded for archive %s", archive_id)
                 return
 
-            plug = await _energy_plug_for_printer(printer_id, db)
+            # The meter the start was read from — never another one: two
+            # counters make a plausible, wrong delta rather than a missing one.
+            # An archive started before the plug was remembered keeps the old
+            # rule, the ranked first plug, which is what its start was read on.
+            remembered = (archive.extra_data or {}).get(ENERGY_PLUG_KEY)
+            if remembered is not None:
+                plug = await db.get(SmartPlug, remembered)
+                if plug is None or plug.printer_id != printer_id:
+                    logger.info(
+                        "[ENERGY-BG] Plug %s that archive %s started on is no longer on printer %s",
+                        remembered,
+                        archive_id,
+                        printer_id,
+                    )
+                    return
+            else:
+                plug = await _energy_plug_for_printer(printer_id, db)
             if plug is None:
                 logger.info("[ENERGY-BG] No smart plug for printer %s", printer_id)
                 return
@@ -865,6 +881,20 @@ async def _default_queue_id_for_printer(db, printer_id: int) -> int | None:
     return (await ensure_printer_queue(db, printer_id)).id
 
 
+#: ``PrintArchive.extra_data`` key: the plug a print's energy start was read from.
+ENERGY_PLUG_KEY = "energy_plug_id"
+
+
+async def _energy_plugs_for_printer(printer_id: int, db) -> list[SmartPlug]:
+    """Every plug on the printer, in the order energy tries them (see below)."""
+    result = await db.execute(
+        select(SmartPlug)
+        .where(SmartPlug.printer_id == printer_id)
+        .order_by(SmartPlug.controls_printer_power.desc(), SmartPlug.id.asc())
+    )
+    return list(result.scalars().all())
+
+
 async def _energy_plug_for_printer(printer_id: int, db) -> SmartPlug | None:
     """The one plug a printer's energy is measured with.
 
@@ -897,15 +927,33 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
     """
     _logger = logging.getLogger(__name__)
     try:
-        plug = await _energy_plug_for_printer(printer_id, db)
-        if not plug:
+        plugs = await _energy_plugs_for_printer(printer_id, db)
+        if not plugs:
             _logger.info("[ENERGY] No smart plug for printer %s (archive %s)", printer_id, archive.id)
             return False
-        energy = await _get_plug_energy(plug, db)
-        if not energy or energy.get("total") is None:
-            _logger.warning("[ENERGY] No 'total' in energy response for archive %s", archive.id)
+        # The first plug, in the ranked order, that actually reports a counter
+        # (upstream #2859): a mains switch with no power sensor must not stand
+        # in front of the plug that meters the printer. Ranking rather than
+        # filtering — a printer whose only plug is an accessory or disabled is
+        # still measured by it when it answers.
+        plug = energy = None
+        for candidate in plugs:
+            reading = await _get_plug_energy(candidate, db)
+            if reading and reading.get("total") is not None:
+                plug, energy = candidate, reading
+                break
+        if plug is None:
+            _logger.warning(
+                "[ENERGY] None of printer %s's plugs reports an energy counter for archive %s (tried: %s)",
+                printer_id,
+                archive.id,
+                ", ".join(p.name for p in plugs),
+            )
             return False
         archive.energy_start_kwh = float(energy["total"])
+        # The end reads THIS meter (``_record_print_energy``). Reassign the dict
+        # so SQLAlchemy flags the JSON column dirty.
+        archive.extra_data = {**(archive.extra_data or {}), ENERGY_PLUG_KEY: plug.id}
         # Same reading, also kept as a snapshot: it marks the true start of this
         # print in the range report instead of leaving the nearest boundary on
         # whichever hour the snapshot loop last fired.
