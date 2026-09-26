@@ -191,6 +191,7 @@ class ArchiveDownloadRetryService:
             print_data = meta.get("_print_data") or {}
             subtask_name = print_data.get("subtask_name") or meta.get("original_subtask")
             filename = print_data.get("filename") or archive.filename
+            plate_index = archive.plate_index
 
         logger.info(
             "Archive retry: archive %s (printer %s, subtask=%s)",
@@ -211,6 +212,29 @@ class ArchiveDownloadRetryService:
 
         temp_path, downloaded_filename = download_result
         try:
+            # Never another plate's file (upstream a4cfbd42 part 3). The print-
+            # start guard (#1204) refuses a 3MF that holds another plate than the
+            # one running and leaves the row empty — and every trigger here comes
+            # back with the same stale name that fetched it. Checked in the one
+            # place all four triggers pass through; a later retry that finds the
+            # running plate's file still attaches it. An unknown plate on either
+            # side is no contradiction.
+            if plate_index is not None:
+                from backend.app.services.archive import sliced_plate_indices_in_3mf
+
+                plates = sliced_plate_indices_in_3mf(temp_path)
+                if plates and plate_index not in plates:
+                    logger.warning(
+                        "Archive retry: archive %s — %s holds plate(s) %s, not the printed plate %s; not attaching",
+                        archive_id,
+                        downloaded_filename,
+                        sorted(plates),
+                        plate_index,
+                    )
+                    async with async_session() as marker_db:
+                        await ArchiveService(marker_db).mark_3mf_unavailable(archive_id)
+                    return "failed"
+
             async with async_session() as db2:
                 service = ArchiveService(db2)
                 ok = await service.attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)

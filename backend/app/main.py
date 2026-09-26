@@ -3785,6 +3785,25 @@ async def _find_live_hash_twin(db, printer_id: int, exclude_id: int, content_has
     return (await db.execute(stmt.limit(1))).scalar_one_or_none()
 
 
+def _name_after_plate_reject(subtask_name: str, corrected_subtask: str | None, filename: str | None) -> str:
+    """The title a row keeps after the wrong-plate guard (#1204) refused its 3MF.
+
+    ``corrected_subtask`` is the name re-pointed at the running plate. Without
+    one, the original name still titles the row when it carries no plate
+    suffix — ``swap_plate_suffix`` returns None for that too, and such a name
+    holds no stale plate number to be wrong about (upstream ebc72e1d, #3126);
+    blanking it dropped the project name and titled the row ``plate_1`` from the
+    gcode path. Only with no name at all is the gcode file's stem what is left.
+    Title only: the stale name stays disowned for lookups.
+    """
+    name = corrected_subtask or subtask_name
+    if name:
+        return name
+    if not filename:
+        return ""
+    return filename.split("/")[-1].replace(".gcode.3mf", "").replace(".gcode", "").replace(".3mf", "")
+
+
 async def on_print_start(printer_id: int, data: dict):
     """Own the short start-resolution window around archive persistence."""
 
@@ -4842,27 +4861,18 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                                 pass
                             temp_path = None
                             downloaded_filename = None
-                            # Override the stale subtask_name so the archive's
-                            # print_name reflects the correct plate. Prefer the swapped
-                            # name when we have one; otherwise let filename win.
-                            if corrected_subtask:
-                                subtask_name = corrected_subtask
-                            else:
-                                subtask_name = ""
                             # The row was named from the lagging subtask_name
                             # before the download could contradict it, and this
                             # branch is where it gets contradicted with no file
                             # to re-derive the name from. A successful
                             # re-download needs no fix — the attach renames from
-                            # the corrected file it actually got.
-                            corrected_name = subtask_name or (
-                                filename.split("/")[-1]
-                                .replace(".gcode.3mf", "")
-                                .replace(".gcode", "")
-                                .replace(".3mf", "")
-                                if filename
-                                else ""
-                            )
+                            # the corrected file it actually got. A name without
+                            # a plate suffix keeps titling the row (#3126).
+                            corrected_name = _name_after_plate_reject(subtask_name, corrected_subtask, filename)
+                            # Disown the stale name for LOOKUPS: it has just
+                            # fetched another plate's 3MF. Only a name re-pointed
+                            # at the running plate survives.
+                            subtask_name = corrected_subtask or ""
                             if corrected_name and corrected_name != archive.print_name:
                                 logger.info(
                                     "Renaming archive %s %r -> %r (stale plate name)",

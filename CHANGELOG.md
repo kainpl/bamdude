@@ -464,6 +464,13 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **A print whose 3MF turned out to be another plate's stays right.** When the
+  file on the card held another plate than the one printing, BamDude refused
+  it but renamed the archive `plate_1` if the job's name carried no plate
+  number; it now keeps the project's name. And the retries that come back for
+  the file later — on reconnect, at print end, by hand — no longer attach
+  that same other-plate file: a recovered 3MF must hold the plate that was
+  printed.
 - **The Slice dialog picks the right material and the right printer's
   process.** A PLA plate could be pre-filled with a PETG profile, and a P1S
   with an A1 process the slicer then refused. Filament profiles are now

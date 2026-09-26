@@ -232,6 +232,33 @@ def create_archive_directory(parent: Path, display_stem: str, *, timestamp: str 
             continue
 
 
+def sliced_plate_indices_in_3mf(file_path: Path) -> set[int]:
+    """Every plate index a sliced 3MF's ``slice_info.config`` records, or an empty set.
+
+    The retry service's plate check (upstream a4cfbd42 part 3): a candidate
+    whose plates do not include the archive's own is another plate's file. A
+    set rather than ``peek_plate_index_in_3mf``'s first plate, because a
+    "slice all" upload records every plate and must not read as plate 1. Empty
+    on anything unreadable — no answer is not a contradiction.
+    """
+    plates: set[int] = set()
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            if "Metadata/slice_info.config" not in zf.namelist():
+                return plates
+            root = ET.fromstring(zf.read("Metadata/slice_info.config").decode())
+    except (zipfile.BadZipFile, OSError, UnicodeDecodeError, ET.ParseError):
+        return plates
+    for plate in root.findall(".//plate"):
+        for meta in plate.findall("metadata"):
+            if meta.get("key") == "index":
+                try:
+                    plates.add(int(meta.get("value") or ""))
+                except ValueError:
+                    pass
+    return plates
+
+
 def peek_plate_index_in_3mf(file_path: Path) -> int | None:
     """Return the plate index recorded inside a Bambu 3MF, or None (#1204).
 
