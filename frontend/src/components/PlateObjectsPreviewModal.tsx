@@ -19,7 +19,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, Box, Maximize2, AlertTriangle, CheckCircle2 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, withMediaToken } from '../api/client';
 import { Modal } from './Modal';
 import { PlateMarkers } from './PlateObjectMarkers';
 import {
@@ -108,12 +108,13 @@ export function PlateObjectsPreviewModal({
   }));
 
   const plateIndex = data?.plate_index ?? plate;
-  const imageUrl =
+  // Both thumbnail routes take the media token — an <img> cannot send headers
+  // (audit D9 a2).
+  const imageUrl = withMediaToken(
     source === 'library'
       ? `/api/v1/library/files/${id}/plate-thumbnail/${plateIndex}?view=top`
-      : `/api/v1/archives/${id}/plate-thumbnail/${plateIndex}?view=top`;
-  // Both thumbnail routes are unauthenticated — an <img> cannot send headers —
-  // so unlike the live camera path there is no stream token to thread here.
+      : `/api/v1/archives/${id}/plate-thumbnail/${plateIndex}?view=top`,
+  );
 
   const showStrip = source === 'library' && (plateList?.plates.length ?? 0) > 1;
 

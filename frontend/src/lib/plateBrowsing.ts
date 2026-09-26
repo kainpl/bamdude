@@ -71,7 +71,7 @@ export function plateThumbnailUrl(
   const plate = current > 0 ? plateAt(file, current) : null;
   if (plate) return plate.has_thumbnail ? api.getLibraryFilePlateThumbnail(file.id, plate.index) : null;
   if (!file.thumbnail_path) return null;
-  return `${api.getLibraryFileThumbnailUrl(file.id)}${version ? `?v=${version}` : ''}`;
+  return api.getLibraryFileThumbnailUrl(file.id, version);
 }
 
 /** Next/previous position, wrapping; inert when there is nothing to page. */

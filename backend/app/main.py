@@ -11152,6 +11152,13 @@ PUBLIC_API_PREFIXES = [
 # ``backend/tests/test_auth_public_patterns.py`` holds the table of every route
 # these are meant to open and fails on drift in either direction.
 PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # ⚠️ An entry lets a header-less request REACH its route; it opens nothing by
+    # itself. Pictures and videos that are not the camera are gated by the
+    # route's MEDIA-token dependency (``require_media_*`` — a signed-in user's
+    # token in ``?token=``, or the ordinary headers, then the resource's own
+    # permission and ownership rule; audit D9 a2). The camera routes keep the
+    # stream token. Anonymous by decision: archive photos (linked from
+    # notifications), external-link icons and the OIDC button icon.
     # Thumbnails
     re.compile(r"^/api/v1/archives/\d+/thumbnail$"),
     re.compile(r"^/api/v1/library/files/\d+/thumbnail$"),
@@ -11166,15 +11173,15 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^/api/v1/archives/\d+/project-image/.+$"),
     # /library/files/{id}/card-file/{zip_path} — the model card's pictures,
     # loaded by <img> from the card dialog. ``{zip_path:path}`` again; the
-    # route's own RequireCameraStreamToken is what authenticates it, this entry
-    # only lets the request reach that gate.
+    # route's own media-token gate is what authenticates it, this entry only
+    # lets the request reach that gate.
     re.compile(r"^/api/v1/library/files/\d+/card-file/.+$"),
     # /products/{id}/attachment-image/{filename} — a product's gallery
     # pictures, loaded by <img> from the product page. Same reasoning: the
     # bearer-only attachment download deliberately lives under /attachments/
     # instead, so no pattern here can reach it.
     re.compile(r"^/api/v1/products/\d+/attachment-image/[^/]+$"),
-    # The product and order covers, both stream-token routes. The write methods
+    # The product and order covers, both media-token routes. The write methods
     # share these paths and ride in with them — the middleware sees a path, not
     # a method — and are stopped by their own PROJECTS_UPDATE permission.
     re.compile(r"^/api/v1/products/\d+/cover-image$"),
@@ -11250,10 +11257,11 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # The nonce itself is the credential: 32-byte random, single-use, ~30s TTL.
     re.compile(r"^/api/v1/obico/cached-frame/[^/]+$"),
     # MakerWorld covers and the thumbnail proxy (B.5 — 0.5.x cycle). <img> tags
-    # can't send Authorization headers and would 401 every image; the proxy's
-    # upstream is MakerWorld's *public* CDN (anyone visiting makerworld.com can
-    # fetch without auth) and the route's SSRF guard restricts the upstream host
-    # to the MakerWorld CDN allowlist, so it can't be abused as an open proxy.
+    # can't send Authorization headers and would 401 every image here; the
+    # routes' own media-token gates authenticate them (the covers under the
+    # library file's ownership, the proxy under MakerWorld's view permission),
+    # and the proxy's SSRF guard still restricts the upstream to the CDN
+    # allowlist.
     re.compile(r"^/api/v1/makerworld/imports/\d+/cover$"),
     re.compile(r"^/api/v1/makerworld/imports/\d+/cover-variant$"),
     re.compile(r"^/api/v1/makerworld/thumbnail$"),

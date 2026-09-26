@@ -49,6 +49,10 @@ from backend.app.main import PUBLIC_API_PATTERNS, app
 #
 # * ``stream-token`` / ``overlay-token`` / ``camwall-token`` — a scoped token in
 #   the query string, checked by a route DEPENDENCY (the camera surface);
+# * ``media-token`` — a signed-in user's media token in the query string, or the
+#   ordinary headers, checked by a route DEPENDENCY that also applies the
+#   resource's own permission and ownership rule (the pictures and videos that
+#   are not the camera — audit D9 a2);
 # * ``slicer-token`` / ``pre-auth`` / ``nonce`` — an unguessable credential the
 #   HANDLER reads out of the path or the body: a download token for the slicer
 #   protocol handlers, the login flow's pre-auth / bridge tokens, Obico's
@@ -67,11 +71,14 @@ from backend.app.main import PUBLIC_API_PATTERNS, app
 #: all three closures are named ``checker``, as is
 #: ``require_ownership_permission``'s, so on the bare name a route that traded
 #: its stream token for an ordinary permission still read as gated.
-_GATE_DEPENDENCY = {
-    "stream-token": "require_camera_stream_token",
-    "overlay-token": "require_overlay_token",
-    "camwall-token": "require_camwall_token",
-    "monitor-token": "kiosk_access",
+_GATE_DEPENDENCY: dict[str, tuple[str, ...]] = {
+    "stream-token": ("require_camera_stream_token",),
+    "overlay-token": ("require_overlay_token",),
+    "camwall-token": ("require_camwall_token",),
+    "monitor-token": ("kiosk_access",),
+    # Two factories, one gate: a resource with an ownership rule takes the
+    # ownership form, one without takes the permission form.
+    "media-token": ("require_media_ownership_permission", "require_media_permission"),
 }
 _DEPENDENCY_GATES = frozenset(_GATE_DEPENDENCY)
 _HANDLER_GATES = frozenset({"slicer-token", "pre-auth", "nonce"})
@@ -85,32 +92,38 @@ _GATES = _DEPENDENCY_GATES | _HANDLER_GATES | frozenset({"anonymous", "setup"})
 # WRITTEN for — the GET where a path carries several methods.
 PUBLIC_ROUTES: dict[str, tuple[str, str]] = {
     # Images an <img src> loads, which cannot carry an Authorization header.
-    # ⚠️ The archive and library pictures are ANONYMOUS by design and have been
-    # since long before this table: anyone who can reach the install can read a
-    # thumbnail, a plate preview, an operator photo or a timelapse by guessing an
-    # id. Whether that should stay is a policy question, raised in the pass-6
-    # report — it is written down here so the next reader does not mistake it for
-    # a gate somebody forgot.
-    "/api/v1/archives/{archive_id}/thumbnail": ("anonymous", "archive card thumbnail"),
-    "/api/v1/library/files/{file_id}/thumbnail": ("anonymous", "library card thumbnail"),
-    "/api/v1/archives/{archive_id}/plate-thumbnail/{plate_index}": ("anonymous", "per-plate thumbnail"),
-    "/api/v1/library/files/{file_id}/plate-thumbnail/{plate_index}": ("anonymous", "per-plate thumbnail"),
-    "/api/v1/archives/{archive_id}/plate-preview": ("anonymous", "plate preview, loaded like its siblings"),
-    "/api/v1/archives/{archive_id}/photos/{filename}": ("anonymous", "operator photos of a finished print"),
-    "/api/v1/archives/{archive_id}/project-image/{image_path:path}": ("anonymous", "pictures inside the 3MF"),
-    "/api/v1/archives/{archive_id}/qrcode": ("anonymous", "QR image for the print"),
-    "/api/v1/archives/{archive_id}/timelapse": ("anonymous", "timelapse <video>"),
-    "/api/v1/library/files/{file_id}/card-file/{zip_path:path}": ("stream-token", "model-card pictures"),
-    "/api/v1/products/{product_id}/attachment-image/{filename}": ("stream-token", "product gallery"),
-    "/api/v1/products/{product_id}/cover-image": ("stream-token", "product cover"),
-    "/api/v1/projects/{project_id}/cover-image": ("stream-token", "order cover"),
+    # Since audit D9 a2 they take a signed-in user's MEDIA token and apply the
+    # resource's own permission and ownership rule — until then most were
+    # anonymous (any thumbnail, plate or timelapse to anyone who guessed an id)
+    # and the rest borrowed the camera token (``camera:view``, and no owner).
+    "/api/v1/archives/{archive_id}/thumbnail": ("media-token", "archive card thumbnail"),
+    "/api/v1/library/files/{file_id}/thumbnail": ("media-token", "library card thumbnail"),
+    "/api/v1/archives/{archive_id}/plate-thumbnail/{plate_index}": ("media-token", "per-plate thumbnail"),
+    "/api/v1/library/files/{file_id}/plate-thumbnail/{plate_index}": ("media-token", "per-plate thumbnail"),
+    "/api/v1/archives/{archive_id}/plate-preview": ("media-token", "plate preview, loaded like its siblings"),
+    "/api/v1/archives/{archive_id}/project-image/{image_path:path}": ("media-token", "pictures inside the 3MF"),
+    "/api/v1/archives/{archive_id}/qrcode": ("media-token", "QR image for the print"),
+    "/api/v1/archives/{archive_id}/timelapse": ("media-token", "timelapse <video>"),
+    "/api/v1/library/files/{file_id}/card-file/{zip_path:path}": ("media-token", "model-card pictures"),
+    "/api/v1/products/{product_id}/attachment-image/{filename}": ("media-token", "product gallery"),
+    "/api/v1/products/{product_id}/cover-image": ("media-token", "product cover"),
+    "/api/v1/projects/{project_id}/cover-image": ("media-token", "order cover"),
+    "/api/v1/printers/{printer_id}/camera-cover": ("media-token", "current job's cover — a picture, not the camera"),
+    "/api/v1/makerworld/imports/{library_file_id}/cover": ("media-token", "MakerWorld import cover"),
+    "/api/v1/makerworld/imports/{library_file_id}/cover-variant": ("media-token", "MakerWorld variant cover"),
+    "/api/v1/makerworld/thumbnail": ("media-token", "MakerWorld CDN proxy for <img>, SSRF-allowlisted upstream"),
+    # Anonymous by decision (owner, 2026-09-26): notification templates link a
+    # finished print's photo, and Discord / webhooks / ntfy fetch it without
+    # credentials.
+    "/api/v1/archives/{archive_id}/photos/{filename}": (
+        "anonymous",
+        "operator photos — linked from notifications for services without credentials",
+    ),
+    # Truly public: the login page draws the OIDC button before anyone is
+    # signed in, and a link's favicon is the site's own public icon.
     "/api/v1/external-links/{link_id}/icon": ("anonymous", "external-link favicon"),
     "/api/v1/auth/oidc/providers/{provider_id}/icon": ("anonymous", "OIDC button icon on the login page"),
-    "/api/v1/makerworld/imports/{library_file_id}/cover": ("anonymous", "MakerWorld import cover"),
-    "/api/v1/makerworld/imports/{library_file_id}/cover-variant": ("anonymous", "MakerWorld variant cover"),
-    "/api/v1/makerworld/thumbnail": ("anonymous", "MakerWorld CDN proxy for <img>, SSRF-allowlisted upstream"),
     # Camera surface — long-lived scoped tokens in the URL, no session.
-    "/api/v1/printers/{printer_id}/camera-cover": ("stream-token", "current job's cover"),
     "/api/v1/printers/{printer_id}/camera/stream": ("stream-token", "MJPEG stream"),
     "/api/v1/printers/{printer_id}/camera/snapshot": ("stream-token", "snapshot"),
     # A standalone camera — one that belongs to no printer — serves the same two
@@ -290,9 +303,9 @@ def test_every_listed_route_carries_the_gate_its_entry_names():
         assert gate in _GATES, f"{path}: unknown gate {gate!r}"
         deps = _gate_dependencies(_intended(path))
         if gate in _DEPENDENCY_GATES:
-            factory = _GATE_DEPENDENCY[gate]
-            assert any(name.split(".")[0] == factory for name in deps), (
-                f"{path} ({why}): tagged {gate}, so it must carry {factory}() — it carries {deps or 'no gate'}"
+            factories = _GATE_DEPENDENCY[gate]
+            assert any(name.split(".")[0] in factories for name in deps), (
+                f"{path} ({why}): tagged {gate}, so it must carry one of {factories} — it carries {deps or 'no gate'}"
             )
         else:
             assert not deps, f"{path} ({why}): tagged {gate}, but {deps} now gates it — retag the entry"
@@ -367,14 +380,16 @@ async def test_the_email_otp_sender_reaches_its_own_pre_auth_gate(async_client):
 
 
 @pytest.mark.asyncio
-async def test_the_printer_cover_lives_on_its_own_segment_and_takes_a_stream_token(
+async def test_the_printer_cover_lives_on_its_own_segment_and_takes_a_media_token(
     async_client, printer_factory, monkeypatch
 ):
     """The route used to be ``/printers/{id}/cover``, whitelisted as the bare
     substring ``"/cover"``. It now has a segment no other route shares, so the
-    pattern can be anchored to it."""
+    pattern can be anchored to it. Its credential is the media token — the
+    job's picture is not the camera, and the camera token opens it no more
+    (audit D9 a2)."""
     from backend.app.api.routes import printers as printer_routes
-    from backend.app.core.auth import create_camera_stream_token
+    from backend.app.core.auth import create_camera_stream_token, create_media_token
     from backend.app.services.bambu_mqtt import PrinterState
 
     printer = await printer_factory(name="Cover", serial_number="COVER0001")
@@ -385,7 +400,9 @@ async def test_the_printer_cover_lives_on_its_own_segment_and_takes_a_stream_tok
     url = f"/api/v1/printers/{printer.id}/camera-cover"
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as anonymous:
         assert (await anonymous.get(url)).status_code == 401, "no token is still no entry"
-        served = await anonymous.get(url, params={"token": await create_camera_stream_token()})
+        camera = await anonymous.get(url, params={"token": await create_camera_stream_token()})
+        assert camera.status_code == 401, "the camera token is for the camera"
+        served = await anonymous.get(url, params={"token": await create_media_token("test_admin")})
 
     assert served.status_code == 200, served.text
     assert served.content == b"\x89PNG-cover"
@@ -407,7 +424,7 @@ async def test_a_retention_cleaned_cover_serves_the_png_and_refuses_the_top_view
     directory and answered 500.
     """
     from backend.app.api.routes import printers as printer_routes
-    from backend.app.core.auth import create_camera_stream_token
+    from backend.app.core.auth import create_media_token
     from backend.app.core.config import settings
     from backend.app.models.archive import PrintArchive
     from backend.app.services.bambu_mqtt import PrinterState
@@ -437,7 +454,7 @@ async def test_a_retention_cleaned_cover_serves_the_png_and_refuses_the_top_view
     monkeypatch.setitem(printer_routes._cover_cache, printer.id, {})
 
     url = f"/api/v1/printers/{printer.id}/camera-cover"
-    token = await create_camera_stream_token()
+    token = await create_media_token("test_admin")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as anonymous:
         top = await anonymous.get(url, params={"token": token, "view": "top"})
         angled = await anonymous.get(url, params={"token": token})

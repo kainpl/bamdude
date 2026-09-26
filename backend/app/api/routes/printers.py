@@ -16,9 +16,9 @@ from sqlalchemy.orm import selectinload
 from backend.app.core import database
 from backend.app.core.api_key_scope import in_key_scope
 from backend.app.core.auth import (
-    RequireCameraStreamToken,
     RequireOverlayToken,
     RequirePermission,
+    require_media_permission,
     require_permission,
 )
 from backend.app.core.config import settings
@@ -1805,12 +1805,15 @@ async def get_printer_cover(
     printer_id: int,
     view: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _token: None = RequireCameraStreamToken,
+    _=Depends(require_media_permission(Permission.PRINTERS_READ)),
 ):
     """Get the cover image for the current print job.
 
-    Gated by ``?token=...`` query param (short-lived camera-stream token)
-    since ``<img src>`` cannot send Authorization headers.
+    Gated by a media token in ``?token=`` (or the ordinary headers — an API
+    key's printer list holds) under ``printers:read``, since ``<img src>``
+    cannot send Authorization headers (audit D9 a2). It used to take the camera
+    stream token: this is the job's picture, not the camera, and a user who may
+    see the printer card but not the live feed saw a broken image.
 
     Serves the thumbnail from a local archive (DB-tracked).  Does NOT
     initiate an FTP download from the printer — that would:

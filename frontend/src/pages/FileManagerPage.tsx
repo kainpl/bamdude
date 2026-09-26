@@ -3393,7 +3393,7 @@ export function FileManagerPage() {
                         >
                           {file.thumbnail_path ? (
                             <img
-                              src={`${api.getLibraryFileThumbnailUrl(file.id)}${thumbnailVersions[file.id] ? `?v=${thumbnailVersions[file.id]}` : ''}`}
+                              src={api.getLibraryFileThumbnailUrl(file.id, thumbnailVersions[file.id])}
                               alt=""
                               className="w-full h-full object-contain"
                             />
@@ -3418,7 +3418,7 @@ export function FileManagerPage() {
                           <div className="absolute top-2/3 left-2/3 z-50 hidden group-hover/thumb:block">
                             <div className="w-48 h-48 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-xl overflow-hidden">
                               <img
-                                src={`${api.getLibraryFileThumbnailUrl(file.id)}${thumbnailVersions[file.id] ? `?v=${thumbnailVersions[file.id]}` : ''}`}
+                                src={api.getLibraryFileThumbnailUrl(file.id, thumbnailVersions[file.id])}
                                 alt={file.filename}
                                 className="w-full h-full object-contain"
                               />

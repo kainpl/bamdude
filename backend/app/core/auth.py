@@ -348,6 +348,85 @@ async def verify_camera_stream_token(token: str) -> bool:
         return record is not None
 
 
+# --- Media tokens (audit D9 a2, upstream 816f073a) ---
+# ``<img src>`` / ``<video src>`` cannot carry an Authorization header, so the
+# pictures and videos of the app need a credential that fits in a URL. Two
+# answers stood before this one, both wrong: most media routes were ANONYMOUS
+# (any thumbnail, plate, QR code or timelapse to anyone who could reach the
+# install and guess an id), and the rest borrowed the CAMERA stream token —
+# which costs ``camera:view`` and names nobody, so a library-only user saw broken
+# images and no route could tell one user's rows from another's.
+#
+# A media token is minted by any signed-in user (``POST /auth/media-token``) and
+# records WHO — like the websocket token. The routes then apply the permission
+# and ownership rules of the resource they serve, through
+# ``require_media_permission`` / ``require_media_ownership_permission``, which
+# also accept the ordinary headers. Deliberately narrower than the camera token:
+# no long-lived scope passes here — camera / wall / overlay tokens live in kiosks
+# and Home Assistant to show VIDEO, and are anonymous by construction.
+MEDIA_TOKEN_EXPIRE_MINUTES = 60
+_MEDIA_TOKEN_REQUIRED = "Valid media token required. Obtain one from POST /api/v1/auth/media-token"
+
+
+async def create_media_token(username: str) -> str:
+    """Create a reusable media token for *username* (valid for MEDIA_TOKEN_EXPIRE_MINUTES).
+
+    Not consumed: one token serves every picture on a page.
+    """
+    now = datetime.now(timezone.utc)
+    token = secrets.token_urlsafe(24)
+    async with async_session() as db:
+        # Prune expired tokens opportunistically (same shape as camera/websocket).
+        await db.execute(
+            delete(AuthEphemeralToken).where(
+                AuthEphemeralToken.token_type == TokenType.MEDIA,
+                AuthEphemeralToken.expires_at < now,
+            )
+        )
+        db.add(
+            AuthEphemeralToken(
+                token=token,
+                token_type=TokenType.MEDIA,
+                username=username,
+                expires_at=now + timedelta(minutes=MEDIA_TOKEN_EXPIRE_MINUTES),
+            )
+        )
+        await db.commit()
+    return token
+
+
+async def _media_token_authority(token: str) -> JWTAuthority:
+    """The authority of the user a media token was minted for, or 401.
+
+    Fail-closed on every miss: an unknown or expired token, a user no longer in
+    the table or deactivated, and a token minted before the user's last
+    password change — the same freshness rule a JWT obeys, so changing a
+    password ends every media token with the sessions.
+    """
+    refused = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_MEDIA_TOKEN_REQUIRED)
+    now = datetime.now(timezone.utc)
+    async with async_session() as db:
+        row = (
+            await db.execute(
+                select(AuthEphemeralToken.username, AuthEphemeralToken.created_at).where(
+                    AuthEphemeralToken.token == token,
+                    AuthEphemeralToken.token_type == TokenType.MEDIA,
+                    AuthEphemeralToken.expires_at > now,
+                )
+            )
+        ).one_or_none()
+        if row is None or not row.username:
+            raise refused
+        user = await get_user_by_username(db, row.username)
+        if user is None or not user.is_active:
+            raise refused
+        minted = row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=timezone.utc)
+        if not _is_token_fresh(int(minted.timestamp()), user):
+            raise refused
+        # Captured while the groups are loaded, exactly as a JWT's authority is.
+        return JWTAuthority(user, frozenset(user.get_permissions()), user.is_admin)
+
+
 # --- WebSocket connection tokens ---
 # Short-lived, reusable tokens gating ``/api/v1/ws``. The Starlette
 # ``@app.middleware("http")`` auth gate only sees the "http" scope, so it never
@@ -2163,6 +2242,10 @@ def require_camera_stream_token():
     Used for camera stream / snapshot endpoints loaded via ``<img>`` / ``<video>``
     tags — those can't send Authorization headers, so the frontend obtains a
     token from ``POST /printers/camera/stream-token`` and appends it to the URL.
+
+    Camera routes only. Every other picture takes a media token
+    (``require_media_*``): minting a camera token costs ``camera:view``, which no
+    thumbnail should need, and it names nobody, so no ownership can be checked.
     """
 
     async def checker(token: str | None = None) -> None:
@@ -2178,6 +2261,73 @@ def require_camera_stream_token():
 
 
 RequireCameraStreamToken = Depends(require_camera_stream_token())
+
+
+def require_media_permission(*permissions: str | Permission):
+    """Media-route dependency for a resource with no per-row ownership (audit D9 a2).
+
+    ``?token=`` — a media token (the ``<img>`` case): the user it names must hold
+    ALL of *permissions*. Otherwise the ordinary headers, through
+    :func:`require_permission` unchanged — so API-key scopes and a key's printer
+    list hold here exactly as on the resource's other routes. Returns the
+    ``User``, or ``None`` for an API key.
+    """
+    perm_strings = [p.value if isinstance(p, Permission) else p for p in permissions]
+    header_checker = require_permission(*permissions)
+
+    async def media_checker(
+        request: Request,
+        token: str | None = None,
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+        x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    ) -> User | None:
+        if token:
+            authority = await _media_token_authority(token)
+            if not authority.has_all(*perm_strings):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Missing required permissions: {', '.join(perm_strings)}",
+                )
+            return authority.user
+        return await header_checker(request=request, credentials=credentials, x_api_key=x_api_key)
+
+    return media_checker
+
+
+def require_media_ownership_permission(all_permission: str | Permission, own_permission: str | Permission):
+    """Media-route dependency for an ownership-scoped resource (audit D9 a2).
+
+    The reason a media token names its user: it returns the same
+    ``(user, can_read_all)`` pair as :func:`require_ownership_permission`, so a
+    picture route hands it to the ``_ensure_*_visible`` gate its header-read
+    siblings already use instead of serving any row to any holder. Header
+    callers go through :func:`require_ownership_permission` unchanged.
+    """
+    all_perm = all_permission.value if isinstance(all_permission, Permission) else all_permission
+    own_perm = own_permission.value if isinstance(own_permission, Permission) else own_permission
+    header_checker = require_ownership_permission(all_permission, own_permission)
+
+    async def media_checker(
+        request: Request,
+        token: str | None = None,
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+        x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    ) -> tuple[User | None, bool]:
+        if token:
+            authority = await _media_token_authority(token)
+            if authority.has_all(all_perm):
+                return authority.user, True
+            if authority.has_all(own_perm):
+                return authority.user, False
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing permission: {own_perm} or {all_perm}",
+            )
+        return await header_checker(request=request, credentials=credentials, x_api_key=x_api_key)
+
+    return media_checker
+
+
 RequireOverlayToken = Depends(require_overlay_token())
 RequireCamWallToken = Depends(require_camwall_token())
 

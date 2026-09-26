@@ -29,6 +29,7 @@ from backend.app.core.auth import (
     authenticate_user,
     authenticate_user_by_email,
     create_access_token,
+    create_media_token,
     create_refresh_token,
     create_websocket_token,
     get_current_active_user,
@@ -996,6 +997,22 @@ async def create_ws_token(user: User | None = RequirePermission(Permission.WEBSO
     per-user broadcasts; ``user`` is None for API-key callers (global-only).
     """
     return {"token": await create_websocket_token(user.username if user else None)}
+
+
+@router.post("/media-token")
+async def mint_media_token(current_user: User = Depends(get_current_active_user)):
+    """Mint a short-lived token for the ``<img>`` / ``<video>`` media routes (audit D9 a2).
+
+    Thumbnails, plate previews, timelapses and covers are loaded as element
+    ``src`` URLs, which cannot carry an ``Authorization`` header. Any signed-in
+    user may ask: what the token reaches is decided per request by the
+    permission and ownership rules of the resource it names. It records the
+    user, so ownership can be checked; it opens no camera route.
+
+    JWT only. An API key has no user to record, and needs no token — the media
+    routes read ``X-API-Key`` / ``Bearer bd_…`` directly, under its scopes.
+    """
+    return {"token": await create_media_token(current_user.username)}
 
 
 # Advanced Authentication Endpoints

@@ -804,6 +804,7 @@
   "Username is required": "Імʼя користувача обовʼязкове",
   "Valid Cam Wall token required. Create one under Settings > API Keys with the 'Cam Wall' scope.": "Потрібен дійсний токен Cam Wall. Створіть його в Налаштування > API-ключі з областю дії «Cam Wall».",
   "Valid camera stream token required. Obtain one from POST /api/v1/printers/camera/stream-token": "Потрібен дійсний токен потоку камери. Отримайте його через POST /api/v1/printers/camera/stream-token",
+  "Valid media token required. Obtain one from POST /api/v1/auth/media-token": "Потрібен дійсний медіатокен. Отримайте його через POST /api/v1/auth/media-token",
   "Valid overlay token required. Create one under Settings > API Keys with the 'Streaming Overlay' scope.": "Потрібен дійсний токен оверлея. Створіть його в Налаштування > API-ключі з областю дії «Streaming Overlay».",
   "Verification failed: {}": "Перевірка не вдалася: {}",
   "Video processing failed": "Не вдалося обробити відео",

@@ -125,6 +125,13 @@ async def _stream_token() -> str:
     return await create_camera_stream_token()
 
 
+async def _media_token() -> str:
+    """What the card's ``<img>`` carries since audit D9 a2 — the signed-in admin's."""
+    from backend.app.core.auth import create_media_token
+
+    return await create_media_token("test_admin")
+
+
 @pytest.mark.asyncio
 async def test_the_card_is_parsed_off_disk_with_token_gated_urls(committing_client, db_session, tmp_path):
     """``file_metadata`` carries only ``designer`` and ``print_name``; the card
@@ -160,9 +167,10 @@ async def test_the_card_is_parsed_off_disk_with_token_gated_urls(committing_clie
     for category in ("bom_docs", "assembly", "other"):
         assert all("/card-download/" in e["url"] for e in aux[category]), category
 
-    # The picture url is the token-gated route, and it really is gated.
-    assert (await committing_client.get(first["url"])).status_code == 401
-    token = await _stream_token()
+    # The picture url is the media-token route (audit D9 a2): a signed-in
+    # fetch reaches it with its own header, an <img> with a media token.
+    assert (await committing_client.get(first["url"])).status_code == 200
+    token = await _media_token()
     got = await committing_client.get(first["url"], params={"token": token})
     assert got.status_code == 200, got.text
     assert got.content == PNG_A and got.headers["content-type"] == "image/png"
@@ -190,7 +198,7 @@ async def test_card_file_serves_only_what_the_card_listed(committing_client, db_
     beside them.
     """
     file_id = (await make_card_file(db_session, tmp_path)).id
-    token = await _stream_token()
+    token = await _media_token()
 
     for member in (
         "3D/3dmodel.model",  # present in the ZIP, absent from the card
@@ -231,7 +239,7 @@ async def test_a_file_without_bytes_or_without_a_card_does_not_500(committing_cl
 
 
 @pytest.mark.asyncio
-async def test_the_browser_reaches_card_file_with_only_a_stream_token(committing_client, db_session, tmp_path):
+async def test_the_browser_reaches_card_file_with_only_a_media_token(committing_client, db_session, tmp_path):
     """Issued from an UNAUTHENTICATED client, and that is the whole point.
 
     ``main.py``'s ``auth_middleware`` runs BEFORE any route dependency, so a
@@ -247,7 +255,7 @@ async def test_the_browser_reaches_card_file_with_only_a_stream_token(committing
 
     file_id = (await make_card_file(db_session, tmp_path)).id
     picture = f"/api/v1/library/files/{file_id}/card-file/Auxiliaries/Model Pictures/a.png"
-    token = await _stream_token()
+    token = await _media_token()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as anonymous:
         assert (await anonymous.get(picture)).status_code == 401, "no token is still no entry"
@@ -256,7 +264,7 @@ async def test_the_browser_reaches_card_file_with_only_a_stream_token(committing
         assert served.content == PNG_A
 
         # The card and the download surface are ordinary bearer reads and stay
-        # behind the JWT — a stream token buys neither.
+        # behind the JWT — a media token in the URL buys neither.
         assert (await anonymous.get(f"/api/v1/library/files/{file_id}/card")).status_code == 401
         document = f"/api/v1/library/files/{file_id}/card-download/Auxiliaries/Bill of Materials/bom.csv"
         assert (await anonymous.get(document)).status_code == 401
@@ -316,7 +324,7 @@ async def test_a_picture_folder_is_a_folder_not_a_promise(committing_client, db_
             "Auxiliaries/Model Pictures/readme.txt": NOTES_TXT,
         },
     )
-    token = await _stream_token()
+    token = await _media_token()
     base = f"/api/v1/library/files/{file.id}"
 
     # The card says so too: a url must never promise what the route would refuse.
@@ -346,7 +354,7 @@ async def test_a_member_past_the_size_cap_is_413_not_a_50_mb_allocation(
     monkeypatch.setattr("backend.app.services.product_files.MAX_ATTACHMENT_BYTES", 4)
 
     file = await make_card_file(db_session, tmp_path, name="big.3mf")
-    token = await _stream_token()
+    token = await _media_token()
     base = f"/api/v1/library/files/{file.id}"
 
     too_big = await committing_client.get(f"{base}/card-file/Auxiliaries/Model Pictures/a.png", params={"token": token})

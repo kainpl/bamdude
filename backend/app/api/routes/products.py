@@ -31,7 +31,7 @@ from sqlalchemy.orm import selectinload
 from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
-from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
+from backend.app.core.auth import RequirePermission, require_media_permission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.i18n.api_errors import json_error
@@ -1246,15 +1246,17 @@ async def get_attachment_image(
     product_id: int,
     filename: str,
     db: AsyncSession = Depends(get_db),
-    _=RequireCameraStreamToken,
+    _=Depends(require_media_permission(Permission.PROJECTS_READ)),
 ):
     """Pictures for ``<img src>``, which cannot carry an Authorization header —
-    so this takes the same ``?token=`` credential as the project cover route.
+    so this takes a media token (or the ordinary headers) under the product's
+    own read permission, like the project cover route (audit D9 a2; it used to
+    take the camera stream token, which cost ``camera:view``).
 
     ⚠️ ``/attachment-image/`` is a UNIQUE segment on purpose, and it is listed in
     ``main.py``'s ``PUBLIC_API_PATTERNS``. ``auth_middleware`` runs BEFORE any
     route dependency, so without that entry every request would be 401'd by the
-    middleware and never reach this route's own stream-token gate — the route
+    middleware and never reach this route's own media-token gate — the route
     would be dead for the only client that needs it, a browser ``<img>``. The
     whitelist entry lets the request REACH the gate; it does not open the route.
     The entry is one anchored regex over this route alone, so the bearer-only
@@ -1396,9 +1398,12 @@ async def set_product_cover_image(
 async def get_product_cover_image(
     product_id: int,
     db: AsyncSession = Depends(get_db),
-    _=RequireCameraStreamToken,
+    _=Depends(require_media_permission(Permission.PROJECTS_READ)),
 ):
-    """The effective cover — the explicit column, else the first picture."""
+    """The effective cover — the explicit column, else the first picture.
+
+    Media token or headers under the product's read permission (audit D9 a2).
+    """
     product = await _get(db, product_id)
     name = effective_cover(product)
     if not name:

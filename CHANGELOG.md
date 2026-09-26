@@ -14,6 +14,21 @@
   key only its own printers. The auto-queue hands work to whichever printer
   fits, so a limited key cannot use it at all. Keys without a printer list
   work as before; a key with an empty list reaches no printer.
+- **Pictures and videos are no longer open to anyone who can reach BamDude.**
+  Archive and library thumbnails, plate previews, pictures inside a 3MF, QR
+  codes, timelapses and MakerWorld covers could be read by anyone on the
+  network by guessing a number. They now need a sign-in: the page fetches a
+  short-lived picture token for the signed-in user, and each picture is
+  checked against what that user may see — a user limited to their own prints
+  sees only their own pictures. Product, order and model-card pictures and the
+  current job's cover on a printer card used to need permission to watch the
+  live camera; they now follow the permission for what they show, so a user
+  without camera access no longer sees broken images there. The camera itself
+  still needs camera access, and a Cam Wall, overlay or kiosk token opens no
+  picture. API keys reach the pictures with their usual header, within their
+  scopes. Photos of a finished print stay public, because notifications link
+  them for Discord, webhooks and ntfy, which fetch without signing in; so do
+  the icons on the sign-in page and on external links.
 
 ### Changed
 

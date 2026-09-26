@@ -33,8 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
-from backend.app.api.routes.library import save_3mf_bytes_to_library
-from backend.app.core.auth import RequirePermission, require_permission, security
+from backend.app.api.routes.library import _LIBRARY_MEDIA_READ, _ensure_library_file_visible, save_3mf_bytes_to_library
+from backend.app.core.auth import RequirePermission, require_media_permission, require_permission, security
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.library import LibraryFile, LibraryFolder
@@ -202,6 +202,7 @@ async def _fetch_makerworld_meta(
 @router.get("/thumbnail")
 async def proxy_thumbnail(
     url: str = Query(..., description="MakerWorld CDN image URL (makerworld.bblmw.com or public-cdn.bblmw.com)"),
+    _=Depends(require_media_permission(makerworld_provider.view_permission)),
 ):
     """Proxy a MakerWorld CDN thumbnail.
 
@@ -209,15 +210,14 @@ async def proxy_thumbnail(
     from makerworld.bblmw.com is blocked. This endpoint refetches the image
     server-side and returns it with a long cache window.
 
-    **Unauthenticated on purpose**: ``<img>`` tags can't send Authorization
-    headers, so requiring a Bearer token here would break the whole feature
-    (browsers would get 401 on every image, rendering as broken-image
-    placeholders). The thumbnails being proxied are MakerWorld's *public*
-    CDN — any visitor to makerworld.com can fetch them without auth — so no
-    data is exposed. The SSRF guard inside ``fetch_thumbnail`` restricts
-    the upstream host to the provider's declared CDN allowlist, so this can't
-    be abused as a generic open proxy. Whitelisted in ``auth_middleware`` so
-    the always-on auth gate doesn't 401 the proxied image fetch.
+    A media token in ``?token=`` (or the ordinary headers) under the
+    provider's view permission (audit D9 a2): ``<img>`` tags can't send
+    Authorization headers. It was anonymous — the pictures are MakerWorld's
+    public CDN — but an anonymous route made the server fetch on behalf of
+    anyone who could reach it; the page that uses it is a signed-in page. The
+    SSRF guard inside ``fetch_thumbnail`` still restricts the upstream host to
+    the provider's declared CDN allowlist. Whitelisted in ``auth_middleware``
+    so the request reaches this gate at all.
 
     URLs are content-addressable (filename contains a hash), so the
     aggressive ``immutable`` cache-control is safe.
@@ -863,17 +863,19 @@ def _serve_local_cover(rel_path: str | None) -> Response:
 async def get_makerworld_cover(
     library_file_id: int,
     db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _LIBRARY_MEDIA_READ,
 ):
     """Serve the model-level cover image saved locally during import.
 
-    No ``RequirePermission`` here — ``<img src>`` browser fetches can't
-    carry an Authorization header. ``main.py::PUBLIC_API_PATTERNS`` carries
-    one anchored entry for this exact route
-    (``^/api/v1/makerworld/imports/\\d+/cover$``), tagged ``anonymous`` in
-    ``backend/tests/test_auth_public_patterns.py``: the data served is the
-    same image MakerWorld serves publicly on their site, so this isn't a
-    privacy regression.
+    A media token in ``?token=`` (or the ordinary headers) — ``<img src>``
+    browser fetches can't carry an Authorization header — under the library
+    file's own ownership rule (audit D9 a2): the cover belongs to a file in
+    somebody's library. ``main.py::PUBLIC_API_PATTERNS`` carries one anchored
+    entry for this exact route (``^/api/v1/makerworld/imports/\\d+/cover$``)
+    so the request reaches the gate.
     """
+    user, can_read_all = auth_result
+    _ensure_library_file_visible(await db.get(LibraryFile, library_file_id), user, can_read_all)
     meta = (
         await db.execute(
             select(LibraryFileMakerworldMeta.cover_path).where(
@@ -888,15 +890,18 @@ async def get_makerworld_cover(
 async def get_makerworld_variant_cover(
     library_file_id: int,
     db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _LIBRARY_MEDIA_READ,
 ):
     """Serve the variant (plate-level) cover image saved locally.
 
     Anchored in the whitelist under its own entry
-    (``^/api/v1/makerworld/imports/\\d+/cover-variant$``) — same reasoning as
+    (``^/api/v1/makerworld/imports/\\d+/cover-variant$``) and gated like
     :func:`get_makerworld_cover`. The path's spelling no longer matters to the
     gate: it once had to END in ``cover`` to satisfy a bare ``"/cover"``
     substring, which is exactly the matching that was removed.
     """
+    user, can_read_all = auth_result
+    _ensure_library_file_visible(await db.get(LibraryFile, library_file_id), user, can_read_all)
     meta = (
         await db.execute(
             select(LibraryFileMakerworldMeta.variant_cover_path).where(

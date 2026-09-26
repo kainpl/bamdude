@@ -95,7 +95,7 @@ import {
 import { SelectionBox } from '../components/SelectionBox';
 
 import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router';
-import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken, DEFAULT_BACKUP_COMPATIBILITY } from '../api/client';
+import { api, discoveryApi, firmwareApi, macrosApi, withMediaToken, DEFAULT_BACKUP_COMPATIBILITY } from '../api/client';
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration, formatTimeOnly, parseUTCDate } from '../utils/date';
@@ -973,7 +973,7 @@ export function CoverImage({ url, printName, paused }: { url: string | null; pri
   const cacheBustedUrl = useMemo(() => {
     if (!url) return null;
     const sep = url.includes('?') ? '&' : '?';
-    return withStreamToken(`${url}${sep}v=${encodeURIComponent(printName || Date.now().toString())}`);
+    return withMediaToken(`${url}${sep}v=${encodeURIComponent(printName || Date.now().toString())}`);
   }, [url, printName]);
 
   // Re-evaluate load state when the image URL changes, and ⚠️ ASK THE ELEMENT

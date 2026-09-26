@@ -17,6 +17,8 @@ import type { PlateMetadata } from '../../types/plates';
 vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
   getAuthToken: vi.fn(() => 'test-admin-token'),
+  // The plate picture takes the media token (audit D9 a2); none has been minted here.
+  withMediaToken: (url: string) => url,
   api: {
     getPlateObjects: vi.fn(),
     getLibraryFilePlates: vi.fn(),

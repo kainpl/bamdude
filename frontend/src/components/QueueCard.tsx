@@ -54,7 +54,7 @@ import { copyableItems, withCurrentPrint } from '../lib/copyQueue';
 import { LibraryPickerModal } from './LibraryPickerModal';
 import { QueueSequencer } from './QueueSequencer';
 import type { SequencedFile } from './QueueSequencer';
-import { api, withStreamToken } from '../api/client';
+import { api, withMediaToken } from '../api/client';
 import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay, farmStatusPollInterval } from '../api/farmReadBudget';
 import type { PrinterQueue, PrintQueueItem, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
@@ -750,7 +750,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
               <div className="relative w-20 h-20 flex-shrink-0">
                 {currentThumbnail ? (
                   <img
-                    src={withStreamToken(currentThumbnail)}
+                    src={withMediaToken(currentThumbnail)}
                     alt=""
                     className="w-full h-full rounded-lg object-cover bg-bambu-dark-tertiary"
                   />

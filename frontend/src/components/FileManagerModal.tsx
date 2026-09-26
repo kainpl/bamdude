@@ -24,7 +24,7 @@ import {
   Eraser,
 } from 'lucide-react';
 import { SelectionBox } from './SelectionBox';
-import { api, type PrinterFileType, type PrinterStorage } from '../api/client';
+import { api, withMediaToken, type PrinterFileType, type PrinterStorage } from '../api/client';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
@@ -193,7 +193,7 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
                           that used to exist answered 401 for every plate. */}
                       {plate.thumbnail_url ? (
                         <img
-                          src={plate.thumbnail_url}
+                          src={withMediaToken(plate.thumbnail_url)}
                           alt={`Plate ${plate.index}`}
                           className="w-10 h-10 rounded object-cover bg-bambu-dark-tertiary"
                         />

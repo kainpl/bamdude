@@ -10,6 +10,7 @@ import { FolderTreeSelect } from '../components/FolderTreeSelect';
 
 import {
   api,
+  withMediaToken,
   type MakerworldImportResponse,
   type MakerworldRecentImport,
   type MakerworldResolvedModel,
@@ -42,7 +43,7 @@ function pickString(obj: Record<string, unknown> | undefined, key: string): stri
 function proxyCdnUrlsInHtml(html: string): string {
   return html.replace(
     /(https?:\/\/(?:makerworld|public-cdn)\.bblmw\.com\/[^\s"']+)/gi,
-    (match) => `/api/v1/makerworld/thumbnail?url=${encodeURIComponent(match)}`,
+    (match) => withMediaToken(`/api/v1/makerworld/thumbnail?url=${encodeURIComponent(match)}`),
   );
 }
 
@@ -53,7 +54,7 @@ function proxyCdnUrlsInHtml(html: string): string {
 function proxyCdn(url: string): string {
   if (!url) return '';
   if (!/^https?:\/\/(makerworld|public-cdn)\.bblmw\.com\//i.test(url)) return url;
-  return `/api/v1/makerworld/thumbnail?url=${encodeURIComponent(url)}`;
+  return withMediaToken(`/api/v1/makerworld/thumbnail?url=${encodeURIComponent(url)}`);
 }
 function pickNumber(obj: Record<string, unknown> | undefined, key: string): number | null {
   const value = obj?.[key];

@@ -1,14 +1,38 @@
 import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, setStreamToken, getStreamToken } from '../api/client';
+import {
+  api,
+  getMediaToken,
+  getStreamToken,
+  isCameraMediaPath,
+  setMediaToken,
+  setStreamToken,
+} from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
+
+/** `src` with its `token=` replaced by (or given) *token*. */
+function stampToken(src: string, token: string): string {
+  const withoutToken = src.replace(/([?&])token=[^&]*(&|$)/, (_m, pre, post) =>
+    post === '&' ? pre : pre === '?' ? '' : ''
+  );
+  const sep = withoutToken.includes('?') ? '&' : '?';
+  return `${withoutToken}${sep}token=${encodeURIComponent(token)}`;
+}
 
 /**
  * Walks the DOM and updates every <img>/<video> pointing at /api/v1/ so its
- * src carries the current stream token. Exported for unit testing; called
- * from useStreamTokenSync when the token arrives after first render.
+ * src carries the current token. Exported for unit testing; called from
+ * useStreamTokenSync when a token arrives after first render.
+ *
+ * *applies* narrows it to the sources that take THIS token: the camera routes
+ * take the camera token and every other picture the media token, and neither
+ * accepts the other (audit D9 a2).
  */
-export function rewriteMediaSrcWithToken(root: ParentNode, token: string): number {
+export function rewriteMediaSrcWithToken(
+  root: ParentNode,
+  token: string,
+  applies: (src: string) => boolean = () => true
+): number {
   const tokenParam = `token=${encodeURIComponent(token)}`;
   let updated = 0;
   root
@@ -17,62 +41,81 @@ export function rewriteMediaSrcWithToken(root: ParentNode, token: string): numbe
     )
     .forEach((el) => {
       const src = el.getAttribute('src') || '';
-      if (src.includes(tokenParam)) return;
-      const withoutToken = src.replace(/([?&])token=[^&]*(&|$)/, (_m, pre, post) =>
-        post === '&' ? pre : pre === '?' ? '' : ''
-      );
-      const sep = withoutToken.includes('?') ? '&' : '?';
-      el.src = `${withoutToken}${sep}${tokenParam}`;
+      if (src.includes(tokenParam) || !applies(src)) return;
+      el.src = stampToken(src, token);
       updated += 1;
     });
   return updated;
 }
 
+const isMediaPath = (src: string) => !isCameraMediaPath(src);
+
+// Tokens last 60 minutes; refresh a little before.
+const TOKEN_REFRESH_MS = 50 * 60 * 1000;
+
 /**
- * Fetches and caches a stream token for <img>/<video> src URLs.
- * Stores the token globally via setStreamToken() so URL generators
- * in client.ts can use withStreamToken() automatically.
+ * Fetches and caches the two URL tokens for <img>/<video> src URLs and stores
+ * them globally (setStreamToken / setMediaToken) so URL generators in client.ts
+ * can use withStreamToken() / withMediaToken() automatically.
  *
- * Also listens for global image load errors on token-protected URLs
- * and automatically refreshes the token (e.g., after backend restart
- * invalidates in-memory tokens).
+ * - The MEDIA token — thumbnails, plates, covers, timelapses — for every
+ *   signed-in user (audit D9 a2). What it reaches is the server's decision,
+ *   per resource.
+ * - The CAMERA token only for a user who may view the camera: asking without
+ *   `camera:view` was a 403 on every page load for everyone else.
+ *
+ * Also listens for image/video load errors on token-protected URLs: a failure
+ * that carries the current token refreshes it (a backend restart can drop
+ * tokens), and a picture that rendered WITHOUT its token — a URL the server
+ * handed over and nobody wrapped — is stamped once, so it recovers instead of
+ * staying broken.
  *
  * Mount this hook once near the app root (e.g., in App.tsx or a layout component).
- * Components that need token-protected URLs can import withStreamToken directly.
  */
 export function useStreamTokenSync() {
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const refreshingRef = useRef(false);
+  const canViewCamera = !!user && hasPermission('camera:view');
 
-  // Key the token by user id so a login/logout invalidates the cache
+  // Key the tokens by user id so a login/logout invalidates the cache
   // automatically — otherwise a failed anonymous fetch on the login page
   // would be cached and never retried after sign-in (upstream 32c0b169).
-  const { data } = useQuery({
+  const { data: streamData } = useQuery({
     queryKey: ['camera-stream-token', user?.id ?? null],
     queryFn: () => api.getCameraStreamToken(),
+    enabled: canViewCamera,
+    staleTime: TOKEN_REFRESH_MS,
+    refetchInterval: TOKEN_REFRESH_MS,
+  });
+  const { data: mediaData } = useQuery({
+    queryKey: ['media-token', user?.id ?? null],
+    queryFn: () => api.getMediaToken(),
     enabled: !!user,
-    staleTime: 50 * 60 * 1000, // refresh at 50 min (tokens expire at 60)
-    refetchInterval: 50 * 60 * 1000,
+    staleTime: TOKEN_REFRESH_MS,
+    refetchInterval: TOKEN_REFRESH_MS,
   });
 
   useEffect(() => {
-    const newToken = data?.token ?? null;
+    const newToken = streamData?.token ?? null;
     setStreamToken(newToken);
-
     // Images/videos that rendered before the token arrived have src URLs
     // without ?token=…; update them in place so they reload with auth.
     if (newToken) {
-      rewriteMediaSrcWithToken(document, newToken);
+      rewriteMediaSrcWithToken(document, newToken, isCameraMediaPath);
     }
-
     return () => setStreamToken(null);
-  }, [data?.token]);
+  }, [streamData?.token]);
 
-  // Listen for image/video load errors on token-protected URLs.
-  // When the backend restarts, in-memory stream tokens are lost and all
-  // thumbnail/stream requests return 401. This handler detects that and
-  // forces a token refresh so images recover without a page reload.
+  useEffect(() => {
+    const newToken = mediaData?.token ?? null;
+    setMediaToken(newToken);
+    if (newToken) {
+      rewriteMediaSrcWithToken(document, newToken, isMediaPath);
+    }
+    return () => setMediaToken(null);
+  }, [mediaData?.token]);
+
   useEffect(() => {
     if (!user) return;
 
@@ -80,15 +123,26 @@ export function useStreamTokenSync() {
       const el = event.target;
       if (!(el instanceof HTMLImageElement || el instanceof HTMLVideoElement)) return;
 
-      const src = el.src || '';
-      const token = getStreamToken();
-      if (!token || !src.includes(`token=${encodeURIComponent(token)}`)) return;
+      const src = el.getAttribute('src') || '';
+      if (!src.includes('/api/v1/')) return;
+      const camera = isCameraMediaPath(src);
+      const token = camera ? getStreamToken() : getMediaToken();
+      if (!token) return;
 
+      if (!src.includes(`token=${encodeURIComponent(token)}`)) {
+        // Rendered without its token, or with the other one. Stamp it — once
+        // per token, so a picture that fails for another reason cannot loop.
+        if (el.dataset.tokenStamped === token) return;
+        el.dataset.tokenStamped = token;
+        el.src = stampToken(src, token);
+        return;
+      }
+
+      // It carried the current token and still failed: the token may have
+      // been dropped (backend restart). Refresh it, at most every 5 seconds.
       if (refreshingRef.current) return;
       refreshingRef.current = true;
-
-      queryClient.invalidateQueries({ queryKey: ['camera-stream-token'] });
-
+      queryClient.invalidateQueries({ queryKey: [camera ? 'camera-stream-token' : 'media-token'] });
       setTimeout(() => {
         refreshingRef.current = false;
       }, 5000);

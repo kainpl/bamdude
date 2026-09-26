@@ -3,6 +3,7 @@ import { Layers, Check, AlertTriangle, Clock, Weight, Box } from 'lucide-react';
 import { SelectionBox } from '../SelectionBox';
 import { useTranslation } from 'react-i18next';
 import type { PlateSelectorProps } from './types';
+import { withMediaToken } from '../../api/client';
 import { formatDuration } from '../../utils/date';
 import { resolveSpoolColorName } from '../../utils/colors';
 import { getBedTypeInfo } from '../../utils/bedType';
@@ -132,7 +133,7 @@ export function PlateSelector({
             <div className="flex items-start gap-3 h-32">
               {active.has_thumbnail && active.thumbnail_url != null ? (
                 <img
-                  src={active.thumbnail_url}
+                  src={withMediaToken(active.thumbnail_url)}
                   alt={t('printModal.plateNFallback', { index: active.index })}
                   className="w-32 h-32 rounded object-contain bg-bambu-dark-tertiary flex-shrink-0"
                 />

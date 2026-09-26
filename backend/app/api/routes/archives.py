@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core import case_folding
 from backend.app.core.auth import (
     RequirePermission,
+    require_media_ownership_permission,
     require_ownership_permission,
 )
 from backend.app.core.config import settings
@@ -81,6 +82,8 @@ def _ensure_archive_visible(
     archive: "PrintArchive | None",
     user: User | None,
     can_read_all: bool,
+    *,
+    include_trashed: bool = False,
 ) -> "PrintArchive":
     """Per-archive visibility gate for ownership-scoped reads (security #2).
 
@@ -94,14 +97,28 @@ def _ensure_archive_visible(
       403 leaks "this id exists"; 404 is indistinguishable from a bad id, which
       was the IDOR PoC vector). Ownerless rows (``created_by_id is None``)
       require ALL — fail-closed.
+
+    ``include_trashed`` lets a soft-deleted row through the first check only —
+    the trash list shows each deleted print with its picture — never past the
+    ownership rule.
     """
-    if not archive or archive.deleted_at is not None:
+    if not archive or (archive.deleted_at is not None and not include_trashed):
         raise HTTPException(404, "Archive not found")
     if can_read_all:
         return archive
     if user is None or archive.created_by_id is None or archive.created_by_id != user.id:
         raise HTTPException(404, "Archive not found")
     return archive
+
+
+# The pictures and the video of an archive (audit D9 a2): a media token in the
+# URL — an ``<img>`` / ``<video>`` cannot send a header — or the ordinary
+# headers, and either way the same ownership rule as every other archive read.
+# The operator's photos are NOT behind it (``get_photo``): notifications link
+# them for services that fetch without credentials.
+_ARCHIVE_MEDIA_READ = Depends(
+    require_media_ownership_permission(Permission.ARCHIVES_READ_ALL, Permission.ARCHIVES_READ_OWN)
+)
 
 
 def _parse_applied_patches(raw: str | None) -> list[str] | None:
@@ -1612,20 +1629,19 @@ async def download_archive_for_slicer(
 async def get_thumbnail(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _ARCHIVE_MEDIA_READ,
 ):
-    """Get the thumbnail image.
-
-    Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
+    """Get the thumbnail image — media token or headers, owner-scoped (audit D9 a2).
 
     Trashed archives are intentionally accessible here so the trash UI can
-    render previews next to the filename. The metadata is already exposed
-    via the trash listing endpoint, so a thumbnail-only access leak is a
-    no-op surface — the trashed row is otherwise visible to anyone the
-    listing serves.
+    render previews next to the filename — to whoever may see the row.
     """
+    user, can_read_all = auth_result
     service = ArchiveService(db)
-    archive = await service.get_archive(archive_id, include_trashed=True)
-    if not archive or not archive.thumbnail_path:
+    archive = _ensure_archive_visible(
+        await service.get_archive(archive_id, include_trashed=True), user, can_read_all, include_trashed=True
+    )
+    if not archive.thumbnail_path:
         raise HTTPException(404, "Thumbnail not found")
 
     thumb_path = settings.base_dir / archive.thumbnail_path
@@ -1649,14 +1665,13 @@ async def get_thumbnail(
 async def get_timelapse(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _ARCHIVE_MEDIA_READ,
 ):
-    """Get the timelapse video.
-
-    Note: Unauthenticated - loaded via <video> tags which can't send auth headers.
-    """
+    """Get the timelapse video — media token or headers, owner-scoped (audit D9 a2)."""
+    user, can_read_all = auth_result
     service = ArchiveService(db)
-    archive = await service.get_archive(archive_id)
-    if not archive or not archive.timelapse_path:
+    archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
+    if not archive.timelapse_path:
         raise HTTPException(404, "Timelapse not found")
 
     timelapse_path = settings.base_dir / archive.timelapse_path
@@ -2293,7 +2308,10 @@ async def get_photo(
 ):
     """Get a specific photo.
 
-    Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
+    ⚠️ Anonymous by decision (audit D9 a2, owner 2026-09-26), unlike the other
+    archive pictures: notification templates link a finished print's photo
+    (``{finish_photo_url}``), and Discord, webhooks and ntfy fetch it without
+    credentials. The file name carries a timestamp and random suffix.
     """
     result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
     archive = result.scalar_one_or_none()
@@ -2375,11 +2393,10 @@ async def get_qrcode(
     request: Request,
     size: int = 200,
     db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _ARCHIVE_MEDIA_READ,
 ):
-    """Generate a QR code that links to this archive.
-
-    Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
-    """
+    """Generate a QR code that links to this archive — media token or headers (audit D9 a2)."""
+    user, can_read_all = auth_result
     try:
         import qrcode
         from PIL import Image as PILImage
@@ -2387,9 +2404,7 @@ async def get_qrcode(
         raise HTTPException(500, "QR code generation not available - qrcode package not installed")
 
     result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
-    archive = result.scalar_one_or_none()
-    if not archive:
-        raise HTTPException(404, "Archive not found")
+    archive = _ensure_archive_visible(result.scalar_one_or_none(), user, can_read_all)
 
     # Build URL to archive download
     base_url = str(request.base_url).rstrip("/")
@@ -2588,18 +2603,17 @@ def _plate_index_from_gcode_name(name: str) -> int | None:
 async def get_plate_preview(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _ARCHIVE_MEDIA_READ,
 ):
     """Get the plate preview image from the 3MF file.
 
     Returns the slicer-generated plate thumbnail which shows the model
-    with correct colors and positioning.
-
-    Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
+    with correct colors and positioning. Media token or headers, owner-scoped
+    (audit D9 a2).
     """
+    user, can_read_all = auth_result
     service = ArchiveService(db)
-    archive = await service.get_archive(archive_id)
-    if not archive:
-        raise HTTPException(404, "Archive not found")
+    archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
 
     file_path = settings.base_dir / archive.file_path
     if not file_path.is_file():
@@ -2901,18 +2915,18 @@ async def get_plate_thumbnail(
     plate_index: int,
     view: str = "plate",
     db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _ARCHIVE_MEDIA_READ,
 ):
     """Get the thumbnail image for a specific plate.
 
     ``view=top`` serves the top-down render the object-preview markers are
-    positioned against.
-
-    Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
+    positioned against. Media token or headers, owner-scoped (audit D9 a2) —
+    the printer's file manager renders these too, for a file on the card that
+    an archive answers for.
     """
+    user, can_read_all = auth_result
     service = ArchiveService(db)
-    archive = await service.get_archive(archive_id)
-    if not archive:
-        raise HTTPException(404, "Archive not found")
+    archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
 
     file_path = settings.base_dir / archive.file_path
     if not file_path.is_file():
@@ -3404,17 +3418,14 @@ async def get_project_image(
     archive_id: int,
     image_path: str,
     db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _ARCHIVE_MEDIA_READ,
 ):
-    """Get an image from the 3MF project page.
-
-    Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
-    """
+    """Get an image from the 3MF project page — media token or headers, owner-scoped (audit D9 a2)."""
     from backend.app.services.threemf_card import ThreeMFCardParser
 
+    user, can_read_all = auth_result
     service = ArchiveService(db)
-    archive = await service.get_archive(archive_id)
-    if not archive:
-        raise HTTPException(404, "Archive not found")
+    archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
 
     file_path = settings.base_dir / archive.file_path
     if not file_path.is_file():

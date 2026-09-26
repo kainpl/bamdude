@@ -20,7 +20,7 @@ import {
   Package,
   RefreshCw,
 } from 'lucide-react';
-import { api, getAuthToken, withStreamToken } from '../api/client';
+import { api, getAuthToken, withMediaToken } from '../api/client';
 import { invalidateOrderViews } from '../utils/queryInvalidation';
 import type { CardAux } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
@@ -411,7 +411,7 @@ function ArchiveCard({ archiveId, archiveName, onClose }: ArchiveCardProps) {
                         className="aspect-square rounded-lg overflow-hidden border border-bambu-dark-tertiary hover:border-bambu-green transition-colors"
                       >
                         <img
-                          src={img.url}
+                          src={withMediaToken(img.url)}
                           alt={img.name}
                           className="w-full h-full object-cover"
                         />
@@ -854,7 +854,7 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
                         onClick={() => setLightbox(index)}
                         className="aspect-square rounded-lg overflow-hidden border border-bambu-dark-tertiary hover:border-bambu-green transition-colors"
                       >
-                        <img src={withStreamToken(picture.url)} alt={picture.name} className="w-full h-full object-cover" />
+                        <img src={withMediaToken(picture.url)} alt={picture.name} className="w-full h-full object-cover" />
                       </button>
                     ))}
                   </div>
@@ -931,7 +931,7 @@ function FileCard({ fileId, fileName, linkedProductIds, onClose }: FileCardProps
             <ChevronLeft className="w-6 h-6 text-white" />
           </button>
           <img
-            src={withStreamToken(pictures[lightbox].url)}
+            src={withMediaToken(pictures[lightbox].url)}
             alt={pictures[lightbox].name}
             className="max-w-[90vw] max-h-[90vh] object-contain"
             onClick={(e) => e.stopPropagation()}

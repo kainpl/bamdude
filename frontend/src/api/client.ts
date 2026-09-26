@@ -178,6 +178,45 @@ export function withStreamToken(url: string): string {
   return `${url}${sep}token=${encodeURIComponent(streamToken)}`;
 }
 
+// Media token for every OTHER picture and video an <img>/<video> loads — thumbnails,
+// plates, covers, timelapses (audit D9 a2). Minted by any signed-in user and bound
+// to them, so the server checks the resource's own permission and ownership. The
+// two tokens are NOT interchangeable: the camera refuses this one, and every other
+// picture refuses the camera's — so a URL picks by what it serves.
+let mediaToken: string | null = null;
+
+export function setMediaToken(token: string | null) {
+  mediaToken = token;
+}
+
+export function getMediaToken(): string | null {
+  return mediaToken;
+}
+
+// The routes that take the CAMERA token; every other `/api/v1/` picture takes the
+// media token. The job's cover (`/camera-cover`) is a picture, not the camera.
+const CAMERA_MEDIA_PATH =
+  /\/api\/v1\/(?:printers\/\d+\/camera\/(?:stream|snapshot|plate-detection\/)|cameras\/\d+\/(?:stream|snapshot)(?:[?#]|$))/;
+
+/** Whether an `<img>`/`<video>` source is a camera route (stream token) rather than media. */
+export function isCameraMediaPath(url: string): boolean {
+  return CAMERA_MEDIA_PATH.test(url);
+}
+
+/**
+ * Append the media token to a same-origin API picture URL (for <img>/<video> src).
+ *
+ * Anything else — a `data:` or `blob:` URL, an external address — is returned
+ * untouched, which lets a caller wrap a URL the server handed over without
+ * knowing what it is. Bare until the token has arrived; the retrofit in
+ * `useStreamTokenSync` stamps what rendered before it.
+ */
+export function withMediaToken(url: string): string {
+  if (!mediaToken || !url.startsWith(`${API_BASE}/`)) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(mediaToken)}`;
+}
+
 /**
  * A multipart upload, which `request()` cannot carry.
  *
@@ -8695,9 +8734,9 @@ export const api = {
   // re-render re-fetch every thumbnail, which turned any background tick
   // (dispatch progress, toast updates) into a thumbnail thrashing storm.
   getArchiveThumbnail: (id: number, version?: string | number) =>
-    `${API_BASE}/archives/${id}/thumbnail${version ? `?v=${encodeURIComponent(String(version))}` : ''}`,
+    withMediaToken(`${API_BASE}/archives/${id}/thumbnail${version ? `?v=${encodeURIComponent(String(version))}` : ''}`),
   getArchivePlateThumbnail: (id: number, plateIndex: number) =>
-    `${API_BASE}/archives/${id}/plate-thumbnail/${plateIndex}`,
+    withMediaToken(`${API_BASE}/archives/${id}/plate-thumbnail/${plateIndex}`),
   getArchiveDownload: (id: number) => `${API_BASE}/archives/${id}/download`,
   downloadArchive: async (id: number, filename?: string): Promise<void> => {
     const headers: Record<string, string> = {};
@@ -8722,10 +8761,10 @@ export const api = {
     window.URL.revokeObjectURL(url);
   },
   getArchiveGcode: (id: number) => `${API_BASE}/archives/${id}/gcode`,
-  getArchivePlatePreview: (id: number) => `${API_BASE}/archives/${id}/plate-preview`,
+  getArchivePlatePreview: (id: number) => withMediaToken(`${API_BASE}/archives/${id}/plate-preview`),
   // Same cache-stability policy as ``getArchiveThumbnail``.
   getArchiveTimelapse: (id: number, version?: string | number) =>
-    `${API_BASE}/archives/${id}/timelapse${version ? `?v=${encodeURIComponent(String(version))}` : ''}`,
+    withMediaToken(`${API_BASE}/archives/${id}/timelapse${version ? `?v=${encodeURIComponent(String(version))}` : ''}`),
   scanArchiveTimelapse: (id: number) =>
     request<{
       status: string;
@@ -8817,7 +8856,9 @@ export const api = {
     }
     return response.json();
   },
-  // Photos
+  // Photos. ⚠️ No token, deliberately: the route is anonymous because
+  // notifications link a finished print's photo for services that fetch without
+  // credentials (audit D9 a2).
   getArchivePhotoUrl: (archiveId: number, filename: string) =>
     `${API_BASE}/archives/${archiveId}/photos/${encodeURIComponent(filename)}`,
   uploadArchivePhoto: async (archiveId: number, file: File): Promise<{ status: string; filename: string; photos: string[] }> => {
@@ -8950,7 +8991,7 @@ export const api = {
 
   // QR Code
   getArchiveQRCodeUrl: (archiveId: number, size = 200) =>
-    `${API_BASE}/archives/${archiveId}/qrcode?size=${size}`,
+    withMediaToken(`${API_BASE}/archives/${archiveId}/qrcode?size=${size}`),
   getArchiveCapabilities: (id: number) =>
     request<{
       has_model: boolean;
@@ -9005,7 +9046,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
   getArchiveProjectImageUrl: (archiveId: number, imagePath: string) =>
-    `${API_BASE}/archives/${archiveId}/project-image/${encodeURIComponent(imagePath)}`,
+    withMediaToken(`${API_BASE}/archives/${archiveId}/project-image/${encodeURIComponent(imagePath)}`),
   getArchiveForSlicer: (id: number, filename: string) => {
     const safe = filename.replace(/[/\\?#]/g, '_');
     return `${API_BASE}/archives/${id}/file/${encodeURIComponent(safe.endsWith('.3mf') ? safe : safe + '.3mf')}`;
@@ -9283,7 +9324,7 @@ export const api = {
     return request<MakerworldImportsPage>(`/makerworld/imports?${qs}`);
   },
   getMakerworldImportCoverUrl: (libraryFileId: number, variant = false) =>
-    `/api/v1/makerworld/imports/${libraryFileId}/${variant ? 'cover-variant' : 'cover'}`,
+    withMediaToken(`${API_BASE}/makerworld/imports/${libraryFileId}/${variant ? 'cover-variant' : 'cover'}`),
   importMakerworldInstance: (
     model_id: number,
     instance_id: number | null,
@@ -10729,6 +10770,10 @@ export const api = {
   // token here and passes it to /api/v1/ws as ?token=.
   getWebSocketToken: () =>
     request<{ token: string }>('/auth/ws-token', { method: 'POST' }),
+  // For `<img>`/`<video>` media that is not the camera (audit D9 a2). Any
+  // signed-in user may mint one; `useStreamTokenSync` keeps it fresh.
+  getMediaToken: () =>
+    request<{ token: string }>('/auth/media-token', { method: 'POST' }),
 
   // Camera
   getCameraStreamToken: () =>
@@ -11122,10 +11167,10 @@ export const api = {
     `${API_BASE}/products/${productId}/attachments/${encodeURIComponent(filename)}`,
   /** ⚠️ The segment is `attachment-image`, NOT `attachments/…/image`. It is a
    *  unique path so `main.py`'s whitelist can let an `<img>` request REACH the
-   *  route's own stream-token gate without also opening the bearer-only
+   *  route's own media-token gate without also opening the bearer-only
    *  download that lives under `/attachments/`. */
   getProductAttachmentImageUrl: (productId: number, filename: string) =>
-    withStreamToken(`${API_BASE}/products/${productId}/attachment-image/${encodeURIComponent(filename)}`),
+    withMediaToken(`${API_BASE}/products/${productId}/attachment-image/${encodeURIComponent(filename)}`),
   deleteProductAttachment: (productId: number, filename: string) =>
     request<ProductAttachment[]>(`/products/${productId}/attachments/${encodeURIComponent(filename)}`, {
       method: 'DELETE',
@@ -11154,7 +11199,7 @@ export const api = {
     );
   },
   getProductCoverImageUrl: (productId: number) =>
-    withStreamToken(`${API_BASE}/products/${productId}/cover-image`),
+    withMediaToken(`${API_BASE}/products/${productId}/cover-image`),
   /** Clears the explicit choice; the first-picture default resumes. */
   deleteProductCover: (productId: number) =>
     request<{ status: string }>(`/products/${productId}/cover-image`, { method: 'DELETE' }),
@@ -11249,9 +11294,8 @@ export const api = {
     ),
 
   // B.2 (#1155) — Project cover image. The GET URL is consumed by an
-  // <img src> tag, so it threads through withStreamToken() to satisfy
-  // the camera-stream-token gate (the GET endpoint is RequireCameraStreamToken
-  // for the same reason: <img> tags can't send Authorization headers).
+  // <img src> tag, so it threads through withMediaToken() to satisfy the
+  // route's media-token gate (<img> tags can't send Authorization headers).
   uploadProjectCoverImage: async (projectId: number, file: File): Promise<{
     status: string;
     filename: string;
@@ -11275,7 +11319,7 @@ export const api = {
     return response.json();
   },
   getProjectCoverImageUrl: (projectId: number) =>
-    withStreamToken(`${API_BASE}/projects/${projectId}/cover-image`),
+    withMediaToken(`${API_BASE}/projects/${projectId}/cover-image`),
   deleteProjectCoverImage: (projectId: number) =>
     request<{ status: string }>(`/projects/${projectId}/cover-image`, { method: 'DELETE' }),
 
@@ -11632,9 +11676,12 @@ export const api = {
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
   },
-  getLibraryFileThumbnailUrl: (id: number) => `${API_BASE}/library/files/${id}/thumbnail`,
+  // ``version`` is a cache-buster, applied BEFORE the token: appended after it,
+  // a second ``?`` would land inside the token's value.
+  getLibraryFileThumbnailUrl: (id: number, version?: string | number | null) =>
+    withMediaToken(`${API_BASE}/library/files/${id}/thumbnail${version ? `?v=${encodeURIComponent(String(version))}` : ''}`),
   getLibraryFilePlateThumbnail: (id: number, plateIndex: number) =>
-    `${API_BASE}/library/files/${id}/plate-thumbnail/${plateIndex}`,
+    withMediaToken(`${API_BASE}/library/files/${id}/plate-thumbnail/${plateIndex}`),
   getLibraryFileGcodeUrl: (id: number, plateId?: number | null) =>
     `${API_BASE}/library/files/${id}/gcode${plateId != null ? `?plate_id=${plateId}` : ''}`,
   moveLibraryFiles: (fileIds: number[], folderId: number | null) =>

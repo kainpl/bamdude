@@ -6,7 +6,7 @@ import { Modal } from './Modal';
 import { ModelViewer } from './ModelViewer';
 import { GcodePreview } from './GcodePreview';
 import { Button } from './Button';
-import { api } from '../api/client';
+import { api, withMediaToken } from '../api/client';
 import { openInSlicer, type SlicerType, isApiSliceableFileType } from '../utils/slicer';
 import { useTheme } from '../contexts/ThemeContext';
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateMetadata } from '../types/plates';
@@ -644,7 +644,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                         >
                           {plate.has_thumbnail && plate.thumbnail_url ? (
                             <img
-                              src={plate.thumbnail_url}
+                              src={withMediaToken(plate.thumbnail_url)}
                               alt={`Plate ${plate.index}`}
                               className={`${splitFullscreen ? 'w-8 h-8' : 'w-10 h-10'} rounded object-cover bg-bambu-dark-tertiary`}
                             />
@@ -854,7 +854,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                     >
                       {plate.has_thumbnail && plate.thumbnail_url ? (
                         <img
-                          src={plate.thumbnail_url}
+                          src={withMediaToken(plate.thumbnail_url)}
                           alt={`Plate ${plate.index}`}
                           className="w-10 h-10 rounded object-cover bg-bambu-dark-tertiary"
                         />

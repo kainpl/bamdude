@@ -32,10 +32,11 @@ async def _upload(client, product_id: int, category: str, name: str, content: by
     )
 
 
-async def _stream_token() -> str:
-    from backend.app.core.auth import create_camera_stream_token
+async def _media_token() -> str:
+    """What a product picture's ``<img>`` carries since audit D9 a2 — the signed-in admin's."""
+    from backend.app.core.auth import create_media_token
 
-    return await create_camera_stream_token()
+    return await create_media_token("test_admin")
 
 
 @pytest.mark.asyncio
@@ -139,14 +140,15 @@ async def test_a_traversing_attachment_name_is_refused_before_the_path_join():
 
 
 @pytest.mark.asyncio
-async def test_the_image_route_wants_a_stream_token_and_serves_pictures_only(committing_client, product):
+async def test_the_image_route_wants_a_media_token_and_serves_pictures_only(committing_client, product):
     """``<img src>`` cannot carry an Authorization header, so pictures go out
-    through the same ``?token=`` credential the project cover route takes."""
+    through a media token in ``?token=``, as the project cover does — and a
+    signed-in fetch through its own header (audit D9 a2)."""
     pic = (await _upload(committing_client, product, "pictures", "a.png")).json()["filename"]
     doc = (await _upload(committing_client, product, "bom_docs", "b.csv", b"a,b")).json()["filename"]
 
-    assert (await committing_client.get(f"/api/v1/products/{product}/attachment-image/{pic}")).status_code == 401
-    token = await _stream_token()
+    assert (await committing_client.get(f"/api/v1/products/{product}/attachment-image/{pic}")).status_code == 200
+    token = await _media_token()
     img = await committing_client.get(f"/api/v1/products/{product}/attachment-image/{pic}", params={"token": token})
     assert img.status_code == 200, img.text
     assert img.content == PNG and img.headers["content-type"] == "image/png"
@@ -192,7 +194,7 @@ async def test_a_dedicated_cover_is_stored_beside_the_gallery_but_never_in_it(co
     assert detail["cover_image_filename"] == first and detail["has_cover"] is True
     assert [a["filename"] for a in detail["attachments"]] == [doc], "the dedicated cover is not a gallery entry"
 
-    token = await _stream_token()
+    token = await _media_token()
     img = await committing_client.get(f"/api/v1/products/{product}/cover-image", params={"token": token})
     assert img.status_code == 200 and img.content == PNG
 
@@ -215,7 +217,7 @@ async def test_a_dedicated_cover_is_stored_beside_the_gallery_but_never_in_it(co
 async def test_the_cover_falls_back_to_the_first_picture_in_gallery_order(committing_client, product):
     a = (await _upload(committing_client, product, "pictures", "a.png", PNG + b"AAA")).json()["filename"]
     b = (await _upload(committing_client, product, "pictures", "b.png", PNG + b"BBB")).json()["filename"]
-    token = await _stream_token()
+    token = await _media_token()
 
     detail = (await committing_client.get(f"/api/v1/products/{product}")).json()
     assert detail["cover_image_filename"] is None and detail["has_cover"] is True
@@ -254,7 +256,7 @@ async def test_a_dangling_cover_column_heals_to_null(committing_client, product)
     ).json()["filename"]
     (product_attachments_dir(product) / name).unlink()
 
-    token = await _stream_token()
+    token = await _media_token()
     gone = await committing_client.get(f"/api/v1/products/{product}/cover-image", params={"token": token})
     assert gone.status_code == 404
     detail = (await committing_client.get(f"/api/v1/products/{product}")).json()
@@ -280,12 +282,12 @@ async def test_has_cover_is_the_effective_cover_in_list_and_detail(committing_cl
 
 
 @pytest.mark.asyncio
-async def test_the_browser_reaches_the_picture_with_only_a_stream_token(committing_client, product):
+async def test_the_browser_reaches_the_picture_with_only_a_media_token(committing_client, product):
     """Issued from an UNAUTHENTICATED client, and that is the whole point.
 
     ``main.py``'s ``auth_middleware`` runs BEFORE any route dependency, so a
     token-gated ``<img>`` route answers 401 from the middleware — never reaching
-    its own ``RequireCameraStreamToken`` — unless its path matches an entry in
+    its own media-token gate — unless its path matches an entry in
     ``PUBLIC_API_PATTERNS``. The ``committing_client`` fixture carries an admin
     JWT and sails past that middleware, so it cannot see the bug at all: it
     would report a green ``<img>`` route no browser can load. That is exactly
@@ -298,7 +300,7 @@ async def test_the_browser_reaches_the_picture_with_only_a_stream_token(committi
 
     pic = (await _upload(committing_client, product, "pictures", "a.png")).json()["filename"]
     await committing_client.put(f"/api/v1/products/{product}/cover-image", json={"filename": pic})
-    token = await _stream_token()
+    token = await _media_token()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as anonymous:
         picture = f"/api/v1/products/{product}/attachment-image/{pic}"
@@ -325,7 +327,7 @@ async def test_unknown_names_and_unknown_products_are_404(committing_client, pro
     ghost = "deadbeefdeadbeefdeadbeefdeadbeef.png"
     assert (await committing_client.get(f"/api/v1/products/{product}/attachments/{ghost}")).status_code == 404
     assert (await committing_client.delete(f"/api/v1/products/{product}/attachments/{ghost}")).status_code == 404
-    token = await _stream_token()
+    token = await _media_token()
     assert (
         await committing_client.get(f"/api/v1/products/{product}/attachment-image/{ghost}", params={"token": token})
     ).status_code == 404
@@ -345,7 +347,7 @@ async def test_deleting_the_implicit_cover_hands_the_role_to_the_next_picture(co
     and deleting the last must leave the product with no cover at all."""
     first = (await _upload(committing_client, product, "pictures", "a.png", PNG + b"AAA")).json()["filename"]
     second = (await _upload(committing_client, product, "pictures", "b.png", PNG + b"BBB")).json()["filename"]
-    token = await _stream_token()
+    token = await _media_token()
 
     detail = (await committing_client.get(f"/api/v1/products/{product}")).json()
     assert detail["cover_image_filename"] is None and detail["has_cover"] is True
@@ -378,7 +380,7 @@ async def test_an_implicit_cover_whose_file_vanished_prunes_that_picture(committ
     second = (await _upload(committing_client, product, "pictures", "b.png", PNG + b"BBB")).json()["filename"]
     (product_attachments_dir(product) / first).unlink()
 
-    token = await _stream_token()
+    token = await _media_token()
     gone = await committing_client.get(f"/api/v1/products/{product}/cover-image", params={"token": token})
     assert gone.status_code == 404
 
@@ -401,7 +403,7 @@ async def test_the_cover_is_revalidated_and_a_uuid_named_picture_is_not(committi
     ``/attachment-image/<uuid>.png`` can never change under its own name.
     """
     name = (await _upload(committing_client, product, "pictures", "a.png")).json()["filename"]
-    token = await _stream_token()
+    token = await _media_token()
 
     cover = await committing_client.get(f"/api/v1/products/{product}/cover-image", params={"token": token})
     assert cover.headers["cache-control"] == "private, no-cache"

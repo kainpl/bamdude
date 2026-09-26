@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, Monitor, Box, Maximize2, AlertTriangle } from 'lucide-react';
-import { api, withStreamToken } from '../api/client';
+import { api, withMediaToken } from '../api/client';
 import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay, farmStatusPollInterval } from '../api/farmReadBudget';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -154,7 +154,7 @@ export function SkipObjectsModal({ printerId, isOpen, onClose, archiveId }: Skip
                 <div className="relative cursor-pointer group" onClick={() => setEnlarged(true)}>
                   {status?.cover_url ? (
                     <img
-                      src={withStreamToken(`${status.cover_url}?view=top`)}
+                      src={withMediaToken(`${status.cover_url}?view=top`)}
                       alt={t('printers.printPreview')}
                       className="w-full aspect-square object-contain rounded-lg bg-gray-900 dark:bg-gray-900 border border-gray-300 dark:border-gray-600"
                     />
@@ -289,7 +289,7 @@ export function SkipObjectsModal({ printerId, isOpen, onClose, archiveId }: Skip
           >
             {status?.cover_url ? (
               <img
-                src={withStreamToken(`${status.cover_url}?view=top`)}
+                src={withMediaToken(`${status.cover_url}?view=top`)}
                 alt={t('printers.printPreview')}
                 className="w-full h-full object-contain rounded-lg bg-gray-900"
               />

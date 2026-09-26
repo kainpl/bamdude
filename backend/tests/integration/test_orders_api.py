@@ -810,10 +810,10 @@ async def test_a_traversing_attachment_name_is_refused_before_the_path_join():
 async def test_cover_image_upload_stream_and_delete(committing_client):
     """The GET is gated by ``RequireCameraStreamToken``, not by the JWT.
 
-    ``<img src>`` cannot carry an Authorization header, so the route takes the
-    same ``?token=`` credential as ``/archives/{id}/thumbnail``.
+    ``<img src>`` cannot carry an Authorization header, so the route takes a
+    media token in ``?token=``, like ``/archives/{id}/thumbnail`` (audit D9 a2).
     """
-    from backend.app.core.auth import create_camera_stream_token
+    from backend.app.core.auth import create_media_token
 
     pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
 
@@ -826,7 +826,7 @@ async def test_cover_image_upload_stream_and_delete(committing_client):
         "filename"
     ]
 
-    token = await create_camera_stream_token()
+    token = await create_media_token("test_admin")
     img = await committing_client.get(f"/api/v1/projects/{pid}/cover-image", params={"token": token})
     assert img.status_code == 200, img.text
     assert img.headers["content-type"] == "image/png"
@@ -853,7 +853,7 @@ async def test_the_cover_route_revalidates_and_heals_a_dangling_reference(commit
     dangling reference and warned about it again, forever.
     """
     from backend.app.api.routes.projects import get_project_attachments_dir
-    from backend.app.core.auth import create_camera_stream_token
+    from backend.app.core.auth import create_media_token
     from backend.app.models.project import Project
 
     pid = (await committing_client.post("/api/v1/projects/", json={"name": "O"})).json()["id"]
@@ -863,7 +863,7 @@ async def test_the_cover_route_revalidates_and_heals_a_dangling_reference(commit
             files={"file": ("cover.png", b"\x89PNG\r\n\x1a\n", "image/png")},
         )
     ).json()["filename"]
-    token = await create_camera_stream_token()
+    token = await create_media_token("test_admin")
 
     served = await committing_client.get(f"/api/v1/projects/{pid}/cover-image", params={"token": token})
     assert served.status_code == 200

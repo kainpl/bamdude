@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { Layers, Clock, Weight, Box, Loader2 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, withMediaToken } from '../api/client';
 import type { PlateMetadata } from '../types/plates';
 import { resolveSpoolColorName } from '../utils/colors';
 import { formatDuration } from '../utils/date';
@@ -85,7 +85,7 @@ function LibraryPlateGallery({ fileId, initialPlateIndex }: Props) {
           <div className="flex items-start gap-3 h-32">
             {active.has_thumbnail && active.thumbnail_url != null ? (
               <img
-                src={active.thumbnail_url}
+                src={withMediaToken(active.thumbnail_url)}
                 alt={`${t('fileManager.plate')} ${active.index}`}
                 className="w-32 h-32 rounded object-contain bg-bambu-dark-tertiary flex-shrink-0"
               />

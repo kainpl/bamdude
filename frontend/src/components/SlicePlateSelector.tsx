@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Layers, Check, Box } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { PlateMetadata } from '../types/plates';
+import { withMediaToken } from '../api/client';
 
 interface SlicePlateSelectorProps {
   plates: PlateMetadata[];
@@ -112,7 +113,7 @@ export function SlicePlateSelector({
             <div className="flex items-start gap-3 h-32">
               {active.has_thumbnail && active.thumbnail_url != null ? (
                 <img
-                  src={active.thumbnail_url}
+                  src={withMediaToken(active.thumbnail_url)}
                   alt={t('archives.platePicker.plateLabel', { index: active.index })}
                   className="w-32 h-32 rounded object-contain bg-bambu-dark-tertiary flex-shrink-0"
                 />

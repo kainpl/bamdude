@@ -19,7 +19,7 @@ from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
+from backend.app.core.auth import RequirePermission, require_media_permission
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -1431,14 +1431,15 @@ async def upload_project_cover_image(
 async def get_project_cover_image(
     project_id: int,
     db: AsyncSession = Depends(get_db),
-    _=RequireCameraStreamToken,
+    _=Depends(require_media_permission(Permission.PROJECTS_READ)),
 ):
     """Stream the project's cover image (#1155).
 
     Browsers can't attach ``Authorization: Bearer ...`` to ``<img src>``
-    requests, so this route accepts the same ``?token=`` stream
-    credential as ``/archives/{id}/thumbnail``. The frontend wraps URLs
-    via ``withStreamToken``.
+    requests, so this route takes a media token in ``?token=`` (or the
+    ordinary headers) under ``projects:read`` — audit D9 a2; it used to take
+    the camera stream token, which cost ``camera:view``. The frontend wraps
+    URLs via ``withMediaToken``.
     """
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()

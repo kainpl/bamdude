@@ -24,7 +24,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import (
-    RequireCameraStreamToken,
+    require_media_ownership_permission,
     require_ownership_permission,
     require_permission,
 )
@@ -150,6 +150,8 @@ def _library_file_visible(
     library_file: LibraryFile | None,
     user: User | None,
     can_read_all: bool,
+    *,
+    include_trashed: bool = False,
 ) -> bool:
     """Is this row visible to the caller?
 
@@ -158,7 +160,11 @@ def _library_file_visible(
     one decision: the raising half below is this predicate plus the raise, and
     nothing else, so the two cannot drift.
     """
-    if library_file is None or getattr(library_file, "deleted_at", None) is not None:
+    if library_file is None:
+        return False
+    # ``include_trashed``: the trash list shows each deleted file with its
+    # picture — past this check only, never past the ownership rule.
+    if getattr(library_file, "deleted_at", None) is not None and not include_trashed:
         return False
     if can_read_all:
         return True
@@ -172,6 +178,8 @@ def _ensure_library_file_visible(
     library_file: LibraryFile | None,
     user: User | None,
     can_read_all: bool,
+    *,
+    include_trashed: bool = False,
 ) -> LibraryFile:
     """Per-file visibility gate for ownership-scoped LIBRARY reads (#1726-adjacent).
 
@@ -185,9 +193,19 @@ def _ensure_library_file_visible(
     """
     # ``library_file is None`` is restated only to narrow the return type — the
     # predicate already answers False for it.
-    if library_file is None or not _library_file_visible(library_file, user, can_read_all):
+    if library_file is None or not _library_file_visible(
+        library_file, user, can_read_all, include_trashed=include_trashed
+    ):
         raise HTTPException(404, "File not found")
     return library_file
+
+
+# The pictures of a library file (audit D9 a2): a media token in the URL — an
+# ``<img>`` cannot send a header — or the ordinary headers, and either way the
+# same ownership rule as every other library read.
+_LIBRARY_MEDIA_READ = Depends(
+    require_media_ownership_permission(Permission.LIBRARY_READ_ALL, Permission.LIBRARY_READ_OWN)
+)
 
 
 def _product_refs(products: list[Product]) -> list[ProductRef]:
@@ -4292,10 +4310,10 @@ async def get_library_file_plate_objects(
 #
 # Two serving routes, split by what a browser would DO with the bytes:
 #
-# * ``card-file`` is the ``<img src>`` surface. It takes a camera stream token —
-#   which is long-lived and also reaches a TV or a Home Assistant card — so it
-#   hands out PICTURES and nothing else. A bill of materials is a document about
-#   somebody's business and has no reason to sit behind a kiosk credential.
+# * ``card-file`` is the ``<img src>`` surface. It takes a media token in the
+#   URL (audit D9 a2; the camera stream token before) and hands out PICTURES and
+#   nothing else — a credential that rides in a URL ends up in logs and history,
+#   and a bill of materials is a document about somebody's business.
 # * ``card-download`` is the bearer surface for everything else, under the same
 #   ownership permission as ``/card`` itself.
 #
@@ -4565,28 +4583,23 @@ async def get_library_file_card_file(
     file_id: int,
     zip_path: str,
     db: AsyncSession = Depends(get_db),
-    _=RequireCameraStreamToken,
+    auth_result: tuple[User | None, bool] = _LIBRARY_MEDIA_READ,
 ):
     """A PICTURE out of the card's auxiliaries, for an ``<img src>``.
 
-    Pictures only (``CARD_PICTURE_CATEGORIES``): a camera stream token is
-    long-lived and also lives in a kiosk or a Home Assistant card, so a bill of
-    materials or an assembly PDF is not served here just because it happens to
-    be in the same ZIP — those go through ``card-download`` and a bearer token.
-    The products route makes the same split for the same reason.
+    Pictures only (``CARD_PICTURE_CATEGORIES``): a bill of materials or an
+    assembly PDF is not served here just because it happens to be in the same
+    ZIP — those go through ``card-download`` and a bearer token. The products
+    route makes the same split for the same reason.
 
-    Token-gated because an ``<img>`` cannot carry an Authorization header — and
-    ``/card-file/`` is in ``main.py``'s ``PUBLIC_API_PATTERNS`` so the request
-    reaches this gate at all.
-
-    ⚠️ **Stream-token-ONLY by design, exactly like the plate-thumbnail route.**
-    It carries no ownership check, and that is not an oversight: the same is
-    true of every ``<img>`` surface in BamDude, because the credential a browser
-    can put in a URL is the only one it has. ``/card`` and ``card-download``
-    beside it ARE ownership-scoped — the split is deliberate, and the price of
-    it is that pictures, and nothing but pictures, sit behind the kiosk
-    credential.
+    Media token or headers (audit D9 a2) because an ``<img>`` cannot carry an
+    Authorization header — ``/card-file/`` is in ``main.py``'s
+    ``PUBLIC_API_PATTERNS`` so the request reaches this gate at all. It used to
+    take the camera stream token, which checked no ownership; the media token
+    names its user, so this is now owner-scoped like ``/card`` beside it.
     """
+    user, can_read_all = auth_result
+    _ensure_library_file_visible(await db.get(LibraryFile, file_id), user, can_read_all)
     data, media_type, _name = await _card_member(db, file_id, zip_path, categories=CARD_PICTURE_CATEGORIES)
     if not media_type.startswith("image/"):
         # A picture folder is a folder, not a promise. Whatever a designer put in
@@ -4650,19 +4663,18 @@ async def get_library_file_plate_thumbnail(
     plate_index: int,
     view: str = "plate",
     db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _LIBRARY_MEDIA_READ,
 ):
     """Get the thumbnail image for a specific plate from a library file.
 
     ``view=top`` serves the top-down render the object-preview markers are
-    positioned against.
+    positioned against. Media token or headers, owner-scoped (audit D9 a2).
     """
     from starlette.responses import Response
 
+    user, can_read_all = auth_result
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
-    lib_file = result.scalar_one_or_none()
-
-    if not lib_file:
-        raise HTTPException(status_code=404, detail="File not found")
+    lib_file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all)
 
     file_path = Path(app_settings.base_dir) / lib_file.file_path
     if not file_path.exists():
@@ -5605,13 +5617,18 @@ async def download_library_file_for_slicer(
 
 
 @router.get("/files/{file_id}/thumbnail")
-async def get_thumbnail(file_id: int, db: AsyncSession = Depends(get_db)):
-    """Get a file's thumbnail."""
-    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
-    file = result.scalar_one_or_none()
+async def get_thumbnail(
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _LIBRARY_MEDIA_READ,
+):
+    """Get a file's thumbnail — media token or headers, owner-scoped (audit D9 a2).
 
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
+    A trashed file keeps its picture for the trash list, to whoever may see it.
+    """
+    user, can_read_all = auth_result
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all, include_trashed=True)
 
     abs_thumb_path = to_absolute_path(file.thumbnail_path)
     if not abs_thumb_path or not abs_thumb_path.exists():

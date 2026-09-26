@@ -46,6 +46,7 @@ class TokenType(str, Enum):
     WEBSOCKET = "websocket"  # short-lived query-param token gating /api/v1/ws (WS can't send Authorization headers)
     REVOKED_JTI = "revoked_jti"
     REFRESH = "refresh"  # m015 — sliding-session refresh token (rotated per /auth/refresh)
+    MEDIA = "media"  # query-param token for <img>/<video> media routes, bound to the user who minted it (audit D9)
 
 
 class EventType(str, Enum):
