@@ -22,6 +22,7 @@ import { QueueSequencer } from '../QueueSequencer';
 import type { SequencedFile } from '../QueueSequencer';
 import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
 import { formatDateTime } from '../../utils/date';
+import { compareAutoQueueOrder } from '../../utils/autoQueueOrder';
 
 /**
  * Top-of-page panel that surfaces pending auto-queue items — the router
@@ -148,10 +149,11 @@ export function AutoQueuePanel() {
   // only CONSECUTIVE copies of one batch collapse into a xN row. A batch whose
   // copies were spread apart by reordering renders as several runs — the order
   // is always visible and always true, which global batch-grouping could not
-  // promise once reordering exists.
+  // promise once reordering exists. "The actual order" is the distributor's:
+  // with shortest-job-first on that is not the position (upstream #3043).
   const sortedItems = useMemo(
-    () => [...(items ?? [])].sort((a, b) => a.position - b.position || a.id - b.id),
-    [items],
+    () => [...(items ?? [])].sort((a, b) => compareAutoQueueOrder(a, b, sjfActive) || a.id - b.id),
+    [items, sjfActive],
   );
   const runs = useMemo(() => {
     const out: Array<{ key: string; batchId: string | null; items: AutoQueueItem[] }> = [];

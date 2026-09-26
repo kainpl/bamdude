@@ -172,6 +172,11 @@
 
 ### Fixed
 
+- **With Queue Shortest First on, the Auto-Queue panel lists jobs in the
+  order they will be placed.** It kept showing the manual order, while the
+  distributor placed the shortest job of each printer model first, a job
+  that had been jumped ahead of that, and a job of unknown length last. The
+  list now follows the same order.
 - **A file dropped on a busy or offline printer's card is queued, not
   refused.** The drop only ever adds a job to that printer's queue, but the
   card refused it unless the printer was idle and online — a red "Printer
