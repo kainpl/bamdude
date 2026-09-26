@@ -203,6 +203,15 @@
   and preheat fell back to its configured default. It now takes the highest
   temperature among the filaments the plate actually uses, as Bambu Studio
   does.
+- **How a camera opens is chosen on the camera button, per browser.** The
+  window-or-overlay choice was one setting for every camera and every
+  person, five steps away on the Settings page. The camera button on a
+  printer card now has an arrow beside it: pick *New window* or *Embedded
+  overlay* and the camera opens that way, and this browser remembers it for
+  the icon from then on — two people watching one farm each keep their own.
+  The Settings value is now the default for a browser that has not chosen.
+  An overlay you open is no longer closed on its own because the default
+  says "window".
 - **BamDude loads on iPhones and iPads with iOS 16.0–16.3 again.** Those
   Safari versions cannot read one kind of pattern in JavaScript (a regex
   lookbehind), and two of them had reached the app — one in the G-code

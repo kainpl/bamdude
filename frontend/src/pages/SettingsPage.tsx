@@ -3190,6 +3190,7 @@ export function SettingsPage() {
                     ? t('settings.cameraOverlayDescription')
                     : t('settings.cameraWindowDescription')}
                 </p>
+                <p className="text-xs text-bambu-gray mt-1">{t('settings.cameraViewModeDefaultHint')}</p>
               </div>
 
               {/* The chamber light for the camera (backend services/camera_light).

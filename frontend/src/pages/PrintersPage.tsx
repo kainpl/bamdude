@@ -71,6 +71,7 @@ import {
   AirVent,
   Download,
   ScanSearch,
+  Check,
   CheckCircle,
   XCircle,
   User,
@@ -220,6 +221,7 @@ import { parseIdList } from '../components/settings/staggerGroupIds';
 import { LocationConditions } from '../components/zigbee/LocationConditions';
 import { LocationCameras } from '../components/LocationCameras';
 import { openCameraWindow, printerSource, type CameraSourceKind } from '../utils/cameraSource';
+import { rememberCameraViewMode, storedCameraViewMode, type CameraViewMode } from '../utils/cameraViewMode';
 
 /** What the one floating camera window is currently showing. */
 interface EmbeddedCameraSelection {
@@ -1821,6 +1823,7 @@ function PrinterCard({
   timeFormat = 'system',
   dateFormat = 'system',
   cameraViewMode = 'window',
+  onCameraViewModeChange,
   onOpenEmbeddedCamera,
   checkPrinterFirmware = true,
   useSlicerApi = false,
@@ -1857,7 +1860,9 @@ function PrinterCard({
   onUnassignSpool?: (printerId: number, amsId: number, trayId: number) => void;
   timeFormat?: 'system' | '12h' | '24h';
   dateFormat?: 'system' | 'us' | 'eu' | 'iso';
-  cameraViewMode?: 'window' | 'embedded';
+  cameraViewMode?: CameraViewMode;
+  /** This browser's camera mode was picked on the camera button's caret (audit D9 b). */
+  onCameraViewModeChange?: (mode: CameraViewMode) => void;
   onOpenEmbeddedCamera?: (printerId: number, printerName: string) => void;
   checkPrinterFirmware?: boolean;
   // Master "Server-side slicing" toggle from Settings. When off, the Filament
@@ -2093,6 +2098,18 @@ function PrinterCard({
     queryFn: ({ signal }) => api.getPrinterStatus(printer.id, signal),
     refetchInterval: query => farmStatusPollInterval(30_000, query), // Fallback polling, WebSocket handles real-time
   });
+
+  // Opens this printer's camera the way asked — the icon passes the browser's
+  // remembered mode, the caret the mode just picked.
+  const openCamera = (mode: CameraViewMode) => {
+    if (mode === 'embedded' && onOpenEmbeddedCamera) {
+      onOpenEmbeddedCamera(printer.id, printer.name);
+    } else {
+      // Same helper the location header's camera buttons use, so the two
+      // cannot drift apart over the window's geometry.
+      openCameraWindow(printerSource(printer.id));
+    }
+  };
 
   // Check if any macros match this printer (for showing/hiding Macros menu item)
   const { data: allMacros } = useQuery({
@@ -6301,24 +6318,47 @@ function PrinterCard({
               >
                 <ChamberLight on={status?.chamber_light ?? false} className={`w-[var(--pc-i5,1.25rem)] h-[var(--pc-i5,1.25rem)] ${status?.chamber_light ? 'text-yellow-400' : ''}`} />
               </Button>
-              {/* Camera Button */}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => {
-                  if (cameraViewMode === 'embedded' && onOpenEmbeddedCamera) {
-                    onOpenEmbeddedCamera(printer.id, printer.name);
-                  } else {
-                    // Same helper the location header's camera buttons use, so
-                    // the two cannot drift apart over the window's geometry.
-                    openCameraWindow(printerSource(printer.id));
-                  }
-                }}
-                disabled={!status?.connected || !hasPermission('camera:view')}
-                title={!hasPermission('camera:view') ? t('printers.permission.noCamera') : (cameraViewMode === 'embedded' ? t('printers.openCameraOverlay') : t('printers.openCameraWindow'))}
-              >
-                <Video className="w-[var(--pc-i5,1.25rem)] h-[var(--pc-i5,1.25rem)]" />
-              </Button>
+              {/* Camera: the icon opens it the way this browser last chose;
+                  the caret offers both and remembers the pick (audit D9 b). */}
+              <div className="inline-flex rounded-md">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => openCamera(cameraViewMode)}
+                  disabled={!status?.connected || !hasPermission('camera:view')}
+                  title={!hasPermission('camera:view') ? t('printers.permission.noCamera') : (cameraViewMode === 'embedded' ? t('printers.openCameraOverlay') : t('printers.openCameraWindow'))}
+                  className="!rounded-r-none !border-r-0"
+                >
+                  <Video className="w-[var(--pc-i5,1.25rem)] h-[var(--pc-i5,1.25rem)]" />
+                </Button>
+                <CardActionMenu
+                  label={t('printers.cameraViewModeMenu')}
+                  title={t('printers.cameraViewModeMenu')}
+                  disabled={!status?.connected || !hasPermission('camera:view')}
+                  width="max-content"
+                  estimatedHeight={96}
+                  triggerClassName="inline-flex items-center justify-center font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-bambu-dark disabled:opacity-50 disabled:cursor-not-allowed border border-bambu-dark-tertiary bg-bambu-dark-tertiary hover:bg-bambu-gray-dark text-white focus:ring-bambu-gray text-sm min-h-[44px] md:min-h-0 py-1.5 px-1.5 rounded-r-lg"
+                  icon={<ChevronDown className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />}
+                >
+                  {(close) => (
+                    <>
+                      {(['window', 'embedded'] as const).map((mode) => (
+                        <CardActionMenuItem
+                          key={mode}
+                          onSelect={() => {
+                            close();
+                            onCameraViewModeChange?.(mode);
+                            openCamera(mode);
+                          }}
+                        >
+                          <Check className={`w-4 h-4 ${cameraViewMode === mode ? 'text-bambu-green' : 'invisible'}`} />
+                          {mode === 'window' ? t('settings.newWindow') : t('settings.embeddedOverlay')}
+                        </CardActionMenuItem>
+                      ))}
+                    </>
+                  )}
+                </CardActionMenu>
+              </div>
               {/* Split button: main part toggles detection, chevron opens modal */}
               <div className={`inline-flex rounded-md ${printer.plate_detection_enabled ? 'ring-1 ring-green-500' : ''}`}>
                 <Button
@@ -9263,12 +9303,16 @@ export function PrintersPage() {
     return DRYING_PRESETS;
   }, [settings?.drying_presets]);
 
-  // Close embedded cameras if mode changes to 'window'
-  useEffect(() => {
-    if (settings?.camera_view_mode === 'window' && embeddedCamera !== null) {
-      setEmbeddedCamera(null);
-    }
-  }, [settings?.camera_view_mode, embeddedCamera]);
+  // How this browser opens a camera: its own pick on a camera button's caret,
+  // else the farm default from Settings (audit D9 b). No effect closes an open
+  // overlay when the default is "window" any more — with the choice made per
+  // click, that would shut what the operator just opened on purpose.
+  const [pickedCameraViewMode, setPickedCameraViewMode] = useState<CameraViewMode | null>(storedCameraViewMode);
+  const cameraViewMode: CameraViewMode = pickedCameraViewMode ?? settings?.camera_view_mode ?? 'window';
+  const chooseCameraViewMode = useCallback((mode: CameraViewMode) => {
+    rememberCameraViewMode(mode);
+    setPickedCameraViewMode(mode);
+  }, []);
 
   // Fetch all smart plugs to know which printers have them
   const { data: smartPlugs } = useQuery({
@@ -10192,7 +10236,8 @@ export function PrintersPage() {
       } : undefined}
       timeFormat={settings?.time_format || 'system'}
       dateFormat={settings?.date_format || 'system'}
-      cameraViewMode={settings?.camera_view_mode || 'window'}
+      cameraViewMode={cameraViewMode}
+      onCameraViewModeChange={chooseCameraViewMode}
       onOpenEmbeddedCamera={(id, name) => setEmbeddedCamera({ kind: 'printer', id, name })}
       checkPrinterFirmware={settings?.check_printer_firmware !== false}
       useSlicerApi={settings?.use_slicer_api ?? false}
@@ -10349,7 +10394,7 @@ export function PrintersPage() {
                   <LocationCameras
                     locationId={group.locationId}
                     onOpenEmbedded={
-                      settings?.camera_view_mode === 'embedded'
+                      cameraViewMode === 'embedded'
                         ? (id, name) => setEmbeddedCamera({ kind: 'camera', id, name })
                         : undefined
                     }
@@ -10488,7 +10533,8 @@ export function PrintersPage() {
               } : undefined}
               timeFormat={settings?.time_format || 'system'}
               dateFormat={settings?.date_format || 'system'}
-              cameraViewMode={settings?.camera_view_mode || 'window'}
+              cameraViewMode={cameraViewMode}
+              onCameraViewModeChange={chooseCameraViewMode}
               onOpenEmbeddedCamera={(id, name) => setEmbeddedCamera({ kind: 'printer', id, name })}
               checkPrinterFirmware={settings?.check_printer_firmware !== false}
               useSlicerApi={settings?.use_slicer_api ?? false}

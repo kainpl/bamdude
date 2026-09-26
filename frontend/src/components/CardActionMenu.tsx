@@ -22,6 +22,13 @@ interface CardActionMenuProps {
   /** The trigger icon's classes — a card that scales its icons through a CSS
    *  variable passes the same expression its neighbours use. */
   iconClassName?: string;
+  /** The trigger's icon, when it is not the card's "⋮" — the caret of a split
+   *  button (the camera button's view-mode menu). */
+  icon?: ReactNode;
+  /** The trigger is disabled — the action beside it is unavailable too. */
+  disabled?: boolean;
+  /** The trigger's hover text. */
+  title?: string;
   /** The items. Called with `close` so each item shuts the menu itself — the
    *  panel cannot close on a bubbling click, being in another tree. */
   children: (close: () => void) => ReactNode;
@@ -57,6 +64,9 @@ export function CardActionMenu({
   estimatedHeight,
   triggerClassName = 'p-1.5 rounded-lg hover:bg-bambu-dark text-bambu-gray hover:text-white transition-colors',
   iconClassName = 'w-4 h-4',
+  icon,
+  disabled,
+  title,
   children,
 }: CardActionMenuProps) {
   const [open, setOpen] = useState(false);
@@ -159,10 +169,12 @@ export function CardActionMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={label}
+        title={title}
+        disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         className={triggerClassName}
       >
-        <MoreVertical className={iconClassName} />
+        {icon ?? <MoreVertical className={iconClassName} />}
       </button>
       {open
         && createPortal(

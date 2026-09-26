@@ -1166,6 +1166,7 @@ export default {
     // Camera
     openCameraOverlay: 'Відкрити накладення камери',
     openCameraWindow: 'Відкрити камеру в новому вікні',
+    cameraViewModeMenu: 'Обрати, як відкривається камера',
     // Firmware
     firmwareUpdateAvailable: 'Доступне оновлення прошивки: {{current}} → {{latest}}',
     firmwareUpToDate: 'Прошивка {{version}} - Актуальна',
@@ -3538,6 +3539,7 @@ export default {
     cameraViewMode: 'Режим перегляду камери',
     cameraOverlayDescription: 'Камера відкривається в масштабованому накладанні на головному екрані',
     cameraWindowDescription: 'Камера відкривається в окремому вікні браузера',
+    cameraViewModeDefaultHint: 'Типовий режим для браузера, який ще не обирав, — кожен браузер пам\'ятає, що востаннє обрали на кнопці камери принтера.',
     externalCamerasDescription: 'Налаштуйте зовнішні камери для заміни вбудованої камери принтера. Підтримує MJPEG потоки, RTSP, HTTP знімки та USB камери (V4L2). Коли увімкнено, зовнішня камера використовується для живого перегляду та фото по завершенню.',
     cameraPlaceholderUsb: 'Шлях до пристрою (/dev/video0)',
     cameraPlaceholderUrl: 'URL камери (rtsp://... або http://...)',

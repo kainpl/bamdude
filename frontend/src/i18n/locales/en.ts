@@ -1151,6 +1151,7 @@ export default {
     },
     // Camera
     openCameraOverlay: 'Open camera overlay',
+    cameraViewModeMenu: 'Choose how the camera opens',
     openCameraWindow: 'Open camera in new window',
     // Firmware
     firmwareUpdateAvailable: 'Firmware update available: {{current}} → {{latest}}',
@@ -3532,6 +3533,7 @@ export default {
     cameraViewMode: 'Camera View Mode',
     cameraOverlayDescription: 'Camera opens in a resizable overlay on the main screen',
     cameraWindowDescription: 'Camera opens in a separate browser window',
+    cameraViewModeDefaultHint: 'The default for a browser that has not chosen yet — each browser remembers what was last picked on a printer\'s camera button.',
     externalCamerasDescription: 'Configure external cameras to replace the built-in printer camera. Supports MJPEG streams, RTSP, HTTP snapshots, and USB cameras (V4L2). When enabled, the external camera is used for live view and finish photos.',
     cameraPlaceholderUsb: 'Device path (/dev/video0)',
     cameraPlaceholderUrl: 'Camera URL (rtsp://... or http://...)',
