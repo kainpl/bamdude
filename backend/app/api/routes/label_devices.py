@@ -40,6 +40,7 @@ from backend.app.schemas.label_device import (
     LabelJobPreview,
     LabelJobResult,
 )
+from backend.app.services.inventory_service import spool_display_template
 from backend.app.services.label_dispatch import (
     DOTS_PER_MM,
     build_contexts,
@@ -222,7 +223,7 @@ async def create_jobs(
     spec = await resolve_template(db, device, body.template_id)
 
     deeplink_base = await _resolve_deeplink_base(request, db)
-    naming = (await get_setting(db, "spool_display_template") or "").strip()
+    naming = await spool_display_template(db)
     contexts = await build_contexts(db, body.spools, deeplink_base=deeplink_base, naming_template=naming)
 
     jobs, warnings = await enqueue_jobs(
@@ -259,7 +260,7 @@ async def preview_job(
     spec = await resolve_template(db, device, body.template_id)
 
     deeplink_base = await _resolve_deeplink_base(request, db)
-    naming = (await get_setting(db, "spool_display_template") or "").strip()
+    naming = await spool_display_template(db)
     contexts = await build_contexts(db, [body.spool], deeplink_base=deeplink_base, naming_template=naming)
 
     png, warnings = render_job_png(spec, contexts[0])

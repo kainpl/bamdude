@@ -370,7 +370,7 @@ describe('AssignSpoolModal', () => {
       );
       expect(api.assignSpool).toHaveBeenCalledTimes(1);
       await waitFor(() =>
-        expect(screen.getByText('PLA Red #7 replaced with Overture PLA Black')).toBeInTheDocument()
+        expect(screen.getByText('PLA Red #7 replaced with Overture PLA Basic Black')).toBeInTheDocument()
       );
     });
 
@@ -399,7 +399,7 @@ describe('AssignSpoolModal', () => {
       await waitFor(() =>
         expect(
           screen.getByText(
-            'PLA Red #7 replaced with Overture PLA Black. The slot will be configured when you insert the filament.'
+            'PLA Red #7 replaced with Overture PLA Basic Black. The slot will be configured when you insert the filament.'
           )
         ).toBeInTheDocument()
       );

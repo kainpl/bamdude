@@ -50,6 +50,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.label_template import LabelSheet, LabelTemplate
 from backend.app.models.spool import Spool
 from backend.app.models.user import User
+from backend.app.services.inventory_service import spool_display_template
 from backend.app.services.label_context import spool_context, spoolman_context
 from backend.app.services.label_renderer import render_template_pdf, render_template_sheet_pdf
 from backend.app.services.label_seed import BUILTIN_SHEETS, BUILTIN_TEMPLATES, sheet_cell_template
@@ -368,7 +369,7 @@ async def render_local_inventory_labels(
     ordered = sorted(spools, key=lambda s: requested_ids.index(s.id))
 
     deeplink_base = await _resolve_deeplink_base(request, db)
-    naming = (await get_setting(db, "spool_display_template") or "").strip()
+    naming = await spool_display_template(db)
 
     contexts = []
     for spool in ordered:
@@ -422,7 +423,7 @@ async def render_spoolman_labels(
         raise HTTPException(404, f"Spool(s) not found in Spoolman: {missing}")
 
     deeplink_base = await _resolve_deeplink_base(request, db)
-    naming = (await get_setting(db, "spool_display_template") or "").strip()
+    naming = await spool_display_template(db)
 
     contexts = []
     for sid in requested_ids:

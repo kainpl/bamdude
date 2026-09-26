@@ -54,6 +54,11 @@ describe('formatSpoolDisplayName', () => {
     expect(formatSpoolDisplayName(makeSpool(), DEFAULT_SPOOL_DISPLAY_TEMPLATE)).toBe('SUNLU PETG Black');
   });
 
+  it('names the subtype by default — PLA and PLA Matte are different filaments (audit D3)', () => {
+    expect(DEFAULT_SPOOL_DISPLAY_TEMPLATE).toBe('{brand} {material} {subtype} {color_name}');
+    expect(formatSpoolDisplayName(makeSpool({ subtype: 'Matte' }), null)).toBe('SUNLU PETG Matte Black');
+  });
+
   it('falls back to the default template when the caller passes empty', () => {
     expect(formatSpoolDisplayName(makeSpool(), '')).toBe('SUNLU PETG Black');
     expect(formatSpoolDisplayName(makeSpool(), '   ')).toBe('SUNLU PETG Black');

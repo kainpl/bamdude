@@ -203,6 +203,18 @@
   and preheat fell back to its configured default. It now takes the highest
   temperature among the filaments the plate actually uses, as Bambu Studio
   does.
+- **Spools are named with their subtype by default.** PLA, PLA Matte and PLA
+  Wood of one brand and colour are different filaments, and the default name
+  template (`{brand} {material} {color_name}`) named them alike on every
+  screen and label. The default is now `{brand} {material} {subtype}
+  {color_name}` — a spool without a subtype reads as before. A template you
+  set yourself is kept as it is.
+- **Searching when assigning a spool finds it by what it is, whatever its name
+  shows.** The search in the slot-assignment dialog matched only the name
+  built from your template, so "Matte", a note or a lot found nothing unless
+  the template happened to show it. It now searches the spool's fields too,
+  as the Filaments page always did. Labels printed without a template set now
+  carry the same default name as the list, instead of one of their own.
 - **Switching between the built-in inventory and Spoolman asks first.** The
   switch removes every AMS slot assignment of the mode you leave, and the
   settings page saved it on its own half a second after a click — a look at

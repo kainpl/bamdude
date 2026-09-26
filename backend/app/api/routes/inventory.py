@@ -10,7 +10,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import String, and_, case, cast, delete, func, literal, or_, select
+from sqlalchemy import and_, case, delete, func, literal, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -1607,11 +1607,10 @@ async def spool_picker(
             filters.append(or_(*checks))
 
     if q.strip():
-        display = inventory_service.display_name_expr(await inventory_service.spool_display_template(db))
-        haystack = cast(Spool.id, String) + literal(" ") + (display if display is not None else literal(""))
-        for token in q.strip().split():
-            escaped = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            filters.append(haystack.ilike(f"%{escaped}%", escape="\\"))
+        # The fields AND the composed name, as every spool search (audit D3) —
+        # the composed name alone made what the picker could find depend on the
+        # operator's template.
+        filters.extend(inventory_service.spool_search_filters(q, await inventory_service.spool_display_template(db)))
 
     total = await inventory_service.count_spools(db, filters=filters)
     spools = await inventory_service.list_spools(

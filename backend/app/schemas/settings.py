@@ -158,7 +158,7 @@ class AppSettings(BaseModel):
     # kept verbatim so typos surface instead of silently collapsing. Used by
     # the Filaments page for tokenised substring search and sort-by-name.
     spool_display_template: str = Field(
-        default="{brand} {material} {color_name}",
+        default="{brand} {material} {subtype} {color_name}",
         description="Template for the synthesised spool display name",
     )
 

@@ -178,7 +178,10 @@ export const SPOOL_PLACEHOLDERS: SpoolPlaceholder[] = [
   },
 ];
 
-export const DEFAULT_SPOOL_DISPLAY_TEMPLATE = '{brand} {material} {color_name}';
+// The subtype is in it (audit D3): PLA, PLA Matte and PLA Wood of one colour are
+// different filaments. Mirrors the backend default (inventory_service,
+// AppSettings) — the template stays the operator's to change.
+export const DEFAULT_SPOOL_DISPLAY_TEMPLATE = '{brand} {material} {subtype} {color_name}';
 
 const placeholderMap = new Map(SPOOL_PLACEHOLDERS.map((p) => [p.key, p]));
 
