@@ -189,3 +189,70 @@ def test_any_other_tls_failure_stays_the_generic_one(tmp_path, monkeypatch):
     msg = "FTP SSL error connecting to 10.0.0.9: [SSL: TLSV1_ALERT_PROTOCOL_VERSION] tlsv1 alert protocol version"
     _write(tmp_path, monkeypatch, [_line(msg)] * 3)
     assert [f.signature_id for f in scan_logs().findings] == ["ftp-ssl-error"]
+
+
+# -- the two measurements the diagnostic rests on (pinned, so it stays falsifiable)
+
+
+def _tls12_only_server(cert: str, key: str, accepts: int):
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(cert, key)
+    server_ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(4)
+
+    def serve():
+        for _ in range(accepts):
+            try:
+                conn, _addr = listener.accept()
+            except OSError:
+                return
+            try:
+                server_ctx.wrap_socket(conn, server_side=True).close()
+            except (ssl.SSLError, OSError):
+                conn.close()
+        listener.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return listener.getsockname()[1]
+
+
+def _handshake(port: int, *, force_tls13: bool) -> None:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3 if force_tls13 else ssl.TLSVersion.TLSv1_2
+    raw = socket.create_connection(("127.0.0.1", port), 5)
+    try:
+        ctx.wrap_socket(raw, server_hostname="printer").do_handshake()
+    finally:
+        raw.close()
+
+
+def test_a_cleartext_banner_is_what_produces_wrong_version_number():
+    port = _server(b"421 Too many connections\r\n")
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    raw = socket.create_connection(("127.0.0.1", port), 5)
+    try:
+        with pytest.raises(ssl.SSLError) as caught:
+            ctx.wrap_socket(raw, server_hostname="printer").do_handshake()
+    finally:
+        raw.close()
+    assert caught.value.reason == "WRONG_VERSION_NUMBER"
+
+
+def test_a_version_mismatch_is_a_different_error_and_no_cap_is_needed(ftp_certs):
+    """So capping TLS cannot be the fix for WRONG_VERSION_NUMBER: a real mismatch
+    reports a protocol-version alert, and a 1.2-only peer connects uncapped."""
+    cert, key = ftp_certs
+    port = _tls12_only_server(cert, key, accepts=2)
+
+    with pytest.raises(ssl.SSLError) as caught:
+        _handshake(port, force_tls13=True)
+    assert caught.value.reason != "WRONG_VERSION_NUMBER"
+
+    _handshake(port, force_tls13=False)  # negotiates 1.2 and connects

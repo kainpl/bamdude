@@ -11,8 +11,8 @@ The default profile matches the historical pre-fix behaviour, so
 every model that doesn't have an entry here keeps its existing FTP
 behaviour byte-for-byte.
 
-Currently only the TLS-version cap lives here (P2S firmware
-01.02.00.00 needs it — see ``cap_tls_v1_2`` below). The A1
+Currently only the TLS-version cap lives here — see ``cap_tls_v1_2``
+below, and its note on what has been measured since it was added. The A1
 data-channel-plaintext quirk still lives in :class:`BambuFTPClient`
 via ``A1_MODELS`` / ``skip_session_reuse``; folding that into a
 profile field is a future cleanup, not load-bearing for this fix.
@@ -34,17 +34,25 @@ class FTPProfile:
 
     # Pin the SSL context's ``maximum_version`` to TLS 1.2.
     #
-    # Python 3.13's default ``ssl.create_default_context()`` negotiates
-    # TLS 1.3 when both peers support it. The BamDude Docker image runs a
-    # Python 3.13+ base, so every Docker user gets 1.3 by default. Some
-    # Bambu printer firmwares (P2S 01.02.00.00 confirmed, #1401) implement
-    # session reuse on the FTPS data channel against an old vsFTPd build
-    # that doesn't tolerate TLS 1.3's asynchronous session-ticket model:
-    # the data channel gets torn down mid-stream and the upload aborts
-    # with 426 "Failure reading network stream" — visible as a clean
-    # truncation at a chunk boundary (one reporter saw exactly 7 × 64 KB
-    # landed on the printer). Capping to TLS 1.2 makes session resumption
-    # synchronous and the upload completes normally.
+    # ``ssl.create_default_context()`` negotiates TLS 1.3 when both peers
+    # offer it (any Python this project runs, 3.12 included). The cap was
+    # added for P2S firmware 01.02.00.00 (#1401): a 426 "Failure reading
+    # network stream" part-way through an upload, read as the printer's
+    # vsFTPd not tolerating TLS 1.3's asynchronous session tickets on the
+    # data channel. Capping made session resumption synchronous and the
+    # reporter's uploads completed.
+    #
+    # ⚠️ Measured since (upstream #2780, audit D5): the cap only bites on a
+    # printer that OFFERS 1.3, and none measured does — an X1C and an H2D
+    # probed on :990, then a 9-printer farm (six P2S, two X1C, an H2D), all
+    # refuse 1.3 and complete only on 1.2. A cap is not needed to reach a
+    # 1.2-only peer either: an uncapped client negotiates 1.2. And a
+    # version mismatch reports ``TLSV1_ALERT_PROTOCOL_VERSION``, never
+    # ``WRONG_VERSION_NUMBER`` — that one comes from bytes that are not a
+    # TLS record at all (a cleartext answer). Both measurements are pinned
+    # by ``tests/unit/services/test_ftp_cleartext_probe.py``. So the entries
+    # below are kept as tuning slots and as a record of what each reporter
+    # saw, not because the mechanism is understood.
     #
     # **Defaults to False** — only applied to printer models where a
     # reporter has confirmed the symptom. Existing P1S / X1C / H2D
@@ -67,32 +75,29 @@ DEFAULT_PROFILE = FTPProfile()
 # AFTER alias normalisation, so internal SSDP codes ("N7") resolve via
 # ``_MODEL_ALIASES`` below.
 _PROFILES: dict[str, FTPProfile] = {
-    # P2S firmware 01.02.00.00 trips the vsFTPd + TLS 1.3 session-reuse
-    # bug on the FTPS data channel (#1401, reporter @iitazz). Cap to
-    # TLS 1.2 so session resumption is synchronous and the upload
-    # completes.
+    # P2S firmware 01.02.00.00 (#1401, reporter @iitazz): a 426 truncation
+    # part-way through a transfer — the only symptom here a TLS 1.3
+    # session-ticket problem could explain, though measured P2S units refuse
+    # 1.3 on :990 (see the field's note). The reporter confirmed the fix.
     "P2S": FTPProfile(
         cap_tls_v1_2=True,
     ),
-    # X2D firmware 01.01.00.00 fails the implicit-FTPS handshake outright
-    # against Python 3.13's default TLS-1.3 ClientHello with
-    # `[SSL: WRONG_VERSION_NUMBER]` (#1638, reporter @vasmarfas). The 3MF
-    # download at print start never connects, so archive cards land empty
-    # (no filament / layers / MakerWorld link / thumbnail) and Spoolman
-    # tracking goes silent. Cap to TLS 1.2 so the ClientHello matches what
-    # the firmware accepted before the Python upgrade. Conservative — every
-    # other model stays on negotiated TLS 1.3.
+    # X2D firmware 01.01.00.00 (#1638, reporter @vasmarfas): the handshake
+    # failed with `[SSL: WRONG_VERSION_NUMBER]` and the cap was added on the
+    # reading that a TLS-1.3 ClientHello caused it. ⚠️ It cannot have: that
+    # error means the printer answered in cleartext (see the field's note),
+    # so the cap is not what changed the outcome. RE-TEST WANTED — kept
+    # because the reporter saw the symptom clear and the entry costs nothing
+    # on a printer that does not offer 1.3.
     "X2D": FTPProfile(
         cap_tls_v1_2=True,
     ),
-    # H2C firmware 01.02.00.00 (#2582) — same H2 generation and firmware line
-    # as the P2S, and with no entry here it ran on negotiated TLS 1.3. The
-    # symptom is the P2S's, not the X2D's: intermittent rather than a
-    # deterministic handshake failure, which points at the session-reuse
-    # variant. When the sliced 3MF fails to come off the printer the print
-    # drops into the no-3MF fallback archive, so the card lands without
-    # filament / layers / thumbnail. Note there is no second chance on this
-    # model — the prot_p → prot_c fallback in ``bambu_ftp.py`` is A1-only.
+    # H2C firmware 01.02.00.00 (#2582): intermittent failures to fetch the
+    # 3MF, capped on the belief that it was the P2S's session-reuse variant.
+    # ⚠️ Unconfirmed on the same grounds as the X2D entry — measured printers
+    # never negotiate 1.3 here, so RE-TEST WANTED. There is no second chance
+    # on this model: the prot_p → prot_c fallback in ``bambu_ftp.py`` is
+    # A1-only.
     "H2C": FTPProfile(
         cap_tls_v1_2=True,
     ),
