@@ -1362,6 +1362,68 @@ async def _report_partial_usage(
     await _settle_archive()
 
 
+def _single_slot_tray_from_state(state, tray_changes: list) -> int | None:
+    """The tray the printer's own reporting says a one-slot print came from, or None
+    (upstream 935d4b5b, #2953).
+
+    The ladder ``usage_tracker`` has used for the same question: a single logged
+    switch, then the current ``tray_now``, then ``last_loaded_tray`` (an A1 parks
+    ``tray_now`` at 255 the moment a print ends), then 255 when it is a real
+    external spool on an H2. More than one logged switch is the tray split's
+    (#1793), not a single tray. ``tray_now_at_start`` is deliberately not a rung:
+    the Spoolman tracking row does not keep it, and where this matters it reads
+    255 anyway — print start runs before the filament loads.
+    """
+    if len(tray_changes) > 1:
+        return None
+    if tray_changes:
+        tray = tray_changes[0][0]
+        if isinstance(tray, int) and 0 <= tray <= 254:
+            return tray
+    if state is None:
+        return None
+    tray_now = getattr(state, "tray_now", 255)
+    if isinstance(tray_now, int) and 0 <= tray_now <= 254:
+        return tray_now
+    last_loaded = getattr(state, "last_loaded_tray", -1)
+    if isinstance(last_loaded, int) and 0 <= last_loaded <= 253:
+        return last_loaded
+    if tray_now == 255:
+        vt_tray = (getattr(state, "raw_data", None) or {}).get("vt_tray") or []
+        if any(isinstance(vt, dict) and int(vt.get("id", 0)) == 255 for vt in vt_tray):
+            return 255
+    return None
+
+
+def _completion_slot_to_tray(
+    slot_to_tray: list | None, filament_usage: list[dict], tray_changes: list, state
+) -> tuple[list | None, str]:
+    """The mapping the completion writer charges by, and where it came from.
+
+    ⚠️ Priority unchanged (CLAUDE.md, "Filament attribution believes the
+    DISPATCHED mapping"): the dispatched / queue mapping captured at start wins
+    (``dispatched``). Without one, a multi-switch log is charged per segment by
+    the tray split (``split`` — each segment to the tray the printer announced,
+    so NOT a guess). A print with exactly one slot carrying usage takes the tray
+    the printer named (``printer-tray``). Anything else is the positional
+    default (``positional``) — right for an AMS loaded in slicer order, but a
+    guess, and the caller treats it as one.
+    """
+    if slot_to_tray:
+        return slot_to_tray, "dispatched"
+    if len(tray_changes) > 1:
+        return None, "split"
+    used = [u for u in filament_usage if (u.get("used_g") or 0) > 0]
+    if len(used) == 1:
+        tray = _single_slot_tray_from_state(state, tray_changes)
+        if tray is not None:
+            slot_id = int(used[0].get("slot_id") or 1)
+            mapping = [-2] * slot_id
+            mapping[slot_id - 1] = tray
+            return mapping, "printer-tray"
+    return None, "positional"
+
+
 async def report_usage(printer_id: int, archive_id: int):
     """Report filament usage to Spoolman after print completion.
 
@@ -1451,6 +1513,26 @@ async def report_usage(printer_id: int, archive_id: int):
         # firmware resets it at print end). At completion the current layer is
         # the print's last valid layer.
         _layer_denom_hint = _total_layers or _current_layer
+
+        # Which tray each slot came from. The dispatched / queue mapping from
+        # print start wins; below it, for a one-slot print, the tray the printer
+        # itself named (upstream 935d4b5b, #2953). A positional default is a
+        # guess: charged, said at WARNING, and it does not restamp the archive.
+        slot_to_tray, mapping_source = _completion_slot_to_tray(slot_to_tray, filament_usage, tray_changes, _state)
+        mapping_is_guess = mapping_source == "positional" and bool(nonzero_slots)
+        if mapping_source == "printer-tray":
+            logger.info(
+                "[SPOOLMAN] Archive %s: no dispatched mapping; charging the tray the printer named: %s",
+                archive_id,
+                slot_to_tray,
+            )
+        elif mapping_is_guess:
+            logger.warning(
+                "[SPOOLMAN] Archive %s: no mapping and no tray named by the printer — charging by tray "
+                "position (right only for an AMS loaded in slicer order); the archive's colour and "
+                "material are left as sliced",
+                archive_id,
+            )
 
         slot_colors: dict[int, str] = {}
         slot_materials: dict[int, str] = {}
@@ -1562,8 +1644,11 @@ async def report_usage(printer_id: int, archive_id: int):
                 )
                 # Track which physical slots the 3MF path already covered so
                 # Path 2 doesn't double-charge them.
-                for slot_id, _used in usage_items:
-                    handled_global_tray_ids.add(_resolve_global_tray_id(slot_id, slot_to_tray, ams_trays))
+                # A slot that used nothing was never charged, so it claims no
+                # tray — the remain%-delta path stays free to cover it (#2953).
+                for slot_id, used in usage_items:
+                    if used > 0:
+                        handled_global_tray_ids.add(_resolve_global_tray_id(slot_id, slot_to_tray, ams_trays))
 
         # Belt-and-braces against the multicolour runout double-count: every
         # tray the journal names is off-limits to the remain%-delta path.
@@ -1606,11 +1691,16 @@ async def report_usage(printer_id: int, archive_id: int):
         # Stamp the archive's filament colour from the matched Spoolman spools
         # so it reflects the curated inventory colour, not the slicer's 3MF
         # value (#1494) — mirrors the built-in inventory path in usage_tracker.
-        await _apply_spool_colors_to_archive(db, archive_id, filament_usage, slot_colors)
+        #
+        # Not from a guess (#2953): those rewrites overwrite what the slicer
+        # recorded, so a spool picked by position would leave nothing to compare
+        # against — the grams can be put back, the sliced colour cannot.
+        if not mapping_is_guess:
+            await _apply_spool_colors_to_archive(db, archive_id, filament_usage, slot_colors)
 
-        # Same for the material: a slot mapped to a differently-typed spool than it
-        # was sliced for otherwise records the sliced type (#2563).
-        await _apply_spool_types_to_archive(db, archive_id, filament_usage, slot_materials)
+            # Same for the material: a slot mapped to a differently-typed spool than
+            # it was sliced for otherwise records the sliced type (#2563).
+            await _apply_spool_types_to_archive(db, archive_id, filament_usage, slot_materials)
 
         # Weight and cost from what was actually charged — applied whether or not
         # the slot mapping was a guess, unlike the colour and material above:

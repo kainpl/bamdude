@@ -464,6 +464,14 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **Spoolman charges the tray the printer used, not the first one loaded.** A
+  print BamDude did not send, on a printer that publishes no mapping (an A1),
+  was charged to whatever sat in the first tray — while the printer had
+  reported feeding from another. A one-filament print is now charged to the
+  tray the printer named; a mapping from the print command or the queue still
+  comes first. Where nothing names a tray the charge still goes by position,
+  but as a logged guess that no longer rewrites the archive's colour and
+  material from the spool it picked.
 - **In Spoolman mode a print costs what its spools cost, and weighs what was
   charged.** Spoolman holds each spool's price and BamDude never read it:
   every print kept the figure estimated at its start, a multi-material print
