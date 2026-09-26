@@ -3766,6 +3766,13 @@ export interface SliceRequest {
    * a key not listed here is not applied. Mutually exclusive with
    * `use_embedded_settings`, which bypasses the process JSON entirely. */
   design_overrides?: string[];
+  /** Per-slot filament colour as `#RRGGBB` / `#RRGGBBAA`, same plate order as
+   * `filament_presets` (upstream 4f10d155, #2977). Neither slicer stores a
+   * colour on a filament preset, so without it every sliced file records the
+   * CLI's built-in #00AE42. An empty string hands that slot to the backend's
+   * fallback chain (the preset's own default_filament_colour, then the source
+   * plate's colour). */
+  filament_colours?: string[];
   printer_preset_id?: number;
   process_preset_id?: number;
   filament_preset_id?: number;

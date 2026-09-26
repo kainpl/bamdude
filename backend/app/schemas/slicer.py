@@ -1,8 +1,14 @@
 """Pydantic schemas for slice requests (Phase 1 of 0.5.x slicer cycle)."""
 
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+# `#RRGGBB` or `#RRGGBBAA`. Bambu Studio writes the 6-digit form into
+# `filament_colour` but accepts and round-trips the 8-digit one, and the AMS
+# reports colours with an alpha byte, so both have to pass.
+_HEX_COLOUR = re.compile(r"#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})")
 
 
 class PresetRef(BaseModel):
@@ -66,6 +72,33 @@ class SliceRequest(BaseModel):
     # validator promotes a singular field into ``[singular]`` when the list
     # is empty so older clients keep working.
     filament_presets: list[PresetRef] = Field(default_factory=list)
+
+    # Per-slot filament colour, plate-slot-ordered like ``filament_presets``
+    # (upstream 4f10d155, #2977). Neither Bambu Studio nor OrcaSlicer stores a
+    # colour on a filament PRESET — it is a per-project property their GUIs set
+    # from the plate — so the CLI falls back to its compiled-in #00AE42 for
+    # every slice unless something supplies one: a green plate thumbnail and a
+    # false "colour mismatch" against the AMS slot the job was mapped to.
+    # ``default_filament_colour`` is NOT a substitute — measured, the CLI never
+    # reads it — so the colour is written to ``filament_colour`` itself.
+    #
+    # ⚠️ Recording a colour here constrains nothing downstream: dispatch
+    # routing ranks by colour, it never requires one unless the job forces
+    # colour matching, so printing in another colour stays an ordinary choice.
+    filament_colours: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Per-slot filament colour as ``#RRGGBB`` / ``#RRGGBBAA``, in the same "
+            "plate-slot order as ``filament_presets``. Written onto each resolved "
+            "filament profile as ``filament_colour`` so the sliced file records the "
+            "colour actually being printed instead of the slicer's built-in default "
+            "(#2977). A shorter list than ``filament_presets`` leaves the remaining "
+            "slots to the fallback chain; an empty string in any position does the "
+            "same for that one slot. An omitted list (older clients, Slicer "
+            "Pipelines) falls back to the preset's own ``default_filament_colour``, "
+            "then to the colour the source file's plate was designed with."
+        ),
+    )
 
     plate: int | None = Field(
         default=None,
@@ -220,6 +253,22 @@ class SliceRequest(BaseModel):
             # Multi-color caller: backfill the singular from the first slot
             # so callers that still read the legacy field see a stable value.
             self.filament_preset = self.filament_presets[0]
+
+        # Colours are pasted straight into a profile the slicer parses, so a
+        # malformed one is rejected here rather than passed through. Empty
+        # strings survive: they are how a caller says "no colour for this slot"
+        # without shortening the list and shifting every slot after it.
+        # Upper-cased so two equal slices never differ by the case of a digit.
+        normalised: list[str] = []
+        for i, colour in enumerate(self.filament_colours):
+            value = (colour or "").strip()
+            if not value:
+                normalised.append("")
+                continue
+            if not _HEX_COLOUR.fullmatch(value):
+                raise ValueError(f"filament_colours[{i}] must be '#RRGGBB' or '#RRGGBBAA', got {colour!r}")
+            normalised.append("#" + value[1:].upper())
+        self.filament_colours = normalised
         return self
 
 

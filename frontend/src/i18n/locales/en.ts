@@ -4718,6 +4718,7 @@ export default {
     process: 'Process profile',
     filament: 'Filament profile',
     filamentSlot: 'Filament {{index}} ({{type}})',
+    filamentColour: 'Filament colour',
     notUsedByPlate: '- not used by this plate',
     selectPreset: '- Select a preset -',
     noPresetsForSlot: 'No presets available',

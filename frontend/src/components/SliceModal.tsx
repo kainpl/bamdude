@@ -32,6 +32,11 @@ import {
 import { useSlicerHealth, type SlicerKind } from '../hooks/useSlicerHealth';
 import { useIsWideLayout } from '../hooks/useIsWideLayout';
 import { defaultDesignKeys, designOverridesField } from '../lib/slicerSettings';
+import {
+  colourInputValue,
+  filamentColoursPayload,
+  resizeColourOverrides,
+} from '../utils/sliceFilamentColours';
 import { Select } from './Select';
 import {
   EMPTY_COMPATIBILITY_INDEX,
@@ -237,6 +242,14 @@ interface PresetDropdownProps {
   disabled?: boolean;
   // Optional colour swatch (multi-color plate filament slots).
   swatchColor?: string;
+  // When set, the swatch becomes an editable colour control for this slot
+  // (upstream 4f10d155, #2977). Filament presets carry no colour of their own,
+  // so for an STL — or any source whose plate was never given one — this is
+  // the only place the colour recorded in the sliced file can come from.
+  onSwatchColorChange?: (colour: string) => void;
+  // Accessible name for that control. Required alongside the handler because
+  // the visible label belongs to the preset select, not to the swatch.
+  swatchColorLabel?: string;
   // 3-state owner filter applied per-section: 'all' shows everything,
   // 'custom' keeps user-imported + user-cloud, 'builtin' keeps standard
   // + bundled cloud presets. Empty tiers collapse out.
@@ -260,10 +273,16 @@ function PresetDropdown({
   onChange,
   disabled,
   swatchColor,
+  onSwatchColorChange,
+  swatchColorLabel,
   selectedPrinterName,
   compatIndex,
 }: PresetDropdownProps) {
   const { t } = useTranslation();
+  // A `<div>` with explicit `htmlFor` labels, not one wrapping `<label>`: the
+  // colour control is a label of its own, and labels do not nest.
+  const selectId = useId();
+  const colourId = `${selectId}-colour`;
 
   // Tier sections (imported → cloud → standard) after the owner filter, plus
   // — for a process / filament slot with a selected printer — a trailing
@@ -312,19 +331,23 @@ function PresetDropdown({
     sections.reduce((sum, s) => sum + s.entries.length, 0) + otherEntries.length;
 
   return (
-    <label className="block">
-      <span className="flex items-center gap-2 text-xs text-bambu-gray mb-1">
-        {swatchColor && (
+    <div className="block">
+      <label htmlFor={selectId} className="flex items-center gap-2 text-xs text-bambu-gray mb-1">
+        {/* Read-only dot for a row with no editable colour; filament rows carry
+            a real control beside the dropdown instead. */}
+        {!onSwatchColorChange && swatchColor && (
           <span
             className="inline-block w-3 h-3 rounded-full border border-bambu-dark-tertiary"
-            style={{ backgroundColor: swatchColor || 'transparent' }}
+            style={{ backgroundColor: swatchColor }}
             aria-hidden
           />
         )}
         <span>{label}</span>
-      </span>
+      </label>
+      <div className="flex items-stretch gap-2">
       <Select
-        className="w-full"
+        id={selectId}
+        className="flex-1 min-w-0"
         value={toRefValue(value)}
         onChange={(e) => onChange(fromRefValue(e.target.value))}
         disabled={disabled || totalEntries === 0}
@@ -353,7 +376,36 @@ function PresetDropdown({
           </optgroup>
         )}
       </Select>
-    </label>
+      {/* The colour control sits beside the dropdown, styled like it and the
+          same height, because that is what makes it read as a control: a bare
+          swatch in the label row looks exactly like the read-only dot above.
+          The whole label opens the picker, so the hex is a hit target and not
+          a caption. */}
+      {onSwatchColorChange && (
+        <label
+          htmlFor={colourId}
+          title={swatchColorLabel}
+          className={`flex items-center gap-2 px-2.5 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-sm ${
+            disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-bambu-gray transition-colors'
+          }`}
+        >
+          <input
+            id={colourId}
+            type="color"
+            value={colourInputValue(swatchColor)}
+            onChange={(e) => onSwatchColorChange(e.target.value.toUpperCase())}
+            disabled={disabled}
+            aria-label={swatchColorLabel}
+            // Painted explicitly as well as through the native swatch, so an
+            // engine that did not fill the swatch still shows the colour.
+            style={{ backgroundColor: colourInputValue(swatchColor) }}
+            className="slice-colour-swatch w-4 h-4 shrink-0 rounded-full border border-bambu-dark-tertiary p-0 disabled:cursor-not-allowed enabled:cursor-pointer"
+          />
+          <span className="font-mono text-xs text-white tracking-tight">{colourInputValue(swatchColor)}</span>
+        </label>
+      )}
+      </div>
+    </div>
   );
 }
 
@@ -542,6 +594,12 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // entry per AMS slot the plate uses. Pre-pick (effect below) initialises
   // each slot from the source plate's required (type, colour).
   const [filamentPresets, setFilamentPresets] = useState<(PresetRef | null)[]>([]);
+  // Per-slot colour picks, plate-slot-ordered alongside `filamentPresets`
+  // (upstream 4f10d155, #2977). `null` means "not picked", not "no colour": the
+  // slot then falls through to the source plate's colour and, past that, to the
+  // backend's own fallbacks. Storing a colour for every slot up front would
+  // defeat that chain — a sent colour outranks the preset's own default.
+  const [filamentColours, setFilamentColours] = useState<(string | null)[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Bed plate override sent to the slicer as ``--curr-bed-type``. Default
@@ -925,6 +983,12 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     });
   }, [presetsQuery.data, selectedPrinterName, compatIndex, embeddedProcess]);
 
+  // A plate switch renumbers the slots, so the colour picks are dropped when
+  // the slot count changes (see `resizeColourOverrides`).
+  useEffect(() => {
+    setFilamentColours((current) => resizeColourOverrides(current, filamentSlots.length));
+  }, [filamentSlots]);
+
   // Filament pre-pick: re-runs when the active filament-slot count changes
   // (plate selection, single-plate metadata arriving) or the selected printer
   // changes. Each slot scores every available filament preset against the
@@ -972,6 +1036,10 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         // backend validator prefers `filament_presets` when both are set.
         filament_preset: filamentPresets[0] as PresetRef,
         filament_presets: filamentPresets as PresetRef[],
+        // The colour each slot is printed in, so the sliced file stops recording
+        // the CLI's #00AE42 whatever was picked (#2977). An untouched slot sends
+        // the source plate's colour, or "" when it has none.
+        filament_colours: filamentColoursPayload(filamentSlots, filamentColours),
         // Always send a concrete plate number when the source is multi-plate;
         // omit otherwise so the backend default applies for STL / single-plate
         // 3MF sources where the concept doesn't apply.
@@ -1597,7 +1665,18 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                       });
                     }}
                     disabled={isEnqueuing || !isUsed || useEmbedded}
-                    swatchColor={filamentSlots.length > 1 ? slot.color : undefined}
+                    // Every filament row, single-slot ones included: an STL
+                    // is exactly the source with no colour anywhere else to
+                    // inherit.
+                    swatchColor={filamentColours[idx] ?? slot.color}
+                    swatchColorLabel={t('slice.filamentColour')}
+                    onSwatchColorChange={(colour) =>
+                      setFilamentColours((current) => {
+                        const next = resizeColourOverrides([...current], filamentSlots.length);
+                        next[idx] = colour;
+                        return next;
+                      })
+                    }
                     selectedPrinterName={selectedPrinterName}
                     compatIndex={compatIndex}
                   />

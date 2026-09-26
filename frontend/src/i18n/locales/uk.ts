@@ -4732,6 +4732,7 @@ export default {
     process: 'Профіль процесу',
     filament: 'Профіль філаменту',
     filamentSlot: 'Філамент {{index}} ({{type}})',
+    filamentColour: 'Колір філаменту',
     notUsedByPlate: '- не використовується цією платою',
     selectPreset: '- Виберіть пресет -',
     noPresetsForSlot: 'Немає доступних пресетів',

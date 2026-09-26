@@ -693,3 +693,28 @@ body {
 .calendar-scroll::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--text-muted) 80%, transparent);
 }
+
+/* Per-slot filament colour swatch in the slice dialog (upstream 4f10d155).
+   A native <input type="color"> paints its value inside a fixed inner padding
+   and its own border, so at 16px the colour reads as a dot in a pale ring
+   rather than a round swatch. These reset both. */
+.slice-colour-swatch {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  overflow: hidden;
+}
+
+.slice-colour-swatch::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.slice-colour-swatch::-webkit-color-swatch {
+  border: none;
+  border-radius: 999px;
+}
+
+.slice-colour-swatch::-moz-color-swatch {
+  border: none;
+  border-radius: 999px;
+}

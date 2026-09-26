@@ -117,7 +117,12 @@ from backend.app.services.product_sync import (
     purge_folder_product_links,
     sync_product_for_file,
 )
-from backend.app.services.slice_output_check import missing_start_gcode_message, start_gcode_is_missing
+from backend.app.services.slice_output_check import (
+    missing_start_gcode_message,
+    start_gcode_is_missing,
+    unresolved_filament_message,
+    unresolved_filament_slots,
+)
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.services.threemf_card import CARD_PICTURE_CATEGORIES, ThreeMFCardParser, content_type_for
@@ -2165,6 +2170,88 @@ async def list_files(
 # archive route both call into them.
 
 
+def _source_plate_colours(model_bytes: bytes) -> list[str]:
+    """Per-slot colours the source 3MF was designed with, or ``[]``.
+
+    Read from ``project_settings.config`` rather than ``slice_info.config``:
+    the latter records the colour the file was LAST SLICED with, which for a
+    source that never carried one is the slicer's own #00AE42 — the exact
+    value #2977 is about, so it would be a circular fallback. STL and
+    mesh-only 3MF sources have no project settings and yield ``[]``.
+    """
+    from io import BytesIO
+
+    try:
+        with zipfile.ZipFile(BytesIO(model_bytes), "r") as zf:
+            return [str(f.get("color") or "") for f in extract_project_filaments_from_3mf(zf)]
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return []
+
+
+def _preset_default_colour(profile: dict) -> str:
+    """A filament preset's own ``default_filament_colour``, or ``""``.
+
+    OrcaSlicer's third-party vendor profiles carry it; Bambu Studio's bundled
+    BBL filament profiles carry it nowhere, which is why it is one link in the
+    chain and never the whole fix. Read here and rewritten as
+    ``filament_colour`` because the CLI does not read it itself (measured:
+    Bambu Studio consumes it in the GUI when a project is created).
+    """
+    raw = profile.get("default_filament_colour")
+    if isinstance(raw, list):
+        raw = raw[0] if raw else None
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def _patch_filament_colours(
+    filament_jsons: list[str],
+    requested: list[str],
+    model_bytes: bytes,
+) -> list[str]:
+    """Write ``filament_colour`` onto each resolved filament profile (upstream 4f10d155, #2977).
+
+    Per slot, first non-empty of: the caller's explicit colour (the slice
+    dialog's per-slot control), the preset's own ``default_filament_colour``,
+    the colour the source 3MF's plate was designed with. All three empty leaves
+    the slot untouched rather than guessing — the slicer's default is then still
+    wrong, but it is the same wrong value the file would have had anyway.
+
+    ⚠️ This records a colour; it decides no routing. A job printed in another
+    colour than the one recorded is ranked lower by the dispatcher, never
+    refused, unless the job itself forces colour matching.
+
+    Returns a new list; a profile that is not parseable JSON is passed through
+    unchanged — a colour is not worth failing a slice that would succeed.
+    """
+    source_colours = _source_plate_colours(model_bytes) if filament_jsons else []
+    patched: list[str] = []
+    for i, raw in enumerate(filament_jsons):
+        try:
+            profile = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Filament colour skipped for slot %d: profile is not valid JSON", i + 1)
+            patched.append(raw)
+            continue
+        if not isinstance(profile, dict):
+            patched.append(raw)
+            continue
+        colour = (
+            (requested[i].strip() if i < len(requested) and requested[i] else "")
+            or _preset_default_colour(profile)
+            or (source_colours[i].strip() if i < len(source_colours) and source_colours[i] else "")
+        )
+        if not colour:
+            patched.append(raw)
+            continue
+        # One-element array: the shape the CLI uses for every other
+        # per-filament field, and the one a ``--load-filaments`` profile is
+        # parsed as. A bare string passes the JSON parser but not the config
+        # deserialiser.
+        profile["filament_colour"] = [colour]
+        patched.append(json.dumps(profile))
+    return patched
+
+
 def _patch_process_bed_type(process_json: str, bed_type: str) -> str:
     """Overwrite ``curr_bed_type`` in a process-profile JSON before
     forwarding to the slicer sidecar.
@@ -2488,6 +2575,11 @@ async def _run_slicer_with_fallback(
     for ref in request.filament_presets:
         assert ref is not None, "schema validator guarantees filament list is non-None"
         filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))
+
+    # Give every slot its colour before anything else touches the list, so the
+    # unused-slot substitution below propagates a complete profile rather than
+    # one that still has to be patched afterwards (upstream 4f10d155, #2977).
+    filament_jsons = _patch_filament_colours(filament_jsons, request.filament_colours, model_bytes)
 
     # Bed-type override (upstream Bambuddy #1337): patch
     # ``curr_bed_type`` onto the resolved process JSON so the slicer's
@@ -2834,6 +2926,20 @@ async def _run_slicer_with_fallback(
             "3mf" if request.export_3mf else "gcode",
         )
         raise HTTPException(status_code=502, detail=missing_start_gcode_message(request.printer_preset.id))
+
+    # A filament preset the sidecar's bundle cannot resolve is not an error
+    # there — the CLI inherits nothing and slices with its own defaults, so a
+    # PETG pick comes back as PLA at 200 C (upstream 4f10d155). Warned rather
+    # than refused: the file prints, and the user may have meant a profile
+    # their sidecar image predates. Skipped on the embedded-settings path,
+    # which sends no filament profiles for the bundle to resolve.
+    if not used_embedded_settings:
+        unresolved = unresolved_filament_slots(result.content, export_3mf=bool(request.export_3mf))
+        if unresolved:
+            logger.warning(
+                "%s",
+                unresolved_filament_message(unresolved, [ref.id for ref in request.filament_presets]),
+            )
 
     return result, used_embedded_settings
 

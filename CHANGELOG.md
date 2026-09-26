@@ -464,6 +464,17 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **A sliced file records the colour it is printed in.** Every file BamDude
+  sliced came back Bambu green whatever filament was picked — a green plate
+  picture and a "colour mismatch" in the print dialog against a correctly
+  mapped spool — because neither slicer keeps a colour on a filament profile.
+  Each filament row in the Slice dialog now has a colour control, starting at
+  the colour the source plate was designed with; untouched, a slot takes the
+  profile's own default colour or the designed one, and a source with none
+  keeps the slicer's green. It is a record, not a requirement: printing in
+  another colour is still an ordinary choice in the print dialog. A filament
+  profile the slicer could not find — which slices silently as PLA at 200 °C —
+  is now named in the log.
 - **Unticking the designer's support settings sticks.** A file with supports
   on carried them into the slice even when every one of its support settings
   was unticked in the Slice dialog — an emptied list looked like an old
