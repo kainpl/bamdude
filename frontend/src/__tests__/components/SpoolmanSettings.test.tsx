@@ -29,6 +29,7 @@ vi.mock('../../api/client', () => ({
     syncAllPrintersAms: vi.fn(),
     syncPrinterAms: vi.fn(),
     getPrinters: vi.fn(),
+    getSpoolmanModeSwitchPreview: vi.fn(),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
   },
 }));
@@ -63,6 +64,7 @@ describe('SpoolmanSettings', () => {
       url: null,
     });
     vi.mocked(api.getPrinters).mockResolvedValue([]);
+    vi.mocked(api.getSpoolmanModeSwitchPreview).mockResolvedValue({ assignments: 3, printing: [] });
     vi.mocked(api.connectSpoolman).mockResolvedValue({ success: true, message: 'Connected' });
     vi.mocked(api.disconnectSpoolman).mockResolvedValue({ success: true, message: 'Disconnected' });
     vi.mocked(api.syncAllPrintersAms).mockResolvedValue({
@@ -312,7 +314,12 @@ describe('SpoolmanSettings', () => {
   });
 
   describe('mode switching', () => {
-    it('can switch to Spoolman mode', async () => {
+    // Switching clears every slot assignment of the mode being left, so it is
+    // asked first and saved only on the answer (audit D4, upstream #2812: the
+    // page used to save the click by itself 500 ms later, and four clicks of
+    // someone looking wiped the configuration).
+
+    it('can switch to Spoolman mode once confirmed', async () => {
       const user = userEvent.setup();
       render(<SpoolmanSettings />);
 
@@ -320,13 +327,64 @@ describe('SpoolmanSettings', () => {
         expect(screen.getByText('Built-in Inventory')).toBeInTheDocument();
       });
 
-      // Click Spoolman card
       await user.click(screen.getByText('Spoolman').closest('button')!);
+      await user.click(await screen.findByRole('button', { name: 'Switch' }));
 
-      // Spoolman settings should now be visible
+      await waitFor(() => {
+        expect(api.updateSpoolmanSettings).toHaveBeenCalledWith({ spoolman_enabled: 'true' });
+      });
       await waitFor(() => {
         expect(screen.getByPlaceholderText('http://192.168.1.100:7912')).toBeInTheDocument();
       });
+    });
+
+    it('asks first, naming what goes, and saves nothing on the click alone', async () => {
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+      await screen.findByText('Built-in Inventory');
+
+      await user.click(screen.getByText('Spoolman').closest('button')!);
+
+      expect(await screen.findByText('Switch filament tracking?')).toBeInTheDocument();
+      expect(await screen.findByText(/3 slot assignments will be removed/)).toBeInTheDocument();
+      expect(api.getSpoolmanModeSwitchPreview).toHaveBeenCalledWith(true);
+      await new Promise((resolve) => setTimeout(resolve, 700)); // past the autosave debounce
+      expect(api.updateSpoolmanSettings).not.toHaveBeenCalled();
+    });
+
+    it('cancel leaves the mode as it was', async () => {
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+      await screen.findByText('Built-in Inventory');
+
+      await user.click(screen.getByText('Spoolman').closest('button')!);
+      await user.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      expect(api.updateSpoolmanSettings).not.toHaveBeenCalled();
+      expect(screen.getByText('Built-in Inventory').closest('button')).toHaveClass('border-bambu-green');
+    });
+
+    it('names the printers printing right now', async () => {
+      vi.mocked(api.getSpoolmanModeSwitchPreview).mockResolvedValue({ assignments: 0, printing: ['X1C-1', 'P1S-2'] });
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+      await screen.findByText('Built-in Inventory');
+
+      await user.click(screen.getByText('Spoolman').closest('button')!);
+
+      expect(await screen.findByText(/X1C-1, P1S-2/)).toBeInTheDocument();
+    });
+
+    it('clicking the mode already on asks nothing', async () => {
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+      await screen.findByText('Built-in Inventory');
+
+      await user.click(screen.getByText('Built-in Inventory').closest('button')!);
+
+      expect(screen.queryByText('Switch filament tracking?')).not.toBeInTheDocument();
+      expect(api.getSpoolmanModeSwitchPreview).not.toHaveBeenCalled();
     });
   });
 });

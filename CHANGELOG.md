@@ -203,6 +203,19 @@
   and preheat fell back to its configured default. It now takes the highest
   temperature among the filaments the plate actually uses, as Bambu Studio
   does.
+- **Switching between the built-in inventory and Spoolman asks first.** The
+  switch removes every AMS slot assignment of the mode you leave, and the
+  settings page saved it on its own half a second after a click — a look at
+  the two options was enough to lose a farm's assignments. Choosing a mode
+  now opens a confirmation that says how many assignments will be removed
+  and which printers are printing right now, and nothing changes until you
+  confirm.
+- **A print that could not charge its filament says so.** When a finished
+  print draws from a slot with no spool assigned — the assignment was
+  removed mid-print, or never existed — the grams used to vanish with only a
+  hidden log line. You now get a **Filament not charged** notification naming
+  the slots and the grams, in both inventory modes, on the same toggle as
+  *Missing spool assignment*.
 - **A filament you created gets your own preset on the AMS slot.** A spool
   of a filament you created in Bambu Studio (Create filament, synced to your
   Bambu Cloud) put its slot on no preset at all and the generic 200–240 °C,

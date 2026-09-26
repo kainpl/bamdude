@@ -762,6 +762,7 @@ async def _report_spool_usage_for_slots(
     printer_id: int | None = None,
     slot_colors_out: dict[int, str] | None = None,
     slot_materials_out: dict[int, str] | None = None,
+    uncharged_out: list[tuple[int, float]] | None = None,
 ) -> int:
     """Report usage to Spoolman for a list of (slot_id, grams) pairs.
 
@@ -827,11 +828,16 @@ async def _report_spool_usage_for_slots(
                 resolution_path = "slot-assignment"
 
         if spool_id_to_use is None:
-            logger.debug(
-                "[SPOOLMAN] Slot %s: no spool resolved (tag=%s, no slot-assignment)",
+            # WARNING with the grams, and reported to the caller (audit D4, #2812):
+            # the print reads as a success while this filament reaches no spool.
+            logger.warning(
+                "[SPOOLMAN] Slot %s: no spool resolved (tag=%s, no slot-assignment) — %.1f g not charged",
                 slot_id,
                 spool_tag[:16] if spool_tag else "none",
+                grams_used,
             )
+            if uncharged_out is not None:
+                uncharged_out.append((global_tray_id, round(float(grams_used), 2)))
             continue
 
         # Record the spool's filament colour + material for the archive rewrites
@@ -1300,6 +1306,8 @@ async def report_usage(printer_id: int, archive_id: int):
         slot_colors: dict[int, str] = {}
         slot_materials: dict[int, str] = {}
         handled_global_tray_ids: set[int] = set()
+        # Filament read and not charged to any Spoolman spool (audit D4).
+        uncharged: list[tuple[int, float]] = []
         spools_updated = 0
 
         # The print's usage journal (m153): runout boundaries + frozen spool
@@ -1395,6 +1403,7 @@ async def report_usage(printer_id: int, archive_id: int):
                     printer_id=printer_id,
                     slot_colors_out=slot_colors,
                     slot_materials_out=slot_materials,
+                    uncharged_out=uncharged,
                 )
                 # Track which physical slots the 3MF path already covered so
                 # Path 2 doesn't double-charge them.
@@ -1446,6 +1455,12 @@ async def report_usage(printer_id: int, archive_id: int):
         # Same for the material: a slot mapped to a differently-typed spool than it
         # was sliced for otherwise records the sliced type (#2563).
         await _apply_spool_types_to_archive(db, archive_id, filament_usage, slot_materials)
+
+        # One word for the print about filament no spool received (audit D4).
+        if uncharged:
+            from backend.app.services import spool_assignment_notifications
+
+            await spool_assignment_notifications.notify_usage_not_recorded(printer_id, uncharged, db, logger)
 
 
 async def _report_remain_delta_for_slots(

@@ -39,6 +39,11 @@
     "title_template": "Відсутнє призначення котушки",
     "body_template": "{printer}: друк розпочато без призначених котушок\nСлоти: {missing_slots}\nОчікуваний профіль:\n{missing_slot_details}"
   },
+  "print_usage_not_recorded": {
+    "name": "Філамент не списано",
+    "title_template": "Філамент не списано",
+    "body_template": "{printer}: друк завершено, але цей філамент не списано з жодної котушки — на кінець друку слот не мав призначеної котушки\n{missing_slot_details}"
+  },
   "printer_offline": {
     "name": "Принтер офлайн",
     "title_template": "Принтер офлайн",

@@ -2162,6 +2162,47 @@ class NotificationService:
             variables=variables,
         )
 
+    async def on_print_usage_not_recorded(
+        self,
+        printer_id: int,
+        printer_name: str,
+        missing_slots: list[dict[str, str]],
+        db: AsyncSession,
+    ):
+        """A finished print left filament uncharged: its trays had no spool to charge (audit D4).
+
+        The missing-spool-assignment EVENT — same provider toggle, Telegram
+        subscription and inbox entry — with its own template, because that
+        event's template says the print STARTED without an assignment.
+        """
+        if not missing_slots:
+            return
+
+        providers = await self._get_providers_for_event(db, "on_print_missing_spool_assignment", printer_id)
+        if not providers:
+            return
+
+        variables = {
+            "printer": printer_name,
+            "missing_slots": ", ".join(slot.get("slot", "Unknown") for slot in missing_slots),
+            "missing_slot_details": "\n".join(
+                f"- {slot.get('slot', 'Unknown')}: {slot.get('grams', '?')} g {slot.get('profile', 'Unknown')}"
+                for slot in missing_slots
+            ),
+        }
+
+        title, message = await self._build_message_from_template(db, "print_usage_not_recorded", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "print_missing_spool_assignment",
+            printer_id,
+            printer_name,
+            variables=variables,
+        )
+
     async def on_printer_offline(self, printer_id: int, printer_name: str, db: AsyncSession):
         """Handle printer offline event."""
         providers = await self._get_providers_for_event(db, "on_printer_offline", printer_id)

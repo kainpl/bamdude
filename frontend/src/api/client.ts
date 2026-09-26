@@ -9982,6 +9982,12 @@ export const api = {
     }),
   getSpoolmanSettings: () =>
     request<{ spoolman_enabled: string; spoolman_url: string; spoolman_sync_mode: string; spoolman_disable_weight_sync: string; spoolman_report_partial_usage: string; auto_add_unknown_rfid: string; }>('/settings/spoolman'),
+  // What switching the inventory mode would take away — the switch clears every
+  // slot assignment of the mode being left, so the settings page asks with this.
+  getSpoolmanModeSwitchPreview: (enable: boolean) =>
+    request<{ assignments: number; printing: string[] }>(
+      `/settings/spoolman/mode-switch-preview?enable=${enable ? 'true' : 'false'}`,
+    ),
   updateSpoolmanSettings: (data: { spoolman_enabled?: string; spoolman_url?: string; spoolman_sync_mode?: string; spoolman_disable_weight_sync?: string; spoolman_report_partial_usage?: string; auto_add_unknown_rfid?: string; }) =>
     request<{ spoolman_enabled: string; spoolman_url: string; spoolman_sync_mode: string; spoolman_disable_weight_sync: string; spoolman_report_partial_usage: string; auto_add_unknown_rfid: string; }>('/settings/spoolman', {
       method: 'PUT',

@@ -108,6 +108,53 @@ def _decode_mqtt_mapping_to_global_trays(mapping_raw: object) -> list[int]:
     return decoded
 
 
+async def notify_usage_not_recorded(
+    printer_id: int,
+    uncharged: list[tuple[int, float]],
+    db,
+    logger: logging.Logger,
+) -> None:
+    """Say so when a finished print could not charge a tray it drew from (audit D4, #2812).
+
+    ``uncharged`` is ``(global tray id, grams)`` for every filament the usage
+    trackers read and could not attribute to a spool — collected across the
+    print, so this is one notification, not one per slot. The print-start check
+    cannot cover it: it is predictive, and the assignment it saw can be gone by
+    the end (an inventory-mode switch clears every assignment of the mode being
+    left). Sent on the missing-spool-assignment event so it follows the same
+    toggle, subscription and inbox entry, with its own wording. ``db`` is the
+    caller's session, used after its own writes. Never raises.
+    """
+    if not uncharged:
+        return
+    grams_by_tray: dict[int, float] = {}
+    for global_tray_id, grams in uncharged:
+        grams_by_tray[global_tray_id] = grams_by_tray.get(global_tray_id, 0.0) + float(grams)
+    try:
+        printer = await db.get(Printer, printer_id)
+        printer_name = printer.name if printer else f"Printer {printer_id}"
+        state = printer_manager.get_status(printer_id)
+        missing_slots = []
+        for global_id, grams in grams_by_tray.items():
+            profile, color = _tray_profile_and_color_for_global_id(state, global_id)
+            missing_slots.append(
+                {
+                    "slot": _slot_label_from_global_tray(global_id),
+                    "profile": profile,
+                    "color": color,
+                    "grams": f"{grams:.1f}",
+                }
+            )
+        await notification_service.on_print_usage_not_recorded(
+            printer_id=printer_id,
+            printer_name=printer_name,
+            missing_slots=missing_slots,
+            db=db,
+        )
+    except Exception as e:
+        logger.warning("Uncharged-usage notification failed: %s", e)
+
+
 async def notify_missing_spool_assignments_on_print_start(
     printer_id: int,
     data: dict,

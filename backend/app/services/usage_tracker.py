@@ -1472,6 +1472,9 @@ async def on_print_complete(
     has_boundary_events = any(e.event in (_EV_RUNOUT, _EV_LOADED) for e in journal_events)
     effective_started_at = None if has_boundary_events else (session.started_at if session else None)
 
+    # Filament the trackers read and could not charge to any spool (audit D4).
+    uncharged: list[tuple[int, float]] = []
+
     # --- Path 1 (PRIMARY): 3MF per-filament estimates ---
     if archive_id:
         print_name = (
@@ -1500,6 +1503,7 @@ async def on_print_complete(
             file_analysis=file_analysis,
             analysis_attempted=analysis_attempted,
             archive_snapshot=archive_snapshot,
+            uncharged=uncharged,
         )
         results.extend(threemf_results)
 
@@ -1706,6 +1710,14 @@ async def on_print_complete(
     except Exception:
         logger.exception("[UsageTracker] Runout zero corrections failed for printer %d", printer_id)
 
+    # One word for the whole print, after every write of the completion — on the
+    # caller's session, as upstream: opening a second one inside the completion
+    # transaction would wait on its own write lock on SQLite.
+    if uncharged:
+        from backend.app.services import spool_assignment_notifications
+
+        await spool_assignment_notifications.notify_usage_not_recorded(printer_id, uncharged, db, logger)
+
     return results
 
 
@@ -1729,6 +1741,7 @@ async def _track_from_3mf(
     file_analysis=None,
     analysis_attempted: bool = False,
     archive_snapshot=None,
+    uncharged: list[tuple[int, float]] | None = None,
 ) -> list[dict]:
     """Track usage from 3MF per-filament slicer data (primary path).
 
@@ -2331,7 +2344,20 @@ async def _track_from_3mf(
             print_started_at=print_started_at,
         )
         if spool_id is None:
-            logger.info("[UsageTracker] 3MF: no spool assignment at printer %d AMS%d-T%d", printer_id, ams_id, tray_id)
+            # WARNING, not INFO (audit D4, upstream #2812): everything before this
+            # succeeded — the 3MF, the grams, the tray — and the print still reports
+            # success while this filament is never charged. The caller turns the
+            # collected list into one notification per print.
+            missed_grams = layer_grams[slot_id] if layer_grams and slot_id in layer_grams else used_g * scale
+            logger.warning(
+                "[UsageTracker] 3MF: no spool assignment at printer %d AMS%d-T%d — %.1f g not charged",
+                printer_id,
+                ams_id,
+                tray_id,
+                missed_grams,
+            )
+            if uncharged is not None and missed_grams > 0:
+                uncharged.append((global_tray_id, round(float(missed_grams), 2)))
             continue
 
         # Load spool

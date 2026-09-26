@@ -74,6 +74,16 @@ DEFAULT_TEMPLATES = [
         "body_template": "{printer}: print started with missing spool assignments\nSlots: {missing_slots}\nExpected profile:\n{missing_slot_details}",
     },
     {
+        # Sent on the print_missing_spool_assignment EVENT (same toggle and
+        # subscription) when a finished print could not charge a tray it drew
+        # from — its own wording, because the event's template says the print
+        # STARTED without an assignment (audit D4).
+        "event_type": "print_usage_not_recorded",
+        "name": "Filament Not Charged",
+        "title_template": "Filament not charged",
+        "body_template": "{printer}: the print finished, but this filament reached no spool — the slot had no spool assigned by the end\n{missing_slot_details}",
+    },
+    {
         "event_type": "printer_offline",
         "name": "Printer Offline",
         "title_template": "Printer Offline",

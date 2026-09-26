@@ -39,6 +39,11 @@
     "title_template": "Missing Spool Assignment",
     "body_template": "{printer}: print started with missing spool assignments\nSlots: {missing_slots}\nExpected profile:\n{missing_slot_details}"
   },
+  "print_usage_not_recorded": {
+    "name": "Filament Not Charged",
+    "title_template": "Filament not charged",
+    "body_template": "{printer}: the print finished, but this filament reached no spool — the slot had no spool assigned by the end\n{missing_slot_details}"
+  },
   "printer_offline": {
     "name": "Printer Offline",
     "title_template": "Printer Offline",

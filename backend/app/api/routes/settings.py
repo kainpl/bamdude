@@ -474,6 +474,41 @@ async def get_spoolman_settings(
     }
 
 
+@router.get("/spoolman/mode-switch-preview")
+async def spoolman_mode_switch_preview(
+    enable: bool,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
+):
+    """What switching the inventory mode would take away (audit D4, upstream #2812).
+
+    The switch below clears every slot assignment of the mode being left — the
+    live tables hold only the active mode, so no reader can be answered by a row
+    of the other one. The settings page asks first with this: how many
+    assignments go, and which printers are printing now (their filament reaches
+    neither inventory). Asking for the mode already on takes nothing.
+    """
+    from sqlalchemy import func, select
+
+    from backend.app.models.printer import Printer
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+    from backend.app.services.printer_manager import printer_manager
+
+    current = (await get_setting(db, "spoolman_enabled") or "false").lower() == "true"
+    if enable == current:
+        return {"assignments": 0, "printing": []}
+    cleared = SpoolAssignment if enable else SpoolmanSlotAssignment
+    assignments = await db.scalar(select(func.count()).select_from(cleared))
+    printers = (
+        await db.execute(select(Printer.id, Printer.name).where(Printer.archived.is_(False)).order_by(Printer.name))
+    ).all()
+    return {
+        "assignments": int(assignments or 0),
+        "printing": [name for printer_id, name in printers if printer_manager.is_print_active(printer_id)],
+    }
+
+
 @router.put("/spoolman")
 async def update_spoolman_settings(
     settings: dict,

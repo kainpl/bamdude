@@ -82,6 +82,13 @@ EVENT_VARIABLES: dict[str, list[str]] = {
         "timestamp",
         "app_name",
     ],
+    "print_usage_not_recorded": [
+        "printer",
+        "missing_slots",
+        "missing_slot_details",
+        "timestamp",
+        "app_name",
+    ],
     "printer_offline": ["printer", "timestamp", "app_name"],
     "printer_error": ["printer", "error_type", "error_detail", "timestamp", "app_name"],
     "ai_failure_detection": ["printer", "task_name", "confidence", "action", "timestamp", "app_name"],
@@ -182,6 +189,13 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "missing_slots": "A1, A3",
         "missing_slot_details": "- A1: PLA Basic\n- A3: PETG HF",
         "timestamp": "2024-01-15 14:30",
+        "app_name": "BamDude",
+    },
+    "print_usage_not_recorded": {
+        "printer": "Bambu X1C",
+        "missing_slots": "A2",
+        "missing_slot_details": "- A2: 65.5 g PLA Basic",
+        "timestamp": "2024-01-15 16:10",
         "app_name": "BamDude",
     },
     "printer_offline": {
