@@ -3045,8 +3045,12 @@ class ArchiveService:
             # Backfill cost + quantity — fallback creation seeded them with
             # NULL / 1, and without this the archive stays stuck there even
             # after the 3MF lands.  Mirrors the logic in archive_print().
+            # Only when the row has no cost yet: a file that lands after the
+            # print completed must not re-price what completion priced from the
+            # spools that fed it (either inventory mode) at the farm rate
+            # (upstream 39835437, #2591).
             filament_grams = metadata.get("filament_used_grams")
-            if filament_grams:
+            if filament_grams and archive.cost is None:
                 recovered = await self._default_rate_cost(filament_grams)
                 if recovered is not None:
                     archive.cost = recovered

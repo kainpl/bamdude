@@ -430,6 +430,17 @@ async def recalculate_all_costs(
     # Get default filament cost from settings
     default_cost_per_kg = await default_rate_per_kg(db)
 
+    # In Spoolman mode there are never SpoolUsageHistory rows (the built-in
+    # tracker writes none), so the fallback below is not a recalculation but a
+    # downgrade: it would overwrite the cost completion priced from the linked
+    # spools, which cannot be rebuilt from the archive row (upstream 39835437,
+    # #2591). An archive with no cost yet is still priced.
+    from backend.app.api.routes.settings import get_setting
+
+    spoolman_setting = await get_setting(db, "spoolman_enabled")
+    spoolman_owns = bool(spoolman_setting) and spoolman_setting.lower() == "true"
+    preserved = 0
+
     # Pre-fetch all usage costs and tracked weight by archive_id. Tracked
     # weight tops up the cost at the default rate for any filament grams not
     # covered by an inventory spool (#1344).
@@ -469,6 +480,9 @@ async def recalculate_all_costs(
             fallback_cost = usage_result.scalar()
             if fallback_cost is not None and fallback_cost > 0:
                 new_cost = round(fallback_cost, 2)
+            elif spoolman_owns and archive.cost is not None:
+                new_cost = None
+                preserved += 1
             elif archive.filament_used_grams and default_cost_per_kg > 0:
                 new_cost = round((archive.filament_used_grams / 1000) * default_cost_per_kg, 2)
             else:
@@ -478,4 +492,7 @@ async def recalculate_all_costs(
             updated += 1
 
     await db.commit()
-    return {"message": f"Recalculated costs for {updated} archives", "updated": updated}
+    message = f"Recalculated costs for {updated} archives"
+    if preserved:
+        message += f"; kept {preserved} priced from Spoolman"
+    return {"message": message, "updated": updated, "preserved": preserved}

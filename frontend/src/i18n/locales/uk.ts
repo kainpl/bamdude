@@ -2080,6 +2080,7 @@ export default {
     exportFailed: 'Помилка експорту',
     layoutReset: 'Макет скинуто',
     recalculatedCosts: 'Перераховано вартість для {{count}} архівів',
+    recalculatedCostsKept: 'Перераховано вартість для {{count}} архівів; {{kept}} з цінами котушок Spoolman лишено як є',
     recalculateFailed: 'Не вдалося перерахувати вартість',
     // Loading
     loadingStats: 'Завантаження статистики...',

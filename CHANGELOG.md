@@ -464,6 +464,15 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **In Spoolman mode a print costs what its spools cost, and weighs what was
+  charged.** Spoolman holds each spool's price and BamDude never read it:
+  every print kept the figure estimated at its start, a multi-material print
+  at one rate for all its filament. Each charge is now priced from the spool
+  it came off, with grams no spool could price at the farm rate. The
+  archive's filament weight also learns what was charged — a failed print
+  records what it used, a print whose 3MF never arrived the grams Spoolman
+  was charged instead of 0. **Recalculate Costs** and a 3MF that lands after
+  the print finished no longer re-price such a cost at the default rate.
 - **A clear spool stays clear in Spoolman.** Every colour was cut to six
   characters on its way to Spoolman, so a clear spool (`00000000`) was stored
   as opaque black, and reading an eight-character colour back turned it grey.

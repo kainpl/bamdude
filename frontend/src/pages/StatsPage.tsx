@@ -1182,7 +1182,13 @@ export function StatsPage() {
     try {
       const result = await api.recalculateCosts();
       await Promise.all([refetchStats(), refetchArchives()]);
-      showToast(t('stats.recalculatedCosts', { count: result.updated }));
+      // Costs priced from Spoolman spools at completion are kept, not re-priced
+      // at the farm rate (#2591) — said, so they do not read as skipped.
+      showToast(
+        result.preserved
+          ? t('stats.recalculatedCostsKept', { count: result.updated, kept: result.preserved })
+          : t('stats.recalculatedCosts', { count: result.updated }),
+      );
     } catch {
       showToast(t('stats.recalculateFailed'), 'error');
     } finally {

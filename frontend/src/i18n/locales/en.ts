@@ -2084,6 +2084,7 @@ export default {
     exportFailed: 'Export failed',
     layoutReset: 'Layout reset',
     recalculatedCosts: 'Recalculated costs for {{count}} archives',
+    recalculatedCostsKept: 'Recalculated costs for {{count}} archives; kept {{kept}} priced from Spoolman spools',
     recalculateFailed: 'Failed to recalculate costs',
     // Loading
     loadingStats: 'Loading statistics...',

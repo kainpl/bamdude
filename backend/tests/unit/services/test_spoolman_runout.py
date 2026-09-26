@@ -211,7 +211,9 @@ class TestSpoolmanRunoutZeroPoint:
 
         await _run(_tracking(), client, events, get_setting=AsyncMock(side_effect=_setting))
 
-        client.get_spool.assert_not_awaited()
+        # No correction drains the 30 g left on the spool: only the print's own
+        # 300 g are charged. (Not asserted as "get_spool never awaited" any more —
+        # each journal segment now fetches its spool for the price, #2591.)
         # The print's own rows are unaffected — split still applies (runout
         # boundary with no spool_loaded keeps the origin on both segments).
         assert sum(c.args[1] for c in client.use_spool.await_args_list) == 300.0
