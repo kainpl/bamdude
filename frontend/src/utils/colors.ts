@@ -311,6 +311,11 @@ export function resolveSpoolColorName(colorName: string | null, rgba: string | n
  * `FilamentSwatch` already paints a richer checkerboard underlay automatically;
  * use this only when retro-fitting an existing simple swatch site.
  */
+// The transparency checkerboard, shared by every swatch that shows a
+// translucent colour, so the fully- and partly-transparent branches cannot
+// drift apart.
+const CHECKERBOARD = 'repeating-conic-gradient(#979797 0% 25%, #f5f5f5 0% 50%)';
+
 export function getSwatchStyle(rgba: string | null | undefined): {
   backgroundColor?: string;
   backgroundImage?: string;
@@ -319,11 +324,24 @@ export function getSwatchStyle(rgba: string | null | undefined): {
   if (!rgba) return { backgroundColor: '#808080' };
   const clean = rgba.replace(/^#/, '');
   if (clean.length < 6) return { backgroundColor: '#808080' };
-  if (clean.length >= 8 && clean.substring(6, 8).toLowerCase() === '00') {
-    return {
-      backgroundImage: 'repeating-conic-gradient(#979797 0% 25%, #f5f5f5 0% 50%)',
-      backgroundSize: '8px 8px',
-    };
+  if (clean.length >= 8) {
+    const alpha = clean.substring(6, 8).toLowerCase();
+    if (alpha === '00') {
+      return { backgroundImage: CHECKERBOARD, backgroundSize: '8px 8px' };
+    }
+    if (alpha !== 'ff') {
+      // Partly translucent (upstream 73912d4f, #2912): the colour at its real
+      // alpha OVER the checkerboard, so the swatch shows both the tint and that
+      // it is see-through. Dropping to the RGB prefix drew a 10%-alpha spool as
+      // an opaque one. Two image layers rather than backgroundColor: a
+      // background colour paints UNDER the image, which would put the
+      // checkerboard on top of the tint.
+      const translucent = `#${clean.substring(0, 8)}`;
+      return {
+        backgroundImage: `linear-gradient(${translucent}, ${translucent}), ${CHECKERBOARD}`,
+        backgroundSize: '100% 100%, 8px 8px',
+      };
+    }
   }
   return { backgroundColor: `#${clean.substring(0, 6)}` };
 }

@@ -7,6 +7,7 @@ import {
   __resetColorCatalogForTests,
   parseFilamentColor,
   isLightColor,
+  getSwatchStyle,
 } from '../../utils/colors';
 
 beforeEach(() => {
@@ -159,5 +160,40 @@ describe('isLightColor', () => {
   // as light for text-contrast purposes.
   it('treats alpha=00 as light', () => {
     expect(isLightColor('00000000')).toBe(true);
+  });
+});
+
+describe('getSwatchStyle (#1545, upstream 73912d4f #2912)', () => {
+  const CHECKERBOARD = 'repeating-conic-gradient(#979797 0% 25%, #f5f5f5 0% 50%)';
+
+  it('falls back to neutral grey for missing or unparseable input', () => {
+    expect(getSwatchStyle(null)).toEqual({ backgroundColor: '#808080' });
+    expect(getSwatchStyle(undefined)).toEqual({ backgroundColor: '#808080' });
+    expect(getSwatchStyle('')).toEqual({ backgroundColor: '#808080' });
+    expect(getSwatchStyle('ABC')).toEqual({ backgroundColor: '#808080' });
+  });
+
+  it('paints an opaque colour flat, with or without the FF byte', () => {
+    expect(getSwatchStyle('FF0000')).toEqual({ backgroundColor: '#FF0000' });
+    expect(getSwatchStyle('FF0000FF')).toEqual({ backgroundColor: '#FF0000' });
+    expect(getSwatchStyle('#FF0000FF')).toEqual({ backgroundColor: '#FF0000' });
+  });
+
+  it('shows the checkerboard alone for a fully transparent colour', () => {
+    expect(getSwatchStyle('00000000')).toEqual({ backgroundImage: CHECKERBOARD, backgroundSize: '8px 8px' });
+  });
+
+  it('layers a partly translucent colour over the checkerboard', () => {
+    // It used to fall through to the RGB prefix, so a 50%-alpha spool rendered
+    // identically to an opaque one — reachable now that Spoolman stores alpha.
+    const style = getSwatchStyle('FF000080');
+    expect(style.backgroundColor).toBeUndefined();
+    expect(style.backgroundImage).toBe(`linear-gradient(#FF000080, #FF000080), ${CHECKERBOARD}`);
+    expect(style.backgroundSize).toBe('100% 100%, 8px 8px');
+  });
+
+  it('treats the alpha byte case-insensitively', () => {
+    expect(getSwatchStyle('ff0000ff')).toEqual({ backgroundColor: '#ff0000' });
+    expect(getSwatchStyle('ff000000')).toEqual({ backgroundImage: CHECKERBOARD, backgroundSize: '8px 8px' });
   });
 });

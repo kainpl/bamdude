@@ -60,6 +60,7 @@ from backend.app.services.spoolman import (
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot
 from backend.app.services.tag_conflict import tag_already_linked
+from backend.app.utils.color_utils import spoolman_color_hex
 from backend.app.utils.filament_remaining import grams_remaining
 
 logger = logging.getLogger(__name__)
@@ -518,7 +519,9 @@ async def _resolve_filament_id(data: SpoolmanInventoryCreate, client: SpoolmanCl
         return data.spoolman_filament_id
     # Validator guarantees material is non-None when spoolman_filament_id is None
     assert data.material is not None  # noqa: S101
-    color_hex = (data.rgba or "808080FF")[:6]
+    # `or "808080"` on the result: spoolman_color_hex returns None only for a
+    # missing value, so this is the same neutral grey the old default gave (#2912).
+    color_hex = spoolman_color_hex(data.rgba) or "808080"
     async with _translate_spoolman_errors():
         return await client.find_or_create_filament(
             material=data.material,
@@ -739,7 +742,9 @@ async def update_spool(
     brand = data.brand if data.brand is not None else (cur_vendor.get("name") or None)
     color_name = data.color_name if data.color_name is not None else (cur_filament.get("color_name") or None)
     cur_color = (cur_filament.get("color_hex") or "808080").upper().removeprefix("#")
-    rgba = data.rgba if data.rgba is not None else (cur_color + "FF")
+    # Handed over as stored: the opaque alpha this used to append was folded
+    # straight back off by `spoolman_color_hex` below (#2912).
+    rgba = data.rgba if data.rgba is not None else cur_color
     label_weight = data.label_weight if data.label_weight is not None else int(cur_filament.get("weight") or 1000)
     # Default ``weight_used`` from the synthetic mapping (``label_weight -
     # remaining_weight``) so an edit that doesn't touch the weight field
@@ -771,7 +776,7 @@ async def update_spool(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    color_hex = rgba[:6]
+    color_hex = spoolman_color_hex(rgba) or rgba
 
     # Resolve which filament this spool should be linked to AFTER the edit.
     #
@@ -785,14 +790,17 @@ async def update_spool(
     # a singleton (only this spool links to it, archived spools included).
     cur_filament_id = cur_filament.get("id")
     desired_name = f"{material} {subtype}".strip() if subtype else material
-    cur_color_norm = (cur_filament.get("color_hex") or "").upper()[:6]
+    # Compare the stored shapes, not raw strings and not bare RGB prefixes: raw
+    # strings PATCH the filament on every no-op edit of an opaque spool, bare
+    # prefixes make an alpha-only edit invisible (#2912).
+    cur_color_norm = spoolman_color_hex(cur_filament.get("color_hex")) or ""
     cur_vendor_name = (cur_vendor.get("name") or "").strip()
     cur_weight_int = int(cur_filament.get("weight") or 0)
     metadata_unchanged = (
         cur_filament_id
         and (cur_filament.get("name") or "").strip() == desired_name
         and (cur_filament.get("material") or "").upper() == material.upper()
-        and cur_color_norm == color_hex.upper()
+        and cur_color_norm == (color_hex or "").upper()
         and cur_vendor_name.lower() == ((brand or "").strip().lower())
         and cur_weight_int == int(label_weight)
     )

@@ -464,6 +464,14 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **A clear spool stays clear in Spoolman.** Every colour was cut to six
+  characters on its way to Spoolman, so a clear spool (`00000000`) was stored
+  as opaque black, and reading an eight-character colour back turned it grey.
+  A translucent colour now keeps its alpha; an opaque one stays six
+  characters, exactly as existing filaments are stored, so nothing already in
+  Spoolman is rewritten or duplicated. Swatches across the spool dialogs draw
+  a partly translucent colour over the transparency checkerboard instead of
+  as solid.
 - **Spoolman works from the first sync after enabling it.** Spoolman refuses a
   spool carrying an extra field it was not told about, and BamDude registered
   its fields only from the Connect button — which enabling Spoolman in Settings
