@@ -34,7 +34,9 @@ from backend.app.models.printer import Printer
 from backend.app.services import preheat as preheat_service
 from backend.app.services.archive import ArchiveService
 from backend.app.services.bambu_ftp import (
+    UploadReport,
     delete_file_async,
+    describe_upload_failure,
     get_ftp_retry_settings,
     list_files_async,
     upload_file_async,
@@ -140,13 +142,17 @@ def _file_digest(path: str) -> str:
     return digest.hexdigest()
 
 
-def _upload_failure_message(storage: str) -> str:
+def _upload_failure_message(storage: str, report: UploadReport | None = None) -> str:
     """⚠️ An upload that failed after the medium was chosen is a different
     story from a refusal before it. The card advice belongs only on the path
     that used a card — on internal storage it would send the operator looking
-    for a slot the print never went near."""
+    for a slot the print never went near.
+
+    On the card path the sentence comes from what the FTP client saw
+    (upstream 70ee5346): the card is named only where the printer refused to
+    store the file, never for a refused handshake, access code or timeout."""
     if storage == "external":
-        return "Failed to upload file to printer. Check if SD card is inserted and properly formatted (FAT32/exFAT)."
+        return describe_upload_failure(report.failure if report else None)
     return "Failed to upload the file into the printer's internal storage."
 
 
@@ -2173,6 +2179,9 @@ class BackgroundDispatchService:
                 # that already works for every printer with a card.
                 # The printer may go quiet on MQTT while it takes the file; that is
                 # not a stale session (spec direct-print-silent-cancel §4.2).
+                # Why the card upload failed, if it does — this operation's own
+                # record, never a shared per-printer one (upstream 70ee5346).
+                upload_report = UploadReport()
                 with printer_manager.transfer_in_progress(job.printer_id):
                     if storage != "external":
                         uploaded = await transport.upload(
@@ -2192,6 +2201,7 @@ class BackgroundDispatchService:
                             retry_delay=ftp_retry_delay,
                             operation_name=f"Upload for reprint to {printer_name}",
                             non_retry_exceptions=(DispatchJobCancelled,),
+                            report=upload_report,
                         )
                     else:
                         uploaded = await upload_file_async(
@@ -2202,13 +2212,14 @@ class BackgroundDispatchService:
                             progress_callback=upload_progress_callback,
                             socket_timeout=ftp_timeout,
                             printer_model=printer_model,
+                            report=upload_report,
                         )
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
 
                 if not uploaded:
-                    raise RuntimeError(_upload_failure_message(storage))
+                    raise RuntimeError(_upload_failure_message(storage, upload_report))
 
                 # ⚠️ Both media get a real digest. The FTP path sent an empty
                 # one for as long as this code existed, reasoning that Bambu's
@@ -2880,6 +2891,9 @@ class BackgroundDispatchService:
                 # that already works for every printer with a card.
                 # The printer may go quiet on MQTT while it takes the file; that is
                 # not a stale session (spec direct-print-silent-cancel §4.2).
+                # Why the card upload failed, if it does — this operation's own
+                # record, never a shared per-printer one (upstream 70ee5346).
+                upload_report = UploadReport()
                 with printer_manager.transfer_in_progress(job.printer_id):
                     if storage != "external":
                         uploaded = await transport.upload(
@@ -2899,6 +2913,7 @@ class BackgroundDispatchService:
                             retry_delay=ftp_retry_delay,
                             operation_name=f"Upload for print to {printer_name}",
                             non_retry_exceptions=(DispatchJobCancelled,),
+                            report=upload_report,
                         )
                     else:
                         uploaded = await upload_file_async(
@@ -2909,6 +2924,7 @@ class BackgroundDispatchService:
                             progress_callback=upload_progress_callback,
                             socket_timeout=ftp_timeout,
                             printer_model=printer_model,
+                            report=upload_report,
                         )
 
                 if uploaded:
@@ -2916,7 +2932,7 @@ class BackgroundDispatchService:
 
                 if not uploaded:
                     await db.rollback()
-                    raise RuntimeError(_upload_failure_message(storage))
+                    raise RuntimeError(_upload_failure_message(storage, upload_report))
 
                 # ⚠️ Both media get a real digest. The FTP path sent an empty
                 # one for as long as this code existed, reasoning that Bambu's

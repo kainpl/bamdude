@@ -464,6 +464,14 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **A print that could not be sent to the printer's card says why.** Every
+  failed upload told the operator to check that the SD card is inserted and
+  formatted FAT32/exFAT — also after the printer turned the file connection
+  away, refused the access code or did not answer, none of which ever reached
+  the card. The queue entry and the failure notification now name what
+  happened: the card only when the printer refused to store the file (with
+  its reply code), otherwise the refused connection, the access code, the
+  network, a dropped transfer or a short copy on the printer.
 - **The connection diagnostic no longer shows port 990 green when the printer's
   file service is turning connections away.** It only checked that the port
   accepted a connection, so a printer answering in plain text — every archive

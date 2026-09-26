@@ -207,8 +207,16 @@ def test_an_exception_with_no_message_still_says_something():
 def test_the_upload_failure_message_only_mentions_a_card_where_one_was_used():
     """⚠️ A failure after the medium was chosen is a different story from a
     refusal before it. Advising an operator to check a card slot the print
-    never went near sends them looking for a fault that is not there."""
-    assert "sd card" in _upload_failure_message("external").lower()
+    never went near sends them looking for a fault that is not there.
+
+    And on the card path only where the printer refused to STORE the file
+    (upstream 70ee5346) — not after a refused handshake, access code or timeout."""
+    from backend.app.services.bambu_ftp import FtpFailure, UploadReport
+
+    storage = _upload_failure_message("external", UploadReport(FtpFailure("storage", code="553")))
+    assert "sd card" in storage.lower()
+    handshake = _upload_failure_message("external", UploadReport(FtpFailure("tls")))
+    assert "formatted" not in handshake.lower()
     internal = _upload_failure_message("internal")
     assert "card" not in internal.lower()
     assert "internal storage" in internal.lower()
