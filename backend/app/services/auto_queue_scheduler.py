@@ -55,6 +55,7 @@ from backend.app.services.filament_policy import auto_policy, serialize_policy
 from backend.app.services.filament_preflight import feed_signature
 from backend.app.services.filament_requirements import PrintRequirementsCache, probe_identity
 from backend.app.services.filament_routing import resolve_filament_routing
+from backend.app.services.offline_feed import OfflineFeedCache, offline_shortfall
 from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.printer_occupancy import (
@@ -183,10 +184,18 @@ class AutoQueueScheduler:
             # At most one printer is woken per pass — see _wake_offline_printer.
             woke_one = False
             requirements_cache = PrintRequirementsCache()
+            # What each switched-off printer holds, read once per pass: the
+            # matcher's reason and the wake step ask about the same printers.
+            offline_feeds = OfflineFeedCache()
             for item in items:
                 while True:
                     eligible = await find_eligible_printer(
-                        db, item, busy_printers, cache=requirements_cache, prefer_lowest=prefer_lowest
+                        db,
+                        item,
+                        busy_printers,
+                        cache=requirements_cache,
+                        prefer_lowest=prefer_lowest,
+                        offline_feeds=offline_feeds,
                     )
                     printer, reason = eligible
                     if printer is None:
@@ -196,7 +205,13 @@ class AutoQueueScheduler:
                             logger.warning("Auto item %s failed: %s", item.id, source_reason)
                             break
                         if not woke_one:
-                            woke_one = await self._wake_offline_printer(db, item, busy_printers)
+                            woke_one = await self._wake_offline_printer(
+                                db,
+                                item,
+                                busy_printers,
+                                requirements=eligible.requirements,
+                                offline_feeds=offline_feeds,
+                            )
                         if reason and item.waiting_reason != reason:
                             logger.info("Auto item %s not placed: %s", item.id, reason)
                             item.waiting_reason = reason
@@ -409,7 +424,9 @@ class AutoQueueScheduler:
     _wake_cooldowns: dict[int, float] = {}
     _WAKE_COOLDOWN_SECONDS = 600.0
 
-    async def _wake_offline_printer(self, db, item, busy_printers: set[int]) -> bool:
+    async def _wake_offline_printer(
+        self, db, item, busy_printers: set[int], *, requirements=None, offline_feeds=None
+    ) -> bool:
         """Switch on one printer this item could run on, if they are all off.
 
         ⚠️ **The gap this closes.** A job aimed at a printer *class* with every
@@ -435,6 +452,12 @@ class AutoQueueScheduler:
         is off, not busy — labelling it busy would misdescribe it in every later
         item's waiting reason, and an all-busy reason is treated as needing no
         user action, so it would suppress the notification too.
+
+        ⚠️ **A printer that cannot run the job is passed over** (upstream #2876):
+        its assigned inventory and last reading say what it holds while it is
+        off (``offline_feed``), and one whose every holder is known and lacks a
+        channel's material or forced colour is not the printer to switch on.
+        Unknown is woken — never having heard is not the same as nothing loaded.
         """
         import time as _time
 
@@ -452,6 +475,17 @@ class AutoQueueScheduler:
             deadline = self._wake_cooldowns.get(printer.id)
             if deadline is not None and deadline > now:
                 continue
+
+            if requirements is not None and offline_feeds is not None:
+                missing = offline_shortfall(requirements, auto_policy(item), await offline_feeds.get(db, printer.id))
+                if missing:
+                    logger.info(
+                        "Auto item %s: not powering on %s — what it holds cannot run the job (needs %s)",
+                        item.id,
+                        printer.name,
+                        ", ".join(m["wanted"] for m in missing),
+                    )
+                    continue
 
             plugs = (
                 (

@@ -154,6 +154,33 @@ def _required_diameter(requirements, nozzle):
         return -1
 
 
+def effective_slots(requirements: "PrintRequirements", policy: RoutingPolicy) -> list[dict] | None:
+    """The channels a job asks for once its overrides have spoken.
+
+    Each slot's ``type`` / ``tray_info_idx`` / ``color`` as the operator
+    overrode them, plus ``strict`` (a forced colour). ``None`` when an override
+    names a channel the plate does not use. Shared by routing and by the
+    auto-queue's wake step (``offline_feed``), so both ask a printer for the
+    same filament.
+    """
+    slots = [dict(f) for f in requirements.used_filaments]
+    overrides = {o["slot_id"]: o for o in policy.filament_overrides}
+    if set(overrides) - {slot["slot_id"] for slot in slots}:
+        return None
+    for slot in slots:
+        override = overrides.get(slot["slot_id"], {})
+        if override.get("type"):
+            if not filament_types_compatible(override["type"], slot["type"]):
+                slot["tray_info_idx"] = override.get("tray_info_idx")
+            slot["type"] = override["type"]
+        if override.get("tray_info_idx"):
+            slot["tray_info_idx"] = override["tray_info_idx"]
+        if override.get("color"):
+            slot["color"] = override["color"]
+        slot["strict"] = policy.force_color_match or bool(override.get("force_color_match"))
+    return slots
+
+
 def resolve_filament_routing(
     requirements: "PrintRequirements",
     policy: RoutingPolicy,
@@ -180,21 +207,9 @@ def resolve_filament_routing(
         # In particular, an external tray report does not prove AMS absence.
         # Single-nozzle wire encoding differs when no AMS is attached.
         return RoutingResult("unknown", "feed_state_unavailable")
-    slots = [dict(f) for f in requirements.used_filaments]
-    overrides = {o["slot_id"]: o for o in policy.filament_overrides}
-    if set(overrides) - {slot["slot_id"] for slot in slots}:
+    slots = effective_slots(requirements, policy)
+    if slots is None:
         return RoutingResult("unknown", "override_slot_not_used")
-    for slot in slots:
-        override = overrides.get(slot["slot_id"], {})
-        if override.get("type"):
-            if not filament_types_compatible(override["type"], slot["type"]):
-                slot["tray_info_idx"] = override.get("tray_info_idx")
-            slot["type"] = override["type"]
-        if override.get("tray_info_idx"):
-            slot["tray_info_idx"] = override["tray_info_idx"]
-        if override.get("color"):
-            slot["color"] = override["color"]
-        slot["strict"] = policy.force_color_match or bool(override.get("force_color_match"))
     nozzle_counts = Counter(s.get("nozzle_id") if s.get("nozzle_id") is not None else 0 for s in slots)
     options: dict[int, list[FeedSource]] = {}
     colors = {}

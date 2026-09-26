@@ -718,6 +718,13 @@ class PrinterManager:
         self._models: dict[int, str | None] = {}  # Cache printer models for feature detection
         self._connected_at: dict[int, float] = {}  # Unix timestamp of last connection
         self._printer_info: dict[int, PrinterInfo] = {}  # Cache printer name/serial for callbacks
+        # The AMS / external-spool reading of a client that has been dropped, so
+        # the auto-queue can still tell what a switched-off printer holds
+        # (upstream #2876). Kept beside the clients, never inside one: it answers
+        # "what did this printer last have loaded", and the AMS merge is
+        # additive, so feeding it back into live status would bring an unplugged
+        # unit back for good.
+        self._last_trays: dict[int, dict] = {}
         self._on_print_start: Callable[[int, dict], None] | None = None
         self._on_print_complete: Callable[[int, dict], None] | None = None
         self._on_print_running_observed: Callable[[int, dict], None] | None = None
@@ -1257,9 +1264,29 @@ class PrinterManager:
 
         return client.state.connected
 
+    @staticmethod
+    def _tray_keys(raw: dict | None) -> dict:
+        raw = raw or {}
+        return {key: raw[key] for key in ("ams", "vt_tray") if isinstance(raw.get(key), list)}
+
+    def last_tray_reading(self, printer_id: int) -> dict:
+        """What this printer last reported loaded: ``{"ams": [...], "vt_tray": [...]}``.
+
+        History, not status — for a printer that is off. The live client's own
+        reading first (it keeps ``raw_data`` after the printer goes offline),
+        else the one left behind when a client was dropped. ``{}`` means never
+        heard in this process, which is not the same as nothing loaded.
+        """
+        client = self._clients.get(printer_id)
+        live = self._tray_keys(client.state.raw_data) if client is not None else {}
+        return live or self._last_trays.get(printer_id, {})
+
     def disconnect_printer(self, printer_id: int, timeout: float = 0):
         """Disconnect from a printer."""
         if printer_id in self._clients:
+            trays = self._tray_keys(self._clients[printer_id].state.raw_data)
+            if trays:
+                self._last_trays[printer_id] = trays
             self._clients[printer_id].disconnect(timeout=timeout)
             del self._clients[printer_id]
         self._connected_at.pop(printer_id, None)  # Clean up connection timestamp

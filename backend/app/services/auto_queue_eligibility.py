@@ -59,6 +59,7 @@ from backend.app.services.filament_policy import auto_policy
 from backend.app.services.filament_preflight import feed_signature
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.filament_routing import resolve_filament_routing
+from backend.app.services.offline_feed import offline_shortfall
 from backend.app.services.print_scheduler import _canonical_filament_type, scheduler
 from backend.app.services.printer_location_service import load_tree, path_of, subtree_ids
 from backend.app.services.printer_manager import printer_manager
@@ -298,7 +299,15 @@ async def find_eligible_printer(
     *,
     cache: PrintRequirementsCache | None = None,
     prefer_lowest: bool = False,
+    offline_feeds=None,
 ) -> EligiblePrinter:
+    """The best printer for ``item`` now, or why there is none.
+
+    ``offline_feeds`` (an ``offline_feed.OfflineFeedCache``) lets a switched-off
+    printer be described by what it lacks instead of as "offline": it is the
+    same answer the wake step acts on, so the reason says why nothing was
+    switched on (upstream #2876). Without it an off printer reads as offline.
+    """
     if item.target_model:
         printers, normalized_model, location_suffix = await printers_for_item(db, item)
         if not printers:
@@ -325,6 +334,21 @@ async def find_eligible_printer(
         # the assignment's re-read is compared to, and only here are the policy
         # and that snapshot both in hand.
         snapshot = printer_manager.get_feed_snapshot(printer.id)
+        if not snapshot.connected and offline_feeds is not None:
+            feed = await offline_feeds.get(db, printer.id)
+            missing = offline_shortfall(req, policy, feed)
+            if missing:
+                loaded = ", ".join(dict.fromkeys(s.material for s in feed.sources))
+                reasons.append(
+                    f"{printer.name}: "
+                    + routing_detail(
+                        "printer_off_missing_filament",
+                        slot=missing[0]["slot"],
+                        wanted=missing[0]["wanted"],
+                        loaded=loaded,
+                    )["message"]
+                )
+                continue
         result = resolve_filament_routing(req, policy, snapshot, prefer_lowest=prefer_lowest)
         if result.plan is None:
             # With the facts: this line names ONE printer, so its trays can be

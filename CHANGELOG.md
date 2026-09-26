@@ -172,6 +172,15 @@
 
 ### Fixed
 
+- **The auto-queue no longer switches on a printer that cannot run the job.**
+  With every printer of the job's model off, it used to power on the first
+  one with an Auto On plug and only then look at what was loaded, so a job
+  for a colour at the far end of the farm woke every earlier printer in turn.
+  What a switched-off printer holds is now read before its plug is touched —
+  from the spools assigned to its slots, and for an unassigned slot from what
+  the printer last reported — and a printer that lacks the job's material or
+  forced colour is passed over, with the job's waiting reason saying what it
+  lacks. A printer not heard from since BamDude started is still switched on.
 - **K-profiles of a custom Bambu Cloud filament show its name, not a raw
   `P…` code.** Bambu Cloud keeps a custom filament's own id either beside
   the preset or inside the preset's settings, and only the first place was

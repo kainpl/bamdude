@@ -18,6 +18,7 @@
   "source_retry_not_failed": "Only a failed auto-queue job can be retried.",
   "mapping_review_required": "Review the selected filament slots.",
   "printer_offline": "Printer is offline; fresh filament state is required.",
+  "printer_off_missing_filament": "Printer is switched off, and what it holds cannot run this job, so it is not switched on.",
   "model_unavailable": "Printer model is unknown.",
   "model_mismatch": "The sliced printer model does not match.",
   "nozzle_state_unavailable": "Waiting for nozzle state.",
