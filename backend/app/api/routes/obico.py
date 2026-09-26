@@ -59,11 +59,17 @@ async def get_printer_status(
     # Error strings can embed configured URLs (the ML API base, the external
     # URL), so they stay behind settings:read with the rest of the configuration.
     can_see_error = user is None or user.has_permission(Permission.SETTINGS_READ.value)
+    per_printer = obico_detection_service.get_per_printer()
+    if not can_see_error:
+        # The "error" CLASS is not configuration: an operator still has to know
+        # their print is not being watched. Only the reason, which can name a
+        # URL, is withheld (upstream #2952).
+        per_printer = {pid: {**entry, "error": None} for pid, entry in per_printer.items()}
     return {
         "enabled": settings["enabled"],
         # None means every printer is monitored.
         "monitored_printers": sorted(enabled_printers) if enabled_printers is not None else None,
-        "per_printer": obico_detection_service.get_per_printer(),
+        "per_printer": per_printer,
         "last_error": obico_detection_service._last_error if can_see_error else None,
     }
 

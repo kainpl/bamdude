@@ -98,6 +98,11 @@ class ObicoDetectionService:
         self._state_keys: dict[int, str] = {}
         # printer_id -> last classification ("safe"/"warning"/"failure")
         self._last_class: dict[int, str] = {}
+        # printer_id -> why the most recent poll produced no verdict; absent
+        # when it did. Per printer, so a card names ITS problem rather than
+        # whichever printer failed last (upstream #2952). A missing verdict is
+        # not "safe": see get_per_printer.
+        self._errors: dict[int, str] = {}
         # printer_id -> whether an action has already been fired for the current print
         self._action_fired: dict[int, bool] = {}
         # Global detection event log (most-recent-first)
@@ -210,6 +215,8 @@ class ObicoDetectionService:
                 self._states.pop(printer_id, None)
                 self._state_keys.pop(printer_id, None)
                 self._action_fired.pop(printer_id, None)
+                self._last_class.pop(printer_id, None)
+                self._errors.pop(printer_id, None)
                 continue
 
             if not camera_ready:
@@ -290,6 +297,17 @@ class ObicoDetectionService:
             )
         return result.frame
 
+    def _no_verdict(self, printer_id: int, reason: str) -> None:
+        """This poll produced no verdict for ``printer_id`` — say so, per printer.
+
+        Kept apart from the classification so the status can read "not checking"
+        instead of inheriting an older verdict, or the "safe" a printer used to
+        get before its first inference (upstream #2952).
+        """
+        self._errors[printer_id] = reason
+        self._last_error = reason
+        logger.warning(reason)
+
     async def _check_printer(self, printer_id: int, status, settings: dict):
         task_name = getattr(status, "task_name", None) or getattr(status, "subtask_name", "") or ""
         key = f"{task_name}"
@@ -304,17 +322,16 @@ class ObicoDetectionService:
         # keyframe wait.
         frame = await self._capture_frame(printer_id)
         if not frame:
-            self._last_error = f"Failed to capture snapshot for printer {printer_id}"
-            logger.warning(self._last_error)
+            self._no_verdict(printer_id, f"Failed to capture snapshot for printer {printer_id}")
             return
 
         external_url = settings.get("external_url") or ""
         if not external_url:
-            self._last_error = (
+            self._no_verdict(
+                printer_id,
                 "external_url setting is empty — Obico's ML API needs a reachable URL to fetch the snapshot from. "
-                "Set Settings → General → External URL."
+                "Set Settings → General → External URL.",
             )
-            logger.warning(self._last_error)
             return
 
         nonce = await stash_frame(frame)
@@ -334,19 +351,21 @@ class ObicoDetectionService:
             # failure while Test Connection reports the server as healthy — /hc/
             # is open, /p/ is not.
             if e.response is not None and e.response.status_code == 401:
-                self._last_error = (
+                # ⚠️ Obico's auth runs before its handler, so a rejected call
+                # leaves no trace in the ML API's own log — the card is the only
+                # place this can be seen (upstream #2952).
+                self._no_verdict(
+                    printer_id,
                     "Obico ML API rejected the token. The server runs with ML_API_TOKEN set — "
                     "enter that value in Settings → Failure detection → ML API token, "
-                    "or clear ML_API_TOKEN on the server."
+                    "or clear ML_API_TOKEN on the server.",
                 )
             else:
-                self._last_error = f"ML API call failed for printer {printer_id}: {e}"
-            logger.warning(self._last_error)
+                self._no_verdict(printer_id, f"ML API call failed for printer {printer_id}: {e}")
             return
         except Exception as e:
             detail = str(e) or type(e).__name__
-            self._last_error = f"ML API call failed for printer {printer_id}: {detail}"
-            logger.warning(self._last_error)
+            self._no_verdict(printer_id, f"ML API call failed for printer {printer_id}: {detail}")
             return
 
         detections = payload.get("detections", []) if isinstance(payload, dict) else []
@@ -358,6 +377,7 @@ class ObicoDetectionService:
         # A successful capture + ML call clears any transient error from previous
         # polls (typical case: cold-start RTSP timeout on first frame after startup,
         # followed by healthy polls that otherwise leave the banner stuck in the UI).
+        self._errors.pop(printer_id, None)
         self._last_error = None
 
         # Log every non-safe sample — safe samples would flood history
@@ -405,15 +425,23 @@ class ObicoDetectionService:
 
         Split out of :meth:`get_status` so the printer-card endpoint and the
         settings panel cannot drift into two answers to the same question.
+
+        ``class`` is ``error`` when the latest poll produced no verdict (with
+        ``error`` saying why), ``unknown`` while a watched print waits for its
+        first result, else the verdict. It used to default to ``safe``, so a
+        print nothing had ever checked showed as a healthy watched one — the
+        worst failure a safety feature has (upstream #2952).
         """
-        return {
-            pid: {
-                "class": self._last_class.get(pid, "safe"),
+        result = {}
+        for pid, state in self._states.items():
+            error = self._errors.get(pid)
+            result[pid] = {
+                "class": "error" if error else (self._last_class.get(pid) or "unknown"),
                 "frame_count": state.frame_count,
                 "score": round(state.ewm_mean, 4),
+                "error": error,
             }
-            for pid, state in self._states.items()
-        }
+        return result
 
     def get_status(self, sensitivity: str = "medium", *, active: bool = True) -> dict:
         # Report the thresholds for the configured sensitivity, not a hardcoded

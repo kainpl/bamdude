@@ -3151,7 +3151,10 @@ export interface ObicoDetectionEvent {
 export interface ObicoStatus {
   is_running: boolean;
   last_error: string | null;
-  per_printer: Record<string, { class: string; frame_count: number; score: number }>;
+  /** `class`: safe / warning / failure — a verdict; `error` — the last poll
+   * produced none (`error` says why, withheld without settings:read);
+   * `unknown` — watched, no result yet (upstream #2952). */
+  per_printer: Record<string, { class: string; frame_count: number; score: number; error?: string | null }>;
   thresholds: { low: number; high: number };
   history: ObicoDetectionEvent[];
   enabled: boolean;
@@ -3169,7 +3172,10 @@ export interface ObicoStatus {
 export interface ObicoPrinterStatus {
   enabled: boolean;
   monitored_printers: number[] | null;
-  per_printer: Record<string, { class: string; frame_count: number; score: number }>;
+  /** `class`: safe / warning / failure — a verdict; `error` — the last poll
+   * produced none (`error` says why, withheld without settings:read);
+   * `unknown` — watched, no result yet (upstream #2952). */
+  per_printer: Record<string, { class: string; frame_count: number; score: number; error?: string | null }>;
   last_error: string | null;
 }
 

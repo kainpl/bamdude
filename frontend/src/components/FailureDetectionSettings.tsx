@@ -79,18 +79,20 @@ export function FailureDetectionSettings() {
     },
   });
 
-  // Auto-save on change (debounced)
-  useEffect(() => {
-    if (!initialized || !settings) return;
-    const changed =
-      settings.obico_enabled !== enabled ||
+  const hasUnsavedChanges =
+    initialized &&
+    !!settings &&
+    (settings.obico_enabled !== enabled ||
       settings.obico_ml_url !== mlUrl ||
       settings.obico_ml_token !== mlToken ||
       settings.obico_sensitivity !== sensitivity ||
       settings.obico_action !== action ||
       settings.obico_poll_interval !== pollInterval ||
-      settings.obico_enabled_printers !== (enabledPrinters === null ? '' : JSON.stringify(enabledPrinters));
-    if (!changed) return;
+      settings.obico_enabled_printers !== (enabledPrinters === null ? '' : JSON.stringify(enabledPrinters)));
+
+  // Auto-save on change (debounced)
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
     const id = setTimeout(() => saveMutation.mutate(), 500);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -99,6 +101,13 @@ export function FailureDetectionSettings() {
   const handleTest = async () => {
     setTestResult(null);
     try {
+      // Save first, so a green result describes the configuration the
+      // detection loop actually runs with (it reads the saved settings) — not
+      // what sits in the boxes inside the auto-save debounce, or after a save
+      // that failed (upstream #2952).
+      if (hasUnsavedChanges) {
+        await saveMutation.mutateAsync();
+      }
       const res = await api.testObicoConnection(mlUrl, mlToken);
       if (res.ok) {
         setTestResult({ ok: true, message: t('failureDetection.testSuccess') });
@@ -326,17 +335,27 @@ export function FailureDetectionSettings() {
                     <div className="space-y-1">
                       {Object.entries(status.per_printer).map(([pid, info]) => {
                         const printer = printers?.find((p) => String(p.id) === pid);
+                        // Only a verdict is green: "no result yet" is grey and
+                        // "the last poll produced none" amber, with its reason
+                        // and without a score (upstream #2952).
+                        const verdict = ['failure', 'warning', 'safe'].includes(info.class);
                         const colorClass =
                           info.class === 'failure'
                             ? 'text-red-700 dark:text-red-400'
-                            : info.class === 'warning'
+                            : info.class === 'warning' || info.class === 'error'
                               ? 'text-amber-700 dark:text-amber-400'
-                              : 'text-green-700 dark:text-green-400';
+                              : info.class === 'safe'
+                                ? 'text-green-700 dark:text-green-400'
+                                : 'text-bambu-gray';
                         return (
-                          <div key={pid} className="flex justify-between">
+                          <div key={pid} className="flex justify-between gap-2">
                             <span className="text-white">{printer?.name ?? `Printer ${pid}`}</span>
-                            <span className={`font-mono ${colorClass}`}>
-                              {info.class} ({info.score.toFixed(3)}, {info.frame_count}f)
+                            <span className={`font-mono text-right ${colorClass}`} title={info.error ?? undefined}>
+                              {verdict
+                                ? `${info.class} (${info.score.toFixed(3)}, ${info.frame_count}f)`
+                                : info.class === 'error'
+                                  ? t('failureDetection.notChecking')
+                                  : t('failureDetection.starting')}
                             </span>
                           </div>
                         );

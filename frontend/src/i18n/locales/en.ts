@@ -895,6 +895,11 @@ export default {
       safe: 'AI Safe',
       warning: 'AI Warning',
       failure: 'AI Failure',
+      error: 'AI not checking',
+      unknown: 'AI starting',
+      errorTitle: 'AI failure detection is not checking this print: {{reason}}',
+      errorNoReason: 'the last check produced no result',
+      unknownTitle: 'AI failure detection is waiting for its first result on this print.',
       idleTitle: 'AI failure detection is on for this printer; nothing is being watched right now.',
       scoreTitle: 'AI failure detection — current score {{score}}. Click for the full status and history.'
     },
@@ -9158,6 +9163,8 @@ export default {
     thresholds: 'Low / High thresholds',
     activePrinters: 'Active prints',
     noActivePrints: 'No prints currently running.',
+    notChecking: 'not checking',
+    starting: 'starting',
     historyTitle: 'Recent Detections',
     noHistory: 'No detections yet.'
   },

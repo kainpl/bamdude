@@ -172,6 +172,14 @@
 
 ### Fixed
 
+- **The AI detection badge no longer says a print is watched when it is not.**
+  A monitored print with no result yet — or whose checks were failing: a
+  rejected ML token, an unreachable ML server, no camera frame, no External
+  URL — showed as "AI Safe" at score 0 (or "AI Idle" mid-print). It now reads
+  **AI starting** until the first result, and **AI not checking** with the
+  reason for that printer when a check produced none; Failure Detection's
+  Active prints list says the same. **Test** saves the form before probing, so
+  a green result describes the configuration detection actually runs with.
 - **Per-print energy is read from the plug that actually meters the printer.**
   With several plugs on a printer, the one marked as its power source was read
   even when it had no energy counter, and the print got no energy figure. The

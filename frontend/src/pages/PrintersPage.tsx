@@ -1608,11 +1608,18 @@ function AiDetectionBadge({ printerId }: { printerId: number }) {
   if (data.monitored_printers && !data.monitored_printers.includes(printerId)) return null;
 
   const live = data.per_printer?.[String(printerId)];
-  const klass = live?.class ?? null;
+  // ⚠️ A watched print with no verdict is never "Idle", and never "Safe": the
+  // last poll produced nothing (`error`) or nothing has come back yet — any
+  // other class the server might send reads as the latter (upstream #2952).
+  const klass = !live
+    ? null
+    : ['failure', 'warning', 'safe', 'error'].includes(live.class)
+      ? live.class
+      : 'unknown';
   const look =
     klass === 'failure'
       ? 'bg-status-error/20 text-status-error'
-      : klass === 'warning'
+      : klass === 'warning' || klass === 'error'
         ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
         : klass === 'safe'
           ? 'bg-status-ok/20 text-status-ok'
@@ -1624,14 +1631,28 @@ function AiDetectionBadge({ printerId }: { printerId: number }) {
         ? t('printers.ai.warning')
         : klass === 'safe'
           ? t('printers.ai.safe')
-          : t('printers.ai.idle');
+          : klass === 'error'
+            ? t('printers.ai.error')
+            : klass === 'unknown'
+              ? t('printers.ai.unknown')
+              : t('printers.ai.idle');
+  // No score is quoted without a verdict: 0.000 beside "not checking" reads as
+  // a reassuring measurement rather than the absence of one.
+  const title =
+    klass === 'error'
+      ? t('printers.ai.errorTitle', { reason: live?.error || t('printers.ai.errorNoReason') })
+      : klass === 'unknown'
+        ? t('printers.ai.unknownTitle')
+        : live
+          ? t('printers.ai.scoreTitle', { score: live.score })
+          : t('printers.ai.idleTitle');
 
   return (
     <button
       type="button"
       onClick={() => navigate('/settings?tab=printing#failure-detection')}
       className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs transition-opacity hover:opacity-80 ${look}`}
-      title={live ? t('printers.ai.scoreTitle', { score: live.score }) : t('printers.ai.idleTitle')}
+      title={title}
     >
       <Sparkles className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />
       {label}

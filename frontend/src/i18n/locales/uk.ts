@@ -907,6 +907,11 @@ export default {
       safe: 'AI норма',
       warning: 'AI увага',
       failure: 'AI збій',
+      error: 'AI не перевіряє',
+      unknown: 'AI запускається',
+      errorTitle: 'AI-детекція збоїв не перевіряє цей друк: {{reason}}',
+      errorNoReason: 'остання перевірка не дала результату',
+      unknownTitle: 'AI-детекція збоїв чекає на перший результат для цього друку.',
       idleTitle: 'AI-детекція збоїв увімкнена для цього принтера; зараз нічого не відстежується.',
       scoreTitle: 'AI-детекція збоїв — поточна оцінка {{score}}. Натисніть, щоб побачити повний стан та історію.'
     },
@@ -9241,6 +9246,8 @@ export default {
     thresholds: 'Пороги Low / High',
     activePrinters: 'Активні друки',
     noActivePrints: 'Зараз нема активних друків.',
+    notChecking: 'не перевіряє',
+    starting: 'запускається',
     historyTitle: 'Останні події',
     noHistory: 'Подій ще не було.'
   },
