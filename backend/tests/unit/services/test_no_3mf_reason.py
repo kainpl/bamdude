@@ -200,3 +200,39 @@ async def test_a_failed_retry_records_the_reason(db_session, test_engine, printe
     row = await db_session.get(PrintArchive, archive_id)
     assert row.extra_data["no_3mf_available"] is True
     assert row.extra_data["no_3mf_reason"] == "auth_rejected"
+
+
+# -- a refused connection does not walk the directories (upstream 91acac2b) ----
+
+
+async def _download_with_listing(tmp_path: Path, *, connect_kind: str | None):
+    async def first_stage(*_args, **_kwargs):
+        if connect_kind is not None:
+            BambuFTPClient._last_connect_failure["10.0.0.9"] = (connect_kind, time.monotonic())
+        return False
+
+    listed = AsyncMock(return_value=[])
+    internal = AsyncMock(return_value=None)
+    with (
+        patch.object(archive_download, "download_file_try_paths_async", side_effect=first_stage),
+        patch.object(archive_download, "list_files_async", new=listed),
+        patch.object(archive_download, "_try_internal_storage", new=internal),
+        patch.object(archive_download, "get_ftp_retry_settings", new=AsyncMock(return_value=(True, 1, 0, 30))),
+    ):
+        await archive_download.try_download_3mf(_printer(), "lamp", "lamp.3mf", tmp_path)
+    return listed, internal
+
+
+@pytest.mark.asyncio
+async def test_a_refused_connection_skips_the_directory_walk(tmp_path):
+    """Five more connects to a file service that just turned one away cannot get
+    further — the walk only helps when the printer answers and the name differs."""
+    listed, internal = await _download_with_listing(tmp_path, connect_kind="tls")
+    listed.assert_not_called()
+    internal.assert_awaited_once(), "internal storage is another transport and is still asked"
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_was_not_there_still_walks_the_directories(tmp_path):
+    listed, _internal = await _download_with_listing(tmp_path, connect_kind=None)
+    assert listed.await_count > 0

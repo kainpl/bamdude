@@ -1795,6 +1795,22 @@ def _match_timelapse_by_timestamp(
     return best_video, best_diff
 
 
+def _refuse_when_the_printer_did_not_answer(printer) -> None:
+    """503 when an empty listing means "the printer never answered", not "nothing there".
+
+    Both answered 404 "no recordings" (upstream 91acac2b), sending the operator
+    to look for a video that may well be on the printer.
+    """
+    from backend.app.services.timelapse_files import last_listing_answered
+
+    if not last_listing_answered(printer.id):
+        raise HTTPException(
+            503,
+            "The printer did not answer, so its recordings could not be listed. Check that it is on the network and "
+            "try again.",
+        )
+
+
 @router.post("/{archive_id}/timelapse/scan")
 async def scan_timelapse(
     archive_id: int,
@@ -1844,6 +1860,7 @@ async def scan_timelapse(
 
     video_files, _source = await list_timelapse_videos(printer)
     if not video_files:
+        _refuse_when_the_printer_did_not_answer(printer)
         # ⚠️ 404, not 500. "This printer has no recordings" is an ordinary
         # answer; dressing it as a server fault made a cardless machine look
         # like a broken BamDude.
@@ -2006,6 +2023,7 @@ async def select_timelapse(
     videos, _source = await list_timelapse_videos(printer)
     chosen = next((f for f in videos if f.get("name") == filename), None)
     if chosen is None:
+        _refuse_when_the_printer_did_not_answer(printer)
         raise HTTPException(404, f"Timelapse '{filename}' not found on printer")
 
     remote_path = chosen.get("path") or f"/timelapse/{filename}"

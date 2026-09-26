@@ -485,6 +485,7 @@
   "No thumbnail found in archive 3MF for plate {}": "У 3MF архіву не знайдено мініатюри для плити {}",
   "No timelapse attached to this archive": "До цього архіву не прикріплено таймлапс",
   "No timelapse recordings found on this printer": "На цьому принтері не знайдено записів таймлапсу",
+  "The printer did not answer, so its recordings could not be listed. Check that it is on the network and try again.": "Принтер не відповів, тож його записи не вдалося перелічити. Перевірте, що він у мережі, і спробуйте ще раз.",
   "No valid OTP code found. Request a new one.": "Дійсного коду OTP не знайдено. Запитайте новий.",
   "Not a MakerWorld URL (host={}); expected makerworld.com": "Це не URL MakerWorld (хост={}); очікується makerworld.com",
   "Not a file of this model card": "Це не файл цієї картки моделі",

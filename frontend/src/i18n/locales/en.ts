@@ -6383,6 +6383,7 @@ export default {
         title: 'File transfer port (FTPS 990)',
         pass: 'Reachable - sending print files will work.',
         warn: 'Port 990 is unreachable. Monitoring may still work, but sending prints to the printer will fail. Make sure port 990 is not blocked.',
+        warn_no_tls: 'Port 990 is open, but the printer\'s file service did not complete a TLS handshake — it turned the connection away. Print files, covers and timelapses cannot be fetched or sent until it does, and unblocking the port will not help. Most often another program (a slicer\'s device page, another integration) is using the file service at that moment: close it and run the check again. If it keeps happening with nothing else connected, restart the printer.',
       },
       port_rtsps: {
         title: 'Camera port ({{protocol}} {{port}})',

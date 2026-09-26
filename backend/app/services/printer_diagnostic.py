@@ -13,11 +13,13 @@ import asyncio
 import ipaddress
 import logging
 import socket
+import ssl
 
 from backend.app.models.printer import Printer
 from backend.app.schemas.printer import DiagnosticCheck, PrinterDiagnosticResult
 from backend.app.services.camera import get_camera_port
 from backend.app.services.discovery import is_running_in_docker
+from backend.app.services.ftp_profiles import get_ftp_profile
 from backend.app.services.printer_manager import printer_manager
 from backend.app.utils.printer_configs import has_remote_storage_toggle
 from backend.app.utils.printer_models import has_external_storage
@@ -55,6 +57,47 @@ async def _check_port(ip: str, port: int, timeout: float = _PORT_PROBE_TIMEOUT) 
         return True
     except Exception:
         return False
+
+
+async def _ftps_handshake(ip: str, model: str | None, timeout: float = _PORT_PROBE_TIMEOUT) -> str:
+    """Complete an implicit-TLS handshake on port 990 the way the FTP client does: ``"ok"`` or ``"no_tls"``.
+
+    A TCP accept is not a working file service (upstream 91acac2b): a printer
+    that answers port 990 in plain text — its file service turning the
+    connection away, ``WRONG_VERSION_NUMBER`` in the log (audit D5) — passed a
+    bare TCP probe while every archive came back empty. The context mirrors
+    ``bambu_ftp.ImplicitFTP_TLS``, the model's TLS cap included, so a pass here
+    means the FTP client would get through too. Handshake only, no login, so the
+    pre-save Add Printer flow can run it without an access code.
+    """
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if get_ftp_profile(model).cap_tls_v1_2:
+        context.maximum_version = ssl.TLSVersion.TLSv1_2
+    writer = None
+    try:
+        _reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, PORT_FTPS, ssl=context), timeout=timeout)
+        return "ok"
+    except Exception:
+        # Called only after the port accepted a TCP connection: whatever stops
+        # the handshake now is the service behind the port, not the port.
+        return "no_tls"
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+
+async def _check_ftps(ip: str, model: str | None) -> str:
+    """``"closed"`` (nothing accepted a TCP connection), else what the handshake said."""
+    if not await _check_port(ip, PORT_FTPS):
+        return "closed"
+    return await _ftps_handshake(ip, model)
 
 
 def _camera_port_for_printer(printer: Printer | None) -> tuple[int, str]:
@@ -236,14 +279,22 @@ async def run_connection_diagnostic(
 
     # --- Port reachability (probed in parallel) ---
     camera_port, camera_protocol = _camera_port_for_printer(printer)
-    mqtt_ok, ftps_ok, camera_ok = await asyncio.gather(
+    mqtt_ok, ftps_state, camera_ok = await asyncio.gather(
         _check_port(ip_address, PORT_MQTT),
-        _check_port(ip_address, PORT_FTPS),
+        _check_ftps(ip_address, getattr(printer, "model", None) if printer else None),
         _check_port(ip_address, camera_port),
     )
     # MQTT is connection-critical; FTPS/camera only degrade printing/camera.
     checks.append(DiagnosticCheck(id="port_mqtt", status="pass" if mqtt_ok else "fail"))
-    checks.append(DiagnosticCheck(id="port_ftps", status="pass" if ftps_ok else "warn"))
+    # An open port whose service will not speak TLS gets its own words: "make
+    # sure port 990 is not blocked" is wrong advice for it (upstream 91acac2b).
+    checks.append(
+        DiagnosticCheck(
+            id="port_ftps",
+            status="pass" if ftps_state == "ok" else "warn",
+            params={"reason": "no_tls"} if ftps_state == "no_tls" else {},
+        )
+    )
     checks.append(
         DiagnosticCheck(
             id="port_rtsps",

@@ -43,6 +43,22 @@ function renderModal(props: Parameters<typeof ConnectionDiagnosticModal>[0]) {
 }
 
 describe('ConnectionDiagnosticModal', () => {
+  it('says an open port 990 that turned the connection away is not a blocked port', async () => {
+    // Upstream 91acac2b: the probe now completes a TLS handshake, and an open port
+    // whose file service will not speak TLS must not be told to unblock the port.
+    const spy = vi.spyOn(api, 'diagnosePrinter').mockResolvedValue({
+      ...PROBLEM_RESULT,
+      overall: 'warnings',
+      checks: [{ id: 'port_ftps', status: 'warn', params: { reason: 'no_tls' } }],
+    });
+
+    renderModal({ printerId: 1, printerName: 'Test P1S', onClose: vi.fn() });
+
+    expect(await screen.findByText(/did not complete a TLS handshake/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Make sure port 990 is not blocked/i)).not.toBeInTheDocument();
+    spy.mockRestore();
+  });
+
   it('runs the diagnostic on mount and renders check titles + the overall banner', async () => {
     const spy = vi.spyOn(api, 'diagnosePrinter').mockResolvedValue(PROBLEM_RESULT);
 

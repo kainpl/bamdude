@@ -464,6 +464,15 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **The connection diagnostic no longer shows port 990 green when the printer's
+  file service is turning connections away.** It only checked that the port
+  accepted a connection, so a printer answering in plain text — every archive
+  arriving empty — passed. It now completes a real TLS handshake (without
+  signing in), and an open port that refuses it gets its own warning, which
+  says unblocking the port will not help and what will. While a printer is
+  refusing, BamDude no longer walks its card's folders for a missing 3MF,
+  connection after connection. Scan for timelapse and choosing a recording now
+  say the printer did not answer, instead of that it has no recordings.
 - **The Archives banner for prints without a 3MF says why, and no longer
   blames the slicer for what the printer did.** It told everyone to switch on
   "Store sent files on external storage" in the slicer — wrong whenever

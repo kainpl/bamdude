@@ -158,6 +158,7 @@ async def _download_3mf(
     temp_path = safe_join_under(temp_dir, primary_filename, http=False)
 
     remote_paths_only = [rp for rp, _ in all_remote_paths]
+    stage_one_started = time.monotonic()
     try:
         downloaded = await download_file_try_paths_async(
             printer.ip_address,
@@ -183,6 +184,12 @@ async def _download_3mf(
     # lives in an unexpected subdir.
     search_term = (subtask_name or filename or "").lower().replace(".gcode", "").replace(".3mf", "")
     if not search_term:
+        return await _try_internal_storage(printer, candidates, original_temp_dir)
+    # ...but only when the printer answered. Stage 1 could not even connect —
+    # refused, rejected, silent — so five directory listings, each a connect of
+    # its own, cannot get further (upstream 91acac2b). The retry triggers come
+    # back for the file; internal storage is another transport and is still asked.
+    if BambuFTPClient.connect_failure_since(printer.ip_address, stage_one_started):
         return await _try_internal_storage(printer, candidates, original_temp_dir)
 
     search_dirs = ["/", "/cache", "/model", "/data", "/data/Metadata"]

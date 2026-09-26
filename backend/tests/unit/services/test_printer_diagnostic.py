@@ -47,8 +47,12 @@ class _Env:
         state=None,
         test_connection_success=True,
         report_messages_since_connect: int | None = 5,
+        ftps_handshake: str = "ok",
     ):
         self.ports = ports or _port_probe()
+        # What port 990 answers once it accepts a TCP connection: "ok" (TLS)
+        # or "no_tls" (audit 91acac2b — an open port is not a working one).
+        self.ftps_handshake = ftps_handshake
         self.in_docker = in_docker
         self.network_mode = network_mode
         self.host_ip = host_ip
@@ -75,6 +79,9 @@ class _Env:
             client.report_messages_since_connect = self.report_messages_since_connect
             manager.get_client.return_value = client
         self._stack.enter_context(patch(f"{MOD}._check_port", new_callable=AsyncMock, side_effect=self.ports))
+        self._stack.enter_context(
+            patch(f"{MOD}._ftps_handshake", new_callable=AsyncMock, return_value=self.ftps_handshake)
+        )
         self._stack.enter_context(patch(f"{MOD}.is_running_in_docker", return_value=self.in_docker))
         self._stack.enter_context(patch(f"{MOD}._detect_docker_network_mode", return_value=self.network_mode))
         self._stack.enter_context(patch(f"{MOD}._get_host_ip", return_value=self.host_ip))
@@ -178,6 +185,22 @@ class TestExistingPrinter:
         assert result.overall == "warnings"
         assert s["port_ftps"] == "warn"
         assert s["port_rtsps"] == "warn"
+
+    async def test_an_open_port_990_that_speaks_no_tls_is_named(self):
+        """The port answered, so "make sure port 990 is not blocked" is the wrong
+        advice — the file service turned the connection away (upstream 91acac2b)."""
+        with _Env(state=_state(), ftps_handshake="no_tls"):
+            result = await run_connection_diagnostic("192.168.1.50", printer=_printer())
+        check = next(c for c in result.checks if c.id == "port_ftps")
+        assert check.status == "warn"
+        assert check.params == {"reason": "no_tls"}
+
+    async def test_a_closed_port_990_keeps_the_plain_warning(self):
+        with _Env(ports=_port_probe({990: False}), state=_state(), ftps_handshake="ok"):
+            result = await run_connection_diagnostic("192.168.1.50", printer=_printer())
+        check = next(c for c in result.checks if c.id == "port_ftps")
+        assert check.status == "warn"
+        assert not check.params
 
     async def test_a1_mini_uses_chamber_image_camera_port(self):
         # A1/P1-family printers use the chamber-image camera protocol on 6000,
