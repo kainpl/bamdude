@@ -6875,7 +6875,13 @@ class BambuMQTTClient:
             # Include HMS errors for failure reason detection
             hms_errors_data = (
                 [
-                    {"code": e.code, "attr": e.attr, "module": e.module, "severity": e.severity}
+                    {
+                        "code": e.code,
+                        "attr": e.attr,
+                        "module": e.module,
+                        "severity": e.severity,
+                        "full_code": e.full_code,
+                    }
                     for e in self.state.hms_errors
                 ]
                 if self.state.hms_errors

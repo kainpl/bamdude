@@ -172,6 +172,11 @@
 
 ### Fixed
 
+- **A queue job that failed on a printer fault names a code you can look up.**
+  A fault reported through the printer's HMS list carries its alert level in
+  the code, and the failure reason read `[0500_24038]` — no such code, and no
+  description with it. It now reads `[0500_4038]` with the fault's sentence,
+  as the same fault does when reported the other way.
 - **The printer card names the newer preparation stages.** Stages 67–76
   (arc fitting, hotend type detection, build plate alignment, the heatbed
   foreign-object checks, pre-extrusion and others) showed as "Unknown stage",

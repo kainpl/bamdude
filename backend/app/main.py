@@ -1396,10 +1396,12 @@ def _format_hms_error_summary(hms_errors: list[dict], device: str = "") -> str |
     parts: list[str] = []
     for err in hms_errors:
         try:
-            code_str = str(err.get("code", "")).replace("0x", "")
-            error_num = int(code_str, 16) if code_str else 0
-            module_num = (int(err.get("attr", 0)) >> 16) & 0xFFFF
-            short_code = f"{module_num:04X}_{error_num:04X}"
+            # ⚠️ Through the one derivation that masks the error to 16 bits: a
+            # fault from the hms[] array carries its alert level in the code's
+            # high half, and unmasked it read 0500_24038 — no such code, and
+            # no catalogue key, so the description was lost too (upstream
+            # 6988a30e). It also takes the raw integer the payload may carry.
+            short_code = _hms_short_code(err.get("attr", 0), err.get("code", ""))
         except (TypeError, ValueError):
             continue
         # ⚠️ The short code goes in WITHOUT its separator: that is how both
