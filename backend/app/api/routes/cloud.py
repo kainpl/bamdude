@@ -1240,7 +1240,13 @@ async def get_filament_id_map(
                 continue
             try:
                 detail = await cloud.get_setting_detail(setting_id)
-                fid = detail.get("filament_id", "")
+                # A preset's own id sits on the envelope OR inside the preset
+                # JSON under ``setting`` — BambuStudio writes it into a family
+                # root's JSON only. Reading just the envelope left such a
+                # custom filament out, and its K-profiles showed a raw P-id
+                # (upstream 9434875f, #3003).
+                setting = detail.get("setting")
+                fid = detail.get("filament_id") or (setting.get("filament_id") if isinstance(setting, dict) else "")
                 name = detail.get("name", "")
                 if fid and name:
                     # Strip printer/nozzle suffix: "Devil Design PLA Basic @Bambu Lab H2D 0.4 nozzle" → "Devil Design PLA Basic"

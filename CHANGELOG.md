@@ -172,6 +172,11 @@
 
 ### Fixed
 
+- **K-profiles of a custom Bambu Cloud filament show its name, not a raw
+  `P…` code.** Bambu Cloud keeps a custom filament's own id either beside
+  the preset or inside the preset's settings, and only the first place was
+  read, so on the Profiles page and in the print dialog such a filament's
+  calibrations were labelled with the bare id. Both places are read now.
 - **With a Filament Track Switch, each AMS is badged with the switch inlet it
   feeds, not a made-up nozzle.** Behind the switch an AMS reaches both
   nozzles, so the printer reports no nozzle for it, and the card fell back to
