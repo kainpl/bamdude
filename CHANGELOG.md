@@ -464,6 +464,10 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **An Orca Cloud session that cannot be refreshed no longer leaks
+  connections.** Every failed sign-in refresh — a revoked token, Orca
+  unreachable, a failed write of the new token — left an open HTTP client
+  behind, once per preset sync, push or profile lookup.
 - **Open in Slicer is offered only for a file the slicer will take.** Bambu
   Studio accepts only a 3MF from a link and refuses an STL or STEP before
   downloading anything, with a message that reads like a broken model. The
