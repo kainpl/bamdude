@@ -7113,6 +7113,7 @@ export default {
     configureSlot: 'Налаштувати слот',
     profile: 'Профіль',
     kFactor: 'K фактор',
+    kFactorShort: 'K',
     fill: 'Заповнити',
     configure: 'Налаштувати'
   },

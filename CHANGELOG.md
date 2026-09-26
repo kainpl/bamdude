@@ -40,6 +40,13 @@
 
 ### Added
 
+- **Each AMS slot card shows its K value.** The calibrated pressure-advance
+  value used to be readable only in the slot's hover card; it now sits under
+  the material on every calibrated slot — AMS, AMS HT and the external spool
+  — as "K 0.024", with the full name on hover. A slot with no known
+  calibration shows nothing rather than the 0.020 default the hover card
+  falls back to, and the other slots on the card keep the line's height, so
+  every fill bar stays aligned.
 - **The filament a print used can be typed into its archive.** A print whose
   3MF never reached BamDude carried no weight, and nothing could give it one
   afterwards — a rescan needs the file. Edit archive now has a *Filament used

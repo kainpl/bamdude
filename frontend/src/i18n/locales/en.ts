@@ -7031,6 +7031,7 @@ export default {
     configureSlot: 'Configure Slot',
     profile: 'Profile',
     kFactor: 'K Factor',
+    kFactorShort: 'K',
     fill: 'Fill',
     configure: 'Configure'
   },

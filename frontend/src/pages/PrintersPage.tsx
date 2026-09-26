@@ -251,6 +251,32 @@ function formatKValue(k: number | null | undefined): string {
   return value.toFixed(3);
 }
 
+// The K-profile value on the slot card itself, not only inside the hover card
+// (upstream 8d1daab2). `k` arrives already resolved for this slot
+// (utils/kprofile_lookup, both status shapers) and gated on the slot being
+// loaded; falsy means no calibration is known for it. formatKValue()'s 0.020
+// default is captioned in the hover card but would read as a measured K on
+// this permanent, uncaptioned line, so an uncalibrated slot shows nothing. A
+// ternary, not `k && <div/>`: a firmware-reported 0 would make that expression
+// the number 0, and React renders numbers.
+//
+// `reserve` holds the row open on slots without a value whenever another slot
+// on the same card has one, so every fill bar stays on one line.
+function KValueLine({ k, reserve }: { k: number | null | undefined; reserve: boolean }) {
+  const { t } = useTranslation();
+  const className = 'text-[length:var(--pc-t8,8px)] text-bambu-gray tabular-nums leading-none truncate';
+  if (!k) {
+    return reserve ? <div className={className} aria-hidden="true">&nbsp;</div> : null;
+  }
+  // Short label with the full name on the title: a spelled-out "K Factor"
+  // clipped the value itself at the narrowest slot width.
+  return (
+    <div className={className} title={t('ams.kFactor')}>
+      {t('ams.kFactorShort')} {formatKValue(k)}
+    </div>
+  );
+}
+
 // Nozzle side indicators (Bambu Lab style - square badge with L/R)
 function NozzleBadge({ side }: { side: 'L' | 'R' }) {
   const { mode } = useTheme();
@@ -2247,6 +2273,13 @@ function PrinterCard({
     }
   }, [status?.ams]);
   const amsData = (status?.ams && status.ams.length > 0) ? status.ams : cachedAmsData.current;
+  // The K line exists only on slots with a known calibration. The AMS units and
+  // the external spools are flex siblings in one row, so when any slot on the
+  // card shows a value the others reserve its height — otherwise their fill
+  // bars sit a line above their neighbours'. A card with no value anywhere
+  // keeps its old height.
+  const anySlotHasKValue = amsData.some(unit => unit.tray.some(tray => tray.k))
+    || (status?.vt_tray ?? []).some(tray => tray.k);
 
   // Cache tray_now to prevent flickering when undefined values come in
   // Valid tray IDs: 0-253 for AMS, 254 for external spool
@@ -5168,6 +5201,7 @@ function PrinterCard({
                                     >
                                       {tray?.tray_type || (emptyKind === 'reset' ? t('printers.ams.slotUnconfigured') : '-')}
                                     </div>
+                                    <KValueLine k={filamentData ? tray?.k : null} reserve={anySlotHasKValue} />
                                     {/* Fill bar */}
                                     <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
                                       {effectiveFill !== null && effectiveFill >= 0 && !isEmpty && tray && (
@@ -5541,6 +5575,7 @@ function PrinterCard({
                             >
                               {tray?.tray_type || (emptyKind === 'reset' ? t('printers.ams.slotUnconfigured') : '-')}
                             </div>
+                            <KValueLine k={filamentData ? tray?.k : null} reserve={anySlotHasKValue} />
                             {/* Fill bar */}
                             <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
                               {htEffectiveFill !== null && htEffectiveFill >= 0 && !isEmpty && (
@@ -5928,6 +5963,7 @@ function PrinterCard({
                                   <div className={`text-[length:var(--pc-t9,9px)] font-bold truncate ${isEmpty ? 'text-white/40' : 'text-white'}`}>
                                     {extTray.tray_type || '-'}
                                   </div>
+                                  <KValueLine k={isEmpty ? null : extTray.k} reserve={anySlotHasKValue} />
                                   <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
                                     {extEffectiveFill !== null && extEffectiveFill >= 0 && !isEmpty && (
                                       <div
