@@ -153,6 +153,7 @@ from backend.app.services.timelapse_files import (
 )
 from backend.app.utils.failure_reasons import USER_CANCELLED
 from backend.app.utils.filament_remaining import grams_used
+from backend.app.utils.print_jobs import is_internal_printer_job
 
 
 # =============================================================================
@@ -4091,12 +4092,18 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             subtask_id,
         )
 
-        # Skip calibration prints - internal printer files should not be archived
-        # Bambu calibration gcode lives under /usr/ (e.g. /usr/etc/print/auto_cali_for_user.gcode)
-        if filename and filename.startswith("/usr/"):
-            logger.info("[CALLBACK] Skipping archive - internal printer file detected: %s", filename)
-            if not notification_sent:
-                await _send_print_start_notification(printer_id, data, logger=logger)
+        # The printer's own jobs — a calibration run is not a user's print. See
+        # utils/print_jobs: the pressure-advance line reports as a subtask name
+        # with no /usr/ path, which a prefix test alone never saw (upstream
+        # 9c938843 / a4a1f4c5 / 164382b3). No "Print started" either: the event
+        # describes the printer calibrating itself, and its completion is
+        # silenced in on_print_complete for the same reason.
+        if is_internal_printer_job(filename, subtask_name):
+            logger.info(
+                "[CALLBACK] Skipping archive - internal printer job detected: filename=%s, subtask=%s",
+                filename,
+                subtask_name,
+            )
             return
 
         if not filename and not subtask_name:
@@ -5637,12 +5644,15 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
             subtask_id = None
 
         # The same two refusals ``on_print_start`` makes before it would create
-        # anything: an internal calibration file (Bambu keeps its own gcode under
-        # ``/usr/``) is not the user's print, and a print we cannot even name is
-        # not adoptable.
-        if filename.startswith("/usr/"):
+        # anything: the printer's own calibration run is not the user's print
+        # (utils/print_jobs — by path OR by name), and a print we cannot even
+        # name is not adoptable.
+        if is_internal_printer_job(filename, subtask_name):
             logger.info(
-                "[ADOPT] Printer %s is running an internal printer file (%s) — not archived", printer_id, filename
+                "[ADOPT] Printer %s is running an internal printer job (%s / %s) — not archived",
+                printer_id,
+                filename,
+                subtask_name,
             )
             return None
         if not filename and not subtask_name:
@@ -8264,6 +8274,19 @@ async def _on_print_complete_impl(
         _bed_cooldown_tasks[printer_id] = task
 
     if not archive_id:
+        # The printer's own calibration run has no archive by design. Returning
+        # before the no-archive notification is not noise control: that path
+        # attributes an unmatched completion to a queue item this printer
+        # finished in the last five minutes — for a calibration run alongside a
+        # real print, an email to its owner that the print is done, early and
+        # twice (upstream 9c938843). Everything above has already run.
+        if is_internal_printer_job(filename, subtask_name):
+            logger.info(
+                "[CALLBACK] Internal printer job completed, no notification: filename=%s, subtask=%s",
+                filename,
+                subtask_name,
+            )
+            return
         logger.warning("Could not find archive for print complete: filename=%s, subtask=%s", filename, subtask_name)
 
         # Still send print-complete/failed/stopped notifications even without an archive.

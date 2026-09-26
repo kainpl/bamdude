@@ -464,6 +464,14 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **A K-profile calibration run no longer shows up as a print.** With flow
+  dynamics calibration on — or when you run it by hand — the printer's
+  pressure-advance line arrived as an archive named after the calibration,
+  with "Print started" and "Print finished" notifications; and because it
+  had no archive, its completion was pinned on the last queue job to finish
+  and emailed that job's owner that their print was done, early. The
+  printer's own jobs are now recognised by name as well as by path, and
+  leave no archive and no notification.
 - **"Silk+" is no longer shown as a Spoolman spool's colour.** Spoolman has
   no colour-name field, so a Spoolman spool carried its subtype in its place,
   and the Filaments page, Assign Spool and the default spool name read it as

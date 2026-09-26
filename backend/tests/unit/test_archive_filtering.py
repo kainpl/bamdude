@@ -64,13 +64,14 @@ class TestCalibrationPrintFiltering:
                     },
                 )
 
-                # Notification should still be sent
-                mock_notif_send.assert_called_once()
+                # No "Print started": the event is the printer calibrating itself,
+                # and its completion is silenced too (upstream 9c938843).
+                mock_notif_send.assert_not_called()
 
         # Verify the skip was logged
         info_messages = [r.message for r in capture_logs.records if r.levelno >= 20]
-        skip_msgs = [m for m in info_messages if "internal printer file" in str(m)]
-        assert skip_msgs, "Should log that internal printer file was skipped"
+        skip_msgs = [m for m in info_messages if "internal printer job" in str(m)]
+        assert skip_msgs, "Should log that the internal printer job was skipped"
 
     @pytest.mark.asyncio
     async def test_usr_prefix_various_paths(self, capture_logs):
@@ -118,7 +119,7 @@ class TestCalibrationPrintFiltering:
 
                 await on_print_start(1, {"filename": path, "subtask_name": "test"})
 
-            skip_msgs = [r for r in capture_logs.records if "internal printer file" in str(r.message)]
+            skip_msgs = [r for r in capture_logs.records if "internal printer job" in str(r.message)]
             assert skip_msgs, f"Path {path} should be skipped"
             capture_logs.clear()
 
@@ -166,8 +167,8 @@ class TestCalibrationPrintFiltering:
                 },
             )
 
-        # Should NOT see "internal printer file" skip message
-        skip_msgs = [r for r in capture_logs.records if "internal printer file" in str(r.message)]
+        # Should NOT see "internal printer job" skip message
+        skip_msgs = [r for r in capture_logs.records if "internal printer job" in str(r.message)]
         assert not skip_msgs, "User gcode should not be skipped"
 
 
