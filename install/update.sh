@@ -42,6 +42,81 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
 }
 
+# Restore the --loop asyncio pin on a unit file written before it existed
+# (upstream 0dfcff59).
+#
+# install.sh has pinned the loop since 2026-07-08 (Virtual Printer FTP uploads
+# truncated on uvloop), but nothing ever rewrote an existing unit file — so an
+# install created before that still runs on uvloop however often it is
+# updated: uvicorn[standard] puts uvloop in every venv and --loop auto prefers
+# it. Only the one flag is ever inserted; everything else in the unit —
+# hardening, environment, a hand-edited port — stays byte-identical, and the
+# file is copied aside first. Anything but a plain single-line uvicorn unit is
+# described, never edited.
+repair_loop_flag() {
+  local fragment exec_line backup
+
+  # The effective ExecStart, so a drop-in that already pins the loop counts —
+  # and a deliberate --loop of any kind is left alone.
+  if systemctl show "$SERVICE_NAME" --property=ExecStart --value 2>/dev/null | grep -q -- '--loop'; then
+    return 0
+  fi
+
+  fragment="$(systemctl show "$SERVICE_NAME" --property=FragmentPath --value 2>/dev/null || true)"
+  if [ -z "$fragment" ] || [ ! -f "$fragment" ]; then
+    warn "Cannot locate the unit file for $SERVICE_NAME; not repairing the --loop flag."
+    return 0
+  fi
+
+  # A drop-in, not the fragment, may be what defines ExecStart; editing the
+  # fragment would then change nothing while reporting success.
+  if [ -n "$(systemctl show "$SERVICE_NAME" --property=DropInPaths --value 2>/dev/null || true)" ]; then
+    warn "$SERVICE_NAME has systemd drop-ins; add '--loop asyncio' to its uvicorn command by hand."
+    return 0
+  fi
+
+  if [ "$(grep -c '^ExecStart=' "$fragment")" -ne 1 ]; then
+    warn "$fragment has no single ExecStart line; add '--loop asyncio' to its uvicorn command by hand."
+    return 0
+  fi
+  exec_line="$(grep '^ExecStart=' "$fragment")"
+  case "$exec_line" in
+    *uvicorn*) ;;
+    *)
+      warn "$fragment does not start uvicorn directly; add '--loop asyncio' to it by hand."
+      return 0
+      ;;
+  esac
+  case "$exec_line" in
+    *\\)
+      warn "$fragment continues its ExecStart onto another line; add '--loop asyncio' by hand."
+      return 0
+      ;;
+  esac
+  if [ ! -w "$fragment" ]; then
+    warn "$fragment is not writable; add '--loop asyncio' to its uvicorn command by hand."
+    return 0
+  fi
+
+  backup="$fragment.bak-$(date +%Y%m%d-%H%M%S)"
+  cp -p "$fragment" "$backup" || {
+    warn "Could not back up $fragment; leaving it alone."
+    return 0
+  }
+
+  # Appended, not spliced: uvicorn accepts its options in any order after the
+  # app path, and appending cannot disturb a value already on the line.
+  if ! sed -i 's|^ExecStart=.*|& --loop asyncio|' "$fragment"; then
+    warn "Failed to edit $fragment; restoring from $backup."
+    cp -p "$backup" "$fragment" || true
+    return 0
+  fi
+
+  log "Added the missing '--loop asyncio' flag to $fragment (backup at $backup)."
+  log "Without it BamDude runs on uvloop, which can truncate Virtual Printer FTP uploads."
+  systemctl daemon-reload || warn "systemctl daemon-reload failed; the new flag applies after the next reload."
+}
+
 check_python_version() {
   # Must run before create_backup, the service stop and `git reset --hard`.
   # The failure this prevents is not one the rollback path can undo: code that
@@ -302,6 +377,9 @@ if [ -f "$FRONTEND_DIR/package.json" ]; then
 else
   warn "Skipping frontend build (frontend/package.json not found)."
 fi
+
+# While the service is stopped, so the flag takes effect on this restart.
+repair_loop_flag
 
 log "Starting service: $SERVICE_NAME"
 systemctl start "$SERVICE_NAME"

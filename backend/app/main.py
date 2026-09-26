@@ -10043,9 +10043,12 @@ async def lifespan(app: FastAPI):
     # Install Windows-only asyncio Proactor cleanup-RST filter (#1113) before
     # anything else can spawn tasks that might trip it. The filter is a no-op
     # on non-Windows hosts.
-    from backend.app.core.asyncio_handlers import install_proactor_reset_filter
+    from backend.app.core.asyncio_handlers import install_proactor_reset_filter, warn_if_running_on_uvloop
 
     install_proactor_reset_filter()
+    # Before init_db, so it sits near the top of the log rather than below a
+    # migration run (upstream 0dfcff59).
+    warn_if_running_on_uvloop()
 
     # Scratch goes on the data volume, not the system temp — before anything
     # stages its first file there. The backup copies the whole data tree into

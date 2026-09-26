@@ -1,10 +1,11 @@
-"""Asyncio event-loop exception handlers used at app startup.
+"""Event-loop concerns handled at app startup.
 
-Currently houses a single Windows-specific filter for the noisy
-``_ProactorBasePipeTransport._call_connection_lost`` ``WinError 10054``
-that fires every time a printer / MQTT broker / camera RSTs a TCP socket
-instead of closing it cleanly. See ``install_proactor_reset_filter`` for
-the why and the failure mode it suppresses.
+Two of them, both about the loop BamDude finds itself on:
+``install_proactor_reset_filter`` silences the noisy Windows
+``_ProactorBasePipeTransport._call_connection_lost`` ``WinError 10054`` that
+fires every time a printer / MQTT broker / camera RSTs a TCP socket instead of
+closing it cleanly; ``warn_if_running_on_uvloop`` says so out loud when the loop
+is uvloop, which BamDude is not launched on and does not want.
 """
 
 from __future__ import annotations
@@ -70,4 +71,51 @@ def install_proactor_reset_filter(loop: asyncio.AbstractEventLoop | None = None)
     if loop is None:
         loop = asyncio.get_running_loop()
     loop.set_exception_handler(_proactor_reset_filter)
+    return True
+
+
+# Every launch path BamDude ships pins it: the Dockerfile, install/install.sh
+# (systemd + launchd), deploy/bamdude.service and the Windows service.
+_LOOP_FLAG = "--loop asyncio"
+
+
+def running_on_uvloop(loop: object | None = None) -> bool:
+    """Is *loop* (or the running loop) a uvloop loop?
+
+    Asks the loop what it is, not whether uvloop imports: ``uvicorn[standard]``
+    installs uvloop on every Linux venv, so its presence says nothing. Matching
+    on the module name keeps this from importing uvloop just to ask — an
+    ImportError on a host without it.
+    """
+    if loop is None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+    return type(loop).__module__.split(".")[0] == "uvloop"
+
+
+def warn_if_running_on_uvloop(loop: object | None = None) -> bool:
+    """One loud WARNING when the process runs on uvloop (upstream 0dfcff59). True when emitted.
+
+    uvloop's TLS layer can drop buffered data when a client closes without a TLS
+    close_notify, so a Virtual Printer FTP upload can be truncated, acknowledged
+    and forwarded as a corrupt 3MF (#1896). ``virtual_printer/ftp_server.py``
+    ZIP-validates a ``.3mf`` before acknowledging it, but that is a backstop,
+    not a licence to run the loop that needs it. A warning, not a refusal:
+    uvicorn chose its loop before any of this runs, and a server that answers
+    beats one that will not boot. Who it reaches: a unit written by a
+    third-party script with no loop pinned, and a native install created before
+    install.sh gained the flag (2026-07-08) whose unit ``update.sh`` could not
+    repair.
+    """
+    if not running_on_uvloop(loop):
+        return False
+    logger.warning(
+        "Running on uvloop, which BamDude is not tested or shipped on: Virtual Printer FTP uploads can be "
+        "silently truncated on this loop. Add '%s' to the uvicorn command in your service file and restart. "
+        "Every installer BamDude ships already does this, and install/update.sh repairs a plain unit written "
+        "before it did; a unit from a third-party script is not touched.",
+        _LOOP_FLAG,
+    )
     return True

@@ -464,6 +464,14 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **Updating a native install repairs a service file that lacks `--loop
+  asyncio`.** Installs created before the installer pinned the flag (July
+  2026) kept running on uvloop however often they were updated, and uvloop
+  can silently truncate a file uploaded to the Virtual Printer. `update.sh`
+  now adds the flag to a plain one-line uvicorn unit while the service is
+  stopped, after backing the file up; a unit with drop-ins, a wrapper script
+  or a continued command line is left alone with a note of what to add.
+  BamDude also logs a warning at startup whenever it runs on uvloop.
 - **A print that could not be sent to the printer's card says why.** Every
   failed upload told the operator to check that the SD card is inserted and
   formatted FAT32/exFAT — also after the printer turned the file connection
