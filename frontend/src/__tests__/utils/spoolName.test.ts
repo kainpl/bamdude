@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
+import { __resetColorCatalogForTests, setColorCatalog } from '../../utils/colors';
+
 import type { InventorySpool } from '../../api/client';
 import {
   DEFAULT_SPOOL_DISPLAY_TEMPLATE,
@@ -173,5 +175,30 @@ describe('separators with nothing to separate', () => {
   it('keeps a hyphen that is part of a value', () => {
     // "PLA-CF" is a material, not two fields with punctuation between them.
     expect(formatSpoolDisplayName(spool({ material: 'PLA-CF' }), '{material}')).toBe('PLA-CF');
+  });
+});
+
+describe('{color_name} for a Spoolman spool whose name is its subtype (upstream e4a9ef45, #3090)', () => {
+  // Spoolman has no colour-name field; the spool arrives with its subtype in
+  // color_name and color_name_is_synthesized set. Printed as the colour, the
+  // default template read "Bambu Lab PLA Silk+ Silk+".
+  const spoolman = (rgba: string) =>
+    makeSpool({ brand: 'Bambu Lab', material: 'PLA', subtype: 'Silk+', color_name: 'Silk+', rgba, color_name_is_synthesized: true });
+
+  it('is not the subtype a second time', () => {
+    __resetColorCatalogForTests();
+    expect(formatSpoolDisplayName(spoolman('123456FF'), DEFAULT_SPOOL_DISPLAY_TEMPLATE)).toBe('Bambu Lab PLA Silk+');
+  });
+
+  it("is the swatch's catalogue name when it has one", () => {
+    __resetColorCatalogForTests();
+    setColorCatalog({ '5f6367': 'Titan Gray' });
+    expect(formatSpoolDisplayName(spoolman('5F6367FF'), DEFAULT_SPOOL_DISPLAY_TEMPLATE)).toBe(
+      'Bambu Lab PLA Silk+ Titan Gray',
+    );
+  });
+
+  it('leaves a stored name exactly as it was', () => {
+    expect(formatSpoolDisplayName(makeSpool({ color_name: 'Jade White' }), '{color_name}')).toBe('Jade White');
   });
 });

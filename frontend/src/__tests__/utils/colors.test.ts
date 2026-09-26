@@ -197,3 +197,32 @@ describe('getSwatchStyle (#1545, upstream 73912d4f #2912)', () => {
     expect(getSwatchStyle('ff000000')).toEqual({ backgroundImage: CHECKERBOARD, backgroundSize: '8px 8px' });
   });
 });
+
+// Upstream e4a9ef45 (#3090) — Spoolman has no colour-name field, so every
+// Spoolman-backed spool arrives with its subtype sitting in color_name. It reads
+// like a name and is not one.
+describe('resolveSpoolColorName — a name the backend synthesised from the subtype', () => {
+  beforeEach(() => {
+    setColorCatalog({ '5f6367': 'Titan Gray' });
+  });
+
+  it('loses to the catalog', () => {
+    expect(resolveSpoolColorName('Silk+', '5F6367FF', true)).toBe('Titan Gray');
+  });
+
+  it('still wins over nothing when the hex is unknown', () => {
+    // It at least says what is on the spool; the catalog covers only what
+    // someone put in it.
+    expect(resolveSpoolColorName('Silk+', '123456FF', true)).toBe('Silk+');
+  });
+
+  it('is not consulted when the flag is absent', () => {
+    // Every existing caller keeps the old behaviour: a stored name is the
+    // user's and is used as given.
+    expect(resolveSpoolColorName('Silk+', '5F6367FF')).toBe('Silk+');
+  });
+
+  it('does not resurrect a Bambu internal code', () => {
+    expect(resolveSpoolColorName('A99-Z9', '123456FF', true)).toBeNull();
+  });
+});

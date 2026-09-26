@@ -284,10 +284,29 @@ export function resolveMultiColorName(cols: string[] | null | undefined): string
   return names.join(' + ');
 }
 
-export function resolveSpoolColorName(colorName: string | null, rgba: string | null): string | null {
-  // If color_name looks like a readable name (no pattern like "X00-Y0"), use it directly
-  if (colorName && !/^[A-Z]\d+-[A-Z]\d+$/.test(colorName)) {
-    return colorName;
+/**
+ * The colour NAME to show for a spool.
+ *
+ * Tries: a stored name the user (or their tag) set → the runtime catalogue via
+ * rgba → a synthesised name after all → null.
+ *
+ * Two kinds of stored name are not answers and defer to the hex:
+ * - a Bambu internal code ("A06-D0") some RFID tags carry instead of a name —
+ *   not unique across material families, so untranslatable on its own (#857);
+ * - a name synthesised from the spool's subtype because the inventory backend
+ *   had none (upstream e4a9ef45, #3090): Spoolman has no colour-name field, so
+ *   every Spoolman spool arrives with its subtype in `color_name` and
+ *   `color_name_is_synthesized` set. "Silk+" is not a colour — a weaker answer
+ *   than the catalogue, still better than nothing when the hex resolves to none.
+ */
+export function resolveSpoolColorName(
+  colorName: string | null,
+  rgba: string | null,
+  colorNameIsSynthesized = false,
+): string | null {
+  const readable = colorName && !/^[A-Z]\d+-[A-Z]\d+$/.test(colorName) ? colorName : null;
+  if (readable && !colorNameIsSynthesized) {
+    return readable;
   }
   // Try hex color lookup from rgba via the runtime catalog
   if (rgba && rgba.length >= 6) {
@@ -299,6 +318,9 @@ export function resolveSpoolColorName(colorName: string | null, rgba: string | n
     const mapped = runtimeColorCatalog[hex];
     if (mapped) return mapped;
   }
+  // A synthesised subtype is a poor colour name and a fine last resort — it at
+  // least says what the spool is. A bare code never is.
+  if (readable) return readable;
   // Return null (displayed as "-") - better than showing a code
   return null;
 }

@@ -419,7 +419,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     <span className="text-sm text-bambu-gray">{spool.subtype || '-'}</span>
   ),
   color_name: ({ spool }) => (
-    <span className="text-sm text-bambu-gray">{resolveSpoolColorName(spool.color_name, spool.rgba) || '-'}</span>
+    <span className="text-sm text-bambu-gray">{resolveSpoolColorName(spool.color_name, spool.rgba, spool.color_name_is_synthesized) || '-'}</span>
   ),
   // Merged cell for when both "rgba" swatch and "color_name" are visible —
   // see toRenderColumns(). Settings panel keeps the two separate entries so
@@ -432,7 +432,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
         title={spool.rgba ? `#${spool.rgba.substring(0, 6)}` : undefined}
       />
       <span className="text-sm text-bambu-gray truncate">
-        {resolveSpoolColorName(spool.color_name, spool.rgba) || '-'}
+        {resolveSpoolColorName(spool.color_name, spool.rgba, spool.color_name_is_synthesized) || '-'}
       </span>
     </div>
   ),
@@ -1651,6 +1651,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // SQL as the behavioral spec in task 1). Spoolman proxies an external
   // system with its own API shape and deliberately keeps this path.
   const filteredSpools = useMemo(() => {
+    // The search below resolves colour names through the catalogue, which the
+    // linter cannot follow — named so the memo recomputes once it loads (#3090).
+    void colorCatalogVersion;
     let filtered = spoolmanMode ? spools || [] : [];
 
     // Archive filter
@@ -1689,7 +1692,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     // source of truth), so two near-identical hexes that map to the same
     // name (e.g. both "Black") filter together.
     if (colorFilter) {
-      filtered = filtered.filter((s) => resolveSpoolColorName(s.color_name, s.rgba) === colorFilter);
+      filtered = filtered.filter((s) => resolveSpoolColorName(s.color_name, s.rgba, s.color_name_is_synthesized) === colorFilter);
     }
 
     // Category dropdown (#729) — '__none__' picks uncategorised spools.
@@ -1755,6 +1758,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           s.brand?.toLowerCase().includes(q) ||
           s.material.toLowerCase().includes(q) ||
           s.color_name?.toLowerCase().includes(q) ||
+          // The name the list shows, not only the stored one (#3090).
+          resolveSpoolColorName(s.color_name, s.rgba, s.color_name_is_synthesized)?.toLowerCase().includes(q) ||
           s.subtype?.toLowerCase().includes(q) ||
           s.note?.toLowerCase().includes(q) ||
           s.slicer_filament_name?.toLowerCase().includes(q)
@@ -1763,7 +1768,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     }
 
     return filtered;
-  }, [spoolmanMode, spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, assignmentMap, search, spoolDisplayTemplate, lowStockThreshold, storageLocations]);
+  }, [spoolmanMode, spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, assignmentMap, search, spoolDisplayTemplate, lowStockThreshold, storageLocations, colorCatalogVersion]);
 
   // Reset page on filter changes
   const resetPage = () => setPageIndex(0);
@@ -1800,7 +1805,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     const set = new Set<string>();
     for (const s of spools || []) {
       if (s.archived_at) continue;
-      const name = resolveSpoolColorName(s.color_name, s.rgba);
+      const name = resolveSpoolColorName(s.color_name, s.rgba, s.color_name_is_synthesized);
       if (name) set.add(name);
     }
     return [...set].sort((a, b) => a.localeCompare(b));
@@ -3294,7 +3299,7 @@ function SpoolCard({
     >
       <div className="h-14 flex items-center justify-center" style={{ backgroundColor: colorStyle }}>
         <span className="bg-white/90 text-gray-800 px-3 py-0.5 rounded-full text-sm font-medium">
-          {resolveSpoolColorName(spool.color_name, spool.rgba) || '-'}
+          {resolveSpoolColorName(spool.color_name, spool.rgba, spool.color_name_is_synthesized) || '-'}
         </span>
       </div>
       <div className="p-4 space-y-3">
@@ -3457,7 +3462,7 @@ function SpoolCardGroup({
       >
         <div className="h-10 flex items-center px-4 gap-3" style={{ backgroundColor: colorStyle }}>
           <span className="bg-white/90 text-gray-800 px-3 py-0.5 rounded-full text-sm font-medium">
-            {resolveSpoolColorName(rep.color_name, rep.rgba) || '-'}
+            {resolveSpoolColorName(rep.color_name, rep.rgba, rep.color_name_is_synthesized) || '-'}
           </span>
         </div>
         <div className="px-4 py-3 flex items-center justify-between">

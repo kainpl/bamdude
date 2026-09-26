@@ -464,6 +464,13 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **"Silk+" is no longer shown as a Spoolman spool's colour.** Spoolman has
+  no colour-name field, so a Spoolman spool carried its subtype in its place,
+  and the Filaments page, Assign Spool and the default spool name read it as
+  the colour ("Bambu Lab PLA Silk+ Silk+"). The catalogue's name for the
+  swatch now wins, with the subtype only as a last resort. Searching by a
+  colour name you can see on screen now finds the spool, even when it is
+  resolved from the swatch rather than stored.
 - **Spoolman charges the tray the printer used, not the first one loaded.** A
   print BamDude did not send, on a printer that publishes no mapping (an A1),
   was charged to whatever sat in the first tray — while the printer had
