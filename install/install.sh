@@ -440,6 +440,76 @@ setup_virtualenv() {
     log_success "Virtual environment configured"
 }
 
+# macOS attributes Local Network permission (TCC) to a process's code
+# signature, and judges a launchd-spawned process on its own rather than
+# letting it inherit the grant of the Terminal that started it. Homebrew's
+# Python is unsigned on Intel, so there is no identity for a grant to attach
+# to: every connection to a LAN address is dropped with no error the app can
+# log and no permission prompt, and the printer just reads as unreachable
+# (upstream #3114).
+#
+# Signing only when currently unsigned is load-bearing, not tidiness. On
+# arm64 the linker ad-hoc signs every binary it produces, so the identity is
+# a hash of the file itself; re-signing rotates that hash, invalidates a
+# working grant, and causes the very outage this repairs. A python.org build
+# carries a real Developer ID and must not be touched for the same reason.
+#
+# Both the interpreter (what sys._base_executable resolves to) and the
+# framework's Python.app are signed: which of the two macOS attributes could
+# not be established, and signing both costs nothing. Re-running this
+# installer after `brew upgrade python` signs the new interpreter too.
+sign_python_for_tcc() {
+    [[ "$OS_TYPE" == "macos" ]] || return 0
+
+    local python_bin base_exe framework target signed_any=0
+    local -a targets=()
+
+    python_bin="$INSTALL_PATH/venv/bin/python3"
+    if [[ ! -x "$python_bin" ]]; then
+        return 0
+    fi
+
+    if ! command -v codesign &>/dev/null; then
+        log_warn "codesign not found - skipping the macOS Local Network signing step."
+        log_info "If the printer turns out to be unreachable, install the Xcode command line"
+        log_info "tools with 'xcode-select --install' and re-run this installer."
+        return 0
+    fi
+
+    log_info "Checking the Python code signature (macOS Local Network permission)..."
+
+    base_exe="$("$python_bin" -c 'import os, sys; print(os.path.realpath(getattr(sys, "_base_executable", None) or sys.executable))' 2>/dev/null)" || return 0
+    if [[ -z "$base_exe" ]] || [[ ! -e "$base_exe" ]]; then
+        return 0
+    fi
+    targets+=("$base_exe")
+
+    # .../Versions/3.13/bin/python3.13 -> .../Versions/3.13/Resources/Python.app
+    framework="${base_exe%/bin/*}"
+    if [[ "$framework" != "$base_exe" ]] && [[ -d "$framework/Resources/Python.app" ]]; then
+        targets+=("$framework/Resources/Python.app")
+    fi
+
+    for target in "${targets[@]}"; do
+        if codesign -dv "$target" &>/dev/null; then
+            continue
+        fi
+        if codesign --force --sign - "$target" &>/dev/null; then
+            log_success "Ad-hoc signed $target"
+            signed_any=1
+        else
+            log_warn "Could not sign $target"
+            log_info "BamDude may be unable to reach the printer. Run this by hand:"
+            log_info "  codesign --force --sign - \"$target\""
+        fi
+    done
+
+    if [[ "$signed_any" -eq 0 ]]; then
+        log_success "Python already carries a code signature"
+    fi
+    return 0
+}
+
 check_node_version() {
     # Returns 0 if Node.js 20+ is available, 1 otherwise
     if ! command -v node &>/dev/null; then
@@ -1126,6 +1196,7 @@ main() {
 
     download_bamdude
     setup_virtualenv
+    sign_python_for_tcc
     build_frontend
     create_directories
     create_env_file

@@ -6397,6 +6397,12 @@ export default {
         pass: 'Reachable - the camera stream will work.',
         warn: 'Port {{port}} is unreachable. The live camera view will not work. This does not affect printing.',
       },
+      macos_local_network: {
+        title: 'macOS Local Network permission',
+        pass: 'macOS is allowing BamDude to reach the local network.',
+        warn_unsigned: 'The Python that runs BamDude has no code signature, so macOS has nothing to attach a Local Network permission to and silently drops every connection to the printer - no error and no prompt. Sign it by re-running the BamDude installer (install/install.sh), or by hand with codesign --force --sign - "{{executable}}", then restart BamDude.',
+        warn_permission: 'If the printer is powered on and at this address, open System Settings > Privacy & Security > Local Network and make sure the Python that runs BamDude is enabled. macOS drops local connections silently when it is not, and updating Python can leave the old permission behind.',
+      },
       network_mode: {
         title: 'Container network mode',
         genericRuntime: 'a container',

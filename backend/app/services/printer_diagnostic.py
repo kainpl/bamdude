@@ -12,8 +12,11 @@ user-side setup errors clustered on exactly these causes.
 import asyncio
 import ipaddress
 import logging
+import os
 import socket
 import ssl
+import subprocess
+import sys
 from pathlib import Path
 
 from backend.app.models.printer import Printer
@@ -250,6 +253,73 @@ def _same_subnet(printer_ip: str, host_ip: str) -> bool | None:
     return printer_addr in network
 
 
+# macOS attributes Local Network permission (TCC) to a process's code
+# signature, and judges a launchd-spawned process on its own instead of
+# letting it inherit the grant of the Terminal that started it. Homebrew's
+# Python is unsigned on Intel, so there is no identity for a grant to attach
+# to: every connection to a LAN address is dropped, with no error the
+# application can log and no permission prompt. All three printer ports read
+# as unreachable while the subnet check passes (#3114).
+_CODESIGN = "/usr/bin/codesign"
+# Reading a local file's signature takes milliseconds, so this is a guard
+# rather than a budget -- and it is deliberately short. The support bundle
+# gives each printer 15s total (_PER_DIAGNOSTIC_TIMEOUT_SECONDS) and drops
+# the whole connection diagnostic on overrun, so a codesign that hangs (the
+# stub that offers to install the command line tools is the plausible way)
+# must not be able to cost the bundle the rest of its checks.
+_CODESIGN_TIMEOUT = 2.0
+
+
+def _base_interpreter_path() -> str:
+    """The interpreter macOS judges, as both the probe and the message see it.
+
+    ``sys._base_executable`` rather than ``sys.executable``: inside a venv the
+    latter is a symlink in the venv's own bin directory, and what macOS judges
+    is the real interpreter it resolves to. Resolved once, here, so the path
+    reported to the user is the same one whose signature was read.
+    """
+    return os.path.realpath(getattr(sys, "_base_executable", None) or sys.executable)
+
+
+def _interpreter_is_signed() -> bool | None:
+    """Does the interpreter BamDude runs under carry a code signature?
+
+    None when it cannot be told: no usable ``codesign`` because the Xcode
+    command line tools are absent, or the probe failed some other way. That
+    is deliberately not folded into False. The advice for "no identity" names
+    a repair that rewrites a file inside the user's Python installation, and
+    offering that on a guess is worse than giving the generic answer.
+
+    On an Apple Silicon Homebrew install the interpreter resolves to the
+    framework's ``bin/pythonX.Y`` (measured, inside and outside a venv alike)
+    -- not the ``Python.app`` stub, which is a separate binary in the same
+    framework. The reporter's TCC log names the same ``bin/pythonX.Y`` on
+    Intel.
+    """
+    executable = _base_interpreter_path()
+    if not executable:
+        return None
+    try:
+        result = subprocess.run(
+            [_CODESIGN, "-d", executable],
+            capture_output=True,
+            text=True,
+            timeout=_CODESIGN_TIMEOUT,
+        )
+    except Exception:
+        # Fail soft, as everywhere else in this module: a diagnostic that
+        # raises is worse than one that declines to answer.
+        logger.debug("codesign probe failed", exc_info=True)
+        return None
+    if result.returncode == 0:
+        return True
+    # codesign writes this to stderr and exits non-zero. It is the one
+    # outcome that separates "no identity at all" from "the probe never ran".
+    if "not signed at all" in result.stderr:
+        return False
+    return None
+
+
 # Default seconds the `printer_publishing` check will wait for the first
 # report-topic message before declaring fail. Bambu printers in idle publish
 # push_status every few seconds; 10s catches healthy bridges with margin while
@@ -392,8 +462,41 @@ async def run_connection_diagnostic(
         )
     )
 
+    # --- macOS Local Network permission ---
+    # Appended on macOS only. Everywhere else there is nothing to say, and a
+    # permanently dimmed "skipped" row would be noise for the users who make
+    # up nearly all of them.
+    #
+    # Both outcomes are reported as warn rather than fail, and only when the
+    # control port is already unreachable -- so this can never be the check
+    # that turns an otherwise healthy result red. A printer that is simply
+    # switched off produces the same all-ports-dead pattern, which is why the
+    # signature probe, not the pattern, is what earns the specific advice.
+    if sys.platform == "darwin":
+        if mqtt_ok:
+            # The control port answered, so LAN access demonstrably works.
+            checks.append(DiagnosticCheck(id="macos_local_network", status="pass"))
+        else:
+            signed = await asyncio.to_thread(_interpreter_is_signed)
+            if signed is False:
+                checks.append(
+                    DiagnosticCheck(
+                        id="macos_local_network",
+                        status="warn",
+                        params={"reason": "unsigned", "executable": _base_interpreter_path()},
+                    )
+                )
+            else:
+                # Signed, or undeterminable. An ad-hoc signature -- which is
+                # what every arm64 binary carries, because the linker adds one
+                # -- identifies itself by a hash of the binary, so a Python
+                # upgrade presents macOS with a new application and leaves the
+                # old grant behind. That is repairable in System Settings,
+                # unlike the unsigned case, so point there instead.
+                checks.append(DiagnosticCheck(id="macos_local_network", status="warn", params={"reason": "permission"}))
+
     # --- Container network mode ---
-    # Not Docker-only: Podman runs Bambuddy in exactly the same two shapes and
+    # Not Docker-only: Podman runs BamDude in exactly the same two shapes and
     # its users were told "Not running in Docker", which reads as "you are on
     # bare metal" and sent them looking for the problem somewhere else (#3092).
     runtime = detect_container_runtime()

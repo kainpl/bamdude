@@ -212,4 +212,49 @@ describe('ConnectionDiagnosticModal', () => {
 
     spy.mockRestore();
   });
+
+  it('names the interpreter when macOS has no signature to grant against (#3114)', async () => {
+    const spy = vi.spyOn(api, 'diagnosePrinter').mockResolvedValue({
+      ...PROBLEM_RESULT,
+      overall: 'problems',
+      checks: [
+        {
+          id: 'macos_local_network',
+          status: 'warn',
+          params: {
+            reason: 'unsigned',
+            executable: '/usr/local/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/bin/python3.14',
+          },
+        },
+      ],
+    });
+
+    renderModal({ printerId: 1, printerName: 'Test P1S', onClose: vi.fn() });
+
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/macOS Local Network permission/i)).toBeInTheDocument();
+    expect(screen.getByText(/has no code signature/i)).toBeInTheDocument();
+    // The path is what tells the user which of several Pythons is meant.
+    expect(screen.getByText(/Versions\/3\.14\/bin\/python3\.14/)).toBeInTheDocument();
+
+    spy.mockRestore();
+  });
+
+  it('points a signed-but-blocked macOS install at System Settings (#3114)', async () => {
+    const spy = vi.spyOn(api, 'diagnosePrinter').mockResolvedValue({
+      ...PROBLEM_RESULT,
+      overall: 'problems',
+      checks: [{ id: 'macos_local_network', status: 'warn', params: { reason: 'permission' } }],
+    });
+
+    renderModal({ printerId: 1, printerName: 'Test P1S', onClose: vi.fn() });
+
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/Privacy & Security > Local Network/i)).toBeInTheDocument();
+    // The signing repair must not be offered to a machine that is already
+    // signed: re-signing it would revoke the grant it still has.
+    expect(screen.queryByText(/codesign --force/i)).not.toBeInTheDocument();
+
+    spy.mockRestore();
+  });
 });

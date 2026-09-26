@@ -6,11 +6,17 @@ so a status flip is a user-facing regression — each one is asserted here.
 """
 
 import ipaddress
+import subprocess
 import types
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from backend.app.services.printer_diagnostic import _host_source_ip, _same_subnet, run_connection_diagnostic
+from backend.app.services.printer_diagnostic import (
+    _host_source_ip,
+    _interpreter_is_signed,
+    _same_subnet,
+    run_connection_diagnostic,
+)
 
 MOD = "backend.app.services.printer_diagnostic"
 
@@ -55,6 +61,7 @@ class _Env:
         test_connection_success=True,
         report_messages_since_connect: int | None = 5,
         ftps_handshake: str = "ok",
+        platform="linux",
     ):
         self.ports = ports or _port_probe()
         # What port 990 answers once it accepts a TCP connection: "ok" (TLS)
@@ -67,6 +74,9 @@ class _Env:
         # The prefix the host's own interface carries; None means no
         # interface claims host_ip.
         self.host_subnet = host_subnet
+        # Pinned so the check list does not depend on the OS the suite runs
+        # on: macos_local_network is emitted on darwin only (upstream #3114).
+        self.platform = platform
         self.state = state
         self.test_connection_success = test_connection_success
         # ``None`` means get_client returns None (e.g. pre-add flow); an int is
@@ -103,6 +113,7 @@ class _Env:
             )
         )
         self._stack.enter_context(patch(f"{MOD}.printer_manager", manager))
+        self._stack.enter_context(patch(f"{MOD}.sys.platform", self.platform))
         return self
 
     def __exit__(self, *exc):
@@ -522,3 +533,86 @@ class TestPreAddFlow:
         with _Env():
             result = await run_connection_diagnostic("192.168.1.50")
         assert _statuses(result)["mqtt_auth"] == "skip"
+
+
+def _signature_probe(signed):
+    """Patch ``_interpreter_is_signed`` to answer ``signed``."""
+    probe = MagicMock(return_value=signed)
+    return patch(f"{MOD}._interpreter_is_signed", probe), probe
+
+
+class TestMacosLocalNetworkCheck:
+    """The macOS Local Network (TCC) check (upstream 1ccaf74d, #3114).
+
+    macOS attributes the permission to a code signature. An unsigned
+    interpreter has no identity to anchor a grant to, so every connection to
+    the printer is dropped with no error and no prompt — the ports read as
+    unreachable and nothing says why.
+    """
+
+    async def test_absent_on_other_platforms(self):
+        with _Env(platform="linux", state=_state()):
+            result = await run_connection_diagnostic("192.168.1.50", printer=_printer())
+        assert "macos_local_network" not in _statuses(result)
+
+    async def test_passes_when_the_control_port_answers(self):
+        patcher, probe = _signature_probe(False)
+        with patcher, _Env(platform="darwin", state=_state()):
+            result = await run_connection_diagnostic("192.168.1.50", printer=_printer())
+        assert _statuses(result)["macos_local_network"] == "pass"
+        probe.assert_not_called()
+
+    async def test_unsigned_interpreter_names_the_repair(self):
+        patcher, _probe = _signature_probe(False)
+        with patcher, _Env(platform="darwin", ports=_port_probe({8883: False}), state=_state()):
+            result = await run_connection_diagnostic("192.168.1.50", printer=_printer())
+        check = _check(result, "macos_local_network")
+        assert check.status == "warn"
+        assert check.params["reason"] == "unsigned"
+        assert check.params["executable"]
+
+    async def test_signed_interpreter_points_at_system_settings(self):
+        patcher, _probe = _signature_probe(True)
+        with patcher, _Env(platform="darwin", ports=_port_probe({8883: False}), state=_state()):
+            result = await run_connection_diagnostic("192.168.1.50", printer=_printer())
+        check = _check(result, "macos_local_network")
+        assert check.status == "warn"
+        assert check.params["reason"] == "permission"
+
+    async def test_undeterminable_signature_is_not_reported_as_unsigned(self):
+        patcher, _probe = _signature_probe(None)
+        with patcher, _Env(platform="darwin", ports=_port_probe({8883: False}), state=_state()):
+            result = await run_connection_diagnostic("192.168.1.50", printer=_printer())
+        assert _check(result, "macos_local_network").params["reason"] == "permission"
+
+    async def test_never_turns_a_healthy_result_red(self):
+        patcher, _probe = _signature_probe(False)
+        with patcher, _Env(platform="darwin", state=_state(), report_messages_since_connect=42):
+            result = await run_connection_diagnostic("192.168.1.50", printer=_printer())
+        assert result.overall == "ok"
+
+
+class TestInterpreterSignatureProbe:
+    """``codesign`` has three outcomes and they must stay distinguishable."""
+
+    def _run(self, **kwargs):
+        return patch(f"{MOD}.subprocess.run", **kwargs)
+
+    def test_zero_exit_means_signed(self):
+        with self._run(return_value=types.SimpleNamespace(returncode=0, stderr="")):
+            assert _interpreter_is_signed() is True
+
+    def test_not_signed_at_all_means_unsigned(self):
+        stderr = "/usr/local/.../python3.14: code object is not signed at all"
+        with self._run(return_value=types.SimpleNamespace(returncode=1, stderr=stderr)):
+            assert _interpreter_is_signed() is False
+
+    def test_other_failure_is_undeterminable(self):
+        with self._run(return_value=types.SimpleNamespace(returncode=1, stderr="No such file or directory")):
+            assert _interpreter_is_signed() is None
+
+    def test_probe_failure_never_raises(self):
+        with self._run(side_effect=OSError("boom")):
+            assert _interpreter_is_signed() is None
+        with self._run(side_effect=subprocess.TimeoutExpired(cmd="codesign", timeout=5.0)):
+            assert _interpreter_is_signed() is None

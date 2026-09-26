@@ -172,6 +172,14 @@
 
 ### Fixed
 
+- **A macOS native install could lose all access to the printer.** macOS grants
+  Local Network permission to a code signature, and Homebrew's Python on Intel
+  has none, so every connection to the printer was dropped silently — no error,
+  no prompt. The installer now signs the interpreter on macOS when it is
+  unsigned (never re-signing a signed one, which would revoke a working grant),
+  and the connection diagnostic gained a **macOS Local Network permission**
+  check that says whether to sign Python or re-grant the permission in System
+  Settings.
 - **The connection diagnostic reads your real network.** Its subnet check
   assumed every LAN is a /24, so on a wider network (a /22, for example) it
   told you a printer a few hundred addresses away was on a different network;

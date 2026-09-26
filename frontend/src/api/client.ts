@@ -2851,6 +2851,8 @@ export interface DiagnosticCheck {
     | 'port_mqtt'
     | 'port_ftps'
     | 'port_rtsps'
+    // macOS only (upstream #3114): the Local Network permission.
+    | 'macos_local_network'
     | 'network_mode'
     | 'subnet'
     | 'mqtt_auth'
