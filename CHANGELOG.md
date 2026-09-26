@@ -464,6 +464,16 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **A 3MF that names "the object's filament" for its walls or infill slices
+  again.** Bambu Studio writes `0` into the wall, sparse-infill and
+  solid-infill filament settings to mean "whichever filament the object
+  uses"; OrcaSlicer 2.3 and earlier count filaments from 1 and refused such a
+  file before our presets were even read. Those three settings are now
+  cleared before slicing when they hold `0`, so every slicer build falls
+  back to its own default — the active filament. The filament preview in
+  the print dialog runs the same cleanup, so a file it could not preview
+  before (this case, or the inherit markers MakerWorld P2S files carry) now
+  shows its per-plate filaments instead of a guess.
 - **An Orca Cloud session that cannot be refreshed no longer leaks
   connections.** Every failed sign-in refresh — a revoked token, Orca
   unreachable, a failed write of the new token — left an open HTTP client

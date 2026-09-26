@@ -34,9 +34,9 @@ import zipfile
 
 import pytest
 
-from backend.app.api.routes.library import (
-    _PROJECT_SETTINGS_SENTINEL_KEYS,
-    _sanitize_project_settings_sentinels,
+from backend.app.utils.threemf_tools import (
+    PROJECT_SETTINGS_SENTINELS,
+    sanitize_project_settings_sentinels as _sanitize_project_settings_sentinels,
 )
 
 
@@ -66,9 +66,9 @@ def _zip_namelist(zip_bytes: bytes) -> list[str]:
 
 
 class TestRemovesSentinelValues:
-    @pytest.mark.parametrize("key", sorted(_PROJECT_SETTINGS_SENTINEL_KEYS))
-    def test_removes_each_allowlisted_key_when_value_is_minus_one(self, key):
-        original = _make_3mf(settings={key: "-1", "layer_height": "0.2"})
+    @pytest.mark.parametrize(("key", "sentinel"), sorted(PROJECT_SETTINGS_SENTINELS.items()))
+    def test_removes_each_allowlisted_key_when_it_holds_its_marker(self, key, sentinel):
+        original = _make_3mf(settings={key: sentinel, "layer_height": "0.2"})
         sanitised = _sanitize_project_settings_sentinels(original)
 
         cfg = _read_settings(sanitised)
@@ -200,3 +200,69 @@ class TestDefensiveFallbacks:
             zf.writestr("Metadata/project_settings.config", "[]")
         original = buf.getvalue()
         assert _sanitize_project_settings_sentinels(original) is original
+
+
+class TestFilamentIndexZero:
+    """Bambu Studio writes ``0`` into three feature-filament indices to mean
+    "whichever filament the object is set to" (upstream 9a837d19, #3030).
+    OrcaSlicer 2.3 and earlier used a 1-based scheme and reject it before our
+    presets are consulted; removing the key lets every build use its own default."""
+
+    @pytest.mark.parametrize("key", ["wall_filament", "sparse_infill_filament", "solid_infill_filament"])
+    def test_a_zero_filament_index_is_removed(self, key):
+        cfg = _read_settings(
+            _sanitize_project_settings_sentinels(_make_3mf(settings={key: "0", "layer_height": "0.2"}))
+        )
+        assert key not in cfg
+        assert cfg["layer_height"] == "0.2"
+
+    def test_the_buckets_do_not_bleed(self):
+        """A -1 on a filament index is a real value; a 0 on a raft field is a setting."""
+        original = _make_3mf(settings={"wall_filament": "-1", "raft_first_layer_expansion": "0"})
+        assert _sanitize_project_settings_sentinels(original) is original
+
+    def test_a_real_first_filament_is_kept(self):
+        original = _make_3mf(settings={"wall_filament": "1"})
+        assert _sanitize_project_settings_sentinels(original) is original
+
+    def test_a_numeric_marker_counts_but_a_boolean_does_not(self):
+        numeric = _make_3mf(settings={"wall_filament": 0, "tree_support_wall_count": -1})
+        cfg = _read_settings(_sanitize_project_settings_sentinels(numeric))
+        assert "wall_filament" not in cfg and "tree_support_wall_count" not in cfg
+        boolean = _make_3mf(settings={"wall_filament": False})
+        assert _sanitize_project_settings_sentinels(boolean) is boolean
+
+
+@pytest.mark.asyncio
+async def test_the_preview_slice_is_sanitised_too(monkeypatch):
+    """The preview runs on the file's own settings — no --load-settings pass can
+    replace a field the range validator already rejected (upstream 9a837d19)."""
+    from backend.app.services import slice_preview
+
+    sent: list[bytes] = []
+
+    class _Service:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def slice_without_profiles(self, *, model_bytes, **_kwargs):
+            sent.append(model_bytes)
+            raise slice_preview.SlicerApiError("stop here")
+
+    monkeypatch.setattr(slice_preview, "SlicerApiService", _Service)
+    slice_preview._preview_cache.clear()
+    source = _make_3mf(settings={"wall_filament": "0", "layer_height": "0.2"})
+
+    result = await slice_preview.get_preview_filaments(
+        kind="library", source_id=1, plate_id=1, file_bytes=source, file_name="m.3mf", api_url="http://sidecar"
+    )
+
+    assert result is None
+    assert sent, "the preview slice ran"
+    assert "wall_filament" not in _read_settings(sent[0])

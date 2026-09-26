@@ -38,6 +38,7 @@ from backend.app.services.slicer_api import (
     SlicerApiError,
     SlicerApiService,
 )
+from backend.app.utils.threemf_tools import sanitize_project_settings_sentinels
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,12 @@ async def get_preview_filaments(
             _preview_cache.move_to_end(key)
             return cached
 
+        # The same sanitiser the real slice runs (upstream 9a837d19) — and it
+        # matters more here: the preview runs on the file's OWN settings, so no
+        # --load-settings pass can replace a field the CLI's range validator
+        # already rejected. The G-code retry below starts from these bytes too.
+        # The cache key stays the source's hash.
+        slice_bytes = sanitize_project_settings_sentinels(file_bytes)
         try:
             # A preview slice is bounded the same way a real one is (#2730):
             # a heavy plate can take a long time and must not be cut off while
@@ -227,7 +234,7 @@ async def get_preview_filaments(
                         request_id=request_id,
                     )
 
-            result = await _slice(file_bytes)
+            result = await _slice(slice_bytes)
         except SlicerApiError as e:
             # One retry, and only for a custom-G-code template the sidecar
             # cannot parse — a file from a Studio newer than the sidecar. The
@@ -244,7 +251,7 @@ async def get_preview_filaments(
             retry_bytes = None
             option = _unparsable_gcode_option(str(e))
             if option is not None:
-                retry_bytes = _blank_custom_gcode(file_bytes, option)
+                retry_bytes = _blank_custom_gcode(slice_bytes, option)
             if retry_bytes is None:
                 logger.warning(
                     "Preview slice failed for %s/%s plate %s: %s",

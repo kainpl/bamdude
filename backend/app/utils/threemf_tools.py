@@ -24,6 +24,99 @@ logger = logging.getLogger(__name__)
 _ZIP_FILE_TYPE = zipfile.ZipFile
 
 
+# Keys in ``Metadata/project_settings.config`` that Bambu Studio writes an
+# "inherit / unset" marker into, mapped to the marker it uses for that key. The
+# slicer CLI's ``StaticPrintConfig`` validator runs against the embedded
+# settings BEFORE ``--load-settings`` overrides apply, so a marker the CLI's own
+# range check rejects makes it exit before our presets are ever consulted.
+#
+# Two conventions, two markers (upstream 9a837d19):
+#   "-1" — inherit from the parent process preset (#1201, MakerWorld P2S 3MFs);
+#   "0"  — "use the object's filament", Bambu Studio's default for the three
+#          feature-filament indices (#3030). Bambu Studio and OrcaSlicer 2.4+
+#          accept 0; OrcaSlicer 2.3 and earlier used a 1-based scheme and
+#          reject it — and sidecar images are version-tagged.
+# The key is REMOVED, not rewritten: the CLI then uses its own compiled default,
+# which is 0 where 0 was legal and 1 on the older builds — "the active filament"
+# either way. Allowlisted, never "strip every marker-shaped value": z_offset,
+# translations, a filament index somebody really set, a raft field at 0 — all
+# legitimate. The buckets must not bleed. Add entries as reports surface: the
+# slicer names the offending field ("<field>: <value> not in range [...]").
+PROJECT_SETTINGS_SENTINELS: dict[str, str] = {
+    "raft_first_layer_expansion": "-1",
+    "tree_support_wall_count": "-1",
+    "prime_tower_brim_width": "-1",
+    "wall_filament": "0",
+    "sparse_infill_filament": "0",
+    "solid_infill_filament": "0",
+}
+
+PROJECT_SETTINGS_PATH = "Metadata/project_settings.config"
+
+
+def _is_sentinel(value: object, sentinel: str) -> bool:
+    """Does ``value`` carry ``sentinel``, as text or as a JSON number?
+
+    Bambu Studio writes every value as a string, but a 3MF round-tripped
+    through another tool can carry a number. ``bool`` is excluded: it is an
+    ``int`` subclass, and ``False`` must never match a ``0`` marker.
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (str, int)):
+        return str(value) == sentinel
+    return False
+
+
+def sanitize_project_settings_sentinels(zip_bytes: bytes) -> bytes:
+    """Strip the allowlisted inherit/unset markers from a 3MF's ``project_settings.config``.
+
+    Only a key from ``PROJECT_SETTINGS_SENTINELS``, and only when it holds that
+    key's marker. The rest of the config — and every other zip entry — is
+    preserved; the file still parses, so ``StaticPrintConfig`` initialises and
+    the slicer falls back to ``--load-settings`` or its own default for the
+    removed key. Returns the input bytes unchanged whenever there is nothing to
+    do or the file cannot be read, so callers pass the result on blind. Used by
+    the real slice AND the preview slice (upstream 9a837d19).
+    """
+    from io import BytesIO
+
+    try:
+        with zipfile.ZipFile(BytesIO(zip_bytes), "r") as zin:
+            if PROJECT_SETTINGS_PATH not in zin.namelist():
+                return zip_bytes
+            try:
+                config = json.loads(zin.read(PROJECT_SETTINGS_PATH).decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return zip_bytes
+            if not isinstance(config, dict):
+                return zip_bytes
+            removed = {
+                key: sentinel
+                for key, sentinel in PROJECT_SETTINGS_SENTINELS.items()
+                if _is_sentinel(config.get(key), sentinel)
+            }
+            if not removed:
+                return zip_bytes
+            for key in removed:
+                config.pop(key, None)
+            patched = json.dumps(config)
+            logger.info(
+                "3MF sanitiser: removed inherit markers %s — the slicer uses its defaults for those keys",
+                sorted(f"{key}={sentinel}" for key, sentinel in removed.items()),
+            )
+            dst = BytesIO()
+            with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+                for item in zin.infolist():
+                    if item.filename == PROJECT_SETTINGS_PATH:
+                        zout.writestr(item, patched)
+                    else:
+                        zout.writestr(item, zin.read(item.filename))
+            return dst.getvalue()
+    except (zipfile.BadZipFile, OSError):
+        return zip_bytes
+
+
 def _zip_source(source: Path | zipfile.ZipFile):
     """Internal read seam; an owned archive stays open across extractors."""
     return nullcontext(source) if isinstance(source, _ZIP_FILE_TYPE) else zipfile.ZipFile(source, "r")
