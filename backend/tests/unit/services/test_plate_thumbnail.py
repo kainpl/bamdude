@@ -135,6 +135,41 @@ class TestInjectPlateThumbnails:
         assert 480 <= large_w <= 540 and 480 <= large_h <= 540
         assert 100 <= small_w <= 140 and 100 <= small_h <= 140
 
+    def test_injected_thumbnail_is_shaded_not_flat(self, distinct_surface_tones):
+        """Injected plate renders are lit, like the library thumbnails (#2816).
+
+        Plate 1 of a slice from a library STL gets its picture from the STL
+        renderer and plates 2..N from this one; unlit, the two disagree on the
+        same card.
+        """
+        from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
+
+        result = inject_plate_thumbnails_if_missing(_build_sliced_3mf(plate_ids=[1], with_thumbnails=set()))
+        with zipfile.ZipFile(io.BytesIO(result), "r") as zf:
+            large = zf.read("Metadata/plate_1.png")
+
+        # _build_sliced_3mf embeds a cube: three faces visible, three tones.
+        assert distinct_surface_tones(large) >= 3
+
+    def test_the_camera_is_the_stl_renderers(self, monkeypatch):
+        """One camera for both renderers — read from stl_thumbnail, never copied.
+
+        A second copy of an angle is how "a plate card and a library thumbnail of
+        the same model look alike" silently stops being true.
+        """
+        from backend.app.services import stl_thumbnail
+        from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing
+
+        fixture = _build_sliced_3mf(plate_ids=[1], with_thumbnails=set())
+
+        def plate_png() -> bytes:
+            with zipfile.ZipFile(io.BytesIO(inject_plate_thumbnails_if_missing(fixture)), "r") as zf:
+                return zf.read("Metadata/plate_1.png")
+
+        before = plate_png()
+        monkeypatch.setattr(stl_thumbnail, "VIEW_AZIM_DEG", stl_thumbnail.VIEW_AZIM_DEG + 30)
+        assert plate_png() != before
+
     def test_injects_for_every_missing_plate_in_multi_plate_3mf(self):
         """Three plates, plate_2 already has a thumbnail; only plates 1 + 3 get rendered."""
         from backend.app.services.plate_thumbnail import inject_plate_thumbnails_if_missing

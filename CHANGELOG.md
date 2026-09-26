@@ -464,6 +464,16 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **Generated thumbnails show the model's shape.** The light on the File
+  Manager's STL thumbnails sat behind the model, so a box's two visible sides
+  came out the same shade and its front edge vanished; it now comes from the
+  viewer's upper left. The plate pictures BamDude draws for a slice the
+  slicer left without one were not lit at all — they now use the same light
+  and the same camera, so plate 1 of a slice from an STL and its other plates
+  look alike. A file whose triangles face the wrong way no longer renders
+  patchy, and a stub STL with no real surface still gets its flat picture
+  instead of none. Existing thumbnails keep their picture until **Generate
+  Thumbnail** is run on the file.
 - **A 3MF that names "the object's filament" for its walls or infill slices
   again.** Bambu Studio writes `0` into the wall, sparse-infill and
   solid-infill filament settings to mean "whichever filament the object

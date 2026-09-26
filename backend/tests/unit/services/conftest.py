@@ -1,4 +1,6 @@
-"""Test fixtures for FTP service tests.
+"""Shared fixtures for service tests.
+
+Mostly FTP.
 
 Provides a real implicit FTPS server (via mock_ftp_server) and client factory
 for integration-style testing of BambuFTPClient against a live server.
@@ -7,6 +9,7 @@ The server fixture is class-scoped to avoid the overhead of starting a new
 TLS server for every test (~67 TLS handshakes → ~9 per class).
 """
 
+import io
 import os
 import shutil
 import socket
@@ -134,3 +137,40 @@ def patch_ftp_port(ftp_server):
     """
     with patch.object(BambuFTPClient, "FTP_PORT", ftp_server.port):
         yield ftp_server
+
+
+@pytest.fixture()
+def distinct_surface_tones():
+    """Count the distinct colours covering the model's surface in a render.
+
+    Shared by the STL and plate thumbnail suites, which render the same way
+    through two different modules and need the same question answered
+    (upstream ed856779, #2816).
+
+    Quantises to 5 bits per channel before counting and keeps only pixels where
+    green dominates. The spread being quantised away is Agg's antialiasing and
+    the alpha compositing; PNG itself is lossless and contributes none.
+
+    **This counts large flat tone regions, which is only the same thing as
+    "is it shaded" for a FLAT-FACED model.** A curved surface produces several
+    such regions with no light at all, so the cube fixture is not incidental:
+    swap in anything rounder and ``>= 3`` passes on completely unlit output.
+    """
+
+    def _count(png: bytes, *, min_share: float = 0.02) -> int:
+        import numpy as np
+        from PIL import Image
+
+        # np.asarray, not Image.getdata(): getdata is deprecated for removal in
+        # Pillow 14 and would surface as an AttributeError, not a warning.
+        rgb = np.asarray(Image.open(io.BytesIO(png)).convert("RGB"), dtype=np.int16)
+        r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+        surface_mask = (g > r) & (g > b)
+        if not surface_mask.any():
+            return 0
+
+        keys = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)
+        counts = np.bincount(keys[surface_mask].ravel())
+        return int((counts / counts.sum() >= min_share).sum())
+
+    return _count

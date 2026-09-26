@@ -52,6 +52,28 @@ def _configure_matplotlib_cache() -> None:
 # Bambu green color for rendering
 BAMBU_GREEN = "#00AE42"
 
+# The camera: an isometric front-quarter that shows the front face, the right
+# side and the top at once — the standard CAD-preview pose. plate_thumbnail
+# reads these two rather than keeping its own: "a plate card and a library
+# thumbnail of the same model look alike" is the reason the renderers share a
+# look, and a second copy of an angle is how that silently stops being true.
+VIEW_ELEV_DEG = 30
+VIEW_AZIM_DEG = -60
+
+# The light, chosen AGAINST the camera above — the two are a pair (upstream
+# ed856779, #2816). matplotlib's light direction for (az, alt) is
+# ``[cos(90-az)cos(alt), sin(90-az)cos(alt), sin(alt)]`` and the camera set by
+# ``view_init(elev, azim)`` sits at ``[cos(elev)cos(azim), cos(elev)sin(azim),
+# sin(elev)]``; the dot product of the two must be POSITIVE or the light is
+# behind the model. The 315 shipped before scored -0.24 against this camera and
+# lit both visible sides to the identical 0.475 — a cube with no front edge. At
+# 240 it is +0.35 and the light comes from the viewer's upper left: left side
+# 0.77, right side 0.44, top 0.90. Moving either constant without the other puts
+# the light back behind the model; ``test_light_gives_the_two_visible_faces_
+# different_shades`` holds the pair.
+LIGHT_AZIMUTH_DEG = 240
+LIGHT_ALTITUDE_DEG = 45
+
 # Maximum vertices before simplification
 MAX_VERTICES = 100000
 
@@ -62,6 +84,76 @@ MAX_VERTICES = 100000
 # empty mesh anyway. Pre-skipping at the call sites suppresses the warning storm
 # bulk-uploaded ZIPs of small test STLs used to produce (#1820).
 MIN_USABLE_STL_BYTES = 200
+
+
+def _repair_winding(mesh, trimesh, label: str) -> None:
+    """Make every face wind the same way, and wind it OUTWARD, before shading.
+
+    matplotlib derives its normals from vertex ORDER, so a triangle wound the
+    wrong way shades as though it faced away and the model comes out patchy —
+    camouflage rather than a surface. ``trimesh.load(force="mesh")`` does not
+    repair winding; this does (upstream ed856779).
+
+    ``trimesh.repair.fix_winding`` and not ``mesh.fix_normals()``: the latter
+    reaches ``body_count`` -> ``scipy.csgraph``, and this renderer should not
+    need a graph engine beyond the networkx fix_winding already uses.
+
+    Three steps, because each one leaves something for the next:
+
+    * ``fix_winding`` makes the winding agree but is free to settle on either
+      orientation, and on a half-inverted sphere it picks INWARD.
+    * ``fix_inversion`` corrects that off the sign of the volume, but only for a
+      WATERTIGHT mesh — a volume measured across holes says nothing.
+    * Which leaves the common case, since a mesh with broken winding is usually
+      not watertight either: with no usable volume, decide by whether the faces
+      point away from the centroid.
+
+    Gated on ``is_winding_consistent``: the check is tens of ms where the repair
+    is seconds on a large mesh, so only meshes that would render wrong pay.
+    Shared with plate_thumbnail so the two renderers cannot drift.
+    """
+    import numpy as np
+
+    if len(mesh.faces) == 0 or mesh.is_winding_consistent:
+        return
+
+    logger.debug("Repairing inconsistent winding before render: %s", label)
+    trimesh.repair.fix_winding(mesh)
+    trimesh.repair.fix_inversion(mesh)
+    if mesh.is_watertight:
+        return
+
+    outward = mesh.triangles.mean(axis=1) - mesh.vertices.mean(axis=0)
+    if float(np.einsum("ij,ij->i", mesh.face_normals, outward).sum()) < 0:
+        logger.debug("Winding settled inward on a non-watertight mesh, inverting: %s", label)
+        mesh.invert()
+
+
+def _shade_kwargs(poly3d, LightSource) -> dict:
+    """``shade=True`` and its light, or nothing when the mesh cannot be shaded.
+
+    matplotlib's ``_shade_colors`` falls back, for a mesh whose every face normal
+    is degenerate, to returning the colour argument unchanged — and for a colour
+    STRING that is a 0-d array, on which ``to_rgba_array`` raises ``TypeError:
+    len() of unsized object``. Stub and truncated STLs, and 3MFs with an empty
+    ``<triangles/>``, reach here; deciding up front keeps their flat render a
+    real outcome instead of a failure with a traceback. Identical to
+    matplotlib's own test: a cross product finite and non-zero for at least one
+    face.
+    """
+    import numpy as np
+
+    if len(poly3d) == 0:
+        return {}
+    tri = np.asarray(poly3d, dtype=float)
+    normals = np.cross(tri[:, 0] - tri[:, 1], tri[:, 1] - tri[:, 2])
+    lengths = np.linalg.norm(normals, axis=1)
+    if not bool(np.any(np.isfinite(lengths) & (lengths > 0))):
+        return {}
+    return {
+        "shade": True,
+        "lightsource": LightSource(azdeg=LIGHT_AZIMUTH_DEG, altdeg=LIGHT_ALTITUDE_DEG),
+    }
 
 
 def generate_stl_thumbnail(
@@ -140,6 +232,15 @@ def _generate_stl_thumbnail(stl_path: Path, thumbnails_dir: Path, size: int) -> 
             if len(mesh.faces) > FACE_LIMIT:
                 return None
 
+        # Wind every face the same way, and outward, or the shading turns the
+        # model into camouflage. Before the vertices below are read: ``poly3d``
+        # is indexed by ``mesh.faces``, so a repair that ever moved a vertex
+        # would leave the two out of step.
+        try:
+            _repair_winding(mesh, trimesh, str(stl_path))
+        except Exception as e:  # best-effort: a flat render beats no thumbnail
+            logger.debug("Winding repair skipped (%s): %s", e, stl_path)
+
         # Get mesh bounds and center it
         vertices = mesh.vertices
         bounds_min = vertices.min(axis=0)
@@ -178,13 +279,11 @@ def _generate_stl_thumbnail(stl_path: Path, thumbnails_dir: Path, size: int) -> 
 
         # Create polygon collection from mesh faces. ``shade=True`` makes
         # matplotlib compute per-face normals and apply Lambertian shading
-        # against the configured ``LightSource`` — without it Poly3DCollection
-        # ships every face the flat ``facecolors`` value and the model looks
-        # like a 2D silhouette regardless of geometry. LightSource azimuth
-        # 315° + altitude 45° is the standard "sun from upper-left" rendering
-        # convention — matches how Bambu Studio + most 3D CAD tools light
-        # their default scene, so the visual cue lines up with what operators
-        # see in slicer previews.
+        # against the light — without it Poly3DCollection ships every face the
+        # flat ``facecolors`` value and the model looks like a 2D silhouette
+        # regardless of geometry. The light is the one chosen against the
+        # camera (``LIGHT_AZIMUTH_DEG``); ``_shade_kwargs`` drops it for a mesh
+        # matplotlib cannot shade.
         #
         # Note on edge handling: when ``shade=True`` matplotlib runs the
         # shading pipeline on edgecolors too — passing ``'none'`` raises
@@ -193,18 +292,19 @@ def _generate_stl_thumbnail(stl_path: Path, thumbnails_dir: Path, size: int) -> 
         # isn't recognised by ``_shade_colors``. Workaround: pass an
         # explicit colour matching ``facecolors`` and rely on
         # ``linewidths=0`` to keep the wireframe invisible.
-        faces = mesh.faces
-        poly3d = [[vertices_scaled[vertex] for vertex in face] for face in faces]
+        #
+        # Indexed with the face array rather than built as a list of lists:
+        # same data, but shading walks it to generate normals, and on an
+        # 82k-face mesh the list form costs ~0.19 s against ~0.007 s.
+        poly3d = vertices_scaled[mesh.faces]
 
-        ls = LightSource(azdeg=315, altdeg=45)
         collection = Poly3DCollection(
             poly3d,
             facecolors=BAMBU_GREEN,
             edgecolors=BAMBU_GREEN,
             linewidths=0,
             alpha=1.0,
-            shade=True,
-            lightsource=ls,
+            **_shade_kwargs(poly3d, LightSource),
         )
         ax.add_collection3d(collection)
         # Without this matplotlib uses its automatic z-order computation
@@ -223,10 +323,9 @@ def _generate_stl_thumbnail(stl_path: Path, thumbnails_dir: Path, size: int) -> 
         ax.set_ylim(-0.525, 0.525)
         ax.set_zlim(-0.525, 0.525)
 
-        # Isometric front-quarter — shows the front face, right side, and
-        # top simultaneously. Standard CAD-preview pose; better than the
-        # previous (elev=25, azim=45) which buried the front face.
-        ax.view_init(elev=30, azim=-60)
+        # Isometric front-quarter — see ``VIEW_ELEV_DEG``. Better than the
+        # previous (elev=25, azim=45), which buried the front face.
+        ax.view_init(elev=VIEW_ELEV_DEG, azim=VIEW_AZIM_DEG)
 
         # Remove axes and grid
         ax.set_axis_off()
