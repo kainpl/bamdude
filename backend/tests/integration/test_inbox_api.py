@@ -11,6 +11,7 @@ from sqlalchemy import select
 from backend.app.core.auth import create_access_token
 from backend.app.models.user import User
 from backend.app.models.user_notification import UserNotification
+from backend.app.services.notification_events import EVENT_CATALOG
 
 
 async def _admin_id(db) -> int:
@@ -158,7 +159,8 @@ async def test_subscriptions_default_custom_reset_and_unknown(async_client, db_s
     r = await async_client.get("/api/v1/inbox/subscriptions")
     assert r.status_code == 200
     body = r.json()
-    assert body["is_default"] is True and len(body["events"]) == 37
+    # Every catalogued event, whatever the count — a literal here went stale with each new event.
+    assert body["is_default"] is True and len(body["events"]) == len(EVENT_CATALOG)
     by_type = {e["event_type"]: e for e in body["events"]}
     assert by_type["print_failed"]["subscribed"] is True and by_type["print_complete"]["subscribed"] is False
     assert by_type["print_failed"]["group"] == "print" and by_type["print_failed"]["severity"] == "error"
