@@ -464,6 +464,13 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **A plate of many copies gets its picture.** When the slicer leaves a plate
+  without a thumbnail, BamDude draws one from the model — but a plate of
+  repeated parts (25 bins, say) was read with every copy's triangles
+  multiplied by the number of copies, so the drawing ran out of memory and the
+  plate stayed blank. Each part is now read once and placed per copy, with
+  detail reduced evenly across the plate; a plate still too heavy after that
+  is skipped rather than drawn.
 - **Generated thumbnails show the model's shape.** The light on the File
   Manager's STL thumbnails sat behind the model, so a box's two visible sides
   came out the same shade and its front edge vanished; it now comes from the
