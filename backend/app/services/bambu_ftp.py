@@ -186,6 +186,54 @@ class ImplicitFTP_TLS(FTP_TLS):
         return conn, size
 
 
+#: One budget for the cleartext probe's connect AND read (upstream cc39acfc).
+_CLEARTEXT_PROBE_TIMEOUT = 2.0
+#: How often one printer is probed at most. Upstream probes once per its FTPS
+#: cool-off; we have no cool-off (FTP is serialised per printer instead), so
+#: the probe keeps its own window.
+_CLEARTEXT_PROBE_WINDOW_SECONDS = 300.0
+
+
+def _read_cleartext_reply(ip_address: str, port: int) -> str | None:
+    """Read what a printer answers the TLS port with, when it is not TLS (audit D5, #2780).
+
+    ``WRONG_VERSION_NUMBER`` means the peer's first bytes were not a TLS record
+    — measured upstream, reproducible without a printer: a cleartext ``421``
+    banner gives exactly that error, a TLS version mismatch gives
+    ``TLSV1_ALERT_PROTOCOL_VERSION`` instead. What it does not say is WHICH
+    cleartext message, and that is the part that names the fault; OpenSSL has
+    consumed those bytes by the time the error surfaces. So this opens one plain
+    connection and reads them.
+
+    ``None`` when the printer said nothing readable — itself informative: a
+    healthy implicit-FTPS service sends nothing until it has a ClientHello, so
+    silence means the refusal had already passed — or could not be reached.
+    """
+    sock = None
+    # One budget for connect AND read, so the wait this adds to a failed connect
+    # is what it says, not double.
+    deadline = time.monotonic() + _CLEARTEXT_PROBE_TIMEOUT
+    try:
+        sock = socket.create_connection((ip_address, port), _CLEARTEXT_PROBE_TIMEOUT)
+        sock.settimeout(max(0.05, deadline - time.monotonic()))
+        # One read: a refusal is one short line, and this must not become a transfer.
+        raw = sock.recv(256)
+    except OSError as e:
+        logger.debug("Cleartext probe of %s:%s could not read: %s", ip_address, port, e)
+        return None
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    if not raw:
+        return None
+    # latin-1 cannot fail; control characters go so a stray byte cannot mangle the log line.
+    text = raw.decode("latin-1").strip()
+    return "".join(c for c in text if c.isprintable()) or None
+
+
 class BambuFTPClient:
     """FTP client for retrieving files from Bambu Lab printers."""
 
@@ -203,6 +251,8 @@ class BambuFTPClient:
     # Cache for working FTP modes per printer IP
     # Maps IP -> "prot_p" or "prot_c"
     _mode_cache: dict[str, str] = {}
+    # When each printer was last asked what it answers port 990 with (audit D5).
+    _cleartext_probed_at: dict[str, float] = {}
 
     def __init__(
         self,
@@ -218,6 +268,9 @@ class BambuFTPClient:
         self.printer_model = printer_model
         self.force_prot_c = force_prot_c
         self._ftp: ImplicitFTP_TLS | None = None
+        # When the control socket opened, so the close log can say how long the
+        # session was held (upstream 10f0900f).
+        self._connected_at: float | None = None
 
     def _is_a1_model(self) -> bool:
         """Check if this is an A1 series printer."""
@@ -264,6 +317,9 @@ class BambuFTPClient:
                 cap_tls_v1_2=profile.cap_tls_v1_2,
             )
             self._ftp.connect(self.ip_address, self.FTP_PORT, timeout=self.timeout)
+            # Stamped here, not after login: a session that dies during login is
+            # the one whose lifetime a reader of the log wants accounted for.
+            self._connected_at = time.monotonic()
             logger.debug("FTP connected, logging in as bblp")
             self._ftp.login("bblp", self.access_code)
             if use_prot_c:
@@ -284,29 +340,97 @@ class BambuFTPClient:
             return True
         except ftplib.error_perm as e:
             logger.warning("FTP connection permission error to %s: %s", self.ip_address, e)
-            self._ftp = None
+            self._abandon_connection("login rejected")
             return False
         except TimeoutError as e:
             logger.warning("FTP connection timed out to %s: %s", self.ip_address, e)
-            self._ftp = None
+            self._abandon_connection("connect timed out")
             return False
         except ssl.SSLError as e:
             logger.warning("FTP SSL error connecting to %s: %s", self.ip_address, e)
-            self._ftp = None
+            # Close the dead socket BEFORE asking the printer anything else: the
+            # probe below opens a second connection, and the leading theory for
+            # this failure is a printer out of connection slots.
+            self._abandon_connection("TLS handshake failed")
+            if getattr(e, "reason", None) == "WRONG_VERSION_NUMBER":
+                self._probe_cleartext_reply()
             return False
         except (OSError, ftplib.Error) as e:
             logger.warning("FTP connection failed to %s: %s (type: %s)", self.ip_address, e, type(e).__name__)
-            self._ftp = None
+            self._abandon_connection("connect failed")
             return False
+
+    def _probe_cleartext_reply(self) -> None:
+        """Log what the printer answered port 990 with — at most once per window (audit D5).
+
+        Only on ``WRONG_VERSION_NUMBER``: a protocol-version alert means the peer
+        did speak TLS, so there is nothing in the clear to read. The printer's
+        own words turn a guess ("the file service wedged") into a cause — an FTP
+        refusal such as "421 Too many connections" would settle it.
+        """
+        now = time.monotonic()
+        last = self._cleartext_probed_at.get(self.ip_address)
+        if last is not None and now - last < _CLEARTEXT_PROBE_WINDOW_SECONDS:
+            return
+        self._cleartext_probed_at[self.ip_address] = now
+        reply = _read_cleartext_reply(self.ip_address, self.FTP_PORT)
+        if reply:
+            logger.warning(
+                "Printer %s answered port %s in cleartext with: %s — that is what the TLS handshake read as a "
+                "malformed record. Please include this line if you report it.",
+                self.ip_address,
+                self.FTP_PORT,
+                reply,
+            )
+        else:
+            logger.warning(
+                "Printer %s sent nothing readable in cleartext on port %s, so its file service was speaking TLS "
+                "again by the time we asked — the refusal was momentary.",
+                self.ip_address,
+                self.FTP_PORT,
+            )
+
+    def _held_for(self) -> str:
+        """How long the control socket has been open, for the close log."""
+        if self._connected_at is None:
+            return "unknown"
+        return f"{time.monotonic() - self._connected_at:.1f}s"
+
+    def _abandon_connection(self, reason: str) -> None:
+        """Drop a connection that never became usable, closing its socket (upstream 10f0900f).
+
+        Every failure path used to clear ``self._ftp`` and leave the socket to the
+        garbage collector — a half-open session held against a printer that
+        serves about one at a time. One DEBUG line says how it closed, so every
+        connect in a debug log has a matching close.
+        """
+        ftp = self._ftp
+        self._ftp = None
+        held = self._held_for()
+        self._connected_at = None
+        if ftp is None:
+            return
+        try:
+            ftp.close()
+        except (OSError, ftplib.Error, EOFError):
+            pass  # Best-effort; the socket may already be gone
+        logger.debug("FTP session to %s closed without QUIT (%s), held %s", self.ip_address, reason, held)
 
     def disconnect(self):
         """Disconnect from the FTP server."""
         if self._ftp:
+            held = self._held_for()
             try:
                 self._ftp.quit()
-            except (OSError, ftplib.Error, EOFError):
-                pass  # Best-effort FTP cleanup; connection may already be closed
-            self._ftp = None
+            except (OSError, ftplib.Error, EOFError) as e:
+                # ``quit()`` sends QUIT and only then closes; when the send
+                # raises, ftplib never reaches its own close and the socket stays
+                # open. Close it here rather than leaving it to the GC.
+                self._abandon_connection(f"QUIT failed: {e}")
+            else:
+                self._ftp = None
+                self._connected_at = None
+                logger.debug("FTP session to %s closed (QUIT acknowledged), held %s", self.ip_address, held)
 
     def list_files(self, path: str = "/") -> list[dict]:
         """List files in a directory."""

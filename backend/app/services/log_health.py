@@ -88,9 +88,22 @@ SIGNATURES: tuple[LogSignature, ...] = (
         min_count=3,
     ),
     LogSignature(
-        # TLS negotiation to the printer's FTPS server failed.
+        # The printer answered port 990 in CLEARTEXT (audit D5, #2780). Its own
+        # finding because the generic TLS advice — firewall, firmware — is
+        # wrong for it: a cleartext banner is what produces this exact error,
+        # and a TLS version mismatch produces a different one.
+        id="ftp-tls-cleartext",
+        patterns=_compile(r"FTP SSL error connecting.*WRONG_VERSION_NUMBER"),
+        severity="warning",
+        category="layer8",
+        wiki_anchor="ftps-cleartext-answer",
+        logger_prefix="backend.app.services.bambu_ftp",
+        min_count=3,
+    ),
+    LogSignature(
+        # Any other TLS negotiation failure with the printer's FTPS server.
         id="ftp-ssl-error",
-        patterns=_compile(r"FTP SSL error connecting"),
+        patterns=_compile(r"FTP SSL error connecting(?!.*WRONG_VERSION_NUMBER)"),
         severity="warning",
         category="layer8",
         wiki_anchor="ftps-tls-failure",

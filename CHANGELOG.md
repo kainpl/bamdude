@@ -203,6 +203,15 @@
   and preheat fell back to its configured default. It now takes the highest
   temperature among the filaments the plate actually uses, as Bambu Studio
   does.
+- **"Secure file-transfer handshake failed" no longer blames your firewall or
+  firmware.** When the printer answers its file port (990) in plain text — the
+  log's `WRONG_VERSION_NUMBER` — the diagnostic now says so, with the cause
+  that fits: the printer's file server turning a connection away, most often
+  because another program is using it at that moment. BamDude also asks the
+  printer once what it replied and logs its own words, so a report can say
+  what actually happened. Other TLS failures keep their own finding, without
+  the firmware advice. A failed file connection now closes its socket instead
+  of leaving it to linger against a printer that serves about one at a time.
 - **Spools are named with their subtype by default.** PLA, PLA Matte and PLA
   Wood of one brand and colour are different filaments, and the default name
   template (`{brand} {material} {color_name}`) named them alike on every

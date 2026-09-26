@@ -6440,10 +6440,15 @@ export default {
         cause: 'The Bambu anti-abuse layer is challenging this network, so no Bambu Cloud sign-in can complete. It is tied to the public IP address, not to your account or this installation.',
         fix: 'Wait — it normally clears within a few hours, and repeated sign-in attempts prolong it. To connect meanwhile, sign in with an access token taken from a browser session.',
       },
+      'ftp-tls-cleartext': {
+        name: 'Printer answered the file port without TLS',
+        cause: 'The printer answered its secure file-transfer port (990) in plain text instead of starting TLS. This is not a firewall or a firmware version problem: it is how the printer\'s file server turns a connection away — most often because another program (a slicer\'s device page, another integration) is using it at that moment, and the printer accepts about one file connection at a time.',
+        fix: 'Close other programs that browse or send files to this printer and try again. If it keeps happening with nothing else connected, restart the printer. The log line right after this error shows what the printer actually replied — include it when you report the problem.',
+      },
       'ftp-ssl-error': {
         name: 'Secure file-transfer handshake failed',
-        cause: 'The TLS handshake with the printer\'s file-transfer server failed. This is often a firewall or outdated printer firmware.',
-        fix: 'Update the printer firmware and check that no firewall or proxy intercepts the connection on port 990.',
+        cause: 'The TLS handshake with the printer\'s file-transfer server failed after the printer had started speaking TLS.',
+        fix: 'Check that nothing between BamDude and the printer intercepts port 990 (a proxy or a security appliance) and try again. The sample line names the exact TLS error — include it when you report the problem.',
       },
       'mqtt-connection-flapping': {
         name: 'Printer connection keeps dropping',
