@@ -1,7 +1,6 @@
 export type PrinterCardSize = 'compact' | 'expanded';
 
 interface ClearPlateButtonInput {
-  connected: boolean | undefined;
   /** ``require_plate_clear`` is on for this printer AND it is awaiting a clear. */
   needsPlateClear: boolean;
   isPrintingOrPaused: boolean;
@@ -26,14 +25,17 @@ interface ClearPlateButtonInput {
  * button while an idle one kept it. Reported as "the button is always there on
  * the H2S and never on the P2S", which is what that looks like on a farm where
  * one model happens to carry the queues.
+ *
+ * ⚠️ **Not gated on the connection** (upstream #2864). Clearing sends nothing
+ * to the printer — the gate is BamDude's own persisted flag — and with Auto
+ * Power Off "gate up, printer off" is the ordinary end of a print.
  */
 export function shouldShowClearPlateButton({
-  connected,
   needsPlateClear,
   isPrintingOrPaused,
   greenClearCtaVisible,
   viewMode,
 }: ClearPlateButtonInput): boolean {
-  if (!connected || !needsPlateClear || isPrintingOrPaused) return false;
+  if (!needsPlateClear || isPrintingOrPaused) return false;
   return !(viewMode === 'expanded' && greenClearCtaVisible);
 }

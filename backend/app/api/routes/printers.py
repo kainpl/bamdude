@@ -1118,6 +1118,10 @@ async def _build_printer_status(
             # answers from the mirrored config here and opens on the card,
             # because "no card reported" and "no card" are different things.
             storage_capability=storage_capability_for(printer.model, None),
+            # The plate gate is BamDude's own persisted flag, true with nobody
+            # home (upstream #2864): the schema default said "clean plate" and
+            # hid the one control that releases it on a switched-off printer.
+            awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
         )
 
     # Determine cover URL if there's an active print (including paused)
@@ -3285,34 +3289,39 @@ async def clear_plate(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    # re-Connect MQTT if stalled
-    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
-        raise HTTPException(500, "Can`t re-connect printer MQTT")
+    # ⚠️ A printer that is switched off is answered too (upstream #2864).
+    # Clearing sends nothing to the printer: the gate is BamDude's own flag,
+    # persisted precisely so it survives an Auto Power Off cycle — which is the
+    # ordinary end of a print on such a farm. Refusing here (or trying to
+    # reconnect to an unplugged machine first) left the gate up until somebody
+    # powered each printer back on. Releasing it dispatches nothing: the
+    # scheduler still needs the printer connected and idle.
+    if printer_manager.is_connected(printer_id):
+        # re-Connect MQTT if stalled
+        if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+            raise HTTPException(500, "Can`t re-connect printer MQTT")
 
-    if not printer_manager.is_connected(printer_id):
-        raise HTTPException(400, "Printer not connected")
-
-    # A stale-window reconnect (the ensure_fresh_connection call above)
-    # recreates the MQTT client with a fresh PrinterState — gcode_state
-    # stays at the "unknown" placeholder until the printer's first status
-    # push lands ~1s later. Without this wait, clear-plate reads the
-    # placeholder and 400s right after a reconnect even though the printer
-    # is actually FINISH/FAILED. Poll briefly for the first real push; the
-    # loop exits immediately when the state is already populated.
-    state = printer_manager.get_status(printer_id)
-    for _ in range(50):  # 50 × 100 ms = 5 s ceiling
-        if state and state.state != "unknown":
-            break
-        await asyncio.sleep(0.1)
+        # A stale-window reconnect (the ensure_fresh_connection call above)
+        # recreates the MQTT client with a fresh PrinterState — gcode_state
+        # stays at the "unknown" placeholder until the printer's first status
+        # push lands ~1s later. Without this wait, clear-plate reads the
+        # placeholder and 400s right after a reconnect even though the printer
+        # is actually FINISH/FAILED. Poll briefly for the first real push; the
+        # loop exits immediately when the state is already populated.
         state = printer_manager.get_status(printer_id)
-    # Accept the ACK in IDLE too — after an Auto Off power cycle the printer
-    # boots straight into IDLE, and the awaiting_plate_clear gate (persisted
-    # from before the cycle) still needs releasing.
-    if not state or state.state not in ("FINISH", "FAILED", "IDLE"):
-        raise HTTPException(
-            400,
-            f"Printer is not in FINISH, FAILED, or IDLE state (current: {state.state if state else 'unknown'})",
-        )
+        for _ in range(50):  # 50 × 100 ms = 5 s ceiling
+            if state and state.state != "unknown":
+                break
+            await asyncio.sleep(0.1)
+            state = printer_manager.get_status(printer_id)
+        # Accept the ACK in IDLE too — after an Auto Off power cycle the printer
+        # boots straight into IDLE, and the awaiting_plate_clear gate (persisted
+        # from before the cycle) still needs releasing.
+        if not state or state.state not in ("FINISH", "FAILED", "IDLE"):
+            raise HTTPException(
+                400,
+                f"Printer is not in FINISH, FAILED, or IDLE state (current: {state.state if state else 'unknown'})",
+            )
 
     defects = data.defects if data is not None else None
     write = (

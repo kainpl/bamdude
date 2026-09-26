@@ -172,6 +172,13 @@
 
 ### Fixed
 
+- **Clear plate works on a printer that is switched off.** With Auto Power
+  Off a print ends with the plate gate up and the printer off, and the web
+  refused to clear it ("Printer not connected") while the card hid the button,
+  so the gate stayed up until somebody switched the printer back on. Clearing
+  sends nothing to the printer, so it is now offered and accepted on a
+  switched-off printer, card and bulk action alike; the queue then powers the
+  printer on for its next job.
 - **An H2C hotend that has parked its nozzle no longer counts as having it.**
   The printer keeps reporting the last nozzle's diameter for an empty hotend,
   so a job sliced for that size could be routed to a machine with no such

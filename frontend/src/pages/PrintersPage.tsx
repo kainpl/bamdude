@@ -2414,7 +2414,6 @@ function PrinterCard({
     && (status?.state === 'FINISH' || status?.state === 'FAILED')
     && hasAutoDispatchableQueue;
   const showClearPlateButton = shouldShowClearPlateButton({
-    connected: status?.connected,
     needsPlateClear,
     isPrintingOrPaused,
     greenClearCtaVisible,
@@ -6192,6 +6191,12 @@ function PrinterCard({
             {viewMode === 'expanded' && <ScheduledDryingStrip printerId={printer.id} />}
           </>
         )}
+
+        {/* The plate gate outlives the power (upstream #2864): with Auto Power
+            Off a finished printer is off with its gate still up, and clearing
+            sends nothing to the printer. The live-status body above renders
+            nothing without a connection, so the answer gets its own slot. */}
+        {printer.is_active !== false && !status?.connected && plateClearButtons}
 
         {/* Smart Plug Controls - hidden in compact mode */}
         {smartPlug && viewMode === 'expanded' && (

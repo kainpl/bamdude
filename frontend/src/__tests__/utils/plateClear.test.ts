@@ -16,7 +16,6 @@ import { describe, it, expect } from 'vitest';
 import { shouldShowClearPlateButton } from '../../utils/plateClear';
 
 const ready = {
-  connected: true,
   needsPlateClear: true,
   isPrintingOrPaused: false,
   greenClearCtaVisible: false,
@@ -48,9 +47,12 @@ describe('when there is nothing to clear', () => {
     expect(shouldShowClearPlateButton({ ...ready, needsPlateClear: false })).toBe(false);
   });
 
-  it('stays hidden on a printer that is not connected', () => {
-    expect(shouldShowClearPlateButton({ ...ready, connected: false })).toBe(false);
-    expect(shouldShowClearPlateButton({ ...ready, connected: undefined })).toBe(false);
+  it('does not ask whether the printer is connected (upstream #2864)', () => {
+    // Clearing sends nothing to the printer, and with Auto Power Off "gate up,
+    // printer off" is the ordinary end of a print — the card shows the answer
+    // on a switched-off printer too (PrintersPageClearPlateOffline).
+    expect(shouldShowClearPlateButton(ready)).toBe(true);
+    expect(Object.keys(ready)).not.toContain('connected');
   });
 
   it('a printing printer is hidden in both sizes, queue or no queue', () => {
@@ -68,7 +70,7 @@ describe('the two plate answers never appear twice', () => {
   // ⚠️ Now load-bearing for two PAIRS of buttons rather than two single ones:
   // the yellow pair on the printer card and the green pair in the queue widget.
   // The operator must still see exactly one pair.
-  const base = { connected: true, needsPlateClear: true, isPrintingOrPaused: false };
+  const base = { needsPlateClear: true, isPrintingOrPaused: false };
 
   it('shows the card pair when the queue has nothing to offer', () => {
     // The empty-queue case: PrinterQueueWidget returns null outright on
