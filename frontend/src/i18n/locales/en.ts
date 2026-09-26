@@ -1319,7 +1319,7 @@ export default {
     dropNoGcodeInside: '{{filename}} has not been sliced — it holds a model, not printable G-code. Slice it first.',
     dropWrongFormat: '{{filename}} cannot be printed — only sliced .gcode.3mf files can.',
     dropToPrint: 'Drop to print',
-    cannotPrint: 'Printer busy'
+    dropToQueue: 'Drop to queue'
   },
 
   // Archives page

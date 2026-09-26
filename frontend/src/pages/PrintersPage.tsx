@@ -174,7 +174,7 @@ import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
 import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow, amsSideBadge, formatSlotLabel } from '../utils/amsHelpers';
 import { FeedDirectionModal } from '../components/FeedDirectionModal';
-import { getPrinterImage, getWifiStrength, hasDoorSensor, mapModelCode } from '../utils/printer';
+import { getPrinterImage, getWifiStrength, hasDoorSensor, isPrinterCurrentlyDispatchable, mapModelCode } from '../utils/printer';
 import { OpenMonitorButton } from '../features/monitor/OpenMonitorButton';
 import { useMonitorTarget } from '../features/monitor/useMonitorTarget';
 import { useProgressiveListLength } from '../hooks/useProgressiveListLength';
@@ -3218,7 +3218,14 @@ function PrinterCard({
     }
   };
 
-  const canDrop = isConnected && status?.state !== 'RUNNING' && status?.state !== 'PAUSE' && hasPermission('printers:control');
+  // A dropped file goes through the Schedule dialog into this printer's queue,
+  // so a printer that is printing, paused or offline is no reason to refuse it
+  // — the item only waits its turn (upstream #2849). What the drop performs is
+  // an upload and a queue add, so those are the permissions it asks for; it
+  // never touches printers:control, which it used to check.
+  const canDrop = hasPermission('library:upload') && hasPermission('queue:create');
+  // Wording only: whether the queued job would start at once or wait.
+  const dropWouldQueue = !isPrinterCurrentlyDispatchable(status);
 
   const handleCardDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
@@ -3402,12 +3409,18 @@ function PrinterCard({
             ) : canDrop ? (
               <>
                 <PrinterIcon className="w-8 h-8 mx-auto mb-2 text-bambu-green" />
-                <p className="text-sm font-medium text-bambu-green">{t('printers.dropToPrint', 'Drop to print')}</p>
+                <p className="text-sm font-medium text-bambu-green">
+                  {dropWouldQueue ? t('printers.dropToQueue') : t('printers.dropToPrint')}
+                </p>
               </>
             ) : (
               <>
                 <X className="w-8 h-8 mx-auto mb-2 text-red-600 dark:text-red-400" />
-                <p className="text-sm font-medium text-red-700 dark:text-red-400">{t('printers.cannotPrint', 'Printer busy')}</p>
+                <p className="text-sm font-medium text-red-700 dark:text-red-400">
+                  {!hasPermission('library:upload')
+                    ? t('fileManager.noPermissionUpload')
+                    : t('fileManager.noPermissionAddToQueue')}
+                </p>
               </>
             )}
           </div>

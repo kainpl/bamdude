@@ -1,3 +1,5 @@
+import type { PrinterStatus } from '../api/client';
+
 export function getPrinterImage(model: string | null | undefined): string {
   if (!model) return '/img/printers/default.png';
   const m = model.toLowerCase().replace(/\s+/g, '');
@@ -203,3 +205,17 @@ export function getWifiStrength(rssi: number): { labelKey: string; color: string
 // itself from the printer's own reported limits, which is the better answer;
 // a flat number there would be a step backwards.
 export const MAX_CHAMBER_TEMP_C = 65;
+
+/**
+ * True when a job queued for this printer would start now rather than wait.
+ *
+ * Wording only — it tells the printer card whether a dropped file will print
+ * or wait in the queue (upstream #2849). The scheduler decides for real
+ * (``print_scheduler._is_printer_idle``): connected, idle, plate cleared.
+ * Drying is not counted: it holds the queue only when the farm asks it to.
+ */
+export function isPrinterCurrentlyDispatchable(status: PrinterStatus | undefined): boolean {
+  if (!status?.connected) return false;
+  if (status.awaiting_plate_clear) return false;
+  return ['IDLE', 'FINISH', 'FAILED'].includes(status.state ?? '');
+}

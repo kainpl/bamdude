@@ -172,6 +172,14 @@
 
 ### Fixed
 
+- **A file dropped on a busy or offline printer's card is queued, not
+  refused.** The drop only ever adds a job to that printer's queue, but the
+  card refused it unless the printer was idle and online — a red "Printer
+  busy", and the file was dropped with nothing uploaded. It is now accepted
+  whatever the printer is doing, and the overlay says whether the job will
+  start at once ("Drop to print") or wait ("Drop to queue"). It asks for the
+  permissions the drop uses — upload and add to queue — instead of printer
+  control, and names the one that is missing.
 - **The auto-queue no longer switches on a printer that cannot run the job.**
   With every printer of the job's model off, it used to power on the first
   one with an Auto On plug and only then look at what was loaded, so a job

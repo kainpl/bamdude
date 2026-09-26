@@ -1328,7 +1328,7 @@ export default {
     dropNoGcodeInside: '{{filename}} не нарізаний — усередині модель, а не готовий G-code. Спершу наріжте його.',
     dropWrongFormat: '{{filename}} надрукувати не можна — приймаються лише нарізані файли .gcode.3mf.',
     dropToPrint: 'Перетягніть для друку',
-    cannotPrint: 'Принтер зайнятий'
+    dropToQueue: 'Відпустіть, щоб поставити в чергу'
   },
 
   // Archives page
