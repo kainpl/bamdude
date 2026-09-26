@@ -172,6 +172,12 @@
 
 ### Fixed
 
+- **The queue's log says why a printer sat out a pass.** It called every such
+  printer "not available", including the one it had just sent a job to, and
+  showed its state as read afterwards — "state=IDLE" one line before the job
+  started there. A printer the pass dispatched to is now logged as reserved;
+  any other names its reason (offline, not idle, drying, plate hold…), with
+  the live state marked as read now.
 - **With Queue Shortest First on, the Auto-Queue panel lists jobs in the
   order they will be placed.** It kept showing the manual order, while the
   distributor placed the shortest job of each printer model first, a job

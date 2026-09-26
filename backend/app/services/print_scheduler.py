@@ -401,6 +401,17 @@ class PrintScheduler:
             # PrintQueueItem and also catches external / direct prints that
             # don't have a corresponding item row.
             busy_printers = await active_claim_printer_ids(db)
+            # Why each printer sits out this pass — a claim and an obstruction
+            # are opposite facts, and the summary below must not call a printer
+            # this pass just dispatched to "not available" (upstream #3018).
+            busy_reasons: dict[int, str] = {}
+
+            def mark_busy(pid: int, reason: str) -> None:
+                busy_printers.add(pid)
+                busy_reasons.setdefault(pid, reason)
+
+            for claimed_printer_id in busy_printers:
+                busy_reasons[claimed_printer_id] = "claimed"
 
             # Defense-in-depth (#1157): augment busy_printers with any printer
             # still inside its post-dispatch hold window. The DB seed above can
@@ -411,7 +422,7 @@ class PrintScheduler:
             # doesn't depend on DB row visibility or completion-callback timing.
             for held_printer_id in list(self._dispatch_holds.keys()):
                 if self._printer_in_dispatch_hold(held_printer_id):
-                    busy_printers.add(held_printer_id)
+                    mark_busy(held_printer_id, "dispatch_hold")
 
             # ⚠️ Snapshot taken HERE, before the item loop adds anything.
             #
@@ -563,10 +574,10 @@ class PrintScheduler:
                             printer_idle = self._is_printer_idle(printer_id, require_plate_clear=rpc)
                         else:
                             logger.warning("Could not power on printer %s via smart plug", printer_id)
-                            busy_printers.add(printer_id)
+                            mark_busy(printer_id, "power_on_failed")
                             continue
                     else:
-                        busy_printers.add(printer_id)
+                        mark_busy(printer_id, "offline")
                         continue
 
                 # Check if printer is idle (busy with another print)
@@ -582,7 +593,7 @@ class PrintScheduler:
                 # between. It now runs where the decision is actually made,
                 # just before dispatch.
                 if not printer_idle:
-                    busy_printers.add(printer_id)
+                    mark_busy(printer_id, "not_idle")
                     continue
 
                 # Drying blocks the queue, if the user asked it to. A hold is a
@@ -596,7 +607,7 @@ class PrintScheduler:
                 if self._drying_in_progress.get(printer_id) and await self._get_bool_setting(db, "queue_drying_block"):
                     if set_wait_reason(item, "drying", "Drying in progress"):
                         await db.commit()
-                    busy_printers.add(printer_id)
+                    mark_busy(printer_id, "drying")
                     continue
 
                 # Staggered start: check if we have a free slot
@@ -702,7 +713,7 @@ class PrintScheduler:
                 if item.status != "printing":
                     continue
                 dispatched = True
-                busy_printers.add(printer_id)
+                mark_busy(printer_id, "dispatched")
                 # ⚠️ The one addition the narrow set DOES take: this print is
                 # imminent. The printer's own state still reads IDLE for a few
                 # seconds after dispatch, so without this the drying pass at the
@@ -713,25 +724,37 @@ class PrintScheduler:
             if skip_reasons:
                 logger.info("Queue skip summary: %s", skip_reasons)
             if busy_printers:
-                # Log why each printer was busy (first time it was checked)
-                for pid in busy_printers:
-                    state = printer_manager.get_status(pid)
-                    connected = printer_manager.is_connected(pid)
-                    awaiting_plate_clear = printer_manager.is_awaiting_plate_clear(pid)
-                    state_name = state.state if state else "NO_STATUS"
-                    logger.info(
-                        "Queue: printer %d not available - connected=%s, state=%s, awaiting_plate_clear=%s",
-                        pid,
-                        connected,
-                        state_name,
-                        awaiting_plate_clear,
-                    )
+                self._log_busy_printers(busy_printers, busy_reasons)
 
             # Scheduled drying first: the units it reserves are off-limits to auto-drying.
             await self._tick_scheduled_drying(dispatching_printers)
             # Auto-drying: start drying on idle printers that have no pending queue items
             await self._check_auto_drying(db, items, dispatching_printers)
             return dispatched
+
+    @staticmethod
+    def _log_busy_printers(busy_printers: set[int], busy_reasons: dict[int, str]) -> None:
+        """Why each printer sat out this pass (upstream #3018).
+
+        A printer the pass dispatched to is a reservation, not an obstruction.
+        For the rest the recorded reason is the cause; the live fields are read
+        NOW, after the decision, and are labelled so — they answered "IDLE" for
+        a printer one line before it was sent a job.
+        """
+        for pid in sorted(busy_printers):
+            reason = busy_reasons.get(pid, "unknown")
+            if reason == "dispatched":
+                logger.info("Queue: printer %d reserved - dispatched this pass", pid)
+                continue
+            state = printer_manager.get_status(pid)
+            logger.info(
+                "Queue: printer %d skipped this pass: %s (now: connected=%s, state=%s, awaiting_plate_clear=%s)",
+                pid,
+                reason,
+                printer_manager.is_connected(pid),
+                state.state if state else "NO_STATUS",
+                printer_manager.is_awaiting_plate_clear(pid),
+            )
 
     async def _get_filament_requirements(self, db: AsyncSession, item: PrintQueueItem) -> list[dict] | None:
         """Read the same exact plate evidence as intake and auto assignment."""

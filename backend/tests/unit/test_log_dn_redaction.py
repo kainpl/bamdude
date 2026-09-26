@@ -85,7 +85,7 @@ class TestOrdinaryLinesAreLeftAlone:
         # ``[DN]`` rather than on equality because some of these legitimately
         # trip the older serial / IP rules, which is not what is under test here.
         lines = [
-            "Queue: printer 3 not available - connected=True, state=FINISH, awaiting_plate_clear=False",
+            "Queue: printer 3 skipped this pass: not_idle (now: connected=True, state=FINISH, awaiting_plate_clear=False)",
             "BamDude starting - debug=False, log_level=INFO",
             "Created custom macro: Purge (event=print_start, type=mqtt_action)",
             "Sent SSDP NOTIFY for 01P00A123456789 (Location=http://h:8000, USN=uuid:x, bind=0.0.0.0)",
