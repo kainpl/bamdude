@@ -203,14 +203,16 @@
   and preheat fell back to its configured default. It now takes the highest
   temperature among the filaments the plate actually uses, as Bambu Studio
   does.
-- **An AMS slot gets the spool's own cloud preset, in the variant for that
-  printer.** A spool configured with one of your own Bambu Cloud presets sent
-  the slot something else: a filament you created went out with no preset
-  and the generic 200–240 °C, a tweaked copy of a system preset as the system
-  preset with its temperatures. The slot now gets your preset. Presets belong
-  to a printer model, so on another model it gets your variant made for that
-  printer and nozzle — the one with the same name apart from the "@printer"
-  part — and, when there is none, the system preset for the model as before.
+- **A filament you created gets your own preset on the AMS slot.** A spool
+  of a filament you created in Bambu Studio (Create filament, synced to your
+  Bambu Cloud) put its slot on no preset at all and the generic 200–240 °C,
+  although your presets for it were right there. The slot now gets your
+  preset made for that printer and nozzle — your "… @Bambu Lab P1S 0.4
+  nozzle" on the P1S, your "… @Bambu Lab X2D 0.4 nozzle" on the X2D — with its
+  temperatures. Where you made none for that printer or nozzle, the slot still
+  gets the filament and your temperatures, just no preset name. Spools of
+  Bambu and generic filaments are unchanged: they already got the preset for
+  each printer.
 - **A sliced 3MF prints whatever it is called.** A plate exported from the
   slicer or a print sent through the cloud arrives as `Foo.3mf`, G-code and
   all. The file manager already recognised it and offered Print, but printing

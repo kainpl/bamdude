@@ -199,64 +199,23 @@ def bambu_preset_id(row: UserFilamentPreset) -> str | None:
     return None
 
 
-async def chosen_user_preset(db: AsyncSession, spool) -> UserFilamentPreset | None:
-    """The user's own preset this spool was configured with, when it has a Bambu id.
+async def family_user_presets(db: AsyncSession, family_id: str) -> list[UserFilamentPreset]:
+    """The user's own presets of a family that a printer can be told about, newest first.
 
-    ``slicer_filament`` holds what the spool form picked. A system preset or an
-    Orca profile is not a user preset in this sense and answers ``None`` — the
-    slot builder already picks the system variant per printer, and nothing
-    about an Orca uuid reaches a printer.
-    """
-    value = (getattr(spool, "slicer_filament", None) or "").strip()
-    if not value or catalog.preset_for_setting_id(value):
-        return None
-    row = (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.cloud_id == value))).scalars().first()
-    if row is None:
-        row = (
-            (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.pushed_cloud_id == value)))
-            .scalars()
-            .first()
-        )
-    if row is None and value.isdigit():
-        row = (
-            (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.local_preset_id == int(value))))
-            .scalars()
-            .first()
-        )
-    return row if row is not None and bambu_preset_id(row) else None
-
-
-def preset_stem(name: str | None) -> str:
-    """A preset's name without the "@<printer>" part a slicer adds per model."""
-    return (name or "").split("@", 1)[0].strip().casefold()
-
-
-async def user_preset_siblings(db: AsyncSession, row: UserFilamentPreset) -> list[UserFilamentPreset]:
-    """The same user preset made for other printers.
-
-    ⚠️ Same family is not enough: a system family such as Generic PETG holds the
-    user's presets for several different products. A sibling also carries the
-    same name once its "@<printer>" part is removed, belongs to the same owner
-    and has a Bambu id — anything looser would put one spool's tuning on another.
+    A spool's identity is its family (the spool form writes nothing finer), so
+    for a family the user created — a P-hash the system catalogue does not know
+    — these are the only presets there are: one per printer and nozzle it was
+    made for, the variant named after the "@". Only mirrors with a Bambu id
+    (:func:`bambu_preset_id`). Newest first so a duplicate for the same printer
+    resolves to the one saved last, deterministically.
     """
     rows = (
-        (
-            await db.execute(
-                select(UserFilamentPreset).where(
-                    UserFilamentPreset.family_filament_id == row.family_filament_id,
-                    UserFilamentPreset.id != row.id,
-                )
-            )
-        )
+        (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.family_filament_id == family_id)))
         .scalars()
         .all()
     )
-    stem = preset_stem(row.name)
-    return [
-        r
-        for r in rows
-        if r.owner_user_id == row.owner_user_id and preset_stem(r.name) == stem and bambu_preset_id(r) is not None
-    ]
+    usable = [row for row in rows if bambu_preset_id(row) is not None]
+    return sorted(usable, key=lambda row: (row.updated_time or "", row.id), reverse=True)
 
 
 async def resolve_spool(db: AsyncSession, spool) -> ResolvedFilament:
