@@ -104,7 +104,7 @@ import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { getTagStyle, is3mf, isPrintable, isSliceable, isMultiPlate } from '../lib/fileTags';
 import { figuresAt, formatMaterials, plateAt, plateSlices, plateThumbnailUrl, step } from '../lib/plateBrowsing';
 import { PlanFromFilesModal } from '../components/library/PlanFromFilesModal';
-import { openInSlicer, type SlicerType } from '../utils/slicer';
+import { desktopSlicerAccepts, isApiSliceableFileType, openInSlicer, type SlicerType } from '../utils/slicer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
@@ -676,6 +676,7 @@ interface FileCardProps {
   onSlice?: (file: LibraryFileListItem) => void;
   onOpenInSlicer?: (file: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
+  desktopSlicer?: SlicerType;
   onPreview3d?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
   onLink?: (file: LibraryFileListItem) => void;
@@ -729,7 +730,25 @@ function anchorFrom(
   };
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, onOpenInSlicer, useSlicerApi, onPreview3d, onModelCard, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
+/**
+ * Whether a file row offers its Slice / Open-in-slicer entry at all.
+ *
+ * With the sidecar, only what a slicer CLI loads (no STEP). Without it, only
+ * what the configured desktop slicer takes over its LINK — Bambu Studio refuses
+ * anything but a 3MF there, before fetching (upstream e2493132); an entry that
+ * could only fail is worse than none.
+ */
+function offersSliceEntry(
+  file: LibraryFileListItem,
+  useSlicerApi: boolean | undefined,
+  desktopSlicer: SlicerType | undefined,
+): boolean {
+  if (!isSliceable(file)) return false;
+  if (useSlicerApi) return isApiSliceableFileType(file.file_type);
+  return desktopSlicerAccepts(file.file_type, desktopSlicer ?? 'bambu_studio');
+}
+
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onDownload, onRename, onGenerateThumbnail, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -739,6 +758,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onSlice?: (f: LibraryFileListItem) => void;
   onOpenInSlicer?: (f: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
+  desktopSlicer?: SlicerType;
   onPreview3d: (f: LibraryFileListItem) => void;
   onModelCard?: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
@@ -814,7 +834,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 DIFFERENT permissions: slicing on the server writes a new
                 library file (library:upload), while opening in a desktop app
                 is a download (library:read). */}
-            {isSliceable(file) && (onSlice || onOpenInSlicer) && (
+            {offersSliceEntry(file, useSlicerApi, desktopSlicer) && (onSlice || onOpenInSlicer) && (
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${!sliceDisabled ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
                 onClick={() => {
@@ -947,7 +967,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, onPreview3d, onModelCard, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onLink, onGenerateThumbnail, onPlateGallery, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1291,7 +1311,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDele
               )}
               {/* See the note on the sibling menu above: not gated on the
                   sidecar, and the two modes need different permissions. */}
-              {isSliceable(file) && (onSlice || onOpenInSlicer) && (
+              {offersSliceEntry(file, useSlicerApi, desktopSlicer) && (onSlice || onOpenInSlicer) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     !sliceDisabled ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
@@ -2418,6 +2438,7 @@ export function FileManagerPage() {
       onSlice={setSliceFile}
       onOpenInSlicer={handleOpenInSlicer}
       useSlicerApi={settings?.use_slicer_api ?? false}
+      desktopSlicer={preferredSlicer}
       onPreview3d={setViewerFile}
       onModelCard={setModelCardFile}
       onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
@@ -3648,6 +3669,7 @@ export function FileManagerPage() {
                         onSlice={setSliceFile}
                         onOpenInSlicer={handleOpenInSlicer}
                         useSlicerApi={settings?.use_slicer_api ?? false}
+                        desktopSlicer={preferredSlicer}
                         onPreview3d={setViewerFile}
                         onModelCard={setModelCardFile}
                             onDownload={handleDownload}

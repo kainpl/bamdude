@@ -1156,6 +1156,8 @@ describe('FileManagerPage', () => {
     });
 
     it('hands the file to the desktop slicer when the sidecar is off', async () => {
+      // OrcaSlicer takes an STL over its link; Bambu Studio would not.
+      server.use(http.get('/api/v1/settings/', () => HttpResponse.json({ preferred_slicer: 'orcaslicer' })));
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
@@ -1169,9 +1171,22 @@ describe('FileManagerPage', () => {
       await waitFor(() => {
         expect(openInSlicer).toHaveBeenCalledWith(
           expect.stringContaining('/library/files/2/'),
-          'bambu_studio',
+          'orcaslicer',
         );
       });
+    });
+
+    it('offers no handoff Bambu Studio would refuse (upstream e2493132)', async () => {
+      // Bambu Studio refuses anything but a 3MF over its link, before fetching.
+      const user = userEvent.setup();
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(screen.getByText('bracket.stl')).toBeInTheDocument());
+      const card = screen.getByText('bracket.stl').closest('.group') as HTMLElement;
+      await user.click(within(card).getByRole('button', { name: 'File actions' }));
+
+      await screen.findByText('Download');
+      expect(screen.queryByText('Open in Slicer')).not.toBeInTheDocument();
     });
 
     it('offers the server slice when the sidecar is on', async () => {

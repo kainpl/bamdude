@@ -471,7 +471,25 @@ describe('ModelViewerModal', () => {
       });
     });
 
-    it('disables Open in Slicer for non-3mf library files', async () => {
+    it('disables Open in Slicer for a file no desktop slicer takes over a link', async () => {
+      render(
+        <ModelViewerModal
+          libraryFileId={1}
+          title="Model.obj"
+          fileType="obj"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        const slicerButton = screen.getByText('Open in Slicer').closest('button');
+        expect(slicerButton).toBeDisabled();
+      });
+    });
+
+    it('promotes OrcaSlicer for an STL when Bambu Studio is preferred (upstream e2493132)', async () => {
+      // Bambu Studio refuses anything but .3mf over its link handler; OrcaSlicer
+      // does not. The file can open — just not in the preferred slicer.
       render(
         <ModelViewerModal
           libraryFileId={1}
@@ -481,10 +499,11 @@ describe('ModelViewerModal', () => {
         />
       );
 
-      await waitFor(() => {
-        const slicerButton = screen.getByText('Open in Slicer').closest('button');
-        expect(slicerButton).toBeDisabled();
-      });
+      const primary = await screen.findByRole('button', { name: 'Open in OrcaSlicer' });
+      expect(primary).toBeEnabled();
+      expect(screen.queryByRole('button', { name: 'More slicer options' })).not.toBeInTheDocument();
+      fireEvent.click(primary);
+      await waitFor(() => expect(openInSlicer).toHaveBeenCalledWith(expect.any(String), 'orcaslicer'));
     });
   });
 
@@ -607,8 +626,8 @@ describe('ModelViewerModal', () => {
       render(
         <ModelViewerModal
           libraryFileId={1}
-          title="Model.stl"
-          fileType="stl"
+          title="Model.obj"
+          fileType="obj"
           onClose={mockOnClose}
         />
       );
@@ -620,7 +639,8 @@ describe('ModelViewerModal', () => {
       expect(screen.queryByRole('button', { name: 'More slicer options' })).not.toBeInTheDocument();
     });
 
-    it('renders a plain Slice button without a split chevron for non-handoff files', async () => {
+    it('offers only OrcaSlicer beside the server slice for an STL', async () => {
+      // Bambu Studio would refuse the STL over its link (upstream e2493132).
       server.use(
         http.get('/api/v1/settings/', () => {
           return HttpResponse.json({ use_slicer_api: true });
@@ -641,7 +661,9 @@ describe('ModelViewerModal', () => {
         expect(screen.getByRole('button', { name: 'Slice' })).toBeInTheDocument();
       });
 
-      expect(screen.queryByRole('button', { name: 'More slicer options' })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'More slicer options' }));
+      expect(await screen.findByText('Open in OrcaSlicer')).toBeInTheDocument();
+      expect(screen.queryByText('Open in Bambu Studio')).not.toBeInTheDocument();
     });
   });
 });

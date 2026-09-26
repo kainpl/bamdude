@@ -7,7 +7,7 @@ import { ModelViewer } from './ModelViewer';
 import { GcodePreview } from './GcodePreview';
 import { Button } from './Button';
 import { api, withMediaToken } from '../api/client';
-import { openInSlicer, type SlicerType, isApiSliceableFileType } from '../utils/slicer';
+import { desktopSlicersFor, openInSlicer, type SlicerType, isApiSliceableFileType } from '../utils/slicer';
 import { useTheme } from '../contexts/ThemeContext';
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateMetadata } from '../types/plates';
 
@@ -398,7 +398,15 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
     };
   }, [isDraggingDivider, dividerHeight, minPlateHeight, minViewerPx, minViewerRatio]);
 
-  const canOpenInSlicer = isLibrary ? (fileType || '').toLowerCase() === '3mf' : true;
+  // Which desktop slicers take this file over a link (upstream e2493132): an
+  // archive is always a 3MF; a library file may be an STL only OrcaSlicer takes.
+  const handoffSlicers: SlicerType[] = isLibrary
+    ? desktopSlicersFor(fileType, preferredSlicer)
+    : desktopSlicersFor('3mf', preferredSlicer);
+  const canOpenInSlicer = handoffSlicers.length > 0;
+  // The preferred slicer when it can take the file; otherwise the one that can,
+  // named on the button so nobody wonders why a different application opened.
+  const primarySlicer: SlicerType = handoffSlicers[0] ?? preferredSlicer;
 
   // With the in-app Slicer API enabled, route the header's slicer button into
   // BamDude's own SliceModal (same as the file-row Cog) instead of launching
@@ -416,10 +424,14 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
   // otherwise the primary already is the preferred one, and only the other is
   // worth listing.
   const slicerDropdownTypes: SlicerType[] = useBamDudeSlicer
-    ? ['bambu_studio', 'orcaslicer']
-    : [preferredSlicer === 'orcaslicer' ? 'bambu_studio' : 'orcaslicer'];
+    ? handoffSlicers
+    : handoffSlicers.filter((slicer) => slicer !== primarySlicer);
   const slicerName = (slicer: SlicerType) =>
     slicer === 'orcaslicer' ? t('settings.slicerOrcaSlicer') : t('settings.slicerBambuStudio');
+  const primaryHandoffLabel =
+    primarySlicer === preferredSlicer
+      ? t('modelViewer.openInSlicer')
+      : t('modelViewer.openInSlicerWith', { slicer: slicerName(primarySlicer) });
   const slicerDropdownItems = slicerDropdownTypes.map((slicer) => ({
     key: slicer,
     label: t('modelViewer.openInSlicerWith', { slicer: slicerName(slicer) }),
@@ -486,14 +498,20 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                   {t('slice.action')}
                 </Button>
               )
-            ) : canOpenInSlicer ? (
+            ) : canOpenInSlicer && slicerDropdownItems.length > 0 ? (
               <SlicerSplitButton
                 icon={<ExternalLink className="w-4 h-4" />}
-                label={t('modelViewer.openInSlicer')}
+                label={primaryHandoffLabel}
                 dropdownLabel={t('modelViewer.moreSlicerOptions')}
-                onPrimary={() => handleOpenInSlicer(preferredSlicer)}
+                onPrimary={() => handleOpenInSlicer(primarySlicer)}
                 items={slicerDropdownItems}
               />
+            ) : canOpenInSlicer ? (
+              // Only one slicer takes this file: no alternative for a chevron.
+              <Button variant="secondary" size="sm" onClick={() => handleOpenInSlicer(primarySlicer)}>
+                <ExternalLink className="w-4 h-4" />
+                {primaryHandoffLabel}
+              </Button>
             ) : (
               <Button variant="secondary" size="sm" onClick={() => handleOpenInSlicer(preferredSlicer)} disabled>
                 <ExternalLink className="w-4 h-4" />

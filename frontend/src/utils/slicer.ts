@@ -82,6 +82,41 @@ export function openInSlicer(downloadUrl: string, slicer: SlicerType = 'bambu_st
 }
 
 /**
+ * What each desktop slicer takes over its LINK handler (upstream e2493132).
+ *
+ * Not the formats the applications can open — both import an STL from the File
+ * menu. Bambu Studio routes every `bambustudio://open?file=` and
+ * `bambustudioopen://` URL into an import path that refuses any filename that is
+ * not `.3mf` before fetching anything ("Download failed, unknown file format"),
+ * which reads as a broken model rather than an unsupported handoff. OrcaSlicer
+ * sends `orcaslicer://open?file=` against our own host to its general
+ * downloader, which checks no extension, so STL and STEP work there.
+ */
+export const DESKTOP_SLICEABLE_FILE_TYPES: Record<SlicerType, readonly string[]> = {
+  bambu_studio: ['3mf'],
+  orcaslicer: ['3mf', 'stl', 'step', 'stp'],
+};
+
+/**
+ * Can `slicer` be handed a `LibraryFile.file_type` over its link?
+ *
+ * An unknown slicer value answers as Bambu Studio: that is where `openInSlicer`
+ * sends anything that is not exactly `orcaslicer`, and settings come off the API
+ * unvalidated.
+ */
+export function desktopSlicerAccepts(fileType: string | null | undefined, slicer: SlicerType): boolean {
+  const formats = DESKTOP_SLICEABLE_FILE_TYPES[slicer] ?? DESKTOP_SLICEABLE_FILE_TYPES.bambu_studio;
+  return formats.includes((fileType || '').toLowerCase());
+}
+
+/** The desktop slicers that take this file over a link — the preferred one first. */
+export function desktopSlicersFor(fileType: string | null | undefined, preferred: SlicerType): SlicerType[] {
+  const order: SlicerType[] =
+    preferred === 'orcaslicer' ? ['orcaslicer', 'bambu_studio'] : ['bambu_studio', 'orcaslicer'];
+  return order.filter((slicer) => desktopSlicerAccepts(fileType, slicer));
+}
+
+/**
  * The file types the slicer *sidecar* can slice.
  *
  * ⚠️ Narrower than what the DESKTOP slicers accept, by exactly STEP. The

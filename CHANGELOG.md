@@ -464,6 +464,12 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **Open in Slicer is offered only for a file the slicer will take.** Bambu
+  Studio accepts only a 3MF from a link and refuses an STL or STEP before
+  downloading anything, with a message that reads like a broken model. The
+  file menu no longer offers that handoff; OrcaSlicer, which takes STL and
+  STEP, still gets it. The 3D preview opens an STL in OrcaSlicer, naming it
+  on the button, when Bambu Studio is the configured slicer.
 - **Updating a native install repairs a service file that lacks `--loop
   asyncio`.** Installs created before the installer pinned the flag (July
   2026) kept running on uvloop however often they were updated, and uvloop
