@@ -31,11 +31,37 @@ function highlightLine(line: string): string {
     .replace(/\b(M\d+(\.\d+)?)\b/gi, '<span class="gc-m">$1</span>')
     // Parameters + value (X100, Y-50.5, F3000)
     .replace(/\b([XYZEFSPTRIJ])([-+]?\d+\.?\d*)\b/gi,
-      '<span class="gc-param">$1</span><span class="gc-num">$2</span>')
-    // Standalone numbers not already wrapped
-    .replace(/(?<!["=\w>])\b(\d+\.?\d*)\b(?![<])/g, '<span class="gc-num">$1</span>');
+      '<span class="gc-param">$1</span><span class="gc-num">$2</span>');
 
-  return highlighted + commentHtml;
+  return wrapStandaloneNumbers(highlighted) + commentHtml;
+}
+
+/**
+ * Standalone numbers not already wrapped — what the old rule did with a
+ * negative lookbehind (not after `"`, `=`, a word character or `>`), without one.
+ *
+ * ⚠️ Safari parses a regex lookbehind only from 16.4, and a regex literal is
+ * validated when its module compiles: one in the bundle leaves iOS 16.0–16.3
+ * with a blank page (audit D12, upstream #2971). Emulated exactly: when the
+ * character before a candidate is one the lookbehind refused, the search
+ * resumes one position later — as the regex engine does — not after the
+ * candidate, so `=1.5` still wraps its `5` (pinned by a snapshot test).
+ */
+function wrapStandaloneNumbers(s: string): string {
+  const number = /\b(\d+\.?\d*)\b(?!<)/g;
+  let out = '';
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = number.exec(s)) !== null) {
+    const before = match.index > 0 ? s[match.index - 1] : '';
+    if (before && /["=\w>]/.test(before)) {
+      number.lastIndex = match.index + 1;
+      continue;
+    }
+    out += `${s.slice(last, match.index)}<span class="gc-num">${match[1]}</span>`;
+    last = number.lastIndex;
+  }
+  return out + s.slice(last);
 }
 
 function highlightGcode(code: string): string {

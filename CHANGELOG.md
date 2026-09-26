@@ -203,6 +203,14 @@
   and preheat fell back to its configured default. It now takes the highest
   temperature among the filaments the plate actually uses, as Bambu Studio
   does.
+- **BamDude loads on iPhones and iPads with iOS 16.0–16.3 again.** Those
+  Safari versions cannot read one kind of pattern in JavaScript (a regex
+  lookbehind), and two of them had reached the app — one in the G-code
+  editor's highlighting, one pulled in by the folder README viewer — so the
+  page stayed blank white. Both are gone, and the build now refuses to ship
+  anything those browsers cannot load. A bare web address or e-mail address
+  in a folder README no longer turns into a link by itself; `[text](url)` and
+  `<https://…>` still do.
 - **"Secure file-transfer handshake failed" no longer blames your firewall or
   firmware.** When the printer answers its file port (990) in plain text — the
   log's `WRONG_VERSION_NUMBER` — the diagnostic now says so, with the cause

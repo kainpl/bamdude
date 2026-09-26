@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { FileText, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import remarkGfm from '../utils/remarkGfmNoAutolink';
 
 import { api } from '../api/client';
 

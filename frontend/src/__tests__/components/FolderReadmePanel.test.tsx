@@ -43,6 +43,26 @@ describe('FolderReadmePanel', () => {
     expect(screen.getByText('A cute robot.')).toBeInTheDocument();
   });
 
+  it('renders GitHub-flavoured tables, strikethrough and task lists (audit D12)', async () => {
+    // remark-gfm left the bundle — its autolink extension carries a regex
+    // lookbehind Safari 16.0–16.3 cannot parse, which blanked the whole app
+    // there. The four extensions a README uses are composed locally instead.
+    server.use(
+      http.get('/api/v1/library/folders/:id/readme', () =>
+        HttpResponse.json({
+          filename: 'README.md',
+          content: '| Part | Qty |\n| --- | --- |\n| Hinge | 2 |\n\n~~old~~\n\n- [x] printed\n- [ ] painted',
+          truncated: false,
+        }),
+      ),
+    );
+    render(<FolderReadmePanel folderId={7} />);
+    expect(await screen.findByRole('table')).toBeInTheDocument();
+    expect(screen.getByRole('cell', { name: 'Hinge' })).toBeInTheDocument();
+    expect(document.querySelector('del')?.textContent).toBe('old');
+    expect(document.querySelectorAll('input[type="checkbox"]')).toHaveLength(2);
+  });
+
   it('shows a Truncated chip when the API flags the content as clipped', async () => {
     server.use(
       http.get('/api/v1/library/folders/:id/readme', () =>
