@@ -4699,7 +4699,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         await db.commit()
 
         # Shared download helper (same logic used by the retry service).
-        from backend.app.services.archive_download import try_download_3mf
+        from backend.app.services.archive_download import last_download_failure_reason, try_download_3mf
         from backend.app.services.archive_download_retry import archive_download_retry
 
         temp_dir = app_settings.archive_dir / "temp"
@@ -4934,7 +4934,9 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                     # unavailable" and what the four retry triggers key on.
                     logger.warning("Could not find 3MF file for print: %s", filename or subtask_name)
                     archive_id = archive.id
-                    await ArchiveService(db).mark_3mf_unavailable(archive_id)
+                    await ArchiveService(db).mark_3mf_unavailable(
+                        archive_id, reason=last_download_failure_reason(printer.id)
+                    )
                     archive = await db.get(PrintArchive, archive_id)
                 else:
                     service = ArchiveService(db)
@@ -5817,7 +5819,7 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
     """
     from backend.app.models.archive import PrintArchive
     from backend.app.models.printer import Printer
-    from backend.app.services.archive_download import try_download_3mf
+    from backend.app.services.archive_download import last_download_failure_reason, try_download_3mf
     from backend.app.services.archive_download_retry import archive_download_retry
 
     try:
@@ -5847,7 +5849,11 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                     archive = await db.get(PrintArchive, archive_id)
                     if archive is not None:
                         if not archive.file_path:
-                            archive.extra_data = {**(archive.extra_data or {}), "no_3mf_available": True}
+                            extra = {**(archive.extra_data or {}), "no_3mf_available": True}
+                            reason = last_download_failure_reason(printer.id)
+                            if reason:
+                                extra["no_3mf_reason"] = reason
+                            archive.extra_data = extra
                             await db.commit()
                         # Locked-file firmware never hands the 3MF over, and the
                         # print still runs to the end — so the tracking row is

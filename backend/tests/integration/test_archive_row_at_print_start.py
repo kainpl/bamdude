@@ -241,8 +241,12 @@ class TestTheRowComesFirst:
         """⚠️ ``no_3mf_available`` means "we tried and could not" — it drives a
         warning banner in Archives, so it must NOT be set optimistically at
         creation, only once an attempt has actually failed."""
+        from backend.app.services import archive_download
+
         printer = await _prepare_printer(printer_factory)
         rec = _Recorder()
+        # What the (stubbed) download would have said about why it failed.
+        monkeypatch.setitem(archive_download._failure_reasons, printer.id, "ftps_refused")
 
         rows = await _drive_print_start(
             db_session=db_session,
@@ -257,6 +261,8 @@ class TestTheRowComesFirst:
         assert len(rows) == 1
         assert rows[0].file_path == "", "empty file_path is what the retry triggers select on"
         assert (rows[0].extra_data or {}).get("no_3mf_available") is True
+        # The banner words itself by this (audit D6).
+        assert (rows[0].extra_data or {}).get("no_3mf_reason") == "ftps_refused"
         assert (rows[0].extra_data or {}).get("_print_data", {}).get("subtask_name") == "Plate_3"
 
     async def test_a_failed_attach_rolls_back_without_breaking_start_lifecycle(

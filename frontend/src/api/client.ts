@@ -2850,6 +2850,18 @@ export interface LogFinding {
   sample: string;
 }
 
+/** Why an archive was left without its 3MF (``extra_data.no_3mf_reason``, audit D6). */
+export type No3MFReason = 'ftps_refused' | 'auth_rejected' | 'unreachable' | 'not_found';
+
+export interface No3MFWarning {
+  /** Some archive of the last 30 days was left without its 3MF. */
+  has_fallback: boolean;
+  /** The most urgent of ``reasons``. */
+  reason: No3MFReason | null;
+  /** Every reason among those archives, most urgent first; ``null`` (none recorded) last. */
+  reasons: (No3MFReason | null)[];
+}
+
 export interface SystemHealthResult {
   findings: LogFinding[];
   scanned_entries: number;
@@ -8508,7 +8520,7 @@ export const api = {
    */
   countArchiveIntoStock: (id: number) =>
     request<StockMoved[]>(`/archives/${id}/count-into-stock`, { method: 'POST' }),
-  getNo3MFWarning: () => request<{ has_fallback: boolean }>('/archives/no-3mf-warning'),
+  getNo3MFWarning: () => request<No3MFWarning>('/archives/no-3mf-warning'),
   searchArchives: (query: string, options?: {
     printerId?: number;
     projectId?: number;

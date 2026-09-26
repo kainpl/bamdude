@@ -800,6 +800,14 @@ async def export_archives(
     )
 
 
+# Why an archive was left without its 3MF (``extra_data["no_3mf_reason"]``,
+# audit D6), most urgent first: a refused file connection leads because it is
+# the one fault nobody configured, and "not found" — the only one "Store sent
+# files on external storage" answers — comes last. A row with no reason, or one
+# this build does not know, ranks after all of them.
+_NO_3MF_REASON_RANK = {"ftps_refused": 0, "auth_rejected": 1, "unreachable": 2, "not_found": 3}
+
+
 @router.get("/no-3mf-warning")
 async def no_3mf_warning(
     db: AsyncSession = Depends(get_db),
@@ -810,16 +818,17 @@ async def no_3mf_warning(
         )
     ),
 ):
-    """Whether to nudge the user about install step 4 ("Store sent files on
-    external storage"). True iff any archive in the last 30 days was created
-    via the no-3MF fallback path — the deterministic symptom of the
-    slicer-side variant of the setting being off.
+    """Whether any archive of the last 30 days was left without its 3MF, and why.
 
-    Complements the connection-diagnostic ``external_storage`` check, which
-    only catches the printer-side variant. On older slicers where the toggle
-    lives only in the slicer, the printer never reports it and the diagnostic
-    passes — this endpoint surfaces the symptom instead. Dismissal is handled
-    client-side via localStorage (one-shot); the backend stays stateless.
+    ``has_fallback`` — some row carries ``no_3mf_available``. ``reasons`` — the
+    distinct ``no_3mf_reason`` values of those rows, most urgent first, ``None``
+    (no reason recorded) last; ``reason`` is the first of them. The Archives
+    banner words itself by the reason (audit D6): a refused connection, a
+    rejected access code or an unreachable printer is not the slicer-side
+    "Store sent files on external storage" setting (install step 4), which the
+    banner suggests only for a file that was looked for and not there.
+    Dismissal is per reason, client-side in localStorage — which is why every
+    reason is listed: one dismissed must not hide the next behind it.
     """
     user, can_read_all = auth_result
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
@@ -831,10 +840,16 @@ async def no_3mf_warning(
     if user is not None and not can_read_all:
         conditions.append(PrintArchive.created_by_id == user.id)
     result = await db.execute(select(PrintArchive.extra_data).where(*conditions))
+    has_fallback = False
+    reasons: set[str | None] = set()
     for (extra_data,) in result.all():
-        if extra_data and extra_data.get("no_3mf_available"):
-            return {"has_fallback": True}
-    return {"has_fallback": False}
+        if not (extra_data and extra_data.get("no_3mf_available")):
+            continue
+        has_fallback = True
+        row_reason = extra_data.get("no_3mf_reason")
+        reasons.add(row_reason if row_reason in _NO_3MF_REASON_RANK else None)
+    ranked = sorted(reasons, key=lambda r: _NO_3MF_REASON_RANK.get(r, len(_NO_3MF_REASON_RANK)))
+    return {"has_fallback": has_fallback, "reason": ranked[0] if ranked else None, "reasons": ranked}
 
 
 @router.get("/tags")

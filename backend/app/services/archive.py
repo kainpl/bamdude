@@ -2964,6 +2964,7 @@ class ArchiveService:
             if preserved_print_data is not None:
                 merged_extra["_print_data"] = preserved_print_data
             merged_extra.pop("no_3mf_available", None)
+            merged_extra.pop("no_3mf_reason", None)
             merged_extra.pop("download_retry_count", None)
             merged_extra.pop("download_next_retry", None)
             # Mirror of the column, for the legacy reader in ``queue_virtual.py``
@@ -3163,11 +3164,16 @@ class ArchiveService:
             if file_reference_scope is not None:
                 await file_reference_scope.__aexit__(None, None, None)
 
-    async def mark_3mf_unavailable(self, archive_id: int) -> bool:
+    async def mark_3mf_unavailable(self, archive_id: int, reason: str | None = None) -> bool:
         """Record a real 3MF recovery failure without overwriting a success.
 
         An empty ``file_path`` while FTP is still in flight is not a failure.
         Call this only after a download/attach attempt ended unsuccessfully.
+
+        *reason* is ``archive_download.last_download_failure_reason`` — what the
+        Archives banner words itself by (audit D6). A failure with no known
+        reason (the file came down but would not attach) drops an earlier one
+        rather than leave it describing an attempt it no longer matches.
         """
         from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 
@@ -3177,7 +3183,12 @@ class ArchiveService:
                 if archive is None or archive.file_path:
                     await self.db.rollback()
                     return False
-                archive.extra_data = {**(archive.extra_data or {}), "no_3mf_available": True}
+                extra = {**(archive.extra_data or {}), "no_3mf_available": True}
+                if reason:
+                    extra["no_3mf_reason"] = reason
+                else:
+                    extra.pop("no_3mf_reason", None)
+                archive.extra_data = extra
                 await self.db.commit()
                 return True
         except Exception:
@@ -3672,9 +3683,8 @@ class ArchiveService:
             return False
 
         # Where this archive's files live — the shared helper, never derived
-        # from ``file_path`` by hand. A print with no 3MF (an H2 / P2S job sent
-        # from the slicer lives on the printer's internal storage, so nothing
-        # can be fetched) has ``file_path == ""``, and ``(base_dir / "").parent``
+        # from ``file_path`` by hand. A print whose 3MF could not be fetched
+        # (``no_3mf_reason`` says why) has ``file_path == ""``, and ``(base_dir / "").parent``
         # is the PARENT of the data directory: in Docker that is /app, so the
         # write failed with EACCES and the video was fetched again and
         # discarded over and over; where the parent was writable it landed

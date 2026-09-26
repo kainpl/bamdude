@@ -1325,9 +1325,26 @@ export default {
   // Archives page
   archives: {
     no3mfBanner: {
-      title: 'Some recent prints couldn\'t be archived with thumbnails',
-      body: 'The slicer didn\'t leave the .gcode.3mf on the printer\'s SD card, so BamDude couldn\'t pull the thumbnail or slicer metadata. This is usually because "Store sent files on external storage" is off in the slicer (Bambu Studio / OrcaSlicer Device tab).',
-      docsLink: 'See install step 4',
+      ftpsRefused: {
+        title: 'Some recent prints couldn\'t be archived — the printer refused the file connection',
+        body: 'BamDude opened the printer\'s file-transfer port (FTPS 990) and the printer turned the connection away, so nothing could be read from it. Those prints are archived with their name and timing, just without a thumbnail or slicer metadata. This is not a slicer setting and not something you changed: most often another program — a slicer\'s device page, another integration — was using the printer\'s file service at that moment. BamDude asks again when the printer reconnects and when the print ends, and Retry 3MF download in an archive\'s menu asks right away; a file still on the printer fills its archive in.',
+        docsLink: 'What this error means',
+      },
+      authRejected: {
+        title: 'Some recent prints couldn\'t be archived — the printer rejected the access code',
+        body: 'The printer refused BamDude\'s file-transfer login, so nothing could be read from it. Those prints are archived with their name and timing only. The access code is wrong, or it changed when LAN mode or Developer Mode was switched. Copy it again from the printer\'s screen into the printer\'s settings in BamDude, then use Retry 3MF download in the affected archives\' menu.',
+        docsLink: 'How to fix the access code',
+      },
+      unreachable: {
+        title: 'Some recent prints couldn\'t be archived — the printer\'s file service didn\'t answer',
+        body: 'BamDude couldn\'t reach the printer\'s file-transfer port (FTPS 990) — the connection failed or timed out — so nothing could be read from it. Those prints are archived with their name and timing only. The printer may have been off or off the network, or something between BamDude and the printer (a firewall, Docker networking) blocks port 990. BamDude asks again when the printer reconnects; Retry 3MF download in an archive\'s menu asks right away.',
+        docsLink: 'Troubleshooting port 990',
+      },
+      notFound: {
+        title: 'Some recent prints couldn\'t be archived with thumbnails',
+        body: 'The printer didn\'t keep the sliced .gcode.3mf, so BamDude couldn\'t pull the thumbnail or slicer metadata. This is usually because "Store sent files on external storage" is off in the slicer (Bambu Studio / OrcaSlicer Device tab).',
+        docsLink: 'See install step 4',
+      },
       dismissLabel: 'Dismiss this notice',
     },
     searchPlaceholder: 'Search archives...',

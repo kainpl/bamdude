@@ -428,14 +428,25 @@
   and other tools can fetch the same address, so the slicer could be refused
   the file it had just been sent to. Links now stay valid for their five
   minutes and still open only the file they were made for.
+- **The Archives banner for prints without a 3MF says why, and no longer
+  blames the slicer for what the printer did.** It told everyone to switch on
+  "Store sent files on external storage" in the slicer — wrong whenever
+  BamDude never got to look: the printer turned the file connection away,
+  rejected the access code, or did not answer at all. BamDude now records why
+  each 3MF could not be fetched, and the banner speaks to the most urgent
+  cause, with a link to the matching troubleshooting entry: a refused
+  connection first, then a rejected access code, then an unreachable printer.
+  The slicer setting is suggested only when the file was looked for and was
+  not on the printer. Each cause is dismissed on its own, so closing one no
+  longer hides another; a banner closed before this update stays closed.
 - **A print with no 3MF in its archive can receive its timelapse and a Fusion
-  360 design file again.** H2-series and P2S printers keep a job sent from the
-  slicer on their internal storage, where it cannot be downloaded, so the
-  archive has no 3MF. For such an archive the timelapse and the design file were
-  written one folder above the data directory — under Docker that failed with a
-  permission error, so the timelapse was downloaded and thrown away again and
-  again; elsewhere the file landed beside the installation and the attach still
-  failed. Both now go into the archive's own folder, next to its photos.
+  360 design file again.** When a print's 3MF could not be fetched from the
+  printer, the archive has none, and for such an archive the timelapse and the
+  design file were written one folder above the data directory — under Docker
+  that failed with a permission error, so the timelapse was downloaded and
+  thrown away again and again; elsewhere the file landed beside the
+  installation and the attach still failed. Both now go into the archive's own
+  folder, next to its photos.
 - **Deleting an archive that has no 3MF now removes its photos, timelapse and
   design file, and a photo taken before the 3MF arrived no longer disappears.**
   Such an archive kept its files in a folder named after its number inside

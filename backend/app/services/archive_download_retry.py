@@ -40,7 +40,7 @@ from backend.app.core.websocket import ws_manager
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.services.archive import ArchiveService
-from backend.app.services.archive_download import try_download_3mf
+from backend.app.services.archive_download import last_download_failure_reason, try_download_3mf
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +204,9 @@ class ArchiveDownloadRetryService:
         if not download_result:
             logger.info("Archive retry: archive %s — download failed", archive_id)
             async with async_session() as marker_db:
-                await ArchiveService(marker_db).mark_3mf_unavailable(archive_id)
+                await ArchiveService(marker_db).mark_3mf_unavailable(
+                    archive_id, reason=last_download_failure_reason(printer.id)
+                )
             return "failed"
 
         temp_path, downloaded_filename = download_result

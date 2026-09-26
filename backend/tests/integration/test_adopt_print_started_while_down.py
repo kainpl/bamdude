@@ -531,12 +531,16 @@ class TestTheDownloadDecidesWhoOwnsThePrint:
         assert rows == [provisional_id], "the row that was announced at adoption is the row that gets the file"
         assert not temp_path.exists(), "the temp file outlived the download"
 
-    async def test_a_failed_download_marks_the_row(self, db_session, printer_factory, main_db, tmp_path):
+    async def test_a_failed_download_marks_the_row(self, db_session, printer_factory, main_db, tmp_path, monkeypatch):
         """⚠️ ``no_3mf_available`` means "we tried and could not" — it raises a
         user-facing banner, so it is set only after an attempt has failed."""
+        from backend.app.services import archive_download
+
         printer_id, provisional_id, _twin, _temp, _hash = await _seed_download_case(
             db_session, printer_factory, tmp_path, with_twin=False
         )
+        # What the (stubbed) download would have said about why it failed.
+        monkeypatch.setitem(archive_download._failure_reasons, printer_id, "unreachable")
 
         spies = await _run_download(printer_id=printer_id, archive_id=provisional_id, download_result=None)
 
@@ -558,6 +562,7 @@ class TestTheDownloadDecidesWhoOwnsThePrint:
         row = await db_session.get(PrintArchive, provisional_id)
         assert row is not None
         assert (row.extra_data or {}).get("no_3mf_available") is True
+        assert (row.extra_data or {}).get("no_3mf_reason") == "unreachable", "the banner words itself by it (D6)"
         assert row.file_path == "", "the retry triggers still have to see it"
         assert (row.extra_data or {}).get("recovered_start") is not None, (
             "the marker must not overwrite the record the reconstruction reads"

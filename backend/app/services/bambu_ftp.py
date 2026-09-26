@@ -253,6 +253,10 @@ class BambuFTPClient:
     _mode_cache: dict[str, str] = {}
     # When each printer was last asked what it answers port 990 with (audit D5).
     _cleartext_probed_at: dict[str, float] = {}
+    # Why the last connect to each printer failed, and when: ``(kind, monotonic)``.
+    # The 3MF download turns it into the reason an archive is left without its
+    # file (audit D6); a successful connect forgets it.
+    _last_connect_failure: dict[str, tuple[str, float]] = {}
 
     def __init__(
         self,
@@ -300,6 +304,23 @@ class BambuFTPClient:
         # Default: try prot_p first (will fall back if needed)
         return False
 
+    @classmethod
+    def connect_failure_since(cls, ip_address: str, since: float) -> str | None:
+        """How the last connect to *ip_address* failed, if it failed at or after *since*.
+
+        ``"auth"`` (the login was refused), ``"timeout"``, ``"tls"`` (the
+        handshake failed — a cleartext answer on port 990 among them) or
+        ``"network"``; ``None`` when nothing failed since *since* (``time.monotonic``)
+        or a connect has succeeded after the failure.
+        """
+        record = cls._last_connect_failure.get(ip_address)
+        if record is None or record[1] < since:
+            return None
+        return record[0]
+
+    def _note_connect_failure(self, kind: str) -> None:
+        self._last_connect_failure[self.ip_address] = (kind, time.monotonic())
+
     def connect(self) -> bool:
         """Connect to the printer FTP server (implicit FTPS on port 990)."""
         try:
@@ -337,17 +358,21 @@ class BambuFTPClient:
             logger.info(
                 f"FTP connected successfully to {self.ip_address} (model={self.printer_model}, prot_c={use_prot_c})"
             )
+            self._last_connect_failure.pop(self.ip_address, None)
             return True
         except ftplib.error_perm as e:
             logger.warning("FTP connection permission error to %s: %s", self.ip_address, e)
             self._abandon_connection("login rejected")
+            self._note_connect_failure("auth")
             return False
         except TimeoutError as e:
             logger.warning("FTP connection timed out to %s: %s", self.ip_address, e)
             self._abandon_connection("connect timed out")
+            self._note_connect_failure("timeout")
             return False
         except ssl.SSLError as e:
             logger.warning("FTP SSL error connecting to %s: %s", self.ip_address, e)
+            self._note_connect_failure("tls")
             # Close the dead socket BEFORE asking the printer anything else: the
             # probe below opens a second connection, and the leading theory for
             # this failure is a printer out of connection slots.
@@ -358,6 +383,7 @@ class BambuFTPClient:
         except (OSError, ftplib.Error) as e:
             logger.warning("FTP connection failed to %s: %s (type: %s)", self.ip_address, e, type(e).__name__)
             self._abandon_connection("connect failed")
+            self._note_connect_failure("network")
             return False
 
     def _probe_cleartext_reply(self) -> None:

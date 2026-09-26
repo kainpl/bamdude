@@ -357,11 +357,12 @@ class TestFieldParity:
         assert not await service.attach_3mf_to_archive(archive_id, src, "../escape.gcode.3mf")
         # ``get`` is awaited before any ORM field is accessed: this is the
         # same boundary on_print_start crosses after a rollback.
-        assert await service.mark_3mf_unavailable(archive_id)
+        assert await service.mark_3mf_unavailable(archive_id, reason="not_found")
         recovered = await db_session.get(PrintArchive, archive_id)
         assert recovered is not None
         assert recovered.file_path == ""
         assert (recovered.extra_data or {}).get("no_3mf_available") is True
+        assert (recovered.extra_data or {}).get("no_3mf_reason") == "not_found"
 
         assert await service.attach_3mf_to_archive(archive_id, src, "recovered.gcode.3mf")
         recovered = await db_session.get(PrintArchive, archive_id)
@@ -369,6 +370,8 @@ class TestFieldParity:
         first_file_path = recovered.file_path
         assert first_file_path
         assert (recovered.extra_data or {}).get("no_3mf_available") is None
+        # The reason goes with the marker it explains (audit D6).
+        assert (recovered.extra_data or {}).get("no_3mf_reason") is None
         assert await service.attach_3mf_to_archive(archive_id, src, "recovered.gcode.3mf")
         recovered = await db_session.get(PrintArchive, archive_id)
         assert recovered is not None and recovered.file_path == first_file_path

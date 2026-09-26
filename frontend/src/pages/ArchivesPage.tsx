@@ -86,6 +86,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { PurgeArchivesModal } from '../components/PurgeArchivesModal';
 import { TrashSplitButton } from '../components/TrashSplitButton';
 import { EditArchiveModal } from '../components/EditArchiveModal';
+import { No3MFBanner } from '../components/No3MFBanner';
 import { SaveArchiveToLibraryModal } from '../components/SaveArchiveToLibraryModal';
 import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu';
 import { BatchTagModal } from '../components/BatchTagModal';
@@ -2750,23 +2751,13 @@ export function ArchivesPage() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState(search);
 
-  // Install-step-4 nudge — covers the slicer-side variant of "Store sent files
-  // on external storage" that the connection diagnostic can't detect (printer
-  // never hears about it). Symptom: archive created via no-3MF fallback. Once
-  // dismissed, never shown again — fixing step 4 stops new fallbacks anyway.
-  const [no3MFWarningDismissed, setNo3MFWarningDismissed] = useState(
-    () => localStorage.getItem('archiveNo3MFWarningDismissed') === 'true',
-  );
+  // Prints left without their 3MF, and why (audit D6) — the banner words
+  // itself by the reason and is dismissed per reason (No3MFBanner).
   const { data: no3MFWarning } = useQuery({
     queryKey: ['archives', 'no-3mf-warning'],
     queryFn: api.getNo3MFWarning,
     staleTime: 5 * 60 * 1000,
-    enabled: !no3MFWarningDismissed,
   });
-  const dismissNo3MFWarning = () => {
-    localStorage.setItem('archiveNo3MFWarningDismissed', 'true');
-    setNo3MFWarningDismissed(true);
-  };
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(() => {
     const saved = localStorage.getItem('archivePerPage');
@@ -3273,38 +3264,8 @@ export function ArchivesPage() {
 
   return (
     <div className="p-4">
-      {/* Install-step-4 nudge (#1687): no-3MF fallback detected — slicer-side
-          "Store sent files on external storage" is likely off. */}
-      {no3MFWarning?.has_fallback && !no3MFWarningDismissed && (
-        <div className="mb-4 rounded-lg border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-amber-900 dark:text-amber-200">
-              {t('archives.no3mfBanner.title')}
-            </div>
-            <div className="text-xs text-amber-800/90 dark:text-amber-200/80 mt-1">
-              {t('archives.no3mfBanner.body')}{' '}
-              <a
-                href="https://docs.bamdude.top/getting-started/"
-                target="_blank"
-                rel="noreferrer"
-                className="underline hover:text-amber-900 dark:hover:text-amber-100 inline-flex items-center gap-1"
-              >
-                {t('archives.no3mfBanner.docsLink')}
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-          </div>
-          <button
-            onClick={dismissNo3MFWarning}
-            className="text-amber-800/70 dark:text-amber-200/60 hover:text-amber-900 dark:hover:text-amber-200 flex-shrink-0 p-1 -m-1"
-            title={t('archives.no3mfBanner.dismissLabel')}
-            aria-label={t('archives.no3mfBanner.dismissLabel')}
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
+      {/* Prints left without their 3MF (#1687), worded by why (audit D6). */}
+      <No3MFBanner warning={no3MFWarning} />
 
       {/* Selection Toolbar */}
       {selectionMode && (
