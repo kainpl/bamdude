@@ -85,6 +85,7 @@ from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.services import order_from_files
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.design_settings import (
+    DesignOverride,
     apply_design_overrides,
     extract_design_process_overrides,
     overrides_from_config,
@@ -2203,8 +2204,40 @@ _SOURCE_PROCESS_SUPPORT_KEYS_TO_PRESERVE = (
 )
 
 
-def _patch_process_support_settings(process_json: str, source_3mf_bytes: bytes) -> str:
+def _declined_source_keys(offered: list[DesignOverride], requested: list[str] | None) -> set[str]:
+    """Settings the file offered and the caller left unticked (upstream b1f5ec96, #2942).
+
+    The slice dialog lists what the designer changed and applies only the keys
+    that are switched on, so the answer to "which of these does this slice
+    want" is already in the request. This reads the other half — the ones on
+    offer and turned down — which the support carry-over must not put back.
+
+    ``requested`` of ``None`` is a caller that predates the per-key choice (or
+    an API consumer that never sends it — Slicer Pipelines) and so cannot have
+    declined anything; an empty list is one that was shown the file's settings
+    and took none. Collapsing the two is what made an emptied list
+    indistinguishable from an old client, and only one of them means no.
+    """
+    if requested is None:
+        return set()
+    return {override.key for override in offered} - set(requested)
+
+
+def _patch_process_support_settings(
+    process_json: str,
+    source_3mf_bytes: bytes,
+    declined: set[str] | frozenset[str] = frozenset(),
+) -> str:
     """Overlay the source 3MF's support configuration onto the process JSON.
+
+    ``declined`` names keys the caller offered the user as the file's own
+    (#2622) and that the user unticked, which this carry must then not
+    reinstate behind their back (#2942). Empty for a source that offers nothing
+    — an OrcaSlicer export carries no ``different_settings_to_system``, so
+    there is nothing to tick and #1881's carry still applies — and for a client
+    that predates the per-key ticks. BamDude's dialog pre-ticks the designer's
+    intent, so by default a file with supports on still switches them on; only
+    an explicit untick stands this down.
 
     Only fires on 3MF sources — STL / STEP don't carry ``project_settings.
     config``. Silently no-ops when the source doesn't have the config, has
@@ -2247,7 +2280,11 @@ def _patch_process_support_settings(process_json: str, source_3mf_bytes: bytes) 
     if not supports_enabled_in_config(src_cfg):
         return process_json
 
-    carried = {key: src_cfg[key] for key in _SOURCE_PROCESS_SUPPORT_KEYS_TO_PRESERVE if key in src_cfg}
+    carried = {
+        key: src_cfg[key] for key in _SOURCE_PROCESS_SUPPORT_KEYS_TO_PRESERVE if key in src_cfg and key not in declined
+    }
+    if not carried:
+        return process_json
     process_cfg.update(carried)
     # Logged because this is the one layer of the process JSON the user cannot
     # see coming: the slice dialog shows the picked preset's values, so a
@@ -2518,7 +2555,16 @@ async def _run_slicer_with_fallback(
         # without patching, the source's `enable_support: 1` + support-slot
         # assignments get discarded and the slice comes out single-material
         # with a PVA slot loaded but never used.
-        presets["process"] = _patch_process_support_settings(presets["process"], primary_bytes)
+        #
+        # Bounded by the dialog's ticks (#2942): the designer's settings are read
+        # once, the keys the user was offered and left unticked are declined,
+        # and the carry stands down for those. A source that offers no per-key
+        # choice, or a caller that sends no list, keeps the carry whole.
+        design_offered = extract_design_process_overrides(primary_bytes)
+        declined_from_file = _declined_source_keys(design_offered, request.design_overrides)
+        presets["process"] = _patch_process_support_settings(
+            presets["process"], primary_bytes, declined=declined_from_file
+        )
 
         # Carry the designer's own process tweaks onto the picked preset (#2622).
         # BambuStudio records exactly which keys deviate from the system preset,
@@ -2531,7 +2577,7 @@ async def _run_slicer_with_fallback(
         if request.design_overrides:
             presets["process"] = apply_design_overrides(
                 presets["process"],
-                extract_design_process_overrides(primary_bytes),
+                design_offered,
                 request.design_overrides,
             )
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 
 from backend.app.api.routes import library
 from backend.app.services.process_overrides import apply_process_overrides
@@ -24,7 +25,8 @@ from backend.app.services.process_overrides import apply_process_overrides
 class TestTheOrderInTheRoute:
     @staticmethod
     def _source() -> str:
-        return inspect.getsource(library)
+        # A call wrapped by the formatter reads the same as one on a single line.
+        return re.sub(r"\(\s+", "(", inspect.getsource(library))
 
     def test_user_overrides_are_applied_after_the_support_carry(self):
         source = self._source()
@@ -37,6 +39,17 @@ class TestTheOrderInTheRoute:
         design = source.index("apply_design_overrides(")
         user = source.index("apply_process_overrides(presets[")
         assert design < user
+
+    def test_the_support_carry_is_told_what_the_user_declined(self):
+        """The carry reads the request's answer (upstream b1f5ec96, #2942): the
+        keys the file offered minus the ones ticked — never an unconditional
+        carry underneath the ticks."""
+        source = self._source()
+        declined = source.index("_declined_source_keys(design_offered, request.design_overrides)")
+        support = source.index("_patch_process_support_settings(presets[")
+        assert declined < support
+        call = source[support : source.index(")", source.index("declined=", support)) + 1]
+        assert "declined=" in call
 
     def test_they_apply_to_every_model_type_not_just_3mf(self):
         """⚠️ Unlike the two patches above, this reads nothing out of the source

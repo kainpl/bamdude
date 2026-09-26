@@ -464,6 +464,16 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **Unticking the designer's support settings sticks.** A file with supports
+  on carried them into the slice even when every one of its support settings
+  was unticked in the Slice dialog — an emptied list looked like an old
+  client and the carry ran underneath. It now stands down for what you
+  untick; ticked by default, a file's supports still switch on as before. The
+  Process settings panel shows the designer's settings beside each option,
+  sharing the ticks with the list above it, and greys an option out only when
+  the slice would really switch it off — read from your preset, the file's
+  ticked values and what you typed, rather than from the slicer's built-in
+  defaults, which greyed the whole Support page for a preset with supports on.
 - **A plate of many copies gets its picture.** When the slicer leaves a plate
   without a thumbnail, BamDude draws one from the model — but a plate of
   repeated parts (25 bins, say) was read with every copy's triangles

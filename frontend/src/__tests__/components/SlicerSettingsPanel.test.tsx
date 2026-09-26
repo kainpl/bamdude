@@ -500,3 +500,51 @@ describe('SlicerSettingsPanel — a file value that would override the picked pr
     await waitFor(() => expect(screen.getAllByText('overrides preset').length).toBeGreaterThan(0));
   });
 });
+
+describe("SlicerSettingsPanel — what the slicer's rules are read against (upstream b1f5ec96, #2942)", () => {
+  /** The designer's own support configuration, as a real file records it. */
+  const supportSource: DesignOverride[] = [
+    { key: 'support_type', value: 'normal(auto)', printer_coupled: false, preset_defining: false },
+    { key: 'enable_support', value: '1', printer_coupled: false, preset_defining: false },
+  ];
+
+  it("honours the picked preset's value, not the compiled-in default", async () => {
+    // A process preset with supports on, nothing typed. The rules used to see
+    // the typed values alone, fall back to the schema's `enable_support: false`
+    // and grey out the whole Support page while the slice ran supports.
+    const user = userEvent.setup();
+    await renderPanel({}, { presetValues: { enable_support: '1' } });
+    const type = await showOption(user, 'Type', 'support_type');
+    expect(type).toBeEnabled();
+  });
+
+  it('still greys the page out when the preset really has supports off', async () => {
+    const user = userEvent.setup();
+    await renderPanel({}, { presetValues: { enable_support: '0' } });
+    const type = await showOption(user, 'Type', 'support_type');
+    expect(type).toBeDisabled();
+  });
+
+  it("counts a switched-on source setting as one of the slice's values", async () => {
+    const user = userEvent.setup();
+    await renderPanel({}, { sourceOverrides: supportSource, initialSelected: ['enable_support'] });
+    const type = await showOption(user, 'Type', 'support_type');
+    expect(type).toBeEnabled();
+  });
+
+  it("leaves the file's tick operable on a row the slicer has greyed out", async () => {
+    // "Is this option in play" and "where does its value come from" are
+    // different questions; folding them together left a ticked source setting
+    // applied to the slice with nothing on screen able to clear it.
+    const user = userEvent.setup();
+    await renderPanel({}, { sourceOverrides: supportSource, initialSelected: ['support_type'] });
+    const type = await showOption(user, 'Type', 'support_type');
+    expect(type).toBeDisabled();
+
+    const tick = screen.getByRole('checkbox', { name: /Use the source file's value for Type/ });
+    expect(tick).toBeEnabled();
+    expect(tick).toBeChecked();
+    await user.click(tick);
+    expect(tick).not.toBeChecked();
+  });
+});

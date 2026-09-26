@@ -137,7 +137,12 @@ class SliceRequest(BaseModel):
             "is all-or-nothing and only works when the picked printer already "
             "matches the design's target — this is the cross-printer path, where "
             "some of the designer's values are intent (walls, infill) and some are "
-            "tuned for their machine (speeds, accelerations, temperatures)."
+            "tuned for their machine (speeds, accelerations, temperatures). "
+            "An empty list is not the same answer as ``None``: it says the caller "
+            "was shown the file's settings and chose none of them, which also "
+            "holds back the support carry-over (#1881) for the support keys the "
+            "file offered (#2942), while ``None`` — a caller that predates the "
+            "per-key choice — leaves that carry-over unconditional."
         ),
     )
     # five enum values BambuStudio's ``curr_bed_type`` accepts (see

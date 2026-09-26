@@ -31,7 +31,7 @@ import {
 } from '../utils/presetPickerUtils';
 import { useSlicerHealth, type SlicerKind } from '../hooks/useSlicerHealth';
 import { useIsWideLayout } from '../hooks/useIsWideLayout';
-import { defaultDesignKeys } from '../lib/slicerSettings';
+import { defaultDesignKeys, designOverridesField } from '../lib/slicerSettings';
 import { Select } from './Select';
 import {
   EMPTY_COMPATIBILITY_INDEX,
@@ -994,7 +994,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         // Carried design settings are patched onto the resolved process JSON,
         // which the embedded-settings path never sends — so the two are
         // mutually exclusive by construction (#2622).
-        ...(!useEmbedded && designKeys.size > 0 ? { design_overrides: [...designKeys] } : {}),
+        ...designOverridesField(useEmbedded, designOverrides, designKeys),
         // The user's own edits from the settings panel. Like design_overrides
         // these patch the resolved process JSON, so the embedded-settings path
         // — which sends no process JSON at all — cannot carry them.
@@ -1653,6 +1653,20 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                       presetValuesResolved={presetValuesResolved}
                       presetValuesReason={presetValuesReason}
                       disabled={isEnqueuing}
+                      // The designer's settings and which of them are on — the
+                      // same state as the list above, so a tick in either place
+                      // is one tick. The panel's greying rules need it: a file
+                      // value that is on is one the slice runs with (#2942).
+                      sourceOverrides={designOverrides}
+                      sourceSelected={designKeys}
+                      onToggleSource={(key, on) =>
+                        setDesignKeys((prev) => {
+                          const next = new Set(prev);
+                          if (on) next.add(key);
+                          else next.delete(key);
+                          return next;
+                        })
+                      }
                     />
                   </div>
                 )}

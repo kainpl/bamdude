@@ -24,6 +24,25 @@ export function defaultDesignKeys(overrides: DesignOverride[]): Set<string> {
   return new Set(overrides.filter((o) => !o.printer_coupled && !o.preset_defining).map((o) => o.key));
 }
 
+/**
+ * The slice request's `design_overrides`, or nothing (upstream b1f5ec96, #2942).
+ *
+ * Sent whenever the file offered any, an EMPTY list included: the backend reads
+ * a missing list as a client that predates the per-key ticks and keeps
+ * carrying the file's support settings unconditionally, where an empty one
+ * says the user was shown them and took none. Dropping an emptied list — what
+ * the dialog used to do — made "untick everything" carry the file's supports
+ * anyway. The embedded-settings path sends no process JSON for these to patch.
+ */
+export function designOverridesField(
+  useEmbedded: boolean,
+  offered: DesignOverride[],
+  selected: Set<string>,
+): { design_overrides?: string[] } {
+  if (useEmbedded || offered.length === 0) return {};
+  return { design_overrides: [...selected] };
+}
+
 export const isVectorOption = (option: ProcessOption): boolean => VECTOR_TYPES.has(option.type);
 
 /**

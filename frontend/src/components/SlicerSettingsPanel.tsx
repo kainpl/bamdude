@@ -158,9 +158,30 @@ export default function SlicerSettingsPanel({
     };
   }, []);
 
+  // What this slice will actually run with, in the precedence the rows display:
+  // the picked preset underneath, the designer's value for each key that is
+  // switched on, anything typed here on top.
+  const effectiveValues = useMemo(() => {
+    const merged: Record<string, SettingValue> = { ...(presetValues ?? {}) };
+    for (const o of sourceOverrides) {
+      if (sourceSelected?.has(o.key)) merged[o.key] = o.value as SettingValue;
+    }
+    // An emptied field is not a value — leaving it in would read as "" and send
+    // the rule reader to the schema default, past the preset.
+    for (const [key, value] of Object.entries(values)) {
+      if (value !== undefined && value !== '') merged[key] = value;
+    }
+    return merged;
+  }, [presetValues, sourceOverrides, sourceSelected, values]);
+
+  // The slicer's own `enable_if` rules, read against that rather than against
+  // `values` alone (upstream b1f5ec96, #2942). `values` holds only what was
+  // typed here and the reader falls back to the SCHEMA default for the rest,
+  // so a preset with supports on read as `enable_support: false` and greyed
+  // out the whole Support page while the slice ran supports.
   const off = useMemo(
-    () => (data ? disabledKeys(values, data.schema, data.toggles) : new Set<string>()),
-    [data, values],
+    () => (data ? disabledKeys(effectiveValues, data.schema, data.toggles) : new Set<string>()),
+    [data, effectiveValues],
   );
 
   const sourceByKey = useMemo(
@@ -358,6 +379,7 @@ export default function SlicerSettingsPanel({
                       onChange={(v) => setValue(key, v)}
                       disabled={disabled || off.has(key)}
                       disabledBySlicer={off.has(key)}
+                      formDisabled={disabled}
                       source={sourceByKey.get(key)}
                       sourceOn={sourceSelected?.has(key) ?? false}
                       onToggleSource={onToggleSource}
@@ -417,6 +439,15 @@ interface RowProps {
   disabled: boolean;
   /** Greyed because the slicer's own rules turn it off, not because the form is busy. */
   disabledBySlicer: boolean;
+  /**
+   * The panel-wide disabled state, without the slicer's per-option rules.
+   *
+   * Gates the "from file" tick, which answers a different question from the
+   * control beside it: not "is this option in play" but "where does its value
+   * come from". Folding the two together is what left a ticked source setting
+   * applied to the slice and impossible to clear (upstream b1f5ec96, #2942).
+   */
+  formDisabled: boolean;
   /** Set when the source file's designer moved this option off the stock preset. */
   source?: DesignOverride;
   sourceOn?: boolean;
@@ -434,6 +465,7 @@ function OptionRow({
   onChange,
   disabled,
   disabledBySlicer,
+  formDisabled,
   source,
   sourceOn = false,
   onToggleSource,
@@ -508,7 +540,7 @@ function OptionRow({
             <input
               type="checkbox"
               checked={sourceOn}
-              disabled={disabled}
+              disabled={formDisabled}
               onChange={(e) => onToggleSource(optionKey, e.target.checked)}
               aria-label={t('slicerSettings.useFromFile', "Use the source file's value for {{option}}", {
                 option: option.label || optionKey,
