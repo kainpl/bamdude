@@ -11,6 +11,9 @@ is the interesting one, and it is the one that was invisible. Naming it later
 needs the number, the model, the stage it came from and what the printer was
 doing, so all of that is recorded -- once per stage number, because a stage can
 be entered repeatedly in one print.
+
+72 and 71 have since been named from BambuStudio's table (upstream 73e0787b), so
+the tests use numbers the table does not have — pinned below.
 """
 
 import logging
@@ -37,17 +40,17 @@ def _stage_records(caplog):
 class TestUnnamedStageIsReported:
     def test_the_h2c_stage_that_prompted_this(self, client, caplog):
         with caplog.at_level(logging.INFO):
-            client._update_state({"stg_cur": 72})
+            client._update_state({"stg_cur": 90})
         records = _stage_records(caplog)
         assert len(records) == 1
         message = records[0].getMessage()
-        assert "72" in message
+        assert "90" in message
         assert "H2C" in message
 
     def test_the_message_carries_what_naming_it_later_needs(self, client, caplog):
         client._update_state({"gcode_state": "RUNNING", "layer_num": 7, "total_layer_num": 240})
         with caplog.at_level(logging.INFO):
-            client._update_state({"stg_cur": 72})
+            client._update_state({"stg_cur": 90})
         message = _stage_records(caplog)[0].getMessage()
         # Where it came from, named, so a sequence can be reconstructed from
         # several of these lines rather than only the stage in isolation.
@@ -57,16 +60,20 @@ class TestUnnamedStageIsReported:
     def test_reported_once_per_stage_not_once_per_transition(self, client, caplog):
         """A stage can be entered repeatedly within a single print."""
         with caplog.at_level(logging.INFO):
-            client._update_state({"stg_cur": 72})
+            client._update_state({"stg_cur": 90})
             client._update_state({"stg_cur": 0})
-            client._update_state({"stg_cur": 72})
+            client._update_state({"stg_cur": 90})
         assert len(_stage_records(caplog)) == 1
 
     def test_a_second_unnamed_stage_is_still_reported(self, client, caplog):
         with caplog.at_level(logging.INFO):
-            client._update_state({"stg_cur": 72})
-            client._update_state({"stg_cur": 71})
+            client._update_state({"stg_cur": 90})
+            client._update_state({"stg_cur": 91})
         assert len(_stage_records(caplog)) == 2
+
+
+def test_the_unnamed_examples_are_really_unnamed():
+    assert 90 not in STAGE_NAMES and 91 not in STAGE_NAMES
 
 
 class TestQuietWhereItShouldBe:

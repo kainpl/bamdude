@@ -1621,7 +1621,7 @@ STAGE_NAMES = {
     47: "Auto bed leveling - phase 1",
     48: "Auto bed leveling - phase 2",
     49: "Heating chamber",
-    50: "Cooling heatbed",
+    50: "Adjusting heatbed temperature",
     51: "Printing calibration lines",
     52: "Auto Check: Material",
     53: "Live View Camera Calibration",
@@ -1638,7 +1638,18 @@ STAGE_NAMES = {
     64: "Preparing Hotend",
     65: "Calibrating nozzle clumping detection",
     66: "Purifying the chamber air",
-    74: "Preparing",  # Seen on H2D during print preparation
+    # 67-76 as BambuStudio names them (v02.08.02.61). 74 was "Preparing" here,
+    # a guess from an H2D; it is the heatbed foreign-object check.
+    67: "Measuring Rotary Attachment",
+    68: "The toolhead moves above the purge chute",
+    69: "Cooling down the nozzle",
+    70: "The toolhead moves to the center of the heatbed",
+    71: "Active Arc Fitting",
+    72: "Hotend Type Detection",
+    73: "Build plate alignment detection",
+    74: "Heatbed surface foreign object detection",
+    75: "Heatbed underside foreign object detection",
+    76: "Pre-extrusion before printing",
     77: "Preparing AMS",
 }
 

@@ -172,6 +172,11 @@
 
 ### Fixed
 
+- **The printer card names the newer preparation stages.** Stages 67–76
+  (arc fitting, hotend type detection, build plate alignment, the heatbed
+  foreign-object checks, pre-extrusion and others) showed as "Unknown stage",
+  and stage 74 — the heatbed surface foreign-object check — as "Preparing".
+  They now read as Bambu Studio names them.
 - **Clear plate works on a printer that is switched off.** With Auto Power
   Off a print ends with the plate gate up and the printer off, and the web
   refused to clear it ("Printer not connected") while the card hid the button,
