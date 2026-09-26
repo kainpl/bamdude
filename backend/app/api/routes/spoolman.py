@@ -97,14 +97,39 @@ async def get_spoolman_status(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
-    """Get Spoolman integration status."""
+    """Get Spoolman integration status.
+
+    ``connected`` answers "does the CONFIGURED Spoolman respond?", which means
+    asking it (upstream 4e40a502). It used to answer "has an earlier request
+    left a client object behind?" — some twenty call sites build one lazily,
+    and saving the Settings page builds one as a side effect, so the flag
+    followed which page had loaded first. The UI reads it twice (Connect only
+    while disconnected, the AMS sync only while connected), so enabling
+    Spoolman there showed a sync that then failed on every slot. Resolved the
+    way every other route resolves a client, stale-URL check included, and
+    not probed at all while the integration is off.
+    """
     sm = await get_spoolman_settings(db)
     enabled, url = sm["enabled"], sm["url"]
 
-    client = await get_spoolman_client()
     connected = False
-    if client:
-        connected = await client.health_check()
+    if enabled and url:
+        client = await get_spoolman_client()
+        if not client or client.base_url != url.rstrip("/"):
+            try:
+                client = await init_spoolman_client(url)
+            except ValueError as exc:
+                # The admin's to correct — and actionable only if the log says so.
+                logger.warning("Spoolman URL %r rejected by SSRF guard during status check: %s", url, exc)
+                client = None
+            except Exception as exc:  # noqa: BLE001 — a status poll reports, it does not fail
+                # Replacing a client closes the previous one, and httpx's
+                # aclose() may raise. A poll answering 500 every 30 s is worse
+                # than one reporting what is true: Spoolman could not be reached.
+                logger.warning("Could not open a Spoolman client for %r during status check: %s", url, exc)
+                client = None
+        if client:
+            connected = await client.health_check()
 
     return SpoolmanStatus(
         enabled=enabled,

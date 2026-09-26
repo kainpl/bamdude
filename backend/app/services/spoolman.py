@@ -106,6 +106,14 @@ class SpoolmanClient:
         # Per-spool locks for atomic read-modify-write in merge_spool_extra.
         # WeakValueDictionary: locks are GC'd once no coroutine holds a reference.
         self._extra_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
+        # Extra-field keys known to exist in this Spoolman (upstream 4e40a502 /
+        # 4d2c6deb). Bounded by the keys BamDude writes, never by spool count;
+        # per instance, so a client pointed at another Spoolman starts over.
+        self._ensured_extra_fields: set[str] = set()
+        self._ensure_extra_lock = asyncio.Lock()
+        # Whether the extra-field LISTING has been read once — a separate
+        # question from the set above ("have we asked" vs "what exists").
+        self._extra_fields_listed = False
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client with connection pooling limits."""
@@ -403,6 +411,7 @@ class SpoolmanClient:
             data["comment"] = comment
         if extra:
             data["extra"] = extra
+            await self._ensure_extra_fields(extra)
 
         logger.debug("Creating spool in Spoolman: %s", data)
         try:
@@ -443,6 +452,7 @@ class SpoolmanClient:
             data["location"] = location
         if extra:
             data["extra"] = extra
+            await self._ensure_extra_fields(extra)
         data["last_used"] = datetime.now(timezone.utc).isoformat()
 
         response = await self._request_spool("PATCH", spool_id, json_body=data, operation="update")
@@ -704,6 +714,7 @@ class SpoolmanClient:
             data["location"] = location
         if extra is not None:
             data["extra"] = extra
+            await self._ensure_extra_fields(extra)
         if clear_spool_weight:
             data["spool_weight"] = None
         elif spool_weight is not None:
@@ -932,24 +943,64 @@ class SpoolmanClient:
         """Register the 'tag' extra field in Spoolman if not present; returns True on success."""
         return await self.ensure_extra_field("tag")
 
-    async def ensure_extra_field(self, name: str, field_type: str = "text") -> bool:
-        """Register a custom extra field in Spoolman if not present.
+    async def _load_existing_extra_field_keys(self) -> set[str] | None:
+        """Keys of the spool extra fields Spoolman already has, or ``None`` when
+        the listing could not be read (upstream 4d2c6deb).
 
-        Spoolman rejects PATCH requests that include unknown extra-dict keys
-        with HTTP 400 ('Unknown extra field <name>.'), so any custom field
-        BamDude persists alongside spools needs to be pre-registered.
-        Idempotent — returns True if the field already exists.
+        ``None`` and ``set()`` differ and the caller acts on it: empty is
+        "Spoolman has none", so every needed field is created; ``None`` is "we
+        could not find out", where the only safe move is to attempt the write
+        blind. Matched on ``key``, never the display ``name`` — a field the user
+        renamed in Spoolman's UI is the same field, and reading it as missing is
+        what re-created it.
         """
         try:
             client = await self._get_client()
+            response = await client.get(f"{self.api_url}/field/spool")
+            if response.status_code != 200:
+                logger.debug(
+                    "Spoolman extra-field listing returned %s; falling back to blind registration",
+                    response.status_code,
+                )
+                return None
+            fields = response.json()
+        except Exception as e:  # noqa: BLE001 — registration is best-effort, see _ensure_extra_fields
+            logger.debug("Could not read Spoolman extra-field listing: %s", e)
+            return None
+        if not isinstance(fields, list):
+            return None
+        return {f["key"] for f in fields if isinstance(f, dict) and isinstance(f.get("key"), str)}
 
-            # Check if field already exists
-            response = await client.get(f"{self.api_url}/field/spool/{name}")
-            if response.status_code == 200:
-                logger.debug("Spoolman extra field %r already exists", name)
+    async def ensure_extra_field(self, name: str, field_type: str = "text") -> bool:
+        """Register a custom extra field in Spoolman if not present.
+
+        Spoolman rejects a write that carries an unknown extra-dict key with
+        HTTP 400 ('Unknown extra field <name>.'), so any custom field BamDude
+        persists alongside spools needs to be registered first. Idempotent —
+        returns True if the field already exists.
+
+        Existence is read from ``GET /field/spool``, the whole listing, once per
+        client (upstream 4d2c6deb). The old per-field ``GET /field/spool/{name}``
+        was never served — Spoolman declares only POST and DELETE there, so it
+        answered 405 every time — and falling through to the POST was worse than
+        a wasted request: that endpoint is an UPSERT, so a field the user had
+        renamed, retyped or given a default in Spoolman was reset to BamDude's
+        version on every restart. Only a successful listing is banked, so one
+        transient failure does not leave the client posting blind for its life.
+        """
+        try:
+            if name in self._ensured_extra_fields:
                 return True
+            if not self._extra_fields_listed:
+                existing = await self._load_existing_extra_field_keys()
+                if existing is not None:
+                    self._ensured_extra_fields |= existing
+                    self._extra_fields_listed = True
+                    if name in existing:
+                        logger.debug("Spoolman extra field %r already exists", name)
+                        return True
 
-            # Field doesn't exist - create it
+            client = await self._get_client()
             field_data = {
                 "name": name,
                 "field_type": field_type,
@@ -958,6 +1009,7 @@ class SpoolmanClient:
             response = await client.post(f"{self.api_url}/field/spool/{name}", json=field_data)
             if response.status_code in (200, 201):
                 logger.info("Created Spoolman extra field %r", name)
+                self._ensured_extra_fields.add(name)
                 return True
 
             logger.warning(
@@ -971,6 +1023,32 @@ class SpoolmanClient:
         except Exception as e:
             logger.warning("Failed to ensure Spoolman extra field %r exists: %s", name, e)
             return False
+
+    async def _ensure_extra_fields(self, extra: dict | None) -> None:
+        """Register every extra key an outgoing write carries, once per client
+        (upstream 4e40a502).
+
+        Registration used to happen before the FEATURE, from hand-kept lists (the
+        connect route, two inline blocks in the inventory routes) — and enabling
+        Spoolman from Settings reaches none of them, so the first AMS sync on a
+        fresh Spoolman failed on every slot with "Unknown extra field tag.". Keyed
+        off the payload, a write that carries a key is a write that registers it.
+
+        Best-effort: ``ensure_extra_field`` logs and returns False rather than
+        raising, and a failure must not turn a write that might still succeed
+        into one that never happens. Failures are not remembered, so a Spoolman
+        that was restarting gets another try on the next write.
+        """
+        names = [name for name in (extra or {}) if name not in self._ensured_extra_fields]
+        if not names:
+            return
+        async with self._ensure_extra_lock:
+            for name in names:
+                # Re-checked under the lock: a concurrent write may have just
+                # registered it, and two syncs racing to POST the same field is
+                # how one of them logs a needless warning.
+                if name not in self._ensured_extra_fields:
+                    await self.ensure_extra_field(name)
 
     def parse_ams_tray(self, ams_id: int, tray_data: dict) -> AMSTray | None:
         """Parse raw MQTT tray data into an AMSTray; returns None for empty or invalid trays."""

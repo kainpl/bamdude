@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Check, X, RefreshCw, Link2, Link2Off, Database, Info, AlertTriangle, Package, ExternalLink } from 'lucide-react';
+import { Loader2, Check, X, RefreshCw, Link2, Database, Info, AlertTriangle, Package, ExternalLink } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { SpoolmanSyncResult, Printer } from '../api/client';
 import { invalidateSpoolViews } from '../utils/queryInvalidation';
@@ -142,17 +142,6 @@ export function SpoolmanSettings() {
   // Connect mutation
   const connectMutation = useMutation({
     mutationFn: api.connectSpoolman,
-    onSuccess: () => {
-      refetchStatus();
-    },
-    onError: () => {
-      showToast(t('settings.toast.saveFailed'), 'error');
-    },
-  });
-
-  // Disconnect mutation
-  const disconnectMutation = useMutation({
-    mutationFn: api.disconnectSpoolman,
     onSuccess: () => {
       refetchStatus();
     },
@@ -498,21 +487,13 @@ export function SpoolmanSettings() {
                   )}
                 </div>
                 <div className="flex gap-2">
-                  {status?.connected ? (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => disconnectMutation.mutate()}
-                      disabled={disconnectMutation.isPending}
-                    >
-                      {disconnectMutation.isPending ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Link2Off className="w-4 h-4" />
-                      )}
-                      {t('settings.disconnect')}
-                    </Button>
-                  ) : (
+                  {/* Retry affordance only (upstream 4e40a502). Spoolman is a
+                      stateless HTTP API with no session to hold open, so there
+                      is nothing for a Disconnect button to disconnect: it closed
+                      this process's client, any other request rebuilt it lazily,
+                      and the status above silently flipped back. The enable
+                      toggle is what turns the integration off. */}
+                  {!status?.connected && (
                     <Button
                       size="sm"
                       onClick={() => connectMutation.mutate()}
@@ -530,9 +511,9 @@ export function SpoolmanSettings() {
               </div>
 
               {/* Error display */}
-              {(connectMutation.isError || disconnectMutation.isError) && (
+              {connectMutation.isError && (
                 <div className="mb-3 p-2 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-sm text-red-700 dark:text-red-400">
-                  {((connectMutation.error || disconnectMutation.error) as Error).message}
+                  {(connectMutation.error as Error).message}
                 </div>
               )}
 

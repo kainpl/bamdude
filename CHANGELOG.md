@@ -464,6 +464,17 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **Spoolman works from the first sync after enabling it.** Spoolman refuses a
+  spool carrying an extra field it was not told about, and BamDude registered
+  its fields only from the Connect button — which enabling Spoolman in Settings
+  never reached, so the first AMS sync failed on every slot. Each write now
+  registers the fields it carries. Registration also stopped resetting fields
+  you renamed in Spoolman on every restart: the existence check asked an
+  endpoint Spoolman never served, and fell through to one that overwrites.
+  The Spoolman status now asks the configured server each time instead of
+  reporting whether an earlier request had left a client behind, and the
+  Disconnect button is gone — there was no session to close, and it undid
+  itself within 30 seconds.
 - **A slicer-sent print keeps its AMS mapping and plate on more printers.**
   The printer confirms a print command by echoing it back, and some models
   (an H2S among them) answer `SUCCESS` in capitals — which BamDude read as a
