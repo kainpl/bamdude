@@ -149,15 +149,16 @@ _AMS_MODULE_PREFIXES = ("ams/", "n3f/", "n3s/")
 # somebody else's command.
 #
 # We counted from 0, which is inside nobody's range and outside our own: a reply
-# with ``sequence_id`` 5 could equally be ours or the screen's. The one place
-# that needed the answer hardcoded a literal — ``project_file`` pins "20000" so
-# a slicer-launched print can be told from ours — and 20000 is exactly
-# ``STUDIO_START_SEQ_ID``. This generalises that single case into the rule it
-# was always an instance of.
+# with ``sequence_id`` 5 could equally be ours or the screen's. ``project_file``
+# pins "20000", which is exactly ``STUDIO_START_SEQ_ID`` — the band is that pin
+# generalised.
 #
-# 20000 itself stays reserved for that pin: the counter starts there and every
-# command pre-increments, so no ordinary command can be mistaken for the
-# project_file we sent.
+# ⚠️ The band says "a studio-style sender", never "BamDude": slicers count up
+# from the same 20000 (measured: Orca 20000 then 20001, Studio 20009/20010), so
+# our own ``project_file`` is recognised by the job it carried, not by its
+# sequence id — see ``BambuMQTTClient._project_file_key`` (upstream 89ea3376).
+# 20000 itself stays reserved for the pin: the counter starts there and every
+# command pre-increments.
 #
 # ⚠️ BS does NOT wrap — ``m_sequence_id`` is a static int incremented forever,
 # so after 10 000 commands its own replies stop passing ``is_studio_cmd``. That
@@ -259,11 +260,15 @@ def is_successful_project_file(print_data: object) -> bool:
 
     ⚠️ Missing ``result`` is success, not failure: the slicer's own send, as it
     arrives on the request topic, has no result field at all.
+
+    ⚠️ Compared without case: an X1 echoes ``"success"``, an H2S ``"SUCCESS"``
+    (upstream 5dd7bd21), and BambuStudio lower-cases the result before it
+    compares. Compared as-is, every H2S echo read as a refusal.
     """
     return (
         isinstance(print_data, dict)
         and print_data.get("command") == "project_file"
-        and print_data.get("result", "success") == "success"
+        and str(print_data.get("result", "success")).lower() == "success"
     )
 
 
@@ -2176,6 +2181,11 @@ class BambuMQTTClient:
         # plate. For a print BamDude did not send this is the only sighting of
         # it before the 3MF has been fetched and read.
         self._captured_print_param: str | None = None
+        # The ``project_file`` WE dispatched, per topic that will echo it, so its
+        # echo is told from a slicer's (upstream 89ea3376). One-shot, consumed by
+        # the first matching frame on each topic — both topics feed
+        # ``_handle_project_file_command``, and our dispatch comes back on each.
+        self._own_project_file_keys: dict[str, str] = {}
 
         # True once we've seen (and normalised 16→6) an A2L AMS-Lite unit in the
         # AMS telemetry. Used to globalise the Lite's local ``tray_now`` to
@@ -2757,7 +2767,7 @@ class BambuMQTTClient:
                 # printer telemetry; anything we send lands twice, once on
                 # publish and once on the broker's echo, and that pair is itself
                 # evidence the command reached the broker.
-                self._handle_project_file_command(payload)
+                self._handle_project_file_command(payload, source="request")
                 return
 
             # Count status reports per connection so check_staleness() can tell
@@ -2769,7 +2779,22 @@ class BambuMQTTClient:
         except json.JSONDecodeError:
             pass  # Ignore non-JSON MQTT messages (e.g. binary or malformed payloads)
 
-    def _handle_project_file_command(self, data: dict) -> None:
+    @staticmethod
+    def _project_file_key(print_data: dict) -> str:
+        """Identity of a ``project_file`` dispatch, for telling ours from a slicer's.
+
+        Sequence id alone cannot — every slicer counts up from the same 20000 —
+        so the key also carries the file and where it went, which differ between
+        any two real dispatches.
+        """
+        return "|".join(str(print_data.get(field, "")) for field in ("sequence_id", "file", "url", "subtask_name"))
+
+    def _remember_own_project_file(self, print_data: dict) -> None:
+        """Mark the ``project_file`` we are about to publish as ours, on both topics."""
+        key = self._project_file_key(print_data)
+        self._own_project_file_keys = {"request": key, "report": key}
+
+    def _handle_project_file_command(self, data: dict, *, source: str = "request") -> None:
         """Remember what a ``project_file`` dispatch asked the printer for.
 
         ⚠️ **Fed by two topics, and on some printers only by the second.** The
@@ -2828,12 +2853,16 @@ class BambuMQTTClient:
                     param,
                 )
             # Diagnostic for upstream #1162 follow-up (X2D + FTS routing): when a
-            # slicer-launched project_file passes through the request topic, log
-            # the full payload so we can diff Studio's field set against ours.
-            # We pin our own sequence_id to "20000" when sending project_file
-            # ourselves, so any other value means the command came from
-            # Studio / Orca, not from us.
-            if print_data.get("sequence_id") != "20000":
+            # slicer-launched project_file passes through, log the full payload
+            # so Studio's field set can be diffed against ours. Ours is the job
+            # we remembered at dispatch, consumed once per topic — NOT
+            # ``sequence_id == "20000"``: slicers count up from that same base,
+            # so whichever of their dispatches landed on it was filed as ours
+            # (upstream 89ea3376).
+            key = self._project_file_key(print_data)
+            if self._own_project_file_keys.get(source) == key:
+                self._own_project_file_keys.pop(source, None)
+            else:
                 logger.info(
                     "[%s] External project_file payload: %s",
                     self.serial_number,
@@ -2942,7 +2971,7 @@ class BambuMQTTClient:
             # capture would then sit there waiting to be attributed to whatever
             # runs next.
             if is_successful_project_file(print_data):
-                self._handle_project_file_command(payload)
+                self._handle_project_file_command(payload, source="report")
             # Handle gcode_line ACK - resolve ACK listener for HTTP wait
             if isinstance(print_data, dict) and print_data.get("command") == "gcode_line" and "result" in print_data:
                 seq_id = print_data.get("sequence_id")
@@ -8026,6 +8055,9 @@ class BambuMQTTClient:
                         command["print"]["nozzle_mapping"] = resolved
 
             logger.info("[%s] Sending print command: %s", self.serial_number, json.dumps(command))
+            # Remembered BEFORE the publish: the broker's echo can arrive on the
+            # network thread before this line returns.
+            self._remember_own_project_file(command["print"])
             self._client.publish(self.topic_publish, json.dumps(command), qos=1)
             # Record what we dispatched so /printers/{id}/camera-cover can pick
             # the right plate thumbnail even when the printer's gcode_file echo

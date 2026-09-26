@@ -49,6 +49,7 @@ def _blank(client):
     client.serial_number = "01P09C4B3002022"
     client._captured_ams_mapping = None
     client._captured_print_param = None
+    client._own_project_file_keys = {}
 
     class _State:
         current_project_url = None
@@ -110,6 +111,15 @@ class TestOnlyASuccessfulDispatchIsBelieved:
         as_sent = {k: v for k, v in ECHOED_COMMAND["print"].items() if k not in ("result", "reason")}
         assert is_successful_project_file(as_sent) is True
 
+    def test_an_upper_case_success_is_taken(self):
+        """An H2S echoes ``result: "SUCCESS"`` (upstream 5dd7bd21); BambuStudio
+        lower-cases the result before comparing. Compared as-is, every such echo
+        read as a refusal and the report topic never yielded the mapping."""
+        assert is_successful_project_file(dict(ECHOED_COMMAND["print"], result="SUCCESS")) is True
+
+    def test_a_refusal_in_any_case_is_not(self):
+        assert is_successful_project_file(dict(ECHOED_COMMAND["print"], result="FAIL")) is False
+
     def test_a_status_push_is_not_a_dispatch(self):
         assert is_successful_project_file({"command": "push_status", "result": "success"}) is False
 
@@ -134,3 +144,62 @@ def test_the_key_the_client_sends_is_the_key_main_reads():
     sent = inspect.getsource(bambu_mqtt).count('"plate_param": self._captured_print_param')
     assert sent == 2, f"expected both print-start callbacks to carry it, found {sent}"
     assert 'parse_plate_id(data.get("plate_param"))' in inspect.getsource(main)
+
+
+class TestOurOwnDispatchIsRecognised:
+    """Our dispatch is told from a slicer's by what it was, not by a magic
+    ``sequence_id`` (upstream 89ea3376).
+
+    "20000" is not ours alone: slicers count up from the same base (measured:
+    Orca 20000 then 20001, Studio 20009/20010), so whichever slicer dispatch
+    landed on it was filed as ours and never logged. The job we actually sent is
+    remembered and consumed on its echo — once PER TOPIC, because both topics
+    feed the same handler and our dispatch is echoed on each.
+    """
+
+    OURS = {
+        "sequence_id": "20000",
+        "command": "project_file",
+        "param": "Metadata/plate_1.gcode",
+        "url": "ftp://Lamp.gcode.3mf",
+        "file": "Lamp.gcode.3mf",
+        "subtask_name": "Lamp",
+    }
+
+    @staticmethod
+    def _external_logs(caplog) -> int:
+        return sum("External project_file payload" in r.getMessage() for r in caplog.records)
+
+    def test_our_echo_on_both_topics_is_not_called_external(self, client, caplog):
+        _blank(client)
+        client._remember_own_project_file(dict(self.OURS))
+        with caplog.at_level("INFO", logger="backend.app.services.bambu_mqtt"):
+            client._handle_project_file_command({"print": dict(self.OURS)}, source="request")
+            client._handle_project_file_command({"print": dict(self.OURS, result="SUCCESS")}, source="report")
+        assert self._external_logs(caplog) == 0
+
+    def test_a_slicer_dispatch_on_the_shared_sequence_id_is_logged(self, client, caplog):
+        _blank(client)
+        client._remember_own_project_file(dict(self.OURS))
+        slicer = dict(self.OURS, file="Cube.gcode.3mf", url="ftp://Cube.gcode.3mf", subtask_name="Cube")
+        with caplog.at_level("INFO", logger="backend.app.services.bambu_mqtt"):
+            client._handle_project_file_command({"print": slicer}, source="request")
+        assert self._external_logs(caplog) == 1
+
+    def test_the_marker_is_one_shot(self, client, caplog):
+        _blank(client)
+        """A slicer reprint of the same file a moment later is somebody else's."""
+        client._remember_own_project_file(dict(self.OURS))
+        with caplog.at_level("INFO", logger="backend.app.services.bambu_mqtt"):
+            client._handle_project_file_command({"print": dict(self.OURS)}, source="request")
+            client._handle_project_file_command({"print": dict(self.OURS)}, source="request")
+        assert self._external_logs(caplog) == 1
+
+    def test_the_dispatch_remembers_what_it_publishes(self):
+        import inspect
+        import re
+
+        source = re.sub(r"\s+", " ", inspect.getsource(BambuMQTTClient.start_print))
+        remember = source.index('self._remember_own_project_file(command["print"])')
+        publish = source.index("self._client.publish(self.topic_publish, json.dumps(command), qos=1)")
+        assert remember < publish

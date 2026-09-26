@@ -464,6 +464,18 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **A slicer-sent print keeps its AMS mapping and plate on more printers.**
+  The printer confirms a print command by echoing it back, and some models
+  (an H2S among them) answer `SUCCESS` in capitals — which BamDude read as a
+  refusal. On a printer whose command channel BamDude cannot listen to, that
+  echo is the only sighting of a print sent from the slicer, so it arrived
+  with no AMS mapping and no plate. BamDude's own prints are now also told
+  from a slicer's by the job itself rather than by a number slicers use too,
+  so the diagnostic log stops filing a slicer's print as BamDude's.
+- **Configure Slot binds the calibrated K-profile it shows.** A click landing
+  in the instant the K-profile list finished loading could send the previous
+  render's empty choice, and the printer bound the default K while the dialog
+  showed the calibrated profile selected.
 - **A print whose 3MF turned out to be another plate's stays right.** When the
   file on the card held another plate than the one printing, BamDude refused
   it but renamed the archive `plate_1` if the job's name carried no plate

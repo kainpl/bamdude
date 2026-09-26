@@ -185,6 +185,15 @@ export function ConfigureAmsSlotModal({
     if (isOpen) api.triggerFilamentPresetSync().catch(() => undefined);
   }, [isOpen]);
   const [selectedKProfile, setSelectedKProfile] = useState<KProfile | null>(null);
+  // The selection as of THIS render, for the Configure mutation to read at
+  // execute time (upstream 5dd7bd21). React Query hands a mutation its options
+  // from an effect, so a click landing between a commit and that effect runs
+  // the previous render's mutationFn — one that captured the selection before
+  // the K-profile query resolved, and sent cali_idx -1 while the dialog showed
+  // the calibrated profile. Written during render: an effect would inherit the
+  // very flush ordering this exists to escape.
+  const selectedKProfileRef = useRef<KProfile | null>(null);
+  selectedKProfileRef.current = selectedKProfile;
   const [colorHex, setColorHex] = useState<string>(''); // Just the 6-char hex, no alpha
   const [colorInput, setColorInput] = useState<string>(''); // User's text input (name or hex)
   const [searchQuery, setSearchQuery] = useState('');
@@ -237,9 +246,12 @@ export function ConfigureAmsSlotModal({
     mutationFn: async () => {
       if (!selectedPresetId) throw new Error('No filament family selected');
       const fam = (familiesData || []).find(f => f.filament_id === selectedPresetId);
-      const caliIdx = selectedKProfile?.slot_id ?? -1;
+      // The K value and the profile's ids travel in the same payload and had
+      // the same exposure, so they read the ref too.
+      const kProfile = selectedKProfileRef.current;
+      const caliIdx = kProfile?.slot_id ?? -1;
       const color = colorHex || slotInfo.trayColor?.slice(0, 6) || 'FFFFFF';
-      const kValue = selectedKProfile?.k_value ? parseFloat(selectedKProfile.k_value) : 0;
+      const kValue = kProfile?.k_value ? parseFloat(kProfile.k_value) : 0;
 
       const result = await api.configureAmsSlot(printerId, slotInfo.amsId, slotInfo.trayId, {
         tray_info_idx: selectedPresetId,
@@ -254,8 +266,8 @@ export function ConfigureAmsSlotModal({
         cali_idx: caliIdx,
         nozzle_diameter: nozzleDiameter,
         setting_id: '',
-        kprofile_filament_id: selectedKProfile?.filament_id,
-        kprofile_setting_id: selectedKProfile?.setting_id || undefined,
+        kprofile_filament_id: kProfile?.filament_id,
+        kprofile_setting_id: kProfile?.setting_id || undefined,
         k_value: kValue,
       });
       return result;
