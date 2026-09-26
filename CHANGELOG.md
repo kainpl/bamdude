@@ -464,6 +464,19 @@
   print that finished kept 0 g even though its assigned spools were debited by
   their measured drop — statistics and inventory disagreed. The measured weight
   is now the archive's figure whenever there is no estimate.
+- **The Slice dialog picks the right material and the right printer's
+  process.** A PLA plate could be pre-filled with a PETG profile, and a P1S
+  with an A1 process the slicer then refused. Filament profiles are now
+  pre-picked from the slot's own base material (PLA, PETG, ABS… — the type
+  the profile states, not a brand or profile family; PA-CF / PA12-CF /
+  PAHT-CF count as one, as they do when printing), falling back to another
+  material only when nothing else exists; a profile you chose yourself is
+  never swapped out. Built-in profiles now carry the slicer's own list of
+  printers they fit (with an updated slicer sidecar), which is what a P1S,
+  X1, X1E or H2D Pro needs — the slicer ships no process named after them.
+  The default process is the one nearest 0.20 mm rather than the
+  alphabetically first, H2D Pro profiles spelled "H2DP" are recognised, and
+  a printer filter that would empty a dropdown shows the whole list instead.
 - **A sliced file records the colour it is printed in.** Every file BamDude
   sliced came back Bambu green whatever filament was picked — a green plate
   picture and a "colour mismatch" in the print dialog against a correctly

@@ -42,6 +42,11 @@ export const EMPTY_COMPATIBILITY_INDEX: PrinterCompatibilityIndex = {
 // (e.g. "X1" ⇄ "X1C") would silently group truly distinct printers.
 const PRINTER_MODEL_SUFFIX_ALIASES: Record<string, readonly string[]> = {
   'A1 MINI': ['A1M'],
+  // Same shape (upstream e9daa212, #2982): the bundle names every H2D Pro
+  // process and filament preset "@BBL H2DP" while the printer preset — and
+  // PRINTER_MODEL_MAP with it — spells the model "H2D Pro". Deliberately
+  // narrow: H2DP and a plain H2D are different machines.
+  'H2D PRO': ['H2DP'],
 };
 
 /**

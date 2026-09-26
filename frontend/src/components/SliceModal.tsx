@@ -1,5 +1,5 @@
 import { AlertTriangle, Check, Cloud, CloudOff, Cog, Loader2, RefreshCw, XCircle } from 'lucide-react';
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -50,6 +50,7 @@ import {
   pickDefault,
   pickFilamentForSlot,
   pickProcessDefault,
+  statesDifferentMaterial,
 } from '../utils/slicePresetPicker';
 
 export type SliceSource =
@@ -298,8 +299,12 @@ function PresetDropdown({
     const filterByPrinter = slot !== 'printer';
     const compatSections: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
     const other: UnifiedPreset[] = [];
+    // The same sections with the printer filter never applied, for the
+    // all-filtered-out case below.
+    const unfiltered: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
     for (const { key, label: lk, fallback } of tiers) {
       const entries = (data[key] as UnifiedPresetsBySlot)[slot];
+      if (entries.length > 0) unfiltered.push({ tierLabel: t(lk, fallback), entries });
       if (!filterByPrinter) {
         if (entries.length > 0) compatSections.push({ tierLabel: t(lk, fallback), entries });
         continue;
@@ -323,6 +328,15 @@ function PresetDropdown({
       if (compatible.length > 0) {
         compatSections.push({ tierLabel: t(lk, fallback), entries: compatible });
       }
+    }
+    // A filter that leaves nothing at all is a statement about our matching,
+    // not about the presets (upstream e9daa212, #2982): a P1S has ten usable
+    // process presets and read as having none, because each is named for an
+    // X1C and says "P1S" only in a `compatible_printers` list an older sidecar
+    // does not report. So an emptied list is shown unfiltered — a visible
+    // preset for the wrong printer can be changed, an empty dropdown cannot.
+    if (compatSections.length === 0 && other.length > 0) {
+      return { sections: unfiltered, otherEntries: [] };
     }
     return { sections: compatSections, otherEntries: other };
   }, [data, slot, t, selectedPrinterName, compatIndex]);
@@ -600,6 +614,12 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // backend's own fallbacks. Storing a colour for every slot up front would
   // defeat that chain — a sent colour outranks the preset's own default.
   const [filamentColours, setFilamentColours] = useState<(string | null)[]>([]);
+  // Slots the user chose a filament for by hand, or by applying a pipeline
+  // (upstream e9daa212, #2982). The pre-pick re-picks a slot whose preset
+  // states the wrong material, and without this it would do so to a deliberate
+  // choice too — printing PETG on a plate a designer labelled PLA is a thing
+  // people do on purpose. A ref, not state: it must not re-trigger the pre-pick.
+  const explicitFilamentSlots = useRef<Set<number>>(new Set());
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Bed plate override sent to the slicer as ``--curr-bed-type``. Default
@@ -986,7 +1006,15 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // A plate switch renumbers the slots, so the colour picks are dropped when
   // the slot count changes (see `resizeColourOverrides`).
   useEffect(() => {
-    setFilamentColours((current) => resizeColourOverrides(current, filamentSlots.length));
+    setFilamentColours((current) => {
+      if (current.length !== filamentSlots.length) {
+        // A renumbered slot list invalidates the record of which slots the
+        // user chose for the same reason: slot 2 of the new plate is not slot 2
+        // of the old one.
+        explicitFilamentSlots.current = new Set();
+      }
+      return resizeColourOverrides(current, filamentSlots.length);
+    });
   }, [filamentSlots]);
 
   // Filament pre-pick: re-runs when the active filament-slot count changes
@@ -1003,7 +1031,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         const cur = current[i] ?? null;
         if (cur) {
           const p = findPreset(data, cur, 'filament');
-          if (p && presetCompatibility(p, 'filament', selectedPrinterName, compatIndex) !== 'mismatch') {
+          // Compatible with the printer is not on its own a reason to keep a
+          // pick: a preset stating another base material than the plate asks
+          // for is the wrong preset however well it fits the machine, and
+          // holding onto one is how a PETG profile survived on a PLA plate
+          // through every re-pick (#2982). An explicit choice is exempt.
+          const wrongMaterial = p && !explicitFilamentSlots.current.has(i) && statesDifferentMaterial(p, slot.type);
+          if (p && !wrongMaterial && presetCompatibility(p, 'filament', selectedPrinterName, compatIndex) !== 'mismatch') {
             return cur;
           }
         }
@@ -1185,6 +1219,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       const ref = picked.filament_presets[i];
       if (resolved(ref, 'filament')) {
         nextFilaments[i] = ref;
+        // Applying a pipeline is as deliberate as picking from the dropdown,
+        // so the slots it fills are exempt from the material re-pick too.
+        explicitFilamentSlots.current.add(i);
       } else {
         unresolved.push(
           nextFilaments.length > 1
@@ -1655,6 +1692,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     data={presetsQuery.data}
                     value={filamentPresets[idx] ?? null}
                     onChange={(ref) => {
+                      explicitFilamentSlots.current.add(idx);
                       setUnresolvedBundleSlots(null);
                       setFilamentPresets((current) => {
                         const next = current.length === filamentSlots.length
