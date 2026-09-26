@@ -172,6 +172,11 @@
 
 ### Fixed
 
+- **An H2C hotend that has parked its nozzle no longer counts as having it.**
+  The printer keeps reporting the last nozzle's diameter for an empty hotend,
+  so a job sliced for that size could be routed to a machine with no such
+  nozzle mounted or docked. A hotend the printer reports as empty (no serial,
+  no temperature rating) is now left out; nozzles in the rack still count.
 - **The queue's log says why a printer sat out a pass.** It called every such
   printer "not available", including the one it had just sent a job to, and
   showed its state as read afterwards — "state=IDLE" one line before the job

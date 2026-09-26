@@ -216,3 +216,33 @@ def test_a_strict_variant_job_does_not_match_the_generic_the_slot_advertises():
     strict = RoutingPolicy(force_color_match=True, allow_base_material_match=False)
     assert resolve_filament_routing(matte_job, strict, plain).status != "compatible"
     assert resolve_filament_routing(matte_job, strict, overlaid).status == "compatible"
+
+
+def _nozzle_state(info, model="H2C"):
+    state = PrinterState(connected=True)
+    state.feed_telemetry.observe({"print": {"device": {"nozzle": {"info": info}}}}, model)
+    return snapshot_from_state(1, model, state)
+
+
+def test_an_empty_hotend_does_not_count_its_last_nozzle():
+    # upstream 4961990a (#2885): a hotend that parked its nozzle back in the
+    # rack keeps reporting that nozzle's diameter, with serial "N/A" and no
+    # temperature rating. Counting it let a slice match a nozzle the machine
+    # did not have mounted.
+    snap = _nozzle_state(
+        [
+            {"id": 0, "diameter": "0.6", "sn": "N/A", "tm": 0},
+            {"id": 1, "diameter": "0.4", "sn": "SN123", "tm": 300},
+            {"id": 16, "diameter": "0.2"},
+        ]
+    )
+    assert snap.nozzle_diameters == {0: (0.4,), 1: (0.2,)}
+
+
+def test_emptiness_has_to_be_stated():
+    # A firmware that reports neither field has told us nothing: that is not
+    # an empty hotend, and reading it as one would switch the guard off.
+    snap = _nozzle_state(
+        [{"id": 0, "diameter": "0.4"}, {"id": 1, "diameter": "0.4", "serial_number": "N/A", "max_temp": 300}], "H2D"
+    )
+    assert snap.nozzle_diameters == {0: (0.4,), 1: (0.4,)}

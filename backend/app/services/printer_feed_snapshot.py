@@ -56,6 +56,30 @@ def _integer(value, default=None):
         return default
 
 
+# What the firmware puts in a hotend's serial when no nozzle is mounted on it.
+_EMPTY_NOZZLE_SERIAL = "N/A"
+
+
+def _hotend_states_empty(entry: dict) -> bool:
+    """A hotend entry of ``device.nozzle.info`` that SAYS nothing is mounted.
+
+    A hotend that parked its nozzle back in the rack keeps reporting that
+    nozzle's diameter — measured on an H2C at idle: diameter "0.4", serial
+    "N/A", no temperature rating (upstream #2885). The diameter is therefore no
+    sign of presence. Emptiness has to be stated: the serial must be the
+    firmware's "N/A" AND the rating absent; a firmware that reports neither has
+    said nothing, and reading that as empty would switch the nozzle check off.
+    Rack docks (ids 16+) are not asked — an empty dock is absent altogether.
+    """
+    serial = str(entry.get("serial_number") or entry.get("sn") or "").strip().upper()
+    if serial != _EMPTY_NOZZLE_SERIAL:
+        return False
+    try:
+        return float(entry.get("max_temp") or entry.get("tm") or 0) <= 0
+    except (TypeError, ValueError):
+        return False
+
+
 @dataclass
 class FeedTelemetry:
     ams_known: bool = False
@@ -197,6 +221,8 @@ class FeedTelemetry:
                         continue
                     nid = _integer(entry.get("id"))
                     if nid is None:
+                        continue
+                    if nid < 16 and _hotend_states_empty(entry):
                         continue
                     if is_nozzle_rack_model(model):
                         from backend.app.utils.printer_models import (
