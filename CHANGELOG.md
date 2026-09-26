@@ -172,6 +172,16 @@
 
 ### Fixed
 
+- **The connection diagnostic reads your real network.** Its subnet check
+  assumed every LAN is a /24, so on a wider network (a /22, for example) it
+  told you a printer a few hundred addresses away was on a different network;
+  it now reads the prefix off BamDude's own interface, and compares the printer
+  against the interface that actually routes to it, which matters on a machine
+  with two network cards. The network-mode check names the container engine —
+  Docker, Podman, Kubernetes, LXC — instead of telling a Podman install it is
+  "not running in Docker"; a mode it cannot read is said to be unknown rather
+  than guessed, and an LXC system container is not told to switch to host
+  networking. Support bundles record the engine as well.
 - **The AI detection badge no longer says a print is watched when it is not.**
   A monitored print with no result yet — or whose checks were failing: a
   rejected ML token, an unreachable ML server, no camera frame, no External

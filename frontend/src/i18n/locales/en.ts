@@ -6398,10 +6398,13 @@ export default {
         warn: 'Port {{port}} is unreachable. The live camera view will not work. This does not affect printing.',
       },
       network_mode: {
-        title: 'Docker network mode',
-        pass: 'Running in host network mode.',
-        warn: 'BamDude is running in Docker bridge networking. Printer discovery and the Virtual Printer need host network mode - recreate the container with "network_mode: host".',
-        skip: 'Not running in Docker - not applicable.',
+        title: 'Container network mode',
+        genericRuntime: 'a container',
+        pass: 'Running in {{runtime}} with host networking.',
+        warn: 'BamDude is running in {{runtime}} with bridge networking. Printer discovery and the Virtual Printer need host networking - recreate the container with host network mode ("network_mode: host" in docker-compose, "--network=host" for Podman).',
+        skip: 'Not running in a container - not applicable.',
+        skip_unknown: 'BamDude is running in {{runtime}}, but its network mode could not be determined. If printer discovery or the Virtual Printer do not work, recreate the container with host networking.',
+        skip_system_container: 'BamDude is running in a {{runtime}} system container, which sits on the LAN like a virtual machine - not applicable.',
       },
       subnet: {
         title: 'Network subnet',

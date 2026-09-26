@@ -142,4 +142,74 @@ describe('ConnectionDiagnosticModal', () => {
 
     spy.mockRestore();
   });
+
+  it('names the container engine in the network-mode check (#3092)', async () => {
+    const spy = vi.spyOn(api, 'diagnosePrinter').mockResolvedValue({
+      ...PROBLEM_RESULT,
+      overall: 'ok',
+      checks: [{ id: 'network_mode', status: 'pass', params: { mode: 'host', runtime: 'Podman' } }],
+    });
+
+    renderModal({ printerId: 1, printerName: 'Test P1S', onClose: vi.fn() });
+
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    // The title is no longer Docker-specific, and the engine the user
+    // actually runs is named back to them.
+    expect(await screen.findByText(/Container network mode/i)).toBeInTheDocument();
+    expect(screen.getByText(/Running in Podman with host networking/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Docker network mode/i)).not.toBeInTheDocument();
+
+    spy.mockRestore();
+  });
+
+  it('localizes an unnamed container engine instead of interpolating a raw word (#3092)', async () => {
+    const spy = vi.spyOn(api, 'diagnosePrinter').mockResolvedValue({
+      ...PROBLEM_RESULT,
+      overall: 'ok',
+      checks: [{ id: 'network_mode', status: 'pass', params: { mode: 'host', runtime: 'container' } }],
+    });
+
+    renderModal({ printerId: 1, printerName: 'Test P1S', onClose: vi.fn() });
+
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    // "a container", not the bare backend sentinel — the same slot carries a
+    // localized noun phrase in every other locale.
+    expect(await screen.findByText(/Running in a container with host networking/i)).toBeInTheDocument();
+
+    spy.mockRestore();
+  });
+
+  it('says so when a container network mode cannot be read, instead of guessing (#3092)', async () => {
+    const spy = vi.spyOn(api, 'diagnosePrinter').mockResolvedValue({
+      ...PROBLEM_RESULT,
+      overall: 'warnings',
+      checks: [{ id: 'network_mode', status: 'skip', params: { reason: 'unknown', runtime: 'Podman' } }],
+    });
+
+    renderModal({ printerId: 1, printerName: 'Test P1S', onClose: vi.fn() });
+
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/network mode could not be determined/i)).toBeInTheDocument();
+    // Must not claim bare metal, which is what sent the reporter looking
+    // for the problem somewhere else.
+    expect(screen.queryByText(/not running in a container/i)).not.toBeInTheDocument();
+
+    spy.mockRestore();
+  });
+
+  it('does not offer host networking to a system container (#3092)', async () => {
+    const spy = vi.spyOn(api, 'diagnosePrinter').mockResolvedValue({
+      ...PROBLEM_RESULT,
+      overall: 'ok',
+      checks: [{ id: 'network_mode', status: 'skip', params: { reason: 'system_container', runtime: 'LXC' } }],
+    });
+
+    renderModal({ printerId: 1, printerName: 'Test P1S', onClose: vi.fn() });
+
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/LXC system container/i)).toBeInTheDocument();
+    expect(screen.queryByText(/recreate the container/i)).not.toBeInTheDocument();
+
+    spy.mockRestore();
+  });
 });

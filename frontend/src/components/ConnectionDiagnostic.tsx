@@ -46,7 +46,13 @@ export function DiagnosticChecklist({ result }: { result: PrinterDiagnosticResul
     const params =
       check.id === 'port_rtsps'
         ? { protocol: 'RTSPS', port: 322, ...check.params }
-        : check.params;
+        // The network_mode check names the container engine. Docker, Podman and
+        // the rest are proper nouns; an engine the backend could not name
+        // arrives as the sentinel 'container' and is localized here (upstream
+        // #3092). Keep in step with RUNTIME_OTHER in services/discovery.py.
+        : check.id === 'network_mode' && check.params?.runtime === 'container'
+          ? { ...check.params, runtime: t('diagnostic.check.network_mode.genericRuntime') }
+          : check.params;
     // A check may carry a `reason` that selects a more specific message variant
     // (external_storage skip on models with no reachable toggle →
     // skip_unsupported_model); fall back to the plain per-status text when no

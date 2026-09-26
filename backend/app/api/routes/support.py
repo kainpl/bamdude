@@ -38,7 +38,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool import Spool
 from backend.app.models.user import User
-from backend.app.services.discovery import is_running_in_docker
+from backend.app.services.discovery import detect_container_runtime, is_running_in_docker
 from backend.app.services.log_reader import sanitize_log_content
 from backend.app.services.network_utils import get_network_interfaces
 from backend.app.services.printer_manager import printer_manager
@@ -1088,6 +1088,10 @@ async def _collect_support_info() -> dict:
         },
         "environment": {
             "docker": in_docker,
+            # Named beside the Docker flag: a Podman or LXC bundle carried
+            # `"docker": false` and nothing else, which reads as bare metal
+            # (upstream #3092).
+            "container_runtime": detect_container_runtime(),
             "data_dir": _sanitize_path(str(settings.base_dir)),
             "log_dir": _sanitize_path(str(settings.log_dir)),
             "timezone": os.environ.get("TZ", ""),
