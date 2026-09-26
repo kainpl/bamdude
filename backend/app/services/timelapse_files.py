@@ -31,6 +31,22 @@ VIDEO_EXTENSIONS = (".mp4", ".avi")
 INTERNAL_TIMELAPSE_ROOT = "/userdata/media/timelapse/"
 
 
+# Whether the last listing of each printer heard from every medium it asked
+# (audit D6 part 4). An empty listing means "no recordings" AND "the card never
+# answered", and a baseline recorded from the second is not evidence of anything.
+_listing_answered: dict[int, bool] = {}
+
+
+def last_listing_answered(printer_id: int) -> bool:
+    """Whether the last :func:`list_timelapse_videos` for *printer_id* heard from every medium it asked.
+
+    False when the card did not answer, or when the internal catalogue was
+    needed and could not be read. A printer never listed counts as answered —
+    there is nothing to distrust.
+    """
+    return _listing_answered.get(printer_id, True)
+
+
 def _videos_only(entries: list[dict]) -> list[dict]:
     return [e for e in entries if not e.get("is_directory") and e.get("name", "").lower().endswith(VIDEO_EXTENSIONS)]
 
@@ -55,10 +71,19 @@ async def list_timelapse_videos(printer) -> tuple[list[dict], str | None]:
 
     Returns ``(videos, source)`` where ``source`` is the directory the files
     came from, or ``"internal"`` for the tunnel catalogue. ``([], None)`` when
-    there are none — which is an ordinary answer, not a failure.
+    there are none — which is an ordinary answer, not a failure — or when the
+    printer did not answer; :func:`last_listing_answered` tells the two apart.
     """
+    videos, source, answered = await _list_both_media(printer)
+    _listing_answered[printer.id] = answered
+    return videos, source
+
+
+async def _list_both_media(printer) -> tuple[list[dict], str | None, bool]:
+    """``(videos, source, answered)`` — the listing, and whether every medium asked replied."""
     from backend.app.services.bambu_ftp import list_files_checked_async
 
+    card_answered = True
     for directory in FTP_TIMELAPSE_DIRS:
         try:
             found, answered = await list_files_checked_async(
@@ -77,16 +102,17 @@ async def list_timelapse_videos(printer) -> tuple[list[dict], str | None]:
                 "[TIMELAPSE] %s is not answering on FTP — not trying the rest of the card",
                 printer.name,
             )
+            card_answered = False
             break
         videos = _videos_only(found)
         if videos:
-            return videos, directory
+            return videos, directory, True
 
     # Nothing on the card. On a machine that records internally there is a
     # whole catalogue FTP cannot see — this is the gap that left an archive
     # without its recording while the file sat on the printer.
     if not _supports_internal_timelapse(printer):
-        return [], None
+        return [], None, card_answered
 
     from backend.app.services.printer_files.factory import transport_for
 
@@ -94,10 +120,10 @@ async def list_timelapse_videos(printer) -> tuple[list[dict], str | None]:
         entries = await transport_for(printer, "internal").list_files("/", file_type="timelapse")
     except Exception as exc:  # noqa: BLE001 — same as above: absence is normal
         logger.debug("[TIMELAPSE] internal catalogue failed on %s: %s", printer.name, exc)
-        return [], None
+        return [], None, False
 
     videos = _videos_only([e.as_dict() for e in entries])
-    return (videos, "internal") if videos else ([], None)
+    return (videos, "internal", card_answered) if videos else ([], None, card_answered)
 
 
 def last_recording_path(printer) -> str:
@@ -118,7 +144,9 @@ def last_recording_path(printer) -> str:
     return str(getattr(printer_manager.get_status(printer.id), "timelapse_path", "") or "")
 
 
-def pick_new_recording(video_files: list[dict], baseline_names: set[str], reported_path: str) -> dict | None:
+def pick_new_recording(
+    video_files: list[dict], baseline_names: set[str], reported_path: str, *, require_unambiguous: bool = False
+) -> dict | None:
     """Which of these recordings belongs to the print that just ended.
 
     Two independent signals, and the weaker one is still the gate:
@@ -132,6 +160,13 @@ def pick_new_recording(video_files: list[dict], baseline_names: set[str], report
     :func:`last_recording_path` cannot promote a recording from an earlier
     print. Where they disagree — or where the printer reported nothing — the
     baseline answer stands, exactly as before.
+
+    *require_unambiguous* — the baseline was taken off a card that did not
+    answer, so "new since the baseline" narrows nothing down (audit D6 part 4,
+    upstream 59d2713a). One new recording, or the one the printer names, still
+    answers; between several others this refuses to guess and leaves them for
+    Scan for timelapse — the first of them would be an arbitrary video attached
+    to this print, and with the tidy-up on, deleted off the printer.
     """
     new_files = [f for f in video_files if f.get("name", "") not in baseline_names]
     if not new_files:
@@ -142,6 +177,15 @@ def pick_new_recording(video_files: list[dict], baseline_names: set[str], report
         named = next((f for f in new_files if f.get("name", "").lower() == wanted), None)
         if named is not None:
             return named
+
+    if require_unambiguous and len(new_files) > 1:
+        logger.warning(
+            "[TIMELAPSE] %s new recordings (%s) and no trustworthy baseline to tell them apart — "
+            "leaving them on the printer for Scan for timelapse",
+            len(new_files),
+            ", ".join(str(f.get("name")) for f in new_files),
+        )
+        return None
 
     # ⚠️ Still first-of-the-new, not "newest by timestamp". A card carries no
     # reliable mtime for these and the tunnel catalogue is ordered by the

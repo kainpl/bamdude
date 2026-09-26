@@ -144,6 +144,7 @@ from backend.app.services.stock_forecast_alerts import stock_forecast_alerts
 # only the listing was worse than useless for a while: the auto-scan found the
 # recording in internal storage and then tried to fetch it over FTP.
 from backend.app.services.timelapse_files import (
+    last_listing_answered as _last_listing_answered,
     last_recording_path as _last_recording_path,
     list_timelapse_videos as _list_timelapse_videos,
     pick_new_recording as _pick_new_recording,
@@ -513,6 +514,11 @@ _POST_PRINT_CLEANUP_BUDGET = 120.0
 # Track timelapse file baselines at print start: {printer_id: set of video filenames}
 # Used for snapshot-diff detection at print completion
 _timelapse_baselines: dict[int, set[str]] = {}
+# Printers whose baseline above was taken off a card that did not answer (audit
+# D6 part 4): recorded all the same — the usual card holds one recording at
+# completion, and an empty baseline resolves it — but the completion scan then
+# refuses to guess between several new recordings.
+_untrusted_timelapse_baselines: set[int] = set()
 
 # Track active bed cooldown monitoring tasks: {printer_id: asyncio.Task}
 _bed_cooldown_tasks: dict[int, asyncio.Task] = {}
@@ -5058,6 +5064,15 @@ async def _capture_timelapse_baseline_at_start(printer, printer_id: int, logger:
     try:
         baseline_files, _ = await _list_timelapse_videos(printer)
         _timelapse_baselines[printer_id] = {f.get("name", "") for f in baseline_files}
+        if _last_listing_answered(printer.id):
+            _untrusted_timelapse_baselines.discard(printer_id)
+        else:
+            _untrusted_timelapse_baselines.add(printer_id)
+            logger.warning(
+                "[TIMELAPSE] Baseline for printer %s taken while its storage did not answer — a single new "
+                "recording will still be attached at completion, several will not be guessed between",
+                printer_id,
+            )
         logger.info(
             "[TIMELAPSE] Baseline at print start: %s video files for printer %s",
             len(_timelapse_baselines[printer_id]),
@@ -5067,7 +5082,19 @@ async def _capture_timelapse_baseline_at_start(printer, printer_id: int, logger:
         logger.warning("[TIMELAPSE] Failed to capture baseline at print start: %s", e)
 
 
-async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[str] | None = None):
+def _pop_timelapse_baseline(printer_id: int) -> tuple[set[str] | None, bool]:
+    """Hand a finished print's baseline to its scan: ``(names, trusted)``, both forgotten here.
+
+    ``(None, True)`` when no baseline was taken — the scan takes its own.
+    """
+    trusted = printer_id not in _untrusted_timelapse_baselines
+    _untrusted_timelapse_baselines.discard(printer_id)
+    return _timelapse_baselines.pop(printer_id, None), trusted
+
+
+async def _scan_for_timelapse_with_retries(
+    archive_id: int, baseline_names: set[str] | None = None, *, baseline_trusted: bool = True
+):
     """
     Scan for timelapse with retries using a snapshot-diff approach.
 
@@ -5081,6 +5108,10 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
 
     Falls back to name-matching (print name contained in MP4 filename) if no
     new file appears after all retries.
+
+    *baseline_trusted* is False when the baseline was taken off a card that did
+    not answer; several new recordings are then left for Scan for timelapse
+    instead of the first being taken (audit D6 part 4).
     """
     logger = logging.getLogger(__name__)
 
@@ -5119,6 +5150,13 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
 
                 baseline_files, _ = await _list_timelapse_videos(printer)
                 baseline_names = {f.get("name", "") for f in baseline_files}
+                if not _last_listing_answered(printer.id):
+                    baseline_trusted = False
+                    logger.warning(
+                        "[TIMELAPSE] Fallback baseline for archive %s taken while printer %s did not answer",
+                        archive_id,
+                        printer.id,
+                    )
                 logger.info(
                     "[TIMELAPSE] Baseline snapshot (fallback): %s existing video files for archive %s",
                     len(baseline_names),
@@ -5184,7 +5222,12 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
 
             # Which of them is ours: new since this print started, and — when
             # the printer named the file it just closed — that one specifically.
-            target = _pick_new_recording(video_files, baseline_names, _last_recording_path(printer))
+            target = _pick_new_recording(
+                video_files,
+                baseline_names,
+                _last_recording_path(printer),
+                require_unambiguous=not baseline_trusted,
+            )
 
             if target is not None:
                 file_name = target.get("name")
@@ -8966,9 +9009,10 @@ async def _on_print_complete_impl(
         logger.info("[TIMELAPSE] Timelapse was active during print, scheduling auto-scan for archive %s", archive_id)
         # Schedule timelapse scan as background task with retries
         # The printer needs time to encode the video after print completion
-        baseline = _timelapse_baselines.pop(printer_id, None)
+        baseline, baseline_trusted = _pop_timelapse_baseline(printer_id)
         spawn_background_task(
-            _scan_for_timelapse_with_retries(archive_id, baseline), name=f"timelapse-scan-{archive_id}"
+            _scan_for_timelapse_with_retries(archive_id, baseline, baseline_trusted=baseline_trusted),
+            name=f"timelapse-scan-{archive_id}",
         )
         log_timing("Timelapse scan scheduled")
 

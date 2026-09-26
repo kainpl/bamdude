@@ -435,6 +435,15 @@
   and other tools can fetch the same address, so the slicer could be refused
   the file it had just been sent to. Links now stay valid for their five
   minutes and still open only the file they were made for.
+- **A timelapse is no longer guessed when the printer's storage did not answer
+  at print start.** The recording attached to a print is the one that appeared
+  after the print started, and what was already there is read at the start.
+  When the card or built-in storage did not answer at that moment, everything
+  on it later looked new, and the first recording in the listing was attached
+  — possibly an old one, which the clean-up option then deleted from the
+  printer. A single new recording, or the one the printer itself names as
+  just finished, is still attached; between several others BamDude no longer
+  guesses and leaves them for *Scan for timelapse*.
 - **A finished print with no 3MF records the filament its spools gave.** When
   the file never arrived there was no slicer figure, and the archive of a
   print that finished kept 0 g even though its assigned spools were debited by
