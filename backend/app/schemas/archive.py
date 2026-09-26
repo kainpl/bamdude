@@ -67,6 +67,13 @@ class ArchiveUpdate(ArchiveBase):
     # applies it to PrintArchivePart rows and derives defective_count from
     # them; it must never reach the generic setattr loop.
     parts_defective: list[ArchivePartDefective] | None = None
+    # Typed by hand, above all for a print whose 3MF never arrived: nothing
+    # else can supply the figure afterwards — a rescan needs the file (audit D6
+    # part 2, upstream d227d422). The ARCHIVE's figure only: statistics, cost
+    # and order metrics read it, and no spool is ever debited from it. Bounded
+    # because it feeds those totals: a negative would subtract, and 100 kg is
+    # far past any single print.
+    filament_used_grams: float | None = Field(None, ge=0, le=100_000)
 
 
 class ArchiveDuplicate(BaseModel):

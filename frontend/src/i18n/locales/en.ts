@@ -7790,6 +7790,8 @@ export default {
     line: 'Line',
     itemsPrinted: 'Items Printed',
     itemsPrintedHelp: 'Number of items produced in this print job',
+    filamentUsed: 'Filament used (g)',
+    filamentUsedHelp: 'For this archive only — statistics, cost and order figures read it; no spool is debited. The one way to give a weight to a print archived without its 3MF.',
     defectiveParts: 'Defective Parts',
     defectivePartsHelp: 'How many came out unusable. Counted automatically when objects are skipped during the print — including from the printer itself.',
     partsDefectiveTitle: 'Defective parts',

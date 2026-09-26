@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link, PackagePlus } from 'lucide-react';
+import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link, PackagePlus, Weight } from 'lucide-react';
 import { api } from '../api/client';
 import type { Archive } from '../api/client';
 import { Button } from './Button';
@@ -40,6 +40,34 @@ interface EditArchiveModalProps {
   archive: Archive;
   onClose: () => void;
   existingTags?: string[];
+}
+
+// What the server accepts for a typed filament figure (`ArchiveUpdate`).
+const MAX_FILAMENT_GRAMS = 100_000;
+
+/**
+ * Keep only a number while it is typed: digits and one decimal separator, a
+ * comma as good as a point, clamped to what the server accepts.
+ *
+ * A text field rather than a number input (upstream d227d422): a number input
+ * reports "" for anything the browser judges malformed — a decimal comma in a
+ * locale that does not expect one included — and that would read as "cleared"
+ * and wipe a good figure while the field still showed what was typed. This
+ * modal has no error surface, so a refused save would look like nothing
+ * happened; filtering here keeps what is shown and what is sent the same.
+ */
+function filamentGramsInput(raw: string): string {
+  let out = '';
+  let separator = false;
+  for (const ch of raw) {
+    if (ch >= '0' && ch <= '9') {
+      out += ch;
+    } else if ((ch === '.' || ch === ',') && !separator) {
+      separator = true;
+      out += ch;
+    }
+  }
+  return Number(out.replace(',', '.')) > MAX_FILAMENT_GRAMS ? String(MAX_FILAMENT_GRAMS) : out;
 }
 
 export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditArchiveModalProps) {
@@ -81,6 +109,11 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const [errorMessage, setErrorMessage] = useState(archive.error_message || '');
   const [status, setStatus] = useState(archive.status);
   const [quantity, setQuantity] = useState(archive.quantity ?? 1);
+  // Filament used, typed by hand (audit D6 part 2) — above all for a print whose
+  // 3MF never arrived, which has no figure and no file to rescan. Sent only
+  // when changed, so an untouched save never rewrites the stored figure.
+  const initialFilamentGrams = archive.filament_used_grams == null ? '' : String(archive.filament_used_grams);
+  const [filamentGrams, setFilamentGrams] = useState(initialFilamentGrams);
   const [defectiveCount, setDefectiveCount] = useState(archive.defective_count ?? 0);
   // Per-part defective counts, keyed by part id. Only meaningful when
   // archive.parts is non-empty — see the render block below.
@@ -277,6 +310,11 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       external_url: externalUrl || null,
     };
 
+    if (filamentGrams !== initialFilamentGrams) {
+      const grams = Number(filamentGrams.replace(',', '.'));
+      updateData.filament_used_grams = filamentGrams === '' || !Number.isFinite(grams) ? null : grams;
+    }
+
     if (hasParts) {
       // Only send defect data when a stepper was actually touched — see the
       // partsDirty declaration above for why an untouched save must omit
@@ -422,6 +460,26 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
           />
           <p className="text-xs text-bambu-gray mt-1">
             {t('editArchive.itemsPrintedHelp')}
+          </p>
+        </div>
+
+        {/* Filament used — the archive's figure only; no spool is debited. */}
+        <div>
+          <label htmlFor="edit-archive-filament-grams" className="block text-sm text-bambu-gray mb-1">
+            <Weight className="w-4 h-4 inline mr-1" />
+            {t('editArchive.filamentUsed')}
+          </label>
+          <input
+            id="edit-archive-filament-grams"
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
+            value={filamentGrams}
+            onChange={(e) => setFilamentGrams(filamentGramsInput(e.target.value))}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+          />
+          <p className="text-xs text-bambu-gray mt-1">
+            {t('editArchive.filamentUsedHelp')}
           </p>
         </div>
 

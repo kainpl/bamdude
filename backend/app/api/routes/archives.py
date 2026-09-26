@@ -1056,13 +1056,33 @@ async def update_archive(
         return await _update_archive_locked(archive_id, update_data, db, auth_result)
 
 
+async def _cost_follows_typed_grams(
+    db: AsyncSession, archive: PrintArchive, previous_grams: float | None, previous_cost: float | None
+) -> None:
+    """Re-price a hand-typed filament figure at the farm rate — when the cost is ours to re-price.
+
+    It is when there was none, or when it is exactly what the farm rate made of
+    the old figure (the archive and attach paths price that way). A cost from
+    spool tracking prices each spool at its own rate, and one the operator
+    typed is theirs: a farm-rate estimate would overwrite the better number.
+    With no rate set the cost stays unknown — never 0.00, which reads as free.
+    """
+    from backend.app.services.filament_cost import cost_of, default_rate_per_kg
+
+    rate = await default_rate_per_kg(db)
+    derived_before = cost_of(previous_grams, rate)
+    if previous_cost is not None and (derived_before is None or abs(previous_cost - derived_before) > 0.005):
+        return
+    archive.cost = cost_of(archive.filament_used_grams, rate)
+
+
 async def _update_archive_locked(
     archive_id: int,
     update_data: ArchiveUpdate,
     db: AsyncSession,
     auth_result: tuple[User | None, bool],
 ):
-    """Update archive metadata (tags, notes, cost, is_favorite, project_id)."""
+    """Update archive metadata (tags, notes, cost, filament grams, is_favorite, project_id)."""
     from sqlalchemy.orm import selectinload
 
     user, can_modify_all = auth_result
@@ -1121,6 +1141,11 @@ async def _update_archive_locked(
         if stale is None or stale.project_id != update_data.project_id:
             archive.project_line_id = None
 
+    # Read before the setattr loop: whether the cost follows a typed filament
+    # figure depends on where the current cost came from.
+    previous_grams = archive.filament_used_grams
+    previous_cost = archive.cost
+
     # ``parts_defective`` and ``defective_count`` are the defects writer's
     # (services/archive_defects), not columns to setattr — the writer clamps,
     # sums the rows and tells the shelf.
@@ -1128,6 +1153,9 @@ async def _update_archive_locked(
         exclude_unset=True, exclude={"parts_defective", "defective_count"}
     ).items():
         setattr(archive, field, value)
+
+    if "filament_used_grams" in update_data.model_fields_set and "cost" not in update_data.model_fields_set:
+        await _cost_follows_typed_grams(db, archive, previous_grams, previous_cost)
 
     if update_data.parts_defective or (
         "defective_count" in update_data.model_fields_set and update_data.defective_count is not None

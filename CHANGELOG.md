@@ -25,6 +25,13 @@
 
 ### Added
 
+- **The filament a print used can be typed into its archive.** A print whose
+  3MF never reached BamDude carried no weight, and nothing could give it one
+  afterwards — a rescan needs the file. Edit archive now has a *Filament used
+  (g)* field. It is the archive's figure only: statistics, cost and order
+  figures read it, and no spool is debited. A cost that was empty, or was the
+  farm rate applied to the old figure, follows the new one; a cost from spool
+  tracking stays. The field takes a decimal comma as well as a point.
 - **Lighter farm monitoring in the browser.** The queue badge reads compact
   counts instead of every queued job, and shows `!` rather than a false zero when
   a count cannot be read. Queue and Printers cards share one set of active queue
@@ -428,6 +435,11 @@
   and other tools can fetch the same address, so the slicer could be refused
   the file it had just been sent to. Links now stay valid for their five
   minutes and still open only the file they were made for.
+- **A finished print with no 3MF records the filament its spools gave.** When
+  the file never arrived there was no slicer figure, and the archive of a
+  print that finished kept 0 g even though its assigned spools were debited by
+  their measured drop — statistics and inventory disagreed. The measured weight
+  is now the archive's figure whenever there is no estimate.
 - **The Archives banner for prints without a 3MF says why, and no longer
   blames the slicer for what the printer did.** It told everyone to switch on
   "Store sent files on external storage" in the slicer — wrong whenever

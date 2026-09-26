@@ -53,6 +53,13 @@ class TestActualFilamentGrams:
     def test_missing_estimate_is_zero(self):
         assert actual_filament_grams("completed", tracked_grams=0.0, estimate=None) == 0.0
 
+    def test_completed_without_an_estimate_takes_what_was_tracked(self):
+        # A print whose 3MF never arrived has no slicer figure; the spools' measured
+        # drop is the only weight there is, and the archive must agree with the
+        # inventory it was deducted from (audit D6).
+        assert actual_filament_grams("completed", tracked_grams=46.16, estimate=None) == 46.2
+        assert actual_filament_grams("completed", tracked_grams=46.16, estimate=0.0) == 46.2
+
 
 def _no_queue_item():
     """A queue lookup that finds nothing.

@@ -585,8 +585,11 @@ def actual_filament_grams(status: str, tracked_grams: float, estimate: float | N
     the *actual* tracked usage). When usage was tracked, substitute the actually
     consumed weight; otherwise (completed, or a failure we couldn't measure) keep
     the estimate, which equals actual at 100%.
+
+    A print whose 3MF never arrived has no estimate at all; then the tracked
+    weight is the only one there is, whatever the status (audit D6).
     """
-    if status != "completed" and tracked_grams > 0:
+    if tracked_grams > 0 and (status != "completed" or not estimate):
         return round(tracked_grams, 1)
     return estimate or 0.0
 

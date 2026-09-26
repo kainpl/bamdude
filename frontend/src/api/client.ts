@@ -8557,6 +8557,9 @@ export const api = {
     defective_count?: number;
     external_url?: string | null;
     parts_defective?: { id: number; defective: number }[];
+    // Typed by hand (audit D6 part 2): the archive's figure only — statistics,
+    // cost and order metrics read it; no spool is debited. 0–100 000 g.
+    filament_used_grams?: number | null;
   }) =>
     request<Archive>(`/archives/${id}`, {
       method: 'PATCH',
