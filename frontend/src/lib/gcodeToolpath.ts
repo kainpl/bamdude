@@ -90,11 +90,26 @@ const FEATURE_BY_COMMENT: Record<string, number> = {
   custom: ToolpathType.wall,
 };
 
+/** Segment flag: the feature came from an explicit, known feature comment (not the parser's default, not `Custom`). */
+export const SEGMENT_TYPED = 1;
+/** Segment flag: written after the first layer-change marker -- i.e. not start G-code. */
+export const SEGMENT_AFTER_FIRST_LAYER = 2;
+
+// BambuStudio GCode.cpp writes these around every object; OrcaSlicer's Bambu
+// branch writes the same text. M624/M625 carry a bitmask of a *set* of objects
+// and are deliberately not read (spec §5.1).
+const OBJECT_START = /^; start printing object, unique label id: (\d+)$/;
+const OBJECT_STOP = /^; stop printing object, unique label id: (\d+)$/;
+
 /** One layer in the shape `buildSegmentData` expects. */
 export interface ToolpathLayer {
   z: number;
   paths: Float32Array;
   widths: number[];
+  /** Per record: owning object id from the slicer's object markers, -1 outside any object. */
+  objectIds?: Int32Array;
+  /** Per record: SEGMENT_TYPED | SEGMENT_AFTER_FIRST_LAYER. */
+  flags?: Uint8Array;
 }
 
 export interface ParsedToolpath {
@@ -119,6 +134,8 @@ const MAX_TOOL = 15;
 /** Growable stride-8 record buffer; typed arrays cannot be pushed to. */
 class PathBuffer {
   private data = new Float32Array(1024 * RECORD_STRIDE);
+  private owners = new Int32Array(1024);
+  private flagBytes = new Uint8Array(1024);
   private count = 0;
   readonly widths: number[] = [];
 
@@ -128,11 +145,19 @@ class PathBuffer {
     x1: number, y1: number, z1: number,
     width: number,
     tool: number,
+    objectId = -1,
+    flags = 0,
   ): void {
     if ((this.count + 1) * RECORD_STRIDE > this.data.length) {
       const grown = new Float32Array(this.data.length * 2);
       grown.set(this.data);
       this.data = grown;
+      const owners = new Int32Array(this.owners.length * 2);
+      owners.set(this.owners);
+      this.owners = owners;
+      const flagBytes = new Uint8Array(this.flagBytes.length * 2);
+      flagBytes.set(this.flagBytes);
+      this.flagBytes = flagBytes;
     }
     const o = this.count * RECORD_STRIDE;
     this.data[o] = x0;
@@ -146,6 +171,8 @@ class PathBuffer {
     // it. That is what lets the viewer offer a filament-coloured view without
     // parsing the file twice: it swaps slot 3 for slot 7 and rebuilds.
     this.data[o + 7] = tool;
+    this.owners[this.count] = objectId;
+    this.flagBytes[this.count] = flags;
     this.count += 1;
     this.widths.push(width);
   }
@@ -157,6 +184,18 @@ class PathBuffer {
   /** Trimmed copy — the renderer walks the whole array, so slack would render. */
   toFloat32Array(): Float32Array {
     return this.data.slice(0, this.count * RECORD_STRIDE);
+  }
+
+  toObjectIds(): Int32Array {
+    return this.owners.slice(0, this.count);
+  }
+
+  toFlags(): Uint8Array {
+    return this.flagBytes.slice(0, this.count);
+  }
+
+  toLayer(z: number): ToolpathLayer {
+    return { z, paths: this.toFloat32Array(), widths: this.widths, objectIds: this.toObjectIds(), flags: this.toFlags() };
   }
 }
 
@@ -219,6 +258,12 @@ export function parseGcodeToolpath(gcode: string): ParsedToolpath {
   // Active filament. BambuStudio also emits sentinel tool numbers
   // (T65535 / T65279) around its own bookkeeping; those are not filaments.
   let tool = 0;
+  // Owning object from the slicer's markers; -1 between objects.
+  let objectId = -1;
+  // Whether `feature` came from an explicit, known comment. The parser starts
+  // every file as `wall`, so without this the purge line of the start G-code is
+  // indistinguishable from a model wall (spec §5.3, consilium C5).
+  let featureExplicit = false;
   // Suppresses a phantom segment from the origin: the machine's position is
   // unknown until the first move sets it, and drawing from (0,0,0) put a stray
   // line across the bed.
@@ -229,7 +274,7 @@ export function parseGcodeToolpath(gcode: string): ParsedToolpath {
 
   const flushLayer = () => {
     if (current.length === 0) return;
-    layers.push({ z: currentZ, paths: current.toFloat32Array(), widths: current.widths });
+    layers.push(current.toLayer(currentZ));
     current = new PathBuffer();
     layerHasExtrusion = false;
     if (pendingZ !== null) {
@@ -257,7 +302,8 @@ export function parseGcodeToolpath(gcode: string): ParsedToolpath {
         return;
       }
 
-      current.push(x, y, z, feature, nx, ny, nz, width, tool);
+      const flags = (featureExplicit ? SEGMENT_TYPED : 0) | (sawLayerMarker ? SEGMENT_AFTER_FIRST_LAYER : 0);
+      current.push(x, y, z, feature, nx, ny, nz, width, tool, objectId, flags);
       segmentCount += 1;
       if (nx < minX) minX = nx;
       if (ny < minY) minY = ny;
@@ -266,7 +312,7 @@ export function parseGcodeToolpath(gcode: string): ParsedToolpath {
       if (ny > maxY) maxY = ny;
       if (nz > maxZ) maxZ = nz;
     } else if (hasPosition) {
-      current.push(x, y, z, ToolpathType.travel, nx, ny, nz, 0, tool);
+      current.push(x, y, z, ToolpathType.travel, nx, ny, nz, 0, tool, objectId, 0);
       travelCount += 1;
     }
     x = nx; y = ny; z = nz;
@@ -278,6 +324,17 @@ export function parseGcodeToolpath(gcode: string): ParsedToolpath {
     if (line.length === 0) continue;
 
     if (line.charCodeAt(0) === 59 /* ; */) {
+      const start = OBJECT_START.exec(line);
+      if (start) {
+        objectId = Number(start[1]);
+        continue;
+      }
+      const stop = OBJECT_STOP.exec(line);
+      if (stop) {
+        // A stop for another id is not the end of the open object.
+        if (Number(stop[1]) === objectId) objectId = -1;
+        continue;
+      }
       // Slicer annotations, in either dialect. BambuStudio writes
       // "; FEATURE: Outer wall" and "; CHANGE_LAYER"; OrcaSlicer and the
       // PrusaSlicer lineage write ";TYPE:Outer wall" and ";LAYER_CHANGE".
@@ -289,7 +346,10 @@ export function parseGcodeToolpath(gcode: string): ParsedToolpath {
       const value = colon >= 0 ? body.slice(colon + 1).trim() : '';
 
       if (key === 'FEATURE' || key === 'TYPE') {
-        feature = FEATURE_BY_COMMENT[value.toLowerCase()] ?? ToolpathType.wall;
+        const name = value.toLowerCase();
+        const known = FEATURE_BY_COMMENT[name];
+        feature = known ?? ToolpathType.wall;
+        featureExplicit = known !== undefined && name !== 'custom';
       } else if (key === 'LINE_WIDTH' || key === 'WIDTH') {
         const parsed = Number.parseFloat(value);
         if (Number.isFinite(parsed) && parsed > 0) {
@@ -456,16 +516,19 @@ export function filterLayersByType(layers: ToolpathLayer[], hidden: ReadonlySet<
     for (let i = 0; i < layer.paths.length; i += RECORD_STRIDE) {
       const type = layer.paths[i + 3];
       if (hidden.has(type)) continue;
+      const k = i / RECORD_STRIDE;
       kept.push(
         layer.paths[i], layer.paths[i + 1], layer.paths[i + 2], type,
         layer.paths[i + 4], layer.paths[i + 5], layer.paths[i + 6],
-        layer.widths[i / RECORD_STRIDE] ?? 0,
+        layer.widths[k] ?? 0,
         layer.paths[i + 7],
+        layer.objectIds?.[k] ?? -1,
+        layer.flags?.[k] ?? 0,
       );
     }
     // A layer emptied by the filter is still a layer: dropping it would
     // renumber every layer above it and make the range slider lie.
-    out.push({ ...layer, paths: kept.toFloat32Array(), widths: kept.widths });
+    out.push(kept.toLayer(layer.z));
   }
   return out;
 }
