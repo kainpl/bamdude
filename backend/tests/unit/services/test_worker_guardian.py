@@ -46,3 +46,11 @@ def test_rejects_untrusted_entrypoint_or_camera_frame(envelope):
 def test_preview_limit_is_not_raised_to_camera_limit():
     with pytest.raises(ValueError, match="preview bootstrap too large"):
         _child_bootstrap(_line({"module": "backend.app.preview_service", "padding": "x" * 16384}))
+
+
+def test_render_probe_child_is_allowlisted():
+    # The render-browser containment probe's owner-death scenario runs this
+    # diagnostic module under the real guardian (plan task 10).
+    module, payload = _child_bootstrap(_line({"module": "backend.app.render_browser_probe_child", "cmd": ["browser"]}))
+    assert module == "backend.app.render_browser_probe_child"
+    assert payload == b'{"cmd": ["browser"]}\n'
