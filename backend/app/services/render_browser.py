@@ -17,6 +17,7 @@ import tempfile
 import urllib.request
 import zipfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 MANIFEST = Path(__file__).resolve().parents[1] / "data" / "render_browser.json"
@@ -126,6 +127,75 @@ def provision(
     staged.rename(target)
     shutil.rmtree(old, ignore_errors=True)
     return target
+
+
+@dataclass(frozen=True)
+class BrowserInstall:
+    executable: Path
+    version: str
+    platform: str
+
+
+def _executable_name(key: str) -> str:
+    return "chrome-headless-shell.exe" if key == "win64" else "chrome-headless-shell"
+
+
+def locate(app_dir: Path) -> BrowserInstall | None:
+    """The provisioned browser under <app_dir>/runtime -- the only place looked at (spec §6.2)."""
+    try:
+        key = platform_key()
+    except ProvisionError:
+        return None
+    root = app_dir / "runtime" / PRODUCT_DIR / key
+    marker = root / "VERSION"
+    if not marker.is_file():
+        return None
+    hits = sorted(root.rglob(_executable_name(key)))
+    if not hits:
+        return None
+    return BrowserInstall(executable=hits[0], version=marker.read_text(encoding="utf-8").strip(), platform=key)
+
+
+# Nothing listens on the discard port; with a fixed proxy list Chromium has no
+# DIRECT fallback, so every URL request that is not bypassed fails (spec §6.3).
+DEAD_PROXY = "http://127.0.0.1:9"
+
+
+def launch_args(*, profile_dir: Path, origin: str, netlog: Path | None = None) -> list[str]:
+    """Flags for one attempt. The sandbox stays on: no flag here disables it.
+
+    ``<-loopback>`` removes Chromium's implicit proxy bypass, which covers
+    loopback AND link-local; only the task's exact HTTP origin is bypassed
+    back (Chromium net/docs/proxy.md, implicit bypass rules). This limits URL
+    requests through the proxy stack; it is not an OS network sandbox. The
+    rule is proven by the network probe (task 10), never re-ordered to make
+    a probe pass.
+    """
+    args = [
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        f"--user-data-dir={profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-default-apps",
+        "--disable-sync",
+        "--disable-breakpad",
+        "--disable-domain-reliability",
+        "--metrics-recording-only",
+        "--mute-audio",
+        f"--proxy-server={DEAD_PROXY}",
+        # Order matters: first drop the implicit exceptions, then add back only
+        # the task's exact HTTP origin. Without the scheme the exception would
+        # also cover https:// and ws:// on the same host:port.
+        f"--proxy-bypass-list=<-loopback>;http://{origin}",
+        "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
+    ]
+    if netlog is not None:
+        args.append(f"--log-net-log={netlog}")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
