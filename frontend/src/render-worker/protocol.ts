@@ -1,0 +1,62 @@
+/**
+ * Wire contract between the part-render page and its loopback job server
+ * (backend/app/services/part_render_http.py). Spec §5.2, §5.5, §5.6.
+ */
+
+/** Bump when anything that reaches the pixels or the instance choice changes (spec §8.5). Mirrored in part_render_protocol.py. */
+export const RENDERER_VERSION = 1;
+
+export interface Bounds {
+  min: [number, number, number];
+  max: [number, number, number];
+}
+
+export interface JobObject {
+  id: number;
+  mode: 'toolpath' | 'model';
+  /** Object box from Metadata/plate_N.json `bbox_objects` -- [x0, y0, x1, y1] in mm; required for `model`. */
+  bbox?: [number, number, number, number];
+}
+
+export interface RenderJob {
+  size: number;
+  objects: JobObject[];
+}
+
+export interface RenderedObject {
+  id: number;
+  method: 'toolpath' | 'model';
+  width: number;
+  height: number;
+  tools: number[];
+  bounds: Bounds;
+  segments: number;
+  sha256: string;
+  bytes: number;
+}
+
+export interface MissingObject {
+  id: number;
+  method: 'missing';
+  reason: 'empty_selection' | 'model_unproven';
+}
+
+export interface RenderManifest {
+  renderer: number;
+  palette: string[];
+  objects: Array<RenderedObject | MissingObject>;
+}
+
+export type RenderErrorReason = 'parse_failed' | 'invalid_output';
+
+export class RenderError extends Error {
+  // A plain field, not a constructor parameter property: the app's tsconfig
+  // sets erasableSyntaxOnly.
+  readonly reason: RenderErrorReason;
+
+  constructor(reason: RenderErrorReason, message: string) {
+    super(message);
+    this.name = 'RenderError';
+    this.reason = reason;
+  }
+}
