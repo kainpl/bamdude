@@ -12,6 +12,7 @@ import json
 import platform as _platform
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -198,6 +199,42 @@ def launch_args(*, profile_dir: Path, origin: str, netlog: Path | None = None) -
     return args
 
 
+@dataclass(frozen=True)
+class LibraryCheck:
+    ok: bool
+    missing: list[str]
+    errors: list[str]
+
+
+def elf_files(install_root: Path, executable: Path) -> list[Path]:
+    """The executable plus every shipped shared object -- SwiftShader and ANGLE are dlopen()ed at run time."""
+    shared = sorted({*install_root.rglob("*.so"), *install_root.rglob("*.so.*")})
+    return [executable, *shared]
+
+
+def check_libraries(paths: list[Path], run: Callable = subprocess.run) -> LibraryCheck:
+    """`ldd` over each ELF. A failed or unreadable ldd is an error, never "nothing missing"."""
+    missing: list[str] = []
+    errors: list[str] = []
+    for path in paths:
+        proc = run(["ldd", str(path)], capture_output=True, text=True)
+        out, err = proc.stdout or "", (proc.stderr or "").strip()
+        if proc.returncode != 0:
+            errors.append(f"{path.name}: ldd exited {proc.returncode}: {(err or out).strip()[:200]}")
+            continue
+        if "not a dynamic executable" in out or ("=>" not in out and "statically linked" not in out):
+            errors.append(f"{path.name}: unusable ldd output: {out.strip()[:200]!r}")
+            continue
+        if err:
+            errors.append(f"{path.name}: {err[:200]}")
+        for line in out.splitlines():
+            if "=> not found" in line:
+                missing.append(f"{path.name}: {line.split('=>', 1)[0].strip()}")
+            elif "version `" in line and "not found" in line:
+                missing.append(f"{path.name}: {line.strip()}")
+    return LibraryCheck(ok=not missing and not errors, missing=missing, errors=errors)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="render_browser")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -207,7 +244,21 @@ def main(argv: list[str] | None = None) -> int:
     # The Docker build provisions from a copy of this module and the manifest
     # alone, before the rest of backend/ is copied, so the layer is cached.
     prov.add_argument("--manifest", type=Path, default=MANIFEST)
+    libs = sub.add_parser("check-libs", help="Linux: shared libraries the browser and its shipped ELFs cannot load")
+    libs.add_argument("--runtime", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.command == "check-libs":
+        found = locate(args.runtime.parent)  # locate() takes the app directory
+        if found is None:
+            print("render-browser: not provisioned", file=sys.stderr)
+            return 1
+        install_root = args.runtime / PRODUCT_DIR / found.platform
+        result = check_libraries(elf_files(install_root, found.executable))
+        for line in result.missing:
+            print(f"render-browser: missing {line}", file=sys.stderr)
+        for line in result.errors:
+            print(f"render-browser: ldd error {line}", file=sys.stderr)
+        return 0 if result.ok else 1
     try:
         target = provision(args.runtime, manifest=load_manifest(args.manifest), platform=args.platform)
     except ProvisionError as exc:
