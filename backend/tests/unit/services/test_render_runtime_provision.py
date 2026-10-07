@@ -61,6 +61,49 @@ def test_installs_and_marks_the_version(tmp_path: Path):
     assert (target / "node.exe").is_file()
 
 
+def test_only_the_executable_and_the_licence_are_installed_from_a_zip(tmp_path: Path):
+    # owner, 2026-10-07: the renderer needs node.exe alone -- no npm/npx/corepack, headers or docs beside a service
+    path = tmp_path / f"{TOP}.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(f"{TOP}/node.exe", b"MZ fake node")
+        zf.writestr(f"{TOP}/LICENSE", b"MIT")
+        zf.writestr(f"{TOP}/npm.cmd", b"@echo npm")
+        zf.writestr(f"{TOP}/node_modules/npm/index.js", b"npm")
+        zf.writestr(f"{TOP}/README.md", b"docs")
+    data = path.read_bytes()
+    target = provision(
+        tmp_path / "runtime",
+        manifest=_manifest(hashlib.sha256(data).hexdigest(), len(data)),
+        platform="win-x64",
+        fetch=_fetch_from(path),
+    )
+    installed = sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file())
+    assert installed == ["LICENSE", "VERSION", "node.exe"]
+
+
+def test_only_the_executable_and_the_licence_are_installed_from_a_tar_xz(tmp_path: Path):
+    files = {
+        "bin/node": b"#!fake",
+        "LICENSE": b"MIT",
+        "lib/node_modules/npm/index.js": b"npm",
+        "include/node/node.h": b"/* */",
+        "share/doc/node/gdbinit": b"doc",
+    }
+    data = _tar_xz(tmp_path, "node-v9-linux-x64", files).read_bytes()
+    manifest = {
+        "version": "v9",
+        "platforms": {"linux-x64": {"url": "u.tar.xz", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}},
+    }
+    target = render_runtime.provision(
+        tmp_path / "runtime",
+        manifest=manifest,
+        platform="linux-x64",
+        fetch=lambda u, d, limit=None: d.write_bytes(data),
+    )
+    installed = sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file())
+    assert installed == ["LICENSE", "VERSION", "bin/node"]
+
+
 def test_is_idempotent(tmp_path: Path):
     archive, sha, size = _archive(tmp_path)
     fetch = _fetch_from(archive)

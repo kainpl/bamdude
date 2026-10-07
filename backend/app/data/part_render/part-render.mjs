@@ -1269,6 +1269,15 @@ async function readAll(stream) {
 function write(stream, bytes) {
 	return new Promise((done, fail) => stream.write(bytes, (error) => error ? fail(error) : done()));
 }
+/**
+* One byte per character (ISO-8859-1). The renderer reads only ASCII -- moves, markers, hex colours --
+* while a UTF-8 decode turns the WHOLE plate into a two-byte V8 string as soon as one name is Cyrillic
+* or one byte is cp1251, doubling its memory. Buffer's latin1, not TextDecoder('latin1'): the WHATWG
+* label means windows-1252, which maps 0x80-0x9F above 0xFF and is two-byte again.
+*/
+function decodeGcode(bytes) {
+	return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");
+}
 function reasonOf(error) {
 	if (error instanceof RenderError) return error.reason;
 	if (isAllocationFailure(error)) return "memory_limit";
@@ -1286,7 +1295,7 @@ async function main(stdin, stdout) {
 		} catch (error) {
 			throw new RenderError("invalid_output", `unreadable job line: ${String(error)}`);
 		}
-		const gcode = new TextDecoder("utf-8", { fatal: false }).decode(input.subarray(newline + 1));
+		const gcode = decodeGcode(input.subarray(newline + 1));
 		const manifest = runJob(job, gcode, (id, png) => {
 			const payload = new Uint8Array(4 + png.length);
 			new DataView(payload.buffer).setUint32(0, id);

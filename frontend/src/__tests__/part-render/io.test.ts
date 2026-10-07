@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Readable, Writable } from 'node:stream';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { main } from '../../part-render/io';
+import { decodeGcode, main } from '../../part-render/io';
 
 const FIXTURES = join(process.cwd(), '..', 'backend', 'app', 'data', 'render_probe');
 
@@ -21,6 +21,20 @@ async function run(input: Uint8Array) {
 }
 const input = (jobLine: string, body: Uint8Array) => Buffer.concat([Buffer.from(jobLine + '\n'), Buffer.from(body)]);
 const reason = (f: { payload: Buffer }) => JSON.parse(f.payload.toString()).reason;
+
+describe('decodeGcode', () => {
+  it('keeps one byte per character, so a non-ASCII name never doubles the plate in memory', () => {
+    // a UTF-8 Cyrillic object name and stray cp1251 bytes: decoded as UTF-8 either turns the whole
+    // string two-byte in V8; the renderer reads only ASCII, so latin1 loses nothing
+    const bytes = Buffer.concat([
+      Buffer.from('; object name: Кронштейн\n', 'utf8'), Buffer.from([0xcf, 0xf0, 0xe8, 0x80, 0x0a]), Buffer.from('G1 X1 Y2\n'),
+    ]);
+    const text = decodeGcode(bytes);
+    expect(text.length).toBe(bytes.length);
+    expect([...text].every((c) => c.charCodeAt(0) <= 0xff)).toBe(true);
+    expect(text.endsWith('G1 X1 Y2\n')).toBe(true);
+  });
+});
 
 describe('main', () => {
   const plate = readFileSync(join(FIXTURES, 'two-objects.gcode'));

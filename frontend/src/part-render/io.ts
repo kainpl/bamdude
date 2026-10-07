@@ -29,6 +29,16 @@ function write(stream: NodeJS.WritableStream, bytes: Uint8Array): Promise<void> 
   return new Promise((done, fail) => stream.write(bytes, (error) => (error ? fail(error) : done())));
 }
 
+/**
+ * One byte per character (ISO-8859-1). The renderer reads only ASCII -- moves, markers, hex colours --
+ * while a UTF-8 decode turns the WHOLE plate into a two-byte V8 string as soon as one name is Cyrillic
+ * or one byte is cp1251, doubling its memory. Buffer's latin1, not TextDecoder('latin1'): the WHATWG
+ * label means windows-1252, which maps 0x80-0x9F above 0xFF and is two-byte again.
+ */
+export function decodeGcode(bytes: Uint8Array): string {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('latin1');
+}
+
 function reasonOf(error: unknown): RenderErrorReason {
   if (error instanceof RenderError) return error.reason;
   if (isAllocationFailure(error)) return 'memory_limit';
@@ -48,7 +58,7 @@ export async function main(stdin: NodeJS.ReadableStream, stdout: NodeJS.Writable
       throw new RenderError('invalid_output', `unreadable job line: ${String(error)}`);
     }
     // fatal: false -- a stray non-UTF-8 byte in a comment must not fail the plate
-    const gcode = new TextDecoder('utf-8', { fatal: false }).decode(input.subarray(newline + 1));
+    const gcode = decodeGcode(input.subarray(newline + 1));
     const manifest = runJob(job, gcode, (id, png) => {
       const payload = new Uint8Array(4 + png.length);
       new DataView(payload.buffer).setUint32(0, id);

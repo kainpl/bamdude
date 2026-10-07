@@ -1,7 +1,9 @@
 """Pin the official Node.js for every platform BamDude ships (spec §6.1).
 
-Reads the release's SHASUMS256.txt from nodejs.org/dist -- the hashes Node.js
-publishes; never a third-party build -- takes each platform's official archive
+Reads the release's SHASUMS256.txt.asc from nodejs.org/dist and accepts its
+hashes only when one of the Node.js release keys vendored in
+scripts/node-release-keys.asc signed it (gpg; TLS alone is not trusted) --
+never a third-party build -- then takes each platform's official archive
 through render_runtime.artifacts_from_shasums, sizes it with a HEAD request and
 rewrites backend/app/data/render_runtime.json. Then it provisions the new pin
 into <repo>/runtime and writes the stand's golden hashes on it.
@@ -11,16 +13,24 @@ between releases a patch release carries a new pin when a Node.js security
 bulletin touches V8 or a module the render script uses (zlib). The pin's date
 is in the manifest.
 
+The release keys are every fingerprint of nodejs/release-keys keys.list
+(vendored from commit 481637f813e9, 2026-09-01). A release signed by a key
+that is not there is refused: refresh the file from that repository after
+checking who the new releaser is.
+
     python scripts/pin_render_runtime.py [--version vX.Y.Z]
 """
 
 import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -35,6 +45,7 @@ from backend.app.services.render_runtime import (  # noqa: E402
 )
 
 DIST = "https://nodejs.org/dist"
+KEYS = Path(__file__).resolve().with_name("node-release-keys.asc")
 LINE = 24
 HEADERS = {"User-Agent": "BamDude render-runtime pin"}
 
@@ -65,15 +76,48 @@ def _size(url: str) -> int:
     return size
 
 
+def gpg_home(path: str, gpg: str) -> str:
+    """``path`` as this gpg takes a --homedir: Git for Windows ships an MSYS gpg, which refuses ``C:\\...``."""
+    if os.name != "nt":
+        return path
+    version = subprocess.run([gpg, "--version"], capture_output=True, text=True, check=True).stdout
+    home_line = next((line for line in version.splitlines() if line.startswith("Home:")), "")
+    if not home_line.split(":", 1)[-1].strip().startswith("/"):
+        return path  # a native Windows gpg (Gpg4win) takes the Windows path as it is
+    win = PureWindowsPath(path)
+    return "/" + win.drive[0].lower() + "/" + "/".join(win.parts[1:])
+
+
+def verify_shasums(signed: bytes, keys: bytes, gpg: str) -> str:
+    """The body of a clear-signed SHASUMS256.txt.asc -- only when one of ``keys`` made a valid signature.
+
+    A throwaway keyring holds nothing but ``keys``; the data goes through stdin (the MSYS gpg reads
+    no Windows path) and the verdict is gpg's VALIDSIG status line, not its exit code alone.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        base = [gpg, "--homedir", gpg_home(tmp, gpg), "--batch"]
+        subprocess.run([*base, "--quiet", "--import"], input=keys, capture_output=True, check=True)
+        result = subprocess.run([*base, "--status-fd", "2", "--decrypt"], input=signed, capture_output=True)
+    status = result.stderr.decode("utf-8", "replace")
+    if result.returncode != 0 or "[GNUPG:] VALIDSIG " not in status:
+        raise ProvisionError("SHASUMS256.txt.asc: no valid signature by a vendored Node.js release key")
+    return result.stdout.decode("utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", default=None, help=f"vX.Y.Z; default: the newest Node.js {LINE} LTS")
     args = parser.parse_args(argv)
     version = args.version or latest_lts()
 
-    with _open(f"{DIST}/{version}/SHASUMS256.txt") as resp:
-        shasums = resp.read().decode("utf-8")
+    gpg = shutil.which("gpg")
+    if gpg is None:
+        print("gpg is required: the pin is taken only from a signed SHASUMS256.txt.asc", file=sys.stderr)
+        return 1
+    with _open(f"{DIST}/{version}/SHASUMS256.txt.asc") as resp:
+        signed = resp.read()
     try:
+        shasums = verify_shasums(signed, KEYS.read_bytes(), gpg)
         artifacts = artifacts_from_shasums(shasums, version)
     except ProvisionError as exc:
         print(exc, file=sys.stderr)

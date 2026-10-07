@@ -113,18 +113,21 @@ def _inside(root: Path, name: str) -> Path:
     return target
 
 
+# What is installed of the official archive (owner, 2026-10-07): the executable and its licence. npm, npx,
+# corepack, headers and docs are not needed by the renderer and do not belong beside a service.
+_INSTALLED = frozenset({"bin/node", "node.exe", "LICENSE"})
+
+
 def _extract(archive: Path, dest: Path) -> None:
-    """Unpack the official archive (``node-vX-<platform>/...``) with its top directory stripped."""
+    """Unpack the executable and the licence of the official archive (``node-vX-<platform>/...``),
+    top directory stripped. Every entry is checked first: an archive with one unsafe entry is refused whole."""
     root = dest.resolve()
     try:
         if archive.name.endswith(".zip"):
             with zipfile.ZipFile(archive) as zf:
                 infos = [(i, _inside(root, i.filename)) for i in zf.infolist()]
                 for info, target in infos:
-                    if target == root:
-                        continue
-                    if info.is_dir():
-                        target.mkdir(parents=True, exist_ok=True)
+                    if target == root or info.is_dir() or target.relative_to(root).as_posix() not in _INSTALLED:
                         continue
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(info) as src, target.open("wb") as out:
@@ -134,8 +137,7 @@ def _extract(archive: Path, dest: Path) -> None:
             members = []
             for m in tf.getmembers():
                 target = _inside(root, m.name)
-                # bin/npm, npx, corepack are symlinks into lib/node_modules: the renderer needs none of them
-                if target == root or m.issym() or m.islnk():
+                if target == root or not m.isfile() or target.relative_to(root).as_posix() not in _INSTALLED:
                     continue
                 m.name = target.relative_to(root).as_posix()
                 members.append(m)
