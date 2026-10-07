@@ -99,6 +99,19 @@ describe('segment ownership', () => {
     const owners = records(parseGcodeToolpath(gcode).layers).map((r) => r.owner);
     expect(owners).toEqual([7, 7, -1]);
   });
+
+  it('a layer change inside an open object keeps its owner', () => {
+    const gcode = [
+      'M83', 'G1 X0 Y0 Z0.2 F600', '; CHANGE_LAYER',
+      '; start printing object, unique label id: 7', '; FEATURE: Outer wall',
+      'G1 X1 Y0 E0.1', '; CHANGE_LAYER', 'G1 Z0.4', 'G1 X2 Y0 E0.1',
+      '; stop printing object, unique label id: 7', 'G1 X3 Y0 E0.1',
+    ].join('\n');
+    const recs = records(parseGcodeToolpath(gcode).layers);
+    expect(recs.map((r) => r.owner)).toEqual([7, 7, -1]);
+    // Float32 storage: compare the layer heights at the precision they were written.
+    expect(recs.map((r) => Math.round(r.z * 10) / 10)).toEqual([0.2, 0.4, 0.4]);
+  });
 });
 
 describe('filterLayersByType keeps metadata aligned', () => {

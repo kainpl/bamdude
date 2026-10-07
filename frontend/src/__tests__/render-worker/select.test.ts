@@ -65,6 +65,11 @@ describe('paletteFromGcode', () => {
     expect(paletteFromGcode('; filament_colour = #00AE42FF;#C0C0C080\n')).toEqual(['#00AE42', '#C0C0C0']);
   });
 
+  it('keeps an empty or malformed slot in place so later T indices keep their colour', () => {
+    expect(paletteFromGcode('; filament_colour = #C0C0C0;;#00AE42\n')).toEqual(['#C0C0C0', '', '#00AE42']);
+    expect(paletteFromGcode('; filament_colour = #C0C0C0;oops;#00AE42\n')).toEqual(['#C0C0C0', '', '#00AE42']);
+  });
+
   it('returns an empty palette without the header line', () => {
     expect(paletteFromGcode('G1 X0\n')).toEqual([]);
   });

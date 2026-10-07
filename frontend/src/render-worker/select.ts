@@ -77,7 +77,8 @@ export function selectSegments(parsed: ParsedToolpath, target: Target): Selectio
 }
 
 const PALETTE_LINE = /^; filament_colour = (.+)$/m;
-const HEX_COLOUR = /#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?/g;
+/** One palette slot: #RRGGBB, optionally #RRGGBBAA. Not global -- exec() keeps no state between slots. */
+const SLOT_COLOUR = /^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?/;
 /** The header sits at the top; a palette line deep in the body would be someone's comment. */
 const PALETTE_SCAN_BYTES = 200_000;
 
@@ -85,7 +86,12 @@ const PALETTE_SCAN_BYTES = 200_000;
 export function paletteFromGcode(gcode: string): string[] {
   const match = PALETTE_LINE.exec(gcode.slice(0, PALETTE_SCAN_BYTES));
   if (!match) return [];
-  return [...match[1].matchAll(HEX_COLOUR)].map((m) => m[0].slice(0, 7).toUpperCase());
+  // One slot per `;`-separated entry: an empty or malformed one stays '' in its
+  // place, so every later T index keeps its own colour.
+  return match[1].split(';').map((entry) => {
+    const colour = SLOT_COLOUR.exec(entry.trim());
+    return colour ? colour[0].slice(0, 7).toUpperCase() : '';
+  });
 }
 
 /** Whether selected bounds lie inside an object box from plate_N.json, in mm, with tolerance. */

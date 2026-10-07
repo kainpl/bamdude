@@ -47,7 +47,12 @@ export interface RenderManifest {
   objects: Array<RenderedObject | MissingObject>;
 }
 
-export type RenderErrorReason = 'parse_failed' | 'invalid_output';
+/**
+ * Spec §5.3: `parse_failed` is deterministic for the same bytes and settles the
+ * plate; `crashed` (the render step or the attempt's own transport failed) and
+ * `invalid_output` are transient and retried.
+ */
+export type RenderErrorReason = 'parse_failed' | 'crashed' | 'invalid_output';
 
 export class RenderError extends Error {
   // A plain field, not a constructor parameter property: the app's tsconfig

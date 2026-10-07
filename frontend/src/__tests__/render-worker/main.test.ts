@@ -9,17 +9,22 @@ import { RENDERER_VERSION, type RenderJob, type RenderManifest } from '../../ren
 const FIXTURES = join(process.cwd(), '..', 'backend', 'app', 'data', 'render_probe');
 const load = (name: string) => readFileSync(join(FIXTURES, name), 'utf8');
 
-function harness(job: RenderJob, gcode: string, opts: { pngStatus?: number } = {}) {
+function harness(
+  job: RenderJob,
+  gcode: string,
+  opts: { pngStatus?: number; plateStatus?: number; manifestStatus?: number } = {},
+) {
   const posts: Array<{ url: string; body: unknown }> = [];
   const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
     if (!init || init.method !== 'POST') {
       if (url === 'job.json') return new Response(JSON.stringify(job));
-      if (url === 'plate.gcode') return new Response(gcode);
+      if (url === 'plate.gcode') return new Response(gcode, { status: opts.plateStatus ?? 200 });
       return new Response('', { status: 404 });
     }
     const body = typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
     posts.push({ url, body });
     if (url.startsWith('png/')) return new Response(null, { status: opts.pngStatus ?? 204 });
+    if (url === 'manifest') return new Response(null, { status: opts.manifestStatus ?? 204 });
     return new Response(null, { status: 204 });
   });
   const deps: RenderDeps = {
@@ -86,13 +91,33 @@ describe('runJob', () => {
   });
 
   it('runJob posts error when rendering throws', async () => {
+    // A WebGL context that cannot be made, a GPU process that died, a canvas
+    // that gives no blob: transient (spec §5.3 "падіння"), never parse_failed,
+    // which would settle the plate for good.
     const { deps, posts } = harness({ size: 512, objects: [{ id: 101, mode: 'toolpath' }] }, load('two-objects.gcode'));
     deps.render = vi.fn(async () => {
       throw new Error('boom');
     });
     await runJob(deps);
     expect(posts.map((p) => p.url)).toEqual(['error']);
-    expect(posts[0].body).toMatchObject({ reason: 'parse_failed' });
+    expect(posts[0].body).toMatchObject({ reason: 'crashed' });
+  });
+
+  it('a plate the server refuses is crashed and never parsed', async () => {
+    const { deps, posts } = harness({ size: 512, objects: [{ id: 101, mode: 'toolpath' }] }, 'G1 X1 E1\n', { plateStatus: 503 });
+    await runJob(deps);
+    expect(deps.render).not.toHaveBeenCalled();
+    expect(posts.map((p) => p.url)).toEqual(['error']);
+    expect(posts[0].body).toMatchObject({ reason: 'crashed' });
+  });
+
+  it('a refused manifest is reported as invalid_output', async () => {
+    const { deps, posts } = harness({ size: 512, objects: [{ id: 101, mode: 'toolpath' }] }, load('two-objects.gcode'), {
+      manifestStatus: 413,
+    });
+    await runJob(deps);
+    expect(posts.map((p) => p.url)).toEqual(['png/101', 'manifest', 'error']);
+    expect(posts[2].body).toMatchObject({ reason: 'invalid_output' });
   });
 
   it('runJob posts error when the job cannot be read', async () => {
@@ -106,6 +131,7 @@ describe('runJob', () => {
     }) as unknown as typeof fetch;
     await runJob(deps);
     expect(posts.map((p) => p.url)).toEqual(['error']);
+    expect(posts[0].body).toMatchObject({ reason: 'crashed' });
   });
 
   it('treats a refused PNG upload as invalid_output', async () => {
