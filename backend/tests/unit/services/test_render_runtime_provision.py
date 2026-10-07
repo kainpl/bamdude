@@ -199,9 +199,50 @@ def test_a_briefly_held_tree_is_renamed_once_it_is_released(tmp_path: Path, monk
 def test_a_tree_that_stays_held_is_an_error(tmp_path: Path, monkeypatch):
     archive, sha, size = _archive(tmp_path)
     _flaky_rename(monkeypatch, refusals=10_000)
-    with pytest.raises(PermissionError):
+    with pytest.raises(ProvisionError, match="could not be put in place"):
         provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
     assert not (tmp_path / "runtime" / "node" / "win-x64").exists()
+
+
+def _refuse_renames_of(monkeypatch, *suffixes: str) -> None:
+    """Path.rename refusing for good a source whose name ends with one of ``suffixes``: a hold that outlasts the retries."""
+    real = Path.rename
+
+    def rename(self, target):
+        if self.name.endswith(suffixes):
+            raise PermissionError(5, "Access is denied", str(self))
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr(render_runtime.time, "sleep", lambda s: None)
+
+
+def test_a_failed_replacement_restores_the_previous_runtime(tmp_path: Path, monkeypatch):
+    # Codex review 2026-10-07 (P2): the old runtime moved aside, the new one refused for good -- the old one
+    # must be back at the regular path, not left in a hidden .old that locate_in never looks at
+    runtime = tmp_path / "runtime"
+    old_executable = _install(runtime, "win-x64")
+    archive, sha, size = _archive(tmp_path)
+    _refuse_renames_of(monkeypatch, ".part")
+    with pytest.raises(ProvisionError, match="previous one is kept"):
+        provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    assert render_runtime.locate_in(runtime, platform="win-x64") == render_runtime.NodeInstall(
+        old_executable, "v9", "win-x64"
+    )
+    assert old_executable.read_bytes() == b"#!fake"
+
+
+def test_a_failed_restore_keeps_the_backup_and_says_where(tmp_path: Path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    _install(runtime, "win-x64")
+    archive, sha, size = _archive(tmp_path)
+    _refuse_renames_of(monkeypatch, ".part", ".old")
+    with pytest.raises(ProvisionError, match="could not be restored") as err:
+        provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    backup = runtime / "node" / ".win-x64.old"
+    assert (backup / "node.exe").is_file()
+    assert (backup / "VERSION").read_text(encoding="utf-8").strip() == "v9"
+    assert str(backup) in str(err.value)
 
 
 @pytest.mark.parametrize(

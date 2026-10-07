@@ -207,9 +207,25 @@ def provision(
             raise
     old = target.parent / f".{key}.old"
     shutil.rmtree(old, ignore_errors=True)
-    if target.exists():
+    had_previous = target.exists()
+    if had_previous:
         _rename(target, old)
-    _rename(staged, target)
+    try:
+        _rename(staged, target)
+    except OSError as exc:
+        # The new tree is refused for good: put the previous runtime back where locate_in looks, never leave
+        # the install with no Node at all; a failed restore keeps the backup and says where it is.
+        if had_previous:
+            try:
+                _rename(old, target)
+            except OSError as restore_exc:
+                raise ProvisionError(
+                    f"{key}: the new runtime could not be put in place ({exc}) and the previous one could not be "
+                    f"restored ({restore_exc}); it is kept at {old}"
+                ) from exc
+        shutil.rmtree(staged, ignore_errors=True)
+        kept = "; the previous one is kept" if had_previous else ""
+        raise ProvisionError(f"{key}: the new runtime could not be put in place ({exc}){kept}") from exc
     shutil.rmtree(old, ignore_errors=True)
     return target
 
