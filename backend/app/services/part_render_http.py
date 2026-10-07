@@ -144,7 +144,9 @@ class JobServer:
                     return self._send_gcode()
                 if route not in owner._allow:
                     return self._reply(HTTPStatus.NOT_FOUND)
-                path = (owner._bundle_dir / route).resolve()
+                # `route` is an exact name from the build's Vite manifest (checked
+                # above), and the parents check below rejects anything resolving out.
+                path = (owner._bundle_dir / route).resolve()  # SEC-PATH-OK: manifest name, parents checked
                 if owner._bundle_dir not in path.parents or not path.is_file():
                     return self._reply(HTTPStatus.NOT_FOUND)
                 self._reply(
