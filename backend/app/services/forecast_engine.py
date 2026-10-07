@@ -219,6 +219,17 @@ def _whole_days(days: float) -> int:
     return math.floor(days + _WHOLE_DAY_EPS)
 
 
+def _whole_days_up(days: float) -> int:
+    """``ceil`` for a day count, blind to round-off in the last digit (see ``_WHOLE_DAY_EPS``)."""
+    return math.ceil(days - _WHOLE_DAY_EPS)
+
+
+def _depleted(stock_g: float, rate: float) -> bool:
+    """Whether ``stock_g`` is gone at ``rate`` g/day: a residue under a nanoday of
+    consumption is the mean's round-off, not stock (see ``_WHOLE_DAY_EPS``)."""
+    return stock_g <= rate * _WHOLE_DAY_EPS
+
+
 def finish_row(
     *,
     rate: float | None,

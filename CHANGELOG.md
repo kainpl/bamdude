@@ -6,6 +6,7 @@
 - **Printer filters and sorting stay usable in the compact toolbar.** Status, location and sort lists now open without collapsing their parent panel; tags can be selected in succession, and the Power On list closes after its action. Fixes [#54](https://github.com/kainpl/bamdude/issues/54).
 - **Telegram defect counts now reach the right print.** Replies to a custom count prompt are matched after the bot identifies the chat, and current permissions and printer scope are checked before recording. The cancel button and `/cancel` also clear the operator's live assessment without affecting another operator's draft. Fixes [#64](https://github.com/kainpl/bamdude/issues/64).
 - **Telegram queue screens show job names again.** The printer card, queue list and job detail read the captured source's display name or the legacy archive/library name, with a safe job-number fallback when metadata is unavailable. Fixes [#65](https://github.com/kainpl/bamdude/issues/65).
+- **The filament forecast no longer grows by a day depending on when it was opened.** A consumption rate that came out a hair under its true value (the last digit of a weighted average) made the depletion chart show an extra day at zero and the shopping list's arrival chart run one day longer. Whole days on both charts are now counted with the same tolerance the days-remaining figure already used.
 
 ## [0.7.0] - 2026-10-06
 

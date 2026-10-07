@@ -3891,7 +3891,9 @@ async def get_inventory_forecast_chart(
         for offset in range(days + 1):
             raw = max(0.0, row.total_remaining_g - rate * offset)
             projection.append((today + timedelta(days=offset), _js_round(raw)))
-            if raw == 0:
+            # Not ``raw == 0``: a mean one ulp under its value leaves 1e-14 g on the
+            # empty day, and the series would run a day of zeros past it.
+            if forecast_engine._depleted(raw, rate):
                 break
         series.append(
             ForecastChartSeries(
@@ -3967,7 +3969,7 @@ async def get_inventory_forecast_logistics(
         arrival_g = item.quantity_spools * avg_spool_g
         stock_at_arrival = max(0.0, row.total_remaining_g - rate * lead)
         peak_g = stock_at_arrival + arrival_g
-        clamped_max = min(lead + math.ceil(peak_g / rate) + 5, 365)
+        clamped_max = min(lead + forecast_engine._whole_days_up(peak_g / rate) + 5, 365)
 
         series: list[tuple[date, int]] = []
         for offset in range(clamped_max + 1):
@@ -3990,7 +3992,7 @@ async def get_inventory_forecast_logistics(
         # headline show day 7 for a precise 400 g / 50 g-per-day boundary.
         # The tolerance is in days and only compensates representational noise;
         # it cannot promote a meaningful fractional day.
-        zero_day = math.floor((row.total_remaining_g / rate) + 1e-9)
+        zero_day = forecast_engine._whole_days(row.total_remaining_g / rate)
         stock_break_day = zero_day if zero_day < lead else None
 
         out.append(

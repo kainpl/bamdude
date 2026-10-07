@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -128,6 +129,29 @@ async def _rate_events(db, spool_id: int, rate: float) -> None:
     which is why the engine floors day counts with a tolerance. std_dev = 0."""
     await _usage(db, spool_id, 3.0, 5.0)
     await _usage(db, spool_id, 2.0, rate)
+
+
+# 50 g/day as the weighted mean can actually come back: one ulp below, one above.
+RATES_ONE_ULP_OFF_50 = (math.nextafter(50.0, 0.0), math.nextafter(50.0, math.inf))
+
+
+def _serve_rate(monkeypatch, material: str, rate: float) -> None:
+    """Hand the routes ``material``'s row with ``rate`` in place of the measured one.
+
+    The mean lands one ulp off for about one clock second in twenty-three
+    (CI 2026-10-08: the chart's and the logistics' day counts each took a turn
+    failing), so a route test that waits for such a second is a flake; this
+    states the condition outright."""
+    real = forecast_engine.compute_forecast
+
+    async def compute_forecast(*args, **kwargs):
+        rows = await real(*args, **kwargs)
+        for row in rows:
+            if row.material == material:
+                row.rate_g_day = rate
+        return rows
+
+    monkeypatch.setattr(forecast_engine, "compute_forecast", compute_forecast)
 
 
 async def _sku_settings(db, **kwargs) -> FilamentSkuSettings:
@@ -515,6 +539,16 @@ class TestForecastChart:
         assert m5["projection"][0][0] in _acceptable_dates(0)
         assert m5["projection"][2][0] in _acceptable_dates(2)
 
+    @pytest.mark.parametrize("rate", RATES_ONE_ULP_OFF_50)
+    async def test_a_rate_one_ulp_off_still_stops_at_the_first_zero(self, async_client, db_session, monkeypatch, rate):
+        """100 g at 50 g/day is empty on day 2 whichever way the mean's last bit
+        fell — a residue of 1e-14 g is not a day of stock left."""
+        await _seed_chart_farm(db_session)
+        _serve_rate(monkeypatch, "M5", rate)
+        rsp = await async_client.get("/api/v1/inventory/forecast/chart?days=7")
+        m5 = next(s for s in rsp.json()["series"] if s["sku"]["material"] == "M5")
+        assert [grams for _, grams in m5["projection"]] == [100, 50, 0]
+
     async def test_a_full_horizon_projection_has_days_plus_one_points(self, async_client, db_session):
         await _seed_chart_farm(db_session)
         rsp = await async_client.get("/api/v1/inventory/forecast/chart?days=7")
@@ -636,6 +670,22 @@ class TestForecastLogistics:
         # rate 50, lead 10, σ=0: safety = 50·14 = 700; ROP = 50·10 + 700 = 1200
         assert row["safety_stock_g"] == pytest.approx(700.0)
         assert row["rop_g"] == pytest.approx(1200.0)
+
+    @pytest.mark.parametrize("rate", RATES_ONE_ULP_OFF_50)
+    async def test_a_rate_one_ulp_off_does_not_add_a_day(self, async_client, db_session, monkeypatch, rate):
+        """The series runs to ceil(2000 / 50) = 40 days past arrival; a mean one
+        ulp below 50 must not make that 41 and the series a point longer."""
+        spool = await _spool(db_session, material="PLA", brand="LG", color_name="Red", weight_used=600.0)
+        await _rate_events(db_session, spool.id, 50.0)
+        await _sku_settings(db_session, material="PLA", brand="LG", color_name="Red", lead_time_days=10)
+        item_id = await _add_cart_item(async_client, material="PLA", brand="LG", color_name="Red", quantity_spools=2)
+        _serve_rate(monkeypatch, "PLA", rate)
+
+        rsp = await async_client.get("/api/v1/inventory/forecast/logistics")
+        row = next(r for r in rsp.json() if r["item_id"] == item_id)
+
+        assert len(row["series"]) == 57
+        assert row["stock_break_day"] == 8
 
     async def test_a_covered_sku_reports_no_break(self, async_client, db_session):
         spool = await _spool(
