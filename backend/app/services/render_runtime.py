@@ -206,10 +206,14 @@ def provision(
             shutil.rmtree(staged, ignore_errors=True)
             raise
     old = target.parent / f".{key}.old"
-    shutil.rmtree(old, ignore_errors=True)
-    had_previous = target.exists()
-    if had_previous:
+    if target.exists():
+        shutil.rmtree(old, ignore_errors=True)  # a stale backup of a swap that completed
+        had_previous = True
         _rename(target, old)
+    else:
+        # No runtime in place: a backup left by an earlier failed restore is the only runtime there is,
+        # and it stays until a runtime is back in place (Codex review 2026-10-07).
+        had_previous = old.exists()
     try:
         _rename(staged, target)
     except OSError as exc:

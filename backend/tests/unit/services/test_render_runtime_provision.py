@@ -245,6 +245,50 @@ def test_a_failed_restore_keeps_the_backup_and_says_where(tmp_path: Path, monkey
     assert str(backup) in str(err.value)
 
 
+def test_a_kept_backup_survives_another_failed_update(tmp_path: Path, monkeypatch):
+    # Codex review 2026-10-07: the next run must not delete the only runtime there is -- the backup a
+    # failed restore left behind -- before a runtime is back in place
+    runtime = tmp_path / "runtime"
+    _install(runtime, "win-x64")
+    archive, sha, size = _archive(tmp_path)
+    _refuse_renames_of(monkeypatch, ".part", ".old")
+    for _ in range(2):
+        with pytest.raises(ProvisionError, match="could not be restored"):
+            provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    backup = runtime / "node" / ".win-x64.old"
+    assert (backup / "node.exe").read_bytes() == b"#!fake"
+    assert (backup / "VERSION").read_text(encoding="utf-8").strip() == "v9"
+
+
+def test_a_kept_backup_goes_back_in_place_when_the_update_fails_again(tmp_path: Path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    old_executable = _install(runtime, "win-x64")
+    archive, sha, size = _archive(tmp_path)
+    _refuse_renames_of(monkeypatch, ".part", ".old")
+    with pytest.raises(ProvisionError):
+        provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    monkeypatch.undo()
+    _refuse_renames_of(monkeypatch, ".part")  # the backup can move again, the new tree still cannot
+    with pytest.raises(ProvisionError, match="previous one is kept"):
+        provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    assert render_runtime.locate_in(runtime, platform="win-x64") == render_runtime.NodeInstall(
+        old_executable, "v9", "win-x64"
+    )
+
+
+def test_a_kept_backup_is_dropped_once_the_new_runtime_is_in_place(tmp_path: Path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    _install(runtime, "win-x64")
+    archive, sha, size = _archive(tmp_path)
+    _refuse_renames_of(monkeypatch, ".part", ".old")
+    with pytest.raises(ProvisionError):
+        provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    monkeypatch.undo()
+    target = provision(runtime, manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    assert (target / "node.exe").read_bytes() == b"MZ fake node"
+    assert not (runtime / "node" / ".win-x64.old").exists()
+
+
 @pytest.mark.parametrize(
     ("system", "machine", "key"),
     [
