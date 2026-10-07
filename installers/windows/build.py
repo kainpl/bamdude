@@ -418,6 +418,20 @@ def stage_ffmpeg() -> None:
         shutil.copy(ffprobe, target / "ffprobe.exe")
 
 
+def stage_render_browser() -> None:
+    """Pinned chrome-headless-shell into app\\runtime (spec §6.2).
+
+    Lands under build\\staging\\app, which [Files] already packs recursively,
+    so the installer needs no new entry. Verified against the manifest's sha256.
+    Runs after stage_backend(), which recreates STAGING/app from scratch.
+    """
+    sys.path.insert(0, str(REPO_ROOT))
+    from backend.app.services.render_browser import provision
+
+    target = provision(STAGING / "app" / "runtime", platform="win64")
+    log(f"staged render browser at {target}")
+
+
 def _read_app_version() -> str:
     """Read APP_VERSION from backend/app/core/config.py (the canonical
     source used by every other BamDude surface — FastAPI OpenAPI title,
@@ -538,6 +552,7 @@ def main() -> int:
     stage_backend(frontend_dist)
     stage_nssm()
     stage_ffmpeg()
+    stage_render_browser()
     write_version_file()
 
     log("")

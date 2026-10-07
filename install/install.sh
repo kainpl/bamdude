@@ -299,22 +299,52 @@ detect_timezone() {
 # Package Installation
 # -----------------------------------------------------------------------------
 
+# Shared libraries of the part-render browser (pinned chrome-headless-shell,
+# provision_render_browser below), per package manager: the owners of the
+# browser ELFs' direct DT_NEEDED libraries (libc / libgcc aside) -- ALSA, ATK,
+# AT-SPI, D-Bus, expat, GBM, GLib, NSPR, NSS, udev, X11/xcb, xkbcommon. The
+# render-browser E2 evidence verified each list with `check-libs` in a container.
+RENDER_LIBS_APT="libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libdbus-1-3 libexpat1 libgbm1 libglib2.0-0 libnspr4 libnss3 libudev1 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2"
+RENDER_LIBS_DNF="alsa-lib at-spi2-atk atk at-spi2-core dbus-libs expat mesa-libgbm glib2 nspr nss nss-util systemd-libs libX11 libxcb libXcomposite libXdamage libXext libXfixes libxkbcommon libXrandr"
+RENDER_LIBS_PACMAN="alsa-lib at-spi2-core dbus expat mesa glib2 nspr nss systemd-libs libx11 libxcb libxcomposite libxdamage libxext libxfixes libxkbcommon libxrandr"
+RENDER_LIBS_ZYPPER="libasound2 libatk-1_0-0 libatk-bridge-2_0-0 libatspi0 libdbus-1-3 libexpat1 libgbm1 libglib-2_0-0 libgio-2_0-0 libgobject-2_0-0 mozilla-nspr mozilla-nss libudev1 libX11-6 libxcb1 libXcomposite1 libXdamage1 libXext6 libXfixes3 libxkbcommon0 libXrandr2"
+
+# Debian trixie and Ubuntu 24.04 renamed several of these for the 64-bit
+# time_t transition. The old name is then only virtual, and apt refuses a
+# virtual package with more than one provider (libasound2 on Ubuntu 24.04), so
+# each name is resolved to its t64 successor where the archive has one.
+apt_render_libs() {
+    local pkg resolved=()
+    for pkg in $RENDER_LIBS_APT; do
+        if apt-cache show "${pkg}t64" >/dev/null 2>&1; then
+            resolved+=("${pkg}t64")
+        else
+            resolved+=("$pkg")
+        fi
+    done
+    echo "${resolved[@]}"
+}
+
 install_dependencies() {
     log_info "Installing system dependencies..."
 
     case "$PKG_MANAGER" in
         apt)
             sudo apt-get update
-            sudo apt-get install -y python3 python3-pip python3-venv git curl ffmpeg
+            # shellcheck disable=SC2046 # word-split the package list on purpose
+            sudo apt-get install -y python3 python3-pip python3-venv git curl ffmpeg $(apt_render_libs)
             ;;
         dnf|yum)
-            sudo $PKG_MANAGER install -y python3 python3-pip git curl ffmpeg
+            # shellcheck disable=SC2086
+            sudo $PKG_MANAGER install -y python3 python3-pip git curl ffmpeg $RENDER_LIBS_DNF
             ;;
         pacman)
-            sudo pacman -Sy --noconfirm python python-pip git curl ffmpeg
+            # shellcheck disable=SC2086
+            sudo pacman -Sy --noconfirm python python-pip git curl ffmpeg $RENDER_LIBS_PACMAN
             ;;
         zypper)
-            sudo zypper install -y python3 python3-pip git curl ffmpeg
+            # shellcheck disable=SC2086
+            sudo zypper install -y python3 python3-pip git curl ffmpeg $RENDER_LIBS_ZYPPER
             ;;
         brew)
             # Check if Homebrew is installed
@@ -438,6 +468,39 @@ setup_virtualenv() {
     fi
 
     log_success "Virtual environment configured"
+}
+
+provision_render_browser() {
+    log_info "Installing the part-render browser (pinned chrome-headless-shell)..."
+    case "$(uname -m)" in
+        x86_64|amd64|aarch64|arm64) ;;
+        *)
+            # Chrome for Testing builds no 32-bit ARM; such an install keeps
+            # working, and part thumbnails report the missing browser on the
+            # System page instead of failing the whole install.
+            log_warn "No render browser is built for $(uname -m); part thumbnails will report it on the System page"
+            return 0
+            ;;
+    esac
+    cd "$INSTALL_PATH"
+    local python="$INSTALL_PATH/venv/bin/python"
+    local as_service=()
+    if [[ "$OS_TYPE" != "macos" ]]; then
+        # Same contract as setup_virtualenv: the install tree belongs to the
+        # service user, so the browser is unpacked by that user too.
+        as_service=(sudo -u "$SERVICE_USER")
+    fi
+    # ${arr[@]+...}: an empty array must expand to nothing under `set -u` on bash 3.2 (macOS).
+    if ! ${as_service[@]+"${as_service[@]}"} "$python" -m backend.app.services.render_browser provision --runtime "$INSTALL_PATH/runtime"; then
+        log_error "Render browser download or verification failed"
+        exit 1
+    fi
+    if [[ "$OS_TYPE" != "macos" ]]; then
+        if ! ${as_service[@]+"${as_service[@]}"} "$python" -m backend.app.services.render_browser check-libs --runtime "$INSTALL_PATH/runtime"; then
+            log_warn "Render browser cannot load all its libraries; part thumbnails will report it on the System page"
+        fi
+    fi
+    log_success "Render browser installed"
 }
 
 # macOS attributes Local Network permission (TCC) to a process's code
@@ -1196,6 +1259,7 @@ main() {
 
     download_bamdude
     setup_virtualenv
+    provision_render_browser
     sign_python_for_tcc
     build_frontend
     create_directories
