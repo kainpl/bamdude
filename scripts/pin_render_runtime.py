@@ -99,6 +99,9 @@ def main(argv: list[str] | None = None) -> int:
     # The stand's golden hashes belong to the pinned Node: provision it here and write them on it.
     target = provision(ROOT / "runtime", manifest=manifest)
     found = locate_in(ROOT / "runtime")
+    if found is None:
+        print(f"provisioned {target}, but no Node executable is there", file=sys.stderr)
+        return 1
     print(f"provisioned {target}")
     return subprocess.call(
         [

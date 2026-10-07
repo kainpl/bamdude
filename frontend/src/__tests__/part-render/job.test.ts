@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runJob } from '../../part-render/job';
-import { RenderError, type RenderJob } from '../../part-render/protocol';
+import { MANIFEST_MAX, PNG_FRAME_OVERHEAD, RenderError, type RenderJob } from '../../part-render/protocol';
 
 const FIXTURES = join(process.cwd(), '..', 'backend', 'app', 'data', 'render_probe');
 const gcode = (name: string) => readFileSync(join(FIXTURES, name), 'utf8');
@@ -46,6 +46,16 @@ describe('runJob', () => {
 
   it('stops at the output budget with invalid_output', () => {
     expect(reasonOf(() => runJob(job([{ id: 101, mode: 'toolpath' }], 10), gcode('two-objects.gcode'), () => {}))).toBe('invalid_output');
+  });
+
+  it('keeps room for the whole manifest frame, its 5-byte header included', () => {
+    // Python counts every stdout byte: the P frame and the M frame at its largest, header and all
+    const one: RenderJob['objects'] = [{ id: 101, mode: 'toolpath' }];
+    let png = 0;
+    runJob(job(one), gcode('two-objects.gcode'), (_, bytes) => { png = bytes.length; });
+    const exact = png + PNG_FRAME_OVERHEAD + 5 + MANIFEST_MAX;
+    expect(reasonOf(() => runJob(job(one, exact), gcode('two-objects.gcode'), () => {}))).toBe('no error');
+    expect(reasonOf(() => runJob(job(one, exact - 1), gcode('two-objects.gcode'), () => {}))).toBe('invalid_output');
   });
 
   it('gives the same bytes twice', () => {

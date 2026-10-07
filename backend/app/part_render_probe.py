@@ -180,7 +180,8 @@ def compare_golden(results: dict[str, dict], golden: dict) -> list[str]:
             problems.append(f"{fixture}: not rendered")
             continue
         if got.get("node") != golden["node"]:
-            return [f"golden skipped: node {got.get('node')} != {golden['node']}"]
+            # not a pass: hashes from another Node are not comparable, and the probe fails
+            return [f"golden not comparable: run on node {got.get('node')}, written on {golden['node']}"]
         for object_id, sha in expected.items():
             if got["sha256"].get(object_id) != sha:
                 problems.append(f"{fixture} {object_id}: sha256 differs from golden")

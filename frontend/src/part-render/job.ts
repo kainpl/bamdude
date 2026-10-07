@@ -6,7 +6,9 @@
 import { createHash } from 'node:crypto';
 import { parseGcodeToolpath } from '../lib/gcodeToolpath';
 import { buildSegmentData } from '../lib/vendor/toolpathRenderer.js';
-import { MANIFEST_MAX, PNG_FRAME_OVERHEAD, RENDERER_VERSION, RenderError, type RenderJob, type RenderManifest } from './protocol';
+import {
+  CONTROL_FRAME_MAX, PNG_FRAME_OVERHEAD, RENDERER_VERSION, RenderError, isAllocationFailure, type RenderJob, type RenderManifest,
+} from './protocol';
 import { drawSegments, frameCamera, geometryBounds, isEmpty, RenderTarget, resolve } from './raster';
 import { encodePng } from './png';
 import { fitsBox, paletteFromGcode, selectSegments } from './select';
@@ -33,7 +35,8 @@ export function runJob(
     parsed = parseGcodeToolpath(gcode);
     palette = paletteFromGcode(gcode);
   } catch (error) {
-    throw new RenderError('parse_failed', String(error));
+    // A plate the heap cannot hold is a memory limit (fallback methods), not a deterministic parse failure.
+    throw new RenderError(isAllocationFailure(error) ? 'memory_limit' : 'parse_failed', String(error));
   }
   const ss = job.supersample ?? DEFAULT_SUPERSAMPLE;
   const target = new RenderTarget(job.size, ss);
@@ -79,7 +82,7 @@ export function runJob(
     }
     const png = encodePng(rgba, job.size, job.size);
     spent += png.length + PNG_FRAME_OVERHEAD;
-    if (spent + MANIFEST_MAX > job.outputBytes) {
+    if (spent + CONTROL_FRAME_MAX > job.outputBytes) {
       throw new RenderError('invalid_output', `PNGs exceed the attempt budget of ${job.outputBytes} bytes`);
     }
     emit(want.id, png);

@@ -59,10 +59,30 @@ describe('segmentVertices', () => {
   });
 
   it('zero-length and vertical segments draw without NaN', () => {
-    const layers = [layer(0.2, [5, 5, 0.2, 1, 5, 5, 0.2, 0], [5, 5, 0.2, 1, 5, 5, 3, 0], [0, 0, 0.2, 1, 10, 10, 0.2, 0])];
-    const img = render(layers, { 1: [0.5, 0.5, 0.5] });
-    expect(img.some((v) => Number.isNaN(v))).toBe(false);
-    expect(img.filter((_, i) => i % 4 === 3 && img[i] > 0).length).toBeGreaterThan(0);
+    // A NaN lands in the Float32 depth / colour buffers; in the Uint8 image it reads as 0 (black), so the
+    // buffers are what is checked, and each degenerate kind is drawn on its own (review focus 4).
+    const cases: Record<string, number[][]> = {
+      'zero length': [[5, 5, 0.2, 1, 5, 5, 0.2, 0]],
+      vertical: [[5, 5, 0.2, 1, 5, 5, 3, 0]],
+      mixed: [[5, 5, 0.2, 1, 5, 5, 0.2, 0], [5, 5, 0.2, 1, 5, 5, 3, 0], [0, 0, 0.2, 1, 10, 10, 0.2, 0]],
+    };
+    for (const [name, records] of Object.entries(cases)) {
+      const data = buildSegmentData([layer(0.2, ...records)], 0.42);
+      const target = new RenderTarget(64, 2);
+      target.clear();
+      drawSegments(data, new Float32Array(data.nV * 3).fill(0.5), frameCamera(geometryBounds(data)!), target);
+      expect(target.depth.some(Number.isNaN), `${name}: depth`).toBe(false);
+      expect(target.rgb.some(Number.isNaN), `${name}: colour`).toBe(false);
+      const img = resolve(target);
+      let covered = 0, black = 0;
+      for (let i = 0; i < img.length; i += 4) {
+        if (img[i + 3] === 0) continue;
+        covered++;
+        if (img[i] + img[i + 1] + img[i + 2] === 0) black++;
+      }
+      expect(covered, `${name}: drawn`).toBeGreaterThan(0);
+      expect(black, `${name}: black pixels`).toBe(0);
+    }
   });
 });
 

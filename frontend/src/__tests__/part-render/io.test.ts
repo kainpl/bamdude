@@ -35,11 +35,20 @@ describe('main', () => {
     expect(JSON.parse(frames[2].payload.toString()).objects).toHaveLength(2);
   });
 
-  it('decodes a G-code with stray non-UTF-8 bytes', async () => {
-    const dirty = Buffer.concat([Buffer.from('; object name: '), Buffer.from([0xcf, 0xf0, 0xe8]), Buffer.from('\n'), plate]);
+  it('decodes a G-code with stray non-UTF-8 bytes into the same render', async () => {
+    // cp1251 bytes from an old slicer: invalid UTF-8, both on a line of their own and inside a real comment
+    const stray = Buffer.from([0xcf, 0xf0, 0xe8]);
+    const at = plate.toString('latin1').indexOf('generated for BamDude');
+    expect(at).toBeGreaterThan(0);
+    const dirty = Buffer.concat([
+      Buffer.from('; object name: '), stray, Buffer.from('\n'), plate.subarray(0, at), stray, plate.subarray(at),
+    ]);
+    const clean = await run(input(jobLine, plate));
     const { code, frames } = await run(input(jobLine, dirty));
     expect(code).toBe(0);
     expect(frames.at(-1)!.kind).toBe('M');
+    const objects = (f: typeof frames) => JSON.parse(f.at(-1)!.payload.toString()).objects;
+    expect(objects(frames)).toEqual(objects(clean.frames)); // the same segments: same tools, sizes, PNG hashes
   });
 
   it('answers an unreadable job line with an E frame', async () => {

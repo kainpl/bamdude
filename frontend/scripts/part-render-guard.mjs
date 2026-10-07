@@ -61,10 +61,13 @@ export function checkCode(code) {
     const declaresSource = node.type === 'ImportDeclaration' || node.type === 'ExportAllDeclaration' || node.type === 'ExportNamedDeclaration';
     if (declaresSource && node.source && !ALLOWED_IMPORTS.includes(node.source.value)) problems.push(`import ${node.source.value}`);
     if (node.type === 'Identifier' && FORBIDDEN_GLOBALS.has(node.name) && isReference(parent, key)) problems.push(`global ${node.name}`);
-    if (node.type === 'MemberExpression' && !node.computed && node.property.type === 'Identifier') {
-      const name = node.property.name;
+    if (node.type === 'MemberExpression') {
+      // `x.fetch` and the equally static `x["fetch"]`; a computed name from a variable is out of reach
+      const name = !node.computed && node.property.type === 'Identifier'
+        ? node.property.name
+        : node.computed && typeof node.property.value === 'string' ? node.property.value : null;
       const ofGlobal = node.object.type === 'Identifier' && GLOBAL_OBJECTS.has(node.object.name);
-      if (FORBIDDEN_MEMBERS.has(name) || (ofGlobal && FORBIDDEN_GLOBALS.has(name))) problems.push(`member ${name}`);
+      if (name !== null && (FORBIDDEN_MEMBERS.has(name) || (ofGlobal && FORBIDDEN_GLOBALS.has(name)))) problems.push(`member ${name}`);
     }
     if (node.type === 'ObjectPattern') {
       // `const {getBuiltinModule} = process`, `const {fetch: request} = globalThis` (consilium R5.2)

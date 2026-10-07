@@ -34,10 +34,30 @@ def _tracked(bases: list[Path]) -> list[Path]:
     return [ROOT / name for name in out.split("\0") if name]
 
 
+TEXT_SUFFIXES = (
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".mjs",
+    ".mts",
+    ".sh",
+    ".bat",
+    ".cmd",
+    ".ps1",
+    ".yml",
+    ".iss",
+    ".json",
+    ".md",
+    ".txt",
+    "",
+)
+
+
 def test_no_browser_names_left():
     hits = []
     for path in _tracked(SCANNED):
-        if path.suffix not in (".py", ".ts", ".tsx", ".mjs", ".sh", ".yml", ".iss", ".json", "") or not path.is_file():
+        if path.suffix not in TEXT_SUFFIXES or not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         hits += [f"{path.relative_to(ROOT)}: {name}" for name in NAMES if name in text]

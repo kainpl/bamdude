@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import os
 import stat
 import tarfile
@@ -42,7 +43,7 @@ def _manifest(sha256: str, size: int) -> dict:
 def _fetch_from(source: Path):
     calls: list[str] = []
 
-    def fetch(url: str, dest: Path) -> None:
+    def fetch(url: str, dest: Path, limit: int | None = None) -> None:
         calls.append(url)
         dest.write_bytes(source.read_bytes())
 
@@ -180,6 +181,19 @@ def test_platform_key_reports_a_platform_without_an_official_build(machine):
         render_runtime.platform_key("Linux", machine)
 
 
+@pytest.mark.parametrize("machine", ["aarch64", "x86_64"])
+def test_a_32_bit_linux_userland_on_a_64_bit_kernel_is_unsupported(machine):
+    # Raspberry Pi OS 32-bit boots a 64-bit kernel on a Pi 4 / Pi 5: uname says aarch64, but the userland
+    # (this Python included) is armhf and cannot run the arm64 Node -- that is no_runtime, not an install
+    with pytest.raises(render_runtime.UnsupportedPlatform):
+        render_runtime.platform_key("Linux", machine, bits=32)
+    assert render_runtime.platform_key("Linux", machine, bits=64).startswith("linux-")
+
+
+def test_a_32_bit_python_on_64_bit_windows_still_runs_the_x64_node():
+    assert render_runtime.platform_key("Windows", "AMD64", bits=32) == "win-x64"
+
+
 SHASUMS = "\n".join(
     f"{i:064x}  node-v24.17.0-{name}"
     for i, name in enumerate(
@@ -227,7 +241,10 @@ def test_provision_unpacks_a_tar_xz_and_locates_bin_node(tmp_path):
         "platforms": {"linux-x64": {"url": "u", "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}},
     }
     target = render_runtime.provision(
-        tmp_path / "runtime", manifest=manifest, platform="linux-x64", fetch=lambda url, dest: dest.write_bytes(data)
+        tmp_path / "runtime",
+        manifest=manifest,
+        platform="linux-x64",
+        fetch=lambda url, dest, limit=None: dest.write_bytes(data),
     )
     assert (target / "VERSION").read_text().strip() == "v9"
     found = render_runtime.locate_in(tmp_path / "runtime", platform="linux-x64")
@@ -251,7 +268,7 @@ def test_provision_refuses_a_tar_entry_escaping_the_target(tmp_path):
     }
     with pytest.raises(render_runtime.ProvisionError):
         render_runtime.provision(
-            tmp_path / "rt", manifest=manifest, platform="linux-x64", fetch=lambda u, d: d.write_bytes(data)
+            tmp_path / "rt", manifest=manifest, platform="linux-x64", fetch=lambda u, d, limit=None: d.write_bytes(data)
         )
     assert not (tmp_path / "escape").exists()
 
@@ -287,3 +304,73 @@ def test_a_version_marker_without_its_executable_is_not_an_install(tmp_path):
     executable = _install(tmp_path, "win-x64")
     executable.unlink()
     assert render_runtime.locate_in(tmp_path, platform="win-x64") is None
+
+
+def test_provision_hands_the_pinned_size_to_the_download(tmp_path: Path):
+    archive, sha, size = _archive(tmp_path)
+    limits: list[int | None] = []
+
+    def fetch(url: str, dest: Path, limit: int | None = None) -> None:
+        limits.append(limit)
+        dest.write_bytes(archive.read_bytes())
+
+    provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=fetch)
+    assert limits == [size]
+
+
+def test_download_stops_at_the_pinned_size(tmp_path: Path, monkeypatch):
+    # a server that keeps sending must not fill the disk before the hash check can refuse the archive
+    class Endless(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(render_runtime.urllib.request, "urlopen", lambda request, timeout: Endless(b"x" * (8 * 2**20)))
+    dest = tmp_path / "node.zip"
+    with pytest.raises(ProvisionError, match="larger than"):
+        render_runtime.download("https://nodejs.org/dist/node.zip", dest, limit=2**20)
+    assert dest.stat().st_size <= 2 * 2**20
+
+
+def _pin_file(tmp_path: Path, sha: str, size: int) -> Path:
+    # an unresolvable host: a code path that reaches the network by mistake fails fast instead of downloading
+    pin = {
+        "version": VERSION,
+        "platforms": {"win-x64": {"url": "https://invalid.invalid/node.zip", "sha256": sha, "bytes": size}},
+    }
+    path = tmp_path / "render_runtime.json"
+    path.write_text(json.dumps(pin), encoding="utf-8")
+    return path
+
+
+def test_cli_provision_exits_0_when_installed(tmp_path: Path, monkeypatch):
+    archive, sha, size = _archive(tmp_path)
+    monkeypatch.setattr(
+        render_runtime, "download", lambda url, dest, limit=None: dest.write_bytes(archive.read_bytes())
+    )
+    args = ["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(_pin_file(tmp_path, sha, size))]
+    assert render_runtime.main([*args, "--platform", "win-x64"]) == 0
+
+
+def test_cli_provision_exits_1_with_a_message_when_the_download_fails(tmp_path: Path, monkeypatch, capsys):
+    _, sha, size = _archive(tmp_path)
+
+    def offline(url, dest, limit=None):
+        raise OSError("Network is unreachable")
+
+    monkeypatch.setattr(render_runtime, "download", offline)
+    args = ["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(_pin_file(tmp_path, sha, size))]
+    assert render_runtime.main([*args, "--platform", "win-x64"]) == 1
+    err = capsys.readouterr().err
+    assert "Network is unreachable" in err and "Traceback" not in err
+
+
+def test_cli_provision_exits_3_on_a_platform_without_an_official_build(tmp_path: Path, monkeypatch, capsys):
+    _, sha, size = _archive(tmp_path)
+    monkeypatch.setattr(render_runtime._platform, "system", lambda: "Linux")
+    monkeypatch.setattr(render_runtime._platform, "machine", lambda: "armv7l")
+    args = ["provision", "--runtime", str(tmp_path / "rt"), "--manifest", str(_pin_file(tmp_path, sha, size))]
+    assert render_runtime.main(args) == 3
+    assert "top-view fallback" in capsys.readouterr().err

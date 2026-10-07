@@ -24,6 +24,8 @@ describe('part-render guard', () => {
     ['getBuiltinModule destructured from process', 'const {getBuiltinModule} = process; getBuiltinModule("http");', 'destructured getBuiltinModule'],
     ['fetch destructured under another name', 'const {fetch: request} = globalThis; request("http://x");', 'destructured fetch'],
     ['a string key destructured', 'const {"WebSocket": W} = globalThis; new W("ws://x");', 'destructured WebSocket'],
+    ['a literal computed global property', 'globalThis["fetch"]("http://x");', 'member fetch'],
+    ['a literal computed member', 'process["getBuiltinModule"]("http");', 'member getBuiltinModule'],
   ])('catches %s', (_name, code, problem) => {
     expect(checkCode(code)).toContain(problem);
   });

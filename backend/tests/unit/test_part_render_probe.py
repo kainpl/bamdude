@@ -1,4 +1,3 @@
-import shutil
 from pathlib import Path
 
 import pytest
@@ -7,6 +6,18 @@ from PIL import Image
 from backend.app import part_render_probe
 from backend.app.part_render_probe import FIXTURE_JOBS, evaluate_render, pixel_counts
 from backend.app.services import render_runtime
+
+
+def _pinned_node() -> Path | None:
+    """The provisioned pin first, a developer Node on PATH only as a fallback (spec §6.1)."""
+    try:
+        return part_render_probe.default_node()
+    except render_runtime.UnsupportedPlatform:
+        return None
+
+
+NODE = _pinned_node()
+needs_node = pytest.mark.skipif(NODE is None, reason="no pinned Node and none on PATH")
 
 
 def _png(path: Path, pixels: dict[tuple[int, int], tuple[int, int, int, int]], size: int = 8) -> Path:
@@ -72,7 +83,7 @@ def test_compare_golden_reports_each_difference():
 def test_compare_golden_refuses_another_node_version():
     golden = {"renderer": 2, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64}}}
     results = {"two-objects": {"ok": True, "node": "v2", "sha256": {"101": "a" * 64}}}
-    assert part_render_probe.compare_golden(results, golden) == ["golden skipped: node v2 != v1"]
+    assert part_render_probe.compare_golden(results, golden) == ["golden not comparable: run on node v2, written on v1"]
 
 
 def test_compare_golden_reports_a_failed_render_instead_of_raising():
@@ -81,18 +92,18 @@ def test_compare_golden_reports_a_failed_render_instead_of_raising():
     assert part_render_probe.compare_golden(results, golden) == ["two-objects: not rendered"]
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="no node on PATH")
+@needs_node
 def test_render_fixture_meets_the_pixel_expectations(tmp_path):
-    report = part_render_probe.render_fixture(Path(shutil.which("node")), "two-objects", tmp_path)
+    report = part_render_probe.render_fixture(NODE, "two-objects", tmp_path)
     assert report["ok"], report["problems"]
     assert set(report["sha256"]) == {"101", "202"}
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="no node on PATH")
+@needs_node
 def test_a_runtime_failure_is_a_report_not_a_crash(tmp_path, monkeypatch):
     monkeypatch.setitem(part_render_probe.FIXTURE_JOBS["two-objects"], "gcode", "single-no-markers.gcode")
     monkeypatch.setattr(part_render_probe, "node_command", lambda node: [str(node), "-e", "process.exit(9)"])
-    report = part_render_probe.render_fixture(Path(shutil.which("node")), "two-objects", tmp_path)
+    report = part_render_probe.render_fixture(NODE, "two-objects", tmp_path)
     assert report["ok"] is False and report["node"].startswith("v") and report["problems"][0].startswith("crashed")
 
 

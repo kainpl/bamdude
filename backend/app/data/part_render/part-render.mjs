@@ -602,8 +602,17 @@ function ue(t, i) {
 ]);
 //#endregion
 //#region src/part-render/protocol.ts
-/** Largest manifest / error frame; the PNG budget leaves this much of `outputBytes` for it (spec §5.6). */
+/** Largest manifest / error payload (spec §5.6). */
 const MANIFEST_MAX = 1024 * 1024;
+/**
+* An allocation the heap could not satisfy -- a memory limit, not a crash and not a parse
+* failure (consilium N6). Asked by name, not instanceof: the engine's RangeError can come
+* from another realm (vitest's jsdom environment).
+*/
+function isAllocationFailure(error) {
+	if (typeof error !== "object" || error === null || error.name !== "RangeError") return false;
+	return /allocation failed|invalid (typed )?array length/i.test(String(error.message));
+}
 var RenderError = class extends Error {
 	reason;
 	constructor(reason, message) {
@@ -1153,7 +1162,7 @@ function runJob(job, gcode, emit, draw = drawSegments) {
 		parsed = parseGcodeToolpath(gcode);
 		palette = paletteFromGcode(gcode);
 	} catch (error) {
-		throw new RenderError("parse_failed", String(error));
+		throw new RenderError(isAllocationFailure(error) ? "memory_limit" : "parse_failed", String(error));
 	}
 	const ss = job.supersample ?? 2;
 	const target = new RenderTarget(job.size, ss);
@@ -1214,7 +1223,7 @@ function runJob(job, gcode, emit, draw = drawSegments) {
 		}
 		const png = encodePng(rgba, job.size, job.size);
 		spent += png.length + 9;
-		if (spent + 1048576 > job.outputBytes) throw new RenderError("invalid_output", `PNGs exceed the attempt budget of ${job.outputBytes} bytes`);
+		if (spent + 1048581 > job.outputBytes) throw new RenderError("invalid_output", `PNGs exceed the attempt budget of ${job.outputBytes} bytes`);
 		emit(want.id, png);
 		objects.push({
 			id: want.id,
@@ -1260,14 +1269,9 @@ async function readAll(stream) {
 function write(stream, bytes) {
 	return new Promise((done, fail) => stream.write(bytes, (error) => error ? fail(error) : done()));
 }
-/** A typed-array allocation the heap could not satisfy is a memory limit, not a crash (consilium N6). */
-/** By name, not instanceof: the engine's RangeError can come from another realm (vitest's jsdom environment). */
-function isRangeError(error) {
-	return typeof error === "object" && error !== null && error.name === "RangeError";
-}
 function reasonOf(error) {
 	if (error instanceof RenderError) return error.reason;
-	if (isRangeError(error) && /allocation failed|invalid (typed )?array length/i.test(String(error.message))) return "memory_limit";
+	if (isAllocationFailure(error)) return "memory_limit";
 	return "crashed";
 }
 async function main(stdin, stdout) {

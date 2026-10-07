@@ -7,7 +7,7 @@
  * Exit code 0 with 'M', 1 with 'E'. No file system, network or child process.
  */
 import { runJob } from './job';
-import { MANIFEST_MAX, RenderError, type RenderErrorReason, type RenderJob } from './protocol';
+import { MANIFEST_MAX, RenderError, isAllocationFailure, type RenderErrorReason, type RenderJob } from './protocol';
 
 function frame(kind: 'P' | 'M' | 'E', payload: Uint8Array): Uint8Array {
   const out = new Uint8Array(5 + payload.length);
@@ -29,15 +29,9 @@ function write(stream: NodeJS.WritableStream, bytes: Uint8Array): Promise<void> 
   return new Promise((done, fail) => stream.write(bytes, (error) => (error ? fail(error) : done())));
 }
 
-/** A typed-array allocation the heap could not satisfy is a memory limit, not a crash (consilium N6). */
-/** By name, not instanceof: the engine's RangeError can come from another realm (vitest's jsdom environment). */
-function isRangeError(error: unknown): error is Error {
-  return typeof error === 'object' && error !== null && (error as Error).name === 'RangeError';
-}
-
 function reasonOf(error: unknown): RenderErrorReason {
   if (error instanceof RenderError) return error.reason;
-  if (isRangeError(error) && /allocation failed|invalid (typed )?array length/i.test(String(error.message))) return 'memory_limit';
+  if (isAllocationFailure(error)) return 'memory_limit';
   return 'crashed';
 }
 

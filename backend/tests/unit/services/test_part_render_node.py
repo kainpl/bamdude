@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import shutil
 import subprocess
 import sys
 import textwrap
@@ -17,8 +16,35 @@ from backend.app.services.part_render_node import NodeRenderError, node_command,
 FIXTURES = Path(__file__).resolve().parents[3] / "app" / "data" / "render_probe"
 JOB = {"size": 64, "outputBytes": 2**20, "objects": [{"id": 101, "mode": "toolpath"}, {"id": 202, "mode": "toolpath"}]}
 PNG = b"\x89PNG\r\n\x1a\n-fake"
-NODE = shutil.which("node")
-needs_node = pytest.mark.skipif(NODE is None, reason="no node on PATH (E2 provisions one)")
+
+
+def _pinned_node() -> str | None:
+    """The provisioned pin first, a developer Node on PATH only as a fallback (part_render_probe.default_node)."""
+    from backend.app.part_render_probe import default_node
+    from backend.app.services.render_runtime import UnsupportedPlatform
+
+    try:
+        found = default_node()
+    except UnsupportedPlatform:
+        return None
+    return str(found) if found else None
+
+
+NODE = _pinned_node()
+needs_node = pytest.mark.skipif(NODE is None, reason="no pinned Node and none on PATH")
+
+
+def test_the_runtime_tests_run_on_the_pin_when_it_is_provisioned():
+    # spec §6.1/§6.3: the guarantees under test (permission model, env, OOM) are the PINNED Node's
+    from backend.app.services import render_runtime
+
+    try:
+        found = render_runtime.locate(Path(__file__).resolve().parents[4])
+    except render_runtime.UnsupportedPlatform:
+        pytest.skip("no official Node.js build for this platform")
+    if found is None:
+        pytest.skip("the pin is not provisioned in this checkout")
+    assert Path(NODE) == found.executable
 
 
 def entry(object_id: int, png: bytes = PNG, size: int = 64) -> dict:
@@ -87,6 +113,20 @@ def test_a_good_answer_is_accepted(tmp_path):
     result = run(fake(tmp_path, GOOD_BODY))
     assert result.pngs == {101: PNG}
     assert [o["method"] for o in result.manifest["objects"]] == ["toolpath", "missing"]
+
+
+def test_node_starts_without_a_console_window_on_windows(tmp_path, monkeypatch):
+    # like every other child the app spawns (preview, worker guardian, embedded PostgreSQL)
+    seen: dict = {}
+    real = subprocess.Popen
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(prn.subprocess, "Popen", spy)
+    run(fake(tmp_path, GOOD_BODY))
+    assert seen.get("creationflags", 0) == (subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
 
 
 def test_a_source_read_error_after_a_valid_prefix_is_not_a_result(tmp_path):

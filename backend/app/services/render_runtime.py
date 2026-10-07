@@ -11,6 +11,7 @@ import hashlib
 import json
 import platform as _platform
 import shutil
+import struct
 import sys
 import tarfile
 import tempfile
@@ -36,11 +37,16 @@ class UnsupportedPlatform(ProvisionError):
     """No official Node.js build for this machine: part thumbnails run their fallback methods (no_runtime)."""
 
 
-def platform_key(system: str | None = None, machine: str | None = None) -> str:
+def platform_key(system: str | None = None, machine: str | None = None, *, bits: int | None = None) -> str:
     system = (system or _platform.system()).lower()
     machine = (machine or _platform.machine()).lower()
+    bits = bits or struct.calcsize("P") * 8
     arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(machine)
     key = {"linux": f"linux-{arch}", "darwin": f"darwin-{arch}", "windows": f"win-{arch}"}.get(system) if arch else None
+    if system == "linux" and bits == 32:
+        # uname names the KERNEL: Raspberry Pi OS 32-bit runs a 64-bit kernel on a Pi 4 / Pi 5, so it
+        # says aarch64 while the userland is armhf and has no loader for a 64-bit Node.
+        raise UnsupportedPlatform(f"no official Node.js build for a 32-bit linux userland ({machine} kernel)")
     if key not in PLATFORMS:
         # Node 24 builds no 32-bit ARM (armv7l moved to experimental): part thumbnails
         # fall back to the top-view method there (spec §5.3, §6.1) -- never a third-party build.
@@ -76,12 +82,18 @@ def load_manifest(path: Path = MANIFEST) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def download(url: str, dest: Path) -> None:
+def download(url: str, dest: Path, limit: int | None = None) -> None:
+    """Fetch ``url`` into ``dest``; past ``limit`` bytes (the pinned size) it stops instead of filling the disk."""
+    size = 0
     with (
         urllib.request.urlopen(urllib.request.Request(url, headers=_HEADERS), timeout=60) as resp,
         dest.open("wb") as out,
     ):
-        shutil.copyfileobj(resp, out, 1024 * 1024)
+        while block := resp.read(1024 * 1024):
+            size += len(block)
+            if limit is not None and size > limit:
+                raise ProvisionError(f"{url}: larger than the pinned {limit} bytes")
+            out.write(block)
 
 
 def _sha256(path: Path) -> str:
@@ -155,8 +167,9 @@ def provision(
     *,
     manifest: dict | None = None,
     platform: str | None = None,
-    fetch: Callable[[str, Path], None] = download,
+    fetch: Callable[[str, Path, int | None], None] | None = None,
 ) -> Path:
+    fetch = fetch or download  # looked up at call time: the CLI and its tests reach the module's download
     manifest = manifest or load_manifest()
     key = platform or platform_key()
     entry = manifest["platforms"].get(key)
@@ -180,7 +193,7 @@ def provision(
     with tempfile.TemporaryDirectory(dir=target.parent, prefix=f".{key}.download.") as tmp:
         # Named after the URL so _extract sees the archive's suffix.
         archive = Path(tmp) / Path(entry["url"]).name
-        fetch(entry["url"], archive)
+        fetch(entry["url"], archive, entry["bytes"])
         if archive.stat().st_size != entry["bytes"] or _sha256(archive) != entry["sha256"]:
             raise ProvisionError(f"{key}: sha256 or size does not match the manifest")
         staged.mkdir()
@@ -246,7 +259,8 @@ def main(argv: list[str] | None = None) -> int:
     except UnsupportedPlatform as exc:
         print(f"render-runtime: {exc}: part thumbnails use the top-view fallback", file=sys.stderr)
         return 3
-    except ProvisionError as exc:
+    except (ProvisionError, OSError) as exc:
+        # A blocked host, a full disk or a tree still held after the retries: a message, not a traceback.
         print(f"render-runtime: {exc}", file=sys.stderr)
         return 1
     print(f"render-runtime: {target}")

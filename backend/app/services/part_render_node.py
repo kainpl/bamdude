@@ -128,7 +128,14 @@ def run_frames(
 ) -> NodeRenderResult:
     """Feed one job and judge the whole answer; kill on any breach. ``env`` is required: build it with node_env()."""
     started = time.monotonic()
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(env))
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=dict(env),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
     stderr_tail: collections.deque[bytes] = collections.deque()
     killed: list[str] = []
     fed = threading.Event()
