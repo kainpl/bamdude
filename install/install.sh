@@ -331,20 +331,16 @@ install_dependencies() {
     case "$PKG_MANAGER" in
         apt)
             sudo apt-get update
-            # shellcheck disable=SC2046 # word-split the package list on purpose
-            sudo apt-get install -y python3 python3-pip python3-venv git curl ffmpeg $(apt_render_libs)
+            sudo apt-get install -y python3 python3-pip python3-venv git curl ffmpeg
             ;;
         dnf|yum)
-            # shellcheck disable=SC2086
-            sudo $PKG_MANAGER install -y python3 python3-pip git curl ffmpeg $RENDER_LIBS_DNF
+            sudo $PKG_MANAGER install -y python3 python3-pip git curl ffmpeg
             ;;
         pacman)
-            # shellcheck disable=SC2086
-            sudo pacman -Sy --noconfirm python python-pip git curl ffmpeg $RENDER_LIBS_PACMAN
+            sudo pacman -Sy --noconfirm python python-pip git curl ffmpeg
             ;;
         zypper)
-            # shellcheck disable=SC2086
-            sudo zypper install -y python3 python3-pip git curl ffmpeg $RENDER_LIBS_ZYPPER
+            sudo zypper install -y python3 python3-pip git curl ffmpeg
             ;;
         brew)
             # Check if Homebrew is installed
@@ -356,7 +352,40 @@ install_dependencies() {
             ;;
     esac
 
+    if ! install_render_libraries; then
+        log_warn "Could not install the render browser's libraries; part thumbnails will report it on the System page"
+    fi
+
     log_success "System dependencies installed"
+}
+
+# The render browser's shared libraries alone. Also called by update.sh, so an
+# install made before the browser shipped gets them on its next update.
+install_render_libraries() {
+    case "$PKG_MANAGER" in
+        apt)
+            # A fresh index first: update.sh may run months after the last one,
+            # and apt_render_libs asks the archive which names exist.
+            sudo apt-get update
+            # shellcheck disable=SC2046 # word-split the package list on purpose
+            sudo apt-get install -y $(apt_render_libs)
+            ;;
+        dnf|yum)
+            # shellcheck disable=SC2086
+            sudo $PKG_MANAGER install -y $RENDER_LIBS_DNF
+            ;;
+        pacman)
+            # shellcheck disable=SC2086
+            sudo pacman -Sy --needed --noconfirm $RENDER_LIBS_PACMAN
+            ;;
+        zypper)
+            # shellcheck disable=SC2086
+            sudo zypper install -y $RENDER_LIBS_ZYPPER
+            ;;
+        brew)
+            # macOS ships everything the browser links against.
+            ;;
+    esac
 }
 
 # -----------------------------------------------------------------------------
@@ -492,8 +521,12 @@ provision_render_browser() {
     fi
     # ${arr[@]+...}: an empty array must expand to nothing under `set -u` on bash 3.2 (macOS).
     if ! ${as_service[@]+"${as_service[@]}"} "$python" -m backend.app.services.render_browser provision --runtime "$INSTALL_PATH/runtime"; then
-        log_error "Render browser download or verification failed"
-        exit 1
+        # A blocked download host or a hash mismatch: nothing unverified was
+        # unpacked, and a missing feature must not fail the whole install --
+        # part thumbnails report it on the System page; re-running the
+        # installer or update.sh tries again.
+        log_warn "Render browser download or verification failed; part thumbnails will report it on the System page"
+        return 0
     fi
     if [[ "$OS_TYPE" != "macos" ]]; then
         if ! ${as_service[@]+"${as_service[@]}"} "$python" -m backend.app.services.render_browser check-libs --runtime "$INSTALL_PATH/runtime"; then
@@ -1314,4 +1347,8 @@ main() {
     echo ""
 }
 
-main "$@"
+# Run only when executed (`./install.sh`, `bash install.sh`, `curl … | bash`):
+# update.sh sources this file for its functions and package lists.
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+    main "$@"
+fi

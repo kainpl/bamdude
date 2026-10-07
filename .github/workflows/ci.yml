@@ -265,6 +265,7 @@ jobs:
           backend/tests/unit/test_no_sandbox_flag_anywhere.py
           backend/tests/unit/services/test_part_render_http.py
           backend/tests/unit/test_render_browser_probe.py
+          backend/tests/unit/test_render_browser_probe_child.py
           -v --tb=short --timeout=180 --timeout-method=thread -n 1
       - name: Probe the tracked bundle with the sandbox on
         shell: bash

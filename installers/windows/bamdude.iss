@@ -167,6 +167,12 @@ Source: "build\staging\VERSION"; DestDir: "{app}"; Flags: ignoreversion
 ; UninstallDisplayIcon path stays stable when the [Files] tree changes.
 Source: "bamdude.ico"; DestDir: "{app}"; Flags: ignoreversion
 
+[InstallDelete]
+; The pinned render browser is replaced whole on every install: files an older
+; build shipped and the new one does not must not stay beside it (spec §6.2).
+; Runs after PrepareToInstall has stopped the service, so nothing holds them.
+Type: filesandordirs; Name: "{app}\app\runtime"
+
 [Dirs]
 ; ProgramData layout — created with permissions LocalSystem can write to
 Name: "{commonappdata}\BamDude"; Permissions: users-modify
