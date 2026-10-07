@@ -124,6 +124,42 @@ def test_replaces_an_older_version(tmp_path: Path):
     assert not (target / "stale.txt").exists()
 
 
+def _flaky_rename(monkeypatch, refusals: int) -> list[str]:
+    """Path.rename refusing ``refusals`` times first, as Windows does while an antivirus holds the new tree."""
+    real = Path.rename
+    calls: list[str] = []
+
+    def rename(self, target):
+        calls.append(self.name)
+        if len(calls) <= refusals:
+            raise PermissionError(5, "Access is denied", str(self))
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr(render_runtime.time, "sleep", lambda s: None)
+    return calls
+
+
+def test_a_briefly_held_tree_is_renamed_once_it_is_released(tmp_path: Path, monkeypatch):
+    # Seen on Windows 2026-10-07: the freshly unpacked node.exe is held for a moment and the
+    # staged directory cannot be renamed into place; a moment later the same rename succeeds.
+    archive, sha, size = _archive(tmp_path)
+    calls = _flaky_rename(monkeypatch, refusals=2)
+    target = provision(
+        tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive)
+    )
+    assert (target / "node.exe").is_file()
+    assert len(calls) == 3
+
+
+def test_a_tree_that_stays_held_is_an_error(tmp_path: Path, monkeypatch):
+    archive, sha, size = _archive(tmp_path)
+    _flaky_rename(monkeypatch, refusals=10_000)
+    with pytest.raises(PermissionError):
+        provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="win-x64", fetch=_fetch_from(archive))
+    assert not (tmp_path / "runtime" / "node" / "win-x64").exists()
+
+
 @pytest.mark.parametrize(
     ("system", "machine", "key"),
     [

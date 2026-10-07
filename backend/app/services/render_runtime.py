@@ -14,6 +14,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 import zipfile
 from collections.abc import Callable
@@ -135,6 +136,20 @@ def _executable(target: Path, key: str) -> Path:
     return target / "node.exe" if key == "win-x64" else target / "bin" / "node"
 
 
+def _rename(src: Path, dst: Path, *, attempts: int = 20, delay: float = 0.5) -> None:
+    """Rename, waiting out a short hold: on Windows a just-unpacked tree is held for a moment
+    (an antivirus scanning the new node.exe) and refuses the rename; a hold that outlasts the
+    retries is an error."""
+    for attempt in range(attempts):
+        try:
+            src.rename(dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+
+
 def provision(
     runtime_root: Path,
     *,
@@ -178,8 +193,8 @@ def provision(
     old = target.parent / f".{key}.old"
     shutil.rmtree(old, ignore_errors=True)
     if target.exists():
-        target.rename(old)
-    staged.rename(target)
+        _rename(target, old)
+    _rename(staged, target)
     shutil.rmtree(old, ignore_errors=True)
     return target
 

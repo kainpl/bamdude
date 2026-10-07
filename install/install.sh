@@ -440,6 +440,36 @@ setup_virtualenv() {
     log_success "Virtual environment configured"
 }
 
+provision_render_runtime() {
+    log_info "Installing the part-render runtime (pinned Node.js)..."
+    cd "$INSTALL_PATH"
+    local python="$INSTALL_PATH/venv/bin/python"
+    local as_service=()
+    if [[ "$OS_TYPE" != "macos" ]]; then
+        # Same contract as setup_virtualenv: the install tree belongs to the
+        # service user, so the runtime is unpacked by that user too.
+        as_service=(sudo -u "$SERVICE_USER")
+    fi
+    # ${arr[@]+...}: an empty array must expand to nothing under `set -u` on bash 3.2 (macOS).
+    local code=0
+    ${as_service[@]+"${as_service[@]}"} "$python" -m backend.app.services.render_runtime provision --runtime "$INSTALL_PATH/runtime" || code=$?
+    if [[ $code -eq 3 ]]; then
+        # No official Node.js for this architecture (32-bit ARM under Node 24):
+        # part thumbnails use the top-view fallback, and the System page says so.
+        log_info "No official Node.js build for $(uname -m): part thumbnails will use the top-view fallback"
+        return 0
+    fi
+    if [[ $code -ne 0 ]]; then
+        # A blocked download host or a hash mismatch: nothing unverified was
+        # unpacked, and a missing feature must not fail the whole install --
+        # part thumbnails report it on the System page; re-running the
+        # installer or update.sh tries again.
+        log_warn "Render runtime download or verification failed; part thumbnails will report it on the System page"
+        return 0
+    fi
+    log_success "Render runtime installed"
+}
+
 # macOS attributes Local Network permission (TCC) to a process's code
 # signature, and judges a launchd-spawned process on its own rather than
 # letting it inherit the grant of the Terminal that started it. Homebrew's
@@ -1196,6 +1226,7 @@ main() {
 
     download_bamdude
     setup_virtualenv
+    provision_render_runtime
     sign_python_for_tcc
     build_frontend
     create_directories

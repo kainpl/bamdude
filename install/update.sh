@@ -212,6 +212,20 @@ on_error() {
 }
 trap 'on_error $?' ERR
 
+# The part-render runtime (pinned Node.js, spec §6): an install made before it
+# shipped gets it here, and a new pin in the manifest reaches every updated
+# install -- the pin is how runtime security fixes travel. install.sh's own
+# function does the work. Run in a subshell: sourcing install.sh brings its
+# globals and `set -e`, which must not leak into this script.
+refresh_render_runtime() {
+  # shellcheck source=install.sh
+  source "$INSTALL_DIR/install/install.sh"
+  detect_os
+  INSTALL_PATH="$INSTALL_DIR"
+  SERVICE_USER="$(stat -c %U "$INSTALL_DIR")"
+  provision_render_runtime
+}
+
 create_backup() {
   local ts backup_file
   local -a auth_args=()
@@ -361,6 +375,17 @@ if [ -x "$VENV_PIP" ] && [ -f requirements.txt ]; then
   "$VENV_PIP" install -r requirements.txt
 else
   warn "Skipping Python dependency update (venv pip or requirements.txt missing)."
+fi
+
+# Never fails the update: a missing runtime is a missing feature, reported on
+# the System page, not a reason to roll the code back.
+if [ -f "$INSTALL_DIR/install/install.sh" ] && [ -x "$VENV_PYTHON" ]; then
+  log "Updating the part-render runtime"
+  if ! (refresh_render_runtime); then
+    warn "Render runtime update failed; part thumbnails will report it on the System page."
+  fi
+else
+  warn "Skipping the render runtime (install/install.sh or the venv python missing)."
 fi
 
 if [ -f "$FRONTEND_DIR/package.json" ]; then
