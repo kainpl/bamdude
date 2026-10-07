@@ -1,0 +1,13 @@
+{
+  "renderer": 2,
+  "node": "v24.17.0",
+  "png_sha256": {
+    "two-objects": {
+      "101": "edd0f5e048409a1311b28ecc6e73e5405e9c12014ef280f66eccbf1f05221f31",
+      "202": "fa8db3e2cc53180de3177648fb7869e28e36f2e734c298ddbf584309afb87fab"
+    },
+    "single-no-markers": {
+      "1": "2148d278e81a77cf95fe0db044508bc22c46037141e4efe89cac34e0d447ba12"
+    }
+  }
+}

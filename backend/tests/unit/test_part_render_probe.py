@@ -1,8 +1,11 @@
+import shutil
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
-from backend.app.render_browser_probe import FIXTURE_JOBS, evaluate_render, pixel_counts
+from backend.app import part_render_probe
+from backend.app.part_render_probe import FIXTURE_JOBS, evaluate_render, pixel_counts
 
 
 def _png(path: Path, pixels: dict[tuple[int, int], tuple[int, int, int, int]], size: int = 8) -> Path:
@@ -59,10 +62,34 @@ def test_evaluate_render_fails_on_page_error():
     assert report["problems"] == ["page error: parse_failed"]
 
 
-def test_a_browser_that_died_is_not_reported_as_a_deadline():
-    # Docker without user namespaces: Chromium aborts in half a second, and
-    # "no manifest before the deadline" sent the reader to the timeout.
-    report = evaluate_render("two-objects", None, None, {}, size=512, min_pixels=50, browser_exit=-5)
-    assert report["problems"] == ["the browser exited with -5 before the manifest"]
-    still_running = evaluate_render("two-objects", None, None, {}, size=512, min_pixels=50, browser_exit=None)
-    assert still_running["problems"] == ["no manifest before the deadline"]
+def test_compare_golden_reports_each_difference():
+    golden = {"renderer": 2, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64, "202": "b" * 64}}}
+    results = {"two-objects": {"ok": True, "node": "v1", "sha256": {"101": "a" * 64, "202": "c" * 64}}}
+    assert part_render_probe.compare_golden(results, golden) == ["two-objects 202: sha256 differs from golden"]
+
+
+def test_compare_golden_refuses_another_node_version():
+    golden = {"renderer": 2, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64}}}
+    results = {"two-objects": {"ok": True, "node": "v2", "sha256": {"101": "a" * 64}}}
+    assert part_render_probe.compare_golden(results, golden) == ["golden skipped: node v2 != v1"]
+
+
+def test_compare_golden_reports_a_failed_render_instead_of_raising():
+    golden = {"renderer": 2, "node": "v1", "png_sha256": {"two-objects": {"101": "a" * 64}}}
+    results = {"two-objects": {"ok": False, "node": "v1", "problems": ["crashed: x"], "sha256": {}}}
+    assert part_render_probe.compare_golden(results, golden) == ["two-objects: not rendered"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="no node on PATH")
+def test_render_fixture_meets_the_pixel_expectations(tmp_path):
+    report = part_render_probe.render_fixture(Path(shutil.which("node")), "two-objects", tmp_path)
+    assert report["ok"], report["problems"]
+    assert set(report["sha256"]) == {"101", "202"}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="no node on PATH")
+def test_a_runtime_failure_is_a_report_not_a_crash(tmp_path, monkeypatch):
+    monkeypatch.setitem(part_render_probe.FIXTURE_JOBS["two-objects"], "gcode", "single-no-markers.gcode")
+    monkeypatch.setattr(part_render_probe, "node_command", lambda node: [str(node), "-e", "process.exit(9)"])
+    report = part_render_probe.render_fixture(Path(shutil.which("node")), "two-objects", tmp_path)
+    assert report["ok"] is False and report["node"].startswith("v") and report["problems"][0].startswith("crashed")
