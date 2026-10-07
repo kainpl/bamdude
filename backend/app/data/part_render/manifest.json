@@ -1,0 +1,20 @@
+{
+  "file": "part-render.mjs",
+  "bytes": 39389,
+  "sha256": "c8102afeac59b84910d0e247e83426a65d66bda0ae2ef216fbb0c6e51c8fdc28",
+  "imports": [
+    "node:crypto",
+    "node:zlib"
+  ],
+  "modules": [
+    "src/lib/gcodeToolpath.ts",
+    "src/lib/vendor/toolpathRenderer.js",
+    "src/part-render/entry.ts",
+    "src/part-render/io.ts",
+    "src/part-render/job.ts",
+    "src/part-render/png.ts",
+    "src/part-render/protocol.ts",
+    "src/part-render/raster.ts",
+    "src/part-render/select.ts"
+  ]
+}

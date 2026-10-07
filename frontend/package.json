@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && npm run check:baseline",
+    "build": "tsc -b && vite build && npm run build:part-render && npm run check:baseline",
+    "build:part-render": "node scripts/build-part-render.mjs",
     "check:baseline": "node scripts/check-browser-baseline.mjs",
     "lint": "eslint .",
     "typecheck": "tsc -b --noEmit",

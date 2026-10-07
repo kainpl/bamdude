@@ -12,3 +12,8 @@
 # entrypoint cannot exec, and install.sh copied from such a checkout fails
 # the same way. CI never saw it because Linux runners do not convert.
 *.sh text eol=lf
+
+# The part-render bundle is checked against the sha256 its build recorded
+# (spec §5.5): an EOL conversion on a Windows clone would make every install
+# report bundle_mismatch.
+backend/app/data/part_render/** -text
