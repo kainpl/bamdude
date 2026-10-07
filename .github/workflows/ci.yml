@@ -226,6 +226,44 @@ jobs:
           backend/tests/unit/services/test_camera_worker_only_contract.py
           -v --tb=short --timeout=180 --timeout-method=thread -n 1
 
+  part-render-smoke:
+    name: Part Render Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: backend-lint
+    if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Provision the pinned Node runtime
+        run: python -m backend.app.services.render_runtime provision --runtime runtime
+      - name: Unit tests
+        run: >
+          python -m pytest backend/tests/unit/services/test_render_runtime_provision.py
+          backend/tests/unit/test_render_runtime_manifest.py backend/tests/unit/test_part_render_bundle.py
+          backend/tests/unit/services/test_part_render_node.py backend/tests/unit/test_part_render_probe.py
+          backend/tests/unit/test_no_browser_leftovers.py
+          -v --tb=short --timeout=180 --timeout-method=thread -n 1
+      - name: Render the fixtures with the pinned runtime (golden on every OS)
+        run: python -m backend.app.part_render_probe render --report probe-report.json
+      - name: Keep the probe report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: part-render-${{ matrix.os }}
+          path: probe-report.json
+
   postgres-scenarios:
     name: PostgreSQL Scenarios
     runs-on: ubuntu-latest
