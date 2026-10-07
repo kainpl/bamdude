@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { parseGcodeToolpath, ToolpathType } from '../../lib/gcodeToolpath';
-import { selectSegments, paletteFromGcode, fitsBox, HIDDEN_TYPES } from '../../render-worker/select';
-import type { Bounds } from '../../render-worker/protocol';
+import { selectSegments, paletteFromGcode, fitsBox, HIDDEN_TYPES } from '../../part-render/select';
+import type { Bounds } from '../../part-render/protocol';
 
 const FIXTURES = join(process.cwd(), '..', 'backend', 'app', 'data', 'render_probe');
 const load = (name: string) => readFileSync(join(FIXTURES, name), 'utf8');

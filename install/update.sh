@@ -212,25 +212,6 @@ on_error() {
 }
 trap 'on_error $?' ERR
 
-# The part-render browser (pinned chrome-headless-shell, spec §6): an install
-# made before it shipped gets it here, and a new pin in the manifest reaches
-# every updated install -- the pin is how browser security fixes travel.
-# install.sh's own functions do the work, so the package lists live in one
-# place. Run in a subshell: sourcing install.sh brings its globals and `set -e`,
-# which must not leak into this script.
-refresh_render_browser() {
-  # shellcheck source=install.sh
-  source "$INSTALL_DIR/install/install.sh"
-  detect_os
-  INSTALL_PATH="$INSTALL_DIR"
-  # The install tree's owner unpacks the browser, as install.sh does.
-  SERVICE_USER="$(stat -c %U "$INSTALL_DIR")"
-  if ! install_render_libraries; then
-    warn "Could not install the render browser's libraries; part thumbnails will report it on the System page."
-  fi
-  provision_render_browser
-}
-
 create_backup() {
   local ts backup_file
   local -a auth_args=()
@@ -380,17 +361,6 @@ if [ -x "$VENV_PIP" ] && [ -f requirements.txt ]; then
   "$VENV_PIP" install -r requirements.txt
 else
   warn "Skipping Python dependency update (venv pip or requirements.txt missing)."
-fi
-
-# Never fails the update: a missing browser is a missing feature, reported on
-# the System page, not a reason to roll the code back.
-if [ -f "$INSTALL_DIR/install/install.sh" ] && [ -x "$VENV_PYTHON" ]; then
-  log "Updating the part-render browser"
-  if ! (refresh_render_browser); then
-    warn "Render browser update failed; part thumbnails will report it on the System page."
-  fi
-else
-  warn "Skipping the render browser (install/install.sh or the venv python missing)."
 fi
 
 if [ -f "$FRONTEND_DIR/package.json" ]; then

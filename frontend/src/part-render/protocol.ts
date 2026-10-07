@@ -1,10 +1,10 @@
 /**
- * Wire contract between the part-render page and its loopback job server
- * (backend/app/services/part_render_http.py). Spec §5.2, §5.5, §5.6.
+ * Wire contract between the part-render script and its Python child
+ * (backend/app/services/part_render_node.py). Spec §5.2, §5.5, §5.6.
  */
 
 /** Bump when anything that reaches the pixels or the instance choice changes (spec §8.5). Mirrored in part_render_protocol.py. */
-export const RENDERER_VERSION = 1;
+export const RENDERER_VERSION = 2;
 
 export interface Bounds {
   min: [number, number, number];
@@ -21,6 +21,10 @@ export interface JobObject {
 export interface RenderJob {
   size: number;
   objects: JobObject[];
+  /** Samples per pixel side; 2 by default (spec §5.2). */
+  supersample?: number;
+  /** Ceiling on ALL stdout bytes of the attempt -- PNG frames, manifest and framing (spec §5.6); Python enforces it too. */
+  outputBytes: number;
 }
 
 export interface RenderedObject {

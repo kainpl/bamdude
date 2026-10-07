@@ -226,65 +226,6 @@ jobs:
           backend/tests/unit/services/test_camera_worker_only_contract.py
           -v --tb=short --timeout=180 --timeout-method=thread -n 1
 
-  render-browser-smoke:
-    name: Render Browser Smoke (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    needs: backend-lint
-    if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v7
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
-      # The owners of the browser ELFs' direct DT_NEEDED libraries, Ubuntu 24.04
-      # names -- the list the Dockerfile and install.sh carry.
-      - name: Install browser libraries (Linux)
-        if: runner.os == 'Linux'
-        run: >
-          sudo apt-get update && sudo apt-get install -y --no-install-recommends
-          libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libdbus-1-3
-          libexpat1 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libudev1 libx11-6 libxcb1
-          libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2
-      - name: Provision the pinned browser
-        run: python -m backend.app.services.render_browser provision --runtime runtime
-      - name: Unit tests
-        run: >
-          python -m pytest backend/tests/unit/services/test_render_browser_provision.py
-          backend/tests/unit/services/test_render_browser_launch.py
-          backend/tests/unit/test_render_browser_manifest.py
-          backend/tests/unit/test_no_sandbox_flag_anywhere.py
-          backend/tests/unit/services/test_part_render_http.py
-          backend/tests/unit/test_render_browser_probe.py
-          backend/tests/unit/test_render_browser_probe_child.py
-          -v --tb=short --timeout=180 --timeout-method=thread -n 1
-      - name: Probe the tracked bundle with the sandbox on
-        shell: bash
-        run: |
-          set +e
-          python -m backend.app.render_browser_probe all --report probe-report.json
-          code=$?
-          # 3 = inconclusive: a hosted runner cannot provide every target (no private
-          # IPv6, no link-local). CI is a smoke, not the E2 gate -- task 14 decides on
-          # real machines. 1 = a definite failure and fails the job.
-          if [ "$code" -eq 3 ]; then echo "::warning::render probe inconclusive on this runner - see the report artifact"; exit 0; fi
-          exit "$code"
-      - name: Keep the probe report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: render-probe-${{ matrix.os }}
-          path: probe-report.json
-
   postgres-scenarios:
     name: PostgreSQL Scenarios
     runs-on: ubuntu-latest
@@ -507,22 +448,6 @@ jobs:
 
       - name: Verify static files exist
         run: docker run --rm bamdude:test test -d /app/static
-
-      - name: Render probe inside the image
-        shell: bash
-        run: |
-          set +e
-          mkdir -p probe-out && chmod 777 probe-out
-          docker run --rm -v "$PWD/probe-out:/out" bamdude:test python -m backend.app.render_browser_probe all --report /out/docker-probe.json
-          code=$?
-          if [ "$code" -eq 3 ]; then echo "::warning::render probe inconclusive in the image - see the report artifact"; exit 0; fi
-          exit "$code"
-      - name: Keep the image probe report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: render-probe-docker
-          path: probe-out/docker-probe.json
 
       # Test 2: Integration Tests
       - name: Build integration container

@@ -1,4 +1,4 @@
-"""The part-render browser: platform, provisioning, location and launch (spec §6).
+"""The part-render browser: platform, provisioning and location (spec §6).
 
 Stdlib only, importable before the app runs: Dockerfile, install.sh and the
 Windows build call ``python -m backend.app.services.render_browser provision``.
@@ -9,16 +9,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import platform as _platform
 import shutil
 import stat
-import subprocess
 import sys
 import tempfile
 import urllib.request
 import zipfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -169,109 +167,6 @@ def locate_in(runtime_root: Path) -> BrowserInstall | None:
     return BrowserInstall(executable=hits[0], version=marker.read_text(encoding="utf-8").strip(), platform=key)
 
 
-# Nothing listens on the discard port; with a fixed proxy list Chromium has no
-# DIRECT fallback, so every URL request that is not bypassed fails (spec §6.3).
-DEAD_PROXY = "http://127.0.0.1:9"
-
-
-def launch_args(*, profile_dir: Path, origin: str, netlog: Path | None = None) -> list[str]:
-    """Flags for one attempt. The sandbox stays on: no flag here disables it.
-
-    ``<-loopback>`` removes Chromium's implicit proxy bypass, which covers
-    loopback AND link-local; only the task's exact HTTP origin is bypassed
-    back (Chromium net/docs/proxy.md, implicit bypass rules). This limits URL
-    requests through the proxy stack; it is not an OS network sandbox. The
-    rule is proven by the network probe (task 10), never re-ordered to make
-    a probe pass.
-    """
-    args = [
-        "--use-angle=swiftshader",
-        "--enable-unsafe-swiftshader",
-        f"--user-data-dir={profile_dir}",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--disable-component-update",
-        "--disable-default-apps",
-        "--disable-sync",
-        "--disable-breakpad",
-        "--disable-domain-reliability",
-        "--metrics-recording-only",
-        "--mute-audio",
-        f"--proxy-server={DEAD_PROXY}",
-        # Order matters: first drop the implicit exceptions, then add back only
-        # the task's exact HTTP origin. Without the scheme the exception would
-        # also cover https:// and ws:// on the same host:port.
-        f"--proxy-bypass-list=<-loopback>;http://{origin}",
-        "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
-    ]
-    if netlog is not None:
-        args.append(f"--log-net-log={netlog}")
-    return args
-
-
-# PreviewProcess's allowlist (services/preview_process.py): what a process needs
-# to start on each OS, and nothing of the service's own -- no DATABASE_URL, API
-# keys, tokens or .env values reach the browser (spec §6.3).
-_ENV_KEYS = frozenset(
-    {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"}
-)
-
-
-def browser_env(
-    home: Path, *, environ: Mapping[str, str] | None = None, posix: bool = os.name != "nt"
-) -> dict[str, str]:
-    """The browser's whole environment for one attempt.
-
-    On POSIX, HOME and the XDG directories point into the attempt's own
-    directory (``home``, which the caller creates and removes): fontconfig's
-    cache and NSS's database are written there and nowhere else. The probe
-    (E2) measured that the pinned build renders with nothing more.
-    """
-    source = os.environ if environ is None else environ
-    env = {key: value for key, value in source.items() if key.upper() in _ENV_KEYS}
-    if posix:
-        env.update(HOME=str(home), XDG_CACHE_HOME=str(home / ".cache"), XDG_CONFIG_HOME=str(home / ".config"))
-    return env
-
-
-@dataclass(frozen=True)
-class LibraryCheck:
-    ok: bool
-    missing: list[str]
-    errors: list[str]
-
-
-def elf_files(install_root: Path, executable: Path) -> list[Path]:
-    """The executable plus every shipped shared object -- SwiftShader and ANGLE are dlopen()ed at run time."""
-    shared = sorted({*install_root.rglob("*.so"), *install_root.rglob("*.so.*")})
-    return [executable, *shared]
-
-
-def check_libraries(paths: list[Path], run: Callable = subprocess.run) -> LibraryCheck:
-    """`ldd` over each ELF. A failed or unreadable ldd is an error, never "nothing missing"."""
-    missing: list[str] = []
-    errors: list[str] = []
-    for path in paths:
-        proc = run(["ldd", str(path)], capture_output=True, text=True)
-        out, err = proc.stdout or "", (proc.stderr or "").strip()
-        if proc.returncode != 0:
-            errors.append(f"{path.name}: ldd exited {proc.returncode}: {(err or out).strip()[:200]}")
-            continue
-        if "not a dynamic executable" in out or ("=>" not in out and "statically linked" not in out):
-            errors.append(f"{path.name}: unusable ldd output: {out.strip()[:200]!r}")
-            continue
-        if err:
-            errors.append(f"{path.name}: {err[:200]}")
-        for line in out.splitlines():
-            if "=> not found" in line:
-                missing.append(f"{path.name}: {line.split('=>', 1)[0].strip()}")
-            elif "version `" in line and "not found" in line:
-                missing.append(f"{path.name}: {line.strip()}")
-    return LibraryCheck(ok=not missing and not errors, missing=missing, errors=errors)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="render_browser")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -281,21 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     # The Docker build provisions from a copy of this module and the manifest
     # alone, before the rest of backend/ is copied, so the layer is cached.
     prov.add_argument("--manifest", type=Path, default=MANIFEST)
-    libs = sub.add_parser("check-libs", help="Linux: shared libraries the browser and its shipped ELFs cannot load")
-    libs.add_argument("--runtime", type=Path, required=True)
     args = parser.parse_args(argv)
-    if args.command == "check-libs":
-        found = locate_in(args.runtime)
-        if found is None:
-            print("render-browser: not provisioned", file=sys.stderr)
-            return 1
-        install_root = args.runtime / PRODUCT_DIR / found.platform
-        result = check_libraries(elf_files(install_root, found.executable))
-        for line in result.missing:
-            print(f"render-browser: missing {line}", file=sys.stderr)
-        for line in result.errors:
-            print(f"render-browser: ldd error {line}", file=sys.stderr)
-        return 0 if result.ok else 1
     try:
         target = provision(args.runtime, manifest=load_manifest(args.manifest), platform=args.platform)
     except ProvisionError as exc:

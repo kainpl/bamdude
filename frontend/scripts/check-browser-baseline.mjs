@@ -28,12 +28,10 @@
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, dirname, relative, resolve } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const STATIC = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'static');
-// The app and the part-render page (spec §5.5) -- both reach a browser.
-const ROOTS = [join(STATIC, 'assets'), join(STATIC, 'render-worker', 'assets')];
+const ASSETS = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'static', 'assets');
 
 /**
  * Each pattern must match only real occurrences of the feature. Anything that
@@ -62,27 +60,23 @@ const FORBIDDEN = [
   },
 ];
 
-const bundles = [];
-for (const root of ROOTS) {
-  let names;
-  try {
-    names = readdirSync(root).filter((f) => f.endsWith('.js'));
-  } catch {
-    console.error(`check-browser-baseline: no build output at ${root} - run \`npm run build\` first.`);
-    process.exit(1);
-  }
-  if (names.length === 0) {
-    console.error(`check-browser-baseline: no .js files in ${root} - did the build succeed?`);
-    process.exit(1);
-  }
-  bundles.push(...names.map((name) => join(root, name)));
+let bundles;
+try {
+  bundles = readdirSync(ASSETS).filter((f) => f.endsWith('.js'));
+} catch {
+  console.error(`check-browser-baseline: no build output at ${ASSETS} - run \`vite build\` first.`);
+  process.exit(1);
+}
+
+if (bundles.length === 0) {
+  console.error(`check-browser-baseline: no .js files in ${ASSETS} - did the build succeed?`);
+  process.exit(1);
 }
 
 const failures = [];
 
-for (const path of bundles) {
-  const name = relative(STATIC, path);
-  const source = readFileSync(path, 'utf8');
+for (const name of bundles) {
+  const source = readFileSync(join(ASSETS, name), 'utf8');
   for (const { pattern, feature, since, hint } of FORBIDDEN) {
     const hits = source.match(pattern);
     if (!hits) continue;

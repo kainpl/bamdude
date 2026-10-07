@@ -1,13 +1,12 @@
 import hashlib
 import os
 import stat
-import subprocess
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from backend.app.services.render_browser import ProvisionError, check_libraries, elf_files, platform_key, provision
+from backend.app.services.render_browser import ProvisionError, platform_key, provision
 
 VERSION = "155.0.8059.39"
 
@@ -143,61 +142,3 @@ def test_replaces_an_older_version(tmp_path: Path):
     provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="linux64", fetch=_fetch_from(archive))
     assert (target / "VERSION").read_text().strip() == VERSION
     assert not (target / "stale.txt").exists()
-
-
-def _ldd(stdout: str = "", stderr: str = "", code: int = 0):
-    def run(cmd, **_kwargs):
-        return subprocess.CompletedProcess(cmd, code, stdout=stdout, stderr=stderr)
-
-    return run
-
-
-OK = "\tlinux-vdso.so.1 (0x00007ffd)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x7f)\n"
-
-
-def test_clean_ldd_output_is_ok():
-    assert check_libraries([Path("chrome-headless-shell")], run=_ldd(OK)).ok
-
-
-def test_not_found_lines_are_missing_libraries():
-    out = OK + "\tlibnss3.so => not found\n\tlibgbm.so.1 => not found\n"
-    result = check_libraries([Path("chrome-headless-shell")], run=_ldd(out))
-    assert not result.ok
-    assert result.missing == ["chrome-headless-shell: libnss3.so", "chrome-headless-shell: libgbm.so.1"]
-
-
-def test_version_errors_are_missing():
-    out = (
-        OK
-        + "./chrome-headless-shell: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by ./chrome-headless-shell)\n"
-    )
-    result = check_libraries([Path("chrome-headless-shell")], run=_ldd(out))
-    assert not result.ok and result.missing
-
-
-def test_a_failed_ldd_is_an_error_not_a_pass():
-    result = check_libraries([Path("chrome-headless-shell")], run=_ldd("", "ldd: cannot execute", code=1))
-    assert not result.ok
-    assert result.errors and "exited 1" in result.errors[0]
-
-
-def test_stderr_is_an_error():
-    result = check_libraries(
-        [Path("libvk_swiftshader.so")], run=_ldd(OK, "warning: you do not have execution permission")
-    )
-    assert not result.ok and result.errors
-
-
-def test_empty_or_unusable_output_is_an_error():
-    assert not check_libraries([Path("x")], run=_ldd("")).ok
-    assert not check_libraries([Path("x")], run=_ldd("\tnot a dynamic executable\n")).ok
-
-
-def test_elf_files_include_every_shipped_shared_object(tmp_path: Path):
-    exe = tmp_path / "chrome-headless-shell"
-    exe.write_bytes(b"")
-    (tmp_path / "libvk_swiftshader.so").write_bytes(b"")
-    (tmp_path / "libEGL.so").write_bytes(b"")
-    (tmp_path / "resources.pak").write_bytes(b"")
-    names = [p.name for p in elf_files(tmp_path, exe)]
-    assert names == ["chrome-headless-shell", "libEGL.so", "libvk_swiftshader.so"]

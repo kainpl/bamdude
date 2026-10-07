@@ -20,8 +20,6 @@ _PREVIEW_MODULES = {
     "backend.app.analysis_service",
     "backend.app.analysis_child",
     "backend.app.library_file_service",
-    # diagnostic: render-browser containment probe (owner-death scenario)
-    "backend.app.render_browser_probe_child",
 }
 _CAMERA_MODULE = "backend.app.camera_worker"
 _PREVIEW_BOOTSTRAP_LIMIT = 16384

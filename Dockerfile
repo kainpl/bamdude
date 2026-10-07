@@ -69,27 +69,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
  && pip install --root-user-action=ignore -r requirements.txt \
  && pip uninstall --yes pip
 
-# Part-render browser (spec §6): the pinned chrome-headless-shell for this
-# architecture, verified against render_browser.json, plus the shared libraries
-# `check-libs` reports. Provisioned from a copy of the module and the manifest
-# alone, after the Python dependencies: the ~290 MB layer is rebuilt when
-# render_browser.py, the pin or requirements.txt changes -- never on any other
-# backend edit -- and rebuilding it never re-runs pip. A missing library fails
-# the build here, not a render in the field. The package list is what E2
-# measured on trixie: the owners of the browser ELFs' direct DT_NEEDED
-# libraries (libc6 / libgcc-s1 aside), listed even where ffmpeg already pulls
-# them in, so the browser does not depend on ffmpeg's dependency tree.
-COPY backend/app/services/render_browser.py /opt/render-browser/render_browser.py
-COPY backend/app/data/render_browser.json /opt/render-browser/render_browser.json
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libdbus-1-3 \
-        libexpat1 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libudev1 libx11-6 libxcb1 \
-        libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
-    && rm -rf /var/lib/apt/lists/* \
-    && python /opt/render-browser/render_browser.py provision --runtime /app/runtime --manifest /opt/render-browser/render_browser.json \
-    && python /opt/render-browser/render_browser.py check-libs --runtime /app/runtime \
-    && rm -rf /opt/render-browser
-
 # Copy backend
 COPY backend/ ./backend/
 
