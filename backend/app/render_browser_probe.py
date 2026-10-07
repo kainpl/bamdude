@@ -77,12 +77,22 @@ def pixel_counts(png: Path) -> dict:
 
 
 def evaluate_render(
-    fixture: str, manifest: dict | None, error: dict | None, pngs: dict[int, Path], *, size: int, min_pixels: int
+    fixture: str,
+    manifest: dict | None,
+    error: dict | None,
+    pngs: dict[int, Path],
+    *,
+    size: int,
+    min_pixels: int,
+    browser_exit: int | None = None,
 ) -> dict:
+    """``browser_exit``: the code when the browser ended by itself before the page finished, else None."""
     problems: list[str] = []
     objects: dict[int, dict] = {}
     if error is not None:
         problems.append(f"page error: {error.get('reason')}")
+    elif manifest is None and browser_exit is not None:
+        problems.append(f"the browser exited with {browser_exit} before the manifest")
     elif manifest is None:
         problems.append("no manifest before the deadline")
     else:
@@ -159,6 +169,7 @@ def run_render(browser_cmd: list[str], *, bundle_dir: Path, fixture: str, out_di
     started = time.monotonic()
     peak = 0
     leftovers: list[int] = []
+    exited_by_itself: int | None = None
     with tempfile.TemporaryDirectory(prefix="bamdude-probe-") as tmp:
         profile = str(Path(tmp) / "profile")
         cmd = [part.replace("{profile}", profile).replace("{origin}", server.origin) for part in browser_cmd] + [url]
@@ -172,6 +183,7 @@ def run_render(browser_cmd: list[str], *, bundle_dir: Path, fixture: str, out_di
                     # The budget is the render child (Python + its job server) PLUS the whole browser tree.
                     peak = max(peak, psutil.Process().memory_info().rss + _tree_rss(root))
                     if proc.poll() is not None:
+                        exited_by_itself = proc.returncode
                         break
             finally:
                 leftovers = kill_tree(proc.pid)
@@ -180,7 +192,13 @@ def run_render(browser_cmd: list[str], *, bundle_dir: Path, fixture: str, out_di
                 stderr.seek(0)
                 stderr_tail = stderr.read()[-4096:].decode(errors="replace")
     report = evaluate_render(
-        fixture, server.outcome.manifest, server.outcome.error, server.outcome.pngs, size=SIZE, min_pixels=MIN_PIXELS
+        fixture,
+        server.outcome.manifest,
+        server.outcome.error,
+        server.outcome.pngs,
+        size=SIZE,
+        min_pixels=MIN_PIXELS,
+        browser_exit=exited_by_itself,
     )
     report.update(
         elapsed_ms=int((time.monotonic() - started) * 1000),
@@ -655,6 +673,10 @@ def browser_processes(executable: Path) -> dict[tuple[int, float], dict]:
         try:
             exe = proc.info["exe"]
             if not exe or os.path.normcase(exe) != wanted:
+                continue
+            # psutil caches exe() on the Process objects process_iter reuses, so
+            # an unreaped child still matches the browser's path; status is not cached.
+            if proc.status() == psutil.STATUS_ZOMBIE:
                 continue
             facts = {"ppid": proc.info["ppid"]}
             if os.name != "nt":

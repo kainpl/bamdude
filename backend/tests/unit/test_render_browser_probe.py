@@ -1,4 +1,5 @@
 import json as _json
+import os
 from pathlib import Path
 
 import psutil
@@ -68,6 +69,15 @@ def test_evaluate_render_fails_on_page_error():
     )
     assert report["ok"] is False
     assert report["problems"] == ["page error: parse_failed"]
+
+
+def test_a_browser_that_died_is_not_reported_as_a_deadline():
+    # Docker without user namespaces: Chromium aborts in half a second, and
+    # "no manifest before the deadline" sent the reader to the timeout.
+    report = evaluate_render("two-objects", None, None, {}, size=512, min_pixels=50, browser_exit=-5)
+    assert report["problems"] == ["the browser exited with -5 before the manifest"]
+    still_running = evaluate_render("two-objects", None, None, {}, size=512, min_pixels=50, browser_exit=None)
+    assert still_running["problems"] == ["no manifest before the deadline"]
 
 
 ORIGIN = "127.0.0.1:41234"
@@ -426,3 +436,25 @@ def test_an_observed_process_still_alive_is_residue(tmp_path, monkeypatch):
     report = probe._scenario("normal", tmp_path / "chrome", lambda _before, _observed: {})
     assert report["verdict"] == "fail"
     assert report["residue"] == [4243]
+
+
+class _FakeProc:
+    def __init__(self, pid: int, exe: str, status: str):
+        self.info = {"pid": pid, "exe": exe, "create_time": 1.0, "ppid": 1}
+        self._status = status
+
+    def status(self) -> str:
+        return self._status
+
+
+def test_a_zombie_is_not_a_live_browser_process(tmp_path, monkeypatch):
+    # psutil caches exe() on the Process objects process_iter reuses, so a
+    # child of the browser that nobody reaped keeps answering with the
+    # browser's path; measured in Docker, where every killed browser left five.
+    exe = tmp_path / "chrome-headless-shell"
+    exe.write_bytes(b"")
+    path = str(exe.resolve())
+    live = _FakeProc(os.getpid(), path, psutil.STATUS_SLEEPING)
+    zombie = _FakeProc(os.getpid() + 1, path, psutil.STATUS_ZOMBIE)
+    monkeypatch.setattr(probe.psutil, "process_iter", lambda _attrs: iter([live, zombie]))
+    assert [pid for pid, _ in probe.browser_processes(exe)] == [os.getpid()]
