@@ -127,6 +127,26 @@ def test_error_post_completes_the_job(server):
     assert srv.outcome.error == {"reason": "parse_failed", "message": "x"}
 
 
+def test_total_cap_counts_the_manifest_too(server):
+    # Spec §5.4: one budget for every PNG plus the manifest.
+    srv, base = server
+    assert _post(base + "png/101", b"x" * 60) == 204
+    manifest = json.dumps({"renderer": 1, "objects": [], "pad": "y" * 40}).encode()
+    assert _post(base + "manifest", manifest, "application/json") == 413
+    assert srv.outcome.manifest is None
+    assert srv.wait(0.05) is False
+
+
+def test_an_error_still_lands_after_the_budget_is_spent(server):
+    # The error is how the page ends an attempt it cannot finish; a spent
+    # budget must not turn that answer into a deadline.
+    srv, base = server
+    assert _post(base + "png/101", b"x" * 60) == 204
+    error = json.dumps({"reason": "invalid_output", "message": "y" * 60}).encode()
+    assert _post(base + "error", error, "application/json") == 204
+    assert srv.wait(1.0)
+
+
 def test_wait_times_out_without_an_answer(server):
     srv, _ = server
     assert srv.wait(0.05) is False

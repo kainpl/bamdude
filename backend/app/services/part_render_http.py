@@ -170,7 +170,17 @@ class JobServer:
                     return self._receive_png(route[4:], length)
                 if route in ("manifest", "error"):
                     if length > _JSON_BYTES:
-                        return self._reply(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                        return self._refuse(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, length)
+                    if route == "manifest":
+                        # One budget for every PNG plus the manifest (spec §5.4). The
+                        # error stays outside it: it is how the page ends an attempt
+                        # it cannot finish, and must land even with the budget spent.
+                        with owner._lock:
+                            over = owner._received + length > owner._limits.total_bytes
+                            if not over:
+                                owner._received += length
+                        if over:
+                            return self._refuse(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, length)
                     try:
                         payload = json.loads(self.rfile.read(length))
                     except ValueError:
