@@ -449,6 +449,9 @@ jobs:
       - name: Verify static files exist
         run: docker run --rm bamdude:test test -d /app/static
 
+      - name: Render the fixtures inside the image
+        run: docker run --rm bamdude:test python -m backend.app.part_render_probe render
+
       # Test 2: Integration Tests
       - name: Build integration container
         run: docker compose -f docker-compose.test.yml build integration

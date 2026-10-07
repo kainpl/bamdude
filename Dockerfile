@@ -69,6 +69,16 @@ RUN --mount=type=cache,target=/root/.cache/pip \
  && pip install --root-user-action=ignore -r requirements.txt \
  && pip uninstall --yes pip
 
+# Part-render runtime (spec §6): the pinned official Node.js for this
+# architecture, verified against render_runtime.json. Provisioned from a copy of
+# the module and the manifest alone, after the Python dependencies: the layer is
+# rebuilt only when render_runtime.py or the pin changes. No system libraries:
+# the official build needs glibc, which the base image has.
+COPY backend/app/services/render_runtime.py /opt/render-runtime/render_runtime.py
+COPY backend/app/data/render_runtime.json /opt/render-runtime/render_runtime.json
+RUN python /opt/render-runtime/render_runtime.py provision --runtime /app/runtime --manifest /opt/render-runtime/render_runtime.json \
+    && rm -rf /opt/render-runtime
+
 # Copy backend
 COPY backend/ ./backend/
 
