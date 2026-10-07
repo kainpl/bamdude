@@ -19,6 +19,7 @@ import psutil
 from PIL import Image
 
 from backend.app.services.part_render_node import NodeRenderError, node_command, node_env, run_frames, verify_bundle
+from backend.app.services.render_runtime import UnsupportedPlatform, locate
 
 FIXTURES = Path(__file__).resolve().parent / "data" / "render_probe"
 SIZE = 512
@@ -111,8 +112,15 @@ _SELF = psutil.Process(os.getpid())
 
 
 def default_node() -> Path | None:
-    found = shutil.which("node")
-    return Path(found) if found else None
+    """The provisioned pin first, then a developer Node on PATH.
+
+    Raises UnsupportedPlatform on a machine without an official Node build (consilium R5.3).
+    """
+    found = locate(Path(__file__).resolve().parents[2])
+    if found is not None:
+        return found.executable
+    on_path = shutil.which("node")
+    return Path(on_path) if on_path else None
 
 
 def node_version(node: Path) -> str:
@@ -222,7 +230,14 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--node", type=Path)
         p.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
-    node = args.node or default_node()
+    try:
+        node = args.node or default_node()
+    except UnsupportedPlatform as exc:
+        print(
+            f"{exc}: part thumbnails use the top-view fallback here (no_runtime); --node tries another Node",
+            file=sys.stderr,
+        )
+        return 3
     if node is None:
         print("no Node runtime: pass --node or provision one", file=sys.stderr)
         return 1

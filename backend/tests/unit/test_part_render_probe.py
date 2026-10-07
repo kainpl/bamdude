@@ -6,6 +6,7 @@ from PIL import Image
 
 from backend.app import part_render_probe
 from backend.app.part_render_probe import FIXTURE_JOBS, evaluate_render, pixel_counts
+from backend.app.services import render_runtime
 
 
 def _png(path: Path, pixels: dict[tuple[int, int], tuple[int, int, int, int]], size: int = 8) -> Path:
@@ -93,3 +94,18 @@ def test_a_runtime_failure_is_a_report_not_a_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(part_render_probe, "node_command", lambda node: [str(node), "-e", "process.exit(9)"])
     report = part_render_probe.render_fixture(Path(shutil.which("node")), "two-objects", tmp_path)
     assert report["ok"] is False and report["node"].startswith("v") and report["problems"][0].startswith("crashed")
+
+
+def test_the_probe_on_a_platform_without_official_node_says_so(monkeypatch, capsys):
+    def unsupported(app_dir):
+        raise render_runtime.UnsupportedPlatform("no official Node.js build for linux/armv7l")
+
+    monkeypatch.setattr(part_render_probe, "locate", unsupported)
+    assert part_render_probe.main(["render"]) == 3
+    assert "top-view fallback" in capsys.readouterr().err
+
+
+def test_the_probe_falls_back_to_node_on_path_when_nothing_is_provisioned(monkeypatch):
+    monkeypatch.setattr(part_render_probe, "locate", lambda app_dir: None)
+    monkeypatch.setattr(part_render_probe.shutil, "which", lambda name: "/usr/bin/node")
+    assert part_render_probe.default_node() == Path("/usr/bin/node")

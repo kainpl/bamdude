@@ -1,0 +1,33 @@
+{
+  "product": "node",
+  "source": "nodejs.org/dist",
+  "version": "v24.17.0",
+  "pinned_at": "2026-10-07",
+  "platforms": {
+    "linux-x64": {
+      "url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-linux-x64.tar.xz",
+      "sha256": "ab343a1b747c7cbf3630dfd7dbf818c5423fab2eb4f5ad1afc896f6bd121a917",
+      "bytes": 31426020
+    },
+    "linux-arm64": {
+      "url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-linux-arm64.tar.xz",
+      "sha256": "67324b9e515e7d13da72571a5dd522bb23145a820f7dde15497897e466759ab3",
+      "bytes": 30386680
+    },
+    "darwin-x64": {
+      "url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-darwin-x64.tar.xz",
+      "sha256": "fe50e386f6a5e0b29ce44b989e543da9fb9a80aed0b91a2f0cb19c55106921fc",
+      "bytes": 28604204
+    },
+    "darwin-arm64": {
+      "url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-darwin-arm64.tar.xz",
+      "sha256": "cf7e9152d7bd86c140f6eccf3577abfbaf8960be1ca49d9d900e8484984dcb9a",
+      "bytes": 26995276
+    },
+    "win-x64": {
+      "url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-win-x64.zip",
+      "sha256": "f2aa33b35b75aca5f3f7b85675a6f6423201053e9381911e64961f3bda2528ab",
+      "bytes": 36948900
+    }
+  }
+}

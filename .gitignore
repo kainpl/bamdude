@@ -97,5 +97,5 @@ ds-bundle/
 .design-sync/
 .codex/
 
-# Part-render browser, provisioned from backend/app/data/render_browser.json (spec §6.2)
+# Part-render runtime (pinned Node.js), provisioned from backend/app/data/render_runtime.json (spec §6.2)
 /runtime/
