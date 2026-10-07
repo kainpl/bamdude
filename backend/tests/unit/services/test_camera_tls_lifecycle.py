@@ -60,6 +60,33 @@ async def silent_handshake_peer():
         await server.wait_closed()
 
 
+@pytest.fixture(autouse=True)
+def no_collection_mid_scenario():
+    """Keep CPython's full garbage collection out of the timed windows.
+
+    These scenarios check deadlines of one or two seconds, and in a long xdist
+    worker a full collection stops the whole process for up to 2.5 s (measured
+    2026-10-08: 93 passes of a second or more in one CI-shaped run). Inside a
+    window it reads as a hang or a late close: CI failed
+    ``test_capture_failure_reaps_and_returns_none`` that way. The collector is
+    off while a scenario runs and the next pass after it takes what piled up;
+    an explicit ``gc.collect()`` still works. No collection up front: in such a
+    worker a full pass costs ~0.45 s even with nothing to collect.
+    """
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
+def test_a_scenario_here_runs_with_the_collector_off():
+    """The windows below are seconds; a full collection must not land inside one."""
+    assert not gc.isenabled()
+
+
 def test_close_cancels_stalled_handshake_and_closes_client(run):
     async def scenario():
         tasks_before = asyncio.all_tasks()

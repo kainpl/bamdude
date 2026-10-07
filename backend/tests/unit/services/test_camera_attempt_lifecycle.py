@@ -1,6 +1,7 @@
 """Attempt boundaries: real proxy sockets with controlled ffmpeg processes."""
 
 import asyncio
+import gc
 import sys
 from unittest.mock import AsyncMock, Mock
 from urllib.parse import urlparse
@@ -9,9 +10,20 @@ import pytest
 
 from backend.app.services import camera, camera_cleanup, camera_tls, external_camera
 from backend.app.services.camera_cleanup import CameraAttempt, CameraCleanupError
-from backend.tests.unit.services.test_camera_tls_lifecycle import TLSPeer, eventually, run, tls_context
+from backend.tests.unit.services.test_camera_tls_lifecycle import (
+    TLSPeer,
+    eventually,
+    no_collection_mid_scenario,
+    run,
+    tls_context,
+)
 
 FRAME = b"\xff\xd8" + b"f" * 120 + b"\xff\xd9"
+
+
+def test_a_scenario_here_runs_with_the_collector_off():
+    """The windows below are seconds; a full collection must not land inside one."""
+    assert not gc.isenabled()
 
 
 class FakeProcess:
