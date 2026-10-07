@@ -6,6 +6,11 @@
 /** Bump when anything that reaches the pixels or the instance choice changes (spec §8.5). Mirrored in part_render_protocol.py. */
 export const RENDERER_VERSION = 2;
 
+/** Largest manifest / error frame; the PNG budget leaves this much of `outputBytes` for it (spec §5.6). */
+export const MANIFEST_MAX = 1024 * 1024;
+/** Frame header (kind + length) and the object id in front of each PNG. */
+export const PNG_FRAME_OVERHEAD = 5 + 4;
+
 export interface Bounds {
   min: [number, number, number];
   max: [number, number, number];
@@ -42,7 +47,7 @@ export interface RenderedObject {
 export interface MissingObject {
   id: number;
   method: 'missing';
-  reason: 'empty_selection' | 'model_unproven';
+  reason: 'empty_selection' | 'model_unproven' | 'empty_render';
 }
 
 export interface RenderManifest {
@@ -54,9 +59,10 @@ export interface RenderManifest {
 /**
  * Spec §5.3: `parse_failed` is deterministic for the same bytes and settles the
  * plate; `crashed` (the render step or the attempt's own transport failed) and
- * `invalid_output` are transient and retried.
+ * `invalid_output` are transient and retried; `memory_limit` goes to the fallback
+ * methods without retries.
  */
-export type RenderErrorReason = 'parse_failed' | 'crashed' | 'invalid_output';
+export type RenderErrorReason = 'parse_failed' | 'crashed' | 'invalid_output' | 'memory_limit';
 
 export class RenderError extends Error {
   // A plain field, not a constructor parameter property: the app's tsconfig
