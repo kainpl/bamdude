@@ -10,10 +10,7 @@ REPO = Path(__file__).resolve().parents[3]
 SCANNED = ["backend/app", "scripts", "deploy", "install", "installers", "Dockerfile", ".github"]
 FORBIDDEN = ("--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu-sandbox")
 SKIP_SUFFIXES = {".png", ".zip", ".exe", ".dll", ".pak", ".bin"}
-ALLOWLIST: dict[str, str] = {
-    # Reads renderer command lines to DETECT a disabled sandbox (task 10); never passes the flag.
-    "backend/app/render_browser_probe.py": "detects the flag in running processes",
-}
+ALLOWLIST: dict[str, str] = {}
 
 
 def _files():

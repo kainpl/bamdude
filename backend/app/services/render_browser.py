@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform as _platform
 import shutil
 import stat
@@ -17,7 +18,7 @@ import sys
 import tempfile
 import urllib.request
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -103,7 +104,13 @@ def provision(
     version = manifest["version"]
     target = runtime_root / PRODUCT_DIR / key
     marker = target / "VERSION"
-    if marker.is_file() and marker.read_text(encoding="utf-8").strip() == version:
+    # The marker alone is not an install: a quarantined or deleted executable
+    # must be put back by the next run, not reported as already there.
+    if (
+        marker.is_file()
+        and marker.read_text(encoding="utf-8").strip() == version
+        and any(target.rglob(_executable_name(key)))
+    ):
         return target
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -143,11 +150,16 @@ def _executable_name(key: str) -> str:
 
 def locate(app_dir: Path) -> BrowserInstall | None:
     """The provisioned browser under <app_dir>/runtime -- the only place looked at (spec §6.2)."""
+    return locate_in(app_dir / "runtime")
+
+
+def locate_in(runtime_root: Path) -> BrowserInstall | None:
+    """The browser provisioned into this runtime directory, whatever it is called."""
     try:
         key = platform_key()
     except ProvisionError:
         return None
-    root = app_dir / "runtime" / PRODUCT_DIR / key
+    root = runtime_root / PRODUCT_DIR / key
     marker = root / "VERSION"
     if not marker.is_file():
         return None
@@ -199,6 +211,31 @@ def launch_args(*, profile_dir: Path, origin: str, netlog: Path | None = None) -
     return args
 
 
+# PreviewProcess's allowlist (services/preview_process.py): what a process needs
+# to start on each OS, and nothing of the service's own -- no DATABASE_URL, API
+# keys, tokens or .env values reach the browser (spec §6.3).
+_ENV_KEYS = frozenset(
+    {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"}
+)
+
+
+def browser_env(
+    home: Path, *, environ: Mapping[str, str] | None = None, posix: bool = os.name != "nt"
+) -> dict[str, str]:
+    """The browser's whole environment for one attempt.
+
+    On POSIX, HOME and the XDG directories point into the attempt's own
+    directory (``home``, which the caller creates and removes): fontconfig's
+    cache and NSS's database are written there and nowhere else. The probe
+    (E2) measured that the pinned build renders with nothing more.
+    """
+    source = os.environ if environ is None else environ
+    env = {key: value for key, value in source.items() if key.upper() in _ENV_KEYS}
+    if posix:
+        env.update(HOME=str(home), XDG_CACHE_HOME=str(home / ".cache"), XDG_CONFIG_HOME=str(home / ".config"))
+    return env
+
+
 @dataclass(frozen=True)
 class LibraryCheck:
     ok: bool
@@ -248,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     libs.add_argument("--runtime", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "check-libs":
-        found = locate(args.runtime.parent)  # locate() takes the app directory
+        found = locate_in(args.runtime)
         if found is None:
             print("render-browser: not provisioned", file=sys.stderr)
             return 1

@@ -122,6 +122,18 @@ def test_a_failed_extract_leaves_no_target_and_the_next_run_installs(tmp_path: P
     assert (target / "VERSION").read_text().strip() == VERSION
 
 
+def test_reinstalls_when_the_executable_is_gone(tmp_path: Path):
+    # Antivirus quarantine or a hand-deleted file: VERSION alone must not
+    # convince a re-run of the installer that nothing is to be done.
+    archive, sha, size = _archive(tmp_path)
+    fetch = _fetch_from(archive)
+    target = provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="linux64", fetch=fetch)
+    (target / "chrome-headless-shell-linux64" / "chrome-headless-shell").unlink()
+    provision(tmp_path / "runtime", manifest=_manifest(sha, size), platform="linux64", fetch=fetch)
+    assert len(fetch.calls) == 2
+    assert (target / "chrome-headless-shell-linux64" / "chrome-headless-shell").is_file()
+
+
 def test_replaces_an_older_version(tmp_path: Path):
     archive, sha, size = _archive(tmp_path)
     target = tmp_path / "runtime" / "chrome-headless-shell" / "linux64"

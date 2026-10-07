@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ipaddress
 import json
 import os
 import shutil
@@ -31,7 +32,7 @@ import psutil
 from PIL import Image
 
 from backend.app.services.part_render_http import JobLimits, JobServer
-from backend.app.services.render_browser import DEAD_PROXY, launch_args, locate
+from backend.app.services.render_browser import DEAD_PROXY, browser_env, launch_args, locate
 from backend.app.services.render_sandbox import classify, process_facts
 from backend.app.services.worker_containment import WorkerContainment
 
@@ -137,6 +138,13 @@ def _tree_rss(root: psutil.Process) -> int:
     return total
 
 
+def _attempt_env(tmp: Path) -> dict[str, str]:
+    """browser_env() with its home inside the attempt's temporary directory (spec §6.3)."""
+    home = tmp / "home"
+    home.mkdir(exist_ok=True)
+    return browser_env(home)
+
+
 def kill_tree(pid: int) -> list[int]:
     """Kill a process tree; return pids still alive afterwards (should be empty)."""
     try:
@@ -150,7 +158,17 @@ def kill_tree(pid: int) -> list[int]:
         except psutil.Error:
             pass
     _, alive = psutil.wait_procs(procs, timeout=5)
-    return [p.pid for p in alive]
+    return [p.pid for p in alive if not _is_zombie(p)]
+
+
+def _is_zombie(proc: psutil.Process) -> bool:
+    """Dead but unreaped -- in Docker the app is PID 1 and reaps nobody. Not a survivor."""
+    try:
+        return proc.status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+    except psutil.Error:
+        return False
 
 
 def run_render(browser_cmd: list[str], *, bundle_dir: Path, fixture: str, out_dir: Path, timeout: float) -> dict:
@@ -175,7 +193,7 @@ def run_render(browser_cmd: list[str], *, bundle_dir: Path, fixture: str, out_di
         cmd = [part.replace("{profile}", profile).replace("{origin}", server.origin) for part in browser_cmd] + [url]
         # A file, not a pipe: Chromium logs to stderr, and a full pipe would stall the render.
         with (Path(tmp) / "stderr.log").open("w+b") as stderr:
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr)
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr, env=_attempt_env(Path(tmp)))
             try:
                 root = psutil.Process(proc.pid)
                 deadline = started + timeout
@@ -355,6 +373,10 @@ def evaluate_network(
                 gaps.append(f"{target.name}: no netlog record for {target.url}")
             elif not record["terminal"]:
                 gaps.append(f"{target.name}: the netlog has no terminal event for {target.url}")
+            elif record["proxy"] is None:
+                # The decision event can move between Chromium builds: missing
+                # evidence, never a reason to touch the launch flags.
+                gaps.append(f"{target.name}: the netlog links no proxy decision to {target.url}")
             elif target.expect == "allowed":
                 if _proxy_list(record["proxy"]) != ["DIRECT"] or record["error"] is not None:
                     problems.append(f"{target.name}: allowed origin went {record['proxy']} / {record['error']}")
@@ -435,6 +457,18 @@ def _host_address(family: int, probe: str) -> str | None:
         s.close()
 
 
+_PRIVATE_NETWORKS = {
+    4: tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")),
+    6: (ipaddress.ip_network("fc00::/7"),),
+}
+
+
+def is_private_address(host: str) -> bool:
+    """RFC 1918 (v4) or unique-local (v6) -- what the private-network targets are named for."""
+    addr = ipaddress.ip_address(host.split("%", 1)[0])
+    return any(addr in net for net in _PRIVATE_NETWORKS[addr.version])
+
+
 def _make_receivers() -> tuple[dict[str, _Receiver], dict[str, str]]:
     receivers: dict[str, _Receiver] = {}
     unavailable: dict[str, str] = {}
@@ -448,7 +482,7 @@ def _make_receivers() -> tuple[dict[str, _Receiver], dict[str, str]]:
         if host is None:
             unavailable[name] = "no such address on this host"
             continue
-        if name == "private-v4" and not host.startswith(("10.", "192.168.", "172.")):
+        if name.startswith("private-") and not is_private_address(host):
             unavailable[name] = f"outgoing address {host} is not private"
             continue
         try:
@@ -539,7 +573,9 @@ def run_network(browser: Path, *, timeout: float = 60.0, keep_netlog: Path | Non
                 *launch_args(profile_dir=Path(tmp) / "profile", origin=origin, netlog=netlog),
                 f"http://{origin}/",
             ]
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_attempt_env(Path(tmp))
+            )
             try:
                 done.wait(timeout)
                 wanted = {t.url for t in state["targets"] if not t.not_testable and t.kind == "fetch"}
@@ -594,13 +630,49 @@ def _children(root_pid: int) -> list[dict]:
     return found
 
 
+class BrowserExited(Exception):
+    """The browser ended before the page answered."""
+
+    def __init__(self, code: int) -> None:
+        super().__init__(f"the browser exited with {code}")
+        self.code = code
+
+
+def wait_until_answered(
+    answered: Callable[[float], bool], exit_code: Callable[[], int | None], *, timeout: float, step: float = 0.2
+) -> bool:
+    """True once the page answered, False at the deadline -- and BrowserExited as soon as the browser is gone.
+
+    A browser that aborts at start (no usable sandbox) must not cost the whole
+    deadline and come back as "no answer".
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if answered(min(step, max(0.0, deadline - time.monotonic()))):
+            return True
+        code = exit_code()
+        if code is not None:
+            raise BrowserExited(code)
+        if time.monotonic() >= deadline:
+            return False
+
+
 def snapshot_when_ready(ready: Callable[[float], bool], take: Callable[[], dict], *, timeout: float) -> dict:
     """Read OS sandbox facts only after the page proved WebGL works (plan review R2).
 
     Chromium may lock the GPU process down after creating it; a snapshot taken
     the moment the processes appear could report a sandbox that is still coming.
+    A browser that died before that point is a failure (spec §6.3
+    sandbox_unavailable); only a live browser without an answer is inconclusive.
     """
-    if not ready(timeout):
+    try:
+        is_ready = ready(timeout)
+    except BrowserExited as exc:
+        return {
+            "verdict": "fail",
+            "problems": [f"the browser exited with {exc.code} before the page was ready (see stderr_tail)"],
+        }
+    if not is_ready:
         return {
             "verdict": "inconclusive",
             "problems": ["the page never rendered through WebGL; there is no ready state to inspect"],
@@ -628,11 +700,11 @@ def run_sandbox(browser: Path, *, timeout: float = 120.0) -> dict:
             url = server.start()
             cmd = [str(browser), *launch_args(profile_dir=Path(tmp) / "profile", origin=server.origin), url]
             with stderr_path.open("wb") as stderr:
-                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr)
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr, env=_attempt_env(Path(tmp)))
 
             def ready(limit: float) -> bool:
                 # WebGL-ready: the manifest names an object rendered through WebGL and the browser still lives.
-                if not server.wait(limit) or proc.poll() is not None:
+                if not wait_until_answered(server.wait, proc.poll, timeout=limit) or proc.poll() is not None:
                     return False
                 manifest = server.outcome.manifest or {}
                 return any(o.get("method") == "toolpath" for o in manifest.get("objects", []))
@@ -687,6 +759,34 @@ def browser_processes(executable: Path) -> dict[tuple[int, float], dict]:
     return found
 
 
+# Linux keeps 15 characters of a process name (TASK_COMM_LEN - 1).
+_COMM_LEN = 15
+
+
+def unreadable_browser_processes(executable: Path) -> set[tuple[int, float]]:
+    """Live processes that may be this browser but whose executable path cannot be read.
+
+    browser_processes() matches by path, and access denied hides the path; the
+    process name stays readable (Linux truncates it). Never seeing a process is
+    not proof that it never existed: the caller counts these as "cannot tell".
+    """
+    stem = executable.name
+    found: set[tuple[int, float]] = set()
+    for proc in psutil.process_iter(["pid", "exe", "name", "create_time"]):
+        try:
+            if proc.info["exe"]:
+                continue  # readable: browser_processes() judges it
+            name = proc.info["name"] or ""
+            if not (name == stem or (len(name) == _COMM_LEN and stem.startswith(name))):
+                continue
+            if proc.status() == psutil.STATUS_ZOMBIE:
+                continue
+            found.add((proc.info["pid"], proc.info["create_time"]))
+        except psutil.Error:
+            continue
+    return found
+
+
 def _observed_state(observed: set[tuple[int, float]]) -> tuple[set[tuple[int, float]], set[tuple[int, float]]]:
     """Which processes already seen in this attempt still live, and which cannot be judged.
 
@@ -721,6 +821,7 @@ def _residue(executable: Path, before: set, observed: set, timeout: float) -> tu
         new = {key for key in browser_processes(executable) if key not in before}
         observed.update(new)
         alive, unknown = _observed_state(observed)
+        unknown |= {key for key in unreadable_browser_processes(executable) if key not in before}
         left = new | alive
         if (not left and not unknown) or time.monotonic() >= deadline:
             return left, unknown
@@ -728,7 +829,7 @@ def _residue(executable: Path, before: set, observed: set, timeout: float) -> tu
 
 
 def _scenario(name: str, executable: Path, body: Callable[[set, set], dict]) -> dict:
-    before = set(browser_processes(executable))
+    before = set(browser_processes(executable)) | unreadable_browser_processes(executable)
     observed: set[tuple[int, float]] = set()
     report: dict = {"scenario": name, "problems": []}
     failed = False
@@ -792,13 +893,14 @@ class _BlockingGcode:
         self._released.set()
 
 
-def _launch_contained(cmd: list) -> tuple[subprocess.Popen, WorkerContainment]:
+def _launch_contained(cmd: list, *, env: dict[str, str]) -> tuple[subprocess.Popen, WorkerContainment]:
     launcher = subprocess.Popen(
         [sys.executable, "-c", _LAUNCHER],
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=os.name != "nt",
+        env=env,  # inherited by the browser the launcher starts
     )
     containment = None
     try:
@@ -863,7 +965,8 @@ def _attempt(browser: Path, *, blocking: bool):
             )
             url = server.start()
             launcher, containment = _launch_contained(
-                [str(browser), *launch_args(profile_dir=tmp / "profile", origin=server.origin), url]
+                [str(browser), *launch_args(profile_dir=tmp / "profile", origin=server.origin), url],
+                env=_attempt_env(tmp),
             )
             yield server, launcher, plate
         finally:
@@ -910,6 +1013,10 @@ def run_containment(browser: Path) -> dict:
             return {"orphaned_before_owner_cleanup": len(orphaned), "left_group": group_boundary(live, launcher.pid)}
 
     def owner_death(before, observed):
+        located = locate(APP_DIR)
+        if located is None or located.executable.resolve() != browser.resolve():
+            # The guardian's diagnostic child starts only the provisioned browser.
+            raise ScenarioError("owner death runs only the provisioned browser, not a --browser override")
         spec = FIXTURE_JOBS["two-objects"]
         plate = _BlockingGcode()
         with tempfile.TemporaryDirectory(prefix="bamdude-contain-") as t:
@@ -932,6 +1039,7 @@ def run_containment(browser: Path) -> dict:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     cwd=str(APP_DIR),
+                    env=_attempt_env(tmp),  # passed on to the guardian, its child and the browser
                 )
                 line = owner.stdout.readline().strip()
                 if not line:

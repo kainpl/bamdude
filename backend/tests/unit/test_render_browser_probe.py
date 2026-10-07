@@ -17,6 +17,12 @@ from backend.app.render_browser_probe import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_unreadable_processes(monkeypatch):
+    # The real scan reads every process on the machine; tests that need it set their own.
+    monkeypatch.setattr(probe, "unreadable_browser_processes", lambda _exe: set())
+
+
 def _png(path: Path, pixels: dict[tuple[int, int], tuple[int, int, int, int]], size: int = 8) -> Path:
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     for xy, rgba in pixels.items():
@@ -242,6 +248,26 @@ def test_a_request_without_a_terminal_event_is_inconclusive():
         assert _evaluate(records=records)["verdict"] == "inconclusive", url
 
 
+def test_a_record_without_a_proxy_decision_is_a_gap_not_a_failure():
+    # A pin bump can move the event the decision is read from; that is missing
+    # evidence, and "fail" would send someone to change the launch flags.
+    for url in (f"http://{ORIGIN}/control", "http://192.0.2.1/hit"):
+        records = _good_records()
+        records[url] = {**records[url], "proxy": None}
+        report = _evaluate(records=records)
+        assert report["verdict"] == "inconclusive", url
+        assert any("no proxy decision" in p for p in report["problems"]), url
+
+
+def test_private_receivers_listen_only_on_private_addresses():
+    # RFC 1918 for v4, ULA (fc00::/7) for v6 -- "172." alone also matches public
+    # 172.217.x, and the v6 receiver used to take any outgoing address at all.
+    for host in ("10.1.2.3", "172.16.5.4", "172.31.255.1", "192.168.0.2", "fd12:3456::1"):
+        assert probe.is_private_address(host), host
+    for host in ("172.217.1.1", "172.32.0.1", "8.8.8.8", "2a02:6b8::1", "fe80::1%3", "127.0.0.1", "::1"):
+        assert not probe.is_private_address(host), host
+
+
 def test_a_direct_connect_attempt_fails():
     assert _evaluate(attempts=["192.0.2.1:80"])["verdict"] == "fail"
 
@@ -348,6 +374,30 @@ def test_no_ready_signal_is_inconclusive_not_fail():
     )
 
 
+def test_a_browser_that_exits_before_ready_fails_at_once():
+    # Docker's default seccomp profile: Chromium aborts in half a second. That is
+    # spec §6.3's sandbox_unavailable -- a failure, not two minutes of waiting
+    # and an "inconclusive".
+    def ready(_timeout):
+        raise probe.BrowserExited(-5)
+
+    report = probe.snapshot_when_ready(ready, lambda: {"verdict": "pass", "problems": []}, timeout=120)
+    assert report["verdict"] == "fail"
+    assert "-5" in report["problems"][0]
+
+
+def test_waiting_for_the_page_stops_when_the_browser_is_gone():
+    codes = iter([None, -5])
+    with pytest.raises(probe.BrowserExited) as exc:
+        probe.wait_until_answered(lambda _t: False, lambda: next(codes), timeout=120)
+    assert exc.value.code == -5
+
+
+def test_waiting_for_the_page_answers_true_or_times_out():
+    assert probe.wait_until_answered(lambda _t: True, lambda: None, timeout=1) is True
+    assert probe.wait_until_answered(lambda _t: False, lambda: None, timeout=0.05, step=0.01) is False
+
+
 def test_a_ready_process_without_restrictions_still_fails():
     assert (
         probe.snapshot_when_ready(lambda _t: True, lambda: {"verdict": "fail", "problems": ["x"]}, timeout=0)["verdict"]
@@ -371,7 +421,7 @@ def test_attach_failure_kills_the_launcher(monkeypatch):
 
     monkeypatch.setattr(probe.WorkerContainment, "attach", staticmethod(refuse))
     with pytest.raises(RuntimeError):
-        probe._launch_contained(["unused"])
+        probe._launch_contained(["unused"], env=dict(os.environ))
     assert _gone(seen["pid"])
 
 
@@ -387,7 +437,7 @@ def test_bootstrap_failure_kills_the_launcher_and_closes_the_job(monkeypatch):
 
     monkeypatch.setattr(probe.WorkerContainment, "attach", staticmethod(FakeContainment))
     with pytest.raises(TypeError):
-        probe._launch_contained([object()])  # not JSON-serialisable: the bootstrap write fails
+        probe._launch_contained([object()], env=dict(os.environ))  # not JSON-serialisable: the bootstrap write fails
     assert _gone(seen["pid"])
     assert seen.get("closed") is True
 
@@ -458,3 +508,94 @@ def test_a_zombie_is_not_a_live_browser_process(tmp_path, monkeypatch):
     zombie = _FakeProc(os.getpid() + 1, path, psutil.STATUS_ZOMBIE)
     monkeypatch.setattr(probe.psutil, "process_iter", lambda _attrs: iter([live, zombie]))
     assert [pid for pid, _ in probe.browser_processes(exe)] == [os.getpid()]
+
+
+class _Killable:
+    def __init__(self, pid: int, status: str, children=()):
+        self.pid = pid
+        self._status = status
+        self._children = list(children)
+
+    def children(self, recursive=False):
+        return self._children
+
+    def kill(self):
+        return None
+
+    def status(self):
+        return self._status
+
+
+def test_kill_tree_does_not_count_an_unreaped_zombie_as_a_survivor(monkeypatch):
+    # In Docker the app is PID 1 and reaps nobody: a killed child stays a zombie.
+    zombie = _Killable(4321, psutil.STATUS_ZOMBIE)
+    root = _Killable(4320, psutil.STATUS_ZOMBIE, [zombie])
+    monkeypatch.setattr(probe.psutil, "Process", lambda _pid: root)
+    monkeypatch.setattr(probe.psutil, "wait_procs", lambda procs, timeout: ([], procs))
+    assert probe.kill_tree(4320) == []
+
+
+def test_kill_tree_still_reports_a_live_survivor(monkeypatch):
+    live = _Killable(4322, psutil.STATUS_SLEEPING)
+    root = _Killable(4320, psutil.STATUS_ZOMBIE, [live])
+    monkeypatch.setattr(probe.psutil, "Process", lambda _pid: root)
+    monkeypatch.setattr(probe.psutil, "wait_procs", lambda procs, timeout: ([], procs))
+    assert probe.kill_tree(4320) == [4322]
+
+
+class _NamedProc:
+    def __init__(self, pid: int, exe: str | None, name: str, status: str = psutil.STATUS_SLEEPING):
+        self.info = {"pid": pid, "exe": exe, "name": name, "create_time": float(pid)}
+        self._status = status
+
+    def status(self):
+        return self._status
+
+
+def test_a_browser_process_whose_path_is_unreadable_is_still_seen(tmp_path, monkeypatch):
+    # Linux truncates the name to 15 characters; Windows keeps it whole.
+    monkeypatch.undo()  # the autouse stub: this test is about the real scan
+    exe = tmp_path / "chrome-headless-shell"
+    procs = [
+        _NamedProc(10, None, "chrome-headless"),
+        _NamedProc(11, None, "chrome-headless-shell"),
+        _NamedProc(12, None, "kworker/0:1"),
+        _NamedProc(13, str(exe), "chrome-headless"),  # readable: browser_processes judges it
+        _NamedProc(14, None, "chrome-headless", psutil.STATUS_ZOMBIE),
+    ]
+    monkeypatch.setattr(probe.psutil, "process_iter", lambda _attrs: iter(procs))
+    assert probe.unreadable_browser_processes(exe) == {(10, 10.0), (11, 11.0)}
+
+
+def test_an_unreadable_process_that_appeared_makes_the_scenario_inconclusive(tmp_path, monkeypatch):
+    scans = iter([set(), {(4245, 5.0)}])  # before the scenario, then during the residue scan
+    monkeypatch.setattr(probe, "unreadable_browser_processes", lambda _exe: next(scans, {(4245, 5.0)}))
+    monkeypatch.setattr(probe, "browser_processes", lambda _exe: {})
+    monkeypatch.setattr(probe, "RESIDUE_SECONDS", 0.1)
+    report = probe._scenario("normal", tmp_path / "chrome", lambda _before, _observed: {})
+    assert report["verdict"] == "inconclusive"
+    assert report["unknown"] == [4245]
+
+
+def test_an_unreadable_process_from_before_the_scenario_is_not_its_residue(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe, "unreadable_browser_processes", lambda _exe: {(4246, 6.0)})
+    monkeypatch.setattr(probe, "browser_processes", lambda _exe: {})
+    monkeypatch.setattr(probe, "RESIDUE_SECONDS", 0.1)
+    report = probe._scenario("normal", tmp_path / "chrome", lambda _before, _observed: {})
+    assert report["verdict"] == "pass"
+
+
+def test_every_launch_in_the_probe_passes_an_explicit_environment():
+    # Spec §6.3: the browser gets an allowlisted environment, never the
+    # service's own -- DATABASE_URL, tokens and .env values stay out.
+    import ast
+
+    tree = ast.parse(Path(probe.__file__).read_text(encoding="utf-8"))
+    launches = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "Popen"
+    ]
+    assert launches, "the probe launches nothing?"
+    missing = [node.lineno for node in launches if not any(k.arg == "env" for k in node.keywords)]
+    assert missing == []
