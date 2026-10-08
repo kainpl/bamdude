@@ -44,6 +44,7 @@ from backend.app.services.part_render_node import (
 from backend.app.services.part_render_protocol import (
     CHILD_MARGIN_SECONDS,
     GCODE_BYTES,
+    ID_MAX,
     INSTANCE_CAP,
     MASTER_SIZE,
     METHODS,
@@ -61,7 +62,6 @@ from backend.app.services.threemf_parser_core import discover_plate_objects
 _BOOT_KEYS = {"root", "task", "deadline_ns", "node"}
 # ASCII digits, at most ten: a plate number, never a 5000-digit int() (final review M1)
 _PLATE_GCODE = re.compile(r"Metadata/plate_([0-9]{1,10})\.gcode\Z")
-_ID_MAX = 0xFFFFFFFF  # a slicer's object id is u32; the instance row is BIGINT (final review C1)
 # what zipfile can open here without a password (spec §5.4)
 _COMPRESSIONS = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA})
 # An id is at most 10 digits (u32): a longer run is no id at all, and never reaches int(), whose 4300-digit
@@ -266,7 +266,7 @@ def plan_3mf(zf: zipfile.ZipFile, plate_index: int, limits: Limits) -> tuple[Pla
     pick = side["pick"] if fallback.fits(side["pick"]) else None
     objects = _discover(number, _read_entry(zf, entry, _HEAD_BYTES), side["slice"], pick)
     # the shared parser takes any digit run as an id; past u32 it is no slicer's object (final review C1)
-    objects = {oid: name for oid, name in objects.items() if 0 <= oid <= _ID_MAX}
+    objects = {oid: name for oid, name in objects.items() if 0 <= oid <= ID_MAX}
     if not objects:
         raise Outcome("unavailable", "no_objects")
     selected, skipped = select_instances(objects, limits.instance_cap)

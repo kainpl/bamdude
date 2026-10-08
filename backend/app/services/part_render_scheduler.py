@@ -127,6 +127,11 @@ class PartRenderScheduler:
             return False  # nothing was attempted: the row stays as it is, nothing is counted (spec §5.3, §13)
         try:
             await owned(self._settle(task, mode, result, generation))
+        except Exception:
+            # an unforeseen failure in the writer: the row waits its pause instead of a full render every
+            # idle period (final review I2)
+            logger.exception("Part render render_id=%s could not be settled; it waits", task.render_id)
+            await owned(part_renders.defer(self.session_factory, task, "settle_failed", generation, now))
         finally:
             await owned(self.runtime.discard(result))
         return True
@@ -148,13 +153,20 @@ class PartRenderScheduler:
                     return
                 if published != "published":
                     logger.warning("Part render render_id=%s publication %s", task.render_id, published)
+                if published in ("failed", "unknown"):
+                    # nothing certain landed: the row waits, uncounted (final review C1); a commit that did
+                    # land left it ready, and the CAS on "pending" then writes nothing
+                    await part_renders.defer(factory, task, f"publish_{published}", generation, now)
                 return
             if child.get("outcome") == "unavailable":
                 await part_renders.mark_terminal(factory, task, "unavailable", child["reason"], generation, now)
                 return
             reason = child.get("reason")
             if reason == "bundle_mismatch":
-                logger.error("Part render bundle_mismatch in the child: nothing counted")  # the runtime's fault
+                # the runtime's fault: nothing counted, the runtime looks again at once, the row waits (M6)
+                logger.error("Part render bundle_mismatch in the child: nothing counted")
+                self.runtime.refresh_node_soon()
+                await part_renders.defer(factory, task, "bundle_mismatch", generation, now)
                 return
             if reason == "source_changed":
                 await part_renders.mark_terminal(factory, task, "failed", "source_changed", generation, now)

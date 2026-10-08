@@ -37,6 +37,7 @@ RETRY_BASE_SECONDS = 60
 # child asks for it under an id no slicer gives an object (plan E3, R3); a file that uses it anyway
 # gets no probe.
 MODEL_PROBE_ID = 0xFFFFFFFF
+ID_MAX = 0xFFFFFFFF  # a slicer's object id is u32; past it no plate names an object (final review C1)
 
 PlateStatus = Literal["pending", "ready", "failed", "unavailable"]
 Phase = Literal["render", "fallback"]

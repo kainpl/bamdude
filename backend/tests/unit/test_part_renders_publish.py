@@ -188,3 +188,59 @@ async def test_a_png_that_does_not_answer_its_manifest_is_refused(db_session, fa
     with pytest.raises(part_renders.InvalidResult):
         await part_renders.publish(factory, root, task, attempt_files(tmp_path, tamper=True), GEN, reason=None)
     assert not root.exists() or not any(root.rglob("*.png"))
+
+
+async def test_an_instance_id_beyond_u32_is_an_invalid_result(db_session, factory, tmp_path):
+    """Final review C1, main's backstop: the instance row is BIGINT, a slicer's id is u32."""
+    task = await pending_task(db_session)
+    result = attempt_files(tmp_path)
+    manifest = json.loads((result.files / "manifest.json").read_text(encoding="utf-8"))
+    manifest["objects"][1]["identify_id"] = 2**64
+    (result.files / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(part_renders.InvalidResult):
+        await part_renders.publish(factory, tmp_path / "part-renders", task, result, GEN, reason=None)
+
+
+async def test_a_database_failure_before_the_commit_is_failed_and_leaves_no_directory(
+    db_session, factory, tmp_path, monkeypatch
+):
+    """Final review C1(b): a statement that fails before the commit committed nothing -- the new directory
+    goes, and the caller hears "failed", not "unknown"."""
+    task = await pending_task(db_session)
+
+    def refused(*args, **kwargs):
+        raise RuntimeError("the instance rows were refused")
+
+    monkeypatch.setattr(part_renders, "insert", refused)
+    root = tmp_path / "part-renders"
+    assert await part_renders.publish(factory, root, task, attempt_files(tmp_path), GEN, reason=None) == "failed"
+    assert not [p for p in root.rglob("*") if p.is_dir() and len(p.name) == 32]
+    db_session.expire_all()
+    assert (await db_session.get(PlateRender, task.render_id)).status == "pending"
+
+
+async def test_a_disk_that_refuses_the_copy_is_failed_and_leaves_no_partial_directory(
+    db_session, factory, tmp_path, monkeypatch
+):
+    """Final review I2: ENOSPC / EACCES while the new directory is written -- no .part is left behind."""
+    import errno
+
+    task = await pending_task(db_session)
+
+    def full(src, dst, length=0):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(part_renders.shutil, "copyfileobj", full)
+    root = tmp_path / "part-renders"
+    assert await part_renders.publish(factory, root, task, attempt_files(tmp_path), GEN, reason=None) == "failed"
+    assert not list(root.rglob("*.part"))
+
+
+async def test_defer_moves_the_next_attempt_without_counting_it(db_session, factory):
+    task = await pending_task(db_session)
+    now = part_renders.utcnow()
+    assert await part_renders.defer(factory, task, "publish_failed", GEN, now)
+    db_session.expire_all()
+    row = await db_session.get(PlateRender, task.render_id)
+    assert (row.status, row.attempts, row.last_error) == ("pending", 0, "publish_failed")
+    assert row.next_attempt_at > now

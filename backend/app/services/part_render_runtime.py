@@ -155,6 +155,10 @@ class PartRenderRuntime:
             logger.warning("Part render runtime_failed: Node %s does not start", self.node.version)
         self.resolve_node()
 
+    def refresh_node_soon(self) -> None:
+        """The child found the bundle changed: look at the installation again on the monitor's next tick."""
+        self.node_refresh_at = 0.0
+
     async def _refresh_node_if_due(self) -> None:
         """The installation and the bundle, looked up again off the loop before the probe decision, so a Node
         put in place or replaced is seen without anybody reading health (consilium E3.2-R3). A new

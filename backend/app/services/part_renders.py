@@ -36,6 +36,7 @@ from backend.app.models.product import ProductPlate
 from backend.app.services import part_images
 from backend.app.services.part_render_protocol import (
     GC_GRACE_SECONDS,
+    ID_MAX,
     MASTER_SIZE,
     MAX_ATTEMPTS,
     METHODS,
@@ -49,6 +50,8 @@ from backend.app.services.part_render_types import AttemptResult, RenderTask, So
 from backend.app.services.preview_artifacts import disk, validate
 from backend.app.services.product_facets import id_chunks
 from backend.app.services.worker_staging import cleanup_owned
+
+logger = logging.getLogger(__name__)
 
 _KEY = ["file_sha256", "plate_index", "renderer_version"]
 _live_generation: str | None = None
@@ -270,6 +273,19 @@ async def mark_terminal(
     )
 
 
+async def defer(
+    session_factory, task: RenderTask, reason: str, generation: str, now: datetime, *, seconds: int = RETRY_BASE_SECONDS
+) -> bool:
+    """Not now, and not counted: a fault of main or the runtime, never of the file (spec §5.3, §13). The row
+    waits its pause instead of being taken again at once (final review C1, I2, M6)."""
+    return await _transition(
+        session_factory,
+        task,
+        generation,
+        {"next_attempt_at": now + timedelta(seconds=seconds), "last_error": reason[:64]},
+    )
+
+
 async def requeue_no_runtime(session_factory) -> int:
     """A runtime appeared: plates finished by the fallback alone go back, their pictures kept (spec §9.1)."""
     async with session_factory() as db:
@@ -336,7 +352,15 @@ def result_path(root: Path, file_sha256: str, renderer_version: int, plate_index
 
 
 def _verify(files: Path) -> tuple[dict, bytes]:
-    """Spec §9.3 step 1: every file is what the manifest says, every PNG decodes at its size."""
+    """Spec §9.3 step 1: every file is what the manifest says, every PNG decodes at its size. A result that
+    cannot even be read is no result either."""
+    try:
+        return _verify_files(files)
+    except OSError as exc:
+        raise InvalidResult(f"unreadable result: {type(exc).__name__}") from exc
+
+
+def _verify_files(files: Path) -> tuple[dict, bytes]:
     deadline = time.monotonic_ns() + _VALIDATE_SECONDS * 10**9
     raw = (files / "manifest.json").read_bytes()
     try:
@@ -352,7 +376,7 @@ def _verify(files: Path) -> tuple[dict, bytes]:
     expected = {"manifest.json"}
     for entry in objects:
         oid, method = entry.get("identify_id"), entry.get("method")
-        if type(oid) is not int or oid in seen or method not in METHODS:
+        if type(oid) is not int or not 0 <= oid <= ID_MAX or oid in seen or method not in METHODS:
             raise InvalidResult(f"malformed instance {oid!r}")
         seen.add(oid)
         declared = entry.get("files") or {}
@@ -401,12 +425,16 @@ def _write_result_dir(files: Path, parent: Path, name: str) -> Path:
     parent.mkdir(parents=True, exist_ok=True)
     part = parent / f"{name}.part"
     part.mkdir()
-    for source in files.iterdir():
-        with source.open("rb") as src, (part / source.name).open("xb") as dst:  # SEC-PATH-OK: names checked by _verify
-            shutil.copyfileobj(src, dst, 1024 * 1024)
-            dst.flush()
-            os.fsync(dst.fileno())
-    _fsync_dir(part)
+    try:
+        for source in files.iterdir():
+            with source.open("rb") as src, (part / source.name).open("xb") as dst:  # SEC-PATH-OK: checked by _verify
+                shutil.copyfileobj(src, dst, 1024 * 1024)
+                dst.flush()
+                os.fsync(dst.fileno())
+        _fsync_dir(part)
+    except BaseException:
+        cleanup_owned(part)  # a half-written attempt directory is nobody's (final review I2)
+        raise
     final = parent / name
     os.replace(part, final)  # the name is new, so the rename never meets a non-empty directory
     _fsync_dir(parent)
@@ -416,12 +444,19 @@ def _write_result_dir(files: Path, parent: Path, name: str) -> Path:
 async def publish(
     session_factory, root: Path, task: RenderTask, result: AttemptResult, generation: str, *, reason: str | None
 ) -> str:
-    """Spec §9.3: ``published`` (committed), ``stale`` (the key or the generation moved; the new directory is gone)
-    or ``unknown`` (the commit's outcome is unknown; nothing is deleted, the start-up reconciliation decides)."""
+    """Spec §9.3: ``published`` (committed), ``stale`` (the key or the generation moved; the new directory is gone),
+    ``failed`` (main could not write it -- disk, or the database before the commit; nothing landed and the new
+    directory is gone; final review C1, I2) or ``unknown`` (the COMMIT itself failed, so it may have landed;
+    nothing is deleted, the start-up reconciliation decides). Raises InvalidResult for a result that does not
+    answer its own manifest."""
     manifest, raw = await disk(_verify, result.files)
     name = uuid4().hex
     parent = result_path(root, task.file_sha256, task.renderer_version, task.plate_index, "")
-    directory = await disk(_write_result_dir, result.files, parent, name)
+    try:
+        directory = await disk(_write_result_dir, result.files, parent, name)
+    except OSError as exc:
+        logger.warning("Part render render_id=%s result directory not written: %s", task.render_id, type(exc).__name__)
+        return "failed"
     if generation != _live_generation:
         await disk(cleanup_owned, directory)
         return "stale"
@@ -465,9 +500,15 @@ async def publish(
                     for entry in manifest["objects"]
                 ],
             )
-            await db.commit()
-    except Exception:
-        return "unknown"  # possibly committed: the directory stays, the reconciliation decides by the database
+            try:
+                await db.commit()
+            except Exception:
+                return "unknown"  # possibly committed: the directory stays, the reconciliation decides
+    except Exception as exc:
+        # failed before the commit, so certainly not committed: the new directory is nobody's
+        logger.warning("Part render render_id=%s publication refused: %s", task.render_id, type(exc).__name__)
+        await disk(cleanup_owned, directory)
+        return "failed"
     if previous and _RESULT_NAME.fullmatch(previous) and previous != name:
         await disk(
             cleanup_owned, result_path(root, task.file_sha256, task.renderer_version, task.plate_index, previous)
@@ -475,8 +516,6 @@ async def publish(
     part_images.mark_changed([(task.file_sha256, task.plate_index)])
     return "published"
 
-
-logger = logging.getLogger(__name__)
 
 _HEX2 = re.compile(r"[0-9a-f]{2}\Z")
 _SHA = re.compile(r"[0-9a-f]{64}\Z")

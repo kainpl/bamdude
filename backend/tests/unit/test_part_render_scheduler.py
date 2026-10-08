@@ -28,6 +28,10 @@ class FakeRuntime:
         self.queue: dict = {}
         self.uncertain = False  # the runtime's ownership_uncertain
         self.proof: asyncio.Event | None = None  # set: a cancel waits for the test to release its proof
+        self.refresh_requested = False
+
+    def refresh_node_soon(self):
+        self.refresh_requested = True
 
     def refusal(self, mode):
         return self.refused
@@ -366,5 +370,54 @@ async def test_gc_runs_only_when_no_attempt_is_alive(factory, db_session, tmp_pa
         runtime.gate.set()
         await run_until(scheduler, lambda: collected)
         assert set(collected) == {0}
+    finally:
+        await stop_parked(scheduler)
+
+
+def ok_with_files(root):
+    return lambda task: AttemptResult("done", "c" * 32, 5, {"outcome": "ok", "reason": None}, root)
+
+
+@pytest.mark.usefixtures("queued")
+@pytest.mark.parametrize("published", ["unknown", "failed", "raises"])
+async def test_a_publication_that_did_not_land_waits_instead_of_rendering_again(
+    factory, db_session, tmp_path, monkeypatch, published
+):
+    """Final review C1(b) / I2: the row waits its pause, nothing is counted, and the queue moves on."""
+    runtime = FakeRuntime()
+    runtime.results = [ok_with_files(tmp_path) for _ in range(6)]
+
+    async def publish(*args, **kwargs):
+        if published == "raises":
+            raise RuntimeError("an unforeseen failure in the writer")
+        return published
+
+    monkeypatch.setattr(prs.part_renders, "publish", publish)
+    scheduler = make_scheduler(runtime, factory, tmp_path)
+    now = part_renders.utcnow()
+    await scheduler.start()
+    try:
+        await run_until(scheduler, lambda: len(runtime.calls) >= 2)
+        await asyncio.sleep(0.5)
+        assert len(runtime.calls) == 2  # each plate once, then both wait
+        stored = await row(db_session, "a" * 64)
+        assert (stored.status, stored.attempts) == ("pending", 0)
+        assert stored.next_attempt_at > now
+    finally:
+        await stop_parked(scheduler)
+
+
+@pytest.mark.usefixtures("queued")
+async def test_a_bundle_mismatch_in_the_child_asks_the_runtime_to_look_again_and_waits(factory, db_session, tmp_path):
+    """Final review M6: the runtime's fault counts nothing and never loops on one plate."""
+    runtime = FakeRuntime()
+    runtime.results = [outcome("done", {"outcome": "failed", "reason": "bundle_mismatch"}) for _ in range(6)]
+    scheduler = make_scheduler(runtime, factory, tmp_path)
+    await scheduler.start()
+    try:
+        await run_until(scheduler, lambda: len(runtime.calls) >= 2)
+        await asyncio.sleep(0.5)
+        assert len(runtime.calls) == 2 and runtime.refresh_requested
+        assert (await row(db_session, "a" * 64)).attempts == 0
     finally:
         await stop_parked(scheduler)
