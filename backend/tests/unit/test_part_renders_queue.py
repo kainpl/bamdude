@@ -36,8 +36,11 @@ def changed():
     unsubscribe()
 
 
-async def linked(db, *, sha="a" * 64, plates=(1,), name="p.gcode.3mf", file_type="gcode", deleted=False, folder=None):
+async def linked(
+    db, *, sha="a" * 64, plates=(1,), name="p.gcode.3mf", file_type="gcode", deleted=False, folder=None, metadata=None
+):
     file = LibraryFile(
+        file_metadata=metadata,
         filename=name,
         file_path=f"library/{name}" if folder is None else f"{folder.external_path}/{name}",
         file_type=file_type,
@@ -255,3 +258,19 @@ async def test_backfill_queues_every_linked_sliced_file_at_backfill_priority(db_
     await linked(db_session, sha="a" * 64, plates=(1, 2))
     assert await part_renders.backfill(factory) == 2
     assert {r.priority for r in await rows(db_session)} == {0}
+
+
+async def test_a_sliced_3mf_without_the_gcode_suffix_is_queued_and_an_unsliced_one_is_not(db_session):
+    """Final review I1: a plate exported from the slicer reaches the library as Foo.3mf (file_type "3mf")
+    with its G-code intact; LibraryFile.is_printable is the one answer to "sliced"."""
+    sliced = await linked(
+        db_session, sha="b" * 64, name="Foo.3mf", file_type="3mf", metadata={"has_sliced_gcode": True}
+    )
+    plain = await linked(
+        db_session, sha="c" * 64, name="Bar.3mf", file_type="3mf", metadata={"has_sliced_gcode": False}
+    )
+    assert await part_renders.ensure_for_files(db_session, [sliced.id, plain.id]) == 1
+    await db_session.commit()
+    assert [r.file_sha256 for r in await rows(db_session)] == ["b" * 64]
+    task = await part_renders.next_task(db_session, part_renders.utcnow())
+    assert (task.file_sha256, task.source.kind) == ("b" * 64, "3mf")

@@ -84,7 +84,7 @@ def _sliced_linked_plates():
             LibraryFile.deleted_at.is_(None),
             LibraryFile.file_hash.is_not(None),
             func.length(LibraryFile.file_hash) == 64,
-            LibraryFile.file_type == "gcode",  # .gcode.3mf and raw .gcode: the sliced files (spec §9.1)
+            LibraryFile.is_printable(),  # sliced by name OR by content (a Foo.3mf from the slicer; spec §9.1)
         )
         .distinct()
     )
