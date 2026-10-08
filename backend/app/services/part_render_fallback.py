@@ -17,6 +17,9 @@ from PIL import Image
 from backend.app.services.part_render_protocol import SMALL_SIZE
 
 MARGIN = 0.08  # of the crop's longer side, on every edge
+# A slicer's top/pick is 512x512. Past this a PNG is not decoded at all: a few KiB of PNG may declare an
+# image whose pixels -- and decode_ids' uint32 copy of them -- would need gigabytes (security review).
+PAIR_PIXELS = 2048 * 2048
 
 
 def decode_ids(pick: Image.Image) -> np.ndarray:
@@ -25,10 +28,23 @@ def decode_ids(pick: Image.Image) -> np.ndarray:
     return rgb[..., 0] | (rgb[..., 1] << 8) | (rgb[..., 2] << 16)
 
 
+def fits(png: bytes | None) -> bool:
+    """Whether a PNG declares at most PAIR_PIXELS: read from its header, not one pixel decoded."""
+    if not png:
+        return False
+    try:
+        with Image.open(io.BytesIO(png)) as img:
+            width, height = img.size
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return False
+    return 0 < width * height <= PAIR_PIXELS
+
+
 def valid_pair(top_png: bytes, pick_png: bytes) -> tuple[Image.Image, np.ndarray] | None:
     """The decoded pair, or None when it is refused: the same bytes (preview_transform.inject_source writes
-    one picture under all three names), sizes that differ, or an image that does not decode."""
-    if top_png == pick_png:
+    one picture under all three names), sizes that differ, an image past PAIR_PIXELS, or one that does not
+    decode."""
+    if top_png == pick_png or not (fits(top_png) and fits(pick_png)):
         return None
     try:
         with Image.open(io.BytesIO(top_png)) as top_img, Image.open(io.BytesIO(pick_png)) as pick_img:

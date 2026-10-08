@@ -23,7 +23,7 @@ import sys
 import time
 import zipfile
 import zlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -60,7 +60,10 @@ from backend.app.services.threemf_parser_core import discover_plate_objects
 
 _BOOT_KEYS = {"root", "task", "deadline_ns", "node"}
 _PLATE_GCODE = re.compile(r"Metadata/plate_(\d+)\.gcode\Z")
-_START_MARKER = re.compile(rb"; start printing object, unique label id: *(\d+)")
+# An id is at most 10 digits (u32): a longer run is no id at all, and never reaches int(), whose 4300-digit
+# limit would raise out of the feed (security review). A non-digit must FOLLOW the id, so digits cut by a
+# chunk boundary wait for the next chunk, where MarkerScan's tail sees the marker whole.
+_START_MARKER = re.compile(rb"; start printing object, unique label id: *(\d{1,10})(?=\D)")
 _MODEL_LABEL = re.compile(rb"; model label id: *([\d,]+)")
 _CHUNK = 1024 * 1024
 _HEAD_BYTES = 65536
@@ -108,15 +111,22 @@ class Instance:
 
 
 class MarkerScan:
-    """Ids whose start marker passed by in the stream that goes to Node (plan E3, R4)."""
+    """Which of ``wanted`` had their start marker pass by in the stream that goes to Node (plan E3, R4), and
+    whether any marker did (R15). Only the wanted ids are kept: a 256 MiB plate may name millions of them,
+    and the scan's memory stays the instance cap's (security review)."""
 
-    def __init__(self) -> None:
+    def __init__(self, wanted: Iterable[int]) -> None:
+        self.wanted = frozenset(wanted)
         self.marked: set[int] = set()
+        self.any_marker = False
         self._tail = b""
 
     def feed(self, chunk: bytes) -> bytes:
         data = self._tail + chunk
-        self.marked.update(int(match.group(1)) for match in _START_MARKER.finditer(data))
+        for match in _START_MARKER.finditer(data):
+            self.any_marker = True
+            if (identify_id := int(match.group(1))) in self.wanted:
+                self.marked.add(identify_id)
         self._tail = data[-96:]  # longer than one marker line, so a marker split across chunks is seen whole
         return chunk
 
@@ -242,7 +252,9 @@ def plan_3mf(zf: zipfile.ZipFile, plate_index: int, limits: Limits) -> tuple[Pla
             ("plate", f"Metadata/plate_{number}.json"),
         )
     }
-    objects = _discover(number, _read_entry(zf, entry, _HEAD_BYTES), side["slice"], side["pick"])
+    # an oversized pick is never decoded, here or by the shared parser (security review)
+    pick = side["pick"] if fallback.fits(side["pick"]) else None
+    objects = _discover(number, _read_entry(zf, entry, _HEAD_BYTES), side["slice"], pick)
     if not objects:
         raise Outcome("unavailable", "no_objects")
     selected, skipped = select_instances(objects, limits.instance_cap)
@@ -267,7 +279,8 @@ def plan_gcode(handle, task: dict, limits: Limits) -> PlatePlan:
     head = handle.read(_HEAD_BYTES)
     handle.seek(0)
     match = _MODEL_LABEL.search(head)
-    ids = sorted({int(token) for token in match.group(1).split(b",") if token.isdigit()}) if match else []
+    tokens = match.group(1).split(b",") if match else []
+    ids = sorted({int(token) for token in tokens if token.isdigit() and len(token) <= 10})  # u32, never int()'s limit
     if not ids:
         raise Outcome("unavailable", "no_objects")
     objects = {oid: f"Object_{oid}" for oid in ids}
@@ -318,7 +331,17 @@ def run_node(boot: dict, root: Path, job: dict, chunks: Iterator[bytes], limits:
     )
 
 
-def assemble(plan: PlatePlan, manifest: dict | None, pngs: dict[int, bytes], marked: set[int]) -> list[Instance]:
+def assemble(
+    plan: PlatePlan,
+    manifest: dict | None,
+    pngs: dict[int, bytes],
+    marked: set[int],
+    *,
+    any_marker: bool | None = None,
+) -> list[Instance]:
+    """``marked``: the selected ids whose marker passed; ``any_marker``: whether any marker passed at all
+    (default: whether one of ``marked`` did)."""
+    any_marker = bool(marked) if any_marker is None else any_marker
     entries = {entry["id"]: entry for entry in manifest["objects"]} if manifest else {}
     probe = entries.pop(MODEL_PROBE_ID, None) if MODEL_PROBE_ID not in plan.objects else None
     out = [Instance(oid, "skipped", "over_cap") for oid in plan.skipped]
@@ -329,7 +352,7 @@ def assemble(plan: PlatePlan, manifest: dict | None, pngs: dict[int, bytes], mar
             continue
         # spec §5.3: model only for a single object WITHOUT markers -- a marked id whose selection came out
         # empty is top_mask or empty_selection, however good the probe looks (consilium E3-R7)
-        if probe is not None and not marked and probe["method"] == "model":
+        if probe is not None and not any_marker and probe["method"] == "model":
             out.append(Instance(oid, "model", master=pngs[MODEL_PROBE_ID], tools=list(probe["tools"])))
             continue
         if entry is None:
@@ -398,7 +421,7 @@ class _Attempt:
         else:
             plan = plan_gcode(self.handle, task, self.limits)
             chunks = lambda scan: _file_chunks(self.handle, plan.gcode_size, scan)  # noqa: E731
-        scan = MarkerScan()
+        scan = MarkerScan(plan.selected)
         manifest, pngs, reason = None, {}, None
         if plan.too_large:
             reason = "too_large"
@@ -413,7 +436,7 @@ class _Attempt:
                 reason = exc.reason  # deterministic: the fallback methods answer in this attempt (spec §5.3)
         if not _same_file(before, os.fstat(self.handle.fileno())):
             raise Outcome("failed", "source_changed")
-        return finish(self.root, assemble(plan, manifest, pngs, scan.marked), reason)
+        return finish(self.root, assemble(plan, manifest, pngs, scan.marked, any_marker=scan.any_marker), reason)
 
     def close(self) -> None:
         for resource in (self.zf, self.handle):

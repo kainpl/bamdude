@@ -75,3 +75,15 @@ def test_model_bbox_reads_bbox_objects_by_id():
     assert fb.model_bbox(None, 7) is None
     assert fb.model_bbox(b"{broken", 7) is None
     assert fb.model_bbox(json.dumps({"bbox_objects": [{"id": 7, "bbox": [1, "x"]}]}).encode(), 7) is None
+
+
+def test_a_pair_over_the_pixel_ceiling_is_refused_before_it_is_decoded(monkeypatch):
+    """Security review: a PNG of a few KiB may declare an enormous image; the size in its header decides
+    before a single pixel is decoded."""
+    monkeypatch.setattr(fb, "PAIR_PIXELS", 64 * 64 - 1)
+    decoded = []
+    monkeypatch.setattr(fb, "decode_ids", lambda pick: decoded.append(pick))
+    assert fb.valid_pair(_top(), _pick({(0, 0, 4, 4): 1})) is None
+    assert decoded == []
+    assert not fb.fits(_top()) and fb.fits(_top((8, 8)))
+    assert not fb.fits(None) and not fb.fits(b"not a png")

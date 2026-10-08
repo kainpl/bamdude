@@ -204,7 +204,7 @@ def test_the_model_probe_is_skipped_when_a_real_id_collides():
 
 
 def test_marker_scan_sees_a_marker_split_across_chunks():
-    scan = part_render.MarkerScan()
+    scan = part_render.MarkerScan({202})
     line = b"; start printing object, unique label id: 202\n"
     scan.feed(b"G1 X1\n" + line[:20])
     scan.feed(line[20:] + b"G1 X2\n")
@@ -415,3 +415,69 @@ def test_a_malformed_bootstrap_is_refused(tmp_path, monkeypatch):
 
     monkeypatch.setattr(part_render.sys, "stdin", Stdin())
     assert part_render.main() == 2
+
+
+def test_the_marker_scan_keeps_only_the_ids_it_was_asked_about():
+    """Security review: a 256 MiB plate may name millions of ids; the scan holds the selected ones only."""
+    scan = part_render.MarkerScan({101})
+    scan.feed(b"".join(b"; start printing object, unique label id: %d\n" % oid for oid in [101, *range(1000, 20000)]))
+    assert scan.marked == {101} and scan.any_marker
+
+
+def test_a_marker_with_an_absurd_id_is_neither_a_crash_nor_a_match():
+    scan = part_render.MarkerScan({1234567890})
+    scan.feed(b"; start printing object, unique label id: 12345678901234\n")
+    scan.feed(b"; start printing object, unique label id: " + b"9" * 5000 + b"\n")
+    assert scan.marked == set()
+
+
+def test_a_foreign_marker_still_rules_out_the_model_probe():
+    """Spec §5.3 / E3-R7: model only when NO marker passed -- an id outside the plan's selection counts."""
+    plan = part_render.PlatePlan({7: "X"}, [7], [], 10, model_bbox=[0.0, 0.0, 1.0, 1.0])
+    manifest = {
+        "objects": [
+            {"id": 7, "method": "missing", "reason": "empty_selection"},
+            {"id": MODEL_PROBE_ID, "method": "model", "tools": [0]},
+        ]
+    }
+    (instance,) = part_render.assemble(plan, manifest, {MODEL_PROBE_ID: b"\x89PNG"}, marked=set(), any_marker=True)
+    assert instance.method != "model"
+
+
+def test_a_pick_image_over_the_pixel_ceiling_is_not_decoded_for_discovery(tmp_path, monkeypatch):
+    """Security review: discovery and the pair skip an oversized pick unread; slice_info still names the objects."""
+    import zipfile
+
+    from backend.app.services import part_render_fallback
+
+    monkeypatch.setattr(part_render_fallback, "PAIR_PIXELS", 16)
+    seen = []
+    real = part_render._discover
+
+    def spy(number, head, slice_info, pick):
+        seen.append(pick)
+        return real(number, head, slice_info, pick)
+
+    monkeypatch.setattr(part_render, "_discover", spy)
+    with zipfile.ZipFile(two_objects_3mf(tmp_path / "f.3mf")) as zf:
+        plan, _ = part_render.plan_3mf(zf, 1, part_render.Limits())
+    assert seen == [None] and plan.pair is None
+    assert set(plan.objects) == {101, 202}
+
+
+def test_a_raw_gcode_header_with_an_absurd_id_keeps_the_sane_ones(tmp_path):
+    source = tmp_path / "plate.gcode"
+    source.write_bytes(b"; model label id: 7," + b"9" * 5000 + b"\nG1 X1\n")
+    with source.open("rb") as handle:
+        plan = part_render.plan_gcode(handle, {"plate_index": 0, "size": source.stat().st_size}, part_render.Limits())
+    assert set(plan.objects) == {7}
+
+
+def test_a_marker_split_inside_its_digits_is_not_two_ids():
+    """A chunk boundary inside the digits: the partial id is no marker; the whole one is seen next feed."""
+    scan = part_render.MarkerScan({12, 1234})
+    line = b"; start printing object, unique label id: 1234\n"
+    cut = line.index(b"34")
+    scan.feed(b"G1 X1\n" + line[:cut])
+    scan.feed(line[cut:] + b"G1 X2\n")
+    assert scan.marked == {1234}
