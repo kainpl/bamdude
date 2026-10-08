@@ -13,17 +13,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
 import time
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from PIL import Image
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +36,7 @@ from backend.app.models.plate_render import PlateRender, PlateRenderObject
 from backend.app.models.product import ProductPlate
 from backend.app.services import part_images
 from backend.app.services.part_render_protocol import (
+    GC_GRACE_SECONDS,
     MASTER_SIZE,
     MAX_ATTEMPTS,
     METHODS,
@@ -473,3 +476,222 @@ async def publish(
         )
     part_images.mark_changed([(task.file_sha256, task.plate_index)])
     return "published"
+
+
+logger = logging.getLogger(__name__)
+
+_HEX2 = re.compile(r"[0-9a-f]{2}\Z")
+_SHA = re.compile(r"[0-9a-f]{64}\Z")
+_VERSION_DIR = re.compile(r"v(\d+)\Z")
+_PLATE_DIR = re.compile(r"p(\d+)\Z")
+_PARTIAL = re.compile(r"[0-9a-f]{32}\.part\Z")
+
+
+@dataclass
+class ReconcileReport:
+    kept: int = 0
+    cleared: int = 0
+    removed: int = 0
+    foreign: int = 0
+
+
+def _real_dir(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink()
+
+
+def _scan(root: Path) -> tuple[dict[tuple[str, int, int, str], Path], list[Path], list[Path]]:
+    """Attempt directories by (sha, version, plate, name), ``*.part`` directories, and entries outside the
+    layout. Read-only, and run with no database session open (m148)."""
+    found: dict[tuple[str, int, int, str], Path] = {}
+    partial: list[Path] = []
+    foreign: list[Path] = []
+    if not _real_dir(root):
+        return found, partial, foreign
+    for prefix in root.iterdir():
+        if not (_real_dir(prefix) and _HEX2.fullmatch(prefix.name)):
+            foreign.append(prefix)
+            continue
+        for sha_dir in prefix.iterdir():
+            if not (_real_dir(sha_dir) and _SHA.fullmatch(sha_dir.name) and sha_dir.name[:2] == prefix.name):
+                foreign.append(sha_dir)
+                continue
+            for version_dir in sha_dir.iterdir():
+                version = _VERSION_DIR.fullmatch(version_dir.name)
+                if not (_real_dir(version_dir) and version):
+                    foreign.append(version_dir)
+                    continue
+                for plate_dir in version_dir.iterdir():
+                    plate = _PLATE_DIR.fullmatch(plate_dir.name)
+                    if not (_real_dir(plate_dir) and plate):
+                        foreign.append(plate_dir)
+                        continue
+                    for entry in plate_dir.iterdir():
+                        if _real_dir(entry) and _RESULT_NAME.fullmatch(entry.name):
+                            found[(sha_dir.name, int(version.group(1)), int(plate.group(1)), entry.name)] = entry
+                        elif _real_dir(entry) and _PARTIAL.fullmatch(entry.name):
+                            partial.append(entry)
+                        else:
+                            foreign.append(entry)
+    return found, partial, foreign
+
+
+def _complete(directory: Path | None, manifest_sha256: str | None) -> bool:
+    """Spec §8.4 row 1: the manifest is the recorded one and every file it names is there at its size."""
+    if directory is None or not manifest_sha256:
+        return False
+    try:
+        raw = (directory / "manifest.json").read_bytes()
+        if hashlib.sha256(raw).hexdigest() != manifest_sha256:
+            return False
+        for entry in json.loads(raw)["objects"]:
+            for size_name, meta in (entry.get("files") or {}).items():
+                path = directory / f"{int(entry['identify_id'])}.{size_name}.png"  # SEC-PATH-OK: int + fixed names
+                if path.stat().st_size != meta["bytes"]:
+                    return False
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return True
+
+
+async def reconcile(session_factory, root: Path) -> ReconcileReport:
+    """Spec §8.4, at every start before admission: no attempt is alive, so a directory without an owning row
+    has no owner. Deletes only inside ``root`` and only by the layout's names."""
+    report = ReconcileReport()
+    found, partial, foreign = await disk(_scan, root)
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(
+                    PlateRender.id,
+                    PlateRender.file_sha256,
+                    PlateRender.renderer_version,
+                    PlateRender.plate_index,
+                    PlateRender.result_dir,
+                    PlateRender.manifest_sha256,
+                ).where(PlateRender.result_dir.is_not(None))
+            )
+        ).all()
+    for row in rows:
+        directory = found.get((row.file_sha256, row.renderer_version, row.plate_index, row.result_dir))
+        if await disk(_complete, directory, row.manifest_sha256):
+            report.kept += 1
+            continue
+        async with session_factory() as db:
+            await db.execute(delete(PlateRenderObject).where(PlateRenderObject.render_id == row.id))
+            await db.execute(
+                update(PlateRender)
+                .where(PlateRender.id == row.id, PlateRender.result_dir == row.result_dir)
+                .values(result_dir=None, manifest_sha256=None)
+            )
+            await db.execute(
+                update(PlateRender)
+                .where(PlateRender.id == row.id, PlateRender.status == "ready")
+                .values(status="pending", phase="render", reason=None, attempts=0, priority=0, next_attempt_at=utcnow())
+            )
+            await db.commit()
+        report.cleared += 1
+        if directory is not None:
+            await disk(cleanup_owned, directory)
+        part_images.mark_changed([(row.file_sha256, row.plate_index)])
+    named = {(r.file_sha256, r.renderer_version, r.plate_index, r.result_dir) for r in rows}
+    for key, directory in found.items():
+        if key not in named:  # a named but broken directory went with its row above
+            await disk(cleanup_owned, directory)
+            report.removed += 1
+    for directory in partial:
+        await disk(cleanup_owned, directory)
+        report.removed += 1
+    for entry in foreign:
+        logger.warning("Part render root holds an entry outside its layout, left alone: %s", entry.name)
+    report.foreign = len(foreign)
+    logger.info(
+        "Part render reconcile kept=%d cleared=%d removed=%d foreign=%d",
+        report.kept,
+        report.cleared,
+        report.removed,
+        report.foreign,
+    )
+    return report
+
+
+def _linked_at_all(sha256_column):
+    """A file in the trash counts: restored, its pictures are there at once (spec §9.5)."""
+    return (
+        select(LibraryFile.id)
+        .join(ProductPlate, ProductPlate.library_file_id == LibraryFile.id)
+        .where(LibraryFile.file_hash == sha256_column)
+        .exists()
+    )
+
+
+def _orphan():
+    """No file links the hash any more, or the row is of another renderer version (spec §9.5)."""
+    return or_(~_linked_at_all(PlateRender.file_sha256), PlateRender.renderer_version != RENDERER_VERSION)
+
+
+async def gc_due(session_factory, now: datetime) -> list:
+    """Start the grace of new orphans, end it for rows linked again, and list the rows past it (plan E3, R7)."""
+    async with session_factory() as db:
+        await db.execute(
+            update(PlateRender)
+            .where(_orphan(), PlateRender.orphaned_at.is_(None))
+            .values(orphaned_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        await db.execute(
+            update(PlateRender)
+            .where(~_orphan(), PlateRender.orphaned_at.is_not(None))
+            .values(orphaned_at=None)
+            .execution_options(synchronize_session=False)
+        )
+        await db.commit()
+        return (
+            await db.execute(
+                select(
+                    PlateRender.id,
+                    PlateRender.file_sha256,
+                    PlateRender.renderer_version,
+                    PlateRender.plate_index,
+                    PlateRender.result_dir,
+                ).where(_orphan(), PlateRender.orphaned_at <= now - timedelta(seconds=GC_GRACE_SECONDS))
+            )
+        ).all()
+
+
+async def gc_remove(session_factory, root: Path, due: list, now: datetime) -> int:
+    """Delete what is STILL an orphan past its grace -- the condition again, inside the DELETE -- and the
+    instance rows and directories of exactly the rows that went, read back through RETURNING in the same
+    transaction. A hash linked again between the choice and the delete keeps its row, its instances and
+    its directory (consilium E3-R3)."""
+    due_before = now - timedelta(seconds=GC_GRACE_SECONDS)
+    removed = 0
+    for start in range(0, len(due), 500):
+        batch = {row.id: row for row in due[start : start + 500]}
+        async with session_factory() as db:
+            gone = set(
+                (
+                    await db.execute(
+                        delete(PlateRender)
+                        .where(PlateRender.id.in_(list(batch)), _orphan(), PlateRender.orphaned_at <= due_before)
+                        .returning(PlateRender.id)
+                        .execution_options(synchronize_session=False)
+                    )
+                ).scalars()
+            )
+            if gone:  # PostgreSQL's CASCADE has taken them already; SQLite runs no FK actions
+                await db.execute(delete(PlateRenderObject).where(PlateRenderObject.render_id.in_(sorted(gone))))
+            await db.commit()
+        removed += len(gone)
+        for render_id in sorted(gone):
+            row = batch[render_id]
+            if row.result_dir and _RESULT_NAME.fullmatch(row.result_dir):
+                await disk(
+                    cleanup_owned,
+                    result_path(root, row.file_sha256, row.renderer_version, row.plate_index, row.result_dir),
+                )
+    return removed
+
+
+async def gc(session_factory, root: Path, now: datetime) -> int:
+    """Spec §9.5, only when no attempt is alive (the scheduler's idle pass)."""
+    return await gc_remove(session_factory, root, await gc_due(session_factory, now), now)
