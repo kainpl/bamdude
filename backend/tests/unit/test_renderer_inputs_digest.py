@@ -19,10 +19,13 @@ RENDER_INPUTS = (
     "backend/app/services/part_render_fallback.py",
     "backend/app/services/part_render_protocol.py",
     "backend/app/part_render.py",
+    # which instances a plate has and which are chosen (spec §5.4, §8.5; final review M11)
+    "backend/app/services/part_names.py",
+    "backend/app/services/threemf_parser_core.py",
 )
 # Changed a file above? Decide first whether RENDERER_VERSION goes up (spec §8.5), then re-pin with
 #   python -c "from backend.tests.unit.test_renderer_inputs_digest import digest; print(digest())"
-PINNED = {2: "b8655dc1ab4e92f7a954c201694ea1898424ba7bbbf1d08c9e29380492315154"}
+PINNED = {2: "f38a16539a750c1e061ab2c870ec6bead25c62a63717c44f10624171cf3c03d3"}
 
 
 def digest() -> str:

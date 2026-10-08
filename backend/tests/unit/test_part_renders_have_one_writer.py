@@ -8,6 +8,15 @@ ALLOWED = {APP / "services" / "part_renders.py", APP / "models" / "plate_render.
 MODELS = {"PlateRender", "PlateRenderObject"}
 
 
+def _names_a_table(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "__table__"
+        and isinstance(node.value, ast.Name)
+        and node.value.id in MODELS
+    )
+
+
 def _writes(tree: ast.AST) -> list[int]:
     hits = []
     for node in ast.walk(tree):
@@ -22,6 +31,8 @@ def _writes(tree: ast.AST) -> list[int]:
             target = first.value if isinstance(first, ast.Attribute) and first.attr == "__table__" else first
             if isinstance(target, ast.Name) and target.id in MODELS:
                 hits.append(node.lineno)
+        elif any(_names_a_table(arg) for arg in node.args):
+            hits.append(node.lineno)  # a helper handed the table writes it (final review M11)
     return hits
 
 
@@ -42,3 +53,9 @@ def test_the_scan_sees_a_writer_when_there_is_one():
         "await db.execute(update(PlateRender.__table__))\n"
     )
     assert _writes(tree) == [1, 2, 3]
+
+
+def test_the_scan_sees_a_helper_handed_the_table():
+    """Final review M11: a dialect helper writes whatever table it is handed."""
+    tree = ast.parse("await db.execute(insert_ignoring_conflicts(db, PlateRender.__table__, rows, key))\n")
+    assert _writes(tree) == [1]
