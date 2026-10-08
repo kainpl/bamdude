@@ -11,23 +11,42 @@ the row alone. SQLite runs no FK actions, so instance rows are deleted here, in 
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import re
+import shutil
+import time
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from PIL import Image
+from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.models.library import LibraryFile, LibraryFolder
-from backend.app.models.plate_render import PlateRender
+from backend.app.models.plate_render import PlateRender, PlateRenderObject
 from backend.app.models.product import ProductPlate
 from backend.app.services import part_images
-from backend.app.services.part_render_protocol import MAX_ATTEMPTS, RENDERER_VERSION, RETRY_BASE_SECONDS
-from backend.app.services.part_render_types import RenderTask, SourceRef
+from backend.app.services.part_render_protocol import (
+    MASTER_SIZE,
+    MAX_ATTEMPTS,
+    METHODS,
+    MISSING_REASONS,
+    RENDERED,
+    RENDERER_VERSION,
+    RETRY_BASE_SECONDS,
+    SMALL_SIZE,
+)
+from backend.app.services.part_render_types import AttemptResult, RenderTask, SourceRef
+from backend.app.services.preview_artifacts import disk, validate
 from backend.app.services.product_facets import id_chunks
+from backend.app.services.worker_staging import cleanup_owned
 
 _KEY = ["file_sha256", "plate_index", "renderer_version"]
 _live_generation: str | None = None
@@ -300,3 +319,157 @@ async def rerender_for_product(db: AsyncSession, product_id: int, *, full: bool)
         )
         count += result.rowcount or 0
     return count
+
+
+_RESULT_NAME = re.compile(r"[0-9a-f]{32}\Z")
+_VALIDATE_SECONDS = 120
+
+
+class InvalidResult(ValueError):
+    """The files do not answer their own manifest -- the attempt counts as invalid_output."""
+
+
+def result_path(root: Path, file_sha256: str, renderer_version: int, plate_index: int, name: str) -> Path:
+    """``part-renders/<sha[:2]>/<sha>/v<version>/p<plate>/<name>`` (spec §8.2): the only layout."""
+    return root / file_sha256[:2] / file_sha256 / f"v{renderer_version}" / f"p{plate_index}" / name
+
+
+def _verify(files: Path) -> tuple[dict, bytes]:
+    """Spec §9.3 step 1: every file is what the manifest says, every PNG decodes at its size."""
+    deadline = time.monotonic_ns() + _VALIDATE_SECONDS * 10**9
+    raw = (files / "manifest.json").read_bytes()
+    try:
+        manifest = json.loads(raw)
+    except ValueError as exc:
+        raise InvalidResult("manifest is not JSON") from exc
+    if not isinstance(manifest, dict) or manifest.get("renderer") != RENDERER_VERSION:
+        raise InvalidResult("manifest of another renderer")
+    objects = manifest.get("objects")
+    if not isinstance(objects, list):
+        raise InvalidResult("manifest has no object list")
+    seen: set[int] = set()
+    expected = {"manifest.json"}
+    for entry in objects:
+        oid, method = entry.get("identify_id"), entry.get("method")
+        if type(oid) is not int or oid in seen or method not in METHODS:
+            raise InvalidResult(f"malformed instance {oid!r}")
+        seen.add(oid)
+        declared = entry.get("files") or {}
+        if method not in RENDERED:
+            if declared or entry.get("reason") not in MISSING_REASONS:
+                raise InvalidResult(f"{oid}: {method} carries files or no reason")
+            continue
+        if set(declared) != {"lg", "sm"}:
+            raise InvalidResult(f"{oid}: not exactly a master and a small size")
+        master = (entry.get("width"), entry.get("height"))
+        if method in ("toolpath", "model") and master != (MASTER_SIZE, MASTER_SIZE):
+            raise InvalidResult(f"{oid}: a {method} master is {master}")
+        for size_name, size in (("lg", master), ("sm", (SMALL_SIZE, SMALL_SIZE))):
+            path = files / f"{oid}.{size_name}.png"  # SEC-PATH-OK: oid is an int
+            data = path.read_bytes()
+            meta = declared[size_name]
+            if len(data) != meta.get("bytes") or hashlib.sha256(data).hexdigest() != meta.get("sha256"):
+                raise InvalidResult(f"{path.name} does not match the manifest")
+            try:
+                validate(path, "png", deadline)
+                with Image.open(path) as img:
+                    if img.size != size:
+                        raise InvalidResult(f"{path.name} is {img.size}, not {size}")
+            except InvalidResult:
+                raise
+            except Exception as exc:
+                raise InvalidResult(f"{path.name} is not a valid PNG") from exc
+            expected.add(path.name)
+    if {p.name for p in files.iterdir()} != expected:
+        raise InvalidResult("files beside the manifest")
+    return manifest, raw
+
+
+def _fsync_dir(path: Path) -> None:
+    if os.name == "nt":
+        return  # Windows cannot open a directory for fsync; NTFS journals the rename
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _write_result_dir(files: Path, parent: Path, name: str) -> Path:
+    """A new attempt directory: written under ``<name>.part``, fsynced, renamed whole (spec §9.3 step 2)."""
+    parent.mkdir(parents=True, exist_ok=True)
+    part = parent / f"{name}.part"
+    part.mkdir()
+    for source in files.iterdir():
+        with source.open("rb") as src, (part / source.name).open("xb") as dst:  # SEC-PATH-OK: names checked by _verify
+            shutil.copyfileobj(src, dst, 1024 * 1024)
+            dst.flush()
+            os.fsync(dst.fileno())
+    _fsync_dir(part)
+    final = parent / name
+    os.replace(part, final)  # the name is new, so the rename never meets a non-empty directory
+    _fsync_dir(parent)
+    return final
+
+
+async def publish(
+    session_factory, root: Path, task: RenderTask, result: AttemptResult, generation: str, *, reason: str | None
+) -> str:
+    """Spec §9.3: ``published`` (committed), ``stale`` (the key or the generation moved; the new directory is gone)
+    or ``unknown`` (the commit's outcome is unknown; nothing is deleted, the start-up reconciliation decides)."""
+    manifest, raw = await disk(_verify, result.files)
+    name = uuid4().hex
+    parent = result_path(root, task.file_sha256, task.renderer_version, task.plate_index, "")
+    directory = await disk(_write_result_dir, result.files, parent, name)
+    if generation != _live_generation:
+        await disk(cleanup_owned, directory)
+        return "stale"
+    now = utcnow()
+    try:
+        async with session_factory() as db:
+            previous = (await db.execute(select(PlateRender.result_dir).where(*_full_key(task)))).scalar_one_or_none()
+            changed = await db.execute(
+                update(PlateRender)
+                .where(*_full_key(task))
+                .values(
+                    status="ready",
+                    phase="render",
+                    reason=reason,
+                    result_dir=name,
+                    manifest_sha256=hashlib.sha256(raw).hexdigest(),
+                    runtime_version=result.runtime_version,
+                    attempts=0,
+                    last_error=None,
+                    finished_at=now,
+                    elapsed_ms=result.elapsed_ms,
+                )
+            )
+            if changed.rowcount != 1 or generation != _live_generation:
+                await db.rollback()
+                await disk(cleanup_owned, directory)
+                return "stale"
+            await db.execute(delete(PlateRenderObject).where(PlateRenderObject.render_id == task.render_id))
+            await db.execute(
+                insert(PlateRenderObject),
+                [
+                    {
+                        "render_id": task.render_id,
+                        "identify_id": entry["identify_id"],
+                        "method": entry["method"],
+                        "reason": entry.get("reason"),
+                        "width": entry.get("width"),
+                        "height": entry.get("height"),
+                        "tools": list(entry.get("tools") or []),
+                    }
+                    for entry in manifest["objects"]
+                ],
+            )
+            await db.commit()
+    except Exception:
+        return "unknown"  # possibly committed: the directory stays, the reconciliation decides by the database
+    if previous and _RESULT_NAME.fullmatch(previous) and previous != name:
+        await disk(
+            cleanup_owned, result_path(root, task.file_sha256, task.renderer_version, task.plate_index, previous)
+        )
+    part_images.mark_changed([(task.file_sha256, task.plate_index)])
+    return "published"
