@@ -125,3 +125,22 @@ async def test_the_old_shape_really_does_break_on_postgresql():
 
     with pytest.raises(AttributeError, match="constraint_target"):
         str(stmt.compile(dialect=postgresql.dialect()))
+
+
+def test_insert_ignoring_conflicts_builds_each_dialects_own_statement():
+    """The part-render queue's insert: each backend gets its own ON CONFLICT DO NOTHING, chosen by the bind."""
+    from types import SimpleNamespace
+
+    from sqlalchemy.dialects import postgresql, sqlite
+
+    from backend.app.core.db_dialect import insert_ignoring_conflicts
+    from backend.app.models.plate_render import PlateRender
+
+    key = ["file_sha256", "plate_index", "renderer_version"]
+    row = {"file_sha256": "a" * 64, "plate_index": 1, "renderer_version": 2}
+    for name, dialect in (("postgresql", postgresql.dialect()), ("sqlite", sqlite.dialect())):
+        db = SimpleNamespace(get_bind=lambda name=name: SimpleNamespace(dialect=SimpleNamespace(name=name)))
+        stmt = insert_ignoring_conflicts(db, PlateRender.__table__, [row], key)
+        assert "ON CONFLICT (file_sha256, plate_index, renderer_version) DO NOTHING" in str(
+            stmt.compile(dialect=dialect)
+        )

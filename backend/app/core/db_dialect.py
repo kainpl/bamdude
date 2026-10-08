@@ -42,6 +42,16 @@ async def upsert_setting(db, model, key: str, value: str):
     await db.execute(stmt)
 
 
+def insert_ignoring_conflicts(db, table, values: list[dict], index_elements: list[str]):
+    """``INSERT ... ON CONFLICT (index_elements) DO NOTHING`` for the backend ``db`` is actually bound to --
+    the bind's dialect, not the configured URL, so a test engine and the live one agree."""
+    if db.get_bind().dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert
+    return insert(table).values(values).on_conflict_do_nothing(index_elements=index_elements)
+
+
 async def run_pragma(conn, pragma_sql: str):
     """Run a PRAGMA statement only on SQLite (no-op on PostgreSQL)."""
     if is_sqlite():

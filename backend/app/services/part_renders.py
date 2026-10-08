@@ -26,11 +26,10 @@ from uuid import uuid4
 
 from PIL import Image
 from sqlalchemy import delete, func, insert, or_, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
+from backend.app.core.db_dialect import insert_ignoring_conflicts
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.plate_render import PlateRender, PlateRenderObject
 from backend.app.models.product import ProductPlate
@@ -106,8 +105,7 @@ async def _insert_pending(db: AsyncSession, keys: set[tuple[str, int]], priority
         }
         for sha, plate in sorted(keys)
     ]
-    insert = sqlite_insert if db.get_bind().dialect.name == "sqlite" else pg_insert
-    result = await db.execute(insert(PlateRender.__table__).values(values).on_conflict_do_nothing(index_elements=_KEY))
+    result = await db.execute(insert_ignoring_conflicts(db, PlateRender.__table__, values, list(_KEY)))
     return result.rowcount or 0
 
 
