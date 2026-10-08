@@ -86,3 +86,26 @@ def test_strays_names_a_process_of_ours_outside_this_tree_and_not_our_own_childr
         for process in (ours, other):
             process.kill()
             process.wait()
+
+
+def test_a_clock_step_does_not_make_a_live_process_look_like_a_stranger(tmp_path, monkeypatch):
+    """Final review M2: on Linux create_time is boot time plus ticks, and the boot time moves when the clock is
+    stepped (an RTC-less Pi syncing NTP after start). The record keeps the distance from boot there, so the
+    proof still kills the process instead of passing it as a recycled pid."""
+    import psutil
+
+    from backend.app.services import part_render_tree as tree
+
+    monkeypatch.setattr(tree, "_BOOT_RELATIVE", True)
+    process = _spawn()
+    try:
+        record(tmp_path / "node.pid", process.pid)
+        real_boot, real_create = psutil.boot_time, psutil.Process.create_time
+        monkeypatch.setattr(psutil, "boot_time", lambda: real_boot() + 3600.0)  # the clock was stepped an hour
+        monkeypatch.setattr(psutil.Process, "create_time", lambda self: real_create(self) + 3600.0)
+        assert tree_gone(tmp_path, strict=True)
+        assert process.wait(timeout=5) is not None  # killed by the proof, not waved through
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()

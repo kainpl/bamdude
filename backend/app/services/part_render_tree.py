@@ -15,12 +15,23 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import psutil
 
 RECORDS = ("guardian", "child", "node")
 _SAME_PROCESS_SECONDS = 0.01
+# Linux derives create_time from the boot time, and the boot time moves when the wall clock is stepped (an
+# RTC-less Pi syncing NTP after start): a record keeps the distance from boot there (final review M2).
+_BOOT_RELATIVE = sys.platform.startswith("linux")
+
+
+def _started(process: psutil.Process) -> float:
+    """When ``process`` started, comparable across processes and across a clock step."""
+    if _BOOT_RELATIVE:
+        return process.create_time() - psutil.boot_time()
+    return process.create_time()
 
 
 def launch(attempt_dir: Path, name: str) -> None:
@@ -31,7 +42,7 @@ def launch(attempt_dir: Path, name: str) -> None:
 
 def record(path: Path, pid: int) -> None:
     """Write the record atomically: a reader sees the whole record or none."""
-    created = psutil.Process(pid).create_time()
+    created = _started(psutil.Process(pid))
     part = path.with_name(path.name + ".part")
     with part.open("x", encoding="ascii") as out:
         json.dump({"pid": pid, "create_time": created}, out)
@@ -48,7 +59,7 @@ def _gone(entry: Path, timeout: float) -> bool:
         return False  # a record that cannot be read proves nothing
     try:
         process = psutil.Process(pid)
-        if abs(process.create_time() - created) > _SAME_PROCESS_SECONDS:
+        if abs(_started(process) - created) > _SAME_PROCESS_SECONDS:
             return True  # the pid is someone else's now: ours is gone
         if process.status() == psutil.STATUS_ZOMBIE:
             return True
