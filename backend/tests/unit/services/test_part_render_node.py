@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -315,3 +316,52 @@ def test_the_permission_model_denies_writes_and_processes(tmp_path):
     )
     out = subprocess.run(node_command(Path(NODE), probe), env=node_env(), capture_output=True, text=True, timeout=60)
     assert json.loads(out.stdout) == []
+
+
+def test_a_hung_source_is_a_timeout_that_reports_the_live_reader(tmp_path):
+    """A NAS read that never returns: Node is killed at the deadline, the call returns within the grace
+    instead of the old 5 s join, and says the reader is still alive (Codex, 2026-10-07)."""
+    release = threading.Event()
+
+    def chunks():
+        yield b"G1 X1\n"
+        release.wait(60)  # the read that does not return
+        yield b"G1 X2\n"
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(NodeRenderError) as err:
+            run(fake(tmp_path, GOOD_BODY), chunks=chunks, deadline_s=0.5)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    assert err.value.reason == "timeout"
+    assert err.value.reader_alive is True
+    assert elapsed < 0.5 + prn.READER_GRACE_SECONDS + 2.0
+
+
+def test_a_fed_plate_reports_no_live_reader(tmp_path):
+    with pytest.raises(NodeRenderError) as err:
+        run(fake(tmp_path, "time.sleep(60)\n"), deadline_s=0.5)
+    assert err.value.reason == "timeout"
+    assert err.value.reader_alive is False
+
+
+def test_on_spawn_receives_the_node_pid(tmp_path):
+    seen: list[int] = []
+    run(fake(tmp_path, GOOD_BODY), on_spawn=seen.append)
+    assert len(seen) == 1 and seen[0] > 0
+
+
+def test_a_failing_on_spawn_kills_node(tmp_path):
+    import psutil
+
+    pids: list[int] = []
+
+    def refuse(pid: int) -> None:
+        pids.append(pid)
+        raise RuntimeError("cannot record the pid")
+
+    with pytest.raises(RuntimeError):
+        run(fake(tmp_path, "time.sleep(60)\n"), on_spawn=refuse)
+    assert not psutil.pid_exists(pids[0]) or psutil.Process(pids[0]).status() == psutil.STATUS_ZOMBIE

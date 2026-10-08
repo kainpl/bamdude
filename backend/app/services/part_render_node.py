@@ -49,16 +49,22 @@ REASONS = (
 SCRIPT_REASONS = ("parse_failed", "crashed", "invalid_output", "memory_limit")
 MISSING_REASONS = ("empty_selection", "model_unproven", "empty_render")
 HEAP_OOM_MARKERS = (b"Reached heap limit", b"JavaScript heap out of memory")
+# After Node is gone, a feed thread that is still alive is inside the SOURCE iterator (a hung NAS read):
+# nothing in this process can stop it. Give a reader that is merely finishing this long, then report it.
+READER_GRACE_SECONDS = 1.0
 # PreviewProcess's allowlist: what a process needs to start, nothing of the service's own --
 # no DATABASE_URL, tokens, and no NODE_OPTIONS / NODE_PATH that would change what Node loads.
 ENV_KEYS = frozenset({"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL"})
 
 
 class NodeRenderError(Exception):
-    def __init__(self, reason: str, message: str) -> None:
+    def __init__(self, reason: str, message: str, *, reader_alive: bool = False) -> None:
         super().__init__(f"{reason}: {message}")
         self.reason = reason if reason in REASONS else "crashed"
         self.message = message
+        # True: the reader is stuck in the source. The caller's process must not wait for it -- part_render
+        # exits hard, and the worker that owns the attempt kills and reaps the tree (plan E3, R9).
+        self.reader_alive = reader_alive
 
 
 @dataclass
@@ -126,6 +132,7 @@ def run_frames(
     output_bytes: int,
     rss_of: Callable[[int], int] | None = None,
     rss_limit: int | None = None,
+    on_spawn: Callable[[int], None] | None = None,
 ) -> NodeRenderResult:
     """Feed one job and judge the whole answer; kill on any breach. ``env`` is required: build it with node_env()."""
     started = time.monotonic()
@@ -137,6 +144,13 @@ def run_frames(
         env=dict(env),
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+    if on_spawn is not None:
+        try:
+            on_spawn(proc.pid)
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
     stderr_tail: collections.deque[bytes] = collections.deque()
     killed: list[str] = []
     fed = threading.Event()
@@ -260,31 +274,35 @@ def run_frames(
         except subprocess.TimeoutExpired:
             kill("timeout")
             proc.wait()
-        for t in threads:
+        feeder, *others = threads
+        for t in others:
             t.join(timeout=5)
+        feeder.join(timeout=READER_GRACE_SECONDS)
+    reader_alive = feeder.is_alive()
+
+    def fail(reason: str, message: str) -> NodeRenderError:
+        return NodeRenderError(reason, message, reader_alive=reader_alive)
 
     tail_bytes = b"".join(stderr_tail)
     tail = tail_bytes.decode("utf-8", "replace")
     elapsed = time.monotonic() - started
     if killed:
         detail = protocol_error or (f"source: {source_error[0]!r}" if source_error else f"after {elapsed:.1f}s")
-        raise NodeRenderError(killed[0], detail)
+        raise fail(killed[0], detail)
     if any(marker in tail_bytes for marker in HEAP_OOM_MARKERS):
-        raise NodeRenderError("memory_limit", "Node reached its heap limit")
+        raise fail("memory_limit", "Node reached its heap limit")
     if terminal is None:
-        raise NodeRenderError(
-            "crashed", f"node exited {proc.returncode} {'mid-frame' if truncated else 'without a result'}"
-        )
+        raise fail("crashed", f"node exited {proc.returncode} {'mid-frame' if truncated else 'without a result'}")
     kind, body = terminal
     if kind == b"E":
         reason = body.get("reason") if isinstance(body, dict) else None
         if reason not in SCRIPT_REASONS:
-            raise NodeRenderError("invalid_output", f"error frame with reason {reason!r}")
-        raise NodeRenderError(reason, str(body.get("message", ""))[:500])
+            raise fail("invalid_output", f"error frame with reason {reason!r}")
+        raise fail(reason, str(body.get("message", ""))[:500])
     if not fed.is_set():
-        raise NodeRenderError("invalid_output", "a manifest before the whole plate was fed")
+        raise fail("invalid_output", "a manifest before the whole plate was fed")
     if proc.returncode != 0:
-        raise NodeRenderError("invalid_output", f"a manifest with exit code {proc.returncode}")
+        raise fail("invalid_output", f"a manifest with exit code {proc.returncode}")
     try:
         _check(body, pngs, job)
     except (TypeError, KeyError, AttributeError, ValueError) as exc:
