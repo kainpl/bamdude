@@ -323,7 +323,11 @@ def _file_chunks(handle, cap: int, scan: MarkerScan) -> Iterator[bytes]:
 
 
 def run_node(boot: dict, root: Path, job: dict, chunks: Iterator[bytes], limits: Limits) -> NodeRenderResult:
-    verify_bundle()  # spec §5.5: the child checks the bundle against its manifest before it starts Node
+    try:
+        verify_bundle()  # spec §5.5: the child checks the bundle against its manifest before it starts Node
+    except OSError as exc:
+        # the runtime's fault, counted nowhere -- never source_read_failed against the file (final review M6)
+        raise NodeRenderError("bundle_mismatch", f"the bundle cannot be read: {type(exc).__name__}") from exc
     deadline_s = (boot["deadline_ns"] - time.monotonic_ns()) / 1e9 - CHILD_MARGIN_SECONDS
     if deadline_s <= 0:
         raise NodeRenderError("timeout", "no time left before Node")

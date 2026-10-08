@@ -114,3 +114,15 @@ def test_model_bbox_survives_what_json_can_hold():
     huge = "1" + "0" * 400
     assert fb.model_bbox(f'{{"bbox_objects": [{{"id": 7, "bbox": [{huge}, 2, 3, 4]}}]}}'.encode(), 7) is None
     assert fb.model_bbox(b"[" * 100000 + b"]" * 100000, 7) is None
+
+
+def test_a_crop_larger_than_a_master_is_scaled_down_not_refused():
+    """Final review M8: past MASTER_SIZE a native crop of a busy top image could outgrow PNG_BYTES and fail the
+    whole plate; it is scaled down to the master size -- never up (R11)."""
+    from backend.app.services.part_render_protocol import MASTER_SIZE
+
+    noise = np.random.default_rng(1).integers(0, 255, (1200, 1200, 4), dtype=np.uint8)
+    noise[..., 3] = 255
+    pair = fb.valid_pair(_png(Image.fromarray(noise, "RGBA")), _pick({(0, 0, 1200, 1200): 101}, size=(1200, 1200)))
+    with Image.open(io.BytesIO(fb.top_mask(pair, 101))) as master:
+        assert master.size == (MASTER_SIZE, MASTER_SIZE)

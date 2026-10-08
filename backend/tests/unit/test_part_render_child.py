@@ -559,3 +559,16 @@ def test_a_raw_gcode_that_ends_early_is_a_read_failure():
     chunks = part_render._file_chunks(io.BytesIO(b"G1 X1\n"), 1000, part_render.MarkerScan(()))
     with pytest.raises(OSError):
         list(chunks)
+
+
+def test_an_unreadable_bundle_is_the_runtimes_fault_not_the_files(tmp_path, monkeypatch):
+    """Final review M6: an OSError while the child checks the bundle is bundle_mismatch -- a runtime fault that
+    counts nothing -- never source_read_failed against the file."""
+
+    def unreadable():
+        raise PermissionError("the bundle cannot be read")
+
+    monkeypatch.setattr(part_render, "verify_bundle", unreadable)
+    boot = boot_for(tmp_path, two_objects_3mf(tmp_path / "f.3mf"), node=str(tmp_path / "node"))
+    result, _ = part_render.render_attempt(boot)
+    assert result == {"outcome": "failed", "reason": "bundle_mismatch"}

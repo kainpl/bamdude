@@ -15,7 +15,7 @@ import math
 import numpy as np
 from PIL import Image
 
-from backend.app.services.part_render_protocol import SMALL_SIZE
+from backend.app.services.part_render_protocol import MASTER_SIZE, SMALL_SIZE
 
 MARGIN = 0.08  # of the crop's longer side, on every edge
 # A slicer's top/pick is 512x512. Past this a PNG is not decoded at all: a few KiB of PNG may declare an
@@ -79,7 +79,9 @@ def _resize(img: Image.Image, size: int) -> Image.Image:
 def top_mask(pair: tuple[Image.Image, np.ndarray], identify_id: int) -> bytes | None:
     """The instance on a transparent square at the top image's own resolution, cropped to its mask with a
     margin; None when it has no pixel. Never upscaled: 256 such masters stay a fraction of one top_N.png,
-    which keeps a fallback-only plate inside ATTEMPT_BYTES (plan E3, R1)."""
+    which keeps a fallback-only plate inside ATTEMPT_BYTES (plan E3, R1). A crop larger than a master is
+    scaled DOWN to MASTER_SIZE, so one busy instance cannot outgrow PNG_BYTES and fail the plate (final
+    review M8)."""
     top, ids = pair
     mask = ids == identify_id
     if not mask.any():
@@ -95,6 +97,8 @@ def top_mask(pair: tuple[Image.Image, np.ndarray], identify_id: int) -> bytes | 
         Image.fromarray(rgba[y0:y1, x0:x1], "RGBA"),
         (pad + (side - (x1 - x0)) // 2, pad + (side - (y1 - y0)) // 2),
     )
+    if canvas.width > MASTER_SIZE:
+        canvas = _resize(canvas, MASTER_SIZE)
     return _png(canvas)
 
 
