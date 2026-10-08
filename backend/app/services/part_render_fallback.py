@@ -28,14 +28,20 @@ def decode_ids(pick: Image.Image) -> np.ndarray:
     return rgb[..., 0] | (rgb[..., 1] << 8) | (rgb[..., 2] << 16)
 
 
+_FORMATS = ["PNG"]  # the slicer writes PNG; another format's size at open need not be the size it decodes to
+
+
 def fits(png: bytes | None) -> bool:
-    """Whether a PNG declares at most PAIR_PIXELS: read from its header, not one pixel decoded."""
+    """Whether ``png`` is a PNG that declares at most PAIR_PIXELS: read from its header, not one pixel decoded.
+
+    PNG only, for the reader of its header and the decoder alike: an ICO, say, declares one size in its
+    directory and decodes the image inside it, whatever that holds (security review)."""
     if not png:
         return False
     try:
-        with Image.open(io.BytesIO(png)) as img:
+        with Image.open(io.BytesIO(png), formats=_FORMATS) as img:
             width, height = img.size
-    except (OSError, ValueError, Image.DecompressionBombError):
+    except Exception:  # whatever a hostile header makes a plugin raise: not measured, so never decoded
         return False
     return 0 < width * height <= PAIR_PIXELS
 
@@ -47,11 +53,14 @@ def valid_pair(top_png: bytes, pick_png: bytes) -> tuple[Image.Image, np.ndarray
     if top_png == pick_png or not (fits(top_png) and fits(pick_png)):
         return None
     try:
-        with Image.open(io.BytesIO(top_png)) as top_img, Image.open(io.BytesIO(pick_png)) as pick_img:
+        with (
+            Image.open(io.BytesIO(top_png), formats=_FORMATS) as top_img,
+            Image.open(io.BytesIO(pick_png), formats=_FORMATS) as pick_img,
+        ):
             if top_img.size != pick_img.size:
                 return None
             return top_img.convert("RGBA"), decode_ids(pick_img)
-    except (OSError, ValueError, Image.DecompressionBombError):
+    except Exception:  # a pair is optional: one that does not decode is no pair
         return None
 
 

@@ -87,3 +87,22 @@ def test_a_pair_over_the_pixel_ceiling_is_refused_before_it_is_decoded(monkeypat
     assert decoded == []
     assert not fb.fits(_top()) and fb.fits(_top((8, 8)))
     assert not fb.fits(None) and not fb.fits(b"not a png")
+
+
+def _as(fmt: str, size=(16, 16)) -> bytes:
+    out = io.BytesIO()
+    Image.new("RGBA" if fmt != "BMP" else "RGB", size, (200, 30, 30, 255)[: 4 if fmt != "BMP" else 3]).save(
+        out, format=fmt
+    )
+    return out.getvalue()
+
+
+def test_only_a_png_fits():
+    """Security review: the size another format declares at open need not be the size it decodes to (an ICO's
+    directory against the image inside it), so nothing but PNG is measured or decoded."""
+    assert fb.fits(_as("PNG"))
+    assert not fb.fits(_as("ICO")) and not fb.fits(_as("BMP")) and not fb.fits(_as("GIF"))
+
+
+def test_a_pair_that_is_not_png_is_refused():
+    assert fb.valid_pair(_as("BMP", (64, 64)), _as("GIF", (64, 64))) is None
