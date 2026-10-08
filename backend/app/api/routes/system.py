@@ -164,6 +164,7 @@ def _get_data_dirs() -> list[Path]:
         settings.library_dir,
         settings.projects_dir,
         settings.products_dir,
+        settings.part_renders_dir,
         settings.log_dir,
         settings.plate_calibration_dir,
         settings.base_dir / "virtual_printer",
@@ -258,6 +259,11 @@ def _get_storage_rules() -> list[tuple[str, str, Callable]]:
             "plate_calibration",
             "Plate Calibration",
             lambda path: _is_under(path, settings.plate_calibration_dir),
+        ),
+        (
+            "part_renders",
+            "Part Renders",
+            lambda path: _is_under(path, settings.part_renders_dir),
         ),
         (
             "logs",

@@ -32,6 +32,10 @@ async def exclusive_operation():
         yield
 
 
+# Deliberately absent: settings.part_renders_dir. Part thumbnails are derived files the queue rebuilds
+# (spec §8.3) -- the one exception to vault inv-data-dir-one-root-per-subsystem. Their rows travel with
+# the database, and the start-up reconciliation (part_renders.reconcile) settles rows and files after a
+# restore.
 def directories(settings) -> dict[str, Path]:
     """One map for both directions, including custom archive/calibration roots."""
     base = Path(settings.base_dir)

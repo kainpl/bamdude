@@ -388,6 +388,7 @@ def import_all_models() -> None:
         oidc_provider,
         orca_base_cache,
         part_stock,
+        plate_render,
         print_completion_receipt,
         print_options_preference,
         print_queue,
