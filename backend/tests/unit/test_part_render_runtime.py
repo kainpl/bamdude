@@ -233,10 +233,11 @@ async def test_an_unproven_retire_closes_admission_until_restart(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_a_previous_generations_unproven_attempt_closes_admission_at_start(tmp_path):
+async def test_a_previous_generations_unproven_attempt_closes_admission_at_start(tmp_path, monkeypatch):
     old = tmp_path / ".cache" / "part-render-service" / "staging" / ("e" * 32) / "service" / ("f" * 32)
     old.mkdir(parents=True)
     (old / "node.pid").write_text("{broken", encoding="ascii")
+    monkeypatch.setattr(prr, "strays", lambda: [4242])  # a process of ours outlived its run
     runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
     await runtime.start()
     try:
@@ -605,3 +606,43 @@ async def test_retained_main_staging_stops_admission_past_its_budget(live, tmp_p
     with pytest.raises(RuntimeUnavailable, match="staging_full"):
         await runtime.render(task_for(two_objects_3mf(tmp_path / "f.3mf")), mode="fallback", deadline_ns=deadline(60))
     assert runtime.health()["reason"] == "staging_full"
+
+
+def _earlier_run(tmp_path: Path) -> Path:
+    """An earlier run that died inside a spawn window: node.launch, no record, and a fetch directory."""
+    generation = tmp_path / ".cache" / "part-render-service" / "staging" / ("e" * 32)
+    attempt = generation / "service" / ("f" * 32)
+    attempt.mkdir(parents=True)
+    (attempt / "node.launch").touch()
+    (generation / "main" / ("1" * 32)).mkdir(parents=True)
+    return generation
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_run_with_nothing_of_ours_left_is_over_and_its_staging_goes(tmp_path, monkeypatch):
+    """Final review C2: main died inside a spawn window (power cut, SIGKILL). Nothing of ours outlives it, so
+    the earlier run is over -- admission and restore stay open, and its staging has no owner."""
+    generation = _earlier_run(tmp_path)
+    monkeypatch.setattr(prr, "strays", lambda: [])
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    await runtime.start()
+    try:
+        assert not runtime.uncertain
+        assert not generation.exists()
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_runs_unrecorded_launch_closes_admission_while_a_process_of_ours_survives(
+    tmp_path, monkeypatch
+):
+    generation = _earlier_run(tmp_path)
+    monkeypatch.setattr(prr, "strays", lambda: [4242])
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    await runtime.start()
+    try:
+        assert runtime.uncertain and runtime.health()["reason"] == "ownership_uncertain"
+        assert generation.exists()  # nothing is deleted while its owner may live
+    finally:
+        await runtime.stop()

@@ -78,3 +78,29 @@ def tree_gone(attempt_dir: Path, *, strict: bool, timeout: float = 5) -> bool:
         elif strict and ((attempt_dir / f"{name}.launch").exists() or (attempt_dir / f"{name}.pid.part").exists()):
             return False
     return True
+
+
+# What a process of a part-render attempt runs: every guardian, the worker and the child, and Node with the
+# bundle. A venv launcher carries its interpreter's command line, so it matches too.
+_OURS = ("backend.app.worker_guardian", "backend.app.part_render", "part-render.mjs")
+
+
+def strays(own: int | None = None) -> list[int]:
+    """Processes of ours that do not descend from ``own`` (this process by default).
+
+    Main started every process of an attempt, so once an earlier main is gone, nothing of its runs can be
+    alive unless it shows up here. Empty: every earlier run is over, whatever its records say (final review
+    C2). A process whose command line cannot be read runs as another user, and ours never do."""
+    own_pid = os.getpid() if own is None else own
+    try:
+        mine = {own_pid, *(child.pid for child in psutil.Process(own_pid).children(recursive=True))}
+    except psutil.NoSuchProcess:
+        mine = {own_pid}
+    found = []
+    for process in psutil.process_iter(["cmdline"]):
+        if process.pid in mine:
+            continue
+        command = process.info.get("cmdline") or []
+        if any(marker in part for part in command for marker in _OURS):
+            found.append(process.pid)
+    return found

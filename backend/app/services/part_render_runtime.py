@@ -35,7 +35,7 @@ from backend.app.services.part_render_protocol import (
     PackError,
     unpack,
 )
-from backend.app.services.part_render_tree import tree_gone
+from backend.app.services.part_render_tree import strays, tree_gone
 from backend.app.services.part_render_types import AttemptResult, Mode, RenderTask, RuntimeUnavailable
 from backend.app.services.preview_artifacts import disk, owned
 from backend.app.services.preview_process import PreviewProcess, SpawnUnproven
@@ -239,24 +239,44 @@ class PartRenderRuntime:
 
     def _prove_previous_generations(self) -> None:
         """An attempt of an earlier process that cannot be proven over closes admission: its reader may still
-        hang on the share this process would read next."""
+        hang on the share this process would read next.
+
+        The proof is first an observation: when no process of ours lives outside this process's tree
+        (``strays``), nothing of an earlier run is alive, whatever its records say -- a launch without its
+        record included, which a crash inside a spawn window leaves behind and no record could ever settle
+        (final review C2). Only when something of ours survives are the earlier attempts proven by their
+        records, strictly. Either way, once proven, an earlier run's staging has no owner and goes."""
         staging = self.staging.parent
         if not staging.is_dir():
             return
-        for generation in staging.iterdir():
-            if generation == self.staging or not _HEX.fullmatch(generation.name):
-                continue
-            service = generation / "service"
-            if not service.is_dir():
-                continue
-            for attempt in service.iterdir():
-                if _HEX.fullmatch(attempt.name) and attempt.is_dir() and not tree_gone(attempt, strict=True):
-                    self.uncertain, self.reason = True, "ownership_uncertain"
-                    logger.error(
-                        "Part render ownership uncertain: attempt=%s of an earlier run is not proven gone",
-                        attempt.name[:8],
-                    )
-                    return
+        earlier = [
+            path
+            for path in staging.iterdir()
+            if path != self.staging and _HEX.fullmatch(path.name) and path.is_dir() and not path.is_symlink()
+        ]
+        if not earlier:
+            return
+        survivors = strays()
+        if survivors:
+            for generation in earlier:
+                service = generation / "service"
+                if not service.is_dir():
+                    continue
+                for attempt in service.iterdir():
+                    if _HEX.fullmatch(attempt.name) and attempt.is_dir() and not tree_gone(attempt, strict=True):
+                        self.uncertain, self.reason = True, "ownership_uncertain"
+                        logger.error(
+                            "Part render ownership uncertain: attempt=%s of an earlier run is not proven gone "
+                            "and %d process(es) of ours outlive their run",
+                            attempt.name[:8],
+                            len(survivors),
+                        )
+                        return
+        for generation in earlier:
+            cleanup = cleanup_owned(generation)
+            if cleanup.status == "retained_error":
+                logger.warning("Part render earlier run staging retained: %s", cleanup.error_type)
+        logger.info("Part render earlier runs over: staging of %d removed", len(earlier))
 
     def _report_retained_staging(self) -> None:
         empty = 0

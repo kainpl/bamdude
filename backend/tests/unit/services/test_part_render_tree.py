@@ -67,3 +67,22 @@ def test_a_process_that_already_exited_is_gone(tmp_path):
     process.kill()
     process.wait()
     assert tree_gone(tmp_path, strict=True)
+
+
+def test_strays_names_a_process_of_ours_outside_this_tree_and_not_our_own_children(tmp_path):
+    """Final review C2: what an earlier run could have left alive is found by what it runs."""
+    import os
+
+    from backend.app.services.part_render_tree import strays
+
+    marker = [sys.executable, "-c", "import time; time.sleep(60)", "backend.app.part_render"]
+    ours = subprocess.Popen(marker, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    other = subprocess.Popen(SLEEP, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        assert ours.pid not in strays()  # our own child is no stray
+        assert ours.pid in strays(own=other.pid)  # seen from a process it does not descend from
+        assert other.pid not in strays(own=other.pid)
+    finally:
+        for process in (ours, other):
+            process.kill()
+            process.wait()
