@@ -252,6 +252,28 @@ describe('SystemInfoPage', () => {
     expect(screen.getByText('Last attempt: done in 2.5 s')).toBeInTheDocument();
   });
 
+  it('names the last part thumbnail outcome in the reader\'s language', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      part_render_worker: {
+        state: 'ready',
+        reason: null,
+        runtime: null,
+        bundle: null,
+        queue: null,
+        last: { outcome: 'invalid_output', elapsed_ms: 1200 },
+      },
+    } as never);
+    await i18n.changeLanguage('uk');
+    const view = render(<SystemInfoPage />);
+    try {
+      expect(await screen.findByText('Остання спроба: хибний результат за 1.2 с')).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      await i18n.changeLanguage('en');
+    }
+  });
+
   it('uses the Ukrainian recovery text and matching documentation page', async () => {
     vi.mocked(api.getSystemInfo).mockResolvedValue({
       ...mockSystemInfo,

@@ -703,7 +703,9 @@ export function SystemInfoPage() {
         {systemInfo.part_render_worker?.last && (
           <p className="text-sm text-bambu-gray mt-2">
             {t('system.partRenderWorker.last', {
-              outcome: systemInfo.part_render_worker.last.outcome,
+              outcome: t(`system.partRenderWorker.outcomes.${systemInfo.part_render_worker.last.outcome}`, {
+                defaultValue: systemInfo.part_render_worker.last.outcome,
+              }),
               seconds: (systemInfo.part_render_worker.last.elapsed_ms / 1000).toFixed(1),
             })}
           </p>
