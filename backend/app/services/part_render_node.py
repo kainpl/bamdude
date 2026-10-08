@@ -28,10 +28,11 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from backend.app.services.part_render_protocol import NODE_HEAP_MB, RENDERER_VERSION
+
 BUNDLE = Path(__file__).resolve().parents[1] / "data" / "part_render" / "part-render.mjs"
 BUNDLE_MANIFEST = BUNDLE.with_name("manifest.json")
-RENDERER_VERSION = 2  # == frontend/src/part-render/protocol.ts (E3 moves it to part_render_protocol)
-HEAP_MB = 1536
+HEAP_MB = NODE_HEAP_MB
 STDERR_KEEP = 64 * 1024
 MANIFEST_MAX = 1024 * 1024  # == MANIFEST_MAX in protocol.ts
 FRAME_HEADER = 5
