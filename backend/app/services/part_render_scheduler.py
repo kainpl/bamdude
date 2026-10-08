@@ -30,6 +30,7 @@ from backend.app.services.preview_artifacts import owned
 logger = logging.getLogger(__name__)
 
 _IDLE_SECONDS = 5
+_START_RETRY_SECONDS = 5  # a start that failed is tried again, doubling up to five minutes
 _GC_INTERVAL_SECONDS = 3600
 
 
@@ -44,18 +45,35 @@ class PartRenderScheduler:
         self.wake = asyncio.Event()
         self.last_gc = float("-inf")
         self.stopping: asyncio.Task | None = None
+        self.requeued = False
 
-    async def start(self) -> None:
+    async def _prepare(self) -> None:
         await part_renders.reconcile(self.session_factory, self.root)  # spec §8.4: before admission
-        if self.runtime.refusal("render") is None:
-            requeued = await part_renders.requeue_no_runtime(self.session_factory)
-            if requeued:
-                logger.info("Part render requeued=%d plates rendered by the fallback alone", requeued)
         queued = await part_renders.backfill(self.session_factory)
         logger.info("Part render backfill queued=%d", queued)
         part_renders.set_live_generation(self.generation)
         self.admission = True
+
+    async def start(self) -> None:
+        await self._prepare()
         self.task = asyncio.create_task(self._loop(), name="part-render-scheduler")
+
+    def start_in_background(self) -> None:
+        """The lifespan's start (final review M9): it never waits for the walk of reconcile and backfill, and a
+        start that fails -- the database not up yet -- is tried again. stop() cancels it like the loop."""
+        self.task = asyncio.create_task(self._start_and_loop(), name="part-render-scheduler")
+
+    async def _start_and_loop(self) -> None:
+        delay = _START_RETRY_SECONDS
+        while True:
+            try:
+                await self._prepare()
+                break
+            except Exception:
+                logger.exception("Part render scheduler did not start; trying again in %ss", delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 300)
+        await self._loop()
 
     def poke(self) -> None:
         self.wake.set()
@@ -108,6 +126,12 @@ class PartRenderScheduler:
                     pass
 
     async def _step(self) -> bool:
+        if not self.requeued and self.runtime.refusal("render") is None:
+            # spec §9.1 "Поява runtime": at start, or the moment Node appears without a restart (R22, M9)
+            self.requeued = True
+            requeued = await part_renders.requeue_no_runtime(self.session_factory)
+            if requeued:
+                logger.info("Part render requeued=%d plates rendered by the fallback alone", requeued)
         now = part_renders.utcnow()
         async with self.session_factory() as db:
             task = await part_renders.next_task(db, now)
@@ -203,13 +227,8 @@ async def start_part_render(base: Path, app_dir: Path) -> None:
     from backend.app.core import database
 
     runtime = await start_part_render_runtime(base, app_dir)
-    candidate = PartRenderScheduler(runtime, database.async_session, settings.part_renders_dir)
-    try:
-        await candidate.start()
-    except Exception:
-        logger.exception("Part render scheduler did not start")
-        return
-    scheduler = candidate
+    scheduler = PartRenderScheduler(runtime, database.async_session, settings.part_renders_dir)
+    scheduler.start_in_background()
 
 
 async def stop_part_render_scheduler(reason: str) -> bool:

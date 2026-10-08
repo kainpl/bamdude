@@ -421,3 +421,66 @@ async def test_a_bundle_mismatch_in_the_child_asks_the_runtime_to_look_again_and
         assert (await row(db_session, "a" * 64)).attempts == 0
     finally:
         await stop_parked(scheduler)
+
+
+async def test_a_background_start_returns_at_once_and_a_failed_start_is_tried_again(factory, tmp_path, monkeypatch):
+    """Final review M9: the lifespan never waits for the walk of reconcile and backfill, and a start that
+    failed (the database not up yet) is tried again instead of leaving the queue dead until a restart."""
+    gate, calls = asyncio.Event(), []
+
+    async def reconcile(sf, root):
+        calls.append("reconcile")
+        if len(calls) == 1:
+            raise RuntimeError("the database is not up yet")
+        await gate.wait()
+        return part_renders.ReconcileReport()
+
+    async def backfill(sf):
+        return 0
+
+    monkeypatch.setattr(part_renders, "reconcile", reconcile)
+    monkeypatch.setattr(part_renders, "backfill", backfill)
+    monkeypatch.setattr(prs, "_START_RETRY_SECONDS", 0.05)
+    scheduler = make_scheduler(FakeRuntime(), factory, tmp_path)
+    scheduler.start_in_background()  # not awaited: returns at once
+    try:
+        await run_until(scheduler, lambda: len(calls) == 2)
+        assert part_renders._live_generation is None  # nothing admitted before reconcile finished
+        gate.set()
+        await run_until(scheduler, lambda: part_renders._live_generation == scheduler.generation)
+    finally:
+        gate.set()
+        await stop_parked(scheduler)
+
+
+def test_the_lifespan_starts_the_scheduler_in_the_background():
+    import inspect
+
+    assert "start_in_background()" in inspect.getsource(prs.start_part_render)
+
+
+async def test_the_fallback_plates_are_requeued_when_the_runtime_becomes_ready_later(factory, tmp_path, monkeypatch):
+    """Final review M9 / spec §9.1 "Поява runtime": Node may appear without a restart (R22); the plates the
+    fallback alone rendered go back to the queue then, once."""
+    calls = []
+
+    async def requeue(sf):
+        calls.append(1)
+        return 0
+
+    monkeypatch.setattr(part_renders, "requeue_no_runtime", requeue)
+    runtime = FakeRuntime()
+    runtime.refused = "runtime_missing"
+    scheduler = make_scheduler(runtime, factory, tmp_path)
+    await scheduler.start()
+    try:
+        await asyncio.sleep(0.3)
+        assert calls == []
+        runtime.refused = None
+        scheduler.poke()
+        await run_until(scheduler, lambda: calls == [1])
+        scheduler.poke()
+        await asyncio.sleep(0.3)
+        assert calls == [1]  # once per process
+    finally:
+        await stop_parked(scheduler)
