@@ -285,6 +285,10 @@ class Service:
                 ref = await disk(describe, root / "result.bin", attempt, transfer, "partrender", ATTEMPT_BYTES)
                 await put(self.store, root / "result.bin", ref, transfer)
                 reply["artifact"] = ref.wire()
+            except asyncio.CancelledError:
+                # the tree is proven gone already; the upload is no longer wanted. Answer the cancel, clean up,
+                # and never leave main without a reply that would cost it a retire (final review M5)
+                reply = {"outcome": "canceled"}
             except Exception:
                 reply = {"outcome": "invalid_output"}
         cleanup = await disk(cleanup_owned, root)

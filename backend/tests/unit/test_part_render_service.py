@@ -394,3 +394,24 @@ def test_the_owner_dying_takes_a_hung_reader_with_it(tmp_path):
 @needs_node
 def test_the_owner_dying_takes_a_busy_node_with_it(tmp_path):
     _owner_dies(tmp_path, task_for(big_plate(tmp_path / "f.3mf")), node=NODE, at_least=2)
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_upload_is_answered_and_leaves_no_staging(tmp_path):
+    """Final review M5: the tree is proven gone before the upload starts; a cancel then gets an answer instead
+    of a lost reply that would make main retire a healthy worker."""
+    service = make_service(tmp_path)
+    started = asyncio.Event()
+
+    class Blocking(FakeStore):
+        async def put(self, key, reader, meta=None):
+            started.set()
+            await asyncio.Event().wait()
+
+    service.store = Blocking()
+    run_command = command(task_for(two_objects_3mf(tmp_path / "f.3mf")))
+    run = asyncio.create_task(service.command(run_command))
+    await asyncio.wait_for(started.wait(), 60)
+    assert await service.command({**run_command, "operation": "cancel"}) == {"outcome": "canceled"}
+    assert (await run)["outcome"] == "canceled"
+    assert not (tmp_path / "service" / ATTEMPT).exists()

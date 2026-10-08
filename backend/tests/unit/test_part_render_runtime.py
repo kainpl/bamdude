@@ -289,10 +289,12 @@ def test_node_resolution_keeps_its_three_answers_apart(tmp_path, monkeypatch):
         raise render_runtime.UnsupportedPlatform("no official build")
 
     monkeypatch.setattr(render_runtime, "locate", unsupported)
+    runtime.resolve_node()  # what the monitor's refresh does; health() only reads
     assert (runtime.health()["state"], runtime.health()["reason"]) == ("degraded", "no_runtime")
     assert runtime.refusal("render") == "no_runtime" and runtime.refusal("fallback") is None and runtime.unsupported
 
     monkeypatch.setattr(render_runtime, "locate", lambda app_dir: None)
+    runtime.resolve_node()
     assert (runtime.health()["state"], runtime.health()["reason"]) == ("unavailable", "runtime_missing")
     assert runtime.refusal("render") == "runtime_missing" and runtime.refusal("fallback") is None
 
@@ -303,6 +305,7 @@ def test_node_resolution_keeps_its_three_answers_apart(tmp_path, monkeypatch):
         raise prr.NodeRenderError("bundle_mismatch", "changed")
 
     monkeypatch.setattr(prr, "verify_bundle", mismatch)
+    runtime.resolve_node()
     assert runtime.health()["reason"] == "bundle_mismatch"
     assert runtime.refusal("render") == "bundle_mismatch"
 
@@ -361,6 +364,7 @@ async def test_a_new_node_installation_is_starting_until_it_is_probed(tmp_path, 
     assert runtime.refusal("render") is None
     newer = render_runtime.NodeInstall(executable=install.executable, version="v24.18.0", platform="linux-x64")
     monkeypatch.setattr(render_runtime, "locate", lambda app_dir: newer)
+    runtime.resolve_node()
     assert runtime.health()["reason"] == "starting"
     await runtime._reprobe_node_if_due()
     assert runtime.refusal("render") is None
@@ -646,3 +650,51 @@ async def test_an_earlier_runs_unrecorded_launch_closes_admission_while_a_proces
         assert generation.exists()  # nothing is deleted while its owner may live
     finally:
         await runtime.stop()
+
+
+def test_health_only_reads(tmp_path, monkeypatch):
+    """Final review M4: a System-page poll neither hashes the bundle on the event loop nor races the monitor's
+    own resolution; the monitor keeps the installation current (R22)."""
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    monkeypatch.setattr(PartRenderRuntime, "resolve_node", lambda self: pytest.fail("health() resolved Node"))
+    assert runtime.health()["reason"] == "not_started"
+
+
+@pytest.mark.asyncio
+async def test_a_render_without_a_node_is_refused_even_when_the_reason_was_cleared(tmp_path):
+    """Final review M4: the installation is read once per attempt -- a render never goes out without Node and
+    comes back as a full render made by the fallback alone."""
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    runtime.ready, runtime.node_reason, runtime.node = True, None, None
+    with pytest.raises(RuntimeUnavailable):
+        await runtime.render(task_for(tmp_path / "x.3mf"), mode="render", deadline_ns=deadline(5))
+
+
+@pytest.mark.asyncio
+async def test_a_task_too_big_for_the_wire_is_a_failed_attempt_not_a_retired_worker(tmp_path, monkeypatch):
+    """Final review M7: a path whose JSON exceeds the wire is the file's problem; the healthy worker stays."""
+    import types
+
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    runtime.ready, runtime.node_reason = True, None
+    runtime.nc = types.SimpleNamespace(is_connected=True)
+
+    async def no_rpc(*args, **kwargs):
+        pytest.fail("the oversized command went out")
+
+    async def no_retire():
+        pytest.fail("a healthy worker was retired")
+
+    monkeypatch.setattr(runtime, "rpc", no_rpc)
+    monkeypatch.setattr(runtime, "retire", no_retire)
+    deep = tmp_path / ("ї" * 4000) / "plate.3mf"
+    result = await runtime.render(task_for(deep), mode="fallback", deadline_ns=deadline(5))
+    assert result.outcome == "crashed"
+
+
+def test_main_waits_for_the_workers_proof_and_upload_before_it_gives_up():
+    """Final review M5: the worker may spend its whole transfer allowance after the proof; main's grace must
+    cover both, or a slow upload of a good result costs a retire."""
+    from backend.app import part_render_service
+
+    assert prr._REPLY_GRACE_SECONDS >= part_render_service._TRANSFER_SECONDS + 20

@@ -46,7 +46,9 @@ logger = logging.getLogger(__name__)
 
 _BUCKET_PREFIX = "bamdude_partrender_"  # not a prefix of any other worker's bucket, nor one of them a prefix of it
 _HEX = re.compile(r"[0-9a-f]{32}\Z")
-_REPLY_GRACE_SECONDS = 30  # the worker's proof (PreviewProcess.stop: up to ~17 s) and its upload after the deadline
+# after the deadline the worker still proves the tree gone (PreviewProcess.stop: up to ~17 s) and uploads the
+# result (part_render_service._TRANSFER_SECONDS = 60); a shorter grace retired a healthy worker (final review M5)
+_REPLY_GRACE_SECONDS = 90
 _CANCEL_SECONDS = 30
 _TRANSFER_SECONDS = 60
 _STARTUP_SECONDS = 20
@@ -202,7 +204,8 @@ class PartRenderRuntime:
         return None
 
     def health(self) -> dict:
-        self.resolve_node()  # spec §7: on every read, so a runtime put in place or removed shows at once
+        """Reads only: the monitor keeps the installation current (R22); a System-page poll hashes nothing on
+        the event loop and never races the monitor's own resolution (final review M4)."""
         if self.uncertain:
             state, reason = "unavailable", "ownership_uncertain"
         elif self.closed:
@@ -585,11 +588,14 @@ class PartRenderRuntime:
             refused = self.refusal(mode)
             if refused is not None:
                 raise RuntimeUnavailable(refused)
+            install = self.node  # read once: the monitor's thread may change it under this attempt (M4)
+            if mode == "render" and install is None:
+                raise RuntimeUnavailable(self.node_reason or "runtime_missing")
             attempt = uuid4().hex
             main_root = self.staging / "main" / attempt  # owned by this call from before its first byte (R17)
-            node = str(self.node.executable) if mode == "render" and self.node is not None else None
+            node = str(install.executable) if mode == "render" else None
             command = self.command("run", attempt, task.wire(), node, deadline_ns)
-            result = AttemptResult("crashed", attempt, 0, runtime_version=self.node.version if node else None)
+            result = AttemptResult("crashed", attempt, 0, runtime_version=install.version if node else None)
             started = time.monotonic()
             settled = False
             logger.info(
@@ -603,6 +609,13 @@ class PartRenderRuntime:
             self.active_task = asyncio.current_task()
             self.stats["attempts"] += 1
             try:
+                try:
+                    encode(command)
+                except PreviewError:
+                    # past the worker's wire limit (a path of thousands of characters): the file's problem, a
+                    # failed attempt -- never a retire of the healthy worker (final review M7)
+                    logger.warning("Part render attempt=%s task does not fit the worker's wire", attempt[:8])
+                    return result
                 timeout = max(0.0, (deadline_ns - time.monotonic_ns()) / 1e9) + _REPLY_GRACE_SECONDS
                 reply = await self.rpc(command, timeout)
                 settled = True  # the worker answered: the attempt's tree is proven gone, or it says it is not
