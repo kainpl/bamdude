@@ -20,6 +20,8 @@ _PREVIEW_MODULES = {
     "backend.app.analysis_service",
     "backend.app.analysis_child",
     "backend.app.library_file_service",
+    "backend.app.part_render_service",
+    "backend.app.part_render",
 }
 _CAMERA_MODULE = "backend.app.camera_worker"
 _PREVIEW_BOOTSTRAP_LIMIT = 16384
@@ -64,11 +66,31 @@ def main():
         module, child_bootstrap = _child_bootstrap(bytes(bootstrap))
     except (KeyError, TypeError, ValueError, UnicodeDecodeError):
         return 2
+    records = None
+    if module == "backend.app.part_render":
+        # plan E3, R12: the parent writes the record, before the child has its bootstrap. Lazy import --
+        # every other worker keeps a guardian that imports nothing of the app.
+        from pathlib import Path
+
+        from backend.app.services.part_render_tree import launch, record
+
+        records = Path(json.loads(child_bootstrap)["root"])
+        try:
+            launch(records, "child")
+        except (OSError, ValueError):
+            return 2
     child = subprocess.Popen(
         [sys.executable, "-m", module],
         stdin=subprocess.PIPE,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+    if records is not None:
+        try:
+            record(records / "child.pid", child.pid)
+        except Exception:
+            child.kill()  # unrecorded and still waiting for its bootstrap: it never ran
+            child.wait()
+            return 2
 
     def owner_died():
         while chunk := os.read(0, 4096):

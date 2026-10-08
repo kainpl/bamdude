@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import psutil
@@ -16,8 +17,19 @@ from backend.app.services.worker_containment import WorkerContainment
 from backend.app.services.worker_process import descendants, descendants_reaped, kill_owned_group
 
 
+class SpawnUnproven(PreviewError):
+    """The guardian was started, its start failed, and the cleanup could not prove its tree gone.
+
+    A PreviewError("unavailable"), so every existing caller sees what it always saw; one that keeps proof
+    of what it spawned (part render, plan E3, R20) tells it apart from a start that failed cleanly."""
+
+    def __init__(self, pid: int) -> None:
+        super().__init__("unavailable")
+        self.pid = pid
+
+
 class PreviewProcess:
-    def __init__(self, module: str, bootstrap: dict, cache: Path):
+    def __init__(self, module: str, bootstrap: dict, cache: Path, *, on_spawn: Callable[[int], None] | None = None):
         # No .env, database URL, API credentials or NATS token in renderer env.
         keys = {
             "PATH",
@@ -52,12 +64,17 @@ class PreviewProcess:
         self.containment = None
         try:
             self.containment = WorkerContainment.attach(self.process.pid)
+            if on_spawn is not None:
+                on_spawn(self.process.pid)  # the guardian has no bootstrap yet, so it has spawned nothing
             self.reader = threading.Thread(target=self._drain, daemon=True)
             self.reader.start()
             self.process.stdin.write(encode({"module": module, **bootstrap}) + b"\n")
             self.process.stdin.flush()
         except BaseException:
-            self.stop()
+            try:
+                self.stop()
+            except Exception as unproven:
+                raise SpawnUnproven(self.process.pid) from unproven  # consilium E3.2-R1
             raise
 
     def _drain(self):

@@ -30,12 +30,12 @@ class AnalysisArtifact:
         return asdict(self)
 
     @classmethod
-    def parse(cls, data: dict, attempt_id: str, suffix: str = "analysis"):
+    def parse(cls, data: dict, attempt_id: str, suffix: str = "analysis", limit: int = ARTIFACT_BYTES):
         if not isinstance(data, dict) or set(data) != {"key", "size", "digest"}:
             raise PreviewError("protocol_error")
         if not _HEX.fullmatch(attempt_id) or data["key"] != f"{attempt_id}_{suffix}":
             raise PreviewError("protocol_error")
-        if type(data["size"]) is not int or not 0 < data["size"] <= ARTIFACT_BYTES:
+        if type(data["size"]) is not int or not 0 < data["size"] <= limit:
             raise PreviewError("protocol_error")
         if not isinstance(data["digest"], str) or not _SHA.fullmatch(data["digest"]):
             raise PreviewError("protocol_error")
@@ -43,9 +43,10 @@ class AnalysisArtifact:
 
 
 class _AnalysisReader:
-    def __init__(self, stream, deadline: int):
+    def __init__(self, stream, deadline: int, limit: int = ARTIFACT_BYTES):
         self.stream = stream
         self.deadline = deadline
+        self.limit = limit
         self.count = 0
         self.digest = hashlib.sha256()
         self.lock = threading.Lock()
@@ -55,7 +56,7 @@ class _AnalysisReader:
             remaining(self.deadline)
             count = self.stream.readinto(buffer)
             self.count += count
-            if self.count > ARTIFACT_BYTES:
+            if self.count > self.limit:
                 raise PreviewError("resource_limit")
             self.digest.update(memoryview(buffer)[:count])
             return count
@@ -65,18 +66,20 @@ class _AnalysisReader:
             self.stream.close()
 
 
-def describe(path: Path, attempt_id: str, deadline: int, suffix: str = "analysis") -> AnalysisArtifact:
+def describe(
+    path: Path, attempt_id: str, deadline: int, suffix: str = "analysis", limit: int = ARTIFACT_BYTES
+) -> AnalysisArtifact:
     digest = hashlib.sha256()
     size = 0
     with path.open("rb") as stream:
         while block := stream.read(CHUNK_BYTES):
             remaining(deadline)
             size += len(block)
-            if size > ARTIFACT_BYTES:
+            if size > limit:
                 raise PreviewError("resource_limit")
             digest.update(block)
     return AnalysisArtifact.parse(
-        {"key": f"{attempt_id}_{suffix}", "size": size, "digest": digest.hexdigest()}, attempt_id, suffix
+        {"key": f"{attempt_id}_{suffix}", "size": size, "digest": digest.hexdigest()}, attempt_id, suffix, limit
     )
 
 
@@ -91,7 +94,7 @@ async def put(store, path: Path, ref: AnalysisArtifact, deadline: int) -> None:
     else:
         raise PreviewError("protocol_error")
     stream = await disk(path.open, "rb")
-    reader = _AnalysisReader(stream, deadline)
+    reader = _AnalysisReader(stream, deadline, ref.size)  # more than declared is resource_limit
     try:
         async with asyncio.timeout(remaining(deadline)):
             await store.put(ref.key, reader, meta=ObjectMeta(options=ObjectMetaOptions(max_chunk_size=CHUNK_BYTES)))
