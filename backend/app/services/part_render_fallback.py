@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 
 import numpy as np
 from PIL import Image
@@ -108,17 +109,21 @@ def model_bbox(plate_json: bytes | None, identify_id: int) -> list[float] | None
         return None
     try:
         data = json.loads(plate_json)
-    except ValueError:
+    except (ValueError, RecursionError):  # a deep nest is no bbox either (final review M1)
         return None
     entries = data.get("bbox_objects") if isinstance(data, dict) else None
     for entry in entries if isinstance(entries, list) else []:
         try:
             if int(entry.get("id")) != identify_id:
                 continue
-        except (TypeError, ValueError, AttributeError):
+        except (TypeError, ValueError, AttributeError, OverflowError):
             continue
         bbox = entry.get("bbox")
-        if isinstance(bbox, list) and len(bbox) >= 4 and all(type(v) in (int, float) for v in bbox[:4]):
-            return [float(v) for v in bbox[:4]]
-        return None
+        if not (isinstance(bbox, list) and len(bbox) >= 4 and all(type(v) in (int, float) for v in bbox[:4])):
+            return None
+        try:
+            box = [float(v) for v in bbox[:4]]
+        except OverflowError:
+            return None
+        return box if all(math.isfinite(v) for v in box) else None
     return None

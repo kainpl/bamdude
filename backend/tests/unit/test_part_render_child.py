@@ -481,3 +481,81 @@ def test_a_marker_split_inside_its_digits_is_not_two_ids():
     scan.feed(b"G1 X1\n" + line[:cut])
     scan.feed(line[cut:] + b"G1 X2\n")
     assert scan.marked == {1234}
+
+
+def test_an_id_beyond_u32_from_the_slicer_metadata_is_no_object(tmp_path):
+    """Final review C1: discovery reads any digit run as an id, and one past u32 overflowed the instance row
+    in main. The child keeps only ids a slicer can write."""
+    import zipfile
+
+    body = b"; model label id: 101," + str(2**64).encode() + b"\n" + gcode("two-objects")
+    path = write_3mf(tmp_path / "f.3mf", {1: body}, objects={1: {101: "A"}})
+    with zipfile.ZipFile(path) as zf:
+        plan, _ = part_render.plan_3mf(zf, 1, part_render.Limits())
+    assert 2**64 not in plan.objects and 101 in plan.objects
+
+
+def test_two_entries_for_one_plate_are_an_invalid_archive(tmp_path):
+    """Final review M1: plate_3 and plate_03 are one plate to a number -- which G-code the printer runs is
+    not ours to guess, so the archive is refused."""
+    import zipfile
+
+    path = write_3mf(tmp_path / "f.3mf", {3: gcode("two-objects")}, objects={3: {101: "A", 202: "B"}})
+    with zipfile.ZipFile(path, "a") as zf:
+        zf.writestr("Metadata/plate_03.gcode", gcode("two-objects"))
+    with zipfile.ZipFile(path) as zf, pytest.raises(part_render.Outcome) as refused:
+        part_render.plan_3mf(zf, 3, part_render.Limits())
+    assert (refused.value.outcome, refused.value.reason) == ("unavailable", "invalid_archive")
+
+
+def test_an_absurd_plate_entry_name_is_not_a_plate(tmp_path):
+    import zipfile
+
+    path = two_objects_3mf(tmp_path / "f.3mf")
+    with zipfile.ZipFile(path, "a") as zf:
+        zf.writestr("Metadata/plate_" + "9" * 5000 + ".gcode", b"G1 X1\n")
+        zf.writestr("Metadata/plate_٣.gcode", b"G1 X1\n")  # ARABIC-INDIC DIGIT THREE: a digit to \d
+    with zipfile.ZipFile(path) as zf:
+        plan, entry = part_render.plan_3mf(zf, 1, part_render.Limits())
+    assert entry == "Metadata/plate_1.gcode" and set(plan.objects) == {101, 202}
+
+
+def test_an_encrypted_entry_is_an_invalid_archive_before_anything_is_read(tmp_path):
+    import zipfile
+
+    path = tmp_path / "f.3mf"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("Metadata/plate_1.gcode", gcode("two-objects"))
+    # zipfile clears the "encrypted" bit it cannot honour, so set it as another archiver would: bit 0 of the
+    # general purpose flag, in the local header (offset 6) and the central directory entry (offset 8)
+    data = bytearray(path.read_bytes())
+    for signature, offset in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        data[data.index(signature) + offset] |= 0x1
+    path.write_bytes(bytes(data))
+    with zipfile.ZipFile(path) as zf, pytest.raises(part_render.Outcome) as refused:
+        part_render.check_archive(zf, part_render.Limits())
+    assert refused.value.reason == "invalid_archive"
+
+
+def test_an_unknown_compression_is_an_invalid_archive():
+    import zipfile
+
+    info = zipfile.ZipInfo("Metadata/plate_1.gcode")
+    info.compress_type = 99
+
+    class Directory:
+        def infolist(self):
+            return [info]
+
+    with pytest.raises(part_render.Outcome) as refused:
+        part_render.check_archive(Directory(), part_render.Limits())
+    assert refused.value.reason == "invalid_archive"
+
+
+def test_a_raw_gcode_that_ends_early_is_a_read_failure():
+    """Final review M3: a short read without an error must not stream half a plate as a whole one."""
+    import io
+
+    chunks = part_render._file_chunks(io.BytesIO(b"G1 X1\n"), 1000, part_render.MarkerScan(()))
+    with pytest.raises(OSError):
+        list(chunks)

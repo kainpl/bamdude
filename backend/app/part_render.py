@@ -59,7 +59,11 @@ from backend.app.services.part_render_tree import launch, record
 from backend.app.services.threemf_parser_core import discover_plate_objects
 
 _BOOT_KEYS = {"root", "task", "deadline_ns", "node"}
-_PLATE_GCODE = re.compile(r"Metadata/plate_(\d+)\.gcode\Z")
+# ASCII digits, at most ten: a plate number, never a 5000-digit int() (final review M1)
+_PLATE_GCODE = re.compile(r"Metadata/plate_([0-9]{1,10})\.gcode\Z")
+_ID_MAX = 0xFFFFFFFF  # a slicer's object id is u32; the instance row is BIGINT (final review C1)
+# what zipfile can open here without a password (spec §5.4)
+_COMPRESSIONS = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA})
 # An id is at most 10 digits (u32): a longer run is no id at all, and never reaches int(), whose 4300-digit
 # limit would raise out of the feed (security review). A non-digit must FOLLOW the id, so digits cut by a
 # chunk boundary wait for the next chunk, where MarkerScan's tail sees the marker whole.
@@ -191,13 +195,15 @@ def _read_entry(zf: zipfile.ZipFile, name: str, limit: int | None = None) -> byt
 
 def check_archive(zf: zipfile.ZipFile, limits: Limits) -> dict[str, zipfile.ZipInfo]:
     """Spec §5.4: the archive is judged on its directory before ANY entry is decompressed (consilium E3-R6).
-    Too many entries, a name twice, or too many bytes in all: unavailable/invalid_archive, nothing read."""
+    Too many entries, a name twice, too many bytes in all, or an entry this process cannot open (encrypted,
+    an unknown compression -- final review M1): unavailable/invalid_archive, nothing read."""
     infos = zf.infolist()
     names = [info.filename for info in infos]
     if (
         len(infos) > limits.zip_entries
         or len(set(names)) != len(names)
         or sum(info.file_size for info in infos) > limits.zip_bytes
+        or any(info.flag_bits & 0x1 or info.compress_type not in _COMPRESSIONS for info in infos)
     ):
         raise Outcome("unavailable", "invalid_archive")
     return {info.filename: info for info in infos}
@@ -232,7 +238,11 @@ def _discover(number: int, gcode_head: bytes, slice_info: bytes | None, pick: by
 
 def plan_3mf(zf: zipfile.ZipFile, plate_index: int, limits: Limits) -> tuple[PlatePlan, str]:
     infos = check_archive(zf, limits)
-    plates = {int(m.group(1)): name for name in infos if (m := _PLATE_GCODE.fullmatch(name))}
+    found = [(int(m.group(1)), name) for name in infos if (m := _PLATE_GCODE.fullmatch(name))]
+    plates = dict(found)
+    if len(plates) != len(found):
+        # plate_3 and plate_03 are one number: which G-code the printer runs is not ours to guess (final review M1)
+        raise Outcome("unavailable", "invalid_archive")
     if plate_index == 0:
         if len(plates) != 1:
             raise Outcome("unavailable", "no_gcode")
@@ -255,6 +265,8 @@ def plan_3mf(zf: zipfile.ZipFile, plate_index: int, limits: Limits) -> tuple[Pla
     # an oversized pick is never decoded, here or by the shared parser (security review)
     pick = side["pick"] if fallback.fits(side["pick"]) else None
     objects = _discover(number, _read_entry(zf, entry, _HEAD_BYTES), side["slice"], pick)
+    # the shared parser takes any digit run as an id; past u32 it is no slicer's object (final review C1)
+    objects = {oid: name for oid, name in objects.items() if 0 <= oid <= _ID_MAX}
     if not objects:
         raise Outcome("unavailable", "no_objects")
     selected, skipped = select_instances(objects, limits.instance_cap)
@@ -299,12 +311,15 @@ def _zip_chunks(zf: zipfile.ZipFile, entry: str, cap: int, scan: MarkerScan) -> 
 
 
 def _file_chunks(handle, cap: int, scan: MarkerScan) -> Iterator[bytes]:
+    """The whole file, exactly: ``cap`` is its size, checked against the hash before the first chunk."""
     total = 0
     while block := handle.read(_CHUNK):
         total += len(block)
         if total > cap:
             raise OSError("the G-code grew while it was read")
         yield scan.feed(block)
+    if total != cap:
+        raise OSError("the G-code ended before its size")  # a short read is half a plate (final review M3)
 
 
 def run_node(boot: dict, root: Path, job: dict, chunks: Iterator[bytes], limits: Limits) -> NodeRenderResult:

@@ -106,3 +106,11 @@ def test_only_a_png_fits():
 
 def test_a_pair_that_is_not_png_is_refused():
     assert fb.valid_pair(_as("BMP", (64, 64)), _as("GIF", (64, 64))) is None
+
+
+def test_model_bbox_survives_what_json_can_hold():
+    """Final review M1: an infinite id, an enormous coordinate and a deep nest are no bbox, never a crash."""
+    assert fb.model_bbox(b'{"bbox_objects": [{"id": 1e999, "bbox": [1, 2, 3, 4]}]}', 7) is None
+    huge = "1" + "0" * 400
+    assert fb.model_bbox(f'{{"bbox_objects": [{{"id": 7, "bbox": [{huge}, 2, 3, 4]}}]}}'.encode(), 7) is None
+    assert fb.model_bbox(b"[" * 100000 + b"]" * 100000, 7) is None
