@@ -11035,10 +11035,17 @@ async def lifespan(app: FastAPI):
         await start_library_file_runtime(Path(app_settings.base_dir))
     except Exception:
         logging.getLogger(__name__).exception("Library file service unavailable at startup")
+    from backend.app.services.part_render_scheduler import start_part_render, stop_part_render
+
+    try:
+        await start_part_render(Path(app_settings.base_dir), Path(app_settings.app_dir))
+    except Exception:
+        logging.getLogger(__name__).exception("Part render service unavailable at startup")
 
     yield
 
     # Shutdown
+    await stop_part_render()  # its attempt ends with its proof before any worker or the broker goes
     await stop_preview_runtime()
     await ws_manager.shutdown()
     # Cloud Link first: it holds a socket and describes this farm, so it should

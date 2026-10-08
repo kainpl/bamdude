@@ -14109,10 +14109,20 @@ export interface CameraWorkerHealth {
   next_retry_at: string | null;
 }
 
+export interface PartRenderWorkerHealth {
+  state: 'ready' | 'degraded' | 'unavailable';
+  reason: string | null;
+  runtime: { version: string; pinned_at: string | null } | null;
+  bundle: { sha256: string } | null;
+  queue: { pending: number; failed: number } | null;
+  last: { outcome: string; elapsed_ms: number } | null;
+}
+
 export interface SystemInfo {
   preview?: PreviewHealth;
   analysis_worker?: { state: 'ready' | 'unavailable'; reason: string | null };
   library_file_worker?: { state: 'ready' | 'unavailable'; reason: string | null };
+  part_render_worker?: PartRenderWorkerHealth;
   camera_worker?: CameraWorkerHealth;
   app: {
     version: string;

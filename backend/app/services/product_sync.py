@@ -48,7 +48,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate, product_files, product_folders
-from backend.app.services import product_facets
+from backend.app.services import part_renders, product_facets
 from backend.app.services.product_composition import part_index, plate_key_counts
 
 
@@ -184,6 +184,7 @@ async def sync_product_for_file(
             )
         await db.flush()
         await product_facets.refresh(db, touched)
+        await part_renders.ensure_for_files(db, [library_file_id])  # spec §9.1: where the facets are refreshed
         return
 
     wanted = wanted_plate_indices(meta)
@@ -209,6 +210,7 @@ async def sync_product_for_file(
         )
     await db.flush()
     await product_facets.refresh(db, touched)
+    await part_renders.ensure_for_files(db, [library_file_id])  # spec §9.1: where the facets are refreshed
 
 
 async def apply_folder_products(db: AsyncSession, *, folder_id: int, product_ids: list[int]) -> None:
@@ -309,6 +311,7 @@ async def purge_file_product_links(db: AsyncSession, library_file_ids: Sequence[
     await db.execute(delete(ProductPlate).where(ProductPlate.library_file_id.in_(ids)))
     await db.execute(delete(product_files).where(product_files.c.library_file_id.in_(ids)))
     await product_facets.refresh(db, affected)
+    await part_renders.ensure_for_files(db, ids)  # the file is unlinked now, so this queues nothing (spec §9.1)
 
 
 async def purge_folder_product_links(db: AsyncSession, folder_ids: Sequence[int]) -> None:

@@ -923,7 +923,15 @@ def test_async_production_does_not_call_renderers():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[3] / "app"
-    forbidden = {"generate_stl_thumbnail", "inject_plate_thumbnails_if_missing", "_inject_preview"}
+    forbidden = {
+        "generate_stl_thumbnail",
+        "inject_plate_thumbnails_if_missing",
+        "_inject_preview",
+        # part render: only the disposable child renders (spec §15)
+        "render_attempt",
+        "run_frames",
+        "top_mask",
+    }
     for path in root.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
             if isinstance(node, ast.AsyncFunctionDef):

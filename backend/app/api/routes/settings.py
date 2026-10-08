@@ -724,6 +724,18 @@ async def restore_backup(
         raise HTTPException(409, "A backup or restore is already running") from exc
 
 
+async def _quiesce_part_render() -> None:
+    """Spec §9.6 and consilium E3-R4: the part render queue is stopped and its last attempt proven over, or the
+    restore ends here -- before any other service is quiesced and before the database is touched."""
+    from backend.app.services import part_render_scheduler
+
+    if not await part_render_scheduler.stop_part_render_scheduler("restore"):
+        raise HTTPException(
+            409,
+            "The part thumbnail worker could not prove its last attempt ended. Restart BamDude, then restore.",
+        )
+
+
 async def _restore_backup(file: UploadFile, db: AsyncSession):
     import asyncio
     import tempfile
@@ -786,6 +798,7 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
                 from backend.app.services.zigbee.poller import zigbee_poller
                 from backend.app.services.zigbee.supervisor import zigbee_supervisor
 
+                await _quiesce_part_render()
                 if virtual_printer_manager.is_enabled:
                     await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()

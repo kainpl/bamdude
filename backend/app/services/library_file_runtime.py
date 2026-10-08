@@ -19,6 +19,7 @@ from backend.app.services.worker_staging import cleanup_owned
 
 logger = logging.getLogger(__name__)
 _REQUEST_SECONDS = 180
+BUCKET_BYTES = 256 * 1024 * 1024
 
 
 class LibraryFileRuntime:
@@ -60,7 +61,7 @@ class LibraryFileRuntime:
                     await js.delete_stream(stream.config.name)
             self.store = await js.create_object_store(
                 bucket=self.bucket,
-                config=ObjectStoreConfig(bucket=self.bucket, max_bytes=256 * 1024 * 1024, ttl=900, storage="file"),
+                config=ObjectStoreConfig(bucket=self.bucket, max_bytes=BUCKET_BYTES, ttl=900, storage="file"),
             )
             await self.launch()
             self.monitor = asyncio.create_task(self.watch(), name="library-file-service-monitor")

@@ -254,6 +254,10 @@ jobs:
           backend/tests/unit/test_render_runtime_manifest.py backend/tests/unit/test_part_render_bundle.py
           backend/tests/unit/services/test_part_render_node.py backend/tests/unit/test_part_render_probe.py
           backend/tests/unit/test_no_browser_leftovers.py
+          backend/tests/unit/services/test_part_render_protocol.py backend/tests/unit/services/test_part_render_tree.py
+          backend/tests/unit/services/test_part_render_fallback.py backend/tests/unit/test_part_render_child.py
+          backend/tests/unit/test_part_render_service.py backend/tests/unit/test_part_render_runtime.py
+          backend/tests/unit/test_part_render_end_to_end.py
           -v --tb=short --timeout=180 --timeout-method=thread -n 1
       - name: Render the fixtures with the pinned runtime (golden on every OS)
         run: python -m backend.app.part_render_probe render --report probe-report.json

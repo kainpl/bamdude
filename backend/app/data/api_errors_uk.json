@@ -861,6 +861,7 @@
   "The order must name every delivery method exactly once": "Порядок має назвати кожен спосіб доставки рівно один раз",
   "The order's stock changed while this was being saved — try again": "Запаси замовлення змінилися, поки зміну зберігали — спробуйте ще раз",
   "The part name is too long": "Назва деталі задовга",
+  "The part thumbnail worker could not prove its last attempt ended. Restart BamDude, then restore.": "Воркер мініатюр деталей не зміг довести, що його остання спроба завершилася. Перезапустіть BamDude, потім відновлюйте.",
   "The plug did not acknowledge the setting — is it powered and in range?": "Розетка не підтвердила налаштування — чи ввімкнено її живлення і чи вона в зоні дії?",
   "The printer did not answer, so its recordings could not be listed. Check that it is on the network and try again.": "Принтер не відповів, тож його записи не вдалося перелічити. Перевірте, що він у мережі, і спробуйте ще раз.",
   "the printer is busy and cannot switch AMS type": "принтер зайнятий і не може змінити тип AMS",

@@ -232,6 +232,26 @@ describe('SystemInfoPage', () => {
     }
   });
 
+  it('shows the part thumbnail worker with its queue and last attempt', async () => {
+    vi.mocked(api.getSystemInfo).mockResolvedValue({
+      ...mockSystemInfo,
+      part_render_worker: {
+        state: 'degraded',
+        reason: 'no_runtime',
+        runtime: null,
+        bundle: null,
+        queue: { pending: 3, failed: 1 },
+        last: { outcome: 'done', elapsed_ms: 2500 },
+      },
+    } as never);
+    render(<SystemInfoPage />);
+    expect(await screen.findByText('Part thumbnail worker')).toBeInTheDocument();
+    expect(screen.getByText('Fallback only')).toBeInTheDocument();
+    expect(screen.getByText('no_runtime')).toBeInTheDocument();
+    expect(screen.getByText('Queue: 3 waiting, 1 failed')).toBeInTheDocument();
+    expect(screen.getByText('Last attempt: done in 2.5 s')).toBeInTheDocument();
+  });
+
   it('uses the Ukrainian recovery text and matching documentation page', async () => {
     vi.mocked(api.getSystemInfo).mockResolvedValue({
       ...mockSystemInfo,

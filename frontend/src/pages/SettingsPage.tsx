@@ -129,6 +129,7 @@ const STORAGE_CATEGORY_COLORS: Record<string, string> = {
   virtual_printer_other: 'bg-purple-700',
   downloads: 'bg-cyan-500',
   attachments: 'bg-rose-500',
+  part_renders: 'bg-indigo-500',
   plate_calibration: 'bg-lime-500',
   logs: 'bg-orange-500',
   other_data: 'bg-yellow-500',
