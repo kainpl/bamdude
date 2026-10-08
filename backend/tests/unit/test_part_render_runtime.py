@@ -102,7 +102,8 @@ def top_guardians() -> list[psutil.Process]:
 
     def guardian(process) -> bool:
         try:
-            return "worker_guardian" in " ".join(process.cmdline())
+            # the module argument itself: pytest's own command line may name test_worker_guardian.py
+            return "backend.app.worker_guardian" in process.cmdline()
         except psutil.Error:
             return False
 
@@ -237,7 +238,6 @@ async def test_a_previous_generations_unproven_attempt_closes_admission_at_start
     old = tmp_path / ".cache" / "part-render-service" / "staging" / ("e" * 32) / "service" / ("f" * 32)
     old.mkdir(parents=True)
     (old / "node.pid").write_text("{broken", encoding="ascii")
-    monkeypatch.setattr(prr, "strays", lambda: [4242])  # a process of ours outlived its run
     runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
     await runtime.start()
     try:
@@ -612,37 +612,56 @@ async def test_retained_main_staging_stops_admission_past_its_budget(live, tmp_p
     assert runtime.health()["reason"] == "staging_full"
 
 
-def _earlier_run(tmp_path: Path) -> Path:
-    """An earlier run that died inside a spawn window: node.launch, no record, and a fetch directory."""
+def _ended(path: Path) -> None:
+    import subprocess
+    import sys
+
+    from backend.app.services.part_render_tree import record
+
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    )
+    record(path, process.pid)
+    process.kill()
+    process.wait()
+
+
+def _earlier_run(tmp_path: Path, *, recorded: bool) -> Path:
+    """An earlier run whose main died inside Node's spawn window: node.launch, no node.pid, a fetch directory.
+    ``recorded``: everything above Node was recorded and has ended."""
+    from backend.app.services.part_render_tree import launch
+
     generation = tmp_path / ".cache" / "part-render-service" / "staging" / ("e" * 32)
     attempt = generation / "service" / ("f" * 32)
     attempt.mkdir(parents=True)
-    (attempt / "node.launch").touch()
     (generation / "main" / ("1" * 32)).mkdir(parents=True)
+    if recorded:
+        for name in ("owner", "worker", "service"):
+            _ended(generation / f"{name}.pid")
+        for name in ("guardian", "child"):
+            launch(attempt, name)
+            _ended(attempt / f"{name}.pid")
+    launch(attempt, "node")
     return generation
 
 
 @pytest.mark.asyncio
-async def test_an_earlier_run_with_nothing_of_ours_left_is_over_and_its_staging_goes(tmp_path, monkeypatch):
-    """Final review C2: main died inside a spawn window (power cut, SIGKILL). Nothing of ours outlives it, so
-    the earlier run is over -- admission and restore stay open, and its staging has no owner."""
-    generation = _earlier_run(tmp_path)
-    monkeypatch.setattr(prr, "strays", lambda: [])
+async def test_an_earlier_run_proven_over_by_its_records_is_admitted_and_its_staging_goes(tmp_path):
+    """Final review C2 / consilium E3-I-R1: main died inside a spawn window. Its records prove every parent
+    dead, so the unrecorded Node never got its input -- no scan of the process table involved."""
+    generation = _earlier_run(tmp_path, recorded=True)
     runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
     await runtime.start()
     try:
-        assert not runtime.uncertain
+        assert not runtime.uncertain and runtime.earlier_proven
         assert not generation.exists()
     finally:
         await runtime.stop()
 
 
 @pytest.mark.asyncio
-async def test_an_earlier_runs_unrecorded_launch_closes_admission_while_a_process_of_ours_survives(
-    tmp_path, monkeypatch
-):
-    generation = _earlier_run(tmp_path)
-    monkeypatch.setattr(prr, "strays", lambda: [4242])
+async def test_an_earlier_runs_unrecorded_launch_without_a_proven_parent_keeps_admission_closed(tmp_path):
+    generation = _earlier_run(tmp_path, recorded=False)
     runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
     await runtime.start()
     try:
@@ -650,6 +669,75 @@ async def test_an_earlier_runs_unrecorded_launch_closes_admission_while_a_proces
         assert generation.exists()  # nothing is deleted while its owner may live
     finally:
         await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_proof_of_an_earlier_run_closes_admission_and_every_restore(tmp_path, monkeypatch):
+    """Consilium E3-I-R2: an error while proving the earlier run keeps its records and refuses admission and
+    restore -- two restores at once included."""
+    from backend.app.services import part_render_scheduler
+
+    generation = _earlier_run(tmp_path, recorded=True)
+
+    def unreadable(path, **kwargs):
+        raise PermissionError("the staging cannot be read")
+
+    monkeypatch.setattr(prr, "generation_gone", unreadable)
+    monkeypatch.setattr(prr, "runtime", None)
+    monkeypatch.setattr(part_render_scheduler, "scheduler", None)
+    try:
+        current = await prr.start_part_render_runtime(tmp_path, ROOT)
+        assert current.uncertain and not current.earlier_proven
+        assert generation.exists()
+        answers = await asyncio.gather(
+            part_render_scheduler.stop_part_render_scheduler("restore"),
+            part_render_scheduler.stop_part_render_scheduler("restore"),
+        )
+        assert answers == [False, False]
+    finally:
+        await prr.stop_part_render_runtime()
+
+
+@pytest.mark.asyncio
+async def test_restore_without_a_scheduler_asks_for_a_completed_proof(tmp_path, monkeypatch):
+    """Consilium E3-I-R2: a start that failed before the proof ran is no proof either."""
+    from backend.app.services import part_render_scheduler
+
+    def broken(self):
+        raise OSError("the data directory cannot be written")
+
+    monkeypatch.setattr(PartRenderRuntime, "_directories", broken)
+    monkeypatch.setattr(prr, "runtime", None)
+    monkeypatch.setattr(part_render_scheduler, "scheduler", None)
+    try:
+        with pytest.raises(OSError):
+            await prr.start_part_render_runtime(tmp_path, ROOT)  # the lifespan logs this and goes on
+        assert not await part_render_scheduler.stop_part_render_scheduler("restore")
+    finally:
+        await prr.stop_part_render_runtime()
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_earlier_run_lets_restore_through(tmp_path, monkeypatch):
+    from backend.app.services import part_render_scheduler
+
+    _earlier_run(tmp_path, recorded=True)
+    monkeypatch.setattr(prr, "runtime", None)
+    monkeypatch.setattr(part_render_scheduler, "scheduler", None)
+    try:
+        await prr.start_part_render_runtime(tmp_path, ROOT)
+        assert await part_render_scheduler.stop_part_render_scheduler("restore")
+    finally:
+        await prr.stop_part_render_runtime()
+
+
+@pytest.mark.asyncio
+async def test_a_generation_records_its_owner_its_worker_and_the_service(live):
+    """Consilium E3-I-R1: what a later start needs to prove this run over -- main, and the worker's parent and
+    worker, recorded before either got any input."""
+    runtime, _ = live
+    staging = runtime.staging
+    assert all((staging / f"{name}.pid").is_file() for name in ("owner", "worker", "service"))
 
 
 def test_health_only_reads(tmp_path, monkeypatch):
@@ -687,8 +775,22 @@ async def test_a_task_too_big_for_the_wire_is_a_failed_attempt_not_a_retired_wor
 
     monkeypatch.setattr(runtime, "rpc", no_rpc)
     monkeypatch.setattr(runtime, "retire", no_retire)
-    deep = tmp_path / ("ї" * 4000) / "plate.3mf"
-    result = await runtime.render(task_for(deep), mode="fallback", deadline_ns=deadline(5))
+    # built by hand: a path this long cannot even be stat()ed on Linux, and main never touches the source
+    # (consilium E3-I-R4)
+    deep = str(tmp_path / ("ї" * 4000) / "plate.3mf")
+    task = RenderTask(
+        render_id=1,
+        file_sha256="a" * 64,
+        plate_index=1,
+        renderer_version=2,
+        phase="render",
+        reason=None,
+        attempts=0,
+        priority=1,
+        has_result=False,
+        source=SourceRef(library_file_id=1, path=deep, root=str(tmp_path), kind="3mf", size=1),
+    )
+    result = await runtime.render(task, mode="fallback", deadline_ns=deadline(5))
     assert result.outcome == "crashed"
 
 

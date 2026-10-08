@@ -18,13 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import subprocess
 import time
 from pathlib import Path
 from uuid import uuid4
 
-from backend.app.services import render_runtime
+from backend.app.services import part_render_tree, render_runtime
 from backend.app.services.analysis_transport import AnalysisArtifact, get
 from backend.app.services.local_worker_broker import get_local_worker_broker
 from backend.app.services.part_render_node import NodeRenderError, node_env, verify_bundle
@@ -35,7 +36,7 @@ from backend.app.services.part_render_protocol import (
     PackError,
     unpack,
 )
-from backend.app.services.part_render_tree import strays, tree_gone
+from backend.app.services.part_render_tree import generation_gone, tree_gone
 from backend.app.services.part_render_types import AttemptResult, Mode, RenderTask, RuntimeUnavailable
 from backend.app.services.preview_artifacts import disk, owned
 from backend.app.services.preview_process import PreviewProcess, SpawnUnproven
@@ -85,6 +86,8 @@ class PartRenderRuntime:
         self.ready = False
         self.closed = False
         self.uncertain = False
+        # every earlier run proven over: until then restore is refused even without a scheduler (E3-I-R2)
+        self.earlier_proven = False
         self.staging_over = False
         self.reason: str | None = "not_started"
         self.node: render_runtime.NodeInstall | None = None
@@ -242,44 +245,31 @@ class PartRenderRuntime:
 
     def _prove_previous_generations(self) -> None:
         """An attempt of an earlier process that cannot be proven over closes admission: its reader may still
-        hang on the share this process would read next.
-
-        The proof is first an observation: when no process of ours lives outside this process's tree
-        (``strays``), nothing of an earlier run is alive, whatever its records say -- a launch without its
-        record included, which a crash inside a spawn window leaves behind and no record could ever settle
-        (final review C2). Only when something of ours survives are the earlier attempts proven by their
-        records, strictly. Either way, once proven, an earlier run's staging has no owner and goes."""
+        hang on the share this process would read next. The proof is the records of each earlier generation,
+        parents first (``part_render_tree.generation_gone``); once every earlier run is proven over, its
+        staging has no owner and goes (final review C2, consilium E3-I-R1)."""
         staging = self.staging.parent
-        if not staging.is_dir():
-            return
-        earlier = [
-            path
-            for path in staging.iterdir()
-            if path != self.staging and _HEX.fullmatch(path.name) and path.is_dir() and not path.is_symlink()
-        ]
-        if not earlier:
-            return
-        survivors = strays()
-        if survivors:
-            for generation in earlier:
-                service = generation / "service"
-                if not service.is_dir():
-                    continue
-                for attempt in service.iterdir():
-                    if _HEX.fullmatch(attempt.name) and attempt.is_dir() and not tree_gone(attempt, strict=True):
-                        self.uncertain, self.reason = True, "ownership_uncertain"
-                        logger.error(
-                            "Part render ownership uncertain: attempt=%s of an earlier run is not proven gone "
-                            "and %d process(es) of ours outlive their run",
-                            attempt.name[:8],
-                            len(survivors),
-                        )
-                        return
+        earlier = (
+            [
+                path
+                for path in staging.iterdir()
+                if path != self.staging and _HEX.fullmatch(path.name) and path.is_dir() and not path.is_symlink()
+            ]
+            if staging.is_dir()
+            else []
+        )
+        for generation in earlier:
+            if not generation_gone(generation):
+                self.uncertain, self.reason = True, "ownership_uncertain"
+                logger.error("Part render ownership uncertain: run %s is not proven over", generation.name[:8])
+                return
         for generation in earlier:
             cleanup = cleanup_owned(generation)
             if cleanup.status == "retained_error":
                 logger.warning("Part render earlier run staging retained: %s", cleanup.error_type)
-        logger.info("Part render earlier runs over: staging of %d removed", len(earlier))
+        if earlier:
+            logger.info("Part render earlier runs over: staging of %d removed", len(earlier))
+        self.earlier_proven = True
 
     def _report_retained_staging(self) -> None:
         empty = 0
@@ -333,7 +323,14 @@ class PartRenderRuntime:
         ownership_uncertain stops that for good."""
         self.reason = "starting"
         await disk(self._directories)
-        await disk(self._prove_previous_generations)
+        # this run records itself before it spawns anything, so a later start can prove it over (E3-I-R1)
+        await disk(part_render_tree.record, self.staging / "owner.pid", os.getpid())
+        try:
+            await disk(self._prove_previous_generations)
+        except Exception:
+            # no proof is no proof: records kept, admission and restore closed (consilium E3-I-R2)
+            self.uncertain, self.reason = True, "ownership_uncertain"
+            logger.exception("Part render ownership uncertain: the proof of earlier runs failed")
         self._report_retained_staging()
         await disk(self._probe_node)
         if self.uncertain:
@@ -393,6 +390,7 @@ class PartRenderRuntime:
         self.epoch = uuid4().hex
 
         async def spawn():
+            await disk(part_render_tree.launch, self.staging, "worker")
             try:
                 self.service = await disk(
                     PreviewProcess,
@@ -406,6 +404,7 @@ class PartRenderRuntime:
                         "staging": str(self.staging / "service"),
                     },
                     self.root / "cache",
+                    on_spawn=lambda pid: part_render_tree.record(self.staging / "worker.pid", pid),
                 )
             except SpawnUnproven as exc:
                 # its guardian existed, its start failed, and nothing proved it gone: no worker beside it

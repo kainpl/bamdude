@@ -81,3 +81,36 @@ def test_the_guardian_records_part_render_before_its_bootstrap(tmp_path):
     recorded = json.loads((attempt / "child.pid").read_text(encoding="ascii"))
     assert recorded["pid"] != child.process.pid  # the part_render process, recorded by its guardian
     assert json.loads((attempt / "result.json").read_text(encoding="utf-8"))["reason"] == "source_read_failed"
+
+
+def test_the_guardian_records_the_part_render_service_before_its_bootstrap(tmp_path):
+    """Consilium E3-I-R1: the worker is recorded in its generation, so a later start can prove the parent of
+    every unrecorded attempt guardian dead."""
+    import json
+    import uuid
+
+    from backend.app.services.preview_process import PreviewProcess
+
+    generation = tmp_path / "generation"
+    (generation / "service").mkdir(parents=True)
+    boot = {
+        "url": "nats://127.0.0.1:9",
+        "token": "x",
+        "bucket": "b",
+        "generation": uuid.uuid4().hex,
+        "epoch": uuid.uuid4().hex,
+        "staging": str(generation / "service"),
+    }
+    import time
+
+    worker = PreviewProcess("backend.app.part_render_service", boot, tmp_path / "cache")
+    try:
+        for _ in range(200):  # the guardian records the service before the service has its bootstrap
+            if (generation / "service.pid").exists():
+                break
+            time.sleep(0.05)
+    finally:
+        worker.stop()  # no broker on port 9: the tree is stopped here, whatever the service does next
+    assert (generation / "service.launch").exists()
+    recorded = json.loads((generation / "service.pid").read_text(encoding="ascii"))
+    assert recorded["pid"] != worker.process.pid

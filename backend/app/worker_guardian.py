@@ -24,6 +24,8 @@ _PREVIEW_MODULES = {
     "backend.app.part_render",
 }
 _CAMERA_MODULE = "backend.app.camera_worker"
+# the workers whose guardian records them before their bootstrap, and under what name
+_RECORDED = {"backend.app.part_render": "child", "backend.app.part_render_service": "service"}
 _PREVIEW_BOOTSTRAP_LIMIT = 16384
 _CAMERA_BOOTSTRAP_LIMIT = 65536
 
@@ -66,17 +68,20 @@ def main():
         module, child_bootstrap = _child_bootstrap(bytes(bootstrap))
     except (KeyError, TypeError, ValueError, UnicodeDecodeError):
         return 2
-    records = None
-    if module == "backend.app.part_render":
-        # plan E3, R12: the parent writes the record, before the child has its bootstrap. Lazy import --
-        # every other worker keeps a guardian that imports nothing of the app.
+    records = name = None
+    if module in _RECORDED:
+        # plan E3, R12: the parent writes the record, before the child has its bootstrap -- part_render in its
+        # attempt directory, the part-render worker in its generation (consilium E3-I-R1). Lazy import: every
+        # other worker keeps a guardian that imports nothing of the app.
         from pathlib import Path
 
         from backend.app.services.part_render_tree import launch, record
 
-        records = Path(json.loads(child_bootstrap)["root"])
+        boot = json.loads(child_bootstrap)
+        name = _RECORDED[module]
+        records = Path(boot["root"]) if name == "child" else Path(boot["staging"]).parent
         try:
-            launch(records, "child")
+            launch(records, name)
         except (OSError, ValueError):
             return 2
     child = subprocess.Popen(
@@ -86,7 +91,7 @@ def main():
     )
     if records is not None:
         try:
-            record(records / "child.pid", child.pid)
+            record(records / f"{name}.pid", child.pid)
         except Exception:
             child.kill()  # unrecorded and still waiting for its bootstrap: it never ran
             child.wait()

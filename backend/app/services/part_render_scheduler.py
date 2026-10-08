@@ -233,10 +233,11 @@ async def start_part_render(base: Path, app_dir: Path) -> None:
 
 async def stop_part_render_scheduler(reason: str) -> bool:
     """True when nothing of the queue may still run. A scheduler that never started has nothing in flight,
-    but its runtime may still be uncertain from its start."""
+    but its runtime must still have COMPLETED its proof of earlier runs -- a start that failed before or
+    during it proves nothing (consilium E3-I-R2)."""
     if scheduler is None:
         current = get_part_render_runtime()
-        return current is None or not current.uncertain
+        return current is None or (current.earlier_proven and not current.uncertain)
     return await scheduler.stop(reason)
 
 
