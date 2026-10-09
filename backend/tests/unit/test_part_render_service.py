@@ -111,8 +111,18 @@ async def tree_of(service: Service, *, at_least: int = 1) -> list[psutil.Process
 
 
 def gone(processes: list[psutil.Process]) -> bool:
-    _, alive = psutil.wait_procs(processes, timeout=10)
-    return not [p for p in alive if p.status() != psutil.STATUS_ZOMBIE]
+    """Each process has ended within 10 s, a zombie included -- asked through the proof's own wait, which
+    survives psutil's EINVAL for a process another parent reaps while it is waited for (psutil.wait_procs
+    raised it here on Linux, about one run in four)."""
+    from backend.app.services.part_render_tree import _wait
+
+    def ended(process):
+        try:
+            return _wait(process, 10)
+        except psutil.NoSuchProcess:
+            return True
+
+    return all(ended(p) for p in processes)
 
 
 def dead_now(processes: list[psutil.Process]) -> bool:
@@ -310,19 +320,24 @@ def test_a_worker_dying_between_spawn_and_record_leaves_no_proof(tmp_path):
 @pytest.mark.asyncio
 async def test_the_watchdog_kills_a_busy_node_and_proves_it_gone(tmp_path, monkeypatch):
     service_root = tmp_path / "service"
+    seen: list[psutil.Process] = []
 
     def rss(self):  # over budget the moment Node is recorded, so the kill lands on a live Node
-        return 10**12 if next(service_root.glob("*/node.pid"), None) else 0
+        if next(service_root.glob("*/node.pid"), None) is None:
+            return 0
+        if not seen:
+            # the tree as the watchdog finds it, before its kill: polling for it from the test raced the kill,
+            # which can land within one poll interval of Node's record
+            guardian = psutil.Process(self.process.pid)
+            seen.extend([guardian, *guardian.children(recursive=True)])
+        return 10**12
 
     monkeypatch.setattr(PreviewProcess, "rss", rss)
     service = make_service(tmp_path)
-    run = asyncio.create_task(
-        service.command(command(task_for(big_plate(tmp_path / "f.3mf")), node=NODE, deadline_s=120))
-    )
-    processes = await tree_of(service, at_least=2)  # part_render and Node
-    reply = await run
+    reply = await service.command(command(task_for(big_plate(tmp_path / "f.3mf")), node=NODE, deadline_s=120))
     assert reply == {"outcome": "memory_limit"}
-    assert dead_now(processes)
+    assert len(seen) >= 3  # the attempt's guardian, part_render and the recorded Node
+    assert dead_now(seen)
 
 
 @needs_node

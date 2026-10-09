@@ -11,6 +11,14 @@ import pytest
 from backend.app.services.part_render_tree import launch, record, tree_gone
 
 SLEEP = [sys.executable, "-c", "import time; time.sleep(60)"]
+# boots in THIS platform's format: a persisted boot counts only in it (consilium r4, R4.2)
+_BOOT_A, _BOOT_B = (
+    ("bootid-41", "bootid-42")
+    if sys.platform == "win32"
+    else ("6c1f9a2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b", "7d2a0b3f-4c5e-4f60-9b0c-1d2e3f4a5b6c")
+)
+# the run's owner as each platform's records name it
+_OWNER = "HOST\\me" if os.name == "nt" else 1000
 
 
 def _spawn():
@@ -80,7 +88,7 @@ def test_a_clock_step_does_not_make_a_live_process_look_like_a_stranger(tmp_path
     from backend.app.services import part_render_tree as tree
 
     monkeypatch.setattr(tree, "_BOOT_RELATIVE", True)
-    monkeypatch.setattr(tree, "_boot_id", lambda: "boot-a")  # the same boot: only the clock moved
+    monkeypatch.setattr(tree, "_boot_id", lambda: _BOOT_A)  # the same boot: only the clock moved
     process = _spawn()
     try:
         record(tmp_path / "node.pid", process.pid)
@@ -210,9 +218,9 @@ def test_a_killed_process_that_stays_a_zombie_is_proven_stopped(tmp_path, monkey
             raise psutil.TimeoutExpired(timeout)
 
     monkeypatch.setattr(tree.psutil, "Process", Orphan)
-    monkeypatch.setattr(tree, "_boot_id", lambda: "boot-a")
+    monkeypatch.setattr(tree, "_boot_id", lambda: _BOOT_A)
     entry = tmp_path / "node.pid"
-    entry.write_text(json.dumps({"pid": 4242, "create_time": 1000.0, "boot": "boot-a"}), encoding="ascii")
+    entry.write_text(json.dumps({"pid": 4242, "create_time": 1000.0, "boot": _BOOT_A}), encoding="ascii")
     assert tree._gone(entry, timeout=0.1)
     assert Orphan.killed
 
@@ -342,7 +350,7 @@ def test_a_stopped_real_node_launched_without_a_record_is_ended_by_the_proof(tmp
 class _Kernel:
     """A modelled OS: the boot the reader reports, and whether anything was signalled."""
 
-    boot = "boot-a"
+    boot = _BOOT_A
     killed = False
 
 
@@ -351,7 +359,7 @@ def _model(monkeypatch, *, ticks: float = 25.0):
 
     from backend.app.services import part_render_tree as tree
 
-    _Kernel.boot, _Kernel.killed = "boot-a", False
+    _Kernel.boot, _Kernel.killed = _BOOT_A, False
 
     class Process:
         def __init__(self, pid):
@@ -383,7 +391,7 @@ def test_a_record_from_another_boot_has_ended_and_its_pid_is_never_signalled(tmp
     """Consilium r2, R2.2: the same pid at the same tick after a reboot is another process."""
     tree = _model(monkeypatch)
     tree.record(tmp_path / "node.pid", 4242)
-    _Kernel.boot = "boot-b"
+    _Kernel.boot = _BOOT_B
     assert tree._gone(tmp_path / "node.pid", timeout=0.1)
     assert not _Kernel.killed
     assert tree._gone(tmp_path / "node.pid", timeout=0.1, kill=False)  # an earlier boot's main has ended too
@@ -430,7 +438,7 @@ def test_a_run_of_another_boot_is_over_whatever_a_power_cut_left_of_its_files(tm
     must not keep the runtime closed, and no pid the run recorded is signalled."""
     from backend.app.services import part_render_tree as tree
 
-    monkeypatch.setattr(tree, "_boot_id", lambda: "boot-a")
+    monkeypatch.setattr(tree, "_boot_id", lambda: _BOOT_A)
     generation, attempt = _generation(tmp_path)
     stranger = _spawn()  # what holds the recorded pids in the next boot
     try:
@@ -438,7 +446,7 @@ def test_a_run_of_another_boot_is_over_whatever_a_power_cut_left_of_its_files(tm
         record(generation / "worker.pid", stranger.pid)
         (attempt / "node.launch").write_text("", encoding="ascii")  # its token lost
         (attempt / "child.pid.part").write_text("{", encoding="ascii")  # its record torn
-        monkeypatch.setattr(tree, "_boot_id", lambda: "boot-b")
+        monkeypatch.setattr(tree, "_boot_id", lambda: _BOOT_B)
         assert tree.generation_gone(generation)
         assert stranger.poll() is None  # never signalled
     finally:
@@ -503,7 +511,7 @@ class _Holder:
         from backend.app.services.part_render_tree import launch_arg
 
         self.pid = pid
-        self.info = {"cmdline": ["python", launch_arg("a" * 32)]}
+        self.info = {"cmdline": ["python", launch_arg("a" * 32)], "username": _OWNER, "uids": _Uids(1000, 1000, 1000)}
 
     def status(self):
         import psutil
@@ -525,7 +533,7 @@ def test_a_holder_started_by_a_holder_during_the_scan_is_found_by_the_next_round
     _Holder.killed = []
     rounds = iter([[_Holder(1)], [_Holder(2)], []])
     monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: next(rounds))
-    assert tree._end_launched("a" * 32, timeout=0.1)
+    assert tree._end_launched("a" * 32, 0.1, _OWNER)
     assert _Holder.killed == [1, 2]
 
 
@@ -534,7 +542,7 @@ def test_holders_that_keep_appearing_are_not_proven_ended(monkeypatch):
 
     _Holder.killed = []
     monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: [_Holder(len(_Holder.killed) + 1)])
-    assert not tree._end_launched("a" * 32, timeout=0.1)
+    assert not tree._end_launched("a" * 32, 0.1, _OWNER)
 
 
 _Uids = __import__("collections").namedtuple("puids", "real effective saved")
@@ -586,8 +594,9 @@ def test_a_token_holder_of_another_user_never_blocks_the_proof_nor_is_touched(tm
     assert not _Stranger.touched
 
 
-def test_a_run_whose_owner_record_names_no_user_counts_every_holder(tmp_path, monkeypatch):
-    """A record from before the user was stored cannot tell a stranger from ours: fail closed."""
+def test_a_run_whose_owner_names_no_user_has_no_authority_over_a_token_holder(tmp_path, monkeypatch):
+    """Consilium r4, R4.1: without the run's user nothing shows a token holder is ours -- the token is public.
+    The holder keeps the run unproven and is not signalled."""
     from backend.app.services import part_render_tree as tree
 
     generation, attempt = _generation(tmp_path)
@@ -596,8 +605,10 @@ def test_a_run_whose_owner_record_names_no_user_counts_every_holder(tmp_path, mo
     owner.pop("user", None)
     (generation / "owner.pid").write_text(json.dumps(owner), encoding="ascii")
     token = launch(attempt, "node")
+    _Stranger.touched = False
     monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: [_Stranger(token)])
     assert not tree.generation_gone(generation)
+    assert not _Stranger.touched
 
 
 def _orphan_under_a_recorded_parent(generation: Path, attempt: Path) -> tuple[int, str]:
@@ -685,9 +696,9 @@ def test_an_unrecorded_holder_whose_command_line_cannot_be_read_keeps_the_run_un
         _end(orphan)
 
 
-def test_an_unreadable_identity_is_no_proof_of_a_stranger(tmp_path, monkeypatch):
-    """Consilium r3, R3.1: only a positively read identity makes a process a stranger. Its identity hidden, a
-    holder whose command line carries the token is still ours to end."""
+def test_a_token_holder_whose_user_cannot_be_read_keeps_the_run_unproven_and_is_not_signalled(tmp_path, monkeypatch):
+    """Consilium r4, R4.1: a hidden identity shows neither a stranger nor ours. The token is public, so it is no
+    authority to signal: the holder keeps the run unproven, untouched."""
     import psutil
 
     from backend.app.services.part_render_tree import generation_gone
@@ -705,9 +716,9 @@ def test_an_unreadable_identity_is_no_proof_of_a_stranger(tmp_path, monkeypatch)
 
     monkeypatch.setattr(psutil.Process, attribute, denied)
     try:
-        assert generation_gone(generation)
-        monkeypatch.undo()
-        assert _holders(token) == []
+        assert not generation_gone(generation)
+        assert psutil.pid_exists(orphan) and psutil.Process(orphan).status() != psutil.STATUS_ZOMBIE
+        assert (attempt / "node.launch").exists()
     finally:
         monkeypatch.undo()
         _end(orphan)
@@ -795,7 +806,7 @@ def test_no_boot_identity_never_signals_an_ambiguous_pid_off_linux(tmp_path, mon
         _Kernel.boot = None
     entry = tmp_path / "node.pid"
     record(entry, 4242)
-    _Kernel.boot = "boot-b" if boot_failure == "record_boot_unknown" else None
+    _Kernel.boot = _BOOT_B if boot_failure == "record_boot_unknown" else None
     assert not tree._gone(entry, timeout=0.1)
     assert not _Kernel.killed
 
@@ -858,3 +869,161 @@ def test_a_windows_boot_counter_is_a_dword(value, kind, boot):
     from backend.app.services import part_render_tree as tree
 
     assert tree._windows_boot(value, kind) == boot
+
+
+class _Readable(_Holder):
+    """A process whose command line carries the token, with the identity a platform reads (None: hidden)."""
+
+    def __init__(self, pid, *, uid=None, user=None):
+        super().__init__(pid)
+        self.info["uids"] = None if uid is None else _Uids(uid, uid, uid)
+        self.info["username"] = user
+
+
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize(
+    ("owner", "readable"),
+    [
+        ("known", False),  # the holder's user cannot be read
+        ("missing", True),  # the run's owner names no user
+    ],
+)
+def test_a_public_token_is_no_authority_to_signal_an_unverified_user(monkeypatch, windows, owner, readable):
+    """Consilium r4, R4.1: a token holder is signalled only when its user is READ and IS the run's owner."""
+    ours = (_OWNER if windows else 1000) if owner == "known" else None
+    holder = _Readable(9, uid=1000 if readable else None, user=(_OWNER if windows else None) if readable else None)
+    if windows and readable:
+        holder.info["username"] = "HOST\\me"
+    _Holder.killed = []
+    tree = _scan(monkeypatch, [holder], windows=windows)
+    assert not tree._end_launched("a" * 32, 0.1, "HOST\\me" if windows and ours else ours)
+    assert _Holder.killed == []
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_a_token_holder_read_as_the_owner_is_ended(monkeypatch, windows):
+    holder = _Readable(9, uid=1000, user="HOST\\me")
+    _Holder.killed = []
+    tree = _scan(monkeypatch, [], windows=windows)
+    rounds = iter([[holder], []])  # killed in the first round, gone in the second
+    monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: next(rounds))
+    assert tree._end_launched("a" * 32, 0.1, "HOST\\me" if windows else 1000)
+    assert _Holder.killed == [9]
+
+
+@pytest.mark.parametrize("bad", ["unknown", "not-a-uuid", "bootid-no-counter", "bootid-4294967296", "BOOTID-1", " "])
+def test_a_malformed_persisted_boot_is_no_proof_that_a_live_run_ended(tmp_path, bad):
+    """Consilium r4, R4.2: a persisted boot counts only in its platform's format. Any other text is no
+    observation of an earlier boot, and a run whose main still lives is not over."""
+    from backend.app.services.part_render_tree import generation_gone
+
+    generation, _ = _generation(tmp_path)
+    record(generation / "owner.pid", os.getpid())  # this live process plays the earlier run's main
+    data = json.loads((generation / "owner.pid").read_text(encoding="ascii"))
+    data["boot"] = bad
+    (generation / "owner.pid").write_text(json.dumps(data), encoding="ascii")
+    assert not generation_gone(generation)
+
+
+def test_a_valid_persisted_boot_of_another_platform_format_is_no_identity_here(monkeypatch):
+    from backend.app.services import part_render_tree as tree
+
+    monkeypatch.setattr(tree, "_boot_id", lambda: _BOOT_A)
+    other = "6c1f9a2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b" if sys.platform == "win32" else "bootid-41"
+    assert not tree._another_boot({"boot": other})
+    assert tree._another_boot({"boot": _BOOT_B})
+
+
+@pytest.mark.parametrize(
+    ("windows", "boot", "known"),
+    [
+        (True, "bootid-0", True),
+        (True, "bootid-4294967295", True),
+        (True, "bootid-4294967296", False),
+        (True, "bootid-07", False),
+        (True, "bootid-", False),
+        (True, "6c1f9a2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b", False),
+        (False, "6c1f9a2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b", True),
+        (False, "6C1F9A2E-3B4D-4E5F-8A9B-0C1D2E3F4A5B", False),
+        (False, "bootid-41", False),
+        (False, "unknown", False),
+        (False, None, False),
+        (False, 41, False),
+    ],
+)
+def test_a_persisted_boot_counts_only_in_its_platform_format(monkeypatch, windows, boot, known):
+    """Consilium r4, R4.2, both formats on every platform: exactly what the platform's reader writes."""
+    from backend.app.services import part_render_tree as tree
+
+    monkeypatch.setattr(tree, "_WINDOWS_BOOT", windows)
+    assert (tree._known_boot(boot) is not None) is known
+
+
+class _Reaped:
+    """A killed process another parent reaps while it is waited for: psutil 7's pidfd wait then raises the
+    kernel's EINVAL, which it maps to nothing (``wait_pid_pidfd_open`` handles ESRCH only)."""
+
+    def __init__(self, *, running: bool, zombie: bool = False):
+        self.pid, self._running, self._zombie, self.killed = 4242, running, zombie, False
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        import errno
+
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+    def is_running(self):
+        return self._running
+
+    def status(self):
+        import psutil
+
+        return psutil.STATUS_ZOMBIE if self._zombie else psutil.STATUS_RUNNING
+
+
+@pytest.mark.parametrize(
+    ("running", "zombie", "ended"), [(False, False, True), (True, True, True), (True, False, False)]
+)
+def test_a_wait_the_kernel_answers_with_einval_asks_the_process_again(running, zombie, ended):
+    """Reaped while waited for (or the pid now names a thread): its identity answers instead of the wait --
+    gone or a stranger now, or a zombie, it has ended; still running as itself, it has not."""
+    from backend.app.services import part_render_tree as tree
+
+    assert tree._wait(_Reaped(running=running, zombie=zombie), timeout=0.1) is ended
+
+
+def test_a_reaped_process_does_not_turn_the_proof_into_an_error(tmp_path, monkeypatch):
+    """The record proof survives the race instead of raising out of it (which made the worker uncertain)."""
+    from backend.app.services import part_render_tree as tree
+
+    reaped = _Reaped(running=False)
+
+    class Live:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def create_time(self):
+            return 1000.0
+
+        def status(self):
+            import psutil
+
+            return psutil.STATUS_RUNNING
+
+        def kill(self):
+            reaped.kill()
+
+        def wait(self, timeout=None):
+            return reaped.wait(timeout)
+
+        def is_running(self):
+            return reaped.is_running()
+
+    monkeypatch.setattr(tree, "_BOOT_RELATIVE", False)
+    monkeypatch.setattr(tree.psutil, "Process", Live)
+    entry = tmp_path / "node.pid"
+    entry.write_text(json.dumps({"pid": 4242, "create_time": 1000.0}), encoding="ascii")
+    assert tree._gone(entry, timeout=0.1, this_run=True)
+    assert reaped.killed

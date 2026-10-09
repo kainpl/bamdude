@@ -22,11 +22,13 @@ pid -- now some other process's -- is never signalled (consilium r2, R2.2).
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -50,6 +52,8 @@ _KERNEL_PIDS = {0, 4}  # Windows: the idle process and System
 _LAUNCH = "--bamdude-launch="
 _TOKEN = re.compile(r"[0-9a-f]{32}\Z")
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+_DWORD_BOOT = re.compile(r"bootid-(0|[1-9][0-9]{0,9})\Z")
+_WINDOWS_BOOT = sys.platform == "win32"  # the format this platform's reader writes: a counter, else a UUID
 _END_ROUNDS = 4  # a venv launcher, the interpreter it starts, then a round that finds none -- and one spare
 _WINDOWS_BOOT_KEY = r"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters"
 _REG_DWORD = 4
@@ -158,6 +162,34 @@ def record(path: Path, pid: int) -> None:
     _fsync_dir(path.parent)  # durable before the process gets its input -- a power cut keeps the record
 
 
+def _wait(process: psutil.Process, timeout: float) -> bool:
+    """Wait for a killed process; True when it has ended -- a zombie included.
+
+    psutil 7 waits for a process that is not our child through a pidfd, and the kernel answers EINVAL when the
+    pid still exists without its task -- another parent reaping it at that moment, or the pid now naming a
+    thread. psutil maps that to nothing and raises the bare OSError, which turned a finished kill into an
+    error and the worker into ownership_uncertain. Then the process is asked again by its identity
+    (``is_running`` compares the start too): gone or a stranger now, or a zombie, it has ended."""
+    try:
+        process.wait(timeout=timeout)
+        return True
+    except psutil.TimeoutExpired:
+        return process.status() == psutil.STATUS_ZOMBIE
+    except OSError as exc:  # psutil's own errors are not OSError
+        if exc.errno != errno.EINVAL:
+            raise
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+                return True
+        except psutil.NoSuchProcess:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
 def _gone(entry: Path, timeout: float, *, kill: bool = True, this_run: bool = False) -> bool:
     """The recorded process has ended -- killed first when ``kill`` and it still runs. An exited process this
     process cannot reap (an orphan whose new parent never reaps: a container's PID 1 without a reaper) stays
@@ -187,11 +219,7 @@ def _gone(entry: Path, timeout: float, *, kill: bool = True, this_run: bool = Fa
         if not kill or not placed:
             return False
         process.kill()
-        try:
-            process.wait(timeout=timeout)
-        except psutil.TimeoutExpired:
-            return process.status() == psutil.STATUS_ZOMBIE
-        return True
+        return _wait(process, timeout)
     except psutil.NoSuchProcess:
         return True
     except psutil.AccessDenied:
@@ -217,10 +245,21 @@ def tree_gone(attempt_dir: Path, *, strict: bool, timeout: float = 5) -> bool:
     return True
 
 
+def _known_boot(boot: object) -> str | None:
+    """A boot identity in this platform's format -- what ``_read_boot_id`` writes -- else None. A persisted
+    boot is checked like the reader's answer: other text is no observation of any boot (consilium r4, R4.2)."""
+    if not isinstance(boot, str):
+        return None
+    if _WINDOWS_BOOT:
+        counter = _DWORD_BOOT.fullmatch(boot)
+        return boot if counter and int(counter.group(1)) <= 0xFFFFFFFF else None
+    return boot if _UUID.fullmatch(boot) else None
+
+
 def _boots(data: dict) -> tuple[str, str] | None:
     """The record's boot and this one, when both are known."""
-    boot, now = data.get("boot"), _boot_id()
-    if not isinstance(boot, str) or not boot or now is None:
+    boot, now = _known_boot(data.get("boot")), _boot_id()  # the reader checks its own answer
+    if boot is None or now is None:
         return None
     return boot, now
 
@@ -265,7 +304,11 @@ def _holders(marker: str, owner: int | str | None) -> list[psutil.Process] | Non
     - on Windows, a process running another program (``_another_program``) -- a launch of ours runs Python
       or Node, under the command line that carries its token;
     - a zombie, which has ended.
-    Any other process whose command line cannot be read may be ours: the scan is no proof of absence."""
+    Any other process whose command line cannot be read may be ours: the scan is no proof of absence.
+
+    The token is public, so carrying it is no authority to signal (consilium r4, R4.1): a holder is returned
+    -- to be killed -- only when its identity is READ and IS the run's owner. A holder whose identity cannot
+    be read, or any holder of a run whose owner names no identity, keeps the scan unproven, untouched."""
     attrs = ["cmdline", "username", "name", "ppid"] if _WINDOWS else ["cmdline", "uids"]
     found = []
     for process in psutil.process_iter(attrs):
@@ -275,6 +318,8 @@ def _holders(marker: str, owner: int | str | None) -> list[psutil.Process] | Non
         cmdline = process.info.get("cmdline")
         if cmdline is not None:
             if marker in cmdline:
+                if owner is None or identity is None:
+                    return None  # nothing shows it is ours: no proof, no signal
                 found.append(process)
             continue
         if _WINDOWS and _another_program(process.info):
@@ -290,7 +335,7 @@ def _holders(marker: str, owner: int | str | None) -> list[psutil.Process] | Non
     return found
 
 
-def _end_launched(token: str, timeout: float, owner: int | str | None = None) -> bool:
+def _end_launched(token: str, timeout: float, owner: int | str | None) -> bool:
     """End every process started with this launch's token; True when a scan finds none left running.
 
     Called only once the launch's parent is proven dead, so the token can be held only by what that parent
@@ -299,8 +344,8 @@ def _end_launched(token: str, timeout: float, owner: int | str | None = None) ->
     holder dead by the end of a round starts nothing more, so a round that finds none closes the set. A
     zombie has ended. A round that cannot read a process that may be a holder proves nothing (``_holders``).
 
-    ``owner`` is the run's user, as its owner record names it: without it no process is a stranger and every
-    holder counts -- fail closed."""
+    ``owner`` is the run's user, as its owner record names it: without it no process is a stranger, and no
+    holder is shown to be ours -- one found keeps the run unproven."""
     marker = launch_arg(token)
     for _ in range(_END_ROUNDS):
         found = _holders(marker, owner)
@@ -313,11 +358,8 @@ def _end_launched(token: str, timeout: float, owner: int | str | None = None) ->
                     continue
                 alive = True
                 process.kill()
-                try:
-                    process.wait(timeout=timeout)
-                except psutil.TimeoutExpired:
-                    if process.status() != psutil.STATUS_ZOMBIE:
-                        return False
+                if not _wait(process, timeout):
+                    return False
             except psutil.NoSuchProcess:
                 continue
             except psutil.AccessDenied:
