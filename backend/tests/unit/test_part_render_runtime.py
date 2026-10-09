@@ -16,7 +16,7 @@ from backend.app.services.local_worker_broker import LocalWorkerBroker
 from backend.app.services.part_render_runtime import PartRenderRuntime
 from backend.app.services.part_render_types import RenderTask, RuntimeUnavailable, SourceRef
 from backend.tests.fixtures.part_render_3mf import two_objects_3mf
-from backend.tests.unit.services.test_part_render_node import NODE, needs_node
+from backend.tests.unit.services.test_part_render_node import NODE, needs_pin
 
 ROOT = Path(__file__).resolve().parents[3]
 needs_fifo = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="a FIFO is how a read is hung here (POSIX)")
@@ -127,7 +127,7 @@ async def test_a_fallback_attempt_renders_through_the_real_worker(live, tmp_path
     assert len(started) == 1 and len(ended) == 1 and result.attempt_id[:8] in ended[0].getMessage()
 
 
-@needs_node
+@needs_pin
 @pytest.mark.asyncio
 async def test_a_full_attempt_renders_with_the_pinned_node(live, tmp_path):
     runtime, _ = live

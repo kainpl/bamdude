@@ -18,7 +18,7 @@ from backend.app.services import part_renders, render_runtime
 from backend.app.services.local_worker_broker import LocalWorkerBroker
 from backend.app.services.part_render_runtime import PartRenderRuntime
 from backend.tests.fixtures.part_render_3mf import two_objects_3mf
-from backend.tests.unit.services.test_part_render_node import needs_node
+from backend.tests.unit.services.test_part_render_node import needs_pin
 from backend.tests.unit.test_part_render_scheduler import make_scheduler, stop_parked
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -80,7 +80,7 @@ async def _instances(db, row) -> dict[int, str]:
     return {o.identify_id: o.method for o in found}
 
 
-@needs_node
+@needs_pin
 async def test_a_linked_file_goes_to_ready_through_the_real_worker(
     tmp_path, test_engine, db_session, monkeypatch, caplog
 ):

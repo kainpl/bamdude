@@ -1,6 +1,7 @@
 """part_render_service: an attempt is answered only once its whole tree is proven gone (plan E3, task 17)."""
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -369,8 +370,20 @@ async def test_a_killed_child_is_crashed_and_leaves_no_node(tmp_path):
 @needs_node
 @pytest.mark.asyncio
 async def test_a_node_past_the_childs_deadline_is_a_timeout_of_the_file(tmp_path):
+    """Node is suspended the moment it is recorded, so it is past the child's deadline on any machine -- a big
+    plate alone was rendered within those two seconds by a fast CI runner (ok instead of timeout)."""
     service = make_service(tmp_path)
-    reply = await service.command(command(task_for(big_plate(tmp_path / "f.3mf")), node=NODE, deadline_s=7))
+    run = asyncio.create_task(
+        service.command(command(task_for(big_plate(tmp_path / "f.3mf")), node=NODE, deadline_s=7))
+    )
+    node_pid = tmp_path / "service" / ATTEMPT / "node.pid"
+    for _ in range(800):
+        if node_pid.exists() or run.done():
+            break
+        await asyncio.sleep(0.01)
+    with contextlib.suppress(psutil.NoSuchProcess, ValueError, OSError):
+        psutil.Process(json.loads(node_pid.read_text(encoding="ascii"))["pid"]).suspend()
+    reply = await run
     assert reply == {"outcome": "done", "result": {"outcome": "failed", "reason": "timeout"}, "artifact": None}
 
 

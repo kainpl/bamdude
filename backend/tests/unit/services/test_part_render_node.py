@@ -35,6 +35,21 @@ NODE = _pinned_node()
 needs_node = pytest.mark.skipif(NODE is None, reason="no pinned Node and none on PATH")
 
 
+def _provisioned_pin() -> bool:
+    """The runtime renders with the provisioned pin alone (spec §6.2) -- a Node on PATH is not one."""
+    from backend.app.services import render_runtime
+
+    try:
+        return render_runtime.locate(Path(__file__).resolve().parents[4]) is not None
+    except render_runtime.UnsupportedPlatform:
+        return False
+
+
+# A test of the real runtime: CI's Backend Tests job has a Node on PATH but no pin, and there the runtime waits
+# for one (runtime_missing) -- Part Render Smoke provisions the pin and runs these on three OSes.
+needs_pin = pytest.mark.skipif(not _provisioned_pin(), reason="the runtime renders only with the provisioned pin")
+
+
 def test_the_runtime_tests_run_on_the_pin_when_it_is_provisioned():
     # spec §6.1/§6.3: the guarantees under test (permission model, env, OOM) are the PINNED Node's
     from backend.app.services import render_runtime
