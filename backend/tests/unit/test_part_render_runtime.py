@@ -807,3 +807,45 @@ def test_main_waits_for_the_workers_proof_and_upload_before_it_gives_up():
     from backend.app import part_render_service
 
     assert prr._REPLY_GRACE_SECONDS >= part_render_service._TRANSFER_SECONDS + 20
+
+
+@pytest.mark.asyncio
+async def test_the_attempt_end_logs_the_workers_crash_cause(tmp_path, monkeypatch, caplog):
+    """Parent-log invariant: a crashed attempt names its sanitized cause, so the next one is diagnosable."""
+    import types
+
+    caplog.set_level(logging.INFO, logger=prr.__name__)
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    runtime.ready, runtime.node_reason = True, None
+    runtime.nc = types.SimpleNamespace(is_connected=True)
+
+    async def crashed(command, timeout):
+        return {"outcome": "crashed", "crash": {"stage": "watch", "error": "FileNotFoundError", "path": "/x"}}
+
+    monkeypatch.setattr(runtime, "rpc", crashed)
+    result = await runtime.render(task_for(tmp_path / "x.3mf"), mode="fallback", deadline_ns=deadline(5))
+    assert (result.outcome, result.crash) == ("crashed", "watch:FileNotFoundError")
+    ended = [r.getMessage() for r in caplog.records if "outcome=crashed" in r.getMessage()]
+    assert len(ended) == 1 and "crash=watch:FileNotFoundError" in ended[0] and "/x" not in ended[0]
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_does_not_answer_is_logged_with_the_rpc_stage(tmp_path, monkeypatch, caplog):
+    import types
+
+    caplog.set_level(logging.INFO, logger=prr.__name__)
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    runtime.ready, runtime.node_reason = True, None
+    runtime.nc = types.SimpleNamespace(is_connected=True)
+
+    async def silent(command, timeout):
+        raise ConnectionResetError("gone")
+
+    async def settled(command):
+        return None
+
+    monkeypatch.setattr(runtime, "rpc", silent)
+    monkeypatch.setattr(runtime, "_cancel_or_retire", settled)
+    result = await runtime.render(task_for(tmp_path / "x.3mf"), mode="fallback", deadline_ns=deadline(5))
+    assert (result.outcome, result.crash) == ("crashed", "rpc:ConnectionResetError")
+    assert any("crash=rpc:ConnectionResetError" in r.getMessage() for r in caplog.records)

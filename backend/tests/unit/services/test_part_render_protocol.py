@@ -142,3 +142,28 @@ def test_unpack_refuses_a_png_over_its_ceiling_in_a_hand_made_pack(tmp_path):
     assert (tmp_path / "result.bin").stat().st_size < prp.ATTEMPT_BYTES
     with pytest.raises(prp.PackError, match="1.lg.png: size outside its ceiling"):
         prp.unpack(tmp_path / "result.bin", _out(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("crash", "summary"),
+    [
+        ({"stage": "no_result", "exit_code": 1}, "no_result:exit=1"),
+        ({"stage": "no_result", "exit_code": -9}, "no_result:exit=-9"),
+        ({"stage": "watch", "error": "FileNotFoundError"}, "watch:FileNotFoundError"),
+        ({"stage": "spawn", "error": "OSError"}, "spawn:OSError"),
+        ({"stage": "rpc", "error": "TimeoutError"}, "rpc:TimeoutError"),
+        ({"stage": "watch"}, "watch"),
+        # what a worker must not put into main's log
+        ({"stage": "elsewhere", "error": "OSError"}, None),
+        ({"stage": "watch", "error": "No such file: /library/secret.3mf"}, "watch"),
+        ({"stage": "no_result", "exit_code": True}, "no_result"),
+        ({"stage": "no_result", "exit_code": 2**40}, "no_result"),
+        ({"stage": "no_result", "exit_code": "1"}, "no_result"),
+        ("crashed", None),
+        (None, None),
+    ],
+)
+def test_a_crash_cause_reaches_the_log_only_as_a_stage_a_code_and_a_class_name(crash, summary):
+    from backend.app.services.part_render_types import crash_summary
+
+    assert crash_summary(crash) == summary

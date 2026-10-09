@@ -37,7 +37,13 @@ from backend.app.services.part_render_protocol import (
     unpack,
 )
 from backend.app.services.part_render_tree import generation_gone, tree_gone
-from backend.app.services.part_render_types import AttemptResult, Mode, RenderTask, RuntimeUnavailable
+from backend.app.services.part_render_types import (
+    AttemptResult,
+    Mode,
+    RenderTask,
+    RuntimeUnavailable,
+    crash_summary,
+)
 from backend.app.services.preview_artifacts import disk, owned
 from backend.app.services.preview_process import PreviewProcess, SpawnUnproven
 from backend.app.services.preview_protocol import CONTROL_SECONDS, PreviewError, decode, encode
@@ -626,6 +632,8 @@ class PartRenderRuntime:
                 if outcome not in _ATTEMPT_OUTCOMES:
                     raise RuntimeError(f"part render worker answered {outcome!r}")
                 result.outcome = outcome
+                if outcome == "crashed":
+                    result.crash = crash_summary(reply.get("crash"))  # re-checked: main logs only what passes
                 if outcome == "done":
                     result.result = reply.get("result")
                     if reply.get("artifact") is not None:
@@ -650,6 +658,8 @@ class PartRenderRuntime:
                 if not settled:
                     await owned(self._cancel_or_retire(command))  # RuntimeUnavailable when unproven
                 result.outcome = "timeout" if time.monotonic_ns() >= deadline_ns else "crashed"
+                if result.outcome == "crashed":
+                    result.crash = crash_summary({"stage": "rpc", "error": type(exc).__name__})
                 logger.warning("Part render attempt=%s worker did not answer: %s", attempt[:8], type(exc).__name__)
                 return result
             finally:
@@ -670,13 +680,14 @@ class PartRenderRuntime:
         self.stats[key] += 1
         logger.log(
             logging.INFO if result.outcome == "done" and child.get("outcome") == "ok" else logging.WARNING,
-            "Part render attempt=%s outcome=%s result=%s reason=%s elapsed_ms=%d methods=%s",
+            "Part render attempt=%s outcome=%s result=%s reason=%s elapsed_ms=%d methods=%s crash=%s",
             result.attempt_id[:8],
             result.outcome,
             child.get("outcome", "-"),
             child.get("reason") or "-",
             result.elapsed_ms,
             ",".join(f"{name}:{count}" for name, count in sorted(counts.items()) if count) or "-",
+            result.crash or "-",
         )
 
     async def discard(self, result: AttemptResult) -> None:

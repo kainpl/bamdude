@@ -251,7 +251,10 @@ async def test_a_start_that_fails_before_any_process_exists_is_a_crash(tmp_path,
 
     monkeypatch.setattr(part_render_service, "PreviewProcess", no_python)
     service = make_service(tmp_path)
-    assert await service.command(command(task_for(two_objects_3mf(tmp_path / "f.3mf")))) == {"outcome": "crashed"}
+    assert await service.command(command(task_for(two_objects_3mf(tmp_path / "f.3mf")))) == {
+        "outcome": "crashed",
+        "crash": {"stage": "spawn", "error": "FileNotFoundError"},
+    }
     assert not service.uncertain
     assert not (tmp_path / "service" / ATTEMPT).exists()
 
@@ -357,7 +360,9 @@ async def test_a_killed_child_is_crashed_and_leaves_no_node(tmp_path):
         await asyncio.sleep(0.025)
     child_pid = json.loads((attempt / "child.pid").read_text(encoding="ascii"))["pid"]
     ps.Process(child_pid).kill()  # part_render dies under its Node
-    assert await run == {"outcome": "crashed"}
+    reply = await run
+    assert reply["outcome"] == "crashed" and reply["crash"]["stage"] == "no_result"
+    assert isinstance(reply["crash"]["exit_code"], int)  # the signal's code differs per OS
     assert dead_now(processes)  # Node included: the records and the group kill both reach it
 
 
@@ -436,3 +441,85 @@ async def test_a_cancel_during_the_upload_is_answered_and_leaves_no_staging(tmp_
     assert await service.command({**run_command, "operation": "cancel"}) == {"outcome": "canceled"}
     assert (await run)["outcome"] == "canceled"
     assert not (tmp_path / "service" / ATTEMPT).exists()
+
+
+class _Entry:
+    """A directory entry as os.scandir hands it out; ``gone`` was renamed away after the listing."""
+
+    def __init__(self, size, *, gone=False, file=True):
+        self.size, self.gone, self.file = size, gone, file
+
+    def is_file(self):
+        return self.file
+
+    def stat(self):
+        if self.gone:
+            raise FileNotFoundError("renamed after the listing")
+        return os.stat_result((0, 0, 0, 0, 0, 0, self.size, 0, 0, 0))
+
+
+class _Listing:
+    def __init__(self, entries):
+        self.entries = entries
+
+    def __enter__(self):
+        return iter(self.entries)
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_the_attempt_size_poll_survives_a_file_renamed_under_it(tmp_path, monkeypatch):
+    """The 203 ms crashed of 2026-10-09: the guardian and part_render write their records as x.part and rename
+    them into place while the worker polls the attempt's size. A name listed, then renamed before its stat,
+    raised FileNotFoundError out of the poll -- and the worker answered crashed. It counts nothing now; its new
+    name is counted at the next poll."""
+    entries = [_Entry(10), _Entry(99, gone=True), _Entry(7, file=False), _Entry(5)]
+    monkeypatch.setattr(part_render_service.os, "scandir", lambda path: _Listing(entries))
+    assert part_render_service._bytes_under(tmp_path) == 15
+
+
+def test_the_attempt_size_poll_survives_the_record_writers_for_real(tmp_path):
+    """The same race with the production writers (launch() renames x.launch.part into place)."""
+    import threading
+
+    from backend.app.services.part_render_tree import launch
+
+    stop = threading.Event()
+
+    def writer():
+        i = 0
+        while not stop.is_set():
+            launch(tmp_path, f"n{i % 4}")
+            i += 1
+
+    thread = threading.Thread(target=writer, daemon=True)
+    thread.start()
+    try:
+        for _ in range(3000):
+            part_render_service._bytes_under(tmp_path)
+    finally:
+        stop.set()
+        thread.join()
+
+
+@pytest.mark.asyncio
+async def test_a_crash_while_watching_names_its_stage_and_the_error_type(tmp_path, monkeypatch):
+    """The parent log's sanitized cause (parent-log invariant): a stage of a closed list and an exception's
+    class name -- never its message, which can carry a path."""
+
+    def refused(root):
+        raise PermissionError(13, "denied", str(root))
+
+    monkeypatch.setattr(part_render_service, "_bytes_under", refused)
+    service = make_service(tmp_path)
+    reply = await service.command(command(task_for(two_objects_3mf(tmp_path / "f.3mf"))))
+    assert reply == {"outcome": "crashed", "crash": {"stage": "watch", "error": "PermissionError"}}
+
+
+@pytest.mark.asyncio
+async def test_a_child_that_ends_without_its_result_names_its_exit_code(tmp_path, monkeypatch):
+    monkeypatch.setattr(part_render_service, "_read_result", lambda root: None)
+    service = make_service(tmp_path)
+    reply = await service.command(command(task_for(two_objects_3mf(tmp_path / "f.3mf"))))
+    assert reply == {"outcome": "crashed", "crash": {"stage": "no_result", "exit_code": 0}}

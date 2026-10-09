@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
 import time
@@ -82,7 +83,18 @@ def _read_result(root: Path) -> dict | None:
 
 
 def _bytes_under(root: Path) -> int:
-    return sum(entry.stat().st_size for entry in root.iterdir() if entry.is_file())
+    """The attempt directory's size. Its writers rename records into place (``x.part`` -> ``x``) while this
+    polls, so a name listed may be gone by its stat: it counts nothing now, and its new name is counted at the
+    next poll. Raising there turned a rename into a crashed attempt (the 203 ms crashed of 2026-10-09)."""
+    total = 0
+    with os.scandir(root) as entries:
+        for entry in entries:
+            try:
+                if entry.is_file():
+                    total += entry.stat().st_size
+            except FileNotFoundError:
+                continue
+    return total
 
 
 class Service:
@@ -228,6 +240,8 @@ class Service:
         deadline = command["deadline_ns"]
         reply: dict = {"outcome": "crashed"}
         child: PreviewProcess | None = None
+        stage = "spawn"  # where a crash happened, for the parent log (part_render_protocol.CRASH_STAGES)
+        crash: dict | None = None
         try:
             await disk(root.mkdir)
             token = await disk(launch, root, "guardian")  # from here, a missing record is unknown (R12)
@@ -251,6 +265,7 @@ class Service:
                 self.child = child
 
             await owned(spawn())
+            stage = "watch"
             while child.process.poll() is None:
                 try:
                     remaining(deadline)
@@ -263,14 +278,19 @@ class Service:
                 await asyncio.sleep(_POLL_SECONDS)
             result = await disk(_read_result, root)
             if result is None:
+                # the guardian's exit code is its child's, or 2 when the guardian itself refused
+                crash = {"stage": "no_result", "exit_code": child.process.returncode}
                 raise _Ended("crashed")
             reply = {"outcome": "done", "result": result, "artifact": None}
         except _Ended as end:
             reply = {"outcome": end.outcome}
+            if end.outcome == "crashed":
+                reply["crash"] = crash or {"stage": stage}
         except asyncio.CancelledError:
             reply = {"outcome": "canceled"}
-        except Exception:
-            reply = {"outcome": "crashed"}
+        except Exception as exc:
+            # the class name only: a message can carry a path (parent-log invariant)
+            reply = {"outcome": "crashed", "crash": {"stage": stage, "error": type(exc).__name__}}
         finally:
             if child is not None:
                 try:
