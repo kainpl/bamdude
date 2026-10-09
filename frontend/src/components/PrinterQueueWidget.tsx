@@ -23,13 +23,14 @@ interface PrinterQueueWidgetProps {
   requirePlateClear?: boolean;
 }
 
-export function PrinterQueueWidget({ printerId, printerModel, printerState, awaitingPlateClear, repeatAvailable, requirePlateClear = true }: PrinterQueueWidgetProps) {
+export function PrinterQueueWidget({ printerId, printerModel, printerState, awaitingPlateClear, repeatAvailable }: PrinterQueueWidgetProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
   const { data: queue } = usePrinterQueueRows(printerId, 'pending');
 
-  const gateArmed = requirePlateClear && (printerState === 'FINISH' || printerState === 'FAILED') && !!awaitingPlateClear;
+  // A hold already exists independently of the setting for future prints.
+  const gateArmed = (printerState === 'FINISH' || printerState === 'FAILED') && !!awaitingPlateClear;
   // Split into auto-dispatchable vs staged (manual_start) items. Read up here
   // because the waiting-print query is gated on it: the counters live inside the
   // `needsClearPlate` block, which also needs a non-empty auto queue, so a gate
@@ -82,7 +83,7 @@ export function PrinterQueueWidget({ printerId, printerModel, printerState, awai
   const nextAutoItem = autoDispatchQueue[0];
   const nextItem = queue?.[0];
   // Only prompt "Clear Plate & Start Next" when there are auto-dispatchable items
-  const needsClearPlate = requirePlateClear && (printerState === 'FINISH' || printerState === 'FAILED') && !!awaitingPlateClear && autoDispatchQueue.length > 0;
+  const needsClearPlate = gateArmed && autoDispatchQueue.length > 0;
 
   if (needsClearPlate) {
     const displayItem = nextAutoItem || nextItem;

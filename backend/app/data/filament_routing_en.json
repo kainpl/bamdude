@@ -55,5 +55,12 @@
     "wanted_and_loaded": "Channel {slot} needs {wanted}; loaded: {loaded}.",
     "wanted_nothing_loaded": "Channel {slot} needs {wanted}; nothing is loaded.",
     "wanted_only": "Channel {slot} needs {wanted}."
-  }
+  },
+  "auto_eject_conflict": "Finish G-code auto-eject conflicts with printer Swap Mode",
+  "plate_calibration_required": "Plate-check calibration is required",
+  "plate_check_unavailable": "Could not obtain or analyse a fresh plate image",
+  "plate_objects_detected": "Objects remain on the plate; inspect the part and purge cube zones",
+  "plate_manual_inspection": "The previous run requires inspection and a run-bound manual plate answer",
+  "plate_context_changed": "Printer or dispatch context changed; a fresh check is required",
+  "plate_telemetry_unavailable": "Fresh local printer telemetry is unavailable"
 }

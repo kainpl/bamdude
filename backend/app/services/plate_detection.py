@@ -7,7 +7,9 @@ a reference image of the empty plate.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -41,8 +43,10 @@ class PlateDetectionResult:
         message: str,
         debug_image: bytes | None = None,
         needs_calibration: bool = False,
+        status: str | None = None,
     ):
-        self.is_empty = is_empty
+        self.status = "unavailable" if needs_calibration else status or ("clear" if is_empty else "occupied")
+        self.is_empty = bool(is_empty and self.status == "clear")
         self.confidence = confidence  # 0.0 to 1.0
         self.difference_percent = difference_percent  # How different from reference
         self.message = message
@@ -51,6 +55,7 @@ class PlateDetectionResult:
 
     def to_dict(self) -> dict:
         return {
+            "status": self.status,
             "is_empty": bool(self.is_empty),
             "confidence": float(round(self.confidence, 2)),
             "difference_percent": float(round(self.difference_percent, 2)),
@@ -390,7 +395,12 @@ class PlateDetector:
         return True
 
     def analyze_frame(
-        self, image_data: bytes, printer_id: int, plate_type: str | None = None, include_debug_image: bool = False
+        self,
+        image_data: bytes,
+        printer_id: int,
+        plate_type: str | None = None,
+        include_debug_image: bool = False,
+        strict_dimensions: bool = False,
     ) -> PlateDetectionResult:
         """Analyze a camera frame to detect if the plate is empty.
 
@@ -411,7 +421,8 @@ class PlateDetector:
             reference_paths = self._get_reference_paths(printer_id)
             if not reference_paths:
                 return PlateDetectionResult(
-                    is_empty=True,  # Default to empty when not calibrated
+                    is_empty=False,
+                    status="unavailable",
                     confidence=0.0,
                     difference_percent=0.0,
                     message="No calibration - please calibrate with empty plate first",
@@ -424,7 +435,8 @@ class PlateDetector:
 
             if current_frame is None:
                 return PlateDetectionResult(
-                    is_empty=True,
+                    is_empty=False,
+                    status="unavailable",
                     confidence=0.0,
                     difference_percent=0.0,
                     message="Failed to decode current image",
@@ -447,6 +459,15 @@ class PlateDetector:
 
                 # Ensure same dimensions
                 if current_frame.shape != reference_frame.shape:
+                    if strict_dimensions:
+                        return PlateDetectionResult(
+                            False,
+                            0,
+                            0,
+                            "Camera dimensions changed; recalibrate",
+                            needs_calibration=True,
+                            status="unavailable",
+                        )
                     reference_frame = cv2.resize(reference_frame, (current_frame.shape[1], current_frame.shape[0]))
 
                 # Extract ROI and preprocess
@@ -467,7 +488,8 @@ class PlateDetector:
 
             if best_ref_idx == -1:
                 return PlateDetectionResult(
-                    is_empty=True,
+                    is_empty=False,
+                    status="unavailable",
                     confidence=0.0,
                     difference_percent=0.0,
                     message="Failed to load any reference images - please recalibrate",
@@ -561,7 +583,8 @@ class PlateDetector:
         except Exception as e:
             logger.exception("Error analyzing frame for plate detection")
             return PlateDetectionResult(
-                is_empty=True,  # Default to empty on error (don't block prints)
+                is_empty=False,
+                status="unavailable",
                 confidence=0.0,
                 difference_percent=0.0,
                 message=f"Analysis error: {e!s}",
@@ -577,6 +600,7 @@ async def capture_camera_image(
     external_camera_type: str | None = None,
     use_external: bool = False,
     external_camera_snapshot_url: str | None = None,
+    fresh: bool = False,
 ) -> tuple[bytes | None, str]:
     """Capture an image from the printer camera.
 
@@ -593,6 +617,9 @@ async def capture_camera_image(
     image_data: bytes | None = None
     camera_source = "unknown"
 
+    if fresh and use_external and not (external_camera_url and external_camera_type):
+        return None, "Configured external camera is incomplete"
+
     # Reuse the live view's frame before touching ANY camera (#2707). The
     # buffered-frame check below used to sit in the built-in branch only, so the
     # docstring's promise not to compete with a viewer was true for one camera
@@ -600,7 +627,17 @@ async def capture_camera_image(
     # the external attempt did not degrade, it failed.
     from backend.app.api.routes.camera import live_frame_for_capture
 
-    defer, buffered_live = live_frame_for_capture(printer_id)
+    not_before = time.monotonic() if fresh else None
+    defer, buffered_live = (
+        live_frame_for_capture(printer_id, not_before=not_before) if fresh else live_frame_for_capture(printer_id)
+    )
+    if fresh and defer:
+        # A viewer owns the camera socket. Wait for its next frame, never open
+        # a second reader or accept a frame from before this check.
+        deadline = time.monotonic() + 10
+        while buffered_live is None and defer and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+            defer, buffered_live = live_frame_for_capture(printer_id, not_before=not_before)
     if defer:
         if buffered_live is None:
             logger.debug(
@@ -619,22 +656,26 @@ async def capture_camera_image(
         try:
             from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-            image_data = (
-                await capture(
-                    CameraCaptureRequest.external(
-                        url=external_camera_url,
-                        camera_type=external_camera_type,
-                        snapshot_url=external_camera_snapshot_url,
-                        purpose="plate_check",
-                        printer_id=printer_id,
-                    )
+            captured = await capture(
+                CameraCaptureRequest.external(
+                    url=external_camera_url,
+                    camera_type=external_camera_type,
+                    snapshot_url=external_camera_snapshot_url,
+                    purpose="plate_check",
+                    printer_id=printer_id,
                 )
-            ).frame
+            )
+            image_data = captured.frame if not fresh or captured.source == "fresh" else None
             if image_data:
                 camera_source = "external"
                 logger.debug("Captured frame from external camera for printer %s", printer_id)
         except Exception as e:
             logger.warning("Failed to capture from external camera: %s", e)
+
+        if fresh and image_data is None:
+            # The configured camera's reference must not be compared with a
+            # different camera after an error or an older coalesced capture.
+            return None, "Configured external camera did not provide a fresh frame"
 
     # Fall back to built-in camera
     if image_data is None:
@@ -643,7 +684,7 @@ async def capture_camera_image(
         try:
             from backend.app.api.routes.camera import get_buffered_frame
 
-            buffered = get_buffered_frame(printer_id)
+            buffered = None if fresh else get_buffered_frame(printer_id)
             if buffered:
                 image_data = buffered
                 camera_source = "built-in (buffered)"
@@ -655,18 +696,17 @@ async def capture_camera_image(
         if image_data is None:
             from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-            image_data = (
-                await capture(
-                    CameraCaptureRequest.builtin(
-                        ip_address=ip_address,
-                        access_code=access_code,
-                        model=model,
-                        timeout=10,
-                        purpose="plate_check",
-                        printer_id=printer_id,
-                    )
+            captured = await capture(
+                CameraCaptureRequest.builtin(
+                    ip_address=ip_address,
+                    access_code=access_code,
+                    model=model,
+                    timeout=10,
+                    purpose="plate_check",
+                    printer_id=printer_id,
                 )
-            ).frame
+            )
+            image_data = captured.frame if not fresh or captured.source == "fresh" else None
             if image_data:
                 camera_source = "built-in"
                 logger.debug("Captured frame from built-in camera for printer %s", printer_id)
@@ -686,6 +726,8 @@ async def check_plate_empty(
     use_external: bool = False,
     roi: tuple[float, float, float, float] | None = None,
     external_camera_snapshot_url: str | None = None,
+    fresh: bool = False,
+    difference_threshold: float = PlateDetector.DEFAULT_DIFFERENCE_THRESHOLD,
 ) -> PlateDetectionResult:
     """Check if the build plate is empty for a printer.
 
@@ -706,7 +748,8 @@ async def check_plate_empty(
     """
     if not OPENCV_AVAILABLE:
         return PlateDetectionResult(
-            is_empty=True,
+            is_empty=False,
+            status="unavailable",
             confidence=0.0,
             difference_percent=0.0,
             message="OpenCV not available - plate detection disabled",
@@ -721,19 +764,21 @@ async def check_plate_empty(
         external_camera_type,
         use_external,
         external_camera_snapshot_url=external_camera_snapshot_url,
+        fresh=fresh,
     )
 
     if image_data is None:
         return PlateDetectionResult(
-            is_empty=True,  # Default to empty on error
+            is_empty=False,
+            status="unavailable",
             confidence=0.0,
             difference_percent=0.0,
             message="Failed to capture camera frame from any source",
         )
 
     # Analyze the captured frame
-    detector = PlateDetector(roi=roi)
-    result = detector.analyze_frame(image_data, printer_id, plate_type, include_debug_image)
+    detector = PlateDetector(roi=roi, difference_threshold=difference_threshold)
+    result = detector.analyze_frame(image_data, printer_id, plate_type, include_debug_image, strict_dimensions=fresh)
 
     # Add camera source to message
     result.message = f"[{camera_source}] {result.message}"

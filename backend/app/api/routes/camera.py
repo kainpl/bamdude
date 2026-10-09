@@ -81,7 +81,7 @@ def is_stream_active(printer_id: int) -> bool:
     return printer_id in _active_worker_streams
 
 
-def live_frame_for_capture(printer_id: int) -> tuple[bool, bytes | None]:
+def live_frame_for_capture(printer_id: int, *, not_before: float | None = None) -> tuple[bool, bytes | None]:
     """Should a one-shot capture stand down for the live view, and to what frame?
 
     Returns ``(defer, frame)``. ``defer`` True means **do not open a capture of
@@ -108,6 +108,8 @@ def live_frame_for_capture(printer_id: int) -> tuple[bool, bytes | None]:
         return False, None
     # Through the public accessor, not ``_last_frames`` directly: there is one
     # way to read the buffer and this is not a second one.
+    if not_before is not None and _last_frame_times.get(printer_id, 0) < not_before:
+        return True, None
     return True, get_buffered_frame(printer_id)
 
 

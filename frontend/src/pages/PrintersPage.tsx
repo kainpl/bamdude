@@ -2148,6 +2148,7 @@ const PrinterCard = memo(function PrinterCard({
   } | null>(null);
   const [showFirmwareModal, setShowFirmwareModal] = useState(false);
   const [plateCheckResult, setPlateCheckResult] = useState<{
+    status?: 'clear' | 'occupied' | 'unavailable';
     is_empty: boolean;
     confidence: number;
     difference_percent: number;
@@ -2449,7 +2450,9 @@ const PrinterCard = memo(function PrinterCard({
   // commands), so both calibration kebab entries are gated on the printer
   // being online and not mid-print.
   const calibrationAvailable = isConnected === true && !isPrintingOrPaused;
-  const needsPlateClear = requirePlateClear && status?.awaiting_plate_clear === true;
+  // The setting controls future holds. An existing hold (including an
+  // auto-eject run) must remain visible and manually answerable when it is off.
+  const needsPlateClear = status?.awaiting_plate_clear === true;
   // Repeat needs a finished queue row to re-arm, and the gate can be armed
   // over nothing — then the button only ever answered "nothing is waiting".
   // An older backend does not send the field; then the button stays as before.
@@ -2475,10 +2478,10 @@ const PrinterCard = memo(function PrinterCard({
   // run dry, and the only pair the compact card ever draws.
   const plateDefects = usePlateDefects(
     printer.id,
-    showClearPlateButton && (status?.state === 'FINISH' || status?.state === 'FAILED'),
+    showClearPlateButton,
   );
   const plateStatus = (() => {
-    if (!requirePlateClear || !status?.connected) return null;
+    if ((!requirePlateClear && !needsPlateClear) || !status?.connected) return null;
     if (isPrintingOrPaused) {
       return {
         label: t('printers.plateStatus.inUse'),
@@ -6757,7 +6760,7 @@ const PrinterCard = memo(function PrinterCard({
               <>
                 <div className={`p-3 rounded-lg ${plateCheckResult.is_empty ? 'bg-green-100 dark:bg-green-500/20 border border-green-300 dark:border-green-500/50' : 'bg-yellow-100 dark:bg-yellow-500/20 border border-yellow-300 dark:border-yellow-500/50'}`}>
                   <p className={`font-medium ${plateCheckResult.is_empty ? 'text-green-700 dark:text-green-400' : 'text-yellow-700 dark:text-yellow-400'}`}>
-                    {plateCheckResult.is_empty ? t('printers.plateDetection.plateEmpty') : t('printers.plateDetection.objectsDetected')}
+                    {plateCheckResult.status === 'unavailable' ? t('autoEject.checkUnavailable') : plateCheckResult.is_empty ? t('printers.plateDetection.plateEmpty') : t('printers.plateDetection.objectsDetected')}
                   </p>
                   <p className="text-sm text-bambu-gray mt-1">
                     {t('printers.plateDetection.confidence')}: {Math.round(plateCheckResult.confidence * 100)}% | {t('printers.plateDetection.difference')}: {plateCheckResult.difference_percent.toFixed(1)}%

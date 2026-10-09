@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, PlainSerializer, model_validator
 
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.filament_routing import FilamentRoutingChoices
+from backend.app.schemas.order_auto_eject import AutoEjectSelection, AutoEjectSettings
 from backend.app.schemas.timelapse import TimelapseStorage
 from backend.app.services.queue_source_descriptor import SourceStorageState
 from backend.app.utils.temperature_limits import MAX_CHAMBER_TEMP_C
@@ -20,7 +21,8 @@ def serialize_utc_datetime(dt: datetime | None) -> str | None:
 UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)]
 
 
-class PrintQueueItemCreate(FilamentRoutingChoices):
+class PrintQueueItemCreate(FilamentRoutingChoices, AutoEjectSelection):
+    auto_eject_enabled: bool | None = None
     queue_id: int  # Required - which printer's queue to add to
     # One-time placement for this newly created block. It is intentionally not
     # stored on the row: after insertion normal queue ordering takes over.
@@ -163,6 +165,8 @@ class QueueSummaryResponse(BaseModel):
 
 
 class PrintQueueItemResponse(BaseModel):
+    auto_eject_settings: AutoEjectSettings = Field(default_factory=AutoEjectSettings)
+    auto_eject: bool = False
     filament_routing: dict | None = None
     id: int
     queue_id: int

@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from copy import deepcopy
 from datetime import datetime, timezone
 
 from sqlalchemy import func, or_, select, update
@@ -660,6 +661,8 @@ class AutoQueueScheduler:
                     # display name and the plate fallback with the job.
                     queue_source_id=item.queue_source_id,
                     source_snapshot=item.source_snapshot,
+                    auto_eject=item.auto_eject,
+                    auto_eject_settings=deepcopy(item.auto_eject_settings),
                     project_id=item.project_id,
                     project_line_id=item.project_line_id,
                     position=next_pos,

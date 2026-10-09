@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from backend.app.core.database import Base
@@ -70,6 +70,8 @@ class PrintQueueItem(Base):
     # and the archive plate fallback. Deliberately NOT a second home for the
     # job's own ``project_id`` / ``project_line_id`` / ``created_by_id`` — those
     # stay canonical as columns (spec §4). The blob is shared; this is not.
+    auto_eject: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    auto_eject_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)

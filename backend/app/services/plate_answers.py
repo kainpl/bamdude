@@ -160,6 +160,7 @@ async def answer_plate_run(
     expected_gate_token: str | None = None,
     may_file_future: bool = False,
     without_order: bool = False,
+    automatic: bool = False,
 ) -> PlateAnswerResult:
     """Write defects and answer exactly the held run, then release the gate.
 
@@ -282,6 +283,13 @@ async def answer_plate_run(
                 receipt.plate_action_actor_id = actor_id
                 receipt.gate_token = printer.awaiting_plate_clear_token if printer is not None else None
                 receipt.rearmed_queue_item_id = item_id
+                if action == "clear":
+                    # Keep provenance with the finished run, in the same commit
+                    # as its receipt. Manual answers also work without auth.
+                    archive.extra_data = {
+                        **(archive.extra_data or {}),
+                        "plate_clear_source": "automatic" if automatic else "manual",
+                    }
 
             # Clear exactly the gate that was just answered in the same commit as
             # the receipt and queue mutation.  Legacy ownerless gates remain

@@ -16,6 +16,7 @@ import time
 import zipfile
 from collections import deque
 from contextlib import AsyncExitStack
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
@@ -78,6 +79,8 @@ def _dispatch_intent(job: PrintDispatchJob, remote_filename: str, submission_id:
         "submission_id": submission_id,
         "dispatch_job_id": job.id,
         "remote_filename": remote_filename,
+        "auto_eject": job.options.get("auto_eject"),
+        "auto_eject_settings": job.options.get("auto_eject_settings"),
     }
 
 
@@ -1937,6 +1940,8 @@ class BackgroundDispatchService:
         item = await db.get(PrintQueueItem, job.queue_item_id) if job.queue_item_id else None
         if item is None or item.status != "printing":
             raise RoutingDeferred("dispatch_claim_changed")
+        job.options["auto_eject"] = item.auto_eject
+        job.options["auto_eject_settings"] = deepcopy(item.auto_eject_settings)
         job.claim_started_at = item.started_at
         job.original_archive_id, job.original_library_file_id = item.archive_id, item.library_file_id
         job.source = await item_descriptor(db, item)
@@ -1959,6 +1964,8 @@ class BackgroundDispatchService:
             or item.status != "printing"
             or item.started_at != job.claim_started_at
             or item.filament_routing != job.routing_intent
+            or bool(item.auto_eject) != bool(job.options.get("auto_eject"))
+            or item.auto_eject_settings != job.options.get("auto_eject_settings")
         ):
             from backend.app.models.printer_queue import PrinterQueue
 
@@ -2435,6 +2442,9 @@ class BackgroundDispatchService:
                 )
                 # H2C nozzle rack (upstream #1784): resolved here, before preheat,
                 # so a pick the rack no longer fits refuses before anything heats.
+                from backend.app.services.order_auto_eject import dispatch_admission
+
+                await dispatch_admission(db, job, printer)
                 rack = await self._resolve_rack(
                     job,
                     printer,
@@ -2553,6 +2563,9 @@ class BackgroundDispatchService:
                     job.routing_guard, job.printer_id, bind_generation=bind_generation
                 )
                 await self._verify_routing_claim(db, job)
+                from backend.app.services.order_auto_eject import dispatch_check
+
+                await dispatch_check(db, job, printer, self._verify_routing_claim, self._raise_if_cancel_requested)
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,
@@ -3164,6 +3177,9 @@ class BackgroundDispatchService:
                 )
                 # H2C nozzle rack (upstream #1784): resolved here, before preheat,
                 # so a pick the rack no longer fits refuses before anything heats.
+                from backend.app.services.order_auto_eject import dispatch_admission
+
+                await dispatch_admission(db, job, printer)
                 rack = await self._resolve_rack(
                     job,
                     printer,
@@ -3279,6 +3295,9 @@ class BackgroundDispatchService:
                     job.routing_guard, job.printer_id, bind_generation=bind_generation
                 )
                 await self._verify_routing_claim(db, job)
+                from backend.app.services.order_auto_eject import dispatch_check
+
+                await dispatch_check(db, job, printer, self._verify_routing_claim, self._raise_if_cancel_requested)
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,

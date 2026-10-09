@@ -75,10 +75,29 @@ class TestSchedulerIdleCheckWithAwaitingPlateClear:
 
     @patch("backend.app.services.print_scheduler.printer_manager")
     def test_idle_state_is_idle(self, mock_pm, scheduler):
-        """Printer in IDLE state should be considered idle."""
+        """An IDLE printer with a released plate gate is dispatch-ready."""
         mock_pm.is_connected.return_value = True
         mock_pm.get_status.return_value = MagicMock(state="IDLE")
+        mock_pm.is_awaiting_plate_clear.return_value = False
         assert scheduler._is_printer_idle(1) is True
+
+    @patch("backend.app.services.print_scheduler.printer_manager")
+    def test_idle_state_not_idle_when_awaiting(self, mock_pm, scheduler):
+        """An IDLE report does not acknowledge a persisted plate-clear gate."""
+        mock_pm.is_connected.return_value = True
+        mock_pm.get_status.return_value = MagicMock(state="IDLE")
+        mock_pm.is_awaiting_plate_clear.return_value = True
+        assert scheduler._is_printer_idle(1) is False
+
+    @pytest.mark.parametrize("state", ["IDLE", "FINISH", "FAILED"])
+    @patch("backend.app.services.print_scheduler.printer_manager")
+    def test_gate_can_be_deferred_to_dispatcher_admission(self, mock_pm, state, scheduler):
+        """Auto-eject admission owns clearance; readiness alone does not clear it."""
+        mock_pm.is_connected.return_value = True
+        mock_pm.get_status.return_value = MagicMock(state=state)
+        mock_pm.is_awaiting_plate_clear.return_value = True
+        assert scheduler._is_printer_idle(1, require_plate_clear=False) is True
+        mock_pm.clear_plate.assert_not_called()
 
     @patch("backend.app.services.print_scheduler.printer_manager")
     def test_running_state_not_idle(self, mock_pm, scheduler):

@@ -245,11 +245,16 @@ async def _publish_items(
             plate_overrides = [o for o in overrides_list if o["slot_id"] in used_slots]
             plate_overrides_json = json.dumps(plate_overrides) if plate_overrides else None
 
+            from backend.app.services.order_auto_eject import capture
+
+            eject, eject_settings = await capture(session, project_id=effective_project_id, options=data)
             for _ in range(_quantity_for(requested_plate_id)):
                 pos_offset += 1
                 items.append(
                     AutoQueueItem(
                         queue_source_id=source.id,
+                        auto_eject=eject,
+                        auto_eject_settings=eject_settings,
                         source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
                         archive_id=data.archive_id,
                         library_file_id=data.library_file_id,

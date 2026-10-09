@@ -430,6 +430,8 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
         select(func.count()).select_from(StockIssue).where(StockIssue.project_id == project.id)
     )
     return ProjectResponse(
+        auto_eject_enabled=bool(project.auto_eject_enabled),
+        auto_eject_settings=project.auto_eject_settings or {},
         id=project.id,
         code=code_for("order", project.id),
         name=project.name,
@@ -1414,8 +1416,11 @@ async def update_project(
     status_before = project.status
     # Every field keys off model_fields_set: an explicit null CLEARS, an absent
     # field leaves the column alone (the tags/due_date/#2536 lesson, applied to all).
-    for field_name in data.model_fields_set:
-        setattr(project, field_name, getattr(data, field_name))
+    for field_name in data.model_fields_set - {"auto_eject_skip_acknowledged"}:
+        value = getattr(data, field_name)
+        if field_name == "auto_eject_settings":
+            value = value.model_dump()
+        setattr(project, field_name, value)
     if moves_customer and "contact_id" not in data.model_fields_set:
         # The contact belonged to the customer the order just left (spec workshop-customers, rule 17).
         project.contact_id = None
@@ -3600,8 +3605,11 @@ async def get_order_queue(
     if scope is not None:
         printing_q = printing_q.where(PrintArchive.printer_id.in_(scope))
         pending_q = pending_q.where(PrintQueueItem.queue_id.in_(scope))
+    from backend.app.services.order_auto_eject import archive_mode
+
     printing = [
         OrderQueuePrinting(
+            auto_eject=archive_mode(archive),
             archive_id=archive.id,
             printer_id=archive.printer_id,
             printer_name=printer_name,

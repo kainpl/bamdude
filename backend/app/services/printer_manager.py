@@ -861,8 +861,14 @@ class PrinterManager:
         token = secrets.token_urlsafe(24)
         async with async_session() as db:
             printer = await db.get(Printer, printer_id)
-            if printer is None or not printer.require_plate_clear:
+            if printer is None:
                 return None
+            if not printer.require_plate_clear:
+                from backend.app.models.archive import PrintArchive
+                from backend.app.services.order_auto_eject import archive_mode
+
+                if not archive_mode(await db.get(PrintArchive, archive_id)):
+                    return None
             printer.awaiting_plate_clear = True
             printer.awaiting_plate_clear_archive_id = archive_id
             printer.awaiting_plate_clear_token = token

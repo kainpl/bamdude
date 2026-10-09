@@ -1,3 +1,4 @@
+import { AutoEjectBadge } from '../AutoEjectBadge';
 import { useMemo, useRef, useState, type DragEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -572,6 +573,7 @@ function AutoQueueRow({
           {/* Does the router's row own the bytes it will hand a printer (m173)?
               In the meta line it already has, at the size the icons there
               already are — the row keeps its shape. */}
+          <AutoEjectBadge mode={item.auto_eject} settings={item.auto_eject_settings} />
           <QueueSourceIndicator
             state={item.source_storage}
             held={item.status === 'failed' || item.status === 'cancelled'}

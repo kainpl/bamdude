@@ -459,6 +459,8 @@ async def _validate_model_update(db: AsyncSession, item: AutoQueueItem, update_d
         source_item = SimpleNamespace(
             queue_source_id=item.queue_source_id,
             source_snapshot=item.source_snapshot,
+            auto_eject=item.auto_eject,
+            auto_eject_settings=item.auto_eject_settings or {},
             archive_id=item.archive_id,
             library_file_id=item.library_file_id,
             plate_id=update_data["plate_id"],

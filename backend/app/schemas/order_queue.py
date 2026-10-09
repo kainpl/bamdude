@@ -9,6 +9,7 @@ from backend.app.schemas.print_queue import PrintQueueItemResponse
 class OrderQueuePrinting(BaseModel):
     """An archive of the order that is printing now — what ``prints_in_progress`` counts."""
 
+    auto_eject: bool = False
     archive_id: int
     printer_id: int | None
     printer_name: str | None

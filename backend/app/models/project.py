@@ -8,7 +8,7 @@ completed | cancelled and is closed by the operator, never automatically.
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -18,6 +18,8 @@ class Project(Base):
     __tablename__ = "projects"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    auto_eject_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    auto_eject_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     name: Mapped[str] = mapped_column(String(255))
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
     # Who receives this order — a contact of ITS customer (checked in the route).

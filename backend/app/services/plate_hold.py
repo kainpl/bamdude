@@ -94,6 +94,8 @@ async def clean_up_finished_row(
     # convenience property that walks the ``queue`` relationship, and touching a
     # lazy relationship here raises MissingGreenlet under the async session.
     printer_id = await db.scalar(select(PrinterQueue.printer_id).where(PrinterQueue.id == queue_item.queue_id))
+    if queue_item.auto_eject:
+        return False
     if printer_id is not None and await should_hold_for_plate_clear(
         db, printer_id, plate_auto_cleared=plate_auto_cleared
     ):

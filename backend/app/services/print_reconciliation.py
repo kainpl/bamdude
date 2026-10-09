@@ -458,6 +458,12 @@ async def _reconcile_complete_archive(
         if status == "completed":
             await _bump_library_file_usage(db, archive.library_file_id)
 
+        # Persist the archive and arm the existing gate BEFORE releasing the
+        # queue claim, just as the live completion handler does.
+        await db.commit()
+        if archive.printer_id is not None and not swap_owed:
+            await printer_manager.arm_awaiting_plate_clear(archive.printer_id, archive.id)
+
         item = (
             await db.execute(select(PrintQueueItem).where(PrintQueueItem.archive_id == archive.id))
         ).scalar_one_or_none()
@@ -474,9 +480,6 @@ async def _reconcile_complete_archive(
             from backend.app.services.plate_hold import clean_up_finished_row
 
             await clean_up_finished_row(db, item, queue_status=status, plate_auto_cleared=False)
-
-        if archive.printer_id is not None and not swap_owed:
-            await printer_manager.arm_awaiting_plate_clear(archive.printer_id, archive.id)
 
         logger.info(
             "reconcile: closed archive %s as %s%s",

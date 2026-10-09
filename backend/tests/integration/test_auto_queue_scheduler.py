@@ -180,7 +180,13 @@ class TestAutoQueueSchedulerTick:
     ) -> None:
         printer, pq = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
 
-        item = routing_item(target_model="A1MINI", status="pending", position=1)
+        item = routing_item(
+            target_model="A1MINI",
+            status="pending",
+            position=1,
+            auto_eject=True,
+            auto_eject_settings={"difference_threshold": 2.5, "skip_check": True},
+        )
         db_session.add(item)
         await db_session.commit()
 
@@ -207,6 +213,8 @@ class TestAutoQueueSchedulerTick:
         pq_items = result.scalars().all()
         assert len(pq_items) == 1
         assert pq_items[0].source_auto_item_id == item.id
+        assert pq_items[0].auto_eject is True
+        assert pq_items[0].auto_eject_settings == {"difference_threshold": 2.5, "skip_check": True}
         assert pq_items[0].position == 1
         await db_session.refresh(pq)
         assert pq.pending_count == 1

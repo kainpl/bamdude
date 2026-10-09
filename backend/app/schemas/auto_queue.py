@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, PlainSerializer, field_validator, model_v
 
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.filament_routing import FilamentOverride
+from backend.app.schemas.order_auto_eject import AutoEjectSelection, AutoEjectSettings
 from backend.app.schemas.print_queue import serialize_utc_datetime
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 from backend.app.schemas.timelapse import TimelapseStorage
@@ -25,7 +26,8 @@ from backend.app.services.queue_source_descriptor import SourceStorageState
 UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)]
 
 
-class AutoQueueItemCreate(BaseModel):
+class AutoQueueItemCreate(AutoEjectSelection):
+    auto_eject_enabled: bool | None = None
     # Source file (either archive_id OR library_file_id)
     archive_id: int | None = None
     library_file_id: int | None = None
@@ -135,6 +137,8 @@ class AutoQueueItemUpdate(BaseModel):
 
 
 class AutoQueueItemResponse(BaseModel):
+    auto_eject_settings: AutoEjectSettings = Field(default_factory=AutoEjectSettings)
+    auto_eject: bool = False
     id: int
     archive_id: int | None
     library_file_id: int | None

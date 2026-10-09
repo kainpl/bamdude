@@ -28,6 +28,8 @@ from backend.app.migrations import (
     m158_products_and_orders as m158,
     m190_customer_contacts as m190,
     m191_order_stage_journal as m191,
+    m197_order_auto_eject as m197,
+    m198_auto_eject_camera_settings as m198,
 )
 from backend.app.migrations.helpers import get_table_columns, table_exists
 from backend.app.models.archive import PrintArchive
@@ -202,9 +204,12 @@ async def _run_upgrade(engine):
         await m158.upgrade(conn)
         # The assertions read through the CURRENT ``Project`` model, so the
         # columns later migrations add to the table m158 rebuilds must exist too:
-        # ``contact_id`` (m190), ``stage`` and ``responsible_id`` (m191).
+        # ``contact_id`` (m190), ``stage`` and ``responsible_id`` (m191),
+        # and the opt-in auto-eject flag/policy (m197/m198).
         await m190.upgrade(conn)
         await m191.upgrade(conn)
+        await m197.upgrade(conn)
+        await m198.upgrade(conn)
 
 
 @pytest.mark.asyncio

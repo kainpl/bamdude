@@ -1,3 +1,4 @@
+import { AutoEjectBadge } from '../AutoEjectBadge';
 import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -188,6 +189,7 @@ function PrintingRow({ print, lineName }: { print: OrderQueuePrinting; lineName:
       <div className="flex items-center justify-between gap-2">
         <b className="inline-flex min-w-0 items-center gap-1.5 font-semibold text-white">
           <Play className="h-3.5 w-3.5 shrink-0 text-bambu-green" aria-hidden />
+          <AutoEjectBadge mode={print.auto_eject} settings={print.auto_eject_settings} />
           {print.printer_id != null && print.printer_name ? (
             <Link to={`/#printer-${print.printer_id}`} className="truncate hover:text-bambu-green" title={t('queueCard.goToPrinter')}>
               {print.printer_name}
@@ -251,6 +253,7 @@ function PendingRow({ item, lineName }: { item: PrintQueueItem; lineName: string
   return (
     <li className={`${ROW} flex gap-2`}>
       <RowPicture src={picture} />
+      <AutoEjectBadge mode={item.auto_eject} settings={item.auto_eject_settings} />
       <div className="min-w-0 flex-1">
       <div className="flex items-center justify-between gap-2">
         <span className="inline-flex min-w-0 items-center gap-1.5 text-white">

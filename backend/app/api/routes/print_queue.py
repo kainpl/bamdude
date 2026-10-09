@@ -196,6 +196,8 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
 
     # Create response with parsed ams_mapping
     item_dict = {
+        "auto_eject": item.auto_eject,
+        "auto_eject_settings": item.auto_eject_settings or {},
         "id": item.id,
         "queue_id": item.queue_id,
         "printer_id": item.printer_id,  # convenience property from queue

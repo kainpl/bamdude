@@ -22,7 +22,7 @@ See ``temp/auto-queue-adaptation-variants.md`` §12 for the full design.
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -61,6 +61,8 @@ class AutoQueueItem(Base):
     queue_source_id: Mapped[int | None] = mapped_column(
         ForeignKey("queue_sources.id", ondelete="RESTRICT"), nullable=True, index=True
     )
+    auto_eject: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    auto_eject_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)

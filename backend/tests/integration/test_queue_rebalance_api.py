@@ -107,6 +107,10 @@ async def test_the_companions_inherit_the_source_rows_job_flags(
     farm.item.feed_policy = "external_only"
     farm.item.auto_off_after = True
     farm.item.require_previous_success = True
+    farm.item.auto_eject = True
+    farm.item.auto_eject_settings = {"difference_threshold": 2.5, "skip_check": True}
+    # Today's order policy must not replace the captured job policy.
+    farm.project.auto_eject_settings = {"difference_threshold": 1, "skip_check": False}
     await db_session.commit()
 
     p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
@@ -119,6 +123,8 @@ async def test_the_companions_inherit_the_source_rows_job_flags(
     rows = await _pending(db_session)
     assert len(rows) == 3
     for row in rows:
+        assert row.auto_eject is True
+        assert row.auto_eject_settings == {"difference_threshold": 2.5, "skip_check": True}
         assert (row.use_ams, row.feed_policy, row.auto_off_after, row.require_previous_success) == (
             False,
             "external_only",

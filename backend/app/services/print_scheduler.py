@@ -544,6 +544,12 @@ class PrintScheduler:
                 # Check if printer is idle
                 rpc = await _get_require_plate_clear(printer_id)
                 printer_idle = self._is_printer_idle(printer_id, require_plate_clear=rpc)
+                if not printer_idle and printer_manager.is_awaiting_plate_clear(printer_id):
+                    from backend.app.models.printer import Printer
+                    from backend.app.services.order_auto_eject import automatic_predecessor
+
+                    held_printer = await db.get(Printer, printer_id)
+                    printer_idle = bool(held_printer and await automatic_predecessor(db, held_printer))
                 printer_connected = printer_manager.is_connected(printer_id)
 
                 # Update waiting_reason based on current state
@@ -558,7 +564,7 @@ class PrintScheduler:
                         reason_code = "drying"
                     elif rpc and printer_manager.is_awaiting_plate_clear(printer_id):
                         status = printer_manager.get_status(printer_id)
-                        if status and status.state in ("FINISH", "FAILED"):
+                        if status and status.state in ("IDLE", "FINISH", "FAILED"):
                             new_reason = "Plate not cleared"
                             reason_code = "plate_not_cleared"
 
@@ -1494,9 +1500,8 @@ class PrintScheduler:
         # OR at FINISH/FAILED with the plate-clear gate released. The gate is the
         # persisted ``awaiting_plate_clear`` flag inverted — absent means clear,
         # present means still waiting on user confirmation.
-        idle = state.state == "IDLE" or (
-            state.state in ("FINISH", "FAILED")
-            and (not require_plate_clear or not printer_manager.is_awaiting_plate_clear(printer_id))
+        idle = state.state in ("IDLE", "FINISH", "FAILED") and (
+            not require_plate_clear or not printer_manager.is_awaiting_plate_clear(printer_id)
         )
         if not idle:
             logger.debug(

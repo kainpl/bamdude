@@ -1,7 +1,7 @@
 export type PrinterCardSize = 'compact' | 'expanded';
 
 interface ClearPlateButtonInput {
-  /** ``require_plate_clear`` is on for this printer AND it is awaiting a clear. */
+  /** The printer is awaiting a clear, regardless of its future-print setting. */
   needsPlateClear: boolean;
   isPrintingOrPaused: boolean;
   /** Whether `PrinterQueueWidget` is about to draw its green "Clear Plate &

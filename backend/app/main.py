@@ -4028,7 +4028,10 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         logger.info(
             f"[PLATE CHECK] printer_id={printer_id}, plate_detection_enabled={printer.plate_detection_enabled if printer else 'NO PRINTER'}"
         )
-        if printer and printer.plate_detection_enabled:
+        from backend.app.services.print_run_binding import current_print_run
+
+        _plate_bound = current_print_run(printer_manager, printer_id)
+        if printer and printer.plate_detection_enabled and (not _plate_bound or _plate_bound.origin != "dispatch"):
             logger.info("[PLATE CHECK] ENTERING plate detection code for printer %s", printer_id)
             # Release the pooled DB connection before the plate-detection camera work
             # (the camera-light lease + FTP/camera capture). Only the printer SELECT has
@@ -4076,7 +4079,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                     external_camera_snapshot_url=printer.external_camera_snapshot_url,
                 )
 
-                if not plate_result.needs_calibration and not plate_result.is_empty:
+                if plate_result.status != "clear":
                     # Objects detected - pause the print!
                     logger.warning(
                         f"[PLATE CHECK] Objects detected on plate for printer {printer_id}! "

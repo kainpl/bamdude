@@ -222,7 +222,28 @@ async def claim_printer_for_direct_print(
                     session, project_id=project_id, library_file_id=library_file_id, plate_index=columns.get("plate_id")
                 )
 
+            from backend.app.services.order_auto_eject import (
+                archive_mode,
+                archive_settings,
+                capture,
+            )
+
+            prior = await session.get(PrintArchive, archive_id) if archive_id else None
+            eject, eject_settings = (
+                await capture(
+                    session,
+                    project_id=project_id,
+                    options=columns,
+                    inherited=archive_mode(prior),
+                    inherited_settings=archive_settings(prior),
+                    preserve=bool(prior),
+                )
+                if origin == "direct"
+                else (False, None)
+            )
             item = PrintQueueItem(
+                auto_eject=eject,
+                auto_eject_settings=eject_settings,
                 filament_routing=record_queue_source(routing, source),
                 queue_id=queue.id,
                 position=0,
@@ -400,12 +421,33 @@ async def enqueue_batch_copies(
 
                 # Hoisted for the same reason as ``queue_add`` (review m5): one intent
                 # for every copy, parsed once.
+                from backend.app.services.order_auto_eject import (
+                    archive_mode,
+                    archive_settings,
+                    capture,
+                )
+
+                prior = await session.get(PrintArchive, archive_id) if archive_id else None
+                eject, eject_settings = await capture(
+                    session,
+                    project_id=project_id,
+                    options={
+                        "execute_swap_macros": execute_swap_macros,
+                        "selected_macro_ids": selected_macro_ids_json,
+                        "gcode_injection": gcode_injection,
+                    },
+                    inherited=archive_mode(prior),
+                    inherited_settings=archive_settings(prior),
+                    preserve=bool(prior),
+                )
                 stamped_routing = record_queue_source(routing, source)
                 items: list[PrintQueueItem] = []
                 for i in range(count):
                     items.append(
                         PrintQueueItem(
                             queue_source_id=source.id,
+                            auto_eject=eject,
+                            auto_eject_settings=eject_settings,
                             source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
                             queue_id=queue_id,
                             archive_id=archive_id,

@@ -17,6 +17,7 @@ import logging
 import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 
 from sqlalchemy import func, select, text
@@ -320,6 +321,8 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
         # that same print being done again, and must stay as quiet about the
         # queue as the original was.
         origin=src.origin,
+        auto_eject=src.auto_eject,
+        auto_eject_settings=deepcopy(src.auto_eject_settings),
         position=new_position,
         scheduled_time=src.scheduled_time,
         manual_start=src.manual_start,

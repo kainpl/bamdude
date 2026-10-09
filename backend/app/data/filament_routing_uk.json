@@ -55,5 +55,12 @@
     "wanted_and_loaded": "Канал {slot} потребує {wanted}; у лотках: {loaded}.",
     "wanted_nothing_loaded": "Канал {slot} потребує {wanted}; лотки порожні.",
     "wanted_only": "Канал {slot} потребує {wanted}."
-  }
+  },
+  "auto_eject_conflict": "Автоскидання фінішним G-code несумісне зі Swap Mode принтера",
+  "plate_calibration_required": "Потрібна калібровка перевірки стола",
+  "plate_check_unavailable": "Не вдалося отримати або проаналізувати свіже зображення стола",
+  "plate_objects_detected": "На столі залишилися предмети; перевірте зони виробу та допоміжного кубика",
+  "plate_manual_inspection": "Попередній запуск потребує огляду та ручного підтвердження очищення саме цього запуску",
+  "plate_context_changed": "Контекст принтера або запуску змінився; потрібна нова перевірка",
+  "plate_telemetry_unavailable": "Свіжа локальна телеметрія принтера недоступна"
 }

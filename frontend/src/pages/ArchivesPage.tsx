@@ -1,3 +1,4 @@
+import { AutoEjectBadge } from '../components/AutoEjectBadge';
 import { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -958,6 +959,8 @@ function ArchiveCard({
       </div>
 
       <CardContent className="p-4 flex-1 flex flex-col">
+        <AutoEjectBadge mode={(archive.extra_data?.dispatch_intent as { auto_eject?: boolean } | undefined)?.auto_eject}
+          settings={(archive.extra_data?.dispatch_intent as { auto_eject_settings?: import('../api/client').AutoEjectSettings } | undefined)?.auto_eject_settings} />
         {/* Archive ID */}
         <p className="text-[10px] text-bambu-gray/70 mb-1">#{archive.id}</p>
 

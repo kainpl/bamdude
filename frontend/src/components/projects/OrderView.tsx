@@ -16,6 +16,7 @@ import { ProcurementChecklist } from './ProcurementChecklist';
 import { OrderPrints } from './OrderPrints';
 import { OrderQueue } from './OrderQueue';
 import { OrderTimeline } from './OrderTimeline';
+import { OrderAutoEject } from './OrderAutoEject';
 import { OrderNotes } from './OrderNotes';
 import { OrderAttachments } from './OrderAttachments';
 import { TakeStockBanner } from './TakeStockBanner';
@@ -272,6 +273,7 @@ export function OrderView({
       <div data-testid="order-grid" className="order-view-grid">
         <WorkshopPanel data-testid="order-main" className="min-w-0">
           <div className="space-y-6">
+            <OrderAutoEject key={order.id} order={order} canEdit={canEdit} />
             <OrderFigures figures={order.figures} forecast={forecastNow} />
 
             <OrderLinesTable order={order} canEdit={canEdit} headingLevel={embedded ? 3 : 2} />

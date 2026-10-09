@@ -752,6 +752,7 @@ async def _apply(
     from the line, so a row whose ``project_id`` points at an order that is gone
     (SQLite honours no FK action) cannot make the creation refuse.
     """
+
     file = (
         await db.execute(LibraryFile.active().where(LibraryFile.id == move.plate.library_file_id))
     ).scalar_one_or_none()
@@ -785,6 +786,9 @@ async def _apply(
             # ``feed_policy`` may be the row's own ``"auto"``; the writer normalises
             # it exactly as it does for every other door.
             payload = {
+                "auto_eject_enabled": item.auto_eject,
+                "auto_eject_settings": item.auto_eject_settings or {},
+                "auto_eject_skip_acknowledged": True,  # Preserve the already accepted job policy.
                 **options,
                 "use_ams": item.use_ams,
                 "feed_policy": item.feed_policy,
