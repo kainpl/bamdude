@@ -356,6 +356,9 @@ def _model(monkeypatch, *, ticks: float = 25.0):
         def create_time(self):
             return 1000.0 + ticks
 
+        def username(self):
+            return "me"
+
         def status(self):
             return psutil.STATUS_RUNNING
 
@@ -528,3 +531,58 @@ def test_holders_that_keep_appearing_are_not_proven_ended(monkeypatch):
     _Holder.killed = []
     monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: [_Holder(len(_Holder.killed) + 1)])
     assert not tree._end_launched("a" * 32, timeout=0.1)
+
+
+class _Stranger:
+    """A process of another local user started with a token it read off our command line (argv is public)."""
+
+    touched = False
+
+    def __init__(self, token: str):
+        from backend.app.services.part_render_tree import launch_arg
+
+        self.pid = 4242
+        self.info = {"cmdline": ["sleep", launch_arg(token)], "username": "mallory"}
+
+    def status(self):
+        import psutil
+
+        return psutil.STATUS_RUNNING
+
+    def kill(self):
+        import psutil
+
+        _Stranger.touched = True
+        raise psutil.AccessDenied(self.pid)
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def test_a_token_holder_of_another_user_never_blocks_the_proof_nor_is_touched(tmp_path, monkeypatch):
+    """Security review of 2e0b445: the token is on a command line every local user can read. Another user's
+    process carrying it is a stranger -- the run's processes all run as its owner -- so it can neither keep
+    the run unproven (a kill it refuses) nor be signalled."""
+    from backend.app.services import part_render_tree as tree
+
+    generation, attempt = _generation(tmp_path)
+    _dead_ancestors(generation, attempt)
+    token = launch(attempt, "node")
+    _Stranger.touched = False
+    monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: [_Stranger(token)])
+    assert tree.generation_gone(generation)
+    assert not _Stranger.touched
+
+
+def test_a_run_whose_owner_record_names_no_user_counts_every_holder(tmp_path, monkeypatch):
+    """A record from before the user was stored cannot tell a stranger from ours: fail closed."""
+    from backend.app.services import part_render_tree as tree
+
+    generation, attempt = _generation(tmp_path)
+    _dead_ancestors(generation, attempt)
+    owner = json.loads((generation / "owner.pid").read_text(encoding="ascii"))
+    owner.pop("user", None)
+    (generation / "owner.pid").write_text(json.dumps(owner), encoding="ascii")
+    token = launch(attempt, "node")
+    monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: [_Stranger(token)])
+    assert not tree.generation_gone(generation)

@@ -53,7 +53,9 @@ def _read_boot_id() -> str | None:
         if sys.platform.startswith("linux"):
             return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip() or None
         if sys.platform == "darwin":
-            done = subprocess.run(["sysctl", "-n", "kern.bootsessionuuid"], capture_output=True, text=True, timeout=5)
+            done = subprocess.run(
+                ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"], capture_output=True, text=True, timeout=5
+            )
             return done.stdout.strip() or None
         if sys.platform == "win32":
             import winreg
@@ -105,11 +107,17 @@ def _fsync_dir(path: Path) -> None:
 
 
 def record(path: Path, pid: int) -> None:
-    """Write the record atomically: a reader sees the whole record or none."""
-    created = _started(psutil.Process(pid))
+    """Write the record atomically: a reader sees the whole record or none. It names the process's user too:
+    every process of a run runs as its owner, so a token holder of another user is a stranger."""
+    process = psutil.Process(pid)
+    created = _started(process)
+    try:
+        user = process.username()
+    except psutil.Error:
+        user = None
     part = path.with_name(path.name + ".part")
     with part.open("w", encoding="ascii") as out:  # a .part left by a write that failed is no record
-        json.dump({"pid": pid, "create_time": created, "boot": _boot_id()}, out)
+        json.dump({"pid": pid, "create_time": created, "boot": _boot_id(), "user": user}, out)
         out.flush()
         os.fsync(out.fileno())
     os.replace(part, path)
@@ -185,17 +193,26 @@ def _token(scope: Path, name: str) -> str | None:
     return token if _TOKEN.fullmatch(token) else None
 
 
-def _end_launched(token: str, timeout: float) -> bool:
+def _end_launched(token: str, timeout: float, user: str | None = None) -> bool:
     """End every process started with this launch's token; True when a scan finds none left running.
 
     Called only once the launch's parent is proven dead, so the token can be held only by what that parent
     started and by what THOSE started before they got any input -- on Windows the venv launcher starts the
     real interpreter with the same command line. Each round kills and waits for every holder it finds; a
     holder dead by the end of a round starts nothing more, so a round that finds none closes the set. A
-    zombie has ended. A process whose command line cannot be read runs as another user, and ours never do."""
+    zombie has ended.
+
+    A command line is public, so anyone on the machine can start a process carrying the token. Every
+    process of a run runs as its owner's ``user``: a holder of another user is a stranger that read it, and
+    is neither signalled nor allowed to keep the run unproven (security review of 2e0b445). Without a known
+    user every holder counts -- fail closed. A process whose command line cannot be read is another user's."""
     marker = launch_arg(token)
     for _ in range(_END_ROUNDS):
-        found = [p for p in psutil.process_iter(["cmdline"]) if marker in (p.info.get("cmdline") or [])]
+        found = [
+            p
+            for p in psutil.process_iter(["cmdline", "username"])
+            if marker in (p.info.get("cmdline") or []) and (user is None or p.info.get("username") == user)
+        ]
         alive = False
         for process in found:
             try:
@@ -259,10 +276,14 @@ def generation_gone(generation: Path, *, timeout: float = 5) -> bool:
             for name in (*GENERATION_RECORDS, *RECORDS)
         )
     try:
-        if _another_boot(json.loads(owner.read_text(encoding="ascii"))):
-            return True  # a run of an earlier boot: nothing of it exists any more
-    except (OSError, ValueError, AttributeError):
+        data = json.loads(owner.read_text(encoding="ascii"))
+    except (OSError, ValueError):
         return False
+    if not isinstance(data, dict):
+        return False
+    if _another_boot(data):
+        return True  # a run of an earlier boot: nothing of it exists any more
+    user = data.get("user") if isinstance(data.get("user"), str) else None
     if not _gone(owner, timeout, kill=False):
         return False  # that main still runs, or its record cannot be read
     settled: dict[tuple[Path, str], bool] = {}
@@ -284,7 +305,7 @@ def generation_gone(generation: Path, *, timeout: float = 5) -> bool:
             return False
         # whatever still holds the launch's token: the launched process itself when unrecorded, the
         # interpreter behind a Windows venv launcher, a fork of it that has not yet executed its own child
-        return token is None or _end_launched(token, timeout)
+        return token is None or _end_launched(token, timeout, user)
 
     def parent_ended(scope: Path, name: str) -> bool:
         parent = _PARENT[name]
