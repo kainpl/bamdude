@@ -888,6 +888,7 @@ async def check_plate_empty(
         external_camera_type=printer.external_camera_type if printer.external_camera_enabled else None,
         use_external=use_external,
         roi=roi,
+        polygon=printer.plate_detection_polygon,
         external_camera_snapshot_url=printer.external_camera_snapshot_url if printer.external_camera_enabled else None,
     )
 
@@ -896,6 +897,7 @@ async def check_plate_empty(
     ref_count = detector.get_calibration_count(printer.id)
 
     response = result.to_dict()
+    response["polygon"] = printer.plate_detection_polygon
     response["light_warning"] = light_warning
     response["reference_count"] = ref_count
     response["max_references"] = detector.MAX_REFERENCES
@@ -912,6 +914,10 @@ async def check_plate_empty(
 
         b64_image = base64.b64encode(result.debug_image).decode("utf-8")
         response["debug_image_url"] = f"data:image/jpeg;base64,{b64_image}"
+    if include_debug_image and result.source_image:
+        import base64
+
+        response["source_image_url"] = "data:image/jpeg;base64," + base64.b64encode(result.source_image).decode("ascii")
 
     return response
 

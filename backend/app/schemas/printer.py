@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
+from backend.app.schemas.plate_detection import PlatePolygon
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 from backend.app.schemas.printer_tag import PrinterTagOut
 from backend.app.utils.rgba import normalize_opaque_rgba
@@ -159,6 +160,7 @@ class PrinterUpdate(BaseModel):
     camera_light_auto: Literal["inherit", "on", "off"] | None = None
     plate_detection_enabled: bool | None = None
     plate_detection_roi: PlateDetectionROI | None = None
+    plate_detection_polygon: PlatePolygon | None = None
     stagger_interval_minutes: int | None = None
     swap_mode_enabled: bool | None = None
     swap_profile: str | None = None
@@ -193,6 +195,7 @@ class PrinterResponse(PrinterBase):
     # Assembled from the four flat columns by ``Printer.plate_detection_roi`` — a
     # model property, because this response is validated straight off the ORM row.
     plate_detection_roi: PlateDetectionROI | None = None
+    plate_detection_polygon: PlatePolygon | None = None
     stagger_interval_minutes: int = 0
     swap_mode_enabled: bool = False
     swap_profile: str | None = None

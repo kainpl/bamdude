@@ -1,4 +1,6 @@
 import { useState, useEffect, useId, useLayoutEffect, useMemo, useRef, useCallback, memo } from 'react';
+import { PlateDetectionAreaEditor } from '../components/PlateDetectionAreaEditor';
+import type { PlateDetectionROI, PlatePoint, PlateDetectionResult } from '../api/client';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { WindowVirtualGrid } from '../components/WindowVirtualGrid';
@@ -2147,18 +2149,7 @@ const PrinterCard = memo(function PrinterCard({
     savedPresetId?: string;
   } | null>(null);
   const [showFirmwareModal, setShowFirmwareModal] = useState(false);
-  const [plateCheckResult, setPlateCheckResult] = useState<{
-    is_empty: boolean;
-    confidence: number;
-    difference_percent: number;
-    message: string;
-    debug_image_url?: string;
-    needs_calibration: boolean;
-    light_warning?: boolean;
-    reference_count?: number;
-    max_references?: number;
-    roi?: { x: number; y: number; w: number; h: number };
-  } | null>(null);
+  const [plateCheckResult, setPlateCheckResult] = useState<PlateDetectionResult | null>(null);
   const [isCheckingPlate, setIsCheckingPlate] = useState(false);
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [editingRoi, setEditingRoi] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
@@ -3168,11 +3159,10 @@ const PrinterCard = memo(function PrinterCard({
   };
 
   // Save ROI settings
-  const handleSaveRoi = async () => {
-    if (!editingRoi) return;
+  const handleSaveRoi = async (roi: PlateDetectionROI, polygon: PlatePoint[] | null) => {
     setIsSavingRoi(true);
     try {
-      await api.updatePrinter(printer.id, { plate_detection_roi: editingRoi });
+      await api.updatePrinter(printer.id, { plate_detection_roi: roi, plate_detection_polygon: polygon });
       showToast(t('printers.toast.detectionAreaSaved'), 'success');
       setEditingRoi(null);
       // Re-check to see new ROI in action
@@ -6844,106 +6834,23 @@ const PrinterCard = memo(function PrinterCard({
               </div>
             )}
 
-            {/* ROI Editor */}
-            {!plateCheckResult.needs_calibration && (
+            {/* Both shapes use source-image coordinates, never the debug overlay. */}
+            {plateCheckResult.source_image_url && (
               <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary">
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-sm font-medium text-white">{t('printers.roi.title')}</p>
-                  {!editingRoi ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setEditingRoi(plateCheckResult.roi || { x: 0.15, y: 0.35, w: 0.70, h: 0.55 })}
-                    >
-                      <Pencil className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] mr-1" />
-                      {t('common.edit')}
-                    </Button>
-                  ) : (
-                    <div className="flex gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setEditingRoi(null)}
-                        disabled={isSavingRoi}
-                      >
-                        {t('common.cancel')}
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={handleSaveRoi}
-                        disabled={isSavingRoi}
-                      >
-                        {isSavingRoi ? <Loader2 className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] animate-spin" /> : t('common.save')}
-                      </Button>
-                    </div>
-                  )}
+                  {!editingRoi && <Button variant="ghost" size="sm"
+                    onClick={() => setEditingRoi(plateCheckResult.roi ?? { x: 0.15, y: 0.35, w: 0.70, h: 0.55 })}>
+                    <Pencil className="w-3 h-3 mr-1" />{t('common.edit')}
+                  </Button>}
                 </div>
-                {editingRoi ? (
-                  <div className="space-y-3 bg-bambu-dark-tertiary/50 p-3 rounded-lg">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-xs text-bambu-gray">{t('printers.roi.xStart')}</label>
-                        <input
-                          type="range"
-                          min="0"
-                          max="0.9"
-                          step="0.01"
-                          value={editingRoi.x}
-                          onChange={(e) => setEditingRoi({ ...editingRoi, x: parseFloat(e.target.value) })}
-                          className="w-full h-1.5 bg-bambu-dark-tertiary rounded-lg cursor-pointer accent-green-500"
-                        />
-                        <span className="text-xs text-bambu-gray">{Math.round(editingRoi.x * 100)}%</span>
-                      </div>
-                      <div>
-                        <label className="text-xs text-bambu-gray">{t('printers.roi.yStart')}</label>
-                        <input
-                          type="range"
-                          min="0"
-                          max="0.9"
-                          step="0.01"
-                          value={editingRoi.y}
-                          onChange={(e) => setEditingRoi({ ...editingRoi, y: parseFloat(e.target.value) })}
-                          className="w-full h-1.5 bg-bambu-dark-tertiary rounded-lg cursor-pointer accent-green-500"
-                        />
-                        <span className="text-xs text-bambu-gray">{Math.round(editingRoi.y * 100)}%</span>
-                      </div>
-                      <div>
-                        <label className="text-xs text-bambu-gray">{t('printers.width')}</label>
-                        <input
-                          type="range"
-                          min="0.1"
-                          max="1"
-                          step="0.01"
-                          value={editingRoi.w}
-                          onChange={(e) => setEditingRoi({ ...editingRoi, w: parseFloat(e.target.value) })}
-                          className="w-full h-1.5 bg-bambu-dark-tertiary rounded-lg cursor-pointer accent-green-500"
-                        />
-                        <span className="text-xs text-bambu-gray">{Math.round(editingRoi.w * 100)}%</span>
-                      </div>
-                      <div>
-                        <label className="text-xs text-bambu-gray">{t('printers.height')}</label>
-                        <input
-                          type="range"
-                          min="0.1"
-                          max="1"
-                          step="0.01"
-                          value={editingRoi.h}
-                          onChange={(e) => setEditingRoi({ ...editingRoi, h: parseFloat(e.target.value) })}
-                          className="w-full h-1.5 bg-bambu-dark-tertiary rounded-lg cursor-pointer accent-green-500"
-                        />
-                        <span className="text-xs text-bambu-gray">{Math.round(editingRoi.h * 100)}%</span>
-                      </div>
-                    </div>
-                    <p className="text-xs text-bambu-gray">
-                      {t('printers.roi.instruction')}
-                    </p>
-                  </div>
-                ) : (
-                  <p className="text-xs text-bambu-gray">
-                    Current: X={Math.round((plateCheckResult.roi?.x || 0.15) * 100)}%, Y={Math.round((plateCheckResult.roi?.y || 0.35) * 100)}%,
-                    W={Math.round((plateCheckResult.roi?.w || 0.70) * 100)}%, H={Math.round((plateCheckResult.roi?.h || 0.55) * 100)}%
-                  </p>
-                )}
+                {editingRoi ? <PlateDetectionAreaEditor
+                  imageUrl={plateCheckResult.source_image_url}
+                  roi={editingRoi} polygon={plateCheckResult.polygon}
+                  saving={isSavingRoi} onSave={handleSaveRoi} onCancel={() => setEditingRoi(null)}
+                /> : <p className="text-xs text-bambu-gray">
+                  {t(plateCheckResult.polygon ? 'printers.roi.polygon' : 'printers.roi.rectangle')}
+                </p>}
               </div>
             )}
           </div>

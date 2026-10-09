@@ -10,6 +10,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from pydantic import TypeAdapter
+
+from backend.app.schemas.plate_detection import PlatePolygon
+
 logger = logging.getLogger(__name__)
 
 # Optional OpenCV import - feature disabled if not available
@@ -41,6 +45,7 @@ class PlateDetectionResult:
         message: str,
         debug_image: bytes | None = None,
         needs_calibration: bool = False,
+        source_image: bytes | None = None,
     ):
         self.is_empty = is_empty
         self.confidence = confidence  # 0.0 to 1.0
@@ -48,6 +53,7 @@ class PlateDetectionResult:
         self.message = message
         self.debug_image = debug_image  # Optional annotated image for debugging
         self.needs_calibration = needs_calibration  # True if no reference image exists
+        self.source_image = source_image  # Original frame for editing the detection area
 
     def to_dict(self) -> dict:
         return {
@@ -79,6 +85,7 @@ class PlateDetector:
         roi: tuple[float, float, float, float] | None = None,
         difference_threshold: float = DEFAULT_DIFFERENCE_THRESHOLD,
         blur_size: int = DEFAULT_BLUR_SIZE,
+        polygon: list[dict[str, float]] | None = None,
     ):
         """Initialize the plate detector.
 
@@ -86,10 +93,16 @@ class PlateDetector:
             roi: Region of interest as (x%, y%, w%, h%) - percentages of image size
             difference_threshold: Percentage of pixels that must differ to trigger "not empty"
             blur_size: Gaussian blur kernel size for noise reduction
+            polygon: Optional normalized contour overriding the rectangular ROI
         """
         if not OPENCV_AVAILABLE:
             raise RuntimeError("OpenCV is not installed. Install with: pip install opencv-python-headless")
 
+        self.polygon = (
+            [p.model_dump() for p in TypeAdapter(PlatePolygon).validate_python(polygon)]
+            if polygon is not None
+            else None
+        )
         self.roi = roi or self.DEFAULT_ROI
         self.difference_threshold = difference_threshold
         self.blur_size = blur_size if blur_size % 2 == 1 else blur_size + 1  # Must be odd
@@ -274,6 +287,15 @@ class PlateDetector:
             Tuple of (roi_frame, x_start, y_start, roi_width, roi_height)
         """
         height, width = frame.shape[:2]
+        if self.polygon is not None:
+            x_start, y_start, roi_width, roi_height = cv2.boundingRect(self._polygon_vertices(frame))
+            return (
+                frame[y_start : y_start + roi_height, x_start : x_start + roi_width],
+                x_start,
+                y_start,
+                roi_width,
+                roi_height,
+            )
         x_start = int(width * self.roi[0])
         y_start = int(height * self.roi[1])
         roi_width = int(width * self.roi[2])
@@ -281,7 +303,18 @@ class PlateDetector:
         roi_frame = frame[y_start : y_start + roi_height, x_start : x_start + roi_width]
         return roi_frame, x_start, y_start, roi_width, roi_height
 
-    def _preprocess_for_comparison(self, frame: np.ndarray) -> np.ndarray:
+    def _polygon_vertices(self, frame: np.ndarray) -> np.ndarray:
+        height, width = frame.shape[:2]
+        return np.array(
+            [[round(p["x"] * (width - 1)), round(p["y"] * (height - 1))] for p in self.polygon], dtype=np.int32
+        )
+
+    def _polygon_mask(self, frame: np.ndarray) -> np.ndarray:
+        mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+        cv2.fillPoly(mask, [self._polygon_vertices(frame)], 1)
+        return mask
+
+    def _preprocess_for_comparison(self, frame: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
         """Preprocess a frame for comparison.
 
         Uses heavy blur to create "blob" representation - smooths out texture
@@ -289,6 +322,18 @@ class PlateDetector:
         to reduce lighting sensitivity.
         """
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if mask is not None:
+            # Weighted blur excludes outside pixels even near the contour. Zero
+            # filling alone would let background/black edges alter the score.
+            weights = cv2.GaussianBlur(mask.astype(np.float32), (51, 51), 0)
+            blurred = cv2.GaussianBlur(gray.astype(np.float32) * mask, (51, 51), 0)
+            blurred = np.divide(blurred, weights, out=np.zeros_like(blurred), where=weights > 0)
+            values = blurred[mask > 0]
+            low, high = values.min(), values.max()
+            normalized = np.zeros_like(gray)
+            if high > low:
+                normalized[mask > 0] = np.clip((values - low) * 255 / (high - low), 0, 255).astype(np.uint8)
+            return normalized
         # Very heavy blur to smooth texture, keep only large shapes
         blurred = cv2.GaussianBlur(gray, (51, 51), 0)
         # Normalize to 0-255 range to reduce brightness sensitivity
@@ -411,7 +456,7 @@ class PlateDetector:
             reference_paths = self._get_reference_paths(printer_id)
             if not reference_paths:
                 return PlateDetectionResult(
-                    is_empty=True,  # Default to empty when not calibrated
+                    is_empty=self.polygon is None,  # Default to empty when not calibrated
                     confidence=0.0,
                     difference_percent=0.0,
                     message="No calibration - please calibrate with empty plate first",
@@ -424,7 +469,7 @@ class PlateDetector:
 
             if current_frame is None:
                 return PlateDetectionResult(
-                    is_empty=True,
+                    is_empty=self.polygon is None,
                     confidence=0.0,
                     difference_percent=0.0,
                     message="Failed to decode current image",
@@ -432,7 +477,12 @@ class PlateDetector:
 
             # Extract ROI from current frame
             current_roi, x_start, y_start, roi_width, roi_height = self._extract_roi(current_frame)
-            current_processed = self._preprocess_for_comparison(current_roi)
+            mask = None
+            if self.polygon is not None:
+                mask = self._polygon_mask(current_frame)[y_start : y_start + roi_height, x_start : x_start + roi_width]
+                if np.count_nonzero(mask) < 32:
+                    return PlateDetectionResult(False, 0, 0, "Detection polygon is too small at this resolution")
+            current_processed = self._preprocess_for_comparison(current_roi, mask)
 
             # Compare against all references, find best match (lowest difference)
             best_difference_percent = float("inf")
@@ -447,17 +497,21 @@ class PlateDetector:
 
                 # Ensure same dimensions
                 if current_frame.shape != reference_frame.shape:
+                    if self.polygon is not None:
+                        return PlateDetectionResult(
+                            False, 0, 0, "Camera dimensions changed; recalibrate", needs_calibration=True
+                        )
                     reference_frame = cv2.resize(reference_frame, (current_frame.shape[1], current_frame.shape[0]))
 
                 # Extract ROI and preprocess
                 reference_roi, _, _, _, _ = self._extract_roi(reference_frame)
-                reference_processed = self._preprocess_for_comparison(reference_roi)
+                reference_processed = self._preprocess_for_comparison(reference_roi, mask)
 
                 # Calculate absolute difference
                 diff = cv2.absdiff(current_processed, reference_processed)
 
                 # Calculate mean difference as percentage
-                mean_diff = np.mean(diff)
+                mean_diff = np.mean(diff[mask > 0]) if mask is not None else np.mean(diff)
                 difference_percent = (mean_diff / 255.0) * 100
 
                 if difference_percent < best_difference_percent:
@@ -467,7 +521,7 @@ class PlateDetector:
 
             if best_ref_idx == -1:
                 return PlateDetectionResult(
-                    is_empty=True,
+                    is_empty=self.polygon is None,
                     confidence=0.0,
                     difference_percent=0.0,
                     message="Failed to load any reference images - please recalibrate",
@@ -502,13 +556,16 @@ class PlateDetector:
                 debug_frame = current_frame.copy()
 
                 # Draw ROI rectangle
-                cv2.rectangle(
-                    debug_frame,
-                    (x_start, y_start),
-                    (x_start + roi_width, y_start + roi_height),
-                    (0, 255, 0),
-                    2,
-                )
+                if self.polygon is not None:
+                    cv2.polylines(debug_frame, [self._polygon_vertices(current_frame)], True, (0, 255, 0), 2)
+                else:
+                    cv2.rectangle(
+                        debug_frame,
+                        (x_start, y_start),
+                        (x_start + roi_width, y_start + roi_height),
+                        (0, 255, 0),
+                        2,
+                    )
 
                 # Create colored difference overlay
                 # Red = areas that are different from reference
@@ -521,7 +578,11 @@ class PlateDetector:
 
                 # Overlay difference on ROI
                 roi_overlay = debug_frame[y_start : y_start + roi_height, x_start : x_start + roi_width]
-                cv2.addWeighted(diff_colored, 0.5, roi_overlay, 0.5, 0, roi_overlay)
+                overlay = cv2.addWeighted(diff_colored, 0.5, roi_overlay, 0.5, 0)
+                if mask is None:
+                    roi_overlay[:] = overlay
+                else:
+                    roi_overlay[mask > 0] = overlay[mask > 0]
 
                 # Add status text
                 status_text = "EMPTY" if is_empty else "OBJECTS DETECTED"
@@ -561,7 +622,7 @@ class PlateDetector:
         except Exception as e:
             logger.exception("Error analyzing frame for plate detection")
             return PlateDetectionResult(
-                is_empty=True,  # Default to empty on error (don't block prints)
+                is_empty=self.polygon is None,  # Default to empty on error (don't block prints)
                 confidence=0.0,
                 difference_percent=0.0,
                 message=f"Analysis error: {e!s}",
@@ -686,6 +747,7 @@ async def check_plate_empty(
     use_external: bool = False,
     roi: tuple[float, float, float, float] | None = None,
     external_camera_snapshot_url: str | None = None,
+    polygon: list[dict[str, float]] | None = None,
 ) -> PlateDetectionResult:
     """Check if the build plate is empty for a printer.
 
@@ -706,7 +768,7 @@ async def check_plate_empty(
     """
     if not OPENCV_AVAILABLE:
         return PlateDetectionResult(
-            is_empty=True,
+            is_empty=polygon is None,
             confidence=0.0,
             difference_percent=0.0,
             message="OpenCV not available - plate detection disabled",
@@ -725,15 +787,16 @@ async def check_plate_empty(
 
     if image_data is None:
         return PlateDetectionResult(
-            is_empty=True,  # Default to empty on error
+            is_empty=polygon is None,  # Default to empty on error
             confidence=0.0,
             difference_percent=0.0,
             message="Failed to capture camera frame from any source",
         )
 
     # Analyze the captured frame
-    detector = PlateDetector(roi=roi)
+    detector = PlateDetector(roi=roi, polygon=polygon)
     result = detector.analyze_frame(image_data, printer_id, plate_type, include_debug_image)
+    result.source_image = image_data if include_debug_image else None
 
     # Add camera source to message
     result.message = f"[{camera_source}] {result.message}"

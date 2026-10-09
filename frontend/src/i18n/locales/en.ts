@@ -1323,6 +1323,19 @@ export default {
     accessCodePlaceholder: 'Leave empty to keep current',
     // ROI editor
     roi: {
+      shape: "Detection shape",
+      rectangle: "Rectangle",
+      polygon: "Polygon",
+      sourceImage: "Original camera frame",
+      vertex: "Vertex {{count}}",
+      width: "Width",
+      height: "Height",
+      redraw: "Draw a new contour",
+      undoPoint: "Remove last point",
+      polygonHelp: "Click to add vertices. Drag points to adjust. Arrow keys move a focused point; Delete removes it. Use at least 3 points without crossing edges.",
+      coverageHelp: "Cover the visible plate and auxiliary objects, allowing space for taller parts. Outside the contour is ignored. Keep the same camera and printer position.",
+      invalidPolygon: "Choose at least three distinct points forming a valid area.",
+
       title: 'Detection Area (ROI)',
       xStart: 'X Start',
       yStart: 'Y Start',

@@ -137,6 +137,7 @@ class Printer(Base):
     # model — the model only says whether there IS a light. m178.
     camera_light_auto: Mapped[str] = mapped_column(String(8), default="inherit", server_default="inherit")
     # Plate detection - check if build plate is empty before starting print
+    plate_detection_polygon: Mapped[list[dict[str, float]] | None] = mapped_column(JSON, nullable=True)
     plate_detection_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # ROI for plate detection (percentages: 0.0-1.0)
     plate_detection_roi_x: Mapped[float | None] = mapped_column(Float, nullable=True)  # X start %

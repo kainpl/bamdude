@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Added
+
+- **Choose a polygon for plate detection.** The camera-area editor can follow the visible plate instead of including the corners of its rectangular bounding box. Switch between Rectangle and Polygon, drag or keyboard-adjust vertices, and retain the existing rectangle and full calibration photos. Pixels outside the polygon do not affect its blur, normalization or difference score.
+
 ## [0.7.0] - 2026-10-06
 
 Images: `ghcr.io/kainpl/bamdude:0.7.0` / `kainpl/bamdude:0.7.0` (`:latest` tracks this release).

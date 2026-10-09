@@ -4073,6 +4073,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                     external_camera_type=printer.external_camera_type,
                     use_external=printer.external_camera_enabled,
                     roi=roi,
+                    polygon=printer.plate_detection_polygon,
                     external_camera_snapshot_url=printer.external_camera_snapshot_url,
                 )
 

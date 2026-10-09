@@ -766,7 +766,8 @@ export interface Printer {
   // Chamber light for the camera: defer to the farm setting, or decide here
   camera_light_auto: CameraLightPolicy;
   plate_detection_enabled: boolean;  // Check plate before print
-  plate_detection_roi?: PlateDetectionROI;  // ROI for plate detection
+  plate_detection_roi?: PlateDetectionROI;
+  plate_detection_polygon?: PlatePoint[] | null;  // ROI for plate detection
   stagger_interval_minutes: number;  // Per-printer stagger interval override (0 = system default)
   swap_mode_enabled: boolean;  // Automatic plate swapper (models with a swap profile)
   swap_profile: string | null;  // Active swap-mode variant (see /macros/swap-profiles)
@@ -1321,6 +1322,7 @@ export interface PrinterCreate {
   camera_light_auto?: CameraLightPolicy;
   plate_detection_enabled?: boolean;
   plate_detection_roi?: PlateDetectionROI;
+  plate_detection_polygon?: PlatePoint[] | null;
   stagger_interval_minutes?: number;
   swap_mode_enabled?: boolean;
   swap_profile?: string | null;
@@ -1329,6 +1331,8 @@ export interface PrinterCreate {
 }
 
 // Plate Detection
+export interface PlatePoint { x: number; y: number; }
+
 export interface PlateDetectionROI {
   x: number;  // X start % (0.0-1.0)
   y: number;  // Y start % (0.0-1.0)
@@ -1348,6 +1352,8 @@ export interface PlateDetectionResult {
   reference_count?: number;
   max_references?: number;
   roi?: PlateDetectionROI;
+  polygon?: PlatePoint[] | null;
+  source_image_url?: string;
 }
 
 export interface PlateDetectionStatus {
