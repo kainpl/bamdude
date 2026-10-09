@@ -60,6 +60,16 @@ support is a bug report, a translation PR or a star. If you would rather chip in
 
 ---
 
+## Release 0.7.0 and current development
+
+**0.7.0** adds configurable products (SKU, version, category and variants), five order views with stages and responsible operators, finished-goods stock and numbered dispatch notes. Orders, Products, Customers and Stock have separate permissions; review custom groups after upgrading. From a library file or its plate gallery, **Add to order…** opens a one-off product with that file already selected.
+
+It also adds [Home Assistant and shared Zigbee sensor bindings](https://docs.bamdude.top/features/sensors/), optional sensor holds on queued starts, [scheduled AMS drying](https://docs.bamdude.top/features/ams/), [Bambu Studio model compatibility](https://docs.bamdude.top/features/filament-routing/), H2C rack-nozzle selection, optional runout-spool archiving and printing labels from a partially used sheet. System reports the preview, camera, 3MF-analysis and library-file workers separately.
+
+**After 0.7.0, in the current development branch:** grouped filament sorting orders both groups and their expanded spools; order plans can reserve loose stock components; printed BOM parts can carry a saved extra percentage. Fixes also restore start notifications, finish photos and post-print actions, isolate PostgreSQL diagnostic queries and repair private broker-directory permissions on startup. These changes are not part of the `0.7.0` image. Check the [Unreleased changelog](CHANGELOG.md) and your installed version before following their instructions.
+
+Docker `latest` follows the latest **stable release tag**; `dev` follows the beta channel. Check the release changelog for what your image includes.
+
 ## What's different from Bambuddy?
 
 BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy), aimed at print farm operators. It still tracks upstream — each release is adapted through a tracked audit rather than a blind merge — so what the two projects share is deliberately **not** listed here. Each item below is either absent upstream or built on a different principle.
@@ -478,6 +488,8 @@ The bundled server comes from our open-source [embedded-postgres](https://github
 Every installer asks which one you want: `install.sh --db sqlite|embedded|external`, a **Database** page in the Windows installer (where the bundled server can run as its own `BamDudePostgres` service), and the same question in `docker-install.sh`. Switching from SQLite imports your existing database automatically on the next start.
 
 Full manual: **<https://docs.bamdude.top/features/postgresql/>**
+
+For full diagnostics on an external server, enable `pg_stat_statements` in the database BamDude uses. The guide covers third-party images and host installations; changing only the BamDude image does not configure that server.
 
 ### Upgrading or migrating
 
