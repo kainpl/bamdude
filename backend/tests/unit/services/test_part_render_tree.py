@@ -210,8 +210,9 @@ def test_a_killed_process_that_stays_a_zombie_is_proven_stopped(tmp_path, monkey
             raise psutil.TimeoutExpired(timeout)
 
     monkeypatch.setattr(tree.psutil, "Process", Orphan)
+    monkeypatch.setattr(tree, "_boot_id", lambda: "boot-a")
     entry = tmp_path / "node.pid"
-    entry.write_text(json.dumps({"pid": 4242, "create_time": 1000.0}), encoding="ascii")
+    entry.write_text(json.dumps({"pid": 4242, "create_time": 1000.0, "boot": "boot-a"}), encoding="ascii")
     assert tree._gone(entry, timeout=0.1)
     assert Orphan.killed
 
@@ -297,7 +298,7 @@ def test_a_stopped_real_node_launched_without_a_record_is_ended_by_the_proof(tmp
 
     import psutil
 
-    from backend.app.services.part_render_tree import generation_gone
+    from backend.app.services.part_render_tree import generation_gone, launch_arg
     from backend.tests.unit.services.test_part_render_node import NODE
 
     if NODE is None:
@@ -307,6 +308,7 @@ def test_a_stopped_real_node_launched_without_a_record_is_ended_by_the_proof(tmp
         _dead(generation / f"{name}.pid")
     launch(attempt, "guardian")
     _dead(attempt / "guardian.pid")
+    child_token = launch(attempt, "child")  # its guardian launched it with this token (consilium r3, R3.3)
     code = (
         "import os, signal, subprocess, sys\n"
         "from pathlib import Path\n"
@@ -321,7 +323,9 @@ def test_a_stopped_real_node_launched_without_a_record_is_ended_by_the_proof(tmp
         "print(p.pid, flush=True)\n"
         "os._exit(0)\n"
     )
-    parent = subprocess.Popen([sys.executable, "-c", code, str(attempt), str(NODE)], stdout=subprocess.PIPE)
+    parent = subprocess.Popen(
+        [sys.executable, "-c", code, str(attempt), str(NODE), launch_arg(child_token)], stdout=subprocess.PIPE
+    )
     node_pid = int(parent.stdout.readline())
     parent.wait(timeout=10)
     try:
@@ -533,6 +537,9 @@ def test_holders_that_keep_appearing_are_not_proven_ended(monkeypatch):
     assert not tree._end_launched("a" * 32, timeout=0.1)
 
 
+_Uids = __import__("collections").namedtuple("puids", "real effective saved")
+
+
 class _Stranger:
     """A process of another local user started with a token it read off our command line (argv is public)."""
 
@@ -542,7 +549,12 @@ class _Stranger:
         from backend.app.services.part_render_tree import launch_arg
 
         self.pid = 4242
-        self.info = {"cmdline": ["sleep", launch_arg(token)], "username": "mallory"}
+        self.info = {
+            "cmdline": ["sleep", launch_arg(token)],
+            "username": "mallory",
+            "uids": _Uids(4242, 4242, 4242),
+            "ppid": 1,
+        }
 
     def status(self):
         import psutil
@@ -586,3 +598,263 @@ def test_a_run_whose_owner_record_names_no_user_counts_every_holder(tmp_path, mo
     token = launch(attempt, "node")
     monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: [_Stranger(token)])
     assert not tree.generation_gone(generation)
+
+
+def _orphan_under_a_recorded_parent(generation: Path, attempt: Path) -> tuple[int, str]:
+    """What a part_render that died inside its spawn window leaves, in the production order: its guardian
+    launched it with its token and recorded it; it launched Node with Node's token and died before recording
+    it. The orphan here is a sleeper, not Node -- same records, same command-line shape."""
+    for name in ("owner", "worker", "service"):
+        _dead(generation / f"{name}.pid")
+    launch(attempt, "guardian")
+    _dead(attempt / "guardian.pid")
+    from backend.app.services.part_render_tree import launch_arg
+
+    child_token = launch(attempt, "child")
+    code = (
+        "import os, subprocess, sys\n"
+        "from pathlib import Path\n"
+        "from backend.app.services.part_render_tree import launch, launch_arg\n"
+        "token = launch(Path(sys.argv[1]), 'node')\n"
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)', launch_arg(token)],"
+        " creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))\n"
+        "print(p.pid, flush=True)\n"
+        "sys.stdin.read()\n"
+        "os._exit(0)\n"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", code, str(attempt), launch_arg(child_token)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    record(attempt / "child.pid", parent.pid)  # its guardian's record, before it got any input
+    orphan = int(parent.stdout.readline())
+    parent.stdin.close()
+    parent.wait(timeout=10)
+    return orphan, (attempt / "node.launch").read_text(encoding="ascii")
+
+
+def _end(pid: int) -> None:
+    import psutil
+
+    try:
+        process = psutil.Process(pid)
+        for each in [*process.children(recursive=True), process]:
+            each.kill()
+    except psutil.NoSuchProcess:
+        pass
+
+
+def test_an_unrecorded_launch_in_the_production_shape_is_found_and_ended(tmp_path):
+    """The parent ordering every launch follows, on every platform: the orphan is ended by its token."""
+    from backend.app.services.part_render_tree import generation_gone
+
+    generation, attempt = _generation(tmp_path)
+    orphan, token = _orphan_under_a_recorded_parent(generation, attempt)
+    try:
+        assert generation_gone(generation)
+        assert _holders(token) == []
+    finally:
+        _end(orphan)
+
+
+def test_an_unrecorded_holder_whose_command_line_cannot_be_read_keeps_the_run_unproven(tmp_path, monkeypatch):
+    """Consilium r3, R3.1: psutil answers None for a command line it may not read, and None is no observation
+    of absence. A process that may be ours and cannot be read keeps the run unproven and its records kept."""
+    import psutil
+
+    from backend.app.services.part_render_tree import generation_gone
+
+    generation, attempt = _generation(tmp_path)
+    orphan, token = _orphan_under_a_recorded_parent(generation, attempt)
+    original = psutil.Process.cmdline
+
+    @__import__("functools").wraps(original)
+    def denied(process):
+        if process.pid == orphan:
+            raise psutil.AccessDenied(process.pid)
+        return original(process)
+
+    monkeypatch.setattr(psutil.Process, "cmdline", denied)
+    try:
+        assert not generation_gone(generation)
+        assert (attempt / "node.launch").exists() and (attempt / "child.pid").exists()
+    finally:
+        monkeypatch.undo()
+        _end(orphan)
+
+
+def test_an_unreadable_identity_is_no_proof_of_a_stranger(tmp_path, monkeypatch):
+    """Consilium r3, R3.1: only a positively read identity makes a process a stranger. Its identity hidden, a
+    holder whose command line carries the token is still ours to end."""
+    import psutil
+
+    from backend.app.services.part_render_tree import generation_gone
+
+    generation, attempt = _generation(tmp_path)
+    orphan, token = _orphan_under_a_recorded_parent(generation, attempt)
+    attribute = "username" if os.name == "nt" else "uids"
+    original = getattr(psutil.Process, attribute)
+
+    @__import__("functools").wraps(original)  # keeps psutil's oneshot cache hooks on POSIX
+    def denied(process):
+        if process.pid == orphan:
+            raise psutil.AccessDenied(process.pid)
+        return original(process)
+
+    monkeypatch.setattr(psutil.Process, attribute, denied)
+    try:
+        assert generation_gone(generation)
+        monkeypatch.undo()
+        assert _holders(token) == []
+    finally:
+        monkeypatch.undo()
+        _end(orphan)
+
+
+class _Unreadable:
+    """A process whose command line psutil could not read, with the identity fields a platform reads."""
+
+    def __init__(self, pid, *, uid=None, user=None, name=None, ppid=None, status="running"):
+        self.pid = pid
+        self._status = status
+        self.info = {
+            "cmdline": None,
+            "uids": None if uid is None else _Uids(uid, uid, uid),
+            "username": user,
+            "name": name,
+            "ppid": ppid,
+        }
+
+    def status(self):
+        return self._status
+
+
+def _scan(monkeypatch, processes, *, windows: bool):
+    from backend.app.services import part_render_tree as tree
+
+    monkeypatch.setattr(tree, "_WINDOWS", windows)
+    monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: list(processes))
+    return tree
+
+
+def test_another_users_unreadable_process_does_not_block_the_proof(monkeypatch):
+    """POSIX shows every process's uid: a process positively of another user cannot hold the run's token,
+    and its unreadable command line is not needed."""
+    tree = _scan(monkeypatch, [_Unreadable(7, uid=4242)], windows=False)
+    assert tree._end_launched("a" * 32, 0.1, 1000)
+
+
+@pytest.mark.parametrize(
+    "foreign",
+    [
+        {"name": "svchost.exe", "ppid": 1536},  # another program
+        {"name": "", "ppid": 4},  # started by System: "Secure System" shows no name
+        {"name": "python.exe", "user": "OTHER\\mallory", "ppid": 999},  # another user, where Windows says so
+    ],
+)
+def test_a_windows_process_positively_not_ours_does_not_block_the_proof(monkeypatch, foreign):
+    """Windows shows every process's image name and creator, and another user's name where it may: a
+    process running another program, started by the kernel, or of another user cannot hold the token."""
+    tree = _scan(monkeypatch, [_Unreadable(7, **foreign)], windows=True)
+    assert tree._end_launched("a" * 32, 0.1, "HOST\\me")
+
+
+@pytest.mark.parametrize(
+    ("windows", "ours"),
+    [
+        (False, {"uid": 1000}),  # our uid
+        (False, {}),  # a uid that could not be read either
+        (True, {"name": "python.exe", "ppid": 6000}),  # our interpreter, user name hidden
+        (True, {"name": "node.exe", "user": "HOST\\me", "ppid": 6000}),
+        (True, {"name": None, "ppid": 6000}),  # no name read: not a positive observation
+    ],
+)
+def test_an_unreadable_process_that_may_be_ours_is_no_proof(monkeypatch, windows, ours):
+    tree = _scan(monkeypatch, [_Unreadable(7, **ours)], windows=windows)
+    assert not tree._end_launched("a" * 32, 0.1, "HOST\\me" if windows else 1000)
+
+
+def test_a_zombie_whose_command_line_cannot_be_read_has_ended(monkeypatch):
+    import psutil
+
+    tree = _scan(monkeypatch, [_Unreadable(7, uid=1000, status=psutil.STATUS_ZOMBIE)], windows=False)
+    assert tree._end_launched("a" * 32, 0.1, 1000)
+
+
+@pytest.mark.parametrize("boot_failure", ["record_boot_unknown", "reader_boot_unknown"])
+def test_no_boot_identity_never_signals_an_ambiguous_pid_off_linux(tmp_path, monkeypatch, boot_failure):
+    """Consilium r3, R3.2: macOS and Windows start times are wall clock, which can repeat across a reboot.
+    Without both boots known, a process matching the record's pid and start proves nothing and is never
+    signalled -- on every platform, not only Linux."""
+    tree = _model(monkeypatch)
+    monkeypatch.setattr(tree, "_BOOT_RELATIVE", False)
+    monkeypatch.setattr(tree.psutil, "boot_time", lambda: 0.0)
+    if boot_failure == "record_boot_unknown":
+        _Kernel.boot = None
+    entry = tmp_path / "node.pid"
+    record(entry, 4242)
+    _Kernel.boot = "boot-b" if boot_failure == "record_boot_unknown" else None
+    assert not tree._gone(entry, timeout=0.1)
+    assert not _Kernel.killed
+
+
+def test_an_unknown_boot_still_shows_a_process_gone_when_nothing_could_be_it(tmp_path, monkeypatch):
+    import psutil
+
+    tree = _model(monkeypatch)
+    monkeypatch.setattr(tree, "_BOOT_RELATIVE", False)
+    _Kernel.boot = None
+    entry = tmp_path / "node.pid"
+    record(entry, 4242)
+
+    def no_such(pid):
+        raise psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(tree.psutil, "Process", no_such)
+    assert tree._gone(entry, timeout=0.1)
+
+
+def test_the_current_run_ends_its_own_process_whatever_the_boot_reader_says(tmp_path, monkeypatch):
+    """A record of this run was written in this boot -- main, and the worker, outlive no reboot -- so
+    ``tree_gone`` needs no boot to act on its own live process."""
+    from backend.app.services import part_render_tree as tree
+
+    monkeypatch.setattr(tree, "_boot_id", lambda: None)
+    process = _spawn()
+    try:
+        launch(tmp_path, "node")
+        record(tmp_path / "node.pid", process.pid)
+        assert tree_gone(tmp_path, strict=True)
+        assert process.wait(timeout=5) is not None
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+@pytest.mark.parametrize(
+    ("raw", "boot"),
+    [
+        ("6c1f9a2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b\n", "6c1f9a2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b"),
+        ("6C1F9A2E-3B4D-4E5F-8A9B-0C1D2E3F4A5B", "6c1f9a2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b"),
+        ("", None),
+        ("unknown", None),
+        ("6c1f9a2e-3b4d-4e5f-8a9b", None),
+    ],
+)
+def test_a_boot_reader_answer_is_an_identity_only_in_its_own_format(raw, boot):
+    """Consilium r3, R3.2: validate the reader's output before taking it as a boot."""
+    from backend.app.services import part_render_tree as tree
+
+    assert tree._uuid_boot(raw) == boot
+
+
+@pytest.mark.parametrize(
+    ("value", "kind", "boot"), [(55, 4, "bootid-55"), ("55", 1, None), (-1, 4, None), (2**32, 4, None)]
+)
+def test_a_windows_boot_counter_is_a_dword(value, kind, boot):
+    from backend.app.services import part_render_tree as tree
+
+    assert tree._windows_boot(value, kind) == boot

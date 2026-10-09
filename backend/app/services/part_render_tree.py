@@ -40,29 +40,51 @@ _SAME_PROCESS_SECONDS = 0.01
 # Linux derives create_time from the boot time, and the boot time moves when the wall clock is stepped (an
 # RTC-less Pi syncing NTP after start): a record keeps the distance from boot there (final review M2).
 _BOOT_RELATIVE = sys.platform.startswith("linux")
+# POSIX shows every process's uid; Windows hides other users' names and command lines from a non-admin but
+# shows every process's image name and creator. Each platform's scan reads what it can read of EVERY process.
+_WINDOWS = os.name == "nt"
+_IMAGES = {"python.exe", "pythonw.exe", "node.exe"} | {
+    Path(exe).name.lower() for exe in (sys.executable, getattr(sys, "_base_executable", None)) if exe
+}
+_KERNEL_PIDS = {0, 4}  # Windows: the idle process and System
 _LAUNCH = "--bamdude-launch="
 _TOKEN = re.compile(r"[0-9a-f]{32}\Z")
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 _END_ROUNDS = 4  # a venv launcher, the interpreter it starts, then a round that finds none -- and one spare
 _WINDOWS_BOOT_KEY = r"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters"
+_REG_DWORD = 4
 _BOOT: list[str | None] = []
+
+
+def _uuid_boot(raw: str) -> str | None:
+    """A Linux boot_id / macOS boot session UUID, or None when the answer is not one (consilium r3, R3.2)."""
+    text = raw.strip().lower()
+    return text if _UUID.fullmatch(text) else None
+
+
+def _windows_boot(value: object, kind: int) -> str | None:
+    """Windows' boot counter, or None unless it is the DWORD the key holds."""
+    if kind != _REG_DWORD or not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 0xFFFFFFFF:
+        return None
+    return f"bootid-{value}"
 
 
 def _read_boot_id() -> str | None:
     """This boot's identity: Linux's boot_id, macOS's boot session UUID, Windows' boot counter."""
     try:
         if sys.platform.startswith("linux"):
-            return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip() or None
+            return _uuid_boot(Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii"))
         if sys.platform == "darwin":
             done = subprocess.run(
                 ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"], capture_output=True, text=True, timeout=5
             )
-            return done.stdout.strip() or None
+            return _uuid_boot(done.stdout) if done.returncode == 0 else None
         if sys.platform == "win32":
             import winreg
 
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_BOOT_KEY) as key:
-                return f"bootid-{winreg.QueryValueEx(key, 'BootId')[0]}"
-    except (OSError, subprocess.SubprocessError, ValueError):
+                return _windows_boot(*winreg.QueryValueEx(key, "BootId"))
+    except (OSError, subprocess.SubprocessError, ValueError, UnicodeDecodeError):
         return None
     return None
 
@@ -106,15 +128,27 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
+def _identity(process: psutil.Process) -> int | str | None:
+    """Who runs ``process``: its real uid on POSIX, its user name on Windows; None when it cannot be read."""
+    try:
+        return process.username() if _WINDOWS else process.uids().real
+    except (psutil.Error, AttributeError):
+        return None
+
+
+def _identity_of(info: dict) -> int | str | None:
+    """The same identity, out of a ``process_iter`` row (None where psutil could not read it)."""
+    if _WINDOWS:
+        return info.get("username")
+    return getattr(info.get("uids"), "real", None)
+
+
 def record(path: Path, pid: int) -> None:
     """Write the record atomically: a reader sees the whole record or none. It names the process's user too:
     every process of a run runs as its owner, so a token holder of another user is a stranger."""
     process = psutil.Process(pid)
     created = _started(process)
-    try:
-        user = process.username()
-    except psutil.Error:
-        user = None
+    user = _identity(process)
     part = path.with_name(path.name + ".part")
     with part.open("w", encoding="ascii") as out:  # a .part left by a write that failed is no record
         json.dump({"pid": pid, "create_time": created, "boot": _boot_id(), "user": user}, out)
@@ -124,30 +158,33 @@ def record(path: Path, pid: int) -> None:
     _fsync_dir(path.parent)  # durable before the process gets its input -- a power cut keeps the record
 
 
-def _gone(entry: Path, timeout: float, *, kill: bool = True) -> bool:
+def _gone(entry: Path, timeout: float, *, kill: bool = True, this_run: bool = False) -> bool:
     """The recorded process has ended -- killed first when ``kill`` and it still runs. An exited process this
     process cannot reap (an orphan whose new parent never reaps: a container's PID 1 without a reaper) stays
     a zombie, and a zombie has ended (consilium E3-I-R3).
 
-    A record of another boot has ended with that boot; its pid is never signalled (consilium r2, R2.2). On
-    Linux the start is counted from a boot, so a record that cannot be placed in one -- written without its
-    boot, or read where the boot cannot be told -- matches a process of ANY boot: it shows the process gone
-    when nothing has its pid and start, and otherwise proves nothing and signals nothing."""
+    A record of another boot has ended with that boot; its pid is never signalled (consilium r2, R2.2). A
+    pid and a start identify a process only within one boot -- Linux counts the start from the boot, macOS
+    and Windows by a wall clock that can repeat across one -- so a record that cannot be placed in THIS boot
+    (written without its boot, or read where the boot cannot be told) shows its process gone when nothing
+    has that pid and start, and otherwise proves nothing and signals nothing, on every platform (consilium
+    r3, R3.2). ``this_run``: the record was written by this run -- main, or the worker -- which outlives no
+    reboot, so it is of this boot by construction."""
     try:
         data = json.loads(entry.read_text(encoding="ascii"))
         pid, created = int(data["pid"]), float(data["create_time"])
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return False  # a record that cannot be read proves nothing
-    if _another_boot(data):
+    if not this_run and _another_boot(data):
         return True  # it ended with its boot; the pid is now some other process's -- never signal it
-    unplaced = _BOOT_RELATIVE and (data.get("boot") is None or _boot_id() is None)
+    placed = this_run or _this_boot(data)
     try:
         process = psutil.Process(pid)
         if abs(_started(process) - created) > _SAME_PROCESS_SECONDS:
             return True  # the pid is someone else's now: ours is gone
         if process.status() == psutil.STATUS_ZOMBIE:
             return True
-        if not kill or unplaced:
+        if not kill or not placed:
             return False
         process.kill()
         try:
@@ -173,16 +210,29 @@ def tree_gone(attempt_dir: Path, *, strict: bool, timeout: float = 5) -> bool:
     for name in RECORDS:
         pid_file = attempt_dir / f"{name}.pid"
         if pid_file.exists():
-            if not _gone(pid_file, timeout):
+            if not _gone(pid_file, timeout, this_run=True):  # an attempt of this run: this boot's
                 return False
         elif strict and ((attempt_dir / f"{name}.launch").exists() or (attempt_dir / f"{name}.pid.part").exists()):
             return False
     return True
 
 
-def _another_boot(data: dict) -> bool:
+def _boots(data: dict) -> tuple[str, str] | None:
+    """The record's boot and this one, when both are known."""
     boot, now = data.get("boot"), _boot_id()
-    return boot is not None and now is not None and boot != now
+    if not isinstance(boot, str) or not boot or now is None:
+        return None
+    return boot, now
+
+
+def _another_boot(data: dict) -> bool:
+    boots = _boots(data)
+    return boots is not None and boots[0] != boots[1]
+
+
+def _this_boot(data: dict) -> bool:
+    boots = _boots(data)
+    return boots is not None and boots[0] == boots[1]
 
 
 def _token(scope: Path, name: str) -> str | None:
@@ -193,26 +243,69 @@ def _token(scope: Path, name: str) -> str | None:
     return token if _TOKEN.fullmatch(token) else None
 
 
-def _end_launched(token: str, timeout: float, user: str | None = None) -> bool:
+def _another_program(info: dict) -> bool:
+    """Windows: the process positively runs something no launch of ours runs -- its image name (read off the
+    system's process list, for every process) is not one of ours, or the kernel started it (System and the
+    idle process, whose pids are never reused)."""
+    name = info.get("name")
+    if name and name.lower() not in _IMAGES:
+        return True
+    return info.get("ppid") in _KERNEL_PIDS
+
+
+def _holders(marker: str, owner: int | str | None) -> list[psutil.Process] | None:
+    """Every process carrying ``marker``; None when a process that may carry it cannot be read.
+
+    Only a positive observation excludes a process (consilium r3, R3.1) -- psutil answers None for what it
+    may not read, and None is not absence:
+    - an identity read and different from the run's ``owner`` (the uid POSIX shows for every process; the
+      user name where Windows shows it): another user's process, a stranger that may have read the token off
+      a public command line -- never ours, never signalled (security review of 2e0b445). An identity that
+      cannot be read excludes nothing;
+    - on Windows, a process running another program (``_another_program``) -- a launch of ours runs Python
+      or Node, under the command line that carries its token;
+    - a zombie, which has ended.
+    Any other process whose command line cannot be read may be ours: the scan is no proof of absence."""
+    attrs = ["cmdline", "username", "name", "ppid"] if _WINDOWS else ["cmdline", "uids"]
+    found = []
+    for process in psutil.process_iter(attrs):
+        identity = _identity_of(process.info)
+        if owner is not None and identity is not None and identity != owner:
+            continue
+        cmdline = process.info.get("cmdline")
+        if cmdline is not None:
+            if marker in cmdline:
+                found.append(process)
+            continue
+        if _WINDOWS and _another_program(process.info):
+            continue
+        try:
+            if process.status() == psutil.STATUS_ZOMBIE:
+                continue
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.AccessDenied:
+            pass
+        return None
+    return found
+
+
+def _end_launched(token: str, timeout: float, owner: int | str | None = None) -> bool:
     """End every process started with this launch's token; True when a scan finds none left running.
 
     Called only once the launch's parent is proven dead, so the token can be held only by what that parent
     started and by what THOSE started before they got any input -- on Windows the venv launcher starts the
     real interpreter with the same command line. Each round kills and waits for every holder it finds; a
     holder dead by the end of a round starts nothing more, so a round that finds none closes the set. A
-    zombie has ended.
+    zombie has ended. A round that cannot read a process that may be a holder proves nothing (``_holders``).
 
-    A command line is public, so anyone on the machine can start a process carrying the token. Every
-    process of a run runs as its owner's ``user``: a holder of another user is a stranger that read it, and
-    is neither signalled nor allowed to keep the run unproven (security review of 2e0b445). Without a known
-    user every holder counts -- fail closed. A process whose command line cannot be read is another user's."""
+    ``owner`` is the run's user, as its owner record names it: without it no process is a stranger and every
+    holder counts -- fail closed."""
     marker = launch_arg(token)
     for _ in range(_END_ROUNDS):
-        found = [
-            p
-            for p in psutil.process_iter(["cmdline", "username"])
-            if marker in (p.info.get("cmdline") or []) and (user is None or p.info.get("username") == user)
-        ]
+        found = _holders(marker, owner)
+        if found is None:
+            return False  # a process that may hold the token cannot be read: not proven (consilium r3, R3.1)
         alive = False
         for process in found:
             try:
@@ -283,7 +376,9 @@ def generation_gone(generation: Path, *, timeout: float = 5) -> bool:
         return False
     if _another_boot(data):
         return True  # a run of an earlier boot: nothing of it exists any more
-    user = data.get("user") if isinstance(data.get("user"), str) else None
+    user = data.get("user")
+    if not (isinstance(user, str) if _WINDOWS else isinstance(user, int) and not isinstance(user, bool)):
+        user = None  # no identity this platform reads: no process is a stranger -- fail closed
     if not _gone(owner, timeout, kill=False):
         return False  # that main still runs, or its record cannot be read
     settled: dict[tuple[Path, str], bool] = {}
