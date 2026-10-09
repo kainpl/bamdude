@@ -12,6 +12,7 @@ from pathlib import Path
 
 import psutil
 
+from backend.app.services.part_render_tree import launch_arg
 from backend.app.services.preview_protocol import LOG_BYTES, PreviewError, encode
 from backend.app.services.worker_containment import WorkerContainment
 from backend.app.services.worker_process import descendants, descendants_reaped, kill_owned_group
@@ -29,7 +30,15 @@ class SpawnUnproven(PreviewError):
 
 
 class PreviewProcess:
-    def __init__(self, module: str, bootstrap: dict, cache: Path, *, on_spawn: Callable[[int], None] | None = None):
+    def __init__(
+        self,
+        module: str,
+        bootstrap: dict,
+        cache: Path,
+        *,
+        on_spawn: Callable[[int], None] | None = None,
+        launch_token: str | None = None,
+    ):
         # No .env, database URL, API credentials or NATS token in renderer env.
         keys = {
             "PATH",
@@ -52,7 +61,14 @@ class PreviewProcess:
         env.setdefault("MPLCONFIGDIR", str(cache))
         self.tail = bytearray()
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "backend.app.worker_guardian"],
+            # the launch's token on the command line: how a guardian whose record never reached the disk is
+            # found after its parent died (part_render_tree, consilium r2 R2.1)
+            [
+                sys.executable,
+                "-m",
+                "backend.app.worker_guardian",
+                *([launch_arg(launch_token)] if launch_token else []),
+            ],
             cwd=Path(__file__).resolve().parents[3],
             env=env,
             stdin=subprocess.PIPE,

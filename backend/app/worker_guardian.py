@@ -69,23 +69,25 @@ def main():
     except (KeyError, TypeError, ValueError, UnicodeDecodeError):
         return 2
     records = name = None
+    tag: list[str] = []
     if module in _RECORDED:
         # plan E3, R12: the parent writes the record, before the child has its bootstrap -- part_render in its
         # attempt directory, the part-render worker in its generation (consilium E3-I-R1). Lazy import: every
         # other worker keeps a guardian that imports nothing of the app.
         from pathlib import Path
 
-        from backend.app.services.part_render_tree import launch, record
+        from backend.app.services.part_render_tree import launch, launch_arg, record
 
         boot = json.loads(child_bootstrap)
         name = _RECORDED[module]
         records = Path(boot["root"]) if name == "child" else Path(boot["staging"]).parent
         try:
-            launch(records, name)
+            token = launch(records, name)
         except (OSError, ValueError):
             return 2
+        tag = [launch_arg(token)]  # how the child is found without its record (consilium r2, R2.1)
     child = subprocess.Popen(
-        [sys.executable, "-m", module],
+        [sys.executable, "-m", module, *(tag if records is not None else [])],
         stdin=subprocess.PIPE,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )

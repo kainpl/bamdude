@@ -200,7 +200,10 @@ class FailingStart:
 
     started: list = []
 
-    def __init__(self, module, bootstrap, cache, *, on_spawn=None):
+    tokens: list = []
+
+    def __init__(self, module, bootstrap, cache, *, on_spawn=None, launch_token=None):
+        FailingStart.tokens.append(launch_token)
         process = subprocess.Popen(SLEEP, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         FailingStart.started.append(process)
         on_spawn(process.pid)
@@ -221,16 +224,19 @@ async def test_a_failed_start_whose_cleanup_is_unproven_keeps_the_proof(tmp_path
         assert (attempt / "guardian.launch").exists() and (attempt / "guardian.pid").exists()
         assert await service.command(command(task_for(tmp_path / "f.3mf"), sequence=2)) == {"outcome": "unavailable"}
         assert len(FailingStart.started) == 1  # no second attempt beside the unproven one
+        # the guardian is started with the token of its launch (consilium r2, R2.1)
+        assert FailingStart.tokens == [(attempt / "guardian.launch").read_text(encoding="ascii")]
     finally:
         for process in FailingStart.started:
             process.kill()
             process.wait()
         FailingStart.started.clear()
+        FailingStart.tokens.clear()
 
 
 @pytest.mark.asyncio
 async def test_a_start_that_fails_before_any_process_exists_is_a_crash(tmp_path, monkeypatch):
-    def no_python(module, bootstrap, cache, *, on_spawn=None):
+    def no_python(module, bootstrap, cache, *, on_spawn=None, launch_token=None):
         raise FileNotFoundError("the interpreter is gone")  # Popen itself failed: there is no process
 
     monkeypatch.setattr(part_render_service, "PreviewProcess", no_python)

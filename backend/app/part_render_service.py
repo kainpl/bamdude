@@ -230,7 +230,7 @@ class Service:
         child: PreviewProcess | None = None
         try:
             await disk(root.mkdir)
-            await disk(launch, root, "guardian")  # from here, a missing record is unknown, not absent (R12)
+            token = await disk(launch, root, "guardian")  # from here, a missing record is unknown (R12)
 
             async def spawn():
                 nonlocal child
@@ -241,6 +241,7 @@ class Service:
                         {"root": str(root), "task": command["task"], "deadline_ns": deadline, "node": command["node"]},
                         self.cache,
                         on_spawn=lambda pid: record(root / "guardian.pid", pid),  # before the guardian's bootstrap
+                        launch_token=token,
                     )
                 except SpawnUnproven:
                     # the guardian existed, its start failed and the constructor's cleanup proved nothing. Set

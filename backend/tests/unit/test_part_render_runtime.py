@@ -489,7 +489,7 @@ async def test_a_worker_start_whose_cleanup_is_unproven_closes_admission(tmp_pat
     await broker.start()
     spawned: list[str] = []
 
-    def unproven(module, bootstrap, cache, *, on_spawn=None):
+    def unproven(module, bootstrap, cache, *, on_spawn=None, launch_token=None):
         spawned.append(module)
         raise prr.SpawnUnproven(4242)
 
@@ -735,9 +735,16 @@ async def test_a_recovered_earlier_run_lets_restore_through(tmp_path, monkeypatc
 async def test_a_generation_records_its_owner_its_worker_and_the_service(live):
     """Consilium E3-I-R1: what a later start needs to prove this run over -- main, and the worker's parent and
     worker, recorded before either got any input."""
+    from backend.app.services.part_render_tree import launch_arg
+
     runtime, _ = live
     staging = runtime.staging
     assert all((staging / f"{name}.pid").is_file() for name in ("owner", "worker", "service"))
+    # and each started with the token of its launch on its command line (consilium r2, R2.1)
+    for name in ("worker", "service"):
+        token = (staging / f"{name}.launch").read_text(encoding="ascii")
+        pid = json.loads((staging / f"{name}.pid").read_text(encoding="ascii"))["pid"]
+        assert launch_arg(token) in psutil.Process(pid).cmdline()
 
 
 def test_health_only_reads(tmp_path, monkeypatch):

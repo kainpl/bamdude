@@ -56,7 +56,7 @@ from backend.app.services.part_render_protocol import (
     PackError,
     pack,
 )
-from backend.app.services.part_render_tree import launch, record
+from backend.app.services.part_render_tree import launch, launch_arg, record
 from backend.app.services.threemf_parser_core import discover_plate_objects
 
 _BOOT_KEYS = {"root", "task", "deadline_ns", "node"}
@@ -331,14 +331,14 @@ def run_node(boot: dict, root: Path, job: dict, chunks: Iterator[bytes], limits:
     deadline_s = (boot["deadline_ns"] - time.monotonic_ns()) / 1e9 - CHILD_MARGIN_SECONDS
     if deadline_s <= 0:
         raise NodeRenderError("timeout", "no time left before Node")
-    launch(root, "node")  # before the spawn; on_spawn records it before the first byte of its stdin (R12)
+    token = launch(root, "node")  # before the spawn; on_spawn records it before the first byte of its stdin (R12)
     own = psutil.Process()
 
     def rss_of(pid: int) -> int:
         return own.memory_info().rss + psutil.Process(pid).memory_info().rss
 
     return run_frames(
-        node_command(Path(boot["node"])),
+        node_command(Path(boot["node"])) + [launch_arg(token)],  # found without its record (r2, R2.1)
         job,
         chunks,
         env=node_env(),

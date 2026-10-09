@@ -17,9 +17,9 @@ from backend.app.part_render_probe import pixel_counts
 from backend.app.services import part_renders, render_runtime
 from backend.app.services.local_worker_broker import LocalWorkerBroker
 from backend.app.services.part_render_runtime import PartRenderRuntime
-from backend.app.services.part_render_scheduler import PartRenderScheduler
 from backend.tests.fixtures.part_render_3mf import two_objects_3mf
 from backend.tests.unit.services.test_part_render_node import needs_node
+from backend.tests.unit.test_part_render_scheduler import make_scheduler, stop_parked
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -62,12 +62,15 @@ async def _run(tmp_path, test_engine, db_session, sha):
     runtime = PartRenderRuntime(tmp_path, broker, app_dir=ROOT)
     await runtime.start()
     factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
-    scheduler = PartRenderScheduler(runtime, factory, tmp_path / "part-renders")
+    scheduler = make_scheduler(runtime, factory, tmp_path / "part-renders")
     try:
         await scheduler.start()  # the backfill queues the linked plate
-        return await _until_settled(db_session, sha)
+        row = await _until_settled(db_session, sha)
+        # stopped while parked, never inside a query: the test's own session shares that one connection
+        await stop_parked(scheduler)
+        return row
     finally:
-        await scheduler.stop("shutdown")
+        await scheduler.stop("shutdown")  # one stop per scheduler: a no-op after stop_parked
         await runtime.stop()
         await broker.stop()
 

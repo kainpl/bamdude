@@ -572,3 +572,22 @@ def test_an_unreadable_bundle_is_the_runtimes_fault_not_the_files(tmp_path, monk
     boot = boot_for(tmp_path, two_objects_3mf(tmp_path / "f.3mf"), node=str(tmp_path / "node"))
     result, _ = part_render.render_attempt(boot)
     assert result == {"outcome": "failed", "reason": "bundle_mismatch"}
+
+
+def test_node_is_started_with_its_launch_token(tmp_path, monkeypatch):
+    """Consilium r2, R2.1: the token in node.launch is on Node's command line, so a later start can find a
+    Node whose record never reached the disk."""
+    from backend.app.services.part_render_tree import launch_arg
+
+    seen = {}
+
+    def capture(cmd, job, chunks, **kwargs):
+        seen["cmd"] = cmd
+        raise part_render.NodeRenderError("crashed", "captured")
+
+    monkeypatch.setattr(part_render, "verify_bundle", lambda: "b" * 64)
+    monkeypatch.setattr(part_render, "run_frames", capture)
+    boot = boot_for(tmp_path, two_objects_3mf(tmp_path / "f.3mf"), node=str(tmp_path / "node"))
+    part_render.render_attempt(boot)
+    token = (tmp_path / "attempt" / "node.launch").read_text(encoding="ascii")
+    assert seen["cmd"][-1] == launch_arg(token)

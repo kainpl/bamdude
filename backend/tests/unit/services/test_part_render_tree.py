@@ -80,6 +80,7 @@ def test_a_clock_step_does_not_make_a_live_process_look_like_a_stranger(tmp_path
     from backend.app.services import part_render_tree as tree
 
     monkeypatch.setattr(tree, "_BOOT_RELATIVE", True)
+    monkeypatch.setattr(tree, "_boot_id", lambda: "boot-a")  # the same boot: only the clock moved
     process = _spawn()
     try:
         record(tmp_path / "node.pid", process.pid)
@@ -242,3 +243,288 @@ def test_an_orphan_killed_by_the_record_check_is_proven_stopped(tmp_path):
             psutil.Process(orphan).kill()
         except psutil.NoSuchProcess:
             pass
+
+
+def _launched_by_a_dead_parent(attempt: Path, name: str) -> subprocess.Popen:
+    """What a parent that died inside the spawn window leaves: <name>.launch with its token, the process
+    started with the token on its command line, and no record."""
+    from backend.app.services.part_render_tree import launch_arg
+
+    token = launch(attempt, name)
+    return subprocess.Popen([*SLEEP, launch_arg(token)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def _dead_ancestors(generation: Path, attempt: Path) -> None:
+    for name in ("owner", "worker", "service"):
+        _dead(generation / f"{name}.pid")
+    for name in ("guardian", "child"):
+        launch(attempt, name)
+        _dead(attempt / f"{name}.pid")
+
+
+def test_an_unrecorded_launch_under_a_dead_parent_is_found_by_its_token_and_ended(tmp_path):
+    """Consilium r2, R2.1: a dead parent proves the input was withheld, not that the child exited. The child
+    is found by the token its launch carries -- no new one can be born once the parent is dead -- and ended."""
+    from backend.app.services.part_render_tree import generation_gone
+
+    generation, attempt = _generation(tmp_path)
+    _dead_ancestors(generation, attempt)
+    unrecorded = _launched_by_a_dead_parent(attempt, "node")
+    try:
+        assert generation_gone(generation)
+        assert unrecorded.wait(timeout=5) is not None  # ended by the proof, not waited out
+        assert _holders((attempt / "node.launch").read_text(encoding="ascii")) == []  # a venv's interpreter too
+    finally:
+        if unrecorded.poll() is None:
+            unrecorded.kill()
+            unrecorded.wait()
+
+
+def test_an_unrecorded_launch_without_a_readable_token_is_not_over(tmp_path):
+    from backend.app.services.part_render_tree import generation_gone
+
+    generation, attempt = _generation(tmp_path)
+    _dead_ancestors(generation, attempt)
+    (attempt / "node.launch").write_text("", encoding="ascii")  # a launch whose token never reached the disk
+    assert not generation_gone(generation)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="SIGSTOP holds Node before it reads EOF (POSIX)")
+def test_a_stopped_real_node_launched_without_a_record_is_ended_by_the_proof(tmp_path):
+    """Consilium r2, R2.1 with the pinned Node and the production command: stopped before it could read EOF,
+    its parent dead -- the proof ends it instead of trusting the EOF."""
+    import signal
+
+    import psutil
+
+    from backend.app.services.part_render_tree import generation_gone
+    from backend.tests.unit.services.test_part_render_node import NODE
+
+    if NODE is None:
+        pytest.skip("no pinned Node")
+    generation, attempt = _generation(tmp_path)
+    for name in ("owner", "worker", "service"):
+        _dead(generation / f"{name}.pid")
+    launch(attempt, "guardian")
+    _dead(attempt / "guardian.pid")
+    code = (
+        "import os, signal, subprocess, sys\n"
+        "from pathlib import Path\n"
+        "from backend.app.services.part_render_node import node_command, node_env\n"
+        "from backend.app.services.part_render_tree import launch, launch_arg, record\n"
+        "root = Path(sys.argv[1])\n"
+        "record(root / 'child.pid', os.getpid())\n"
+        "token = launch(root, 'node')\n"
+        "p = subprocess.Popen(node_command(Path(sys.argv[2])) + [launch_arg(token)], stdin=subprocess.PIPE,"
+        " stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=node_env())\n"
+        "os.kill(p.pid, signal.SIGSTOP)\n"
+        "print(p.pid, flush=True)\n"
+        "os._exit(0)\n"
+    )
+    parent = subprocess.Popen([sys.executable, "-c", code, str(attempt), str(NODE)], stdout=subprocess.PIPE)
+    node_pid = int(parent.stdout.readline())
+    parent.wait(timeout=10)
+    try:
+        assert psutil.Process(node_pid).status() == psutil.STATUS_STOPPED
+        assert generation_gone(generation)
+        assert not psutil.pid_exists(node_pid) or psutil.Process(node_pid).status() == psutil.STATUS_ZOMBIE
+    finally:
+        try:
+            psutil.Process(node_pid).kill()
+        except psutil.NoSuchProcess:
+            pass
+
+
+class _Kernel:
+    """A modelled OS: the boot the reader reports, and whether anything was signalled."""
+
+    boot = "boot-a"
+    killed = False
+
+
+def _model(monkeypatch, *, ticks: float = 25.0):
+    import psutil
+
+    from backend.app.services import part_render_tree as tree
+
+    _Kernel.boot, _Kernel.killed = "boot-a", False
+
+    class Process:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def create_time(self):
+            return 1000.0 + ticks
+
+        def status(self):
+            return psutil.STATUS_RUNNING
+
+        def kill(self):
+            _Kernel.killed = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(tree, "_BOOT_RELATIVE", True)
+    monkeypatch.setattr(tree, "_boot_id", lambda: _Kernel.boot)
+    monkeypatch.setattr(tree.psutil, "Process", Process)
+    monkeypatch.setattr(tree.psutil, "boot_time", lambda: 1000.0)
+    return tree
+
+
+def test_a_record_from_another_boot_has_ended_and_its_pid_is_never_signalled(tmp_path, monkeypatch):
+    """Consilium r2, R2.2: the same pid at the same tick after a reboot is another process."""
+    tree = _model(monkeypatch)
+    tree.record(tmp_path / "node.pid", 4242)
+    _Kernel.boot = "boot-b"
+    assert tree._gone(tmp_path / "node.pid", timeout=0.1)
+    assert not _Kernel.killed
+    assert tree._gone(tmp_path / "node.pid", timeout=0.1, kill=False)  # an earlier boot's main has ended too
+
+
+def test_a_record_from_this_boot_still_kills_its_live_process(tmp_path, monkeypatch):
+    tree = _model(monkeypatch)
+    tree.record(tmp_path / "node.pid", 4242)
+    assert tree._gone(tmp_path / "node.pid", timeout=0.1)
+    assert _Kernel.killed
+
+
+def test_a_linux_record_without_its_boot_proves_nothing_and_signals_nothing(tmp_path, monkeypatch):
+    """Consilium r2, R2.2: a record from before the boot was stored cannot be placed in a boot."""
+    import json
+
+    tree = _model(monkeypatch)
+    (tmp_path / "node.pid").write_text(json.dumps({"pid": 4242, "create_time": 25.0}), encoding="ascii")
+    assert not tree._gone(tmp_path / "node.pid", timeout=0.1)
+    assert not _Kernel.killed
+
+
+def test_a_linux_record_without_its_boot_shows_its_process_gone_when_nothing_could_be_it(tmp_path, monkeypatch):
+    """Consilium r2, R2.2, records written before the boot was stored: when no process has the recorded pid
+    and start, the recorded one is gone in any boot -- nothing to signal, nothing ambiguous."""
+    import psutil
+
+    tree = _model(monkeypatch)
+    entry = tmp_path / "node.pid"
+    entry.write_text(json.dumps({"pid": 4242, "create_time": 99.0}), encoding="ascii")
+    assert tree._gone(entry, timeout=0.1)  # the pid is held by a process with another start
+    assert not _Kernel.killed
+
+    def no_such(pid):
+        raise psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(tree.psutil, "Process", no_such)
+    entry.write_text(json.dumps({"pid": 4242, "create_time": 25.0}), encoding="ascii")
+    assert tree._gone(entry, timeout=0.1)
+
+
+def test_a_run_of_another_boot_is_over_whatever_a_power_cut_left_of_its_files(tmp_path, monkeypatch):
+    """Consilium r2, R2.2: nothing of a run outlives its boot. A launch whose token or record a power cut lost
+    must not keep the runtime closed, and no pid the run recorded is signalled."""
+    from backend.app.services import part_render_tree as tree
+
+    monkeypatch.setattr(tree, "_boot_id", lambda: "boot-a")
+    generation, attempt = _generation(tmp_path)
+    stranger = _spawn()  # what holds the recorded pids in the next boot
+    try:
+        record(generation / "owner.pid", stranger.pid)
+        record(generation / "worker.pid", stranger.pid)
+        (attempt / "node.launch").write_text("", encoding="ascii")  # its token lost
+        (attempt / "child.pid.part").write_text("{", encoding="ascii")  # its record torn
+        monkeypatch.setattr(tree, "_boot_id", lambda: "boot-b")
+        assert tree.generation_gone(generation)
+        assert stranger.poll() is None  # never signalled
+    finally:
+        stranger.kill()
+        stranger.wait()
+
+
+def _holders(token: str) -> list:
+    """Every process still running with this launch's token on its command line."""
+    import psutil
+
+    from backend.app.services.part_render_tree import launch_arg
+
+    marker = launch_arg(token)
+    return [
+        p
+        for p in psutil.process_iter(["cmdline", "status"])
+        if marker in (p.info["cmdline"] or []) and p.info["status"] != psutil.STATUS_ZOMBIE
+    ]
+
+
+def test_a_fork_caught_before_it_executed_its_child_is_ended_by_its_parents_token(tmp_path):
+    """Consilium r2, R2.1: until it executes, a child runs its PARENT's command line, so the child's own token
+    cannot find it -- a parent killed while that exec stalls leaves exactly this. Proving the parent over ends
+    every holder of the parent's token; here also the interpreter behind a Windows venv launcher."""
+    from backend.app.services.part_render_tree import generation_gone, launch_arg
+
+    generation, attempt = _generation(tmp_path)
+    for name in ("owner", "worker", "service"):
+        _dead(generation / f"{name}.pid")
+    launch(attempt, "guardian")
+    _dead(attempt / "guardian.pid")
+    token = launch(attempt, "child")
+    _dead(attempt / "child.pid")
+    launch(attempt, "node")  # its spawn began: node.launch and no record
+    fork = subprocess.Popen([*SLEEP, launch_arg(token)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        assert generation_gone(generation)
+        assert fork.wait(timeout=5) is not None
+        assert _holders(token) == []
+    finally:
+        if fork.poll() is None:
+            fork.kill()
+            fork.wait()
+
+
+def test_an_unrecorded_launch_whose_parents_token_cannot_be_read_is_not_over(tmp_path):
+    """Without the parent's token a fork of it caught before its exec cannot be found: not proven."""
+    from backend.app.services.part_render_tree import generation_gone
+
+    generation, attempt = _generation(tmp_path)
+    _dead_ancestors(generation, attempt)
+    (attempt / "child.launch").write_text("", encoding="ascii")
+    launch(attempt, "node")
+    assert not generation_gone(generation)
+
+
+class _Holder:
+    killed: list = []
+
+    def __init__(self, pid: int):
+        from backend.app.services.part_render_tree import launch_arg
+
+        self.pid = pid
+        self.info = {"cmdline": ["python", launch_arg("a" * 32)]}
+
+    def status(self):
+        import psutil
+
+        return psutil.STATUS_RUNNING
+
+    def kill(self):
+        _Holder.killed.append(self.pid)
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def test_a_holder_started_by_a_holder_during_the_scan_is_found_by_the_next_round(monkeypatch):
+    """A venv launcher may start its interpreter -- the same command line -- after a round saw only the
+    launcher: the next round finds it, and only a round that finds none closes the set."""
+    from backend.app.services import part_render_tree as tree
+
+    _Holder.killed = []
+    rounds = iter([[_Holder(1)], [_Holder(2)], []])
+    monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: next(rounds))
+    assert tree._end_launched("a" * 32, timeout=0.1)
+    assert _Holder.killed == [1, 2]
+
+
+def test_holders_that_keep_appearing_are_not_proven_ended(monkeypatch):
+    from backend.app.services import part_render_tree as tree
+
+    _Holder.killed = []
+    monkeypatch.setattr(tree.psutil, "process_iter", lambda attrs: [_Holder(len(_Holder.killed) + 1)])
+    assert not tree._end_launched("a" * 32, timeout=0.1)

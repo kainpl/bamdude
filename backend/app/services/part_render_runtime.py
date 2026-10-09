@@ -390,7 +390,7 @@ class PartRenderRuntime:
         self.epoch = uuid4().hex
 
         async def spawn():
-            await disk(part_render_tree.launch, self.staging, "worker")
+            token = await disk(part_render_tree.launch, self.staging, "worker")
             try:
                 self.service = await disk(
                     PreviewProcess,
@@ -405,6 +405,7 @@ class PartRenderRuntime:
                     },
                     self.root / "cache",
                     on_spawn=lambda pid: part_render_tree.record(self.staging / "worker.pid", pid),
+                    launch_token=token,
                 )
             except SpawnUnproven as exc:
                 # its guardian existed, its start failed, and nothing proved it gone: no worker beside it

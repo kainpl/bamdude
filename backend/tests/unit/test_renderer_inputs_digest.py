@@ -25,7 +25,7 @@ RENDER_INPUTS = (
 )
 # Changed a file above? Decide first whether RENDERER_VERSION goes up (spec §8.5), then re-pin with
 #   python -c "from backend.tests.unit.test_renderer_inputs_digest import digest; print(digest())"
-PINNED = {2: "f38a16539a750c1e061ab2c870ec6bead25c62a63717c44f10624171cf3c03d3"}
+PINNED = {2: "654f85810b7ac17ad92f4789868a4fa2aaabb27fcee9aaaa98f8a6a013cd3301"}
 
 
 def digest() -> str:
