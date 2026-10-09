@@ -132,19 +132,34 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
+def _uid(uids: object) -> int | tuple | None:
+    """POSIX: the uid, when real, effective and saved are one -- every process of a run runs so, none of ours
+    changes uid. Mixed uids (a setuid program such as sudo, run by the same user: real 501, effective 0 --
+    measured on CI's macOS runner) are returned whole, and so never equal an owner's uid: positively not ours,
+    whatever the real uid says. None when psutil could not read them."""
+    real, effective, saved = (getattr(uids, name, None) for name in ("real", "effective", "saved"))
+    if real is None:
+        return None
+    return real if real == effective == saved else (real, effective, saved)
+
+
 def _identity(process: psutil.Process) -> int | str | None:
-    """Who runs ``process``: its real uid on POSIX, its user name on Windows; None when it cannot be read."""
+    """Who runs ``process``, for a record: its uid on POSIX (None unless its uids are one), its user name on
+    Windows; None when it cannot be read."""
     try:
-        return process.username() if _WINDOWS else process.uids().real
+        if _WINDOWS:
+            return process.username()
+        uid = _uid(process.uids())
+        return uid if isinstance(uid, int) else None
     except (psutil.Error, AttributeError):
         return None
 
 
-def _identity_of(info: dict) -> int | str | None:
+def _identity_of(info: dict) -> int | str | tuple | None:
     """The same identity, out of a ``process_iter`` row (None where psutil could not read it)."""
     if _WINDOWS:
         return info.get("username")
-    return getattr(info.get("uids"), "real", None)
+    return _uid(info.get("uids"))
 
 
 def record(path: Path, pid: int) -> None:

@@ -1027,3 +1027,35 @@ def test_a_reaped_process_does_not_turn_the_proof_into_an_error(tmp_path, monkey
     entry.write_text(json.dumps({"pid": 4242, "create_time": 1000.0}), encoding="ascii")
     assert tree._gone(entry, timeout=0.1, this_run=True)
     assert reaped.killed
+
+
+def test_a_setuid_process_of_our_user_is_not_ours_and_does_not_block_the_proof(monkeypatch):
+    """Measured on CI's macOS runner (2026-10-09): a long-lived /usr/bin/sudo with real uid 501 -- the runner's
+    user -- and effective uid 0, its command line unreadable. Read by its real uid alone it "may be ours", and
+    every earlier run there stayed unproven. Our processes never change uid: real, effective and saved are all
+    the owner's, so a process whose uids are not one is positively someone else's -- a sudo -s in a developer's
+    terminal included."""
+    sudo = _Unreadable(979, ppid=977)
+    sudo.info["uids"] = _Uids(501, 0, 0)
+    tree = _scan(monkeypatch, [sudo], windows=False)
+    assert tree._end_launched("a" * 32, 0.1, 501)
+
+
+def test_a_setuid_token_holder_is_a_stranger_and_never_signalled(monkeypatch):
+    holder = _Readable(9, uid=501)
+    holder.info["uids"] = _Uids(501, 0, 0)
+    _Holder.killed = []
+    tree = _scan(monkeypatch, [holder], windows=False)
+    assert tree._end_launched("a" * 32, 0.1, 501)
+    assert _Holder.killed == []
+
+
+def test_a_record_of_a_process_with_mixed_uids_names_no_owner(monkeypatch):
+    from backend.app.services import part_render_tree as tree
+
+    class Setuid:
+        def uids(self):
+            return _Uids(501, 0, 0)
+
+    monkeypatch.setattr(tree, "_WINDOWS", False)
+    assert tree._identity(Setuid()) is None
