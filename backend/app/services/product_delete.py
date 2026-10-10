@@ -9,7 +9,8 @@ SQLite honours no FK cascade, so nothing here leans on one: the pivot rows
 and the procurement rows hanging off the product's parts are dropped by hand,
 the stock ledger goes through its own writer, and the ORM cascades parts and
 plates. Attachment files on disk are left as the route always left them —
-``scripts/prune_orphan_archive_files.py`` reconciles disk.
+``scripts/prune_orphan_archive_files.py`` reconciles disk. The parts' photos
+(``part-images/``) go after the commit through part_images (part thumbnails, plan E4, D8).
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from sqlalchemy.orm import selectinload
 from backend.app.models.finished_stock import StockItem
 from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
-from backend.app.services import finished_stock, part_stock, product_facets, stock_issues
+from backend.app.services import finished_stock, part_images, part_stock, product_facets, stock_issues
 from backend.app.services.product_gate import lock_product_delete, product_gate
 
 
@@ -55,6 +56,7 @@ async def delete_product(db: AsyncSession, product: Product) -> None:
     await part_stock.delete_for_parts(db, list(part_ids))
     await product_facets.delete_for_product(db, product.id)
     await db.flush()
+    part_images.forget_product(db, product.id)
     await db.delete(product)
     await db.flush()
 

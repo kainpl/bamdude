@@ -30,13 +30,20 @@ from __future__ import annotations
 import asyncio
 import functools
 import hashlib
+import io
 import logging
+import posixpath
 import re
 import shutil
+import zipfile
+import zlib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 
+from fastapi import HTTPException
+from PIL import Image, ImageOps
 from pydantic import BaseModel
 from sqlalchemy import event, exists, select
 from sqlalchemy.orm import Session, selectinload
@@ -47,6 +54,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.plate_render import PlateRender, PlateRenderObject
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.schemas.part_image import (
+    INT32_MAX,
     ImageChoice,
     InstanceImageRef,
     InstanceKey,
@@ -55,12 +63,13 @@ from backend.app.schemas.part_image import (
     PhotoState,
     PinState,
 )
+from backend.app.services import part_stock
 from backend.app.services.part_names import tally_objects
-from backend.app.services.part_render_protocol import RENDERED, RENDERER_VERSION
+from backend.app.services.part_render_protocol import ID_MAX, RENDERED, RENDERER_VERSION, SMALL_SIZE
 from backend.app.services.preview_artifacts import disk
 from backend.app.services.product_composition import part_index, part_sources, plate_objects, recipes_for_products
 from backend.app.services.product_facets import SQL_CHUNK, id_chunks
-from backend.app.services.product_files import product_part_images_dir
+from backend.app.services.product_files import attachment_limit, product_part_images_dir
 
 logger = logging.getLogger(__name__)
 
@@ -759,3 +768,347 @@ def attach(fn=None, *, editor: bool = False):
         return run
 
     return wrap(fn) if fn is not None else wrap
+
+
+PHOTO_FORMATS = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp"}
+PHOTO_MAX_PIXELS = 40_000_000
+PHOTO_MEMBER_ROOT = "part-images"
+
+
+class _PhotoRefused(Exception):
+    def __init__(self, too_many_pixels: bool = False):
+        super().__init__()
+        self.too_many_pixels = too_many_pixels
+
+
+def _photo_files(directory: Path, name_or_stem: str) -> list[Path]:
+    """Every file one stored photo can consist of: its original under any accepted extension
+    and its small copy -- what a cleanup removes, whatever got written."""
+    stem = name_or_stem.split(".", 1)[0]
+    return [directory / f"{stem}.{ext}" for ext in PHOTO_FORMATS.values()] + [directory / f"{stem}.sm.png"]
+
+
+def _unlink_all(paths: Iterable[Path]) -> None:
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Rejected part photo file %s was not removed: %s", path.name, type(exc).__name__)
+
+
+def _write_photo(content: bytes, directory: Path, stem: str) -> str:
+    """Validate, then write one photo and its small copy (a thread); returns the extension.
+
+    All or nothing: nothing is written before the bytes are known to be a photo, and a write that
+    fails part way removes what this call wrote before the error goes on (consilium E4-R2)."""
+    try:
+        with Image.open(io.BytesIO(content)) as probe:
+            fmt, (width, height) = probe.format, probe.size
+    except Image.DecompressionBombError as exc:
+        raise _PhotoRefused(too_many_pixels=True) from exc
+    except (OSError, ValueError, SyntaxError) as exc:
+        raise _PhotoRefused() from exc
+    ext = PHOTO_FORMATS.get(fmt or "")
+    if ext is None:
+        raise _PhotoRefused()
+    if width * height > PHOTO_MAX_PIXELS:
+        raise _PhotoRefused(too_many_pixels=True)
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            image.load()  # a truncated file is refused before anything is written
+            small = ImageOps.exif_transpose(image)
+            small.thumbnail((SMALL_SIZE, SMALL_SIZE))
+            if small.mode not in ("RGB", "RGBA"):
+                small = small.convert("RGBA")
+            buffer = io.BytesIO()
+            small.save(buffer, "PNG")
+    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
+        raise _PhotoRefused() from exc
+    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        (directory / f"{stem}.{ext}").write_bytes(content)
+        (directory / f"{stem}.sm.png").write_bytes(buffer.getvalue())
+    except BaseException:
+        _unlink_all(_photo_files(directory, stem))
+        raise
+    return ext
+
+
+async def _store_photo(db, product_id: int, content: bytes) -> str:
+    """Write a photo for this transaction and own the write to its end (consilium E4-R2).
+
+    The thread runs under ``preview_artifacts.disk``: a cancelled caller still waits for it, so
+    nothing it writes can land after the caller -- or the rollback behind it -- has cleaned up.
+    Whatever ends the write without a name (a refusal, a disk error, a cancellation) removes
+    every file of the stem before it goes on, so a caller that catches the error and commits
+    keeps nothing of it. A photo that was written belongs to the transaction: removed again if
+    the transaction does not land, kept if it does. The part's previous photo is not touched here.
+    """
+    directory = product_part_images_dir(product_id)
+    stem = uuid4().hex
+    files = _photo_files(directory, stem)
+    for path in files:
+        unlink_on_rollback(db, path)
+    try:
+        ext = await disk(_write_photo, content, directory, stem)
+    except BaseException:
+        await disk(_unlink_all, files)
+        raise
+    return f"{stem}.{ext}"
+
+
+async def _locked(db, part_id: int) -> ProductPart:
+    """Spec §10.3: the part row only -- the product gate is not taken (plan E4, D12)."""
+    part = await part_stock.lock_part(db, part_id)
+    if part is None:
+        raise HTTPException(status_code=404, detail="Part not found")
+    return part
+
+
+def _drop_photo(db, part: ProductPart) -> None:
+    if part.image_photo and PHOTO_NAME.fullmatch(part.image_photo):
+        directory = product_part_images_dir(part.product_id)
+        unlink_after_commit(db, directory / part.image_photo)
+        unlink_after_commit(db, directory / small_photo_name(part.image_photo))
+    part.image_photo = None
+
+
+def _clear_pin(part: ProductPart) -> None:
+    part.image_file_id = part.image_plate_index = part.image_identify_id = None
+
+
+async def set_choice(db, part_id: int, source: str, instance: InstanceKey | None) -> ProductPart:
+    """``PUT /product-parts/{id}/image`` (spec §11.2): auto, or a pin on a ready candidate of the part."""
+    part = await _locked(db, part_id)
+    if source == "instance":
+        if part.kind != "printed":
+            raise HTTPException(status_code=422, detail="A purchased part has no plate objects to pin")
+        if instance is None:
+            raise HTTPException(status_code=422, detail="Choose the plate object to pin")
+        key = (instance.library_file_id, instance.plate_index, instance.identify_id)
+        offered = await candidates(db, part.id, lambda _file: True)
+        if not any((c.library_file_id, c.plate_index, c.identify_id) == key and c.v is not None for c in offered or []):
+            raise HTTPException(status_code=422, detail="This object cannot be pinned to this part")
+        _drop_photo(db, part)
+        part.image_source = "instance"
+        part.image_file_id, part.image_plate_index, part.image_identify_id = key
+    else:
+        _drop_photo(db, part)
+        _clear_pin(part)
+        part.image_source = "auto"
+    mark_changed(db, [part.product_id])
+    await db.flush()
+    return part
+
+
+async def set_photo(db, part_id: int, content: bytes) -> ProductPart:
+    """``POST /product-parts/{id}/image/photo``: the photo becomes the part's picture (spec §10.3)."""
+    if len(content) > attachment_limit():
+        raise HTTPException(status_code=413, detail=f"A photo may be at most {attachment_limit()} bytes")
+    part = await _locked(db, part_id)
+    try:
+        name = await _store_photo(db, part.product_id, content)
+    except _PhotoRefused as refused:
+        if refused.too_many_pixels:
+            raise HTTPException(
+                status_code=422, detail=f"The photo may have at most {PHOTO_MAX_PIXELS} pixels"
+            ) from refused
+        raise HTTPException(status_code=422, detail="The photo must be a PNG, JPEG or WebP picture") from refused
+    _drop_photo(db, part)
+    _clear_pin(part)
+    part.image_source, part.image_photo = "photo", name
+    mark_changed(db, [part.product_id])
+    await db.flush()
+    return part
+
+
+async def clear_photo(db, part_id: int) -> ProductPart:
+    """``DELETE /product-parts/{id}/image/photo``: a photo choice goes back to auto; anything else stays."""
+    part = await _locked(db, part_id)
+    if part.image_source == "photo":
+        _drop_photo(db, part)
+        part.image_source = "auto"
+        mark_changed(db, [part.product_id])
+        await db.flush()
+    return part
+
+
+def forget_part(db, part: ProductPart) -> None:
+    """The part is being deleted: its photo goes after the commit (spec §10.3)."""
+    _drop_photo(db, part)
+    mark_changed(db, [part.product_id])
+
+
+def absorb(db, target: ProductPart, source: ProductPart) -> None:
+    """Merge B into A: A keeps its own choice, B's photo goes after the commit (spec §10.3)."""
+    _drop_photo(db, source)
+    mark_changed(db, [target.product_id])
+
+
+def forget_product(db, product_id: int) -> None:
+    """The product is being deleted: its parts' photos go after the commit (plan E4, D8)."""
+    unlink_after_commit(db, product_part_images_dir(product_id))
+    mark_changed(db, [product_id])
+
+
+def _copy_photos(pairs: list[tuple[Path, Path]]) -> set[str]:
+    """Copy each photo with its small copy (a thread). A pair that fails leaves nothing of itself."""
+    copied: set[str] = set()
+    for source, target in pairs:
+        written = [target, target.with_name(small_photo_name(target.name))]
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, written[0])
+            small = source.with_name(small_photo_name(source.name))
+            if small.is_file():
+                shutil.copyfile(small, written[1])
+        except OSError as exc:
+            _unlink_all(written)
+            logger.warning("Part photo %s was not copied: %s", source.name, type(exc).__name__)
+            continue
+        except BaseException:
+            _unlink_all(written)
+            raise
+        copied.add(target.name)
+    return copied
+
+
+async def _copy_owned(db, pairs: list[tuple[Path, Path]]) -> set[str]:
+    """``_copy_photos`` for this transaction, owned to its end like ``_store_photo``: the copies
+    are the transaction's, and a cancellation or an error removes every destination first."""
+    destinations = [p for _source, target in pairs for p in (target, target.with_name(small_photo_name(target.name)))]
+    for path in destinations:
+        unlink_on_rollback(db, path)
+    try:
+        return await disk(_copy_photos, pairs)
+    except BaseException:
+        await disk(_unlink_all, destinations)
+        raise
+
+
+async def copy_for_duplicate(db, pairs: list[tuple[ProductPart, ProductPart]], copy_product_id: int) -> None:
+    """A duplicate's parts take their choices (spec §10.3). Call it AFTER the copy's links are made:
+    a pin is copied only when its file really linked to the copy; otherwise the copy is explicitly
+    auto -- the library's rights are not walked around through a picture. A photo copy that fails
+    leaves nothing behind and the copy stays auto (consilium E4-R2)."""
+    linked = set(
+        (
+            await db.execute(select(ProductPlate.library_file_id).where(ProductPlate.product_id == copy_product_id))
+        ).scalars()
+    )
+    target = product_part_images_dir(copy_product_id)
+    photos: list[tuple[ProductPart, Path, Path]] = []
+    for source, copy in pairs:
+        if source.image_source == "instance" and source.image_file_id in linked:
+            copy.image_source = "instance"
+            copy.image_file_id = source.image_file_id
+            copy.image_plate_index = source.image_plate_index
+            copy.image_identify_id = source.image_identify_id
+        elif (path := _photo_path(source)) is not None:
+            photos.append((copy, path, target / f"{uuid4().hex}{path.suffix}"))
+    copied = await _copy_owned(db, [(src, dst) for _copy, src, dst in photos]) if photos else set()
+    for copy, _src, dst in photos:
+        if dst.name in copied:
+            copy.image_source, copy.image_photo = "photo", dst.name
+    mark_changed(db, [copy_product_id])
+
+
+def photo_for_export(part: ProductPart) -> tuple[str, Path] | None:
+    path = _photo_path(part)
+    return (part.image_photo, path) if path is not None else None
+
+
+def manifest_entry(part: ProductPart, exported_photos: set[str]) -> dict:
+    """The choice in ``product.json`` (spec §10.3). The pin names its file by library id here;
+    ``product_card._write_export`` turns it into the file's hash, the only name an archive keeps
+    unique (plan E4, D10)."""
+    if part.image_source == "photo" and part.image_photo in exported_photos:
+        return {"source": "photo", "photo": f"{PHOTO_MEMBER_ROOT}/{part.image_photo}"}
+    if part.image_source == "instance" and part.image_file_id is not None:
+        return {
+            "source": "instance",
+            "instance": {
+                "library_file_id": part.image_file_id,
+                "plate": part.image_plate_index,
+                "identify_id": part.image_identify_id,
+            },
+        }
+    return {"source": "auto"}
+
+
+def exported_choice(entry: dict, hash_by_file: dict[int, str]) -> dict:
+    """The manifest's image entry once the export knows its files' hashes (plan E4, D10): a pin names its
+    file by the hash the export computed, the only name an archive keeps unique; a pin whose file was not
+    exported travels as auto. Here and not in product_card, whose ``"source"`` keys are the attachments'."""
+    if entry.get("source") != "instance":
+        return entry
+    instance = entry["instance"]
+    digest = hash_by_file.get(instance["library_file_id"])
+    if not digest:
+        return {"source": "auto"}
+    return {
+        "source": "instance",
+        "instance": {"file_hash": digest, "plate": instance["plate"], "identify_id": instance["identify_id"]},
+    }
+
+
+def _whole(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _imported_pin(raw, file_by_hash: dict[str, int]) -> tuple[int, int, int] | None:
+    """``(library_file_id, plate_index, identify_id)`` of an imported pin whose numbers fit the
+    columns, or ``None`` (consilium E4-R3: ``plate = 2**100`` aborted the import at the flush)."""
+    instance = raw if isinstance(raw, dict) else {}
+    digest = instance.get("file_hash")
+    file_id = file_by_hash.get(digest) if isinstance(digest, str) else None
+    plate, identify_id = _whole(instance.get("plate")), _whole(instance.get("identify_id"))
+    if file_id is None or plate is None or identify_id is None:
+        return None
+    if not (0 <= plate <= INT32_MAX and 0 <= identify_id <= ID_MAX):
+        return None
+    return file_id, plate, identify_id
+
+
+async def import_choices(
+    db,
+    zf: zipfile.ZipFile,
+    names: set[str],
+    product_id: int,
+    pairs: list[tuple[ProductPart, object]],
+    file_by_hash: dict[str, int],
+) -> None:
+    """The imported parts take their choices (spec §10.3; plan E4, D22). Call it after the links are made.
+
+    A pin is kept only when it holds structurally on THIS farm: numbers in the columns' range, a
+    plate the new product links, an object that resolves to this very part. Its pixels are not
+    asked for -- on a new farm the plate renders later and the pin waits (``not_rendered``) --
+    so ``set_choice``'s ready-only rule is deliberately not used here. Anything else, and a photo
+    that is unreadable or refused, leaves the part on auto; a refused photo leaves no file (D21).
+    """
+    snap = None
+    if any(isinstance(raw, dict) and raw.get("source") == "instance" for _part, raw in pairs):
+        snap = await _load(db, [part.id for part, _raw in pairs])
+    for part, raw in pairs:
+        image = raw if isinstance(raw, dict) else {}
+        if image.get("source") == "instance" and part.kind == "printed" and snap is not None:
+            key = _imported_pin(image.get("instance"), file_by_hash)
+            plate = snap.plates.get((product_id, key[0], key[1])) if key is not None else None
+            if plate is None or plate.owners.get(key[2]) != part.id:
+                continue
+            part.image_source = "instance"
+            part.image_file_id, part.image_plate_index, part.image_identify_id = key
+        elif image.get("source") == "photo" and isinstance(image.get("photo"), str):
+            member = posixpath.normpath(f"attachments/{image['photo']}")
+            if not member.startswith(f"attachments/{PHOTO_MEMBER_ROOT}/") or member not in names:
+                continue
+            if zf.getinfo(member).file_size > attachment_limit():
+                continue
+            try:
+                content = await disk(zf.read, member)
+                name = await _store_photo(db, product_id, content)
+            except (_PhotoRefused, zipfile.BadZipFile, zlib.error, RuntimeError, OSError) as exc:
+                logger.info("Imported part photo %s skipped: %s", posixpath.basename(member), type(exc).__name__)
+                continue
+            part.image_source, part.image_photo = "photo", name
+    mark_changed(db, [product_id])

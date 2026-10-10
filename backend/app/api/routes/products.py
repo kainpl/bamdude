@@ -135,6 +135,7 @@ from backend.app.services import (
     finished_stock,
     finished_stock_views,
     line_config,
+    part_images,
     part_stock,
     plan_engine,
     product_delete,
@@ -1527,26 +1528,27 @@ async def duplicate_product(
     await db.flush()
     # Groups first: the parts' bindings go through the old → new option map.
     option_map = await product_variants.copy_groups(db, source.id, copy.id)
+    pairs: list[tuple[ProductPart, ProductPart]] = []
     for part in source.parts:
-        db.add(
-            ProductPart(
-                product_id=copy.id,
-                kind=part.kind,
-                name=part.name,
-                name_key=part.name_key,
-                qty_per_unit=part.qty_per_unit,
-                ignored=part.ignored,
-                # NULL for a purchased part, and it stays NULL on the copy: the
-                # column is printed-only, and [] would read as "no aliases yet".
-                aliases=list(part.aliases) if part.aliases is not None else None,
-                auto=part.auto,
-                unit_price=part.unit_price,
-                sourcing_url=part.sourcing_url,
-                remarks=part.remarks,
-                sort_order=part.sort_order,
-                variant_option_id=option_map.get(part.variant_option_id) if part.variant_option_id else None,
-            )
+        new = ProductPart(
+            product_id=copy.id,
+            kind=part.kind,
+            name=part.name,
+            name_key=part.name_key,
+            qty_per_unit=part.qty_per_unit,
+            ignored=part.ignored,
+            # NULL for a purchased part, and it stays NULL on the copy: the
+            # column is printed-only, and [] would read as "no aliases yet".
+            aliases=list(part.aliases) if part.aliases is not None else None,
+            auto=part.auto,
+            unit_price=part.unit_price,
+            sourcing_url=part.sourcing_url,
+            remarks=part.remarks,
+            sort_order=part.sort_order,
+            variant_option_id=option_map.get(part.variant_option_id) if part.variant_option_id else None,
         )
+        db.add(new)
+        pairs.append((part, new))
     # ⚠️ No hand-copied ``ProductPlate`` rows. The syncs below plant the plates
     # for every file the copy ends up linked to, from the file's own metadata —
     # copying them here as well only avoided ``uq_product_plates_file_plate``
@@ -1573,6 +1575,9 @@ async def duplicate_product(
         folders = []
     for folder in folders:
         await _apply_folder(db, folder.id, await _folder_product_ids(db, folder.id) | {copy.id})
+    # The parts' pictures: a photo is copied as a file; a pin only where its file really linked to the copy
+    # (spec part-thumbnails §10.3) -- after the links, which is what it checks against.
+    await part_images.copy_for_duplicate(db, pairs, copy.id)
 
     # Read the JSON column into plain dicts HERE, on the loop, before the thread
     # touches anything: the worker gets data, never an ORM row.
@@ -1817,6 +1822,7 @@ async def delete_part(
         await line_config.forget_part(db, part_id)
     except line_config.LineConfigError as e:
         raise HTTPException(status_code=e.status, detail=str(e)) from e
+    part_images.forget_part(db, part)  # its photo goes after the commit (spec part-thumbnails §10.3)
     await db.delete(part)
     return {"message": "Part deleted"}
 
@@ -1870,6 +1876,8 @@ async def merge_part(
     # the acquired counts onto the target: PostgreSQL's cascade would drop them
     # anyway, and a backend-dependent answer here is worse than a plain one.
     await db.execute(delete(ProjectProcurement).where(ProjectProcurement.product_part_id == source.id))
+    # The target keeps its own picture choice, as it keeps its name; the source's photo goes after the commit.
+    part_images.absorb(db, target, source)
     await db.delete(source)
     await db.flush()
     await db.refresh(target)
