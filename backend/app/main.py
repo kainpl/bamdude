@@ -66,6 +66,7 @@ from backend.app.api.routes import (
     notifications,
     obico,
     orca_cloud,
+    part_images as part_images_routes,
     print_options_preferences,
     print_queue,
     printer_locations,
@@ -11343,6 +11344,8 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # share these paths and ride in with them — the middleware sees a path, not
     # a method — and are stopped by their own products:update / orders:update permission.
     re.compile(r"^/api/v1/products/\d+/cover-image$"),
+    re.compile(r"^/api/v1/product-parts/\d+/image$"),
+    re.compile(r"^/api/v1/products/\d+/files/\d+/plates/\d+/objects/\d+/image$"),
     re.compile(r"^/api/v1/projects/\d+/cover-image$"),
     re.compile(r"^/api/v1/archives/\d+/qrcode$"),
     # The timelapse VIDEO only. The six timelapse routes beside it
@@ -11904,6 +11907,8 @@ app.include_router(projects.router, prefix=app_settings.api_prefix)
 app.include_router(customers.router, prefix=app_settings.api_prefix)
 app.include_router(delivery_methods.router, prefix=app_settings.api_prefix)
 app.include_router(products.router, prefix=app_settings.api_prefix)
+app.include_router(part_images_routes.router, prefix=app_settings.api_prefix)
+app.include_router(part_images_routes.product_router, prefix=app_settings.api_prefix)
 app.include_router(product_categories.router, prefix=app_settings.api_prefix)
 app.include_router(stock.router, prefix=app_settings.api_prefix)
 app.include_router(stock_issues.router, prefix=app_settings.api_prefix)

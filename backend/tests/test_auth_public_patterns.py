@@ -107,6 +107,11 @@ PUBLIC_ROUTES: dict[str, tuple[str, str]] = {
     "/api/v1/library/files/{file_id}/card-file/{zip_path:path}": ("media-token", "model-card pictures"),
     "/api/v1/products/{product_id}/attachment-image/{filename}": ("media-token", "product gallery"),
     "/api/v1/products/{product_id}/cover-image": ("media-token", "product cover"),
+    "/api/v1/product-parts/{part_id}/image": ("media-token", "a part's picture"),
+    "/api/v1/products/{product_id}/files/{library_file_id}/plates/{plate_index}/objects/{identify_id}/image": (
+        "media-token",
+        "a plate object's picture -- the editor's gallery, the unassigned chips",
+    ),
     "/api/v1/projects/{project_id}/cover-image": ("media-token", "order cover"),
     "/api/v1/printers/{printer_id}/camera-cover": ("media-token", "current job's cover — a picture, not the camera"),
     "/api/v1/makerworld/imports/{library_file_id}/cover": ("media-token", "MakerWorld import cover"),

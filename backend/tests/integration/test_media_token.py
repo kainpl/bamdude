@@ -49,6 +49,8 @@ MEDIA_ROUTES = [
     "/api/v1/library/files/1/card-file/Auxiliaries/pictures/a.png",
     "/api/v1/products/1/attachment-image/a.png",
     "/api/v1/products/1/cover-image",
+    "/api/v1/product-parts/1/image",
+    "/api/v1/products/1/files/1/plates/1/objects/1/image",
     "/api/v1/projects/1/cover-image",
     "/api/v1/printers/1/camera-cover",
     "/api/v1/makerworld/imports/1/cover",
