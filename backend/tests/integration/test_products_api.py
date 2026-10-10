@@ -175,7 +175,10 @@ async def test_parts_can_be_edited_merged_and_aliased(committing_client, sliced_
     assert r.status_code == 200 and r.json()["aliases"] == ["bracket.stl"]
     plates = (await committing_client.get(f"/api/v1/products/{pid}/plates")).json()
     assert {y["name"]: y["count"] for y in plates[0]["yield"]} == {"bracket.stl": 2}
-    assert plates[0]["unassigned"] == [{"name_key": "lid.stl", "count": 1}]
+    # the object's picture fields (part thumbnails E4) are asserted where they are filled
+    assert [{"name_key": u["name_key"], "count": u["count"]} for u in plates[0]["unassigned"]] == [
+        {"name_key": "lid.stl", "count": 1}
+    ]
 
     # A part cannot drop its OWN key — that would leave the row unreachable.
     r = await committing_client.delete(

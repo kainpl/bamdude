@@ -57,6 +57,40 @@ def plate_instance_names(meta: dict | None, plate_index: int) -> list[str]:
     return names
 
 
+def plate_objects(meta: dict | None, plate_index: int) -> dict[int, str]:
+    """``identify_id -> raw name`` of a plate's instances (spec part-thumbnails §10.1).
+
+    The same plates and the same fallback as :func:`plate_instance_names`: a plate that lists
+    names without ids (``objects``) has instances nobody can point at, so it adds names there
+    and nothing here. JSON storage turned the ids into strings; an id that is not a u32 is
+    skipped -- no slicer names such an object.
+    """
+    out: dict[int, str] = {}
+
+    def take(objects: dict) -> None:
+        for key, name in objects.items():
+            try:
+                identify_id = int(key)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= identify_id <= 0xFFFFFFFF:
+                out[identify_id] = str(name)
+
+    named = False
+    for plate in _plates(meta, plate_index):
+        po = plate.get("printable_objects")
+        if isinstance(po, dict) and po:
+            named = True
+            take(po)
+        elif plate.get("objects"):
+            named = True
+    if not named and plate_index == 0:
+        po = (meta or {}).get("printable_objects")
+        if isinstance(po, dict):
+            take(po)
+    return out
+
+
 def plate_key_counts(meta: dict | None, plate_index: int) -> tuple[Counter[str], dict[str, str]]:
     """``name_key → instances`` and ``name_key → canonical display spelling``."""
     raw = plate_instance_names(meta, plate_index)

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, StringConstraints, ValidationInfo, field_
 
 from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
+from backend.app.schemas.part_image import PartImageRef
 
 #: The most one request may put on a line or move on a shelf. Far above any
 #: shelf, far below the INTEGER a PostgreSQL column overflows at — a typo is
@@ -115,6 +116,9 @@ class DroppedPartOut(BaseModel):
     per_after: int
     printed: int
     queued: int
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class LineConfigurationImpact(BaseModel):
@@ -309,6 +313,9 @@ class PartFiguresOut(BaseModel):
     #: WS-13 E6 H01: the part of ``surplus`` still to move — ``PartFigures.bankable``,
     #: the very number ``bank-surplus`` moves (0 for a part without a shelf).
     bankable: int = 0
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class LinePurchasedPartOut(BaseModel):
@@ -320,6 +327,9 @@ class LinePurchasedPartOut(BaseModel):
     per: int
     need: int
     variant: bool = False
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class ProjectLineResponse(BaseModel):
@@ -569,6 +579,9 @@ class PlanPartCount(BaseModel):
     part_id: int
     name: str
     count: int
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class PlanAlternativeOut(BaseModel):
@@ -949,6 +962,9 @@ class PartStateOut(BaseModel):
     held: int
     issued: int
     written_off: int = 0
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class StockPositionRefOut(BaseModel):

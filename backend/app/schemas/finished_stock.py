@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import PaginationMeta
+from backend.app.schemas.part_image import PartImageRef
 from backend.app.schemas.project import MAX_QTY, LineConfigurationOut, RecipientIn
 
 
@@ -118,6 +119,9 @@ class StockItemPartOut(BaseModel):
     name: str
     per: int
     on_shelf: int
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class StockItemDetail(StockItemOut):
@@ -220,6 +224,11 @@ class StockJournalRow(BaseModel):
     project: StockJournalOrder | None = None
     issue: StockJournalIssue | None = None
     user: StockJournalUser | None = None
+    #: A parts-book row's part (plan E4, D1); ``None`` on a finished-goods row.
+    part_id: int | None = None
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class StockJournalPage(BaseModel):

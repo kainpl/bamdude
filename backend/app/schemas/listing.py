@@ -15,6 +15,7 @@ from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.customer import CustomerResponse
 from backend.app.schemas.farm_forecast import EstimateReasonOut
+from backend.app.schemas.part_image import PartImageRef
 from backend.app.schemas.product import PartSourceOut, ProductListItem, ProductPartVariantOut
 from backend.app.schemas.project import LineConfigurationOut, ProjectListResponse
 from backend.app.schemas.stock import StockListItem
@@ -127,6 +128,9 @@ class ProductPartRow(BaseModel):
     yield_min: int | None = None
     yield_max: int | None = None
     hidden_sources: int = 0
+    #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
+    #: answer is built; ``None`` where the route is not one that shows pictures.
+    image: PartImageRef | None = None
 
 
 class ProductPartsPage(BaseModel):

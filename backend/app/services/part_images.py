@@ -28,20 +28,39 @@ without ``after_soft_rollback`` and would leave its marks behind; nothing calls 
 from __future__ import annotations
 
 import asyncio
+import functools
+import hashlib
 import logging
+import re
 import shutil
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sqlalchemy import event, select
-from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from sqlalchemy import event, exists, select
+from sqlalchemy.orm import Session, selectinload
+from starlette.responses import Response
 
 from backend.app.core.config import settings
 from backend.app.models.library import LibraryFile
-from backend.app.models.product import ProductPlate
+from backend.app.models.plate_render import PlateRender, PlateRenderObject
+from backend.app.models.product import Product, ProductPart, ProductPlate
+from backend.app.schemas.part_image import (
+    ImageChoice,
+    InstanceImageRef,
+    InstanceKey,
+    PartImageCandidateOut,
+    PartImageRef,
+    PhotoState,
+    PinState,
+)
+from backend.app.services.part_names import tally_objects
+from backend.app.services.part_render_protocol import RENDERED, RENDERER_VERSION
 from backend.app.services.preview_artifacts import disk
+from backend.app.services.product_composition import part_index, part_sources, plate_objects, recipes_for_products
 from backend.app.services.product_facets import SQL_CHUNK, id_chunks
+from backend.app.services.product_files import product_part_images_dir
 
 logger = logging.getLogger(__name__)
 
@@ -251,3 +270,492 @@ async def shutdown() -> None:
         for task in list(_tasks):
             task.cancel()
         await asyncio.gather(*list(_tasks), return_exceptions=True)
+
+
+PHOTO_NAME = re.compile(r"[0-9a-f]{32}\.(png|jpg|webp)\Z")
+_PREFERRED = ("toolpath", "model")  # over top_mask, across every source (spec §10.2, step 3)
+_SHA = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def small_photo_name(name: str) -> str:
+    return name.split(".", 1)[0] + ".sm.png"
+
+
+@dataclass(frozen=True)
+class _Render:
+    render_id: int
+    file_sha256: str
+    plate_index: int
+    status: str
+    result_dir: str | None
+    objects: dict  # identify_id -> (method, reason)
+
+
+@dataclass
+class _Plate:
+    file: LibraryFile
+    plate_index: int
+    names: dict[int, str]  # identify_id -> name_key, sibling-folded over the whole plate
+    owners: dict[int, int]  # identify_id -> the part it resolves to
+
+
+@dataclass
+class _Snapshot:
+    parts: dict[int, ProductPart]
+    products: dict[int, Product]
+    sources: dict[int, list[_Plate]]  # part id -> its plates, in part_sources' order (files outside the trash)
+    plates: dict[tuple[int, int, int], _Plate]  # (product id, file id, plate index)
+    files: dict[int, LibraryFile]  # every file named, a trashed pin's too
+    renders: dict[tuple[str, int], _Render]
+
+
+@dataclass(frozen=True)
+class _Effective:
+    ref: PartImageRef
+    lg: Path | None = None
+    sm: Path | None = None
+
+
+def _chunks(values: Iterable) -> Iterable[list]:
+    ordered = sorted(set(values))
+    for start in range(0, len(ordered), SQL_CHUNK):
+        yield ordered[start : start + SQL_CHUNK]
+
+
+async def _renders(db, hashes: Iterable[str]) -> dict[tuple[str, int], _Render]:
+    rows = []
+    for chunk in _chunks(h for h in hashes if h and _SHA.fullmatch(h)):
+        rows += (
+            await db.execute(
+                select(
+                    PlateRender.id,
+                    PlateRender.file_sha256,
+                    PlateRender.plate_index,
+                    PlateRender.status,
+                    PlateRender.result_dir,
+                ).where(PlateRender.file_sha256.in_(chunk), PlateRender.renderer_version == RENDERER_VERSION)
+            )
+        ).all()
+    objects: dict[int, dict] = {}
+    for chunk in id_chunks(r.id for r in rows if r.result_dir):
+        for o in (
+            await db.execute(
+                select(
+                    PlateRenderObject.render_id,
+                    PlateRenderObject.identify_id,
+                    PlateRenderObject.method,
+                    PlateRenderObject.reason,
+                ).where(PlateRenderObject.render_id.in_(chunk))
+            )
+        ).all():
+            objects.setdefault(o.render_id, {})[o.identify_id] = (o.method, o.reason)
+    return {
+        (r.file_sha256, r.plate_index): _Render(
+            r.id, r.file_sha256, r.plate_index, r.status, r.result_dir, objects.get(r.id, {})
+        )
+        for r in rows
+    }
+
+
+async def _load(db, part_ids: Iterable[int]) -> _Snapshot:
+    """Everything a set of parts' pictures stands on, in a fixed number of statements.
+
+    ``populate_existing``: a route that just merged or deleted a part answers through here,
+    and a collection loaded before its flush would still hold the gone row -- whose aliases
+    would then claim the survivor's objects (plan E4, task 28).
+    """
+    parts: dict[int, ProductPart] = {}
+    for chunk in id_chunks(part_ids):
+        rows = await db.execute(
+            select(ProductPart).where(ProductPart.id.in_(chunk)).execution_options(populate_existing=True)
+        )
+        parts.update((p.id, p) for p in rows.scalars())
+    products: dict[int, Product] = {}
+    for chunk in id_chunks(p.product_id for p in parts.values()):
+        rows = await db.execute(
+            select(Product)
+            .options(selectinload(Product.plates), selectinload(Product.parts))
+            .where(Product.id.in_(chunk))
+            .execution_options(populate_existing=True)
+        )
+        products.update((p.id, p) for p in rows.scalars())
+    recipes = await recipes_for_products(db, products.values())
+    files: dict[int, LibraryFile] = {}
+    sources: dict[int, list[_Plate]] = {}
+    plates: dict[tuple[int, int, int], _Plate] = {}
+    for product_id, rows in recipes.items():
+        index = part_index(products[product_id].parts)
+        by_plate_id: dict[int, _Plate] = {}
+        for plate, file, _recipe in rows:
+            files[file.id] = file
+            names = {
+                identify_id: tally.name_key
+                for tally in tally_objects(plate_objects(file.file_metadata, plate.plate_index))
+                for identify_id in tally.identify_ids
+            }
+            entry = _Plate(
+                file=file,
+                plate_index=plate.plate_index,
+                names=names,
+                owners={i: index[key].id for i, key in names.items() if key in index},
+            )
+            by_plate_id[plate.id] = entry
+            plates[(product_id, file.id, plate.plate_index)] = entry
+        for part_id, found in part_sources(rows, lambda _file: True).items():
+            sources[part_id] = [by_plate_id[s.plate_id] for s in found]
+    pinned = {p.image_file_id for p in parts.values() if p.image_source == "instance" and p.image_file_id is not None}
+    for chunk in id_chunks(pinned - files.keys()):
+        files.update(
+            (f.id, f) for f in (await db.execute(select(LibraryFile).where(LibraryFile.id.in_(chunk)))).scalars()
+        )
+    renders = await _renders(db, (f.file_hash for f in files.values()))
+    return _Snapshot(parts, products, sources, plates, files, renders)
+
+
+def _render_v(render: _Render, identify_id: int) -> str:
+    return hashlib.sha256(f"{render.render_id}:{render.result_dir}:{identify_id}".encode()).hexdigest()[:12]
+
+
+def _instance(render: _Render | None, identify_id: int) -> tuple[str, str | None] | None:
+    """``(status, v)`` of one object's picture -- ready / pending / missing / skipped -- or ``None``
+    when none will come (no row, or a failed / unavailable plate without a result)."""
+    if render is None:
+        return None
+    if render.result_dir is None:
+        return ("pending", None) if render.status == "pending" else None
+    method, _reason = render.objects.get(identify_id, ("missing", None))
+    if method in RENDERED:
+        return "ready", _render_v(render, identify_id)
+    return method, None
+
+
+def _render_paths(render: _Render, identify_id: int) -> tuple[Path, Path]:
+    from backend.app.services.part_renders import result_path  # part_renders imports this module
+
+    directory = result_path(
+        Path(settings.part_renders_dir), render.file_sha256, RENDERER_VERSION, render.plate_index, render.result_dir
+    )
+    return directory / f"{identify_id}.lg.png", directory / f"{identify_id}.sm.png"
+
+
+def _render_effective(render: _Render, identify_id: int) -> _Effective:
+    lg, sm = _render_paths(render, identify_id)
+    return _Effective(PartImageRef(kind="render", status="ready", v=_render_v(render, identify_id)), lg=lg, sm=sm)
+
+
+def _pin(part: ProductPart, snap: _Snapshot) -> tuple[PinState, _Effective | None]:
+    """Spec §10.2 / §10.4, in this order: unlinked, trashed, gone, someone else's, not rendered."""
+    file = snap.files.get(part.image_file_id)
+    product = snap.products.get(part.product_id)
+    if file is None or product is None or all(pp.library_file_id != file.id for pp in product.plates):
+        return PinState(valid=False, reason="file_unlinked"), None
+    if file.deleted_at is not None:
+        return PinState(valid=False, reason="file_trashed"), None
+    plate = snap.plates.get((part.product_id, file.id, part.image_plate_index))
+    if plate is None or part.image_identify_id not in plate.names:
+        return PinState(valid=False, reason="object_gone"), None
+    if plate.owners.get(part.image_identify_id) != part.id:
+        return PinState(valid=False, reason="not_this_part"), None
+    render = snap.renders.get((file.file_hash, part.image_plate_index))
+    state = _instance(render, part.image_identify_id)
+    if state is None or state[0] != "ready":
+        return PinState(valid=False, reason="not_rendered"), None
+    return PinState(valid=True), _render_effective(render, part.image_identify_id)
+
+
+def _auto(part: ProductPart, snap: _Snapshot) -> _Effective | None:
+    """Spec §10.2: sources in order, instances by id, toolpath / model before top_mask, else pending."""
+    fallback: _Effective | None = None
+    waiting = False
+    for plate in snap.sources.get(part.id, []):
+        render = snap.renders.get((plate.file.file_hash, plate.plate_index))
+        if render is not None and render.result_dir is None:
+            waiting = waiting or render.status == "pending"
+            continue
+        for identify_id in sorted(i for i, owner in plate.owners.items() if owner == part.id):
+            state = _instance(render, identify_id)
+            if state is None or state[0] != "ready":
+                continue
+            if render.objects[identify_id][0] in _PREFERRED:
+                return _render_effective(render, identify_id)
+            fallback = fallback or _render_effective(render, identify_id)
+    if fallback is not None:
+        return fallback
+    if waiting:
+        return _Effective(PartImageRef(kind="render", status="pending", v=None))
+    return None
+
+
+def _photo_path(part: ProductPart) -> Path | None:
+    if part.image_source != "photo" or not part.image_photo or not PHOTO_NAME.fullmatch(part.image_photo):
+        return None
+    return product_part_images_dir(part.product_id) / part.image_photo
+
+
+async def _photos_present(parts: Iterable[ProductPart]) -> dict[int, bool]:
+    wanted = {p.id: path for p in parts if (path := _photo_path(p)) is not None}
+    if not wanted:
+        return {}
+    return await disk(lambda: {pid: path.is_file() for pid, path in wanted.items()})  # one owned hop (D16, D21)
+
+
+def _effective(part: ProductPart, snap: _Snapshot, present: dict[int, bool]) -> _Effective | None:
+    photo = _photo_path(part)
+    if photo is not None and present.get(part.id):
+        return _Effective(
+            PartImageRef(kind="photo", status="ready", v=part.image_photo),
+            lg=photo,
+            sm=photo.with_name(small_photo_name(photo.name)),
+        )
+    if part.image_source == "instance" and part.kind == "printed":
+        _state, pinned = _pin(part, snap)
+        if pinned is not None:
+            return pinned
+    return _auto(part, snap)
+
+
+def _choice(part: ProductPart, snap: _Snapshot, present: dict[int, bool]) -> ImageChoice:
+    if part.image_source == "instance" and part.image_file_id is not None:
+        return ImageChoice(
+            source="instance",
+            instance=InstanceKey(
+                library_file_id=part.image_file_id,
+                plate_index=part.image_plate_index,
+                identify_id=part.image_identify_id,
+            ),
+            pin=_pin(part, snap)[0],
+        )
+    if part.image_source == "photo":
+        return ImageChoice(source="photo", photo=PhotoState(present=present.get(part.id, False)))
+    return ImageChoice(source="auto")
+
+
+async def _answers(db, part_ids: Iterable[int], *, editor: bool):
+    snap = await _load(db, part_ids)
+    present = await _photos_present(snap.parts.values())
+    effective = {pid: _effective(part, snap, present) for pid, part in snap.parts.items()}
+    choices = {pid: _choice(part, snap, present) for pid, part in snap.parts.items()} if editor else {}
+    return effective, choices
+
+
+async def resolve(db, part_ids: Iterable[int]) -> dict[int, PartImageRef | None]:
+    """Spec §10.2: every part's effective picture, in a fixed number of statements."""
+    effective, _choices = await _answers(db, part_ids, editor=False)
+    return {pid: (e.ref if e is not None else None) for pid, e in effective.items()}
+
+
+async def editor_states(db, part_ids: Iterable[int]) -> dict[int, ImageChoice]:
+    """Spec §10.4: the stored choice and whether its pin / photo still holds."""
+    _effective_, choices = await _answers(db, part_ids, editor=True)
+    return choices
+
+
+async def instance_refs(
+    db, keys: Iterable[tuple[int, int, int]]
+) -> dict[tuple[int, int, int], InstanceImageRef | None]:
+    """``(library_file_id, plate_index, identify_id) -> its picture`` -- files outside the trash only."""
+    wanted = set(keys)
+    files: dict[int, LibraryFile] = {}
+    for chunk in id_chunks(k[0] for k in wanted):
+        files.update(
+            (f.id, f)
+            for f in (
+                await db.execute(select(LibraryFile).where(LibraryFile.id.in_(chunk), LibraryFile.deleted_at.is_(None)))
+            ).scalars()
+        )
+    renders = await _renders(db, (f.file_hash for f in files.values()))
+    out: dict[tuple[int, int, int], InstanceImageRef | None] = {}
+    for key in wanted:
+        file_id, plate_index, identify_id = key
+        file = files.get(file_id)
+        state = _instance(renders.get((file.file_hash, plate_index)), identify_id) if file is not None else None
+        out[key] = (
+            InstanceImageRef(
+                library_file_id=file_id, plate_index=plate_index, identify_id=identify_id, status=state[0], v=state[1]
+            )
+            if state is not None
+            else None
+        )
+    return out
+
+
+async def candidates(db, part_id: int, visible: Callable[[LibraryFile], bool]) -> list[PartImageCandidateOut] | None:
+    """Spec §11.2: the part's instances on every linked plate outside the trash (plan E4, D18)."""
+    snap = await _load(db, [part_id])
+    part = snap.parts.get(part_id)
+    if part is None:
+        return None
+    pinned = (
+        (part.image_file_id, part.image_plate_index, part.image_identify_id)
+        if part.image_source == "instance"
+        else None
+    )
+    out: list[PartImageCandidateOut] = []
+    for plate in snap.sources.get(part_id, []):
+        render = snap.renders.get((plate.file.file_hash, plate.plate_index))
+        shown = visible(plate.file)
+        for identify_id in sorted(i for i, owner in plate.owners.items() if owner == part_id):
+            method, reason = (
+                render.objects.get(identify_id, ("missing", None))
+                if render is not None and render.result_dir
+                else (None, None)
+            )
+            state = _instance(render, identify_id)
+            out.append(
+                PartImageCandidateOut(
+                    library_file_id=plate.file.id,
+                    filename=plate.file.filename if shown else None,
+                    hidden=not shown,
+                    plate_index=plate.plate_index,
+                    identify_id=identify_id,
+                    method=method,
+                    reason=reason,
+                    plate_status=render.status if render is not None else "none",
+                    v=state[1] if state is not None and state[0] == "ready" else None,
+                    pinned=(plate.file.id, plate.plate_index, identify_id) == pinned,
+                )
+            )
+    return out
+
+
+def _existing(*paths: Path | None) -> Path | None:
+    for path in paths:
+        if path is not None and path.is_file():
+            return path
+    return None
+
+
+async def image_file(db, part_id: int, size: str) -> tuple[Path, str] | None:
+    """The file behind ``GET /product-parts/{id}/image``: ``(path, v)``; ``sm`` falls back to ``lg``."""
+    effective = (await _answers(db, [part_id], editor=False))[0].get(part_id)
+    if effective is None or effective.ref.status != "ready":
+        return None
+    path = await disk(_existing, effective.sm if size == "sm" else effective.lg, effective.lg)
+    if path is None:
+        logger.warning("Part %s picture %s is not on disk", part_id, effective.ref.kind)
+        return None
+    return path, effective.ref.v
+
+
+async def instance_file(
+    db, product_id: int, library_file_id: int, plate_index: int, identify_id: int, size: str
+) -> tuple[Path, str] | None:
+    """One object's picture of a plate the product links (spec §11.1); anything else is ``None`` (one 404)."""
+    linked = await db.scalar(
+        select(
+            exists().where(
+                ProductPlate.product_id == product_id,
+                ProductPlate.library_file_id == library_file_id,
+                ProductPlate.plate_index == plate_index,
+            )
+        )
+    )
+    file = await db.get(LibraryFile, library_file_id) if linked else None
+    if file is None or file.deleted_at is not None:
+        return None
+    render = (await _renders(db, [file.file_hash])).get((file.file_hash, plate_index))
+    state = _instance(render, identify_id)
+    if state is None or state[0] != "ready":
+        return None
+    lg, sm = _render_paths(render, identify_id)
+    path = await disk(_existing, sm if size == "sm" else lg, lg)
+    return (path, state[1]) if path is not None else None
+
+
+@functools.cache
+def part_image_shapes() -> dict[type[BaseModel], str]:
+    """Spec §11.3: every wire shape that carries a part's picture, and where it names the part.
+
+    ``id`` -- the part model itself; ``part_id`` -- a row naming a part; ``instance`` -- a plate
+    object (its file and plate come from the enclosing ``plate``, which carries no picture of its
+    own). Looked up through the MRO, so a subclass (``StockMovementRowOut``) is covered. Built
+    lazily: schemas/stock.py imports a service, and services must not import schemas at load time
+    in an order that can close a cycle. The structural guard (tests/unit/test_part_image_shapes.py)
+    fails on a new shape that names a part and is neither here nor explained in its allowlist.
+    """
+    from backend.app.schemas import finished_stock, listing, product, project
+
+    return {
+        product.ProductPartResponse: "id",
+        product.PlateYieldEntry: "part_id",
+        product.StockBalanceOut: "part_id",
+        product.StockMovementOut: "part_id",
+        project.PartFiguresOut: "part_id",
+        project.LinePurchasedPartOut: "part_id",
+        project.DroppedPartOut: "part_id",
+        project.PlanPartCount: "part_id",
+        project.PartStateOut: "part_id",
+        finished_stock.StockItemPartOut: "part_id",
+        finished_stock.StockJournalRow: "part_id",
+        listing.ProductPartRow: "part_id",
+        product.PlateUnassignedEntry: "instance",
+        product.PlateRecipeResponse: "plate",
+    }
+
+
+def _kind(value: BaseModel) -> str | None:
+    shapes = part_image_shapes()
+    for cls in type(value).__mro__:
+        if cls in shapes:
+            return shapes[cls]
+    return None
+
+
+def _collect(value, plate, parts: list, instances: list) -> None:
+    if isinstance(value, BaseModel):
+        kind = _kind(value)
+        if kind == "plate":
+            plate = (value.library_file_id, value.plate_index)
+        elif kind == "id":
+            parts.append((value, value.id))
+        elif kind == "part_id" and value.part_id is not None:
+            parts.append((value, value.part_id))
+        elif kind == "instance" and plate is not None and value.identify_id is not None:
+            instances.append((value, (*plate, value.identify_id)))
+        for name in type(value).model_fields:
+            _collect(getattr(value, name), plate, parts, instances)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _collect(item, plate, parts, instances)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _collect(item, plate, parts, instances)
+
+
+async def fill(db, payload, *, editor: bool = False) -> None:
+    """Spec §11.3: give every part and plate object in ``payload`` its picture, in ONE read."""
+    parts: list = []
+    instances: list = []
+    _collect(payload, None, parts, instances)
+    if parts:
+        effective, choices = await _answers(db, {pid for _obj, pid in parts}, editor=editor)
+        for obj, pid in parts:
+            found = effective.get(pid)
+            obj.image = found.ref if found is not None else None
+            if editor and _kind(obj) == "id":
+                obj.image_choice = choices.get(pid)
+    if instances:
+        found = await instance_refs(db, {key for _obj, key in instances})
+        for obj, key in instances:
+            obj.image = found.get(key)
+
+
+def attach(fn=None, *, editor: bool = False):
+    """Mark a route whose answer shows parts: after the handler, ``fill`` its answer (plan E4, D4).
+
+    ``editor`` also fills ``image_choice`` (spec §10.4) -- the product page and the part's doors.
+    A ``Response`` passes through untouched. The route-coverage guard reads ``__part_images__``.
+    """
+
+    def wrap(endpoint):
+        @functools.wraps(endpoint)
+        async def run(*args, **kwargs):
+            result = await endpoint(*args, **kwargs)
+            if not isinstance(result, Response):
+                await fill(kwargs["db"], result, editor=editor)
+            return result
+
+        run.__part_images__ = "editor" if editor else "image"
+        return run
+
+    return wrap(fn) if fn is not None else wrap
