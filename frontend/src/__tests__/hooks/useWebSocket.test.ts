@@ -229,6 +229,25 @@ describe('useWebSocket hook', () => {
     });
   });
 
+  it('refreshes every view that shows a part picture when one changes', async () => {
+    const { useWebSocket } = await import('../../hooks/useWebSocket');
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+    const ws = await waitForWs();
+
+    act(() => {
+      ws.open();
+      ws.simulateMessage({ type: 'part_images_changed', data: { product_ids: [7] } });
+    });
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ['part-image-candidates'] }));
+    }, { timeout: 5000 });
+    for (const key of [['product'], ['products'], ['product-plates'], ['product-parts'], ['stock-items'], ['stock-journal-page'], ['project']]) {
+      expect(invalidateSpy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: key }));
+    }
+  });
+
   it('applies all 50 WS states and acknowledges them while every REST request is still pending', async () => {
     const { useWebSocket } = await import('../../hooks/useWebSocket');
     const reads = vi.fn(() => new Promise<Record<string, unknown>>(() => {}));

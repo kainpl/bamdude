@@ -5,7 +5,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useConnection } from '../contexts/ConnectionContext';
 import { useTranslation } from 'react-i18next';
 import { forecastQueryKeys, inventoryLocationsQueryKey } from '../utils/inventoryQueries';
-import { ORDER_VIEW_KEYS, PRODUCT_FILE_KEYS } from '../utils/queryInvalidation';
+import { ORDER_VIEW_KEYS, PART_IMAGE_VIEW_KEYS, PRODUCT_FILE_KEYS } from '../utils/queryInvalidation';
 import { prioritizeLiveStatusEntries } from '../utils/liveStatusPriority';
 
 // The only auth-failure close code /api/v1/ws emits (backend websocket.py
@@ -765,6 +765,13 @@ export function useWebSocket() {
 
       case 'archive_updated':
         debouncedInvalidate('archives');
+        invalidateProjectViews();
+        break;
+
+      // Spec part-thumbnails §12.3: a part's picture changed for somebody — a render finished, a
+      // choice, a merge, a link. Every view that shows parts refetches; no polling anywhere.
+      case 'part_images_changed':
+        debouncedInvalidate(...PART_IMAGE_VIEW_KEYS);
         invalidateProjectViews();
         break;
 

@@ -226,6 +226,11 @@ export function withMediaToken(url: string): string {
   return `${url}${sep}token=${encodeURIComponent(mediaToken)}`;
 }
 
+/** `?v=…&size=…` for a part picture: the version first, so the token lands after both. */
+function partImageQuery(v: string | null, size: PartImageSize): string {
+  return v ? `?v=${encodeURIComponent(v)}&size=${size}` : `?size=${size}`;
+}
+
 /**
  * A multipart upload, which `request()` cannot carry.
  *
@@ -1848,6 +1853,8 @@ export interface PartFigures {
   queued: number;
   /** The part of `surplus` still to move — the number «bank surplus» moves (WS-13 E6 H01). */
   bankable: number;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /** A purchased part of one line (WS-13 E4 H03). `need` = per × the line's stored
@@ -1858,6 +1865,8 @@ export interface LinePurchasedPart {
   per: number;
   need: number;
   variant: boolean;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /** `product` — kits of the product; `parts` — a set of its parts, quantity 1 for
@@ -1902,6 +1911,8 @@ export interface DroppedPart {
   /** Already printed under this line / waiting in a queue for it. */
   printed: number;
   queued: number;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /** What a configuration change would do — the server's dry run (rule 14). */
@@ -2378,6 +2389,8 @@ export interface PlanPartCount {
   part_id: number;
   name: string;
   count: number;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /**
@@ -2729,6 +2742,54 @@ export interface ProductRef {
   is_active: boolean;
 }
 
+/** A part's effective picture (spec part-thumbnails §10.2). `v` is its identity; the URL carries it. */
+export interface PartImageRef {
+  kind: 'photo' | 'render';
+  status: 'ready' | 'pending';
+  v: string | null;
+}
+
+/** One plate object's picture — the editor's gallery and the unassigned chips (spec §11.3). */
+export interface InstanceImageRef {
+  library_file_id: number;
+  plate_index: number;
+  identify_id: number;
+  status: 'ready' | 'pending' | 'missing' | 'skipped';
+  v: string | null;
+}
+
+export interface PartImageInstanceKey {
+  library_file_id: number;
+  plate_index: number;
+  identify_id: number;
+}
+
+export type PartImagePinReason = 'file_unlinked' | 'file_trashed' | 'object_gone' | 'not_this_part' | 'not_rendered';
+
+/** What the operator chose and whether it still holds (spec §10.4) — on the editor's answers only. */
+export interface PartImageChoice {
+  source: 'auto' | 'instance' | 'photo';
+  instance: PartImageInstanceKey | null;
+  pin: { valid: boolean; reason: PartImagePinReason | null } | null;
+  photo: { present: boolean } | null;
+}
+
+/** An instance of the part on a linked plate (spec §11.2); `filename` is null for a file you may not see. */
+export interface PartImageCandidate {
+  library_file_id: number;
+  filename: string | null;
+  hidden: boolean;
+  plate_index: number;
+  identify_id: number;
+  method: string | null;
+  reason: string | null;
+  plate_status: 'none' | 'pending' | 'ready' | 'failed' | 'unavailable';
+  v: string | null;
+  pinned: boolean;
+}
+
+export type PartImageSize = 'sm' | 'lg';
+
 export interface ProductPart {
   id: number;
   kind: ProductPartKind;
@@ -2766,6 +2827,10 @@ export interface ProductPart {
   /** The option this part belongs to, or `null` for a part in every
    *  configuration (spec workshop-product-variants, rule 3). */
   variant_option_id: number | null;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
+  /** The editor's state (spec part-thumbnails §10.4) — on the product page and the part's doors only. */
+  image_choice?: PartImageChoice | null;
 }
 
 /** One option of a variant group, with what would refuse its delete. */
@@ -2875,12 +2940,18 @@ export interface PlateYieldEntry {
   part_id: number;
   name: string;
   count: number;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /** An object on the plate that matches no part yet — the prompt to add one. */
 export interface PlateUnassignedEntry {
   name_key: string;
   count: number;
+  /** The first object of the name on this plate (part thumbnails E4, D2); null when the file has no ids. */
+  identify_id?: number | null;
+  /** That object's picture; always sent, optional until a surface reads it. */
+  image?: InstanceImageRef | null;
 }
 
 export interface PlateRecipe {
@@ -3221,6 +3292,8 @@ export interface StockBalance {
   /** WS-13 E1 ST4 — the option the part is bound to; null when it is none (or the
    *  row came from the flat stock answer, which does not read options). */
   variant?: { group: string; option: string } | null;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /** WS-13 E1 ST4 / Q12 — the kits the free shelf makes with ONE option of one group,
@@ -3260,6 +3333,8 @@ export interface StockMovement {
   note: string | null;
   created_by: number | null;
   created_at: string;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /**
@@ -3454,6 +3529,8 @@ export interface FulfilmentPartState {
   issued: number;
   /** Written off under the order (spec workshop-order-issue-followups, rule 44). */
   written_off: number;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 /** What a line can assemble, receive and issue now — `order_fulfilment.state`, the
@@ -3680,6 +3757,8 @@ export interface ProductPartRow extends PartSourcesSummary {
   product: { id: number; code: string; name: string; sku: string | null };
   /** WS-13 E1 K3 — the models THIS part's sliced sources are sliced for. */
   models: string[];
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 export interface ProductPartsPage {
@@ -3781,6 +3860,8 @@ export interface StockItemPart {
   name: string;
   per: number;
   on_shelf: number;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 export interface StockItemDetail extends StockItem {
@@ -3860,6 +3941,10 @@ export interface StockJournalRow {
   /** The dispatch note of an issue movement. */
   issue?: { id: number; code: string } | null;
   user: { id: number; username: string } | null;
+  /** A parts-book row's part (part thumbnails E4, D1). */
+  part_id?: number | null;
+  /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
+  image?: PartImageRef | null;
 }
 
 export interface StockJournalPage {
@@ -13011,6 +13096,40 @@ export const api = {
       'PUT',
     );
   },
+  /** A part's picture (spec part-thumbnails §11.1). `v` and `size` go INTO the address, before the
+   *  token `withMediaToken` stamps: with the current `v` the server lets the browser keep it. */
+  partImageUrl: (partId: number, v: string | null, size: PartImageSize = 'sm') =>
+    withMediaToken(`${API_BASE}/product-parts/${partId}/image${partImageQuery(v, size)}`),
+  /** One object of a plate the product links — the editor's gallery, the unassigned chips. */
+  partInstanceImageUrl: (
+    productId: number,
+    libraryFileId: number,
+    plateIndex: number,
+    identifyId: number,
+    v: string | null,
+    size: PartImageSize = 'sm',
+  ) =>
+    withMediaToken(
+      `${API_BASE}/products/${productId}/files/${libraryFileId}/plates/${plateIndex}/objects/${identifyId}/image${partImageQuery(v, size)}`,
+    ),
+  getPartImageCandidates: (partId: number) =>
+    request<PartImageCandidate[]>(`/product-parts/${partId}/image-candidates`),
+  setPartImage: (
+    partId: number,
+    body: { source: 'auto' } | { source: 'instance'; instance: PartImageInstanceKey },
+  ) => request<ProductPart>(`/product-parts/${partId}/image`, { method: 'PUT', body: JSON.stringify(body) }),
+  uploadPartPhoto: (partId: number, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return sendForm<ProductPart>(`/product-parts/${partId}/image/photo`, formData);
+  },
+  deletePartPhoto: (partId: number) =>
+    request<ProductPart>(`/product-parts/${partId}/image/photo`, { method: 'DELETE' }),
+  rerenderPartImages: (productId: number, full = false) =>
+    request<{ queued: number }>(`/products/${productId}/part-images/rerender`, {
+      method: 'POST',
+      body: JSON.stringify({ full }),
+    }),
   /** `version` — the product page's cache-buster (the owner's F6, WS-13 E9): a cover set
    *  there shows at once. It goes INTO the address, before the token `withMediaToken`
    *  stamps; every other renderer passes none and keeps the bare, revalidated address. */
