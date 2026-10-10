@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import hashlib
+import inspect
 import io
 import logging
 import posixpath
@@ -754,14 +755,18 @@ def attach(fn=None, *, editor: bool = False):
 
     ``editor`` also fills ``image_choice`` (spec §10.4) -- the product page and the part's doors.
     A ``Response`` passes through untouched. The route-coverage guard reads ``__part_images__``.
+    The session is found through the endpoint's own signature: FastAPI passes it by name, a caller
+    that invokes the endpoint directly (the lock-order tests) passes it by position.
     """
 
     def wrap(endpoint):
+        signature = inspect.signature(endpoint)
+
         @functools.wraps(endpoint)
         async def run(*args, **kwargs):
             result = await endpoint(*args, **kwargs)
             if not isinstance(result, Response):
-                await fill(kwargs["db"], result, editor=editor)
+                await fill(signature.bind_partial(*args, **kwargs).arguments["db"], result, editor=editor)
             return result
 
         run.__part_images__ = "editor" if editor else "image"

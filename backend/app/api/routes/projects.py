@@ -163,6 +163,7 @@ from backend.app.services import (
     order_from_files,
     order_fulfilment,
     order_journal,
+    part_images,
     part_stock,
     product_delete,
     product_gate as product_gate_module,
@@ -1134,6 +1135,7 @@ def _consumed_its_stock(status: str | None) -> bool:
 
 @router.post("", response_model=ProjectResponse)
 @router.post("/", response_model=ProjectResponse)
+@part_images.attach
 async def create_project(
     data: ProjectCreate,
     db: AsyncSession = Depends(get_db),
@@ -1175,6 +1177,7 @@ async def create_project(
 
 
 @router.post("/from-files", response_model=ProjectResponse)
+@part_images.attach
 async def create_project_from_files(
     data: OrderFromFilesRequest,
     request: Request,
@@ -1323,6 +1326,7 @@ async def get_orders_filament(
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
+@part_images.attach
 async def get_project(
     project_id: int, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.ORDERS_READ)
 ):
@@ -1340,6 +1344,7 @@ _JOURNAL_FIELDS = {
 
 
 @router.patch("/{project_id}", response_model=ProjectResponse)
+@part_images.attach
 async def update_project(
     project_id: int,
     data: ProjectUpdate,
@@ -1469,6 +1474,7 @@ async def update_project(
 
 
 @router.put("/{project_id}/stage", response_model=ProjectResponse)
+@part_images.attach
 async def set_project_stage(
     project_id: int,
     data: ProjectStageUpdate,
@@ -1526,6 +1532,7 @@ async def _line_positions(db: AsyncSession, lines) -> dict[int, StockPositionRef
 
 
 @router.get("/{project_id}/fulfilment", response_model=FulfilmentStateOut)
+@part_images.attach
 async def get_fulfilment(
     project_id: int,
     db: AsyncSession = Depends(get_db),
@@ -1575,6 +1582,7 @@ async def get_fulfilment(
 
 
 @router.post("/{project_id}/fulfilment", response_model=FulfilmentOut)
+@part_images.attach
 async def fulfil_order(
     project_id: int,
     data: FulfilmentIn,
@@ -1659,6 +1667,7 @@ async def get_stock_offers(
 
 
 @router.post("/{project_id}/take-stock", response_model=TakeStockOut)
+@part_images.attach
 async def take_stock(
     project_id: int,
     request: Request,
@@ -1866,6 +1875,7 @@ async def _intake(
 
 
 @router.post("/{project_id}/lines/batch", response_model=BatchLinesOut)
+@part_images.attach
 async def add_lines_batch(
     project_id: int,
     data: BatchLinesIn,
@@ -1897,6 +1907,7 @@ async def add_lines_batch(
 
 
 @router.post("/{project_id}/lines", response_model=ProjectResponse)
+@part_images.attach
 async def add_line(
     project_id: int,
     data: ProjectLineCreate,
@@ -1921,6 +1932,7 @@ async def _get_line(db: AsyncSession, project_id: int, line_id: int, *, fresh: b
 
 
 @router.patch("/{project_id}/lines/{line_id}", response_model=ProjectResponse)
+@part_images.attach
 async def update_line(
     project_id: int,
     line_id: int,
@@ -2050,6 +2062,7 @@ async def update_line(
     "/{project_id}/lines/{line_id}/configuration",
     response_model=ProjectResponse | LineConfigurationImpact,
 )
+@part_images.attach
 async def configure_line(
     project_id: int,
     line_id: int,
@@ -2152,6 +2165,7 @@ async def configure_line(
 
 
 @router.delete("/{project_id}/lines/{line_id}", response_model=ProjectResponse)
+@part_images.attach
 async def delete_line(
     project_id: int,
     line_id: int,
@@ -2296,6 +2310,7 @@ async def bank_surplus(
 
 
 @router.patch("/{project_id}/procurement/{part_id}", response_model=ProjectResponse)
+@part_images.attach
 async def update_procurement(
     project_id: int,
     part_id: int,
@@ -3343,6 +3358,7 @@ async def _copy_attachment_files(source_id: int, new_id: int) -> bool:
 
 
 @router.post("/{project_id}/duplicate", response_model=ProjectResponse)
+@part_images.attach
 async def duplicate_project(
     project_id: int,
     data: ProjectDuplicate = Body(default_factory=ProjectDuplicate),
@@ -3543,6 +3559,7 @@ async def _pending_auto_prints(db: AsyncSession, line_ids: list[int]) -> dict[in
 
 
 @router.get("/{project_id}/plan", response_model=OrderPlanResponse)
+@part_images.attach
 async def get_order_plan(
     project_id: int,
     request: Request,

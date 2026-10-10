@@ -384,6 +384,7 @@ async def _rows_out(db: AsyncSession, rows: list[_Row]) -> list[StockJournalRow]
                     product_name=products.get(r.extra[0]),
                     item=item_ref(m.stock_item_id) if m.stock_item_id else None,
                     part_name=r.extra[1],
+                    part_id=m.product_part_id,  # the part's picture rides on it (plan E4, D1)
                     kind=m.reason,
                     delta=m.delta,
                     note=m.note,

@@ -272,7 +272,8 @@ async def test_a_page_reads_the_library_once(async_client, hanger, test_engine):
     await _parts(async_client)
     with counting_statements(test_engine, match="FROM library_files") as seen:
         await _parts(async_client)
-    assert len(seen) == 1, seen
+    # the page's own read, and the parts' pictures (part thumbnails E4) -- one batch each, never one per row
+    assert len(seen) == 2, seen
 
 
 # ---------- WS-13 E1 ES: one standard unit, from scratch, in whole plates ----------

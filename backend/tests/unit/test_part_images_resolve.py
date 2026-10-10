@@ -334,3 +334,17 @@ async def test_attach_fills_the_answer_and_marks_the_route(db_session):
     answer = await route(db=db_session)
     assert answer.image.status == "ready"
     assert route.__part_images__ == "image"
+
+
+async def test_attach_finds_the_session_passed_by_position(db_session):
+    """A route called directly (the lock-order tests do) passes its session by position, not by name."""
+    from backend.app.schemas.project import DroppedPartOut
+
+    farm = await rendered_farm(db_session)
+
+    @part_images.attach
+    async def route(project_id: int, db, flag: bool = False):
+        return DroppedPartOut(part_id=farm.body.id, name="Body", per_before=2, per_after=0, printed=0, queued=0)
+
+    answer = await route(1, db_session)
+    assert answer.image.status == "ready"

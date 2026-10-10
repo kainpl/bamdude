@@ -1967,7 +1967,9 @@ async def test_the_plan_loads_every_products_recipes_in_one_batch(
     assert all(line["rows"] for line in r.json()["lines"]), "each line still gets its own plate to print"
     assert calls["batched"] == 1
     assert engine_reads == [1], seen
-    assert len(seen) == 2, seen  # + the one batched read of the names
+    # + the one batched read of the names, + the parts' pictures (part thumbnails E4: one batch
+    # for every part of the answer, whatever the number of products)
+    assert len(seen) == 3, seen
 
 
 @pytest.mark.asyncio

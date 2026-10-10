@@ -64,6 +64,7 @@ from backend.app.services import (
     finished_stock,
     finished_stock_views,
     line_config,
+    part_images,
     part_stock,
     stock_issues,
     stock_journal,
@@ -224,6 +225,7 @@ async def _stock_rows(
 
 
 @router.get("", response_model=StockSummaryOut | StockListPage)
+@part_images.attach
 async def stock_summary(
     q: str | None = Query(None, max_length=200),
     with_stock: bool = Query(True),
@@ -281,6 +283,7 @@ async def stock_figures(
 
 
 @router.get("/movements", response_model=StockMovementsPageOut)
+@part_images.attach
 async def stock_movements(
     product_id: int | None = Query(None),
     part_id: int | None = Query(None),
@@ -536,6 +539,7 @@ async def stock_items_summary(
 
 
 @router.get("/items/lookup", response_model=StockLookupOut)
+@part_images.attach
 async def lookup_stock_item(
     product_id: int = Query(...),
     options: str | None = Query(
@@ -649,6 +653,7 @@ async def get_stock_journal_products(
 
 
 @router.get("/journal", response_model=StockJournalPage)
+@part_images.attach
 async def get_stock_journal(
     book: Literal["both", "finished", "parts"] = Query("both"),
     product_id: int | None = Query(None),
@@ -686,6 +691,7 @@ async def get_stock_journal(
 
 
 @router.get("/items/{item_id}", response_model=StockItemDetail)
+@part_images.attach
 async def get_stock_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),

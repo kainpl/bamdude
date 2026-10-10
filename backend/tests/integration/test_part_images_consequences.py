@@ -37,6 +37,7 @@ async def test_a_merge_keeps_the_target_choice_and_drops_the_source_photo(commit
     await part_images.drain()
     await db_session.refresh(farm.body)
     assert farm.body.image_source == "instance"  # the target keeps its own choice
+    assert r.json()["image_choice"]["source"] == "instance"  # and the answer says so (task 30's decorator)
     assert not photo.exists()
 
 
@@ -69,6 +70,8 @@ async def test_a_duplicate_copies_the_photo_and_a_pin_whose_file_it_linked(commi
     r = await committing_client.post(f"/api/v1/products/{farm.product.id}/duplicate", json={})
     assert r.status_code == 200, r.text
     copy_id = r.json()["id"]
+    parts = {p["name"]: p for p in r.json()["parts"]}
+    assert parts["Body"]["image"]["kind"] == "render" and parts["Lid"]["image"]["kind"] == "photo"
     rows = {
         p.name: p
         for p in (await db_session.execute(select(ProductPart).where(ProductPart.product_id == copy_id))).scalars()
