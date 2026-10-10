@@ -733,6 +733,7 @@ class PrinterManager:
         self._on_finish_photo_moment: Callable[[int, dict], None] | None = None
         self._on_status_change: Callable[[int, PrinterState], None] | None = None
         self._on_ams_change: Callable[[int, list], None] | None = None
+        self._on_spool_inserted: Callable[[int, dict], None] | None = None
         self._on_layer_change: Callable[[int, int, int], None] | None = None
         # #1349: fires when an AMS on the connected printer finishes a
         # drying cycle. Receives ``(printer_id, ams_id)``.
@@ -1036,6 +1037,9 @@ class PrinterManager:
         """Set callback for AMS data change events."""
         self._on_ams_change = callback
 
+    def set_spool_inserted_callback(self, callback: Callable[[int, dict], None]):
+        self._on_spool_inserted = callback
+
     def set_layer_change_callback(self, callback: Callable[[int, int, int], None]):
         """Set callback for layer change events.
 
@@ -1149,6 +1153,10 @@ class PrinterManager:
             if self._on_ams_change:
                 self._schedule_async(self._on_ams_change(printer_id, ams_data))
 
+        def on_spool_inserted(event: dict):
+            if self._on_spool_inserted:
+                self._schedule_async(self._on_spool_inserted(printer_id, event))
+
         def on_layer_change(layer_num: int, previous_layer: int):
             if self._on_layer_change:
                 self._schedule_async(self._on_layer_change(printer_id, layer_num, previous_layer))
@@ -1211,6 +1219,7 @@ class PrinterManager:
             on_print_start=on_print_start,
             on_print_complete=on_print_complete,
             on_ams_change=on_ams_change,
+            on_spool_inserted=on_spool_inserted,
             on_layer_change=on_layer_change,
             on_macro_complete=on_macro_complete,
             on_kprofiles_changed=on_kprofiles_changed,

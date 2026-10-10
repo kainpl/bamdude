@@ -98,7 +98,8 @@ import {
 import { SelectionBox } from '../components/SelectionBox';
 
 import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router';
-import { api, discoveryApi, firmwareApi, macrosApi, withMediaToken, DEFAULT_BACKUP_COMPATIBILITY } from '../api/client';
+import { api, discoveryApi, firmwareApi, macrosApi, withMediaToken, DEFAULT_BACKUP_COMPATIBILITY, DEFAULT_AUTO_STOCK_SPOOL } from '../api/client';
+import { AutoStockSpoolFields } from '../components/AutoStockSpoolFields';
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration, formatTimeOnly, parseUTCDate } from '../utils/date';
@@ -8869,6 +8870,7 @@ export function EditPrinterModal({
     require_plate_clear: printer.require_plate_clear ?? true,
     // An older backend sends no `ams_policies` at all, hence the optional read.
     ams_compat: printer.ams_policies?.backup_compatibility ?? DEFAULT_BACKUP_COMPATIBILITY,
+    auto_stock_spool: printer.ams_policies?.auto_stock_spool ?? DEFAULT_AUTO_STOCK_SPOOL,
   });
 
   // Swap profile catalog for the dropdown (same query as add-form).
@@ -8911,7 +8913,7 @@ export function EditPrinterModal({
       swap_profile: form.swap_mode_enabled ? form.swap_profile : null,
       require_plate_clear: form.swap_mode_enabled ? false : form.require_plate_clear,
       // PATCH replaces the whole namespace, so the policy always travels in full.
-      ams_policies: backupCompatibilityPatch(form.ams_compat),
+      ams_policies: { ...backupCompatibilityPatch(form.ams_compat), auto_stock_spool: form.auto_stock_spool },
     };
     // Only include access_code if it was changed
     if (form.access_code) {
@@ -9203,6 +9205,8 @@ export function EditPrinterModal({
                   </>
                 );
               })()}
+              <AutoStockSpoolFields value={form.auto_stock_spool}
+                onChange={auto_stock_spool => setForm({ ...form, auto_stock_spool })} />
               {!form.swap_mode_enabled && (
               <div>
                 <label className="flex items-center gap-2 cursor-pointer">

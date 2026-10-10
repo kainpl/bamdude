@@ -3,7 +3,7 @@ import io
 import json
 import logging
 import math
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
 import httpx
@@ -34,6 +34,7 @@ from backend.app.models.spool_catalog import SpoolCatalogEntry
 from backend.app.models.spool_k_profile import SpoolKProfile
 from backend.app.models.user import User
 from backend.app.schemas.archive import PaginationMeta
+from backend.app.schemas.auto_stock_spool import AvailableStockSpoolGroup
 from backend.app.schemas.forecast import (
     ForecastChartResponse,
     ForecastChartSeries,
@@ -262,7 +263,7 @@ async def apply_spool_to_slot_via_mqtt(
     # helper for all three assignment paths — the actual plan stays the spool's
     # truth, only what the printer is told changes.
     printer_row = await db.get(Printer, printer_id)
-    _, projection = await publish_projected_slot(
+    sent, projection = await publish_projected_slot(
         db,
         client,
         printer=printer_row,
@@ -317,7 +318,7 @@ async def apply_spool_to_slot_via_mqtt(
         spool.id,
         printer_id,
     )
-    return True
+    return bool(sent)
 
 
 # ── Spool Catalog Schemas ──────────────────────────────────────────────────
@@ -1929,6 +1930,16 @@ async def lookup_spool_by_tag(
     raise HTTPException(404, "Spool not found")
 
 
+@router.get("/spools/auto-stock-groups", response_model=list[AvailableStockSpoolGroup])
+async def auto_stock_groups(
+    db: AsyncSession = Depends(get_db),
+    _=RequirePermission(Permission.INVENTORY_READ),
+):
+    from backend.app.services.auto_stock_spool import available_groups
+
+    return await available_groups(db)
+
+
 @router.get("/spools/{spool_id}", response_model=SpoolResponse)
 async def get_spool(
     spool_id: int,
@@ -2588,6 +2599,14 @@ async def assign_spool(
     current_user: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Assign a spool to an AMS slot and auto-configure via MQTT."""
+    from backend.app.main import _get_ams_assignment_lock
+
+    # A manual answer must not race insertion/RFID reconciliation on this slot.
+    async with _get_ams_assignment_lock(data.printer_id):
+        return await _assign_spool(data, db, current_user)
+
+
+async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_user: User | None):
     from backend.app.services.printer_manager import printer_manager
 
     # 1. Validate spool exists and is not archived
@@ -2699,6 +2718,7 @@ async def assign_spool(
         tray_id=data.tray_id,
         fingerprint_color=fingerprint_color,
         fingerprint_type=fingerprint_type,
+        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
     db.add(assignment)
     await db.commit()

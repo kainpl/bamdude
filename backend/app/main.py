@@ -1543,6 +1543,7 @@ _nozzle_count_updated: set[int] = set()
 # HMS classification). The reason hint is consumed + cleared by the next
 # pause edge so a subsequent unrelated user-pause doesn't inherit it.
 _last_printer_state: dict[int, str] = {}
+_last_printer_state_generation: dict[int, int] = {}
 _pause_started_at: dict[int, float] = {}
 _expected_pause_reasons: dict[int, str] = {}
 
@@ -1689,7 +1690,7 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
         logging.getLogger(__name__).warning("pause edge handler failed for printer %s: %s", printer_id, e)
 
 
-async def _handle_resume_edge(printer_id: int, state: PrinterState):
+async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_resume_witnessed: bool = False):
     """Fire on_print_resume notification + WS push on PAUSE→RUNNING.
 
     Computes paused duration from ``_pause_started_at`` (planted by
@@ -1697,6 +1698,8 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState):
     without a recorded start (e.g. BamDude restarted while the printer
     was paused).
     """
+    observed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    generation = state.connection_generation
     try:
         printer_info = printer_manager.get_printer(printer_id)
         printer_name = printer_info.name if printer_info else f"Printer {printer_id}"
@@ -1718,9 +1721,39 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState):
             from backend.app.models.print_usage_event import EVENT_RESUME
             from backend.app.services.print_usage_journal import active_archive_id, record_event
 
-            async with async_session() as db:
+            async with _get_ams_assignment_lock(printer_id), async_session() as db:
                 archive_id = await active_archive_id(db, printer_id)
                 if archive_id is not None:
+                    from backend.app.services.auto_stock_spool import claim_on_external_resume
+
+                    outcome = (
+                        await claim_on_external_resume(
+                            db,
+                            printer_id=printer_id,
+                            event={"observed_at": observed_at, "generation": generation},
+                            manager=printer_manager,
+                        )
+                        if stock_resume_witnessed
+                        else {"reason": "unwitnessed_resume"}
+                    )
+                    if outcome["reason"] == "assigned":
+                        from backend.app.services import ams_advertised_overlay as overlay
+
+                        overlay.forget(printer_id, 255, outcome["tray_id"])
+                        # Resume was reported by the printer, not requested by
+                        # us. Keep its in-flight filament configuration intact;
+                        # only inventory attribution changes at the runout layer.
+                        await ws_manager.broadcast(
+                            {"type": "spool_auto_assigned", "printer_id": printer_id, "spool_id": outcome["spool_id"]}
+                        )
+                    elif outcome["reason"] == "no_full_stock":
+                        await ws_manager.broadcast({"type": "stock_spool_unavailable", "printer_id": printer_id})
+                    logging.getLogger(__name__).info(
+                        "External stock resume decision: printer=%s generation=%s reason=%s",
+                        printer_id,
+                        generation,
+                        outcome["reason"],
+                    )
                     tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)
                     await record_event(
                         db,
@@ -1733,7 +1766,9 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState):
                         spoolman_spool_id=spoolman_spool_id,
                     )
         except Exception as e:
-            logging.getLogger(__name__).debug("Resume journal entry failed for printer %d: %s", printer_id, e)
+            logging.getLogger(__name__).warning(
+                "Resume stock/journal processing failed for printer %d: %s", printer_id, e
+            )
 
         filename = state.subtask_name or state.gcode_file
         ws_data = {
@@ -1968,8 +2003,17 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         if prev_state == "RUNNING" and current_state == "PAUSE":
             await _handle_pause_edge(printer_id, state)
         elif prev_state == "PAUSE" and current_state == "RUNNING":
-            await _handle_resume_edge(printer_id, state)
+            await _handle_resume_edge(
+                printer_id,
+                state,
+                stock_resume_witnessed=(
+                    _printer_last_connected.get(printer_id) is True
+                    and state.connected
+                    and _last_printer_state_generation.get(printer_id) == state.connection_generation
+                ),
+            )
     _last_printer_state[printer_id] = current_state
+    _last_printer_state_generation[printer_id] = state.connection_generation
 
     # Offline-notification edge (#1752): schedule on_printer_offline on the
     # connected→disconnected transition. "Back online" is already covered by the
@@ -2293,7 +2337,99 @@ def slot_reported_no_filament(tray_type: str, tray_state: object) -> bool:
     return not (tray_type or "").strip() and tray_state not in _FIRMWARE_EMPTY_STATES
 
 
+_stock_insertion_seen: dict[tuple[int, int, int], tuple[int, int]] = {}
+
+
+async def on_stock_spool_inserted(printer_id: int, event: dict):
+    logger = logging.getLogger(__name__)
+    from sqlalchemy.orm import selectinload
+
+    from backend.app.services.auto_stock_spool import claim_on_insertion
+
+    async with _get_ams_assignment_lock(printer_id):
+        key = (printer_id, event["ams_id"], event["tray_id"])
+        token = (event["generation"], event["sequence"])
+        if token <= _stock_insertion_seen.get(key, (-1, -1)):
+            return
+        _stock_insertion_seen[key] = token
+        try:
+            async with async_session() as db:
+                outcome = await claim_on_insertion(db, printer_id=printer_id, event=event, manager=printer_manager)
+                logger.info(
+                    "Stock insertion decision: printer=%s AMS%s-T%s generation=%s sequence=%s reason=%s",
+                    printer_id,
+                    event["ams_id"],
+                    event["tray_id"],
+                    event["generation"],
+                    event["sequence"],
+                    outcome["reason"],
+                )
+                if outcome["reason"] == "assigned":
+                    from backend.app.api.routes.inventory import apply_spool_to_slot_via_mqtt
+                    from backend.app.models.spool import Spool
+                    from backend.app.services import ams_advertised_overlay as overlay
+
+                    # The replacement has a new identity. A failed publish must
+                    # not leave routing looking through the outgoing spool's mask.
+                    overlay.forget(printer_id, event["ams_id"], event["tray_id"])
+
+                    spool = (
+                        await db.execute(
+                            select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == outcome["spool_id"])
+                        )
+                    ).scalar_one()
+                    # Same publisher/projection as manual assignments. Neither
+                    # queue colour/profile overrides nor the dispatched mapping
+                    # are changed by loading a replacement.
+                    published = False
+                    try:
+                        published = await apply_spool_to_slot_via_mqtt(
+                            db=db,
+                            current_user=None,
+                            spool=spool,
+                            printer_id=printer_id,
+                            ams_id=event["ams_id"],
+                            tray_id=event["tray_id"],
+                        )
+                    except Exception:
+                        logger.exception("Stock assignment configuration failed for printer %s", printer_id)
+                    if not published:
+                        logger.warning(
+                            "Stock spool assigned, but slot configuration was not published for printer %s", printer_id
+                        )
+                        await ws_manager.broadcast({"type": "stock_spool_config_failed", "printer_id": printer_id})
+                    await ws_manager.broadcast(
+                        {
+                            "type": "spool_auto_assigned",
+                            "printer_id": printer_id,
+                            "ams_id": event["ams_id"],
+                            "tray_id": event["tray_id"],
+                            "spool_id": spool.id,
+                        }
+                    )
+                elif outcome["reason"] == "no_full_stock":
+                    await ws_manager.broadcast(
+                        {
+                            "type": "stock_spool_unavailable",
+                            "printer_id": printer_id,
+                            "ams_id": event["ams_id"],
+                            "tray_id": event["tray_id"],
+                        }
+                    )
+        except Exception:
+            logger.exception("Stock insertion assignment failed for printer %s", printer_id)
+
+
 async def on_ams_change(printer_id: int, ams_data: list):
+    # Unlink/replay and insertion assignment must share the same lock. Otherwise
+    # a delayed empty-slot callback could delete the freshly assigned refill.
+    async with _get_ams_assignment_lock(printer_id):
+        state = printer_manager.get_status(printer_id)
+        current = getattr(state, "raw_data", {}).get("ams") if state else None
+        await _on_ams_change(printer_id, current if isinstance(current, list) else ams_data)
+
+
+async def _on_ams_change(printer_id: int, ams_data: list):
     """Handle AMS data changes - sync to Spoolman if enabled and auto mode."""
     logger = logging.getLogger(__name__)
 
@@ -2375,8 +2511,21 @@ async def on_ams_change(printer_id: int, ams_data: list):
             from sqlalchemy.orm import selectinload
 
             from backend.app.api.routes.inventory import _find_tray_in_ams_data, tray_holds_filament
+            from backend.app.api.routes.settings import get_setting
+            from backend.app.models.printer import Printer as _Printer
             from backend.app.models.spool import Spool as _Spool
             from backend.app.models.spool_assignment import SpoolAssignment as SA
+            from backend.app.services.auto_stock_spool import policy_for
+            from backend.app.services.spool_tag_matcher import is_valid_tag
+
+            stock_printer = await db.get(_Printer, printer_id)
+            protect_partial_returns = (
+                stock_printer is not None
+                and stock_printer.is_active
+                and not stock_printer.archived
+                and policy_for(stock_printer).enabled
+                and (await get_setting(db, "spoolman_enabled") or "").lower() != "true"
+            )
 
             result = await db.execute(
                 select(SA)
@@ -2388,6 +2537,13 @@ async def on_ams_change(printer_id: int, ams_data: list):
             # WS fan-out below can run after the session is released.
             unlinked_slots: list[tuple[int, int]] = []
             for assignment in result.scalars().all():
+                known = assignment.spool
+                partial_return = (
+                    protect_partial_returns
+                    and assignment.ams_id < 254
+                    and known is not None
+                    and ((known.weight_used or 0) > 0 or known.last_used is not None or known.added_full is False)
+                )
                 # External spool assignments (ams_id=255) live in vt_tray, not AMS data
                 if assignment.ams_id == 255:
                     ps = printer_manager.get_status(printer_id)
@@ -2404,15 +2560,18 @@ async def on_ams_change(printer_id: int, ams_data: list):
                 else:
                     current_tray = _find_tray_in_ams_data(ams_data, assignment.ams_id, assignment.tray_id)
                 if not current_tray:
-                    if printing_now:
-                        # Runout, not a swap — see ``printing_now`` at the top of
-                        # this function. The next idle-time pass unlinks it if
-                        # the user really did take the spool out.
+                    if printing_now or partial_return:
+                        # A running print may have run out. With stock loading
+                        # enabled, keep a known partial spool too: removal alone
+                        # cannot distinguish its return from a full replacement.
                         logger.info(
-                            "Auto-unlink skipped: spool %d AMS%d-T%d - slot empty during a running print (runout?)",
+                            "Auto-unlink skipped: spool %d AMS%d-T%d - empty slot retains known identity "
+                            "(printing=%s partial-return=%s)",
                             assignment.spool_id,
                             assignment.ams_id,
                             assignment.tray_id,
+                            printing_now,
+                            partial_return,
                         )
                         continue
                     logger.info(
@@ -2554,12 +2713,15 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         # Letting the blank fall through to the fingerprint
                         # compare below turned a runout into "spool changed"
                         # (X2D, 2026-08-23) and the runout row froze spool=None.
-                        if printing_now:
+                        if printing_now or partial_return:
                             logger.info(
-                                "Auto-unlink skipped: spool %d AMS%d-T%d - slot empty during a running print (runout?)",
+                                "Auto-unlink skipped: spool %d AMS%d-T%d - empty slot retains known identity "
+                                "(printing=%s partial-return=%s)",
                                 assignment.spool_id,
                                 assignment.ams_id,
                                 assignment.tray_id,
+                                printing_now,
+                                partial_return,
                             )
                             continue
                         # Off a print too, on firmware's own say-so: a blank report
@@ -2654,6 +2816,19 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             spool.rgba if spool else "?",
                             spool.material if spool else "?",
                         )
+                        if partial_return and not is_valid_tag(
+                            current_tray.get("tag_uid"), current_tray.get("tray_uuid")
+                        ):
+                            # Untagged remove/reinsert or firmware metadata reset
+                            # cannot prove that a used spool became a full one.
+                            # Keep its existing persistent identity: the stock
+                            # selector still requires a confirmed runout to
+                            # replace it, or the operator assigns another spool.
+                            logger.info(
+                                "Auto-unlink skipped: known partial spool %d needs an explicit replacement",
+                                assignment.spool_id,
+                            )
+                            continue
                         stale.append(assignment)  # Spool changed
             # Snapshot the slots before the delete — ORM attribute access after the
             # commit would refresh against a deleted row.
@@ -2701,7 +2876,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
     # Postgres. SQLite's WAL serialises writes so the bug stayed latent
     # there. See _ams_assignment_locks comment for details.
     try:
-        async with _get_ams_assignment_lock(printer_id), async_session() as db:
+        async with async_session() as db:
             from backend.app.api.routes.settings import get_setting
             from backend.app.models.spool import Spool as _Spool2
             from backend.app.models.spool_assignment import SpoolAssignment as SA
@@ -10673,6 +10848,7 @@ async def lifespan(app: FastAPI):
     printer_manager.set_print_running_observed_callback(on_print_running_observed)
     printer_manager.set_finish_photo_moment_callback(on_finish_photo_moment)
     printer_manager.set_ams_change_callback(on_ams_change)
+    printer_manager.set_spool_inserted_callback(on_stock_spool_inserted)
 
     # Layer change callback for external camera timelapse
     async def on_layer_change(printer_id: int, layer_num: int, previous_layer: int):

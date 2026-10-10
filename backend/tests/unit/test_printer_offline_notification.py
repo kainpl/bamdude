@@ -35,6 +35,7 @@ def _state(connected: bool, state: str = "IDLE") -> SimpleNamespace:
     """
     return SimpleNamespace(
         connected=connected,
+        connection_generation=1,
         state=state,
         progress=0,
         layer_num=0,
@@ -106,6 +107,7 @@ def _reset_edge_state():
     main_module._printer_offline_notify_tasks.clear()
     main_module._last_status_broadcast.clear()
     main_module._last_printer_state.clear()
+    main_module._last_printer_state_generation.clear()
     yield
     main_module._printer_last_connected.clear()
     for task in list(main_module._printer_offline_notify_tasks.values()):
@@ -114,6 +116,7 @@ def _reset_edge_state():
     main_module._printer_offline_notify_tasks.clear()
     main_module._last_status_broadcast.clear()
     main_module._last_printer_state.clear()
+    main_module._last_printer_state_generation.clear()
 
 
 class TestMaybeNotifyPrinterOffline:
@@ -207,6 +210,45 @@ class TestOfflineEdgeDetection:
         pm.get_printer.return_value = None  # Skip the relay payload branch.
         pm.get_model.return_value = ""
         return ws_mgr, relay, pm
+
+    @pytest.mark.parametrize(
+        "was_connected,old_generation,new_generation,witnessed",
+        [(True, 1, 1, True), (False, 1, 1, False), (True, 1, 2, False), (None, None, 1, False)],
+    )
+    async def test_external_stock_resume_requires_same_connected_session(
+        self, was_connected, old_generation, new_generation, witnessed
+    ):
+        ws_mgr, relay, pm = self._patch_handler_deps()
+        main_module._last_printer_state[1] = "PAUSE"
+        main_module._printer_last_connected[1] = was_connected
+        if old_generation is not None:
+            main_module._last_printer_state_generation[1] = old_generation
+        state = _state(connected=True, state="RUNNING")
+        state.connection_generation = new_generation
+        handler = AsyncMock()
+        with (
+            patch("backend.app.main.ws_manager", ws_mgr),
+            patch("backend.app.main.mqtt_relay", relay),
+            patch("backend.app.main.printer_manager", pm),
+            patch("backend.app.main.printer_state_to_dict", return_value={}),
+            patch("backend.app.main._handle_resume_edge", handler),
+        ):
+            await main_module.on_printer_status_change(1, state)
+            await main_module.on_printer_status_change(1, state)
+        handler.assert_awaited_once_with(1, state, stock_resume_witnessed=witnessed)
+
+    async def test_first_running_status_does_not_trigger_external_replacement(self):
+        ws_mgr, relay, pm = self._patch_handler_deps()
+        handler = AsyncMock()
+        with (
+            patch("backend.app.main.ws_manager", ws_mgr),
+            patch("backend.app.main.mqtt_relay", relay),
+            patch("backend.app.main.printer_manager", pm),
+            patch("backend.app.main.printer_state_to_dict", return_value={}),
+            patch("backend.app.main._handle_resume_edge", handler),
+        ):
+            await main_module.on_printer_status_change(1, _state(connected=True, state="RUNNING"))
+        handler.assert_not_awaited()
 
     async def test_first_call_connected_does_not_schedule(self):
         ws_mgr, relay, pm = self._patch_handler_deps()

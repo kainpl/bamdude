@@ -871,6 +871,13 @@ export function useWebSocket() {
         invalidateSlotQueries();
         break;
 
+            case 'stock_spool_config_failed':
+              showToast(t('printers.autoStock.configFailed'), 'warning');
+              break;
+            case 'stock_spool_unavailable':
+        showToast(t('printers.autoStock.unavailable'), 'warning');
+        break;
+
       case 'spool_usage_logged':
         // Filament consumption recorded - refresh spool data. The slot hover
         // cards read the spool THROUGH the assignment row (its embedded spool

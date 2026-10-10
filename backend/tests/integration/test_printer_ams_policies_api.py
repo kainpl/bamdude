@@ -16,7 +16,8 @@ async def test_fresh_printer_reports_default_off_policy(async_client, printer_fa
             "normalize_color": False,
             "canonical_color_rgba": "000000FF",
             "generic_base_material": False,
-        }
+        },
+        "auto_stock_spool": {"enabled": False, "group": None},
     }
 
 

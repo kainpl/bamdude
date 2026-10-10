@@ -986,3 +986,56 @@ async def test_an_empty_pinned_slot_is_never_parked_and_plans_once_its_group_is_
     )
     await db_session.commit()
     assert (await preflight_item(db_session, item, printer.id)).plan.mapping == [-1, -1, 1]
+
+
+@pytest.mark.parametrize("allow_base_material_match", [False, True])
+@pytest.mark.parametrize("force_color_match", [False, True])
+async def test_retained_partial_stock_assignment_cannot_admit_an_empty_slot(
+    db_session, tmp_path, printer_factory, monkeypatch, allow_base_material_match, force_color_match
+):
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services.filament_policy_write import prepare_routing
+    from backend.tests.integration.test_ams_unlink_runout_guard import _run_on_ams_change
+    from backend.tests.unit.services.test_auto_stock_spool import GROUP, spool
+
+    item, source, printer, _, mqtt = await a_job_pinned_to_ams_slot_0(
+        db_session, tmp_path, printer_factory, monkeypatch, filam_bak=None
+    )
+    printer.ams_policies = {"auto_stock_spool": {"enabled": True, "group": GROUP}}
+    partial = await spool(db_session, weight_used=300)
+    db_session.add(
+        SpoolAssignment(
+            printer_id=printer.id,
+            spool_id=partial.id,
+            ams_id=0,
+            tray_id=0,
+            fingerprint_type="PLA",
+            fingerprint_color="FF0000FF",
+        )
+    )
+    routing, _ = await prepare_routing(
+        db_session,
+        printer_id=printer.id,
+        library_file_id=source.id,
+        options={
+            "manual_mapping": True,
+            "ams_mapping": [-1, -1, 0],
+            "allow_base_material_match": allow_base_material_match,
+            "force_color_match": force_color_match,
+        },
+    )
+    item.filament_routing = routing
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def session():
+        yield db_session
+
+    monkeypatch.setattr("backend.app.main.async_session", session)
+    empty = [{"id": 0, "tray": [{"id": 0, "exists": False, "state": 9, "tray_type": "", "tray_color": ""}]}]
+    await _run_on_ams_change(printer.id, empty, "IDLE")
+    assert (await db_session.execute(select(SpoolAssignment.spool_id))).scalar_one() == partial.id
+    mqtt._process_message(ams_report())
+    with pytest.raises(RoutingDeferred, match="pinned_source_empty"):
+        await preflight_item(db_session, item, printer.id)
+    mqtt._client.publish.assert_not_called()

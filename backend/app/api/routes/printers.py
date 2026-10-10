@@ -72,6 +72,7 @@ from backend.app.services.archive import (
     sd_stem,
 )
 from backend.app.services.archive_defects import DefectsWrite
+from backend.app.services.auto_stock_spool import NAMESPACE as AUTO_STOCK_NAMESPACE, policy_for
 from backend.app.services.bambu_ftp import (
     clear_sdcard_async,
     get_storage_info_async,
@@ -131,6 +132,7 @@ from backend.app.utils.timelapse import capability_for as timelapse_capability_f
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["printers"])
+_may_change_stock_policy = require_permission(Permission.INVENTORY_UPDATE)
 
 
 def _caller_can_view_printer_secrets(user: User | None) -> bool:
@@ -257,6 +259,7 @@ async def create_printer(
     printer_data: PrinterCreate,
     _=RequirePermission(Permission.PRINTERS_CREATE),
     db: AsyncSession = Depends(get_db),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Add a new printer."""
     # Check if serial number already exists. An archived printer keeps its
@@ -280,8 +283,10 @@ async def create_printer(
     # that sent nothing and shadow the column default).
     patch = printer_data.ams_policies
     data.pop("ams_policies", None)
-    if patch is not None and patch.backup_compatibility is not None:
-        data["ams_policies"] = {AMS_BACKUP_COMPAT_NAMESPACE: patch.backup_compatibility.model_dump()}
+    if patch is not None:
+        data["ams_policies"] = {k: v.model_dump() for k, v in patch if v is not None}
+        if patch.auto_stock_spool and patch.auto_stock_spool.enabled:
+            await creds.check(_may_change_stock_policy)
     printer = Printer(**data)
 
     # Probe MQTT connectivity BEFORE persisting so a mistyped access code or
@@ -535,6 +540,7 @@ async def update_printer(
     printer_data: PrinterUpdate,
     _=RequirePermission(Permission.PRINTERS_UPDATE),
     db: AsyncSession = Depends(get_db),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Update a printer."""
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -585,8 +591,16 @@ async def update_printer(
         patch = printer_data.ams_policies
         if patch is not None and patch.backup_compatibility is not None:
             merged[AMS_BACKUP_COMPAT_NAMESPACE] = patch.backup_compatibility.model_dump()
+        if patch is not None and patch.auto_stock_spool is not None:
+            if patch.auto_stock_spool != policy_for(printer):
+                await creds.check(_may_change_stock_policy)
+            merged[AUTO_STOCK_NAMESPACE] = patch.auto_stock_spool.model_dump()
         update_data["ams_policies"] = merged
 
+    connection_changed = any(
+        key in update_data and update_data[key] != getattr(printer, key)
+        for key in ("ip_address", "access_code", "is_active")
+    )
     for field, value in update_data.items():
         setattr(printer, field, value)
 
@@ -599,7 +613,7 @@ async def update_printer(
         printer_manager.update_printer_name(printer_id, printer.name)
 
     # Reconnect if connection settings changed
-    if any(k in update_data for k in ["ip_address", "access_code", "is_active"]):
+    if connection_changed:
         printer_manager.disconnect_printer(printer_id)
         if printer.is_active:
             await printer_manager.connect_printer(printer)

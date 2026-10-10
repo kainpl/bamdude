@@ -807,7 +807,24 @@ export interface BackupCompatibilityPolicy {
 
 export interface AmsPolicies {
   backup_compatibility: BackupCompatibilityPolicy;
+  auto_stock_spool?: AutoStockSpoolPolicy;
 }
+
+export interface StockSpoolGroup {
+  material: string;
+  rgba: string;
+  brand: string;
+  subtype: string;
+  filament_family_id: string;
+  label_weight: number;
+}
+
+export interface AutoStockSpoolPolicy {
+  enabled: boolean;
+  group: StockSpoolGroup | null;
+}
+
+export const DEFAULT_AUTO_STOCK_SPOOL: AutoStockSpoolPolicy = { enabled: false, group: null };
 
 export const DEFAULT_BACKUP_COMPATIBILITY: BackupCompatibilityPolicy = {
   normalize_color: false,
@@ -1325,7 +1342,7 @@ export interface PrinterCreate {
   swap_mode_enabled?: boolean;
   swap_profile?: string | null;
   require_plate_clear?: boolean;
-  ams_policies?: { backup_compatibility?: BackupCompatibilityPolicy };
+  ams_policies?: { backup_compatibility?: BackupCompatibilityPolicy; auto_stock_spool?: AutoStockSpoolPolicy };
 }
 
 // Plate Detection
@@ -11907,6 +11924,8 @@ export const api = {
   // InventoryPage itself now rides the paged fns below.
   getSpools: (includeArchived = false) =>
     request<InventorySpool[]>(`/inventory/spools?include_archived=${includeArchived}`),
+  getAutoStockSpoolGroups: () =>
+    request<(StockSpoolGroup & { available_count: number })[]>('/inventory/spools/auto-stock-groups'),
   // Server-driven variants (task 4) — the ONLY callers allowed to set `page`.
   getSpoolsPaged: (params: SpoolListParams = {}) =>
     request<SpoolListPage>(`/inventory/spools?${spoolListSearchParams(params)}`),

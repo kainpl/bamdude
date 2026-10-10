@@ -533,6 +533,21 @@ export default {
       titleOff: 'AMS Filament Backup: Off',
       titleUnknown: 'AMS Filament Backup: Unknown'
     },
+    autoStock: {
+      title: 'Assign a full stock spool on loading',
+      description: 'For this printer, load new full spools from the selected inventory group into any supported AMS slot. BamDude assigns one unused stock spool automatically, including same-slot replacements after runout during a print. External holders use confirmed runout followed by your resume.',
+      group: 'Inventory filament group',
+      chooseGroup: 'Select a group of full, unassigned spools',
+      available: '{{count}} full in stock',
+      helpTitle: 'How automatic assignment works',
+      externalHelp: 'External holders: after an unambiguous runout of the assigned spool, your PAUSE → RUNNING transition is treated as installation of a new full spool from this group. There is no holder insertion sensor; ordinary loading without runout still needs manual assignment. Returning the old spool after runout also needs manual assignment before resuming. Reconnects, ordinary pauses, jams, repeated reports and missing stock never claim a new spool. Both H2D external sides are handled only when the runout and loaded feed identify the same holder. BamDude never resumes the printer or changes its in-flight filament configuration.',
+      help: 'Off by default. This is your declaration that newly loaded untagged spools are full and belong to this group; the printer cannot identify their individual inventory IDs or weigh them. For AMS slots, only fresh local empty → occupied reports trigger assignment. Startup, reconnects and repeated reports do not. RFID and manual/pre-assigned spools take priority. A same-slot refill after a confirmed runout keeps the existing old/new consumption split and never resumes the printer automatically. Removing and returning a known partial spool without runout keeps its assignment, including after restart. After confirmed runout, insertion means a new full spool; returning the old spool requires manual assignment. Queue colour/profile overrides and AMS Backup settings stay as configured. Partial spools, different filaments, uncertain insertion signals require manual assignment. External holders follow the runout-and-resume policy below. Built-in inventory, solid 1.75 mm filament only. No matching stock means no new spool record is created.',
+      noStock: 'No full, unused, unassigned stock groups are available. Add spools as full with zero usage; tagged, archived or previously used spools are excluded.',
+      loadFailed: 'Could not load inventory groups. Retry before choosing a group.',
+      permission: 'Inventory update permission is required to change automatic assignment.',
+      unavailable: 'No full stock spool is available for the configured group. Assign the loaded spool manually.',
+      configFailed: 'The stock spool is assigned, but its AMS settings were not sent. Check the slot configuration before continuing.',
+    },
     amsCompat: {
       badge: 'AMS sees: {{profile}}',
       firmwareDidNotMerge: 'The firmware did not merge these slots into one backup group. BamDude only changes what the printer is told; the printer decides the grouping (RFID identity and firmware rules still apply).',

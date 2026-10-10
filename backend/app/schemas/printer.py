@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
+from backend.app.schemas.auto_stock_spool import AutoStockSpoolPolicy
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 from backend.app.schemas.printer_tag import PrinterTagOut
 from backend.app.utils.rgba import normalize_opaque_rgba
@@ -43,12 +44,14 @@ class AmsPolicies(BaseModel):
     """
 
     backup_compatibility: BackupCompatibilityPolicy = Field(default_factory=BackupCompatibilityPolicy)
+    auto_stock_spool: AutoStockSpoolPolicy = Field(default_factory=AutoStockSpoolPolicy)
 
 
 class AmsPoliciesPatch(BaseModel):
     """What a PATCH may carry — a namespace left out is left alone, not reset."""
 
     backup_compatibility: BackupCompatibilityPolicy | None = None
+    auto_stock_spool: AutoStockSpoolPolicy | None = None
 
 
 class BackupCompatibilityApplyRequest(BaseModel):

@@ -10,6 +10,7 @@ but with qos=1 they respond instantly.
 import asyncio
 import json
 import logging
+import math
 import os
 import ssl
 import threading
@@ -813,7 +814,7 @@ def apply_tray_exist_bits(
 
     Mutates ``units`` in place. Returns the number of slots cleared.
     """
-    if not tray_exist_bits_str:
+    if tray_exist_bits_str is None or tray_exist_bits_str == "":
         return 0
     try:
         if isinstance(tray_exist_bits_str, int):
@@ -821,6 +822,8 @@ def apply_tray_exist_bits(
         else:
             tray_exist_bits = int(tray_exist_bits_str, 16)
     except (ValueError, TypeError):
+        return 0
+    if isinstance(tray_exist_bits_str, bool) or tray_exist_bits < 0:
         return 0
     if tray_exist_bits == 0 and not power_on_flag:
         return 0
@@ -2199,6 +2202,7 @@ class BambuMQTTClient:
         on_usage_event: Callable[[str, str | None, int | None, int], None] | None = None,
         on_lights_report: Callable[[bool], None] | None = None,
         on_kprofile_tables_due: Callable[[list[str]], None] | None = None,
+        on_spool_inserted: Callable[[dict], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -2208,6 +2212,12 @@ class BambuMQTTClient:
         self.on_print_start = on_print_start
         self.on_print_complete = on_print_complete
         self.on_ams_change = on_ams_change
+        self.on_spool_inserted = on_spool_inserted
+        self._stock_presence_generation = None
+        self._stock_presence: dict[tuple[int, int], bool] = {}
+        self._stock_presence_bits: str | int | None = None
+        self._stock_pending_presence: list[dict] = []
+        self._stock_insertion_sequence = 0
         self.on_layer_change = on_layer_change
         self.on_macro_complete = on_macro_complete
         # Fires with the full skipped-object list whenever it grows, from either
@@ -3145,7 +3155,11 @@ class BambuMQTTClient:
         # Wrap in try/except to prevent breaking the MQTT connection
         if "ams" in payload:
             try:
-                self._handle_ams_data(payload["ams"])
+                self._handle_ams_data(
+                    payload["ams"],
+                    presence_is_status=is_printer_status_frame(payload.get("print", payload)),
+                    printer_status=payload.get("print", payload),
+                )
             except Exception as e:
                 logger.error("[%s] Error handling AMS data: %s", self.serial_number, e)
 
@@ -3307,7 +3321,11 @@ class BambuMQTTClient:
             # Handle AMS data that comes inside print key
             if "ams" in print_data:
                 try:
-                    self._handle_ams_data(print_data["ams"])
+                    self._handle_ams_data(
+                        print_data["ams"],
+                        presence_is_status=is_printer_status_frame(print_data),
+                        printer_status=print_data,
+                    )
                 except Exception as e:
                     logger.error("[%s] Error handling AMS data from print: %s", self.serial_number, e)
 
@@ -4328,7 +4346,7 @@ class BambuMQTTClient:
         logger.debug("[%s] External spool identity changed, triggering sync callback", self.serial_number)
         self.on_ams_change(self.state.raw_data.get("ams") or [])
 
-    def _handle_ams_data(self, ams_data):
+    def _handle_ams_data(self, ams_data, *, presence_is_status=True, printer_status=None):
         """Handle AMS data changes for Spoolman integration.
 
         This is called when we receive top-level AMS data in MQTT messages.
@@ -4700,8 +4718,10 @@ class BambuMQTTClient:
             # P1S/P1P send partial updates without "ams" key - this is valid, not an error
             # We've already processed the status fields above, so just return if no ams list
             if ams_list is None:
-                logger.debug("[%s] AMS partial update (no tray data)", self.serial_number)
-                return
+                if "tray_exist_bits" not in ams_data:
+                    logger.debug("[%s] AMS partial update (no tray data)", self.serial_number)
+                    return
+                ams_list = []  # presence-only pushes still describe physical slot changes
         elif isinstance(ams_data, list):
             ams_list = ams_data
             self._normalize_a2l_am_units(ams_list)
@@ -4857,6 +4877,30 @@ class BambuMQTTClient:
             )
 
         self.state.raw_data["ams"] = merged_ams
+        stock_payload = ams_data
+        if (
+            presence_is_status
+            and self.state.connected
+            and isinstance(ams_data, dict)
+            and ams_data.get("power_on_flag") is False
+            and isinstance(printer_status, dict)
+            and printer_status.get("gcode_state")
+            in ("IDLE", "RUNNING", "PAUSE", "FINISH", "FAILED", "PREPARE", "SLICING")
+            and all(
+                isinstance(printer_status.get(k), (int, float))
+                and not isinstance(printer_status[k], bool)
+                and math.isfinite(printer_status[k])
+                and printer_status[k] > 0
+                for k in ("nozzle_temper", "bed_temper")
+            )
+        ):
+            # This flag is "read AMS on startup", not the printer's power.
+            # A live status carrying both physical temperature measurements
+            # disproves the shutdown interpretation. Admit this empty baseline
+            # ONLY for stock insertion tracking; keep the shared cache/VP
+            # shutdown guard unchanged. Sparse reports/ACKs cannot override it.
+            stock_payload = {**ams_data, "power_on_flag": True}
+        inserted = self._stock_spool_insertions(merged_ams, stock_payload) if presence_is_status else []
 
         # ⚠️ Derived BEFORE the falling-edge detector below, which reads
         # ``dry_status`` to tell a finished cycle from a transient zero. It
@@ -5051,6 +5095,13 @@ class BambuMQTTClient:
                 # may lack fields like 'remain' that the merged state preserves
                 self.on_ams_change(merged_ams)
 
+        # Separate from the content hash: an untagged same-colour refill can
+        # change ONLY the presence bit. Seed each connection, never infer an
+        # insertion from the first snapshot or a cached ``exists`` value.
+        if self.on_spool_inserted:
+            for event in inserted:
+                self.on_spool_inserted(event)
+
         # Upstream #2582: read-back check runs on EVERY AMS push, not just hash
         # changes. The change hash keys on tray_type/tag_uid/remain — NOT
         # tray_info_idx or cali_idx — so an assignment that only swaps the
@@ -5058,6 +5109,118 @@ class BambuMQTTClient:
         # gating the check on it would miss exactly the confirmation we're after.
         if self._pending_assignments:
             self._check_assignment_verifications()
+
+    def _stock_spool_insertions(self, units: list, payload) -> list[dict]:
+        if self._stock_presence_generation != self.state.connection_generation:
+            self._stock_presence_generation = self.state.connection_generation
+            self._stock_presence.clear()
+            self._stock_presence_bits = None
+            self._stock_pending_presence.clear()
+        if not isinstance(payload, dict):
+            return []
+        bits = payload.get("tray_exist_bits")
+        # A firmware presence push can precede discovery of the AMS units.
+        # Retain that real observation even when there are no tray rows yet.
+        # The canonical helper validates masks and ignores shutdown/unknown
+        # reports; never seed from cached tray content or a command ACK.
+        probe = [{"id": 0, "tray": [{"id": 0}]}]
+        apply_tray_exist_bits(probe, bits, power_on_flag=payload.get("power_on_flag", True), annotate_exists=True)
+        valid_bits = isinstance(probe[0]["tray"][0].get("exists"), bool)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        self._stock_pending_presence = [
+            p for p in self._stock_pending_presence if 0 <= (now - p["observed_at"]).total_seconds() <= 30
+        ]
+        if not valid_bits:
+            # Metadata may follow an already witnessed bit edge in a separate
+            # status push. An explicitly invalid/shutdown mask still vetoes it.
+            if "tray_exist_bits" in payload:
+                self._stock_pending_presence.clear()
+                return []
+            if not self._stock_pending_presence:
+                return []
+        else:
+            if self._stock_presence_bits is not None and self._stock_presence_bits != bits:
+                self._stock_pending_presence.append(
+                    {"before": self._stock_presence_bits, "after": bits, "observed_at": now, "seen": set()}
+                )
+                self._stock_pending_presence = self._stock_pending_presence[-32:]
+            self._stock_presence_bits = bits
+        # Reuse the canonical firmware bit layout, but never feed cached presence
+        # annotations back into the decision. Invalid/missing bits produce none.
+        fresh = [
+            {"id": u.get("id"), "tray": [{"id": t.get("id")} for t in u.get("tray", []) if isinstance(t, dict)]}
+            for u in units
+            if isinstance(u, dict)
+        ]
+        apply_tray_exist_bits(
+            fresh,
+            self._stock_presence_bits,
+            annotate_exists=True,
+        )
+        current = {
+            (int(u["id"]), int(t["id"])): t["exists"]
+            for u in fresh
+            for t in u["tray"]
+            if isinstance(t.get("exists"), bool)
+        }
+        pending = {}
+        for observation in self._stock_pending_presence:
+            before = [{"id": u["id"], "tray": [dict(t) for t in u["tray"]]} for u in fresh]
+            after = [{"id": u["id"], "tray": [dict(t) for t in u["tray"]]} for u in fresh]
+            apply_tray_exist_bits(before, observation["before"], annotate_exists=True)
+            apply_tray_exist_bits(after, observation["after"], annotate_exists=True)
+            for prior_unit, next_unit in zip(before, after, strict=True):
+                for prior, next_tray in zip(prior_unit["tray"], next_unit["tray"], strict=True):
+                    if not isinstance(prior.get("exists"), bool):
+                        continue
+                    key = (int(prior_unit["id"]), int(prior["id"]))
+                    if key in observation["seen"] or key not in current:
+                        continue
+                    observation["seen"].add(key)
+                    if prior.get("exists") is False and next_tray.get("exists") is True and current[key]:
+                        pending[key] = observation["observed_at"]
+        if not valid_bits:
+            # Only the recent witnessed insertion may annotate a late-discovered
+            # slot. No default/cached tray shape can manufacture an observation.
+            for unit in units:
+                if not isinstance(unit, dict):
+                    continue
+                for tray in unit.get("tray", []):
+                    if not isinstance(tray, dict):
+                        continue
+                    # Only IDs already validated by the canonical bit decoder
+                    # may receive a deferred observation.
+                    if any(str(unit.get("id")) == str(a) and str(tray.get("id")) == str(t) for a, t in pending):
+                        tray["exists"] = True
+        events = []
+        for unit in fresh:
+            for tray in unit["tray"]:
+                present = tray.get("exists")
+                if not isinstance(present, bool):
+                    continue
+                key = (int(unit["id"]), int(tray["id"]))
+                previous = self._stock_presence.get(key)
+                self._stock_presence[key] = present
+                if previous is None and present and key not in pending:
+                    logger.info(
+                        "[%s] Stock presence baseline AMS%s-T%s generation=%s: already present; not an insertion",
+                        self.serial_number,
+                        key[0],
+                        key[1],
+                        self.state.connection_generation,
+                    )
+                if key in pending:
+                    self._stock_insertion_sequence += 1
+                    events.append(
+                        {
+                            "ams_id": key[0],
+                            "tray_id": key[1],
+                            "generation": self.state.connection_generation,
+                            "sequence": self._stock_insertion_sequence,
+                            "observed_at": pending[key],
+                        }
+                    )
+        return events
 
     def register_assignment_verification(
         self,
