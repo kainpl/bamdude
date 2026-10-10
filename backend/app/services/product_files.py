@@ -214,6 +214,13 @@ def product_attachments_dir(product_id: int) -> Path:
     return Path(settings.products_dir) / str(product_id) / "attachments"
 
 
+def product_part_images_dir(product_id: int) -> Path:
+    """``<DATA_DIR>/products/<id>/part-images`` — the parts' photos and their small copies
+    (spec part-thumbnails §8.6), under the product root the backup already carries. Only
+    ``services/part_images.py`` writes here."""
+    return Path(settings.products_dir) / str(product_id) / "part-images"
+
+
 def safe_attachment_name(filename: str) -> str:
     """The projects routes' literal path-traversal guard, in one place.
 

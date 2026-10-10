@@ -13,6 +13,7 @@ from enum import StrEnum
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -163,6 +164,14 @@ class ProductPart(Base):
     variant_option_id: Mapped[int | None] = mapped_column(
         ForeignKey("product_variant_options.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # spec part-thumbnails §8.6: which picture the part shows. Only the chosen source's data is
+    # kept, and services/part_images.py is the only writer. No FK on image_file_id: a pin whose
+    # file went explains itself (``file_unlinked``) instead of silently becoming "auto" (plan E4, D9).
+    image_source: Mapped[str] = mapped_column(String(16), nullable=False, default="auto", server_default="auto")
+    image_file_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    image_plate_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    image_identify_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # a slicer id is u32
+    image_photo: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     product: Mapped["Product"] = relationship(back_populates="parts")
 
