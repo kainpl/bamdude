@@ -243,4 +243,7 @@ async def trash_duplicate_rows(db: AsyncSession) -> tuple[int, int]:
     await db.execute(
         update(LibraryFile).where(LibraryFile.id.in_(losers)).values(deleted_at=datetime.now(timezone.utc))
     )
+    from backend.app.services import part_images  # library_ingest sits below the product services
+
+    await part_images.mark_files_changed(db, losers)
     return len(grouped), len(losers)

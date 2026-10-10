@@ -1705,6 +1705,7 @@ async def create_part(
     db.add(part)
     await db.flush()
     await db.refresh(part)
+    part_images.mark_changed(db, [part.product_id])  # names, aliases and parts move pictures (spec §12.3)
     return await _part_out(db, part)
 
 
@@ -1785,6 +1786,7 @@ async def update_part(
         part.auto = False
     await db.flush()
     await db.refresh(part)
+    part_images.mark_changed(db, [part.product_id])  # names, aliases and parts move pictures (spec §12.3)
     return await _part_out(db, part)
 
 
@@ -1914,6 +1916,7 @@ async def add_part_alias(
     _apply_alias_change(lambda: add_alias(product.parts, part, data.name_key.strip().lower()))
     await db.flush()
     await db.refresh(part)
+    part_images.mark_changed(db, [part.product_id])  # names, aliases and parts move pictures (spec §12.3)
     return await _part_out(db, part)
 
 
@@ -1931,6 +1934,7 @@ async def remove_part_alias(
     _apply_alias_change(lambda: remove_alias(part, name_key))
     await db.flush()
     await db.refresh(part)
+    part_images.mark_changed(db, [part.product_id])  # names, aliases and parts move pictures (spec §12.3)
     return await _part_out(db, part)
 
 

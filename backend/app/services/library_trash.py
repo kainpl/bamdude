@@ -31,7 +31,7 @@ from backend.app.core.database import async_session
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.settings import Settings
-from backend.app.services import queue_source_release
+from backend.app.services import part_images, queue_source_release
 from backend.app.services.product_sync import purge_file_product_links
 
 logger = logging.getLogger(__name__)
@@ -470,6 +470,7 @@ class LibraryTrashService:
         moved = len(ids)
         if moved:
             await db.execute(LibraryFile.__table__.update().where(LibraryFile.id.in_(ids)).values(deleted_at=started))
+            await part_images.mark_files_changed(db, ids)
             await db.commit()
             logger.info("Library purge: moved %d file(s) to trash (older_than_days=%d)", moved, older_than_days)
 
@@ -637,6 +638,7 @@ class LibraryTrashService:
 
         await _cancel_pending_queue_items(db, file.id)
         file.deleted_at = datetime.now(timezone.utc)
+        await part_images.mark_files_changed(db, [file.id])  # a trashed file is no source (spec part-thumbnails §12.3)
         if detach_folder:
             file.folder_id = None
         return True
@@ -644,6 +646,7 @@ class LibraryTrashService:
     async def restore(self, db: AsyncSession, file: LibraryFile) -> LibraryFile:
         """Clear ``deleted_at`` so the file reappears in listings."""
         file.deleted_at = None
+        await part_images.mark_files_changed(db, [file.id])  # its plates show pictures again
         await db.commit()
         await db.refresh(file)
         return file
