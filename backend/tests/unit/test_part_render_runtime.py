@@ -80,6 +80,23 @@ async def busy(runtime: PartRenderRuntime, at_least: int = 2) -> list[psutil.Pro
     raise AssertionError("the attempt never started")
 
 
+async def recorded(runtime: PartRenderRuntime) -> None:
+    """Every process the attempt launched has its record. ``busy`` sees a child the moment it forks, before its
+    guardian has written ``child.pid``: a worker killed then leaves a launch caught before its record, which
+    main's strict proof refuses by design until the process restarts (``test_part_render_tree``) -- measured on
+    macOS 2026-10-10, where that window made this scenario fail one run in many."""
+    service = runtime.staging / "service"
+    for _ in range(800):
+        attempts = [path for path in service.iterdir() if path.is_dir()] if service.is_dir() else []
+        launched = [
+            (attempt, path.name.removesuffix(".launch")) for attempt in attempts for path in attempt.glob("*.launch")
+        ]
+        if launched and all((attempt / f"{name}.pid").exists() for attempt, name in launched):
+            return
+        await asyncio.sleep(0.025)
+    raise AssertionError("the attempt's records never completed")
+
+
 def dead(processes) -> bool:
     def one(process):
         try:
@@ -201,6 +218,7 @@ async def test_a_worker_dying_mid_attempt_leaves_no_orphan_and_restarts(live, tm
     runtime, broker = live
     render = asyncio.create_task(runtime.render(hung(tmp_path), mode="fallback", deadline_ns=deadline(120)))
     tree = await busy(runtime)
+    await recorded(runtime)  # mid-attempt, not inside its spawn window (that case is fail-closed by design)
     old_pid = runtime.service.process.pid
     services = [
         p for p in psutil.Process(old_pid).children(recursive=True) if "part_render_service" in " ".join(p.cmdline())
