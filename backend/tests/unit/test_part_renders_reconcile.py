@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.models.plate_render import PlateRender, PlateRenderObject
-from backend.app.services import part_renders
+from backend.app.services import part_images, part_renders
 from backend.app.services.part_render_protocol import GC_GRACE_SECONDS
 from backend.tests.unit.test_part_renders_queue import linked
 
@@ -184,3 +184,22 @@ async def test_gc_drops_another_renderer_versions_rows_after_the_grace(db_sessio
     await part_renders.gc(factory, tmp_path, now)
     assert await part_renders.gc(factory, tmp_path, now + timedelta(seconds=GC_GRACE_SECONDS + 1)) == 1
     assert await reload(db_session, row) is None
+
+
+@pytest.fixture
+def changed():
+    seen: list[set] = []
+    unsubscribe = part_images.subscribe(seen.append)
+    yield seen
+    unsubscribe()
+
+
+async def test_gc_says_which_plates_went(db_session, factory, changed, tmp_path):
+    """Plan E4, task 27: a GC deletion reaches the picture collector with the plate's key, after its commit."""
+    row = await add_row(db_session)  # an orphan: no linked file
+    now = part_renders.utcnow()
+    await part_renders.gc_due(factory, now)  # starts the grace
+    later = now + timedelta(seconds=GC_GRACE_SECONDS + 1)
+    due = await part_renders.gc_due(factory, later)
+    assert await part_renders.gc_remove(factory, tmp_path, due, later) == 1
+    assert changed == [{(row.file_sha256, row.plate_index)}]

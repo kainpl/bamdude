@@ -3,8 +3,9 @@
 Rows are keyed by content: file_sha256, plate, renderer version. The queue picks a pending row whose hash
 still has a linked file outside the trash; a hash whose files are all in the trash is skipped, not
 parked, so the queue never starves (spec §9.2). Every transition the scheduler makes is a CAS on the
-full key and the live generation (spec §9.3, §9.6), in its own short transaction, and ends in
-part_images.mark_changed. ensure_for_files and rerender_for_product run in the caller's transaction and
+full key and the live generation (spec §9.3, §9.6), in its own short transaction, and tells
+part_images.mark_renders_changed in that transaction, before the commit (plan E4, D5). ensure_for_files
+and rerender_for_product run in the caller's transaction and
 never commit, like product_facets.refresh. Main never touches a source file: SourceRef is composed from
 the row alone. SQLite runs no FK actions, so instance rows are deleted here, in code.
 """
@@ -90,9 +91,9 @@ def _sliced_linked_plates():
     )
 
 
-async def _insert_pending(db: AsyncSession, keys: set[tuple[str, int]], priority: int) -> int:
+async def _insert_pending(db: AsyncSession, keys: set[tuple[str, int]], priority: int) -> set[tuple[str, int]]:
     if not keys:
-        return 0
+        return set()
     now = utcnow()
     values = [
         {
@@ -108,17 +109,23 @@ async def _insert_pending(db: AsyncSession, keys: set[tuple[str, int]], priority
         }
         for sha, plate in sorted(keys)
     ]
-    result = await db.execute(insert_ignoring_conflicts(db, PlateRender.__table__, values, list(_KEY)))
-    return result.rowcount or 0
+    statement = insert_ignoring_conflicts(db, PlateRender.__table__, values, list(_KEY)).returning(
+        PlateRender.__table__.c.file_sha256, PlateRender.__table__.c.plate_index
+    )
+    return {(sha, plate) for sha, plate in (await db.execute(statement)).all()}  # ON CONFLICT rows are not returned
+
+
+async def _ensure(db: AsyncSession, library_file_ids: Iterable[int], priority: int) -> set[tuple[str, int]]:
+    inserted: set[tuple[str, int]] = set()
+    for chunk in id_chunks(library_file_ids):
+        found = (await db.execute(_sliced_linked_plates().where(LibraryFile.id.in_(chunk)))).all()
+        inserted |= await _insert_pending(db, {(sha, plate) for sha, plate in found}, priority)
+    return inserted
 
 
 async def ensure_for_files(db: AsyncSession, library_file_ids: Iterable[int], *, priority: int = 1) -> int:
     """A pending row per plate of every linked, sliced file outside the trash (spec §9.1). Never commits."""
-    total = 0
-    for chunk in id_chunks(library_file_ids):
-        found = (await db.execute(_sliced_linked_plates().where(LibraryFile.id.in_(chunk)))).all()
-        total += await _insert_pending(db, {(sha, plate) for sha, plate in found}, priority)
-    return total
+    return len(await _ensure(db, library_file_ids, priority))
 
 
 async def backfill(session_factory) -> int:
@@ -128,8 +135,10 @@ async def backfill(session_factory) -> int:
     total = 0
     for start in range(0, len(found), 500):
         async with session_factory() as db:
-            total += await _insert_pending(db, set(found[start : start + 500]), 0)
+            inserted = await _insert_pending(db, set(found[start : start + 500]), 0)
+            await part_images.mark_renders_changed(db, inserted)
             await db.commit()
+        total += len(inserted)
     return total
 
 
@@ -218,8 +227,8 @@ async def _transition(session_factory, task: RenderTask, generation: str, values
         if result.rowcount != 1 or generation != _live_generation:
             await db.rollback()
             return False
+        await part_images.mark_renders_changed(db, [(task.file_sha256, task.plate_index)])
         await db.commit()
-    part_images.mark_changed([(task.file_sha256, task.plate_index)])
     return True
 
 
@@ -297,20 +306,25 @@ async def requeue_no_runtime(session_factory) -> int:
                 PlateRender.renderer_version == RENDERER_VERSION,
             )
             .values(status="pending", phase="render", reason=None, attempts=0, priority=0, next_attempt_at=utcnow())
+            .returning(PlateRender.file_sha256, PlateRender.plate_index)
+            .execution_options(synchronize_session=False)
         )
+        keys = {(sha, plate) for sha, plate in result.all()}
+        await part_images.mark_renders_changed(db, keys)
         await db.commit()
-    return result.rowcount or 0
+    return len(keys)
 
 
 async def rerender_for_product(db: AsyncSession, product_id: int, *, full: bool) -> int:
     """Spec §9.1: this product's failed / unavailable plates back to pending at priority 2; with ``full`` the
-    ready ones too, their result_dir kept so the old pictures show until the new ones are published."""
+    ready ones too, their result_dir kept so the old pictures show until the new ones are published. Every
+    product that shares one of these plates hears it after the caller's commit (plan E4, D23)."""
     files = (
         (await db.execute(select(ProductPlate.library_file_id).where(ProductPlate.product_id == product_id)))
         .scalars()
         .all()
     )
-    await ensure_for_files(db, files, priority=2)
+    changed = await _ensure(db, files, 2)
     keys = set((await db.execute(_sliced_linked_plates().where(ProductPlate.product_id == product_id))).all())
     statuses = ("failed", "unavailable", "ready") if full else ("failed", "unavailable")
     now = utcnow()
@@ -334,7 +348,10 @@ async def rerender_for_product(db: AsyncSession, product_id: int, *, full: bool)
                 requested_at=now,
             )
         )
-        count += result.rowcount or 0
+        if result.rowcount:
+            count += result.rowcount
+            changed.add((sha, plate))
+    await part_images.mark_renders_changed(db, changed)
     return count
 
 
@@ -500,6 +517,7 @@ async def publish(
                     for entry in manifest["objects"]
                 ],
             )
+            await part_images.mark_renders_changed(db, [(task.file_sha256, task.plate_index)])
             try:
                 await db.commit()
             except Exception:
@@ -513,7 +531,6 @@ async def publish(
         await disk(
             cleanup_owned, result_path(root, task.file_sha256, task.renderer_version, task.plate_index, previous)
         )
-    part_images.mark_changed([(task.file_sha256, task.plate_index)])
     return "published"
 
 
@@ -625,11 +642,11 @@ async def reconcile(session_factory, root: Path) -> ReconcileReport:
                 .where(PlateRender.id == row.id, PlateRender.status == "ready")
                 .values(status="pending", phase="render", reason=None, attempts=0, priority=0, next_attempt_at=utcnow())
             )
+            await part_images.mark_renders_changed(db, [(row.file_sha256, row.plate_index)])
             await db.commit()
         report.cleared += 1
         if directory is not None:
             await disk(cleanup_owned, directory)
-        part_images.mark_changed([(row.file_sha256, row.plate_index)])
     named = {(r.file_sha256, r.renderer_version, r.plate_index, r.result_dir) for r in rows}
     for key, directory in found.items():
         if key not in named:  # a named but broken directory went with its row above
@@ -717,6 +734,9 @@ async def gc_remove(session_factory, root: Path, due: list, now: datetime) -> in
             )
             if gone:  # PostgreSQL's CASCADE has taken them already; SQLite runs no FK actions
                 await db.execute(delete(PlateRenderObject).where(PlateRenderObject.render_id.in_(sorted(gone))))
+            await part_images.mark_renders_changed(
+                db, {(batch[render_id].file_sha256, batch[render_id].plate_index) for render_id in gone}
+            )
             await db.commit()
         removed += len(gone)
         for render_id in sorted(gone):

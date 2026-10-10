@@ -11046,6 +11046,9 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     await stop_part_render()  # its attempt ends with its proof before any worker or the broker goes
+    from backend.app.services import part_images
+
+    await part_images.shutdown()  # events and photo removals already started finish, or are cancelled
     await stop_preview_runtime()
     await ws_manager.shutdown()
     # Cloud Link first: it holds a socket and describes this farm, so it should
