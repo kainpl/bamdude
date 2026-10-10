@@ -14,6 +14,7 @@ import pytest
 from backend.app.services import part_render_runtime as prr, render_runtime
 from backend.app.services.local_worker_broker import LocalWorkerBroker
 from backend.app.services.part_render_runtime import PartRenderRuntime
+from backend.app.services.part_render_tree import launch
 from backend.app.services.part_render_types import RenderTask, RuntimeUnavailable, SourceRef
 from backend.tests.fixtures.part_render_3mf import two_objects_3mf
 from backend.tests.unit.services.test_part_render_node import NODE, needs_pin
@@ -231,6 +232,23 @@ async def test_an_unproven_retire_closes_admission_until_restart(tmp_path, monke
     with pytest.raises(RuntimeUnavailable, match="ownership_uncertain"):
         await runtime.render(task_for(tmp_path / "x.3mf"), mode="fallback", deadline_ns=deadline(5))
     assert attempt.exists()  # nothing is deleted while its owner may live
+
+
+@pytest.mark.asyncio
+async def test_an_unproven_retire_says_why_in_the_parent_log(tmp_path, caplog):
+    """The parent log names the record and the check that failed -- "not proven gone" alone could not tell
+    the macOS ownership_uncertain of 2026-10-10 from its three other causes."""
+    runtime = PartRenderRuntime(tmp_path, None, app_dir=ROOT)
+    attempt = runtime.staging / "service" / ("d" * 32)
+    attempt.mkdir(parents=True)
+    launch(attempt, "child")  # launched, its record never written
+    runtime.ready = True
+    with (
+        caplog.at_level(logging.ERROR, logger="backend.app.services.part_render_runtime"),
+        pytest.raises(RuntimeUnavailable),
+    ):
+        await runtime.retire()
+    assert "attempt=dddddddd ownership uncertain: child: launched without its record" in caplog.text
 
 
 @pytest.mark.asyncio

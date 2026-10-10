@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from backend.app.services.part_render_tree import launch, record, tree_gone
+from backend.app.services.part_render_tree import launch, record, tree_gone, tree_unproven
 
 SLEEP = [sys.executable, "-c", "import time; time.sleep(60)"]
 # boots in THIS platform's format: a persisted boot counts only in it (consilium r4, R4.2)
@@ -68,6 +68,68 @@ def test_a_half_written_record_fails_the_strict_proof(tmp_path):
     (tmp_path / "child.pid.part").write_text("{", encoding="ascii")
     assert not tree_gone(tmp_path, strict=True)
     assert tree_gone(tmp_path, strict=False)
+
+
+# Why a proof failed, for the parent log: the record, the check and the process's state -- never a command
+# line or a path (the local-microservice invariant; the macOS ownership_uncertain of 2026-10-10 said only
+# "not proven gone", which cannot tell its four causes apart).
+
+
+def test_a_proof_names_a_launch_without_its_record(tmp_path):
+    launch(tmp_path, "child")
+    assert tree_unproven(tmp_path, strict=True) == "child: launched without its record"
+    assert tree_unproven(tmp_path, strict=False) is None
+
+
+def test_a_proof_names_a_half_written_record(tmp_path):
+    (tmp_path / "guardian.pid.part").write_text("{", encoding="ascii")
+    assert tree_unproven(tmp_path, strict=True) == "guardian: half-written record"
+
+
+def test_a_proof_names_an_unreadable_record(tmp_path):
+    (tmp_path / "node.pid").write_text("{broken", encoding="ascii")
+    assert tree_unproven(tmp_path, strict=True) == "node: record unreadable"
+
+
+def test_a_proof_names_a_process_that_outlived_its_kill(tmp_path, monkeypatch):
+    from backend.app.services import part_render_tree
+
+    process = _spawn()
+    try:
+        record(tmp_path / "child.pid", process.pid)
+        monkeypatch.setattr(part_render_tree, "_wait", lambda _process, _timeout: False)
+        why = tree_unproven(tmp_path, strict=True)
+        assert why is not None and why.startswith(f"child: still running after its kill pid={process.pid} status=")
+    finally:
+        process.kill()
+        process.wait()
+
+
+def test_a_proof_names_a_process_it_may_not_read(tmp_path, monkeypatch):
+    import psutil
+
+    from backend.app.services import part_render_tree
+
+    process = _spawn()
+    try:
+        record(tmp_path / "child.pid", process.pid)
+
+        def denied(pid):
+            raise psutil.AccessDenied(pid)
+
+        monkeypatch.setattr(part_render_tree.psutil, "Process", denied)
+        assert tree_unproven(tmp_path, strict=True) == f"child: access denied pid={process.pid}"
+    finally:
+        process.kill()
+        process.wait()
+
+
+def test_a_proven_tree_has_no_reason(tmp_path):
+    process = _spawn()
+    launch(tmp_path, "child")
+    record(tmp_path / "child.pid", process.pid)
+    assert tree_unproven(tmp_path, strict=True) is None
+    assert process.wait(timeout=5) is not None
 
 
 def test_a_process_that_already_exited_is_gone(tmp_path):

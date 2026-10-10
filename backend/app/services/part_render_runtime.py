@@ -36,7 +36,7 @@ from backend.app.services.part_render_protocol import (
     PackError,
     unpack,
 )
-from backend.app.services.part_render_tree import generation_gone, tree_gone
+from backend.app.services.part_render_tree import generation_gone, tree_unproven
 from backend.app.services.part_render_types import (
     AttemptResult,
     Mode,
@@ -472,12 +472,10 @@ class PartRenderRuntime:
         for attempt in attempts:
             # strict: the worker is gone, so a launch without its record may have left a process outside
             # every tree this process can see
-            if not await disk(lambda path=attempt: tree_gone(path, strict=True)):
+            why = await disk(lambda path=attempt: tree_unproven(path, strict=True))
+            if why is not None:
                 self.uncertain, self.reason = True, "ownership_uncertain"
-                logger.error(
-                    "Part render attempt=%s ownership uncertain: a launched process is not proven gone",
-                    attempt.name[:8],
-                )
+                logger.error("Part render attempt=%s ownership uncertain: %s", attempt.name[:8], why)
                 raise RuntimeUnavailable("ownership_uncertain")
         for attempt in attempts:
             result = await disk(cleanup_owned, attempt)

@@ -206,7 +206,20 @@ def _wait(process: psutil.Process, timeout: float) -> bool:
 
 
 def _gone(entry: Path, timeout: float, *, kill: bool = True, this_run: bool = False) -> bool:
-    """The recorded process has ended -- killed first when ``kill`` and it still runs. An exited process this
+    return _not_gone(entry, timeout, kill=kill, this_run=this_run) is None
+
+
+def _state(process: psutil.Process) -> str:
+    """A process's state for the parent log: psutil's status word, never its command line."""
+    try:
+        return process.status()
+    except psutil.Error:
+        return "unreadable"
+
+
+def _not_gone(entry: Path, timeout: float, *, kill: bool = True, this_run: bool = False) -> str | None:
+    """Why the recorded process is not shown ended, for the parent log; None when it has ended -- killed first
+    when ``kill`` and it still runs. An exited process this
     process cannot reap (an orphan whose new parent never reaps: a container's PID 1 without a reaper) stays
     a zombie, and a zombie has ended (consilium E3-I-R3).
 
@@ -221,24 +234,28 @@ def _gone(entry: Path, timeout: float, *, kill: bool = True, this_run: bool = Fa
         data = json.loads(entry.read_text(encoding="ascii"))
         pid, created = int(data["pid"]), float(data["create_time"])
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return False  # a record that cannot be read proves nothing
+        return "record unreadable"  # a record that cannot be read proves nothing
     if not this_run and _another_boot(data):
-        return True  # it ended with its boot; the pid is now some other process's -- never signal it
+        return None  # it ended with its boot; the pid is now some other process's -- never signal it
     placed = this_run or _this_boot(data)
     try:
         process = psutil.Process(pid)
         if abs(_started(process) - created) > _SAME_PROCESS_SECONDS:
-            return True  # the pid is someone else's now: ours is gone
+            return None  # the pid is someone else's now: ours is gone
         if process.status() == psutil.STATUS_ZOMBIE:
-            return True
-        if not kill or not placed:
-            return False
+            return None
+        if not kill:
+            return f"running pid={pid} status={_state(process)}"
+        if not placed:
+            return f"running pid={pid} status={_state(process)}, boot unknown"
         process.kill()
-        return _wait(process, timeout)
+        if _wait(process, timeout):
+            return None
+        return f"still running after its kill pid={pid} status={_state(process)}"
     except psutil.NoSuchProcess:
-        return True
+        return None
     except psutil.AccessDenied:
-        return False
+        return f"access denied pid={pid}"
 
 
 def tree_gone(attempt_dir: Path, *, strict: bool, timeout: float = 5) -> bool:
@@ -250,14 +267,25 @@ def tree_gone(attempt_dir: Path, *, strict: bool, timeout: float = 5) -> bool:
     ``PreviewProcess.stop()`` killed the attempt's group / Job Object, an unrecorded process was inside
     that group and went with it.
     """
+    return tree_unproven(attempt_dir, strict=strict, timeout=timeout) is None
+
+
+def tree_unproven(attempt_dir: Path, *, strict: bool, timeout: float = 5) -> str | None:
+    """Why the attempt's processes are not proven gone -- ``<record>: <what failed>``, with a pid and its
+    psutil status, never a command line or a path -- or None when they are (``tree_gone``). The reason is
+    what the parent log needs to tell a slow kill from an unreadable record or a launch caught before its
+    record (the local-microservice invariant)."""
     for name in RECORDS:
         pid_file = attempt_dir / f"{name}.pid"
         if pid_file.exists():
-            if not _gone(pid_file, timeout, this_run=True):  # an attempt of this run: this boot's
-                return False
-        elif strict and ((attempt_dir / f"{name}.launch").exists() or (attempt_dir / f"{name}.pid.part").exists()):
-            return False
-    return True
+            why = _not_gone(pid_file, timeout, this_run=True)  # an attempt of this run: this boot's
+            if why is not None:
+                return f"{name}: {why}"
+        elif strict and (attempt_dir / f"{name}.launch").exists():
+            return f"{name}: launched without its record"
+        elif strict and (attempt_dir / f"{name}.pid.part").exists():
+            return f"{name}: half-written record"
+    return None
 
 
 def _known_boot(boot: object) -> str | None:
