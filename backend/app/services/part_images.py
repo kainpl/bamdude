@@ -285,6 +285,10 @@ async def shutdown() -> None:
 PHOTO_NAME = re.compile(r"[0-9a-f]{32}\.(png|jpg|webp)\Z")
 _PREFERRED = ("toolpath", "model")  # over top_mask, across every source (spec §10.2, step 3)
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
+# E3's result directory name (part_renders._RESULT_NAME; not imported -- part_renders imports this module).
+# A row whose result_dir is anything else (a restored or tampered database) has no result and never
+# becomes a served path (E4 final review).
+_RESULT_DIR = re.compile(r"[0-9a-f]{32}\Z")
 
 
 def small_photo_name(name: str) -> str:
@@ -346,8 +350,9 @@ async def _renders(db, hashes: Iterable[str]) -> dict[tuple[str, int], _Render]:
                 ).where(PlateRender.file_sha256.in_(chunk), PlateRender.renderer_version == RENDERER_VERSION)
             )
         ).all()
+    result_dirs = {r.id: r.result_dir if r.result_dir and _RESULT_DIR.fullmatch(r.result_dir) else None for r in rows}
     objects: dict[int, dict] = {}
-    for chunk in id_chunks(r.id for r in rows if r.result_dir):
+    for chunk in id_chunks(r.id for r in rows if result_dirs[r.id]):
         for o in (
             await db.execute(
                 select(
@@ -361,7 +366,7 @@ async def _renders(db, hashes: Iterable[str]) -> dict[tuple[str, int], _Render]:
             objects.setdefault(o.render_id, {})[o.identify_id] = (o.method, o.reason)
     return {
         (r.file_sha256, r.plate_index): _Render(
-            r.id, r.file_sha256, r.plate_index, r.status, r.result_dir, objects.get(r.id, {})
+            r.id, r.file_sha256, r.plate_index, r.status, result_dirs[r.id], objects.get(r.id, {})
         )
         for r in rows
     }
@@ -636,7 +641,19 @@ def _existing(*paths: Path | None) -> Path | None:
 
 
 async def image_file(db, part_id: int, size: str) -> tuple[Path, str] | None:
-    """The file behind ``GET /product-parts/{id}/image``: ``(path, v)``; ``sm`` falls back to ``lg``."""
+    """The file behind ``GET /product-parts/{id}/image``: ``(path, v)``; ``sm`` falls back to ``lg``.
+
+    A part with its photo answers from its own row -- no product, file or plate is read for each <img>
+    (E4 final review). A photo that is gone falls through to the render or the automatic pick, as
+    ``resolve`` says (spec §10.2).
+    """
+    part = await db.get(ProductPart, part_id)
+    photo = _photo_path(part) if part is not None else None
+    if photo is not None:
+        small = photo.with_name(small_photo_name(photo.name))
+        path = await disk(_existing, small if size == "sm" else photo, photo)
+        if path is not None:
+            return path, part.image_photo
     effective = (await _answers(db, [part_id], editor=False))[0].get(part_id)
     if effective is None or effective.ref.status != "ready":
         return None
@@ -756,7 +773,8 @@ def attach(fn=None, *, editor: bool = False):
     ``editor`` also fills ``image_choice`` (spec §10.4) -- the product page and the part's doors.
     A ``Response`` passes through untouched. The route-coverage guard reads ``__part_images__``.
     The session is found through the endpoint's own signature: FastAPI passes it by name, a caller
-    that invokes the endpoint directly (the lock-order tests) passes it by position.
+    that invokes the endpoint directly (the lock-order tests) passes it by position. Best effort: a
+    lookup that fails is logged and leaves the pictures ``None``; it never fails the route.
     """
 
     def wrap(endpoint):
@@ -766,7 +784,15 @@ def attach(fn=None, *, editor: bool = False):
         async def run(*args, **kwargs):
             result = await endpoint(*args, **kwargs)
             if not isinstance(result, Response):
-                await fill(signature.bind_partial(*args, **kwargs).arguments["db"], result, editor=editor)
+                db = signature.bind_partial(*args, **kwargs).arguments["db"]
+                await db.flush()  # the route's own writes: a failure there is the route's, never swallowed
+                try:
+                    # Best effort (E4 final review), in a savepoint so a failed lookup leaves the transaction
+                    # usable: the answer goes without its pictures, the write the route made still lands.
+                    async with db.begin_nested():
+                        await fill(db, result, editor=editor)
+                except Exception:
+                    logger.exception("Part pictures left out of the answer of %s", endpoint.__name__)
             return result
 
         run.__part_images__ = "editor" if editor else "image"
@@ -775,7 +801,12 @@ def attach(fn=None, *, editor: bool = False):
     return wrap(fn) if fn is not None else wrap
 
 
-PHOTO_FORMATS = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp"}
+# The format Pillow reports -> the stored extension. ``MPO`` is a JPEG whose MPF segment carries a second
+# image (most camera and many phone JPEGs): a JPEG photo all the same (E4 final review).
+PHOTO_FORMATS = {"PNG": "png", "JPEG": "jpg", "MPO": "jpg", "WEBP": "webp"}
+# The decoders an uploaded photo is opened with (``formats=``), so no other Pillow plugin ever parses its
+# bytes. There is no "MPO" opener: the JPEG decoder answers it.
+_PILLOW_FORMATS = ("PNG", "JPEG", "WEBP")
 PHOTO_MAX_PIXELS = 40_000_000
 PHOTO_MEMBER_ROOT = "part-images"
 
@@ -790,7 +821,9 @@ def _photo_files(directory: Path, name_or_stem: str) -> list[Path]:
     """Every file one stored photo can consist of: its original under any accepted extension
     and its small copy -- what a cleanup removes, whatever got written."""
     stem = name_or_stem.split(".", 1)[0]
-    return [directory / f"{stem}.{ext}" for ext in PHOTO_FORMATS.values()] + [directory / f"{stem}.sm.png"]
+    return [directory / f"{stem}.{ext}" for ext in dict.fromkeys(PHOTO_FORMATS.values())] + [
+        directory / f"{stem}.sm.png"
+    ]
 
 
 def _unlink_all(paths: Iterable[Path]) -> None:
@@ -807,7 +840,7 @@ def _write_photo(content: bytes, directory: Path, stem: str) -> str:
     All or nothing: nothing is written before the bytes are known to be a photo, and a write that
     fails part way removes what this call wrote before the error goes on (consilium E4-R2)."""
     try:
-        with Image.open(io.BytesIO(content)) as probe:
+        with Image.open(io.BytesIO(content), formats=_PILLOW_FORMATS) as probe:
             fmt, (width, height) = probe.format, probe.size
     except Image.DecompressionBombError as exc:
         raise _PhotoRefused(too_many_pixels=True) from exc
@@ -819,7 +852,7 @@ def _write_photo(content: bytes, directory: Path, stem: str) -> str:
     if width * height > PHOTO_MAX_PIXELS:
         raise _PhotoRefused(too_many_pixels=True)
     try:
-        with Image.open(io.BytesIO(content)) as image:
+        with Image.open(io.BytesIO(content), formats=_PILLOW_FORMATS) as image:
             image.load()  # a truncated file is refused before anything is written
             small = ImageOps.exif_transpose(image)
             small.thumbnail((SMALL_SIZE, SMALL_SIZE))
@@ -907,18 +940,28 @@ async def set_choice(db, part_id: int, source: str, instance: InstanceKey | None
 
 
 async def set_photo(db, part_id: int, content: bytes) -> ProductPart:
-    """``POST /product-parts/{id}/image/photo``: the photo becomes the part's picture (spec §10.3)."""
+    """``POST /product-parts/{id}/image/photo``: the photo becomes the part's picture (spec §10.3).
+
+    The photo is decoded and written BEFORE the part row is locked: on SQLite that lock is the database's
+    write lock, and a 40 MP decode under it would stall every other writer (E4 final review). The file is
+    the transaction's from the start, so a part that went meanwhile leaves nothing behind.
+    """
     if len(content) > attachment_limit():
         raise HTTPException(status_code=413, detail=f"A photo may be at most {attachment_limit()} bytes")
-    part = await _locked(db, part_id)
+    product_id = await db.scalar(select(ProductPart.product_id).where(ProductPart.id == part_id))
+    if product_id is None:
+        raise HTTPException(status_code=404, detail="Part not found")
     try:
-        name = await _store_photo(db, part.product_id, content)
+        name = await _store_photo(db, product_id, content)
     except _PhotoRefused as refused:
         if refused.too_many_pixels:
             raise HTTPException(
                 status_code=422, detail=f"The photo may have at most {PHOTO_MAX_PIXELS} pixels"
             ) from refused
         raise HTTPException(status_code=422, detail="The photo must be a PNG, JPEG or WebP picture") from refused
+    part = await _locked(db, part_id)
+    if part.product_id != product_id:  # a part never moves; the photo is in this product's folder
+        raise HTTPException(status_code=404, detail="Part not found")
     _drop_photo(db, part)
     _clear_pin(part)
     part.image_source, part.image_photo = "photo", name

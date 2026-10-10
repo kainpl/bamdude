@@ -284,3 +284,57 @@ async def test_an_unknown_part_is_404(db_session):
     with pytest.raises(HTTPException) as refused:
         await part_images.clear_photo(db_session, 999_999)
     assert refused.value.status_code == 404
+
+
+def mpo_bytes() -> bytes:
+    """A JPEG with a second image in its MPF segment -- what many cameras and phones write; Pillow calls it MPO."""
+    first, second = Image.new("RGB", (40, 30), (10, 120, 200)), Image.new("RGB", (20, 15), (200, 20, 10))
+    buffer = io.BytesIO()
+    first.save(buffer, "MPO", save_all=True, append_images=[second])
+    return buffer.getvalue()
+
+
+async def test_a_camera_jpeg_with_a_second_image_is_a_jpeg(db_session):
+    """Final review I1: Pillow reports a JPEG carrying an MPF segment as MPO; it is a JPEG photo all the same."""
+    content = mpo_bytes()
+    with Image.open(io.BytesIO(content)) as probe:
+        assert probe.format == "MPO"
+    farm = await rendered_farm(db_session)
+    part_ = await part_images.set_photo(db_session, farm.body.id, content)
+    await db_session.commit()
+    path = product_part_images_dir(farm.product.id) / part_.image_photo
+    assert path.suffix == ".jpg" and path.read_bytes() == content
+    with Image.open(path.with_name(part_images.small_photo_name(path.name))) as small:
+        assert small.format == "PNG" and max(small.size) <= 128
+
+
+async def test_the_photo_is_decoded_before_the_part_row_is_locked(db_session, monkeypatch):
+    """Final review: the decode never runs under the part lock -- on SQLite that is the database's write lock."""
+    from backend.app.services import part_stock
+
+    order: list[str] = []
+    real_lock, real_write = part_stock.lock_part, part_images._write_photo
+
+    async def lock(db, part_id):
+        order.append("lock")
+        return await real_lock(db, part_id)
+
+    def write(*args):
+        order.append("write")
+        return real_write(*args)
+
+    monkeypatch.setattr(part_stock, "lock_part", lock)
+    monkeypatch.setattr(part_images, "_write_photo", write)
+    farm = await rendered_farm(db_session)
+    await part_images.set_photo(db_session, farm.body.id, image_bytes())
+    assert order == ["write", "lock"]
+
+
+async def test_a_photo_for_an_unknown_part_writes_nothing(db_session):
+    await db_session.execute(text("select 1"))
+    with pytest.raises(HTTPException) as refused:
+        await part_images.set_photo(db_session, 999_999, image_bytes())
+    assert refused.value.status_code == 404
+    from backend.app.core.config import settings
+
+    assert not any(settings.products_dir.rglob("*.png")) if settings.products_dir.exists() else True

@@ -3,8 +3,9 @@
 Rows are keyed by content: file_sha256, plate, renderer version. The queue picks a pending row whose hash
 still has a linked file outside the trash; a hash whose files are all in the trash is skipped, not
 parked, so the queue never starves (spec §9.2). Every transition the scheduler makes is a CAS on the
-full key and the live generation (spec §9.3, §9.6), in its own short transaction, and tells
-part_images.mark_renders_changed in that transaction, before the commit (plan E4, D5). ensure_for_files
+full key and the live generation (spec §9.3, §9.6), in its own short transaction; one that moves a plate's
+status or result tells part_images.mark_renders_changed in that transaction, before the commit (plan E4,
+D5; a back-off, a fallback switch or a defer shows nobody anything new). ensure_for_files
 and rerender_for_product run in the caller's transaction and
 never commit, like product_facets.refresh. Main never touches a source file: SourceRef is composed from
 the row alone. SQLite runs no FK actions, so instance rows are deleted here, in code.
@@ -227,7 +228,8 @@ async def _transition(session_factory, task: RenderTask, generation: str, values
         if result.rowcount != 1 or generation != _live_generation:
             await db.rollback()
             return False
-        await part_images.mark_renders_changed(db, [(task.file_sha256, task.plate_index)])
+        if "status" in values or "result_dir" in values:  # what a picture or a plate's state shows
+            await part_images.mark_renders_changed(db, [(task.file_sha256, task.plate_index)])
         await db.commit()
     return True
 

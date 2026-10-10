@@ -169,6 +169,19 @@ async def test_a_transient_failure_backs_off(db_session, factory, changed):
     row = await _row(db_session, task)
     assert (row.status, row.phase, row.attempts, row.last_error) == ("pending", "render", 1, "crashed")
     assert row.next_attempt_at == now + timedelta(seconds=60)
+    assert changed == []  # still pending, the same result: no picture moved (E4 final review)
+
+
+async def test_only_a_visible_transition_tells_the_picture_collector(db_session, factory, changed):
+    """E4 final review: a back-off, a switch to the fallback phase or a defer leave the plate pending with its
+    result as it was -- every client refetching its Workshop views for that is load with nothing to show.
+    A status change (here a terminal one) is a picture change."""
+    task = await _one(db_session)
+    now = part_renders.utcnow()
+    assert await part_renders.enter_fallback(factory, task, "no_runtime", GEN, now)
+    assert await part_renders.defer(factory, task, "settle_failed", GEN, now)
+    assert changed == []
+    assert await part_renders.mark_terminal(factory, task, "failed", "source_changed", GEN, now)
     assert changed == [{(task.file_sha256, task.plate_index)}]
 
 

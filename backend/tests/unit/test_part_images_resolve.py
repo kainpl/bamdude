@@ -348,3 +348,33 @@ async def test_attach_finds_the_session_passed_by_position(db_session):
 
     answer = await route(1, db_session)
     assert answer.image.status == "ready"
+
+
+async def test_a_result_dir_that_is_no_result_name_is_no_result(db_session):
+    """E4 final review: a result directory comes from the database; one that is not E3's 32-hex name (a restored
+    or tampered row) is no result and never becomes a served path."""
+    farm = await rendered_farm(db_session, status=None)
+    await add_render(db_session, result_dir="../../escape")
+    await db_session.commit()
+    assert await part_images.resolve(db_session, [farm.body.id]) == {farm.body.id: None}
+    assert await part_images.instance_file(db_session, farm.product.id, farm.file.id, 1, 11, "lg") is None
+
+
+async def test_a_photo_is_served_without_reading_the_plates(db_session, test_engine):
+    """E4 final review: a part with its photo answers its <img> from its own row -- no product, file or plate read."""
+    from backend.app.services.product_files import product_part_images_dir
+
+    farm = await rendered_farm(db_session)
+    name = "2" * 32 + ".png"
+    farm.body.image_source, farm.body.image_photo = "photo", name
+    await db_session.commit()
+    png(product_part_images_dir(farm.product.id) / name)
+    counted: list[str] = []
+    listener = lambda *args: counted.append(args[2])  # noqa: E731
+    event.listen(test_engine.sync_engine, "before_cursor_execute", listener)
+    try:
+        found = await part_images.image_file(db_session, farm.body.id, "lg")
+    finally:
+        event.remove(test_engine.sync_engine, "before_cursor_execute", listener)
+    assert found == (product_part_images_dir(farm.product.id) / name, name)
+    assert not [s for s in counted if "library_files" in s or "product_plates" in s], counted
