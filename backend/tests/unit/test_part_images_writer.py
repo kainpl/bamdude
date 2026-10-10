@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
-from PIL import Image
+from PIL import Image, ImageCms, PngImagePlugin
+from PIL.TiffImagePlugin import IFDRational
 from sqlalchemy import text
 
 from backend.app.schemas.part_image import InstanceKey
@@ -76,15 +77,110 @@ async def test_auto_clears_the_pin_and_the_photo(db_session):
 
 
 @pytest.mark.parametrize(("fmt", "ext"), [("PNG", "png"), ("JPEG", "jpg"), ("WEBP", "webp")])
-async def test_a_photo_is_kept_as_sent_with_a_small_copy(db_session, fmt, ext):
+async def test_a_photo_is_stored_in_its_own_format_with_a_small_copy(db_session, fmt, ext):
     farm = await rendered_farm(db_session)
-    content = image_bytes(fmt)
-    part_ = await part_images.set_photo(db_session, farm.body.id, content)
+    part_ = await part_images.set_photo(db_session, farm.body.id, image_bytes(fmt))
     await db_session.commit()
     path = product_part_images_dir(farm.product.id) / part_.image_photo
-    assert part_.image_source == "photo" and path.suffix == f".{ext}" and path.read_bytes() == content
+    assert part_.image_source == "photo" and path.suffix == f".{ext}"
+    with Image.open(path) as stored:
+        assert (stored.format, stored.size) == (fmt, (40, 20))
     with Image.open(path.with_name(part_images.small_photo_name(path.name))) as small:
         assert small.format == "PNG" and max(small.size) <= 128
+
+
+SRGB = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+PRIVATE = (b"SYNTHETIC-CAMERA-SERIAL", b"SYNTHETIC-XMP", b"SYNTHETIC-COMMENT")
+
+
+def private_photo(fmt: str) -> bytes:
+    """A 40x20 photo turned on its side by EXIF, carrying what a phone writes: GPS, the camera's serial,
+    XMP and a comment (PNG: text chunks) -- and a colour profile, which is pixels' meaning, not private."""
+    image = Image.new("RGB", (40, 20), (10, 120, 200))
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    exif[0xA431] = "SYNTHETIC-CAMERA-SERIAL"
+    exif[0x8825] = {1: "N", 2: (IFDRational(50), IFDRational(27), IFDRational(1)), 3: "E", 4: (IFDRational(30),)}
+    xmp = b'<x:xmpmeta xmlns:x="adobe:ns:meta/">SYNTHETIC-XMP</x:xmpmeta>'
+    buffer = io.BytesIO()
+    if fmt == "PNG":
+        info = PngImagePlugin.PngInfo()
+        info.add_text("Comment", "SYNTHETIC-COMMENT")
+        info.add_itxt("XML:com.adobe.xmp", xmp.decode())
+        image.save(buffer, "PNG", exif=exif, icc_profile=SRGB, pnginfo=info)
+    elif fmt == "JPEG":
+        image.save(buffer, "JPEG", exif=exif, icc_profile=SRGB, xmp=xmp, comment=b"SYNTHETIC-COMMENT")
+    else:
+        image.save(buffer, "WEBP", exif=exif, icc_profile=SRGB, xmp=xmp)
+    content = buffer.getvalue()
+    assert [marker for marker in PRIVATE if marker in content]  # the fixture does carry them
+    return content
+
+
+def assert_no_private_metadata(path: Path) -> None:
+    content = path.read_bytes()
+    assert [marker for marker in PRIVATE if marker in content] == []
+    with Image.open(path) as stored:
+        exif = stored.getexif()
+        assert dict(exif) == {} and dict(exif.get_ifd(0x8825)) == {}
+        assert not {"exif", "xmp", "XML:com.adobe.xmp", "comment", "Comment"} & set(stored.info)
+
+
+@pytest.mark.parametrize("fmt", ["JPEG", "PNG", "WEBP"])
+async def test_a_photo_keeps_its_pixels_and_colour_profile_and_nothing_private(db_session, fmt):
+    """Spec §31 (D11 amended): EXIF with GPS and the camera's serial, XMP, IPTC and comments do not reach
+    the readers of orders and stock or a product export; the orientation is applied to the pixels."""
+    farm = await rendered_farm(db_session)
+    part_ = await part_images.set_photo(db_session, farm.body.id, private_photo(fmt))
+    await db_session.commit()
+    path = product_part_images_dir(farm.product.id) / part_.image_photo
+    small = path.with_name(part_images.small_photo_name(path.name))
+    assert_no_private_metadata(path)
+    assert_no_private_metadata(small)
+    with Image.open(path) as stored:
+        assert stored.format == fmt and stored.size == (20, 40)  # upright: 40x20 turned on its side
+        assert stored.info.get("icc_profile") == SRGB
+
+
+async def test_an_imported_photo_keeps_nothing_private(db_session):
+    farm = await rendered_farm(db_session)
+    member = "attachments/part-images/" + "f" * 32 + ".jpg"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr(member, private_photo("JPEG"))
+    with zipfile.ZipFile(buffer) as zf:
+        await part_images.import_choices(
+            db_session,
+            zf,
+            {member},
+            farm.product.id,
+            [(farm.lid, {"source": "photo", "photo": member.removeprefix("attachments/")})],
+            {},
+        )
+    await db_session.commit()
+    assert farm.lid.image_source == "photo"
+    assert_no_private_metadata(product_part_images_dir(farm.product.id) / farm.lid.image_photo)
+
+
+def noisy_webp(quality: int) -> bytes:
+    image = Image.effect_noise((256, 256), 64).convert("RGB")
+    buffer = io.BytesIO()
+    image.save(buffer, "WEBP", quality=quality)
+    return buffer.getvalue()
+
+
+async def test_a_photo_that_saved_again_outgrows_the_cap_is_413_and_leaves_nothing(db_session, monkeypatch):
+    """The stored photo stays within the cap the import asks of it, or an export would lose it on the way in."""
+    from backend.app.services import product_files
+
+    farm = await rendered_farm(db_session)
+    content = noisy_webp(quality=5)
+    monkeypatch.setattr(product_files, "MAX_ATTACHMENT_BYTES", len(content))
+    with pytest.raises(HTTPException) as refused:
+        await part_images.set_photo(db_session, farm.body.id, content)
+    assert refused.value.status_code == 413 and "metadata" in refused.value.detail
+    directory = product_part_images_dir(farm.product.id)
+    assert not directory.exists() or list(directory.iterdir()) == []
 
 
 async def test_the_small_photo_is_upright(db_session):
@@ -303,7 +399,9 @@ async def test_a_camera_jpeg_with_a_second_image_is_a_jpeg(db_session):
     part_ = await part_images.set_photo(db_session, farm.body.id, content)
     await db_session.commit()
     path = product_part_images_dir(farm.product.id) / part_.image_photo
-    assert path.suffix == ".jpg" and path.read_bytes() == content
+    assert path.suffix == ".jpg"
+    with Image.open(path) as stored:  # saved again as its first image: the second one is not the photo
+        assert (stored.format, stored.size, getattr(stored, "n_frames", 1)) == ("JPEG", (40, 30), 1)
     with Image.open(path.with_name(part_images.small_photo_name(path.name))) as small:
         assert small.format == "PNG" and max(small.size) <= 128
 

@@ -44,7 +44,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, JpegImagePlugin
 from pydantic import BaseModel
 from sqlalchemy import event, exists, select
 from sqlalchemy.orm import Session, selectinload
@@ -812,9 +812,10 @@ PHOTO_MEMBER_ROOT = "part-images"
 
 
 class _PhotoRefused(Exception):
-    def __init__(self, too_many_pixels: bool = False):
+    def __init__(self, too_many_pixels: bool = False, too_large: bool = False):
         super().__init__()
         self.too_many_pixels = too_many_pixels
+        self.too_large = too_large
 
 
 def _photo_files(directory: Path, name_or_stem: str) -> list[Path]:
@@ -834,8 +835,38 @@ def _unlink_all(paths: Iterable[Path]) -> None:
             logger.warning("Rejected part photo file %s was not removed: %s", path.name, type(exc).__name__)
 
 
+def _saved_again(source: Image.Image, upright: Image.Image, ext: str) -> bytes:
+    """The photo saved again in its own format: its pixels and its colour profile, nothing else (spec §31).
+
+    EXIF (GPS, the camera's serial), XMP, IPTC, comments and text chunks are not carried over by
+    construction -- ``info`` is emptied, and only the profile (and a PNG's transparency, which is
+    pixels) are handed to the encoder. A JPEG keeps its own quantisation tables and sampling, so it
+    keeps its quality and roughly its size; only its first image is a photo (an MPO's second is not)."""
+    options: dict = {}
+    if "icc_profile" in upright.info:
+        options["icc_profile"] = upright.info["icc_profile"]
+    if ext == "png" and "transparency" in upright.info:
+        options["transparency"] = upright.info["transparency"]
+    upright.info = {}
+    if ext == "jpg":
+        fmt = "JPEG"
+        options.update(qtables=source.quantization, subsampling=JpegImagePlugin.get_sampling(source), optimize=True)
+    elif ext == "webp":
+        fmt = "WEBP"
+        options["quality"] = 92
+    else:
+        fmt = "PNG"
+    buffer = io.BytesIO()
+    upright.save(buffer, fmt, **options)
+    return buffer.getvalue()
+
+
 def _write_photo(content: bytes, directory: Path, stem: str) -> str:
     """Validate, then write one photo and its small copy (a thread); returns the extension.
+
+    The photo is not kept as sent: it is turned upright and saved again without its metadata
+    (:func:`_saved_again`), and what was saved must still fit the cap an import asks of it -- or
+    a product export would lose the photo on the way into another farm.
 
     All or nothing: nothing is written before the bytes are known to be a photo, and a write that
     fails part way removes what this call wrote before the error goes on (consilium E4-R2)."""
@@ -854,17 +885,22 @@ def _write_photo(content: bytes, directory: Path, stem: str) -> str:
     try:
         with Image.open(io.BytesIO(content), formats=_PILLOW_FORMATS) as image:
             image.load()  # a truncated file is refused before anything is written
-            small = ImageOps.exif_transpose(image)
+            upright = ImageOps.exif_transpose(image)
+            profile = upright.info.get("icc_profile")
+            photo = _saved_again(image, upright, ext)
+            small = upright
             small.thumbnail((SMALL_SIZE, SMALL_SIZE))
             if small.mode not in ("RGB", "RGBA"):
                 small = small.convert("RGBA")
             buffer = io.BytesIO()
-            small.save(buffer, "PNG")
+            small.save(buffer, "PNG", **({"icc_profile": profile} if profile else {}))
     except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
         raise _PhotoRefused() from exc
+    if len(photo) > attachment_limit():
+        raise _PhotoRefused(too_large=True)
     directory.mkdir(parents=True, exist_ok=True)
     try:
-        (directory / f"{stem}.{ext}").write_bytes(content)
+        (directory / f"{stem}.{ext}").write_bytes(photo)
         (directory / f"{stem}.sm.png").write_bytes(buffer.getvalue())
     except BaseException:
         _unlink_all(_photo_files(directory, stem))
@@ -954,6 +990,11 @@ async def set_photo(db, part_id: int, content: bytes) -> ProductPart:
     try:
         name = await _store_photo(db, product_id, content)
     except _PhotoRefused as refused:
+        if refused.too_large:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Saved again without its metadata, the photo would be larger than {attachment_limit()} bytes",
+            ) from refused
         if refused.too_many_pixels:
             raise HTTPException(
                 status_code=422, detail=f"The photo may have at most {PHOTO_MAX_PIXELS} pixels"

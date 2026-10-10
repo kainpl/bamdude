@@ -774,6 +774,7 @@
   "Run not found": "Запуск не знайдено",
   "S3 download failed: {}": "Не вдалося завантажити з S3: {}",
   "save_mode must be 'replace' or 'new'": "save_mode має бути «replace» або «new»",
+  "Saved again without its metadata, the photo would be larger than {} bytes": "Збережене заново без метаданих, фото було б більшим за {} байтів",
   "Scan job not found": "Завдання сканування не знайдено",
   "Scheduled drying not found": "Заплановану сушку не знайдено",
   "Sensor binding does not belong to this location and category": "Прив'язка датчика не належить цьому місцю й категорії",
