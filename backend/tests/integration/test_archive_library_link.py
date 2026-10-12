@@ -192,3 +192,96 @@ async def test_attach_3mf_backfills_library_file_id(db_session, printer_factory,
     await db_session.refresh(archive)
     assert archive.library_file_id == lib.id
     assert archive.content_hash == expected_hash
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_archive_print_inherits_library_swap_compatible(db_session, printer_factory, tmp_path):
+    """A queue dispatch of a swap_compatible library file creates a swap archive.
+
+    ``on_print_complete`` auto-clears the plate gate from the ARCHIVE's flag
+    only; before this the dispatch archive was always False, so a completed
+    ``.swap.`` job still armed ``awaiting_plate_clear`` and stalled the queue.
+    The library flag wins even when the dispatched name has lost ``.swap.``.
+    """
+    printer = await printer_factory()
+    src = _make_tempfile(tmp_path, "plate.gcode.3mf", b"swap-bytes")
+
+    lib = LibraryFile(
+        filename="plate.swap.gcode.3mf",
+        file_path="/library/plate.swap.gcode.3mf",
+        file_type="3mf",
+        file_size=10,
+        file_hash="b" * 64,
+        swap_compatible=True,
+    )
+    db_session.add(lib)
+    await db_session.commit()
+    await db_session.refresh(lib)
+
+    archive = await ArchiveService(db_session).archive_print(
+        printer_id=printer.id,
+        source_file=src,
+        original_filename="plate.gcode.3mf",
+        source_content_hash=lib.file_hash,
+        library_file_id=lib.id,
+    )
+
+    assert archive is not None
+    assert archive.swap_compatible is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("job.swap.gcode.3mf", True),
+        ("job.swaps.3mf", True),
+        ("job.swap.3mf", True),
+        ("job.gcode.3mf", False),
+        ("swapper.gcode.3mf", False),
+    ],
+)
+async def test_archive_print_swap_compatible_from_name(db_session, printer_factory, tmp_path, name, expected):
+    """No library file: the flag follows the same name rule as the fallback paths."""
+    printer = await printer_factory()
+    src = _make_tempfile(tmp_path, name, b"bytes-" + name.encode())
+
+    archive = await ArchiveService(db_session).archive_print(
+        printer_id=printer.id,
+        source_file=src,
+        original_filename=name,
+    )
+
+    assert archive is not None
+    assert archive.swap_compatible is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_archive_print_non_swap_library_file_stays_non_swap(db_session, printer_factory, tmp_path):
+    """A plain library file must not gain the flag (it skips the plate gate)."""
+    printer = await printer_factory()
+    src = _make_tempfile(tmp_path, "plain.gcode.3mf", b"plain-bytes")
+
+    lib = LibraryFile(
+        filename="plain.gcode.3mf",
+        file_path="/library/plain.gcode.3mf",
+        file_type="3mf",
+        file_size=11,
+        file_hash="c" * 64,
+    )
+    db_session.add(lib)
+    await db_session.commit()
+    await db_session.refresh(lib)
+
+    archive = await ArchiveService(db_session).archive_print(
+        printer_id=printer.id,
+        source_file=src,
+        original_filename="plain.gcode.3mf",
+        library_file_id=lib.id,
+    )
+
+    assert archive is not None
+    assert archive.swap_compatible is False

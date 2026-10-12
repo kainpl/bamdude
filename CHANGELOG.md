@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed
+
+- **A swap-ready file printed from the queue no longer stops the queue at «Clear plate».** A `.swap.` / `.swaps.` library file was accepted only on a Swap Mode printer, but once dispatched from the queue it finished as an ordinary print: the printer waited for a manual plate answer and the next job never started. Its archive now keeps the file's swap flag from the moment it is created, so a completed swap print clears the plate by itself as it already did for prints started from the printer. Failed, aborted and cancelled prints still wait for you.
+
 ## [0.7.0] - 2026-10-06
 
 Images: `ghcr.io/kainpl/bamdude:0.7.0` / `kainpl/bamdude:0.7.0` (`:latest` tracks this release).

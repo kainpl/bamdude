@@ -1201,6 +1201,26 @@ class ArchiveService:
         if resolved_plate_index is not None:
             metadata["plate_id"] = resolved_plate_index
 
+        # Swap compatibility, decided at creation. ``on_print_complete`` reads
+        # only the archive's flag to auto-clear the plate gate, and the
+        # dispatch path creates its archive here — so without this a
+        # swap_compatible library file printed from the queue completed with
+        # swap_compatible=False and armed the gate anyway. Library flag first
+        # (immutable, set at upload), then the same name check the fallback
+        # and attach paths use.
+        swap_compatible = False
+        if library_file_id is not None:
+            from backend.app.models.library import LibraryFile
+
+            swap_compatible = bool(
+                await self.db.scalar(select(LibraryFile.swap_compatible).where(LibraryFile.id == library_file_id))
+            )
+        if not swap_compatible:
+            fname_lower = (original_filename or source_file.name).lower()
+            swap_compatible = (
+                fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower
+            )
+
         # Create archive record
         archive = PrintArchive(
             printer_id=printer_id,
@@ -1238,6 +1258,7 @@ class ArchiveService:
             project_line_id=project_line_id,
             subtask_id=subtask_id,
             library_file_id=library_file_id,
+            swap_compatible=swap_compatible,
             is_calibration=is_calibration,
             calibration_session_id=calibration_session_id,
         )
