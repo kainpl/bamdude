@@ -1640,3 +1640,87 @@ async def test_review_r2_a_print_opens_no_episode_under_a_policy_it_did_not_asse
 
     active, inbox, _ = await _episodes(real_sessions)
     assert (opened, active, inbox) == (None, [], 0)
+
+
+# ---- plan T8 / A20: the long computations leave the event loop ---------------------------------
+
+
+async def test_the_history_s_computation_runs_off_the_event_loop(db_session, printer_factory, factory, monkeypatch):
+    """A week of five-second readings is seconds of pure Python: on the loop it stalled the whole
+    server for 4.7 s (measured 2026-10-27). Normalising, detecting and integrating run in a thread."""
+    import threading
+
+    from backend.app.services import meter_watch as watch
+
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def spy(name, real):
+        def wrapped(*args, **kwargs):
+            seen[name] = threading.get_ident()
+            return real(*args, **kwargs)
+
+        return wrapped
+
+    monkeypatch.setattr(watch, "normalize", spy("normalize", watch.normalize))
+    monkeypatch.setattr(watch, "detect", spy("detect", watch.detect))
+    monkeypatch.setattr(watch, "integrate", spy("integrate", watch.integrate))
+    printer, plug, archive = await _stalled_print(db_session, printer_factory)
+
+    with _end_reading(10.0):
+        await main._record_print_energy(archive.id, printer.id)
+
+    await db_session.refresh(archive)
+    assert archive.energy_kwh == pytest.approx(0.2, abs=1e-3)
+    assert set(seen) == {"normalize", "detect", "integrate"}
+    assert all(ident != loop_thread for ident in seen.values()), seen
+
+
+async def test_the_sweep_s_detection_runs_off_the_event_loop(db_session, factory, monkeypatch):
+    import threading
+
+    from backend.app.services import meter_watch as watch
+
+    loop_thread = threading.get_ident()
+    seen = []
+    real = watch.detect
+
+    def spy(*args, **kwargs):
+        seen.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(watch, "detect", spy)
+    plug = await _watched_plug(db_session)
+
+    assert await MeterWatch()._evaluate_plug(factory, plug.id, 60) is True
+    assert seen and all(ident != loop_thread for ident in seen)
+
+
+async def test_a_history_over_budget_is_refused_before_it_is_read(db_session, test_engine, monkeypatch):
+    """A20: 691 200 one-second readings took 76 s to read up to the budget before refusing. The rows
+    are counted first; over the budget, not one chunk is read, and the answer is insufficient_budget."""
+    from sqlalchemy import event
+
+    from backend.app.services import meter_watch as watch
+    from backend.app.services.meter_source import Cadence
+
+    monkeypatch.setattr(watch, "MAX_POWER_ROWS", 50)
+    monkeypatch.setattr(watch, "CHUNK_ROWS", 10)
+    now = datetime.now(timezone.utc)
+    plug = await _plug(db_session)
+    await _power(db_session, plug.id, now - timedelta(minutes=200), now, 200.0)
+    chunks = []
+
+    def count(conn, cursor, statement, parameters, context, executemany):
+        if "smart_plug_power_history" in statement and "LIMIT" in statement.upper():
+            chunks.append(statement)
+
+    event.listen(test_engine.sync_engine, "before_cursor_execute", count)
+    try:
+        with pytest.raises(watch.BudgetExceeded):
+            await watch.read_history(
+                lambda: _SessionProxy(db_session), plug, now - timedelta(hours=4), now, Cadence(60, 180, 180)
+            )
+    finally:
+        event.remove(test_engine.sync_engine, "before_cursor_execute", count)
+    assert chunks == []

@@ -12,6 +12,11 @@ one evaluator (``meter_detector`` over ``power_integrator``):
   is estimated once from the power history of the same source -- or, without enough history, left
   unknown with its reason. A healthy counter stays the measurement, a short quantized zero included.
 
+The pure computations -- normalising, detecting, integrating -- run in a thread (``asyncio.to_thread``,
+the default executor, no worker of their own): a week of five-second readings is seconds of Python,
+and on the event loop it stalled the whole server (plan T8, measured 2026-10-27). They read only
+their own immutable inputs.
+
 Reading is memory first, then a fresh database read (W10): a reading is always in the buffer copy,
 in the database, or in both -- never in neither -- and both sides are brought to UTC before they meet.
 Everything is restricted to the plug's current measurement source: its token for buffered readings,
@@ -20,12 +25,13 @@ its strict cutoff for rows.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from backend.app.services.measurement_buffer import measurement_buffer
 from backend.app.services.meter_detector import CounterPoint, Detection, detect
@@ -76,6 +82,10 @@ async def _power_rows(db, plug, start: datetime, end: datetime) -> list[Sample]:
     if plug.measurement_source_since is not None:
         # Strictly after the cutoff (W2): a row of the very instant belongs to the source before.
         conditions.append(SmartPlugPowerHistory.recorded_at > plug.measurement_source_since)
+    # Counted first, on the (plug, time) index: a history over the budget is refused before a single
+    # chunk is read -- reading up to the budget first took 76 s for a week of 1 s readings (A20).
+    if (await db.scalar(select(func.count()).select_from(SmartPlugPowerHistory).where(*conditions))) > MAX_POWER_ROWS:
+        raise BudgetExceeded
     samples: list[Sample] = []
     last_id = 0
     while True:
@@ -139,7 +149,7 @@ async def read_history(session_factory, plug, start: datetime, end: datetime, ca
     async with session_factory() as read:
         rows = await _power_rows(read, plug, lower, upper)
         counters = await _counter_points(read, plug, start, end)
-    return History(normalize(rows + from_memory), counters)
+    return History(await asyncio.to_thread(normalize, rows + from_memory), counters)
 
 
 # ---- a print's energy (W8-W10) --------------------------------------------------
@@ -183,7 +193,8 @@ async def assess_print_window(
     if history.storage_replaced:
         return Assessment("storage_replaced", cadence=cadence)
     counters = [*history.counters, CounterPoint(start_at, start_total), CounterPoint(end_at, end_total)]
-    detection = detect(
+    detection = await asyncio.to_thread(
+        detect,
         counters,
         history.power,
         gap_limit=cadence.gap_seconds,
@@ -201,8 +212,8 @@ async def assess_print_window(
         return Assessment(
             "unavailable", reason="unknown_end", cadence=cadence, incident_id=incident_id, detection=detection
         )
-    integral = integrate(
-        history.power, start_at, end_at, gap_limit=cadence.gap_seconds, edge_limit=cadence.edge_seconds
+    integral = await asyncio.to_thread(
+        integrate, history.power, start_at, end_at, gap_limit=cadence.gap_seconds, edge_limit=cadence.edge_seconds
     )
     if not integral.sufficient:
         return Assessment(
@@ -442,7 +453,8 @@ class MeterWatch:
                 return False
             if history.storage_replaced:
                 return False
-            detection = detect(
+            detection = await asyncio.to_thread(
+                detect,
                 history.counters,
                 history.power,
                 gap_limit=cadence.gap_seconds,
@@ -526,8 +538,6 @@ class MeterWatch:
 
 
 async def _newest_counter_at(db, plug) -> datetime | None:
-    from sqlalchemy import func
-
     from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
 
     conditions = [SmartPlugEnergySnapshot.plug_id == plug.id]
