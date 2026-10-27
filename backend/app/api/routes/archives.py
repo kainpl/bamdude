@@ -44,7 +44,7 @@ from backend.app.schemas.archive import (
 from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.schemas.project import StockMovedOut
 from backend.app.schemas.swap_declaration import SwapDeclarationRequest, SwapRefreshRequest
-from backend.app.services import part_stock, swap_compatibility
+from backend.app.services import meter_watch, part_stock, swap_compatibility
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope, locked_print
@@ -240,6 +240,7 @@ def archive_to_response(
         ),
         "energy_kwh": archive.energy_kwh,
         "energy_cost": archive.energy_cost,
+        **meter_watch.energy_wire_fields(archive.extra_data, archive.energy_kwh),
         # The declaration through its reader: a legacy False and a malformed
         # record are unknown, never the column's False (spec r4 §9).
         **swap_compatibility.wire_fields(swap_compatibility.archive_fact(archive).value),

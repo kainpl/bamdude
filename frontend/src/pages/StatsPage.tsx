@@ -204,6 +204,8 @@ function EnergyWidget({
   stats: {
     print_energy_kwh: number;
     print_energy_cost: number;
+    print_energy_estimated?: number;
+    print_energy_unavailable?: number;
     total_energy_kwh: number;
     total_energy_cost: number;
     energy_data_warming_up?: boolean;
@@ -212,6 +214,17 @@ function EnergyWidget({
 }) {
   const { t } = useTranslation();
 
+  // The printing pair sums estimates with measurements and leaves unknown figures out
+  // (spec plug-meter-watchdog W11): say both, beside the numbers, never as a silent zero.
+  const estimated = stats?.print_energy_estimated ?? 0;
+  const unknown = stats?.print_energy_unavailable ?? 0;
+  const approx = estimated > 0 ? '≈ ' : '';
+  const printNotes = [
+    estimated > 0 ? t('stats.energyEstimatedNote', { count: estimated }) : null,
+    unknown > 0 ? t('stats.energyUnknownNote', { count: unknown }) : null,
+  ].filter((note): note is string => note !== null);
+  const printTooltip = [t('stats.energyWhilePrintingTooltip'), ...printNotes].join(' ');
+
   // ⚠️ Only the plug-side pair can be warming up: it is the one read from
   // hourly snapshots when a date filter is on. The per-print pair is a column
   // on rows that already exist.
@@ -219,14 +232,16 @@ function EnergyWidget({
   const warmingUpTooltip = warmingUp ? t('stats.energyWarmingUpTooltip') : undefined;
 
   return (
+    <>
     <StatTiles
       items={[
         {
           icon: Zap,
           color: 'text-yellow-600 dark:text-yellow-400',
           label: t('stats.energyWhilePrinting'),
-          value: `${stats?.print_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
-          tooltip: t('stats.energyWhilePrintingTooltip'),
+          value: `${approx}${stats?.print_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
+          warning: printNotes.length > 0,
+          tooltip: printTooltip,
         },
         {
           icon: Zap,
@@ -240,8 +255,9 @@ function EnergyWidget({
           icon: DollarSign,
           color: 'text-yellow-500',
           label: t('stats.energyCostWhilePrinting'),
-          value: `${currency} ${stats?.print_energy_cost?.toFixed(2) ?? '0.00'}`,
-          tooltip: t('stats.energyWhilePrintingTooltip'),
+          value: `${approx}${currency} ${stats?.print_energy_cost?.toFixed(2) ?? '0.00'}`,
+          warning: printNotes.length > 0,
+          tooltip: printTooltip,
         },
         {
           icon: DollarSign,
@@ -253,6 +269,12 @@ function EnergyWidget({
         },
       ]}
     />
+    {printNotes.length > 0 && (
+      <p className="mt-3 text-xs text-bambu-gray" data-testid="print-energy-notes">
+        {printNotes.join(' · ')}
+      </p>
+    )}
+    </>
   );
 }
 

@@ -1718,6 +1718,15 @@ export interface Archive {
   defective_count: number;
   energy_kwh: number | null;
   energy_cost: number | null;
+  /** What `energy_kwh` is — never read off the number alone (spec plug-meter-watchdog W11):
+   *  `estimated` from the power history over a stalled counter, `unavailable` with no usable
+   *  figure (not a zero), `approximate` a counter difference over a recovered window, `measured`
+   *  the counter's difference; null when there is no energy at all. Older servers omit it. */
+  energy_status?: 'measured' | 'approximate' | 'estimated' | 'unavailable' | null;
+  /** Share of an estimated window the power history covered, 0..1. */
+  energy_coverage?: number | null;
+  /** `meter_stalled` for an estimate; why, for an unavailable figure. */
+  energy_reason?: string | null;
   swap_compatible: boolean;
   /** Is `swap_compatible` a declaration, or the unknown's False? Decode both with `decodeSwapFact`. */
   swap_compatibility_known: boolean;
@@ -1806,6 +1815,9 @@ export interface AggregateTotals {
   quantity: number;
   seconds: number;
   printers: number;
+  /** Prints whose energy is estimated (inside `energy_kwh`) / has no usable figure (outside it). */
+  energy_estimated?: number;
+  energy_unavailable?: number;
 }
 export interface AggregateRecords {
   longest: { archive_id: number; print_name: string | null; seconds: number } | null;
@@ -1897,6 +1909,10 @@ export interface ArchiveStats {
   // counters. The gap between them is what standing still costs.
   print_energy_kwh: number;
   print_energy_cost: number;
+  /** Of the prints in `print_*`: estimated from the power history (inside the sums), and with no
+   *  usable figure (outside them, never a zero). `total_*` never holds an estimate. */
+  print_energy_estimated?: number;
+  print_energy_unavailable?: number;
   total_energy_kwh: number;
   total_energy_cost: number;
   // True when a date-filtered total-consumption query is running on incomplete
@@ -2300,6 +2316,9 @@ export interface ProjectFigures {
   total_filament_cost?: number;
   /** Actual electricity portion of `total_cost`; older servers omit it. */
   total_energy_cost?: number;
+  /** Prints whose energy is estimated (inside `total_energy_cost`) / has no usable figure. */
+  energy_estimated?: number;
+  energy_unavailable?: number;
   total_cost: number;
   defective: number;
   /** null when the order carries no price — not zero, which would read as
@@ -5833,6 +5852,13 @@ export interface SmartPlug {
   // Visibility options
   show_in_switchbar: boolean;
   show_on_printer_card: boolean;  // For scripts: show on printer card
+  // Meter watch (spec plug-meter-watchdog): how often an MQTT plug publishes its watts
+  // (null = 300 s), the energy a flat counter must have missed before it is suspected (Wh,
+  // null = 100), and whether the firmware may repeat watts after its relay opens (null = the
+  // type's default: Zigbee yes).
+  mqtt_expected_power_interval_seconds?: number | null;
+  meter_min_expected_wh?: number | null;
+  phantom_watts_risk?: boolean | null;
   // Status
   last_state: string | null;
   last_checked: string | null;
@@ -6111,6 +6137,21 @@ export interface SmartPlugCreate {
   // Visibility options
   show_in_switchbar?: boolean;
   show_on_printer_card?: boolean;
+  // Meter watch
+  mqtt_expected_power_interval_seconds?: number | null;
+  meter_min_expected_wh?: number | null;
+  phantom_watts_risk?: boolean | null;
+}
+
+/** An active suspicion that a plug's lifetime counter stopped following its load. A
+ *  suspicion, never a verdict about the device (spec plug-meter-watchdog W6). */
+export interface MeterIncident {
+  plug_id: number;
+  opened_at: string;
+  flat_since: string;
+  flat_until: string;
+  total_kwh: number;
+  evidence: { integral_wh?: number; coverage?: number; samples?: number } | null;
 }
 
 export interface SmartPlugUpdate {
@@ -6187,6 +6228,10 @@ export interface SmartPlugUpdate {
   // Visibility options
   show_in_switchbar?: boolean;
   show_on_printer_card?: boolean;
+  // Meter watch
+  mqtt_expected_power_interval_seconds?: number | null;
+  meter_min_expected_wh?: number | null;
+  phantom_watts_risk?: boolean | null;
 }
 
 // Home Assistant entity for smart plug selection
@@ -11566,6 +11611,7 @@ export const api = {
       { method: 'PUT', body: JSON.stringify({ mode }) },
     ),
   getSmartPlugs: () => request<SmartPlug[]>('/smart-plugs/'),
+  getMeterIncidents: () => request<MeterIncident[]>('/smart-plugs/meter-incidents'),
   getSmartPlug: (id: number) => request<SmartPlug>(`/smart-plugs/${id}`),
   getSmartPlugByPrinter: (printerId: number) => request<SmartPlug | null>(`/smart-plugs/by-printer/${printerId}`),
   getScriptPlugsByPrinter: (printerId: number) => request<SmartPlug[]>(`/smart-plugs/by-printer/${printerId}/scripts`),

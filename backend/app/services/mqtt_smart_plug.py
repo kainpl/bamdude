@@ -69,6 +69,9 @@ class MQTTSmartPlugService:
         self.plug_configs: dict[int, dict[str, MQTTDataSourceConfig]] = {}
         # plug_id -> latest data
         self.plug_data: dict[int, SmartPlugMQTTData] = {}
+        # plug_id -> (measurement source token, phantom-watts risk), set with the subscription
+        # (spec plug-meter-watchdog W2/W3) and read under the same lock as every message.
+        self.plug_sources: dict[int, tuple[str | None, bool]] = {}
         self._disconnection_event: threading.Event | None = None
         self._configured = False
         self._broker = ""
@@ -282,14 +285,23 @@ class MQTTSmartPlugService:
 
                 # Process based on data type
                 if data_type == "power":
+                    token, risky = self.plug_sources.get(plug_id, (None, False))
+                    known = data.state if data.state in ("ON", "OFF") else None
                     try:
-                        data.power = float(raw_value) * config.multiplier
+                        watts = float(raw_value) * config.multiplier
+                    except (ValueError, TypeError):
+                        # Received and unusable: kept as such, never as a gap two neighbours span.
+                        measurement_buffer.record_power(
+                            plug_id, raw_value, source_token=token, state=known, phantom_risk=risky
+                        )
+                    else:
+                        data.power = watts
                         logger.debug("MQTT smart plug %s: power=%s", plug_id, data.power)
                         # Buffered rather than written: this is the paho callback
                         # thread, and it has no event loop to write with.
-                        measurement_buffer.record_power(plug_id, data.power)
-                    except (ValueError, TypeError):
-                        pass  # Ignore unparseable power reading from MQTT
+                        measurement_buffer.record_power(
+                            plug_id, watts, source_token=token, state=known, phantom_risk=risky
+                        )
 
                 elif data_type == "energy":
                     try:
@@ -380,6 +392,9 @@ class MQTTSmartPlugService:
         # Legacy: single topic/path/multiplier (for backward compatibility)
         topic: str | None = None,
         multiplier: float = 1.0,
+        # The measurement source the readings belong to (spec plug-meter-watchdog W2/W3)
+        source_token: str | None = None,
+        phantom_risk: bool = False,
     ):
         """Subscribe to MQTT topics for a plug.
 
@@ -390,6 +405,7 @@ class MQTTSmartPlugService:
         with self._lock:
             # Initialize config for this plug
             self.plug_configs[plug_id] = {}
+            self.plug_sources[plug_id] = (source_token, phantom_risk)
 
             # Determine topics (new fields take priority, fall back to legacy)
             effective_power_topic = power_topic or topic
@@ -505,6 +521,7 @@ class MQTTSmartPlugService:
 
             # Remove data
             self.plug_data.pop(plug_id, None)
+            self.plug_sources.pop(plug_id, None)
 
     def get_plug_data(self, plug_id: int) -> SmartPlugMQTTData | None:
         """Get latest data for a plug (called by status endpoint)."""
@@ -671,6 +688,8 @@ def subscribe_plug_to_mqtt(service: "MQTTSmartPlugService", plug: Any) -> list[s
     if not (power_topic or energy_topic or state_topic or energy_total_topic):
         return []
 
+    from backend.app.services.meter_source import phantom_risk
+
     legacy_mult = plug.mqtt_multiplier or 1.0
     service.subscribe(
         plug_id=plug.id,
@@ -686,6 +705,8 @@ def subscribe_plug_to_mqtt(service: "MQTTSmartPlugService", plug: Any) -> list[s
         state_topic=state_topic,
         state_path=plug.mqtt_state_path,
         state_on_value=plug.mqtt_state_on_value,
+        source_token=getattr(plug, "measurement_source_id", None),
+        phantom_risk=phantom_risk(plug),
     )
     return [t for t in {power_topic, energy_topic, state_topic, energy_total_topic} if t]
 

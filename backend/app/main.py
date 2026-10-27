@@ -788,7 +788,9 @@ async def _get_plug_energy(plug, db, *, force_read: bool = False) -> dict | None
     return await service.get_energy(plug)
 
 
-async def _record_print_energy(archive_id: int, printer_id: int, *, approximate: bool = False, may_read=None) -> None:
+async def _record_print_energy(
+    archive_id: int, printer_id: int, *, approximate: bool = False, may_read=None, ended_at: datetime | None = None
+) -> None:
     """Calculate and save energy usage in background.
 
     Reads the starting kWh from the archive row (#941: persisted so a mid-print
@@ -804,6 +806,15 @@ async def _record_print_energy(archive_id: int, printer_id: int, *, approximate:
     the printer's idle draw over the gap is inside the figure; the archive is
     flagged rather than left empty, because "no energy recorded" reads as "this
     print used nothing".
+
+    The counter is not always believed (spec plug-meter-watchdog W8-W10). When
+    the measured window meets a proven flat series of the same measurement
+    source (``meter_watch``), the whole window is estimated once from the power
+    history, marked as such -- or, without enough history, or with an end that
+    is not known, left unknown with its reason, never written as a measured
+    zero. A source that changed under the print makes the counter's difference
+    meaningless too. A healthy counter stays the measurement; a figure this
+    writer finalised is never overwritten by a second callback.
     """
     logger = logging.getLogger(__name__)
     try:
@@ -819,6 +830,13 @@ async def _record_print_energy(archive_id: int, printer_id: int, *, approximate:
             if starting_kwh is None:
                 logger.info("[ENERGY-BG] No start kWh recorded for archive %s", archive_id)
                 return
+            started = archive.extra_data or {}
+            if (started.get(ENERGY_PROVENANCE_KEY) or {}).get("final"):
+                logger.info("[ENERGY-BG] Archive %s already has its final energy figure", archive_id)
+                return
+            start_source = started.get(ENERGY_SOURCE_KEY)
+            start_at = _utc_or_none(started.get(ENERGY_START_AT_KEY))
+            end_at = _utc_or_none(archive.completed_at) or _utc_or_none(ended_at)
 
             # The meter the start was read from — never another one: two
             # counters make a plausible, wrong delta rather than a missing one.
@@ -851,6 +869,7 @@ async def _record_print_energy(archive_id: int, printer_id: int, *, approximate:
             # read on the dispatch path.
             if may_read is not None and not may_read():
                 return
+            token_before = plug.measurement_source_id
             energy = await _get_plug_energy(plug, db, force_read=True)
             if may_read is not None and not may_read():
                 return
@@ -858,15 +877,50 @@ async def _record_print_energy(archive_id: int, printer_id: int, *, approximate:
             if not energy or energy.get("total") is None:
                 logger.warning("[ENERGY-BG] No 'total' in energy response")
                 return
+            read_at = datetime.now(timezone.utc)
 
             # Recorded before the sanity check below, not after: a counter
             # that went backwards is precisely when the range report most
             # needs a fresh baseline, and the reading itself is true even
-            # though the per-print delta derived from it is not.
-            await smart_plug_manager.record_energy_snapshot(db, plug.id, energy["total"])
+            # though the per-print delta derived from it is not. Only as
+            # the source it was read from (spec plug-meter-watchdog W2).
+            from backend.app.services.measurement_buffer import measurement_buffer
+            from backend.app.services.meter_source import source_guard
+
+            async with source_guard():
+                if measurement_buffer.retired:
+                    # A restore replaced the storage while the plug was read: nothing of this print is its.
+                    logger.info("[ENERGY-BG] Archive %s: storage replaced by a restore; nothing written", archive_id)
+                    return
+                current_source = await db.scalar(select(SmartPlug.measurement_source_id).where(SmartPlug.id == plug.id))
+                if current_source == token_before:
+                    await smart_plug_manager.record_energy_snapshot(db, plug.id, energy["total"], at=read_at)
+                await db.commit()
+            source_changed = current_source != token_before or (
+                start_source is not None and current_source != start_source
+            )
 
             energy_used = round(energy["total"] - starting_kwh, 4)
             logger.info("[ENERGY-BG] Per-print energy: %s kWh", energy_used)
+
+            async def source_changed_under_the_print() -> None:
+                await _write_print_energy(
+                    db,
+                    archive_id,
+                    kind="unavailable",
+                    kwh=None,
+                    cost_per_kwh=None,
+                    approximate=approximate,
+                    record={"version": 1, "kind": "unavailable", "unavailable_reason": "source_changed", "final": True},
+                )
+                logger.info("[ENERGY-BG] Archive %s: the plug's measurement source changed under the print", archive_id)
+
+            # Changed under the end's own read, or since the start was read: the difference of two
+            # readings is not one meter's (A24). A start from before m211 knows no source; only a
+            # change under its end read can be proven then.
+            if source_changed:
+                await source_changed_under_the_print()
+                return
             if energy_used < 0:
                 logging.getLogger(__name__).warning(
                     "[ENERGY-BG] Negative energy delta for archive %s (start=%s, end=%s) - counter reset?",
@@ -884,34 +938,134 @@ async def _record_print_energy(archive_id: int, printer_id: int, *, approximate:
 
             energy_cost_per_kwh = await get_setting(db, "energy_cost_per_kwh")
             cost_per_kwh = float(energy_cost_per_kwh) if energy_cost_per_kwh else 0.15
-            # The row was read before the plug's round-trip, and the 3MF may have
-            # landed meanwhile -- its attach writes the same metadata. So the
-            # snapshot commits first, and the archive is written from a fresh
-            # read under its own write scope, merging only what this writer adds
-            # (swap-source-lifecycle spec r4 §7). No I/O under the scope.
-            await db.commit()
-            from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 
-            async with archive_write_scope(db, archive_id):
-                fresh = await load_active_archive_for_write(db, archive_id)
-                if fresh is None:
-                    await db.rollback()
-                    logger.warning("[ENERGY-BG] Archive %s no longer exists", archive_id)
+            kind, kwh, record = "measured", energy_used, None
+            if start_source is not None and start_at is not None:
+                from backend.app.services import meter_watch as watch
+                from backend.app.services.measurement_history import resolve_sample_seconds
+
+                await db.refresh(plug)
+                if plug.measurement_source_id != token_before:
+                    # Rotated after the end read's check: its history now starts at the new cutoff,
+                    # and an empty window would read as a healthy counter (plan T6).
+                    await source_changed_under_the_print()
                     return
-                fresh.energy_kwh = energy_used
-                fresh.energy_cost = round(energy_used * cost_per_kwh, 3)
-                if approximate:
-                    # Reassign the dict so SQLAlchemy flags the JSON column dirty.
-                    fresh.extra_data = {**(fresh.extra_data or {}), "energy_is_approximate": True}
-                await db.commit()
-            logger.info(
-                "[ENERGY-BG] Saved: %s kWh, cost=%s%s",
-                energy_used,
-                fresh.energy_cost,
-                " (approximate — recovered print)" if approximate else "",
+                window_end = end_at or read_at
+                assessment = await watch.assess_print_window(
+                    async_session,
+                    plug,
+                    start_at=start_at,
+                    end_at=window_end,
+                    start_total=starting_kwh,
+                    end_total=energy["total"],
+                    end_known=not approximate and end_at is not None,
+                    sample_seconds=await resolve_sample_seconds(db),
+                )
+                if assessment.kind == "storage_replaced":
+                    logger.info("[ENERGY-BG] Archive %s: storage replaced by a restore; nothing written", archive_id)
+                    return
+                if assessment.kind != "measured":
+                    if assessment.incident_id is None and assessment.detection is not None:
+                        # Best effort: the episode and its warning are the sweep's to retry, the
+                        # print's figure is not (spec §9 — a failed inbox write stops nothing else).
+                        try:
+                            assessment.incident_id = await watch.open_incident_from_print(
+                                async_session, plug, assessment.detection, read_at
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("[ENERGY-BG] Archive %s: stall episode not recorded: %s", archive_id, exc)
+                    kind = assessment.kind
+                    kwh = round(assessment.kwh, 4) if assessment.kwh is not None else None
+                    record = watch.provenance(
+                        assessment,
+                        plug,
+                        start_at=start_at,
+                        end_at=window_end,
+                        counter_delta=energy_used,
+                        tariff=cost_per_kwh,
+                    )
+                    record["final"] = True
+                    if started.get("energy_start_partial"):
+                        record["start_partial"] = True
+            await _write_print_energy(
+                db,
+                archive_id,
+                kind=kind,
+                kwh=kwh,
+                cost_per_kwh=cost_per_kwh,
+                approximate=approximate,
+                record=record,
             )
     except Exception as e:
         logger.warning("[ENERGY-BG] Failed: %s", e)
+
+
+#: ``PrintArchive.extra_data`` keys of the energy measurement (spec plug-meter-watchdog W2, W9).
+ENERGY_SOURCE_KEY = "energy_source_id"
+ENERGY_START_AT_KEY = "energy_start_at"
+ENERGY_PROVENANCE_KEY = "energy_provenance"
+
+
+def _utc_or_none(value) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+async def _write_print_energy(db, archive_id: int, *, kind: str, kwh, cost_per_kwh, approximate: bool, record) -> None:
+    """Write one print's energy figure and where it came from (W9).
+
+    The row was read before the plug's round-trip, and the 3MF may have landed
+    meanwhile -- its attach writes the same metadata. So the snapshot commits
+    first, and the archive is written from a fresh read under its own write
+    scope, merging only what this writer adds (swap-source-lifecycle spec r4
+    §7). No I/O under the scope, no notification under it.
+    """
+    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+    from backend.app.services.measurement_buffer import measurement_buffer
+
+    logger = logging.getLogger(__name__)
+    if measurement_buffer.retired:
+        logger.info("[ENERGY-BG] Archive %s: storage replaced by a restore; nothing written", archive_id)
+        return
+    await db.commit()
+    async with archive_write_scope(db, archive_id):
+        fresh = await load_active_archive_for_write(db, archive_id)
+        if fresh is None:
+            await db.rollback()
+            logger.warning("[ENERGY-BG] Archive %s no longer exists", archive_id)
+            return
+        extra = dict(fresh.extra_data or {})
+        if (extra.get(ENERGY_PROVENANCE_KEY) or {}).get("final"):
+            await db.rollback()
+            return  # finalised by an earlier callback: never overwritten
+        if kind == "unavailable":
+            fresh.energy_kwh = None
+            fresh.energy_cost = None
+        else:
+            fresh.energy_kwh = kwh
+            fresh.energy_cost = round(kwh * cost_per_kwh, 3)
+        if approximate or kind == "estimated":
+            extra["energy_is_approximate"] = True
+        if kind == "estimated":
+            extra["energy_reconstructed_from"] = "power_history"
+        if record is not None:
+            extra[ENERGY_PROVENANCE_KEY] = record
+        # Reassign the dict so SQLAlchemy flags the JSON column dirty.
+        fresh.extra_data = extra
+        await db.commit()
+    logger.info(
+        "[ENERGY-BG] Saved archive %s energy: %s (%s)%s",
+        archive_id,
+        kwh,
+        kind,
+        " (approximate — recovered print)" if approximate else "",
+    )
 
 
 async def _default_queue_id_for_printer(db, printer_id: int) -> int | None:
@@ -982,11 +1136,13 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
         # in front of the plug that meters the printer. Ranking rather than
         # filtering — a printer whose only plug is an accessory or disabled is
         # still measured by it when it answers.
-        plug = energy = None
+        plug = energy = token = None
         for candidate in plugs:
+            # The source is captured BEFORE the read (spec plug-meter-watchdog W2).
+            candidate_token = candidate.measurement_source_id
             reading = await _get_plug_energy(candidate, db)
             if reading and reading.get("total") is not None:
-                plug, energy = candidate, reading
+                plug, energy, token = candidate, reading, candidate_token
                 break
         if plug is None:
             _logger.warning(
@@ -996,15 +1152,34 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
                 ", ".join(p.name for p in plugs),
             )
             return False
-        archive.energy_start_kwh = float(energy["total"])
-        # The end reads THIS meter (``_record_print_energy``). Reassign the dict
-        # so SQLAlchemy flags the JSON column dirty.
-        archive.extra_data = {**(archive.extra_data or {}), ENERGY_PLUG_KEY: plug.id}
-        # Same reading, also kept as a snapshot: it marks the true start of this
-        # print in the range report instead of leaving the nearest boundary on
-        # whichever hour the snapshot loop last fired.
-        await smart_plug_manager.record_energy_snapshot(db, plug.id, energy["total"])
-        await db.commit()
+        read_at = datetime.now(timezone.utc)
+        from backend.app.services.measurement_buffer import measurement_buffer
+        from backend.app.services.meter_source import source_guard
+
+        async with source_guard():
+            if measurement_buffer.retired:
+                _logger.info("[ENERGY] Storage replaced by a restore; no start recorded for archive %s", archive.id)
+                return False
+            current_source = await db.scalar(select(SmartPlug.measurement_source_id).where(SmartPlug.id == plug.id))
+            if current_source != token:
+                # Reconfigured while it was being read: the counter is another source's.
+                _logger.info("[ENERGY] Plug %s changed while its start was read (archive %s)", plug.id, archive.id)
+                return False
+            archive.energy_start_kwh = float(energy["total"])
+            # The end reads THIS meter (``_record_print_energy``), of THIS measurement
+            # source, and the estimate's window starts at THIS reading (W2, W10).
+            # Reassign the dict so SQLAlchemy flags the JSON column dirty.
+            archive.extra_data = {
+                **(archive.extra_data or {}),
+                ENERGY_PLUG_KEY: plug.id,
+                ENERGY_SOURCE_KEY: current_source,
+                ENERGY_START_AT_KEY: read_at.isoformat(),
+            }
+            # Same reading, also kept as a snapshot: it marks the true start of this
+            # print in the range report instead of leaving the nearest boundary on
+            # whichever hour the snapshot loop last fired.
+            await smart_plug_manager.record_energy_snapshot(db, plug.id, energy["total"], at=read_at)
+            await db.commit()
         _logger.info(
             "[ENERGY] Recorded starting energy%s for archive %s: %s kWh",
             f" ({context})" if context else "",
@@ -9415,11 +9590,15 @@ async def _on_print_complete_impl(
     # Run slow operations as background tasks to avoid blocking the event loop
     # These operations can take 5-10+ seconds and would freeze the UI if awaited
 
+    # The moment this completion was handled: the energy window's end when the archive
+    # carries none (spec plug-meter-watchdog W10) -- never a later "now" of the writer.
+    energy_ended_at = datetime.now(timezone.utc)
+
     async def _background_energy_calculation():
         if not _owns_printer_effect():
             logger.info("[ENERGY-BG] skipping stale completion for archive %s", archive_id)
             return
-        await _record_print_energy(archive_id, printer_id, may_read=_owns_printer_effect)
+        await _record_print_energy(archive_id, printer_id, may_read=_owns_printer_effect, ended_at=energy_ended_at)
 
     async def _background_finish_photo() -> str | None:
         """Capture finish photo in background. Returns photo filename if captured."""

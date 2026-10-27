@@ -53,7 +53,7 @@ from backend.app.models.spool import Spool
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.models.user import User
 from backend.app.schemas.git_backup import RestoreCategory
-from backend.app.services import swap_compatibility
+from backend.app.services import meter_watch, swap_compatibility
 from backend.app.services.git_providers.factory import get_provider_backend
 from backend.app.services.printer_manager import printer_manager
 
@@ -1202,6 +1202,8 @@ class GitRestoreService:
                 write, declared = swap_compatibility.restored_declaration(entry, existing)
                 if write:
                     swap_compatibility.write_archive_fact(existing, declared)
+                if "energy_record" in entry:
+                    existing.extra_data = meter_watch.with_energy_record(existing.extra_data, entry["energy_record"])
                 await self._restore_source_declaration(db, entry, existing, tally)
                 tally.restored += 1
                 continue
@@ -1241,6 +1243,8 @@ class GitRestoreService:
             )
             _write, declared = swap_compatibility.restored_declaration(entry)
             swap_compatibility.write_archive_fact(row, declared)
+            if "energy_record" in entry:
+                row.extra_data = meter_watch.with_energy_record(row.extra_data, entry["energy_record"])
             created_at = _parse_dt(entry.get("created_at"))
             if created_at is not None:
                 row.created_at = created_at

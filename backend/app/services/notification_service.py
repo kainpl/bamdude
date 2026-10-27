@@ -1692,7 +1692,7 @@ class NotificationService:
         """Raise an event for the in-app inbox only (spec §3.3, ``IN_APP_ONLY_EVENTS``).
 
         Renders through the same templates as every other event and never looks
-        at providers. No caller today; the first in-app-only event brings one.
+        at providers. Caller: the plug meter watch (``plug_meter_stalled``).
         """
         if printer_name and "printer" not in variables:
             variables = {**variables, "printer": printer_name}

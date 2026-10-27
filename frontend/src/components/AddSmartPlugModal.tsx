@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useToast } from '../contexts/ToastContext';
-import { X, Save, Loader2, Wifi, WifiOff, CheckCircle, Bell, Clock, LayoutGrid, Search, Plug, Power, Eye } from 'lucide-react';
+import { X, Save, Loader2, Wifi, WifiOff, CheckCircle, Bell, Clock, LayoutGrid, Search, Plug, Power, Eye, Gauge } from 'lucide-react';
 import { ZigbeePlugFields } from './smartPlug/ZigbeePlugFields';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
@@ -107,6 +107,15 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
   const [powerAlertEnabled, setPowerAlertEnabled] = useState(plug?.power_alert_enabled || false);
   const [powerAlertHigh, setPowerAlertHigh] = useState<string>(plug?.power_alert_high?.toString() || '');
   const [powerAlertLow, setPowerAlertLow] = useState<string>(plug?.power_alert_low?.toString() || '');
+
+  // Meter watch (spec plug-meter-watchdog): an empty field is the server's default
+  const [meterMinWh, setMeterMinWh] = useState<string>(plug?.meter_min_expected_wh?.toString() ?? '');
+  const [mqttPowerInterval, setMqttPowerInterval] = useState<string>(
+    plug?.mqtt_expected_power_interval_seconds?.toString() ?? '',
+  );
+  const [phantomPolicy, setPhantomPolicy] = useState<'default' | 'risk' | 'safe'>(
+    plug?.phantom_watts_risk == null ? 'default' : plug.phantom_watts_risk ? 'risk' : 'safe',
+  );
 
   // Schedule settings
   const [scheduleEnabled, setScheduleEnabled] = useState(plug?.schedule_enabled || false);
@@ -362,6 +371,17 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
       return;
     }
 
+    const minWh = meterMinWh.trim() ? Number(meterMinWh) : null;
+    if (minWh != null && !(minWh >= 100)) {
+      setError(t('smartPlugs.meterWatch.minWhTooLow'));
+      return;
+    }
+    const powerInterval = plugType === 'mqtt' && mqttPowerInterval.trim() ? Number(mqttPowerInterval) : null;
+    if (powerInterval != null && !(Number.isInteger(powerInterval) && powerInterval >= 1 && powerInterval <= 3600)) {
+      setError(t('smartPlugs.meterWatch.mqttIntervalInvalid'));
+      return;
+    }
+
     if (plugType === 'rest') {
       if (!restOnUrl.trim() && !restOffUrl.trim()) {
         setError(t('smartPlugs.restUrlRequired'));
@@ -430,6 +450,10 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
       // Visibility
       show_in_switchbar: showInSwitchbar,
       show_on_printer_card: showOnPrinterCard,
+      // Meter watch
+      meter_min_expected_wh: minWh,
+      mqtt_expected_power_interval_seconds: powerInterval,
+      phantom_watts_risk: phantomPolicy === 'default' ? null : phantomPolicy === 'risk',
     };
 
     if (isEditing) {
@@ -1677,6 +1701,65 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
               </p>
             </div>
           )}
+        </div>
+
+        {/* Meter watch (spec plug-meter-watchdog) */}
+        <div className="border-t border-bambu-dark-tertiary pt-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Gauge className="w-4 h-4 text-bambu-green" />
+            <span className="text-white font-medium">{t('smartPlugs.meterWatch.title')}</span>
+          </div>
+          <p className="text-xs text-bambu-gray">{t('smartPlugs.meterWatch.description')}</p>
+          <div>
+            <label htmlFor="meter-min-wh" className="block text-sm text-bambu-gray mb-1">
+              {t('smartPlugs.meterWatch.minWh')}
+            </label>
+            <input
+              id="meter-min-wh"
+              type="number"
+              value={meterMinWh}
+              onChange={(e) => setMeterMinWh(e.target.value)}
+              placeholder="100"
+              min="100"
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+            />
+            <p className="text-xs text-bambu-gray mt-1">{t('smartPlugs.meterWatch.minWhHint')}</p>
+          </div>
+          {plugType === 'mqtt' && (
+            <div>
+              <label htmlFor="meter-mqtt-interval" className="block text-sm text-bambu-gray mb-1">
+                {t('smartPlugs.meterWatch.mqttInterval')}
+              </label>
+              <input
+                id="meter-mqtt-interval"
+                type="number"
+                value={mqttPowerInterval}
+                onChange={(e) => setMqttPowerInterval(e.target.value)}
+                placeholder="300"
+                min="1"
+                max="3600"
+                step="1"
+                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+              />
+              <p className="text-xs text-bambu-gray mt-1">{t('smartPlugs.meterWatch.mqttIntervalHint')}</p>
+            </div>
+          )}
+          <div>
+            <label htmlFor="meter-phantom" className="block text-sm text-bambu-gray mb-1">
+              {t('smartPlugs.meterWatch.phantom')}
+            </label>
+            <Select
+              id="meter-phantom"
+              className="w-full"
+              value={phantomPolicy}
+              onChange={(e) => setPhantomPolicy(e.target.value as typeof phantomPolicy)}
+            >
+              <option value="default">{t('smartPlugs.meterWatch.phantomDefault')}</option>
+              <option value="risk">{t('smartPlugs.meterWatch.phantomRisk')}</option>
+              <option value="safe">{t('smartPlugs.meterWatch.phantomSafe')}</option>
+            </Select>
+            <p className="text-xs text-bambu-gray mt-1">{t('smartPlugs.meterWatch.phantomHint')}</p>
+          </div>
         </div>
 
         {/* Schedule - not shown for MQTT plugs (monitor-only) */}

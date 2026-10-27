@@ -63,23 +63,81 @@ async def flush_buffered(db) -> int:
     A reading whose device has gone — a plug deleted between the report and the
     flush, a sensor never adopted — is dropped rather than raised. The loop must
     survive a device disappearing; one lost row is not worth a stopped flush.
+
+    Power readings also pass the plug's measurement source (spec
+    plug-meter-watchdog W2): a reading whose captured token is not the plug's
+    current one, or whose moment is not strictly after the source's cutoff, is a
+    reading of another configuration and is dropped. The check and the commit
+    run under ``source_guard``, the lock a rotation holds. The batch stays
+    visible to readers until its commit is acknowledged; a failure before the
+    commit puts it back, a failure in it leaves its moments marked unusable.
     """
-    power, sensors = measurement_buffer.drain()
+    from backend.app.services.meter_source import source_guard
+
+    power = measurement_buffer.take_power()
+    sensors = measurement_buffer.drain_sensors()
     if not power and not sensors:
         return 0
 
     written = 0
-
+    committing = False
+    try:
+        async with source_guard():
+            written += await _write_power(db, power)
+            written += await _write_sensors(db, sensors)
+            # The INSERTs run here, before the commit: a refusal of them is a known rollback, which
+            # puts the batch back; only a failure of the commit itself leaves its outcome unknown.
+            await db.flush()
+            committing = True
+            await db.commit()
+    except BaseException:
+        if power:
+            if committing:
+                measurement_buffer.mark_unknown()
+            else:
+                measurement_buffer.return_power()
+        raise
     if power:
-        known = {
-            plug_id
-            for (plug_id,) in await db.execute(select(SmartPlug.id).where(SmartPlug.id.in_({s.plug_id for s in power})))
-        }
-        for sample in power:
-            if sample.plug_id not in known:
-                continue
-            db.add(SmartPlugPowerHistory(plug_id=sample.plug_id, power=sample.power, recorded_at=sample.recorded_at))
-            written += 1
+        measurement_buffer.ack_power()
+    return written
+
+
+async def _write_power(db, power) -> int:
+    from backend.app.services.meter_source import naive_utc
+
+    if not power:
+        return 0
+    sources = {
+        plug_id: (token, since)
+        for plug_id, token, since in await db.execute(
+            select(SmartPlug.id, SmartPlug.measurement_source_id, SmartPlug.measurement_source_since).where(
+                SmartPlug.id.in_({s.plug_id for s in power})
+            )
+        )
+    }
+    written = 0
+    for sample in power:
+        source = sources.get(sample.plug_id)
+        if source is None:
+            continue
+        token, since = source
+        moment = naive_utc(sample.recorded_at)
+        if sample.source_token != token or (since is not None and moment <= since):
+            continue
+        db.add(
+            SmartPlugPowerHistory(
+                plug_id=sample.plug_id,
+                power=sample.power,
+                recorded_at=moment,
+                unusable_reason=sample.reason,
+            )
+        )
+        written += 1
+    return written
+
+
+async def _write_sensors(db, sensors) -> int:
+    written = 0
 
     if sensors:
         # The buffer carries an IEEE because that is what a report knows; the
@@ -102,8 +160,6 @@ async def flush_buffered(db) -> int:
                 )
             )
             written += 1
-
-    await db.commit()
     return written
 
 
@@ -114,11 +170,16 @@ async def sample_polled_plugs(db) -> int:
     added later is covered without touching this. Best-effort per plug: one
     unreachable device must not cost the others their history.
     """
+    from backend.app.services.meter_source import phantom_risk
+
     plugs = (await db.execute(select(SmartPlug).where(SmartPlug.enabled.is_(True)))).scalars().all()
     sampled = 0
     for plug in plugs:
         if (plug.plug_type or "").strip().lower() in REPORTING_PLUG_TYPES:
             continue
+        # The source is captured BEFORE the read (spec plug-meter-watchdog W2): a reading that
+        # answers after the plug was reconfigured carries the old token and the flush drops it.
+        token, risky = plug.measurement_source_id, phantom_risk(plug)
         try:
             service = await smart_plug_manager.get_service_for_plug(plug, db)
             energy = await service.get_energy(plug)
@@ -130,7 +191,10 @@ async def sample_polled_plugs(db) -> int:
             # No reading is not zero watts. A fabricated zero would be drawn as
             # "the printer was off", which is a different claim entirely.
             continue
-        measurement_buffer.record_power(plug.id, power)
+        state = str((energy or {}).get("state") or "").strip().upper() or None
+        measurement_buffer.record_power(
+            plug.id, power, source_token=token, state=state if state in ("ON", "OFF") else None, phantom_risk=risky
+        )
         sampled += 1
     return sampled
 

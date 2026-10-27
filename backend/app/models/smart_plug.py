@@ -113,6 +113,21 @@ class SmartPlug(Base):
     # its counter means instead of the operator having to.
     zigbee_ieee: Mapped[str | None] = mapped_column(String(23), nullable=True)
 
+    # Meter watch (m211, spec plug-meter-watchdog r4). One measurement configuration is a random
+    # token and the strict cutoff after which history belongs to it: producers capture the token, the
+    # flush drops a fact of another token, and the estimate reads only after the cutoff. Rotated by
+    # ``services/meter_source.py`` whenever what the readings mean changes -- never by a rename.
+    measurement_source_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    measurement_source_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # How often an MQTT plug is expected to publish its watts; NULL = 300 s (the gap limit is 3x this).
+    mqtt_expected_power_interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The energy a flat counter must have missed before it is suspected (Wh, >= 100); NULL = 100.
+    meter_min_expected_wh: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Whether this plug's firmware may repeat watts after its relay opens; NULL = its type's default.
+    phantom_watts_risk: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # The newest counter point the meter-watch sweep has evaluated.
+    meter_watch_cursor: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Link to printer (multiple plugs/scripts can be linked to one printer)
     printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id", ondelete="SET NULL"), nullable=True)
     # Whether this plug is the printer's MAINS feed (m110 / upstream #2629).

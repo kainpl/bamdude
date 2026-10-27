@@ -194,7 +194,15 @@ function StatsLine({ figures, money }: { figures: ProjectFigures; money: (value:
   const energy = figures.total_energy_cost ?? 0;
   const components: string[] = [];
   if (filament > 0) components.push(t('orders.figures.stats.costFilament', { amount: money(filament) }));
-  if (energy > 0) components.push(t('orders.figures.stats.costEnergy', { amount: money(energy) }));
+  // An estimate is inside the electricity figure and said so; an unknown one is outside it and
+  // counted, never a zero (spec plug-meter-watchdog W11).
+  if (energy > 0) {
+    components.push(
+      (figures.energy_estimated ?? 0) > 0
+        ? t('orders.figures.stats.costEnergyEstimated', { amount: money(energy) })
+        : t('orders.figures.stats.costEnergy', { amount: money(energy) }),
+    );
+  }
   if (figures.procurement_partial) {
     components.push(
       figures.procurement_known_cost > 0
@@ -208,6 +216,13 @@ function StatsLine({ figures, money }: { figures: ProjectFigures; money: (value:
     parts.push(
       <span key="cost" data-testid="order-cost-breakdown">
         {t('orders.figures.stats.cost', { parts: components.join(' + ') })}
+      </span>,
+    );
+  }
+  if ((figures.energy_unavailable ?? 0) > 0) {
+    parts.push(
+      <span key="energy-unknown" data-testid="order-energy-unknown">
+        {t('orders.figures.stats.energyUnknown', { count: figures.energy_unavailable })}
       </span>,
     );
   }

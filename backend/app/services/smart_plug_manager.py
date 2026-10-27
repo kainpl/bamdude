@@ -152,6 +152,7 @@ class SmartPlugManager:
             resolve_sample_seconds,
             sample_polled_plugs,
         )
+        from backend.app.services.meter_watch import meter_watch
         from backend.app.services.sensor_alerts import run_sensor_alerts
 
         await asyncio.sleep(20)  # let the rest of the application finish booting
@@ -167,6 +168,14 @@ class SmartPlugManager:
                     # just wrote. Wrapped inside run_sensor_alerts — this loop
                     # also prunes, and an exception here would stop that too.
                     await run_sensor_alerts(db)
+                # The meter watch reads what the flush just wrote, at most every five
+                # minutes, each plug in its own short session (spec plug-meter-watchdog
+                # W5, W12). Guarded on its own: it must never cost the loop its prune.
+                try:
+                    await meter_watch.sweep(async_session, interval)
+                except Exception as exc:  # noqa: BLE001 — the watch is never the loop's reason to stop
+                    logger.warning("Meter watch sweep failed: %s", exc)
+                async with async_session() as db:
                     since_prune += interval
                     if since_prune >= 24 * 60 * 60:
                         since_prune = 0.0
@@ -215,9 +224,11 @@ class SmartPlugManager:
             if not plugs:
                 return
 
-            now = datetime.now(timezone.utc)
-            captured = 0
+            readings: list[tuple[int, str | None, datetime, float]] = []
             for plug in plugs:
+                # Captured before the read (spec plug-meter-watchdog W2): a counter that answers after
+                # the plug was reconfigured is the old source's and is not stored as the new one's.
+                token = plug.measurement_source_id
                 try:
                     service = await self.get_service_for_plug(plug, db)
                     energy = await service.get_energy(plug)
@@ -226,6 +237,7 @@ class SmartPlugManager:
                     continue
                 if not energy:
                     continue
+                read_at = datetime.now(timezone.utc)
 
                 # Relay the reading before the lifetime-counter gate below: a
                 # plug that reports watts but keeps no cumulative counter is
@@ -250,21 +262,36 @@ class SmartPlugManager:
                     # No lifetime counter configured for this plug — a figure
                     # that resets cannot feed cumulative snapshots.
                     continue
-                db.add(
-                    SmartPlugEnergySnapshot(
-                        plug_id=plug.id,
-                        recorded_at=now,
-                        lifetime_kwh=float(lifetime),
-                    )
-                )
-                captured += 1
+                readings.append((plug.id, token, read_at, float(lifetime)))
 
+            if not readings:
+                return
+            from backend.app.services.meter_source import naive_utc, source_guard
+
+            captured = 0
+            async with source_guard():
+                current = {
+                    plug_id: (token, since)
+                    for plug_id, token, since in await db.execute(
+                        select(SmartPlug.id, SmartPlug.measurement_source_id, SmartPlug.measurement_source_since).where(
+                            SmartPlug.id.in_({r[0] for r in readings})
+                        )
+                    )
+                }
+                for plug_id, token, read_at, lifetime in readings:
+                    source = current.get(plug_id)
+                    moment = naive_utc(read_at)
+                    if source is None or source[0] != token or (source[1] is not None and moment <= source[1]):
+                        continue
+                    db.add(SmartPlugEnergySnapshot(plug_id=plug_id, recorded_at=moment, lifetime_kwh=lifetime))
+                    captured += 1
+                if captured:
+                    await db.commit()
             if captured:
-                await db.commit()
                 logger.info("Captured %d energy snapshot(s)", captured)
 
     @staticmethod
-    async def record_energy_snapshot(db, plug_id: int, lifetime_kwh: float | None) -> bool:
+    async def record_energy_snapshot(db, plug_id: int, lifetime_kwh: float | None, at: datetime | None = None) -> bool:
         """Store one lifetime-counter reading, outside the hourly loop.
 
         Called at print start and print end, where the counter has just been
@@ -287,10 +314,12 @@ class SmartPlugManager:
 
         if lifetime_kwh is None:
             return False
+        from backend.app.services.meter_source import naive_utc
+
         db.add(
             SmartPlugEnergySnapshot(
                 plug_id=plug_id,
-                recorded_at=datetime.now(timezone.utc),
+                recorded_at=naive_utc(at),
                 lifetime_kwh=float(lifetime_kwh),
             )
         )

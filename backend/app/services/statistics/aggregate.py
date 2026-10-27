@@ -210,6 +210,11 @@ _IS_DONE = case((PrintArchive.status == "completed", 1), else_=0)
 # the spent time and material, not the rate.
 _IS_FAILED = case((and_(PrintArchive.status.in_(FAILURE_STATUSES), outcomes.not_dispatch_failure()), 1), else_=0)
 
+# What a print's energy figure is (spec plug-meter-watchdog W11): an estimate is summed like a
+# measurement and counted so the page can say so; an unknown one adds nothing and is counted too,
+# never read as zero consumption.
+_ENERGY_KIND = PrintArchive.extra_data["energy_provenance"]["kind"].as_string()
+
 _METRIC_COLUMNS = (
     func.count().label("prints"),
     func.sum(_IS_DONE).label("completed"),
@@ -338,10 +343,13 @@ async def _totals(db, filters: list) -> dict:
                 *_METRIC_COLUMNS,
                 func.sum(func.coalesce(PrintArchive.energy_kwh, 0.0)).label("energy_kwh"),
                 func.count(func.distinct(PrintArchive.printer_id)).label("printers"),
+                func.sum(case((_ENERGY_KIND == "estimated", 1), else_=0)).label("energy_estimated"),
+                func.sum(case((_ENERGY_KIND == "unavailable", 1), else_=0)).label("energy_unavailable"),
             ).where(*filters)
         )
     ).one()
-    values = dict(zip((*_METRIC_NAMES, "energy_kwh", "printers"), row, strict=True))
+    names = (*_METRIC_NAMES, "energy_kwh", "printers", "energy_estimated", "energy_unavailable")
+    values = dict(zip(names, row, strict=True))
     return {k: (v or 0) for k, v in values.items()}
 
 

@@ -126,6 +126,9 @@ export const handlers = [
     return HttpResponse.json(mockSmartPlugs);
   }),
 
+  // Before `:id`, which would otherwise read «meter-incidents» as a plug id.
+  http.get('/api/v1/smart-plugs/meter-incidents', () => HttpResponse.json([])),
+
   http.get('/api/v1/smart-plugs/:id', ({ params }) => {
     const plug = mockSmartPlugs.find((p) => p.id === Number(params.id));
     if (!plug) {

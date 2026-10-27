@@ -341,4 +341,15 @@ DEFAULT_TEMPLATES = [
         "title_template": "Storage Sensor Alert",
         "body_template": "{location}: {sensor} reports {state}",
     },
+    {
+        "event_type": "plug_meter_stalled",
+        "name": "Plug Meter Stalled",
+        "title_template": "Plug Meter Stalled",
+        "body_template": (
+            "The energy counter of plug {plug} has not changed since {since}, although its power history "
+            "shows a load. Print energy may be estimated or unknown. Check where the plug's total comes "
+            "from. If the device has hung, unplug it from the mains and plug it back in once prints have "
+            "finished; the relay button does not restart its electronics."
+        ),
+    },
 ]

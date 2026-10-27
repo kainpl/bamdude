@@ -22,7 +22,7 @@ from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
-from backend.app.services import swap_compatibility
+from backend.app.services import meter_watch, swap_compatibility
 from backend.app.services.bambu_cloud import BambuCloudService
 from backend.app.services.printer_manager import printer_manager
 
@@ -695,6 +695,9 @@ class GitBackupService:
                     "cost": a.cost,
                     "energy_kwh": a.energy_kwh,
                     "energy_cost": a.energy_cost,
+                    # What that figure is -- an estimate must not come back as a measurement
+                    # (spec plug-meter-watchdog W11). Only these keys of extra_data.
+                    "energy_record": meter_watch.energy_record(a.extra_data),
                     "quantity": a.quantity,
                     "created_at": a.created_at.isoformat() if a.created_at else None,
                     # ⚠️ Soft-deleted archives are collected too — the row is kept

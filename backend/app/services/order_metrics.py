@@ -30,6 +30,7 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectLinePartStock, ProjectProcurement
+from backend.app.services import meter_watch
 from backend.app.services.line_composition import (
     Composition,
     LineConfig,
@@ -235,6 +236,10 @@ class ProjectFigures:
     total_filament_grams: float = 0.0
     total_filament_cost: float = 0.0
     total_energy_cost: float = 0.0
+    #: Prints whose energy is estimated from the power history (inside ``total_energy_cost``), and
+    #: prints with no usable figure (outside it, never a zero) -- spec plug-meter-watchdog W11.
+    energy_estimated: int = 0
+    energy_unavailable: int = 0
     total_cost: float = 0.0
     defective: int = 0
     margin: float | None = None
@@ -1045,6 +1050,9 @@ def project_figures(
         pf.total_filament_grams += float(a.filament_used_grams or 0)
         pf.total_filament_cost += float(a.cost or 0)
         pf.total_energy_cost += float(a.energy_cost or 0)
+        energy_status = meter_watch.energy_wire_fields(a.extra_data, a.energy_kwh)["energy_status"]
+        pf.energy_estimated += energy_status == "estimated"
+        pf.energy_unavailable += energy_status == "unavailable"
         pf.defective += int(a.defective_count or 0)
     pf.total_filament_grams = round(pf.total_filament_grams, 2)
     pf.total_filament_cost = round(pf.total_filament_cost, 2)

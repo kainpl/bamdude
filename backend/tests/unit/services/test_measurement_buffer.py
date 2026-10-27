@@ -79,7 +79,11 @@ def test_recording_never_raises_whatever_it_is_given():
     measurement_buffer.record_power(1, "not a number")
     measurement_buffer.record_sensor("aa:bb", "temperature", object())
 
-    assert measurement_buffer.drain() == ([], [])
+    power, sensors = measurement_buffer.drain()
+    # A received power value that is no number is KEPT as an unusable moment (spec
+    # plug-meter-watchdog W3): dropping it would let its two neighbours be joined.
+    assert [(s.power, s.reason) for s in power] == [(0.0, "invalid_input")]
+    assert sensors == []
 
 
 def test_it_does_not_grow_without_bound():
@@ -92,8 +96,11 @@ def test_it_does_not_grow_without_bound():
 
     power, _ = measurement_buffer.drain()
 
-    assert len(power) == MAX_BUFFERED
-    assert power[-1].power == float(MAX_BUFFERED + 499), "the newest readings are the ones kept"
+    readings = [s for s in power if s.reason is None]
+    assert len(readings) == MAX_BUFFERED
+    assert readings[-1].power == float(MAX_BUFFERED + 499), "the newest readings are the ones kept"
+    # Where the dropped ones were stays known (spec plug-meter-watchdog W3): two markers bound the run.
+    assert sorted(s.reason for s in power if s.reason) == ["buffer_loss", "buffer_loss"]
 
 
 def test_pending_reports_what_is_waiting():

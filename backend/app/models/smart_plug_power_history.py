@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Index, Integer, func
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -11,8 +11,13 @@ class SmartPlugPowerHistory(Base):
 
     Separate from ``smart_plug_energy_snapshots``, which holds the lifetime kWh
     counter hourly and feeds per-print accounting. This one is instantaneous
-    watts and feeds nothing but charts — no total is ever derived from it, so a
-    gap here costs a drawing and nothing else.
+    watts. It feeds the charts and, since m211, the meter-stall watch and the
+    MARKED estimate of a print whose counter stood still (spec
+    plug-meter-watchdog): no device total is ever derived from it, and an
+    estimate is always labelled as one. A gap here is a gap in that estimate,
+    which is why ``unusable_reason`` keeps a reading that was received and found
+    unusable instead of dropping it -- two good neighbours must not be joined
+    across it.
 
     The key is a BIGINT. Retention bounds how many rows the table holds; it does
     not bound the counter, which only grows, and PostgreSQL's usual SERIAL is
@@ -30,4 +35,7 @@ class SmartPlugPowerHistory(Base):
     id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     plug_id: Mapped[int] = mapped_column(ForeignKey("smart_plugs.id", ondelete="CASCADE"), nullable=False)
     power: Mapped[float] = mapped_column(Float, nullable=False)  # watts
+    # NULL: a usable reading. Otherwise why it is not one (state_unknown, invalid_input,
+    # batch_unknown, buffer_loss) -- ``power`` is then a placeholder nothing reads (m211).
+    unusable_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())

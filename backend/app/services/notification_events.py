@@ -4,10 +4,11 @@ Spec: vault 60-specs/notification-center-spec §3. ONE source for what the inbox
 knows about an event; the provider registry (``PROVIDER_EVENT_DEFAULTS``) and the
 templates stay what they are, and a test pins the three against each other.
 
-``IN_APP_ONLY_EVENTS`` is deliberately empty today. An event listed there is in
-the catalog and reaches the inbox through ``NotificationService.notify_in_app``,
-but never gets an ``on_*`` provider flag, so no external channel can be
-subscribed to it (§3.3).
+An event listed in ``IN_APP_ONLY_EVENTS`` is in the catalog and reaches the
+inbox through ``NotificationService.notify_in_app``, but never gets an ``on_*``
+provider flag, so no external channel can be subscribed to it (§3.3). The first
+is ``plug_meter_stalled`` (spec plug-meter-watchdog W7): external channels for it
+are the owner's separate decision.
 """
 
 from __future__ import annotations
@@ -81,12 +82,13 @@ EVENT_CATALOG: dict[str, EventMeta] = {
     "sensor_speaking_again": _e("info", "sensors"),
     "ha_sensor_alert": _e("warning", "sensors"),
     "location_ha_sensor_alert": _e("warning", "sensors"),
+    "plug_meter_stalled": _e("warning", "sensors"),
 }
 
 # Events shown only inside BamDude — never offered to Telegram / email / push
-# providers. Empty on purpose; grow it together with the sender that raises the
-# event through ``NotificationService.notify_in_app`` (spec §3.3).
-IN_APP_ONLY_EVENTS: frozenset[str] = frozenset()
+# providers. Grow it together with the sender that raises the event through
+# ``NotificationService.notify_in_app`` (spec §3.3).
+IN_APP_ONLY_EVENTS: frozenset[str] = frozenset({"plug_meter_stalled"})
 
 # Two provider flags each govern several catalog events. The service owns the
 # behaviour (which column gates which message); the map lives here because the

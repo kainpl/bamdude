@@ -414,6 +414,7 @@ def import_all_models() -> None:
         slicer_pipeline,
         smart_plug,
         smart_plug_energy_snapshot,
+        smart_plug_meter_incident,
         smart_plug_power_history,
         smart_sensor,
         smart_sensor_binding,

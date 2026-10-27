@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
-import { Plug, Power, PowerOff, Loader2, Trash2, Settings2, Thermometer, Clock, Wifi, WifiOff, Edit2, Bell, Calendar, LayoutGrid, ExternalLink, Home, Radio, Eye, Globe, SlidersHorizontal } from 'lucide-react';
+import { Plug, Power, PowerOff, Loader2, Trash2, Settings2, Thermometer, Clock, Wifi, WifiOff, Edit2, Bell, Calendar, LayoutGrid, ExternalLink, Home, Radio, Eye, Globe, SlidersHorizontal, AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { SmartPlug, SmartPlugUpdate } from '../api/client';
@@ -11,6 +11,7 @@ import { DeviceReportingModal } from './zigbee/DeviceReportingModal';
 import { useAuth } from '../contexts/AuthContext';
 import { ZigbeeStatusBadge } from './zigbee/ZigbeeStatusBadge';
 import { useToast } from '../contexts/ToastContext';
+import { formatDateTime } from '../utils/date';
 
 interface SmartPlugCardProps {
   plug: SmartPlug;
@@ -42,6 +43,16 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
   });
 
   const linkedPrinter = printers?.find(p => p.id === plug.printer_id);
+
+  // A suspected stall of the plug's energy counter (spec plug-meter-watchdog W6): shown here
+  // whether or not anyone is subscribed to the inbox warning. One list for every card.
+  const { data: meterIncidents } = useQuery({
+    queryKey: ['smart-plugs', 'meter-incidents'],
+    queryFn: api.getMeterIncidents,
+    refetchInterval: 300000,
+  });
+  const meterIncident = meterIncidents?.find((incident) => incident.plug_id === plug.id);
+  const missedWh = meterIncident?.evidence?.integral_wh;
 
   // Control mutation with optimistic updates
   const controlMutation = useMutation({
@@ -265,6 +276,24 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
             <div className="mb-3 px-2 py-1.5 bg-bambu-dark rounded-lg">
               <span className="text-xs text-bambu-gray">{t('smartPlugs.linkedTo')} </span>
               <span className="text-sm text-white">{linkedPrinter.name}</span>
+            </div>
+          )}
+
+          {meterIncident && (
+            <div
+              role="status"
+              data-testid="meter-incident"
+              className="mb-3 p-2 rounded-lg bg-yellow-100 dark:bg-yellow-500/20 text-xs text-yellow-800 dark:text-yellow-300 space-y-1"
+            >
+              <p className="flex items-center gap-1.5 font-medium">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                {t('smartPlugs.meterWatch.stalledTitle')}
+              </p>
+              <p>
+                {t('smartPlugs.meterWatch.stalled', { since: formatDateTime(meterIncident.flat_since) })}
+                {missedWh != null && ` ${t('smartPlugs.meterWatch.stalledEvidence', { wh: Math.round(missedWh) })}`}
+              </p>
+              <p>{t('smartPlugs.meterWatch.advice')}</p>
             </div>
           )}
 

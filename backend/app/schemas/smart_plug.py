@@ -112,6 +112,12 @@ class SmartPlugBase(BaseModel):
     # Visibility options
     show_in_switchbar: bool = False
     show_on_printer_card: bool = True  # For scripts: show on printer card
+    # Meter watch (spec plug-meter-watchdog r4). How often an MQTT plug publishes its watts (NULL = 300 s);
+    # the energy a flat counter must have missed before it is suspected (Wh, NULL = 100); whether the
+    # firmware may repeat watts after its relay opens (NULL = the type's default: Zigbee yes).
+    mqtt_expected_power_interval_seconds: int | None = Field(default=None, ge=1, le=3600)
+    meter_min_expected_wh: float | None = Field(default=None, ge=100, le=1_000_000)
+    phantom_watts_risk: bool | None = None
 
     @model_validator(mode="after")
     def validate_plug_type_fields(self) -> "SmartPlugBase":
@@ -221,6 +227,10 @@ class SmartPlugUpdate(BaseModel):
     # Visibility options
     show_in_switchbar: bool | None = None
     show_on_printer_card: bool | None = None
+    # Meter watch (spec plug-meter-watchdog r4)
+    mqtt_expected_power_interval_seconds: int | None = Field(default=None, ge=1, le=3600)
+    meter_min_expected_wh: float | None = Field(default=None, ge=100, le=1_000_000)
+    phantom_watts_risk: bool | None = None
 
 
 class SmartPlugResponse(SmartPlugBase):
@@ -237,6 +247,20 @@ class SmartPlugResponse(SmartPlugBase):
     power_alert_last_triggered: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MeterIncidentOut(BaseModel):
+    """An active suspicion that a plug's lifetime counter stopped following its load (spec W6)."""
+
+    plug_id: int
+    opened_at: datetime
+    flat_since: datetime
+    flat_until: datetime
+    total_kwh: float
+    evidence: dict | None = None
 
     class Config:
         from_attributes = True

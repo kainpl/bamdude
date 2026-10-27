@@ -153,7 +153,10 @@ async def test_the_energy_write_holds_its_window(factory, monkeypatch):
     window = Window(factory, archive_id, archive_write_scope.load_active_archive_for_write)
     window.install(monkeypatch)
     monkeypatch.setattr(archive_write_scope, "load_active_archive_for_write", window.around(window.load))
-    monkeypatch.setattr(main, "_energy_plug_for_printer", AsyncMock(return_value=SimpleNamespace(id=1)))
+    # A plug from before m211: no measurement source.
+    monkeypatch.setattr(
+        main, "_energy_plug_for_printer", AsyncMock(return_value=SimpleNamespace(id=1, measurement_source_id=None))
+    )
     monkeypatch.setattr(main, "_get_plug_energy", AsyncMock(return_value={"total": 11.5}))
     monkeypatch.setattr(main.smart_plug_manager, "record_energy_snapshot", AsyncMock())
 

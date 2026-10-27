@@ -150,10 +150,13 @@ async def test_deleting_a_zigbee_plug_tears_down_its_driver_state(async_client: 
     await db_session.refresh(plug)
 
     zigbee_smart_plug_service.update(plug.id, state="ON")
-    zigbee_smart_plug_service._listeners[(plug.id, 0x0006)] = object()
+    listener = SimpleNamespace(retired=False)
+    zigbee_smart_plug_service._listeners[(plug.id, 0x0006)] = listener
 
     response = await async_client.delete(f"/api/v1/smart-plugs/{plug.id}")
 
     assert response.status_code == 200, response.text
     assert zigbee_smart_plug_service.get_plug_data(plug.id) is None
     assert [key for key in zigbee_smart_plug_service._listeners if key[0] == plug.id] == []
+    # zigpy keeps the listener on the old cluster: it must be silenced, not only forgotten.
+    assert listener.retired is True

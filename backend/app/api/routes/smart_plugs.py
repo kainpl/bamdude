@@ -22,6 +22,7 @@ from backend.app.schemas.smart_plug import (
     HASensorEntity,
     HATestConnectionRequest,
     HATestConnectionResponse,
+    MeterIncidentOut,
     RESTTestConnectionRequest,
     RESTTestConnectionResponse,
     SmartPlugControl,
@@ -172,6 +173,10 @@ async def create_smart_plug(
         plug_data["auto_off"] = False
 
     plug = SmartPlug(**plug_data)
+    # Its first measurement source: nothing came before it (spec plug-meter-watchdog W2).
+    from backend.app.services.meter_source import start_source
+
+    start_source(plug)
     db.add(plug)
     await db.commit()
     await db.refresh(plug)
@@ -540,6 +545,27 @@ async def list_ha_sensor_entities(
     return [HASensorEntity(**s) for s in sensors]
 
 
+@router.get("/meter-incidents", response_model=list[MeterIncidentOut])
+async def list_meter_incidents(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
+):
+    """Every active suspicion that a plug's counter stopped following its load (spec plug-meter-watchdog W6).
+
+    Shown on the plug whether or not anyone is subscribed to the inbox warning.
+    """
+    from backend.app.models.smart_plug_meter_incident import SmartPlugMeterIncident
+
+    rows = (
+        await db.execute(
+            select(SmartPlugMeterIncident)
+            .where(SmartPlugMeterIncident.status == "active")
+            .order_by(SmartPlugMeterIncident.plug_id)
+        )
+    ).scalars()
+    return list(rows)
+
+
 @router.get("/{plug_id}", response_model=SmartPlugResponse)
 async def get_smart_plug(
     plug_id: int,
@@ -661,10 +687,15 @@ async def update_smart_plug(
     _: User | None = RequirePermission(Permission.SMART_PLUGS_UPDATE),
 ):
     """Update a smart plug."""
+    from backend.app.services.meter_source import identity_of, phantom_risk, rotate_source, source_guard
+
     result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
     plug = result.scalar_one_or_none()
     if not plug:
         raise HTTPException(404, "Smart plug not found")
+    identity_before = identity_of(plug)
+    watch_policy_before = (plug.meter_min_expected_wh, plug.mqtt_expected_power_interval_seconds)
+    ieee_before = plug.zigbee_ieee
 
     update_data = data.model_dump(exclude_unset=True)
 
@@ -720,8 +751,29 @@ async def update_smart_plug(
     for field, value in update_data.items():
         setattr(plug, field, value)
 
-    await db.commit()
+    # What the readings mean changed: a new measurement source, with a strict cutoff, in the same
+    # step as the flush's token check (spec plug-meter-watchdog W2). A rename rotates nothing.
+    rotated = identity_of(plug) != identity_before
+    if (plug.meter_min_expected_wh, plug.mqtt_expected_power_interval_seconds) != watch_policy_before:
+        # The same source under another policy: its last day is evaluated again (spec r4 W4/W5).
+        plug.meter_watch_cursor = None
+    if rotated:
+        async with source_guard():
+            await rotate_source(db, plug)
+            await db.commit()
+    else:
+        await db.commit()
     await db.refresh(plug)
+    if rotated and plug.plug_type == "zigbee":
+        from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+        if (plug.zigbee_ieee or "").lower() == (ieee_before or "").lower():
+            zigbee_smart_plug_service.retarget(plug.id, plug.measurement_source_id, phantom_risk(plug))
+        else:
+            from backend.app.services.zigbee.reporting import subscribe_all
+
+            await zigbee_smart_plug_service.teardown(plug.id)
+            await subscribe_all(zigbee_smart_plug_service, [plug])
 
     # Handle MQTT subscription changes
     if old_plug_type == "mqtt" and plug.plug_type != "mqtt":
@@ -741,7 +793,7 @@ async def update_smart_plug(
             "state_on_value": plug.mqtt_state_on_value,
         }
 
-        mqtt_changed = old_plug_type != "mqtt" or old_mqtt_config != new_mqtt_config
+        mqtt_changed = old_plug_type != "mqtt" or old_mqtt_config != new_mqtt_config or rotated
 
         if mqtt_changed:
             # Unsubscribe from old topics first
@@ -782,6 +834,12 @@ async def delete_smart_plug(
 
         await zigbee_smart_plug_service.teardown(plug_id)
 
+    # SQLite runs no FK actions: the plug's stall episodes go with it in code.
+    from sqlalchemy import delete as sql_delete
+
+    from backend.app.models.smart_plug_meter_incident import SmartPlugMeterIncident
+
+    await db.execute(sql_delete(SmartPlugMeterIncident).where(SmartPlugMeterIncident.plug_id == plug_id))
     await db.delete(plug)
     await db.commit()
 

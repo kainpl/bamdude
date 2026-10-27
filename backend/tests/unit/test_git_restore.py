@@ -1372,6 +1372,23 @@ class TestRestoreArchives:
         assert tally.restored == 1
 
     @pytest.mark.asyncio
+    async def test_an_estimated_energy_figure_comes_back_as_an_estimate(self, db_session):
+        """Spec plug-meter-watchdog W11: the number alone would read as a measurement."""
+        record = {
+            "energy_provenance": {"kind": "estimated", "coverage": 0.97, "final": True},
+            "energy_is_approximate": True,
+            "energy_reconstructed_from": "power_history",
+        }
+        entry = self._archive_entry(energy_kwh=0.2, energy_cost=0.04, energy_record=record)
+
+        await _service()._restore_archives(db_session, {"archives": [entry]}, False, _CategoryTally(), {})
+        await db_session.commit()
+
+        row = (await db_session.execute(select(PrintArchive))).scalar_one()
+        assert row.energy_kwh == 0.2
+        assert {k: row.extra_data[k] for k in record} == record
+
+    @pytest.mark.asyncio
     async def test_soft_deleted_archive_is_not_restored_as_visible(self, db_session):
         """A backup keeps soft-deleted rows, so the flag has to survive.
 

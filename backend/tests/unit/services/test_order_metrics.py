@@ -353,6 +353,30 @@ def test_project_cost_keeps_filament_and_energy_components():
     assert (total.total_filament_cost, total.total_energy_cost, total.total_cost) == (2.0, 0.35, 2.35)
 
 
+def test_project_figures_say_which_energy_is_estimated_or_unknown():
+    """Spec plug-meter-watchdog W11: an estimate is inside the energy cost and counted; an unknown is
+    outside it and counted, never read as a zero."""
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 3)]
+    archives = [
+        _archive(1, file_id=5, plate=0, energy_cost=0.4),
+        _archive(2, file_id=5, plate=0, energy_cost=0.1),
+        _archive(3, file_id=5, plate=0, energy_cost=None),
+    ]
+    archives[0].energy_kwh = 2.0
+    archives[0].extra_data = {"energy_provenance": {"kind": "estimated", "coverage": 0.97}}
+    archives[1].energy_kwh = 0.5
+    archives[2].extra_data = {"energy_provenance": {"kind": "unavailable", "unavailable_reason": "unknown_end"}}
+    aps = {i: [_ap(i, "a", 1)] for i in (1, 2, 3)}
+    ctx = _ctx(lines, parts, archives, aps, {(5, 0): 10})
+
+    figures, other = attribute(ctx)
+    total = project_figures(ctx, figures, other)
+
+    assert total.total_energy_cost == 0.5
+    assert (total.energy_estimated, total.energy_unavailable) == (1, 1)
+
+
 def test_a_scrapped_plate_is_listed_under_the_line_whose_product_counts_it():
     """An archive that credited nothing is still the order's work, and WHICH
     line's work is readable off its part rows.

@@ -79,6 +79,10 @@ class Totals(BaseModel):
     quantity: int = 0
     seconds: float = 0.0
     printers: int = 0
+    # Prints whose energy is estimated from the power history (inside ``energy_kwh``), and prints with
+    # no usable figure (outside it) -- spec plug-meter-watchdog W11.
+    energy_estimated: int = 0
+    energy_unavailable: int = 0
 
 
 class LongestRecord(BaseModel):
@@ -175,6 +179,11 @@ class ArchiveStats(BaseModel):
     # still, which is the reason anyone wants both.
     print_energy_kwh: float = 0.0
     print_energy_cost: float = 0.0
+    # Of the prints in ``print_*``: how many are estimated from the power history, and how many
+    # have no usable figure and add nothing (spec plug-meter-watchdog W11). ``total_*`` never
+    # contains an estimate: it is what the counters said.
+    print_energy_estimated: int = 0
+    print_energy_unavailable: int = 0
     total_energy_kwh: float = 0.0
     total_energy_cost: float = 0.0
     # Set when the date-range query in "total consumption" mode is running on

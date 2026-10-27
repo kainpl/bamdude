@@ -126,12 +126,27 @@ class ClusterReportListener:
     every report would put a mesh round-trip behind a number that never changes.
     """
 
-    def __init__(self, service, plug_id: int, cluster_id: int, multiplier=None, divisor=None):
+    def __init__(
+        self,
+        service,
+        plug_id: int,
+        cluster_id: int,
+        multiplier=None,
+        divisor=None,
+        source_token: str | None = None,
+        phantom_risk: bool = True,
+    ):
         self._service = service
         self._plug_id = plug_id
         self._cluster_id = cluster_id
         self._multiplier = multiplier
         self._divisor = divisor
+        # The measurement source this listener reads for (spec plug-meter-watchdog W2): captured when
+        # it is set up, retargeted in place only while the device stays the same, and the listener is
+        # retired when the plug moves to another device -- zigpy keeps it attached to the old cluster.
+        self.source_token = source_token
+        self.phantom_risk = phantom_risk
+        self.retired = False
 
     def __call__(self, event) -> None:
         """zigpy's current event API, which is what actually carries reports.
@@ -159,6 +174,8 @@ class ClusterReportListener:
         listeners at DEBUG level, so the guard below exists to make failures
         visible rather than to protect zigpy.
         """
+        if self.retired:
+            return
         try:
             if self._cluster_id == ON_OFF and attrid == ATTR_ON_OFF:
                 state = "ON" if value else "OFF"
@@ -191,21 +208,35 @@ class ClusterReportListener:
                 # goes through its own conversion.
                 power = demand_to_watts(value, self._multiplier, self._divisor)
                 if power is not None:
-                    self._service.update(self._plug_id, power=power)
-                    # Buffered, never written here: this runs inside a zigpy
-                    # callback that must not block and must not raise.
-                    measurement_buffer.record_power(self._plug_id, power)
+                    self._record_power(power)
                 return
 
             if self._cluster_id == ELECTRICAL_MEASUREMENT and attrid == ATTR_ACTIVE_POWER:
                 power = scale(value, self._multiplier, self._divisor)
                 if power is not None:
-                    self._service.update(self._plug_id, power=power)
-                    measurement_buffer.record_power(self._plug_id, power)
+                    self._record_power(power)
                 return
             # Anything else is noise: devices report far more than we asked for.
         except Exception as exc:  # noqa: BLE001 — see the docstring
             logger.warning("Zigbee plug %s: report for 0x%04X ignored: %s", self._plug_id, attrid, exc)
+
+    def _record_power(self, power: float) -> None:
+        """Cache the watts and buffer them as a reading, with the relay state known AT this moment.
+
+        Read before the update, so a later OFF at flush time never rewrites this reading (spec
+        plug-meter-watchdog W3). Buffered, never written here: this runs inside a zigpy callback
+        that must not block and must not raise.
+        """
+        known = self._service.get_plug_data(self._plug_id)
+        state = getattr(known, "state", None)
+        self._service.update(self._plug_id, power=power)
+        measurement_buffer.record_power(
+            self._plug_id,
+            power,
+            source_token=self.source_token,
+            state=state if state in ("ON", "OFF") else None,
+            phantom_risk=self.phantom_risk,
+        )
 
 
 def _attrs_for(service, device, cluster_id: int, attr: int) -> tuple[int, ...]:
@@ -259,6 +290,19 @@ async def _scaling_pair(cluster, attrs: tuple[str, ...]):
     return None, None
 
 
+def _source_of(plug) -> dict:
+    """What a new listener reads for: the plug's current measurement source and phantom policy.
+
+    A Zigbee plug may repeat its last watts after the relay opens unless the plug says otherwise
+    (``meter_source.phantom_risk``; spelled out here so a bare test plug needs no type).
+    """
+    explicit = getattr(plug, "phantom_watts_risk", None)
+    return {
+        "source_token": getattr(plug, "measurement_source_id", None),
+        "phantom_risk": True if explicit is None else bool(explicit),
+    }
+
+
 async def bind_plug(service, plug, device, parameters: dict[str, dict] | None = None) -> dict[int, bool]:
     """Bind and subscribe every cluster this plug actually has.
 
@@ -301,6 +345,7 @@ async def bind_plug(service, plug, device, parameters: dict[str, dict] | None = 
                 cluster_id=cluster_id,
                 multiplier=multiplier,
                 divisor=divisor,
+                **_source_of(plug),
             )
             already = False
         service._listeners[(plug.id, cluster_id)] = listener
@@ -554,6 +599,7 @@ async def refresh_plug(service, plug, device) -> bool:
                 cluster_id=cluster_id,
                 multiplier=multiplier,
                 divisor=divisor,
+                **_source_of(plug),
             )
             service._listeners[(plug.id, cluster_id)] = listener
             cluster.add_listener(listener)

@@ -1722,6 +1722,18 @@ export default {
 
   // Archives page
   archives: {
+    energy: {
+      estimated: '≈ {{kwh}} kWh, estimated from the plug\'s power history ({{coverage}}% of the print covered): its energy counter stood still.',
+      approximate: '≈ {{kwh}} kWh, approximate: the counter was read at a moment other than the print\'s own start or end.',
+      unknown: 'Energy unknown',
+      reasons: {
+        insufficient_history: 'The plug\'s energy counter stood still and its power history does not cover this print well enough to estimate it.',
+        unknown_end: 'The plug\'s energy counter stood still and the end of this print was not observed.',
+        source_changed: 'The plug was reconfigured or replaced during this print, so its two readings do not belong to one meter.',
+        insufficient_budget: 'There was too much power history to evaluate for this print.',
+        other: 'There is no reliable energy figure for this print.',
+      },
+    },
     no3mfBanner: {
       ftpsRefused: {
         title: 'Some recent prints couldn\'t be archived — the printer refused the file connection',
@@ -2477,6 +2489,10 @@ export default {
     energyAtThePlug: 'Energy At The Plug',
     energyCostAtThePlug: 'Cost At The Plug',
     energyAtThePlugTooltip: 'Everything the smart plugs counted: printing, idling, warming up, and anything else on the same socket. The gap between this and the printing figure is what standing still costs.',
+    energyEstimatedNote_one: '{{count}} print is estimated from power history',
+    energyEstimatedNote_other: '{{count}} prints are estimated from power history',
+    energyUnknownNote_one: '{{count}} print has no reliable energy figure and is not counted as zero',
+    energyUnknownNote_other: '{{count}} prints have no reliable energy figure and are not counted as zero',
     energyWarmingUpTooltip: 'Energy tracking is still collecting hourly snapshots. Date-range totals will become accurate once at least one snapshot exists before the selected range. Early values may undercount.',
     printsByPrinter: 'Prints by Printer',
     byMaterial: 'By Material',
@@ -6516,6 +6532,9 @@ export default {
         cost: 'cost: {{parts}}',
         costFilament: 'filament {{amount}}',
         costEnergy: 'electricity {{amount}}',
+        costEnergyEstimated: 'electricity ≈ {{amount}}',
+        energyUnknown_one: '{{count}} print without a reliable energy figure',
+        energyUnknown_other: '{{count}} prints without a reliable energy figure',
         costPurchases: 'purchases {{amount}}',
         costPurchasesAtLeast: 'purchases ≥ {{amount}}',
         costPurchasesUnknown: 'purchases: price unknown',
@@ -10821,6 +10840,25 @@ export default {
     alertAbove: 'Alert if above (W)',
     alertBelow: 'Alert if below (W)',
     alertDescription: 'Get notified when power consumption crosses these thresholds. Leave empty to disable that direction.',
+    meterWatch: {
+      title: 'Energy counter watch',
+      description: 'BamDude compares the plug\'s energy counter with its power history. A counter that stands still while the plug reports a load is a suspicion, not a verdict about the device.',
+      minWh: 'Missed energy before a stall is suspected (Wh)',
+      minWhHint: 'At least 100. Raise it for a plug whose counter moves in coarse steps. Empty = 100 Wh.',
+      minWhTooLow: 'The missed-energy threshold must be at least 100 Wh.',
+      mqttInterval: 'How often the plug publishes its power (s)',
+      mqttIntervalHint: 'Readings further apart than three of these intervals (at least 3 minutes) are a gap, never a line between them. Empty = 300 s.',
+      mqttIntervalInvalid: 'The publish interval must be between 1 and 3600 seconds.',
+      phantom: 'Watts after the relay opens',
+      phantomDefault: 'Default for this plug type',
+      phantomRisk: 'May keep repeating old watts',
+      phantomSafe: 'Reports what it measures',
+      phantomHint: 'While the relay state of a plug that may repeat old watts is unknown, its readings are not used.',
+      stalledTitle: 'Energy counter stalled',
+      stalled: 'The energy counter has not changed since {{since}}, although the power history shows a load. Print energy over this time is estimated from the power history or left unknown.',
+      stalledEvidence: 'Missed: about {{wh}} Wh.',
+      advice: 'If the device has hung, unplug it from the mains and plug it back in once prints have finished — the relay button does not restart its electronics.',
+    },
     dailySchedule: 'Daily Schedule',
     turnOnAt: 'Turn On at',
     turnOffAt: 'Turn Off at',
@@ -11280,7 +11318,8 @@ export default {
         sensor_back_in_range: 'Sensor back in range',
         sensor_speaking_again: 'Sensor reporting again'
         ,ha_sensor_alert: 'Printer HA sensor alert',
-        location_ha_sensor_alert: 'Storage HA sensor alert'
+        location_ha_sensor_alert: 'Storage HA sensor alert',
+        plug_meter_stalled: 'Plug energy counter stalled'
       }
     },
     // User email notification preferences

@@ -21,7 +21,10 @@ import pytest
 
 
 def _plug(plug_type: str, plug_id: int = 1):
-    return SimpleNamespace(id=plug_id, name=f"plug-{plug_id}", plug_type=plug_type, printer_id=None)
+    # No measurement source: a plug from before m211, whose end is read as it always was.
+    return SimpleNamespace(
+        id=plug_id, name=f"plug-{plug_id}", plug_type=plug_type, printer_id=None, measurement_source_id=None
+    )
 
 
 class _FakeResult:
@@ -130,8 +133,12 @@ class TestTheEndOfAPrintAsksThePlugItself:
 
         from backend.app import main
 
-        archive = SimpleNamespace(energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, extra_data=None)
-        db = SimpleNamespace(get=AsyncMock(return_value=archive), commit=AsyncMock())
+        archive = SimpleNamespace(
+            energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, completed_at=None, extra_data=None
+        )
+        db = SimpleNamespace(
+            get=AsyncMock(return_value=archive), commit=AsyncMock(), scalar=AsyncMock(return_value=None)
+        )
 
         @asynccontextmanager
         async def fake_session():
@@ -174,8 +181,12 @@ class TestTheEndOfAPrintAsksThePlugItself:
 
         from backend.app import main
 
-        archive = SimpleNamespace(energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, extra_data={"notes": "x"})
-        db = SimpleNamespace(get=AsyncMock(return_value=archive), commit=AsyncMock())
+        archive = SimpleNamespace(
+            energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, completed_at=None, extra_data={"notes": "x"}
+        )
+        db = SimpleNamespace(
+            get=AsyncMock(return_value=archive), commit=AsyncMock(), scalar=AsyncMock(return_value=None)
+        )
 
         @asynccontextmanager
         async def fake_session():
@@ -210,8 +221,12 @@ class TestTheEndOfAPrintAsksThePlugItself:
 
         from backend.app import main
 
-        archive = SimpleNamespace(energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, extra_data={})
-        db = SimpleNamespace(get=AsyncMock(return_value=archive), commit=AsyncMock())
+        archive = SimpleNamespace(
+            energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, completed_at=None, extra_data={}
+        )
+        db = SimpleNamespace(
+            get=AsyncMock(return_value=archive), commit=AsyncMock(), scalar=AsyncMock(return_value=None)
+        )
 
         @asynccontextmanager
         async def fake_session():

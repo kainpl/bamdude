@@ -431,6 +431,10 @@ class ProjectFiguresOut(BaseModel):
     total_filament_grams: float
     total_filament_cost: float
     total_energy_cost: float
+    # Prints whose energy is estimated (inside ``total_energy_cost``) and prints with none usable
+    # (outside it) -- spec plug-meter-watchdog W11.
+    energy_estimated: int = 0
+    energy_unavailable: int = 0
     total_cost: float
     defective: int
     margin: float | None

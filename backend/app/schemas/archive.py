@@ -201,6 +201,13 @@ class ArchiveResponse(BaseModel):
     # Energy tracking
     energy_kwh: float | None = None
     energy_cost: float | None = None
+    # What that figure is (spec plug-meter-watchdog W11, ``meter_watch.energy_wire_fields``):
+    # measured / approximate / estimated / unavailable, or None when there is no energy at all.
+    energy_status: str | None = None
+    # The share of an estimated window the power history covered, 0..1.
+    energy_coverage: float | None = None
+    # meter_stalled for an estimate; why for an unavailable figure.
+    energy_reason: str | None = None
 
     # Swap mode. ``swap_compatible`` keeps its old meaning; ``swap_compatibility_known``
     # says whether that False is a declaration or the unknown's (spec r4 §9). Both

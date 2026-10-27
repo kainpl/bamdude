@@ -465,11 +465,26 @@ class ZigbeeSmartPlugService:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         for key in [k for k in self._listeners if k[0] == plug_id]:
-            self._listeners.pop(key, None)
+            listener = self._listeners.pop(key, None)
+            # zigpy keeps it attached to the old device's cluster: silenced, it writes nothing more for
+            # a plug that may now be another device (spec plug-meter-watchdog W2).
+            if listener is not None:
+                listener.retired = True
         self._cache.pop(plug_id, None)
         # Or the next plug to be given this id inherits a threshold nobody set
         # for it — plug ids are reused, and this one is invisible when wrong.
         self._stale_after.pop(plug_id, None)
+
+    def retarget(self, plug_id: int, source_token: str | None, phantom_risk: bool) -> None:
+        """The plug's measurement source changed but its device did not: later reports are the new source's.
+
+        Called after the rotation committed (spec plug-meter-watchdog W2). A device change goes
+        through ``teardown`` and a fresh bind instead -- its old listeners stay on the old cluster.
+        """
+        for (owner, _cluster), listener in self._listeners.items():
+            if owner == plug_id:
+                listener.source_token = source_token
+                listener.phantom_risk = phantom_risk
 
     async def get_status(self, plug: Any) -> dict:
         """Current state, refreshed by a direct read if the cache has aged out.

@@ -10,7 +10,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
+import { server } from '../mocks/server';
 import { SmartPlugCard } from '../../components/SmartPlugCard';
 import type { SmartPlug } from '../../api/client';
 
@@ -100,6 +102,53 @@ describe('SmartPlugCard', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe('meter watch', () => {
+    it('shows a suspected counter stall with the safe advice', async () => {
+      server.use(
+        http.get('/api/v1/smart-plugs/meter-incidents', () =>
+          HttpResponse.json([
+            {
+              plug_id: 1,
+              opened_at: '2026-10-27T10:00:00',
+              flat_since: '2026-10-27T08:00:00',
+              flat_until: '2026-10-27T10:00:00',
+              total_kwh: 12.3,
+              evidence: { integral_wh: 412.4, coverage: 0.99, samples: 120 },
+            },
+          ]),
+        ),
+      );
+      render(<SmartPlugCard plug={createMockPlug({ id: 1 })} onEdit={mockOnEdit} />);
+
+      const notice = await screen.findByTestId('meter-incident');
+      expect(notice).toHaveTextContent('Energy counter stalled');
+      expect(notice).toHaveTextContent('about 412 Wh');
+      // Never «unplug the printer now»: only after prints have finished, and not with the relay button.
+      expect(notice).toHaveTextContent(/once prints have finished/);
+    });
+
+    it('shows nothing for a plug without an active suspicion', async () => {
+      server.use(
+        http.get('/api/v1/smart-plugs/meter-incidents', () =>
+          HttpResponse.json([
+            {
+              plug_id: 2,
+              opened_at: '2026-10-27T10:00:00',
+              flat_since: '2026-10-27T08:00:00',
+              flat_until: '2026-10-27T10:00:00',
+              total_kwh: 1,
+              evidence: null,
+            },
+          ]),
+        ),
+      );
+      render(<SmartPlugCard plug={createMockPlug({ id: 1 })} onEdit={mockOnEdit} />);
+
+      await waitFor(() => expect(screen.getByText('Test Plug')).toBeInTheDocument());
+      expect(screen.queryByTestId('meter-incident')).not.toBeInTheDocument();
+    });
   });
 
   describe('rendering', () => {

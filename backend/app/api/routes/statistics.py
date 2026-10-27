@@ -19,7 +19,7 @@ import io
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequirePermission, require_ownership_permission
@@ -244,6 +244,16 @@ async def get_archive_stats(
     print_energy_cost = (
         await db.execute(select(func.sum(PrintArchive.energy_cost)).where(*base_conditions))
     ).scalar() or 0
+    # Estimated figures are inside the sums above; unknown ones are not, and are not zero either.
+    energy_kind = PrintArchive.extra_data["energy_provenance"]["kind"].as_string()
+    estimated_prints, unavailable_prints = (
+        await db.execute(
+            select(
+                func.sum(case((energy_kind == "estimated", 1), else_=0)),
+                func.sum(case((energy_kind == "unavailable", 1), else_=0)),
+            ).where(*base_conditions)
+        )
+    ).one()
 
     # ── What the plugs measured, full stop ───────────────────────────────
     if not date_from and not date_to:
@@ -284,6 +294,8 @@ async def get_archive_stats(
         time_accuracy_by_printer=accuracy_by_printer if accuracy_by_printer else None,
         print_energy_kwh=round(print_energy_kwh, 3),
         print_energy_cost=round(print_energy_cost, 3),
+        print_energy_estimated=int(estimated_prints or 0),
+        print_energy_unavailable=int(unavailable_prints or 0),
         total_energy_kwh=round(total_energy_kwh, 3),
         total_energy_cost=round(total_energy_cost, 3),
         energy_data_warming_up=energy_data_warming_up,

@@ -1,4 +1,6 @@
 import { AutoEjectBadge } from '../components/AutoEjectBadge';
+import { ArchiveEnergyFact } from '../components/ArchiveEnergy';
+import { hasEnergyFact } from '../utils/archiveEnergy';
 import { RecoveryEndTime } from '../components/RecoveryEndTime';
 import { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
@@ -52,7 +54,6 @@ import {
   Settings,
   User,
   Play,
-  Zap,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
   ArrowUp,
@@ -1094,7 +1095,7 @@ function ArchiveCard({
               {archive.filament_used_grams.toFixed(1)}g
             </div>
           )}
-          {(archive.cost != null || archive.energy_cost != null) && (
+          {(archive.cost != null || hasEnergyFact(archive)) && (
             <div className="flex items-center gap-3 text-bambu-gray">
               {archive.cost != null && (
                 <div className="flex items-center gap-1.5">
@@ -1102,12 +1103,7 @@ function ArchiveCard({
                   {currency}{archive.cost.toFixed(2)}
                 </div>
               )}
-                {archive.energy_cost != null && (
-                  <div className="flex items-center gap-1.5" title={`${t('stats.energyUsed')}: ${archive.energy_kwh?.toFixed(3) || 'N/A'} kWh`}>
-                    <Zap className="w-3 h-3" />
-                    {currency}{archive.energy_cost.toFixed(2)}
-                  </div>
-                )}
+              <ArchiveEnergyFact archive={archive} currency={currency} className="flex items-center gap-1.5" iconClassName="w-3 h-3" />
             </div>
           )}
           {(archive.layer_height || archive.total_layers) && (
@@ -2318,16 +2314,15 @@ function ArchiveListRow({
             // bolt is what keeps them apart: the filament figure carries no
             // icon, so two bare amounts in a row would read as one number split
             // in half.
-            if (archive.energy_cost != null) {
+            if (hasEnergyFact(archive)) {
               facts.push(
-                <span
+                <ArchiveEnergyFact
                   key="energy"
+                  archive={archive}
+                  currency={rowCurrency}
                   className="flex items-center gap-1"
-                  title={`${t('stats.energyUsed')}: ${archive.energy_kwh?.toFixed(3) ?? 'N/A'} kWh`}
-                >
-                  <Zap className="w-2.5 h-2.5" />
-                  {rowCurrency}{archive.energy_cost.toFixed(2)}
-                </span>,
+                  iconClassName="w-2.5 h-2.5"
+                />,
               );
             }
             if (archive.total_layers) {

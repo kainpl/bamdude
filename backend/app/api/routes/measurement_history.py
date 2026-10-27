@@ -12,8 +12,9 @@ says so in its own docstring — the two must not be tidied into one shape.
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from backend.app.core.api_key_scope import sensor_in_key_scope
 from backend.app.core.auth import RequirePermission
@@ -66,6 +67,12 @@ async def get_plug_power_history(
     more than a chart can draw or a browser should be handed. Each point is the
     average over ``bucket_seconds``, which rides along so the reader can say so
     rather than presenting an average as an instant.
+
+    A reading received and found unusable (``unusable_reason``, spec
+    plug-meter-watchdog W3) is a hole, not a value: a bucket holding one is
+    ``None`` even beside valid readings -- filtering the marker out first would
+    let its neighbours fill the bucket and hide it. The statistics skip such a
+    moment entirely, a valid duplicate of it included.
     """
     if await db.get(SmartPlug, plug_id) is None:
         raise HTTPException(status_code=404, detail="No such plug.")
@@ -79,9 +86,14 @@ async def get_plug_power_history(
     # so there is no dialect branch to keep in sync.
     bucket_index = func.floor(func.extract("epoch", SmartPlugPowerHistory.recorded_at) / bucket)
 
+    usable = SmartPlugPowerHistory.unusable_reason.is_(None)
     rows = (
         await db.execute(
-            select(bucket_index.label("bucket"), func.avg(SmartPlugPowerHistory.power).label("power"))
+            select(
+                bucket_index.label("bucket"),
+                func.avg(case((usable, SmartPlugPowerHistory.power), else_=None)).label("power"),
+                func.count(SmartPlugPowerHistory.unusable_reason).label("marked"),
+            )
             .where(*window)
             .group_by(bucket_index)
             .order_by(bucket_index)
@@ -90,26 +102,39 @@ async def get_plug_power_history(
 
     # The statistics are taken over the READINGS, not the buckets: averaging
     # first would lose the peak, which is the one number the smoothed line
-    # cannot show.
+    # cannot show. Only usable moments: a valid duplicate of a marked moment is
+    # not one.
+    marker = aliased(SmartPlugPowerHistory)
+    marked_moment = (
+        select(marker.id)
+        .where(
+            marker.plug_id == SmartPlugPowerHistory.plug_id,
+            marker.recorded_at == SmartPlugPowerHistory.recorded_at,
+            marker.unusable_reason.is_not(None),
+        )
+        .exists()
+    )
     stats = (
         await db.execute(
             select(
                 func.min(SmartPlugPowerHistory.power),
                 func.avg(SmartPlugPowerHistory.power),
                 func.max(SmartPlugPowerHistory.power),
-            ).where(*window)
+            ).where(*window, usable, ~marked_moment)
         )
     ).one()
 
     # int(): SQLite returns the bucket index as a float, and range() would not
     # take it.
-    measured = {int(row.bucket): float(row.power) for row in rows if row.power is not None}
+    buckets = {int(row.bucket): row for row in rows}
+    measured = {index: float(row.power) for index, row in buckets.items() if row.power is not None and not row.marked}
     points = []
-    if measured:
+    if buckets:
         # From the first reading to the last, so a gap inside the span shows as
         # one -- and a plug added this morning still answers with an empty list
-        # rather than a window full of nulls.
-        for index in range(min(measured), max(measured) + 1):
+        # rather than a window full of nulls. A marker-only bucket at an edge
+        # still bounds the span: the hole it is must show.
+        for index in range(min(buckets), max(buckets) + 1):
             value = measured.get(index)
             points.append(
                 {

@@ -853,6 +853,11 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
                     await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()
                 await smart_plug_manager.stop_scheduler()
+                # Nothing buffered belongs to the storage that replaces this one, and no
+                # energy writer may estimate from it (spec plug-meter-watchdog W2, W10).
+                from backend.app.services.measurement_buffer import measurement_buffer
+
+                measurement_buffer.retire()
                 notification_service.stop_digest_scheduler()
                 await background_dispatch.stop()
                 await zigbee_supervisor.stop()

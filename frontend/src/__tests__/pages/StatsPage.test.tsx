@@ -235,6 +235,26 @@ describe('StatsPage', () => {
       });
     });
 
+    it('says how many printing figures are estimated or unknown, beside the numbers', async () => {
+      server.use(
+        http.get('/api/v1/statistics/overview', () =>
+          HttpResponse.json({
+            ...mockStats,
+            print_energy_kwh: 1.5,
+            print_energy_cost: 0.3,
+            print_energy_estimated: 2,
+            print_energy_unavailable: 1,
+          }),
+        ),
+      );
+      render(<StatsPage />);
+
+      const notes = await screen.findByTestId('print-energy-notes');
+      expect(notes).toHaveTextContent('2 prints are estimated from power history');
+      expect(notes).toHaveTextContent('1 print has no reliable energy figure and is not counted as zero');
+      expect(screen.getByText('≈ 1.500 kWh')).toBeInTheDocument();
+    });
+
     it('shows both energy costs — printing, and everything the plugs counted', async () => {
       // ⚠️ Two pairs since the display-mode setting went. One pair whose
       // meaning depended on a setting could not be read without opening
