@@ -130,3 +130,25 @@ class TestUnusable:
     def test_two_different_values_at_one_moment_are_a_conflict_not_a_choice(self):
         samples = every(60, 200.0) + [Sample(at(600), 150.0)]
         assert run(samples).covered_seconds == pytest.approx(3600 - 120)
+
+
+class TestWhatAnEstimateCannotKnow:
+    """A27, A31: the integral is of the readings, not of the load; neither the 100 Wh threshold nor an
+    estimate is a guarantee of the energy drawn."""
+
+    def test_short_peaks_landing_on_every_reading_are_integrated_as_a_steady_load(self):
+        # An idle plug whose one-second 2000 W peaks happen to coincide with its minute readings:
+        # the history says 2 kWh for an hour that drew about 33 Wh. Aliasing -- what the samples show.
+        result = run(every(60, 2000.0))
+        drawn_kwh = 2000.0 * 1 * 60 / 3600 / 1000
+        assert result.sufficient
+        assert result.kwh == pytest.approx(2.0)
+        assert result.kwh > 50 * drawn_kwh
+
+    def test_one_bridge_of_90_s_at_600_w_is_15_wh_whatever_was_drawn_between(self):
+        # Two readings 90 s apart, nothing between: inside the gap limit, so the line is drawn. Its
+        # trapezoid is G x P = 15 Wh -- the bound of one bridge, and already above 10 Wh.
+        result = run([Sample(at(0), 600.0), Sample(at(90), 600.0)], end=90)
+        assert result.sufficient
+        assert result.kwh * 1000 == pytest.approx(600.0 * 90 / 3600)
+        assert result.kwh * 1000 > 10.0

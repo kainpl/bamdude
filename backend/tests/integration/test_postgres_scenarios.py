@@ -148,6 +148,40 @@ def test_telemetry_day_window_on_postgres(tmp_path):
     assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
 
 
+# The suite runs every test under two server time zones; the outer watchdog outlives its budget.
+@pytest.mark.timeout(960)
+def test_plug_meter_watch_on_postgres(tmp_path):
+    """The plug meter watch on PostgreSQL: the flush's source fence, the episode's partial unique index
+    under a race, the archive merge under the advisory guard, rotations and policy changes from
+    independent sessions -- under UTC and a DST zone -- and m211 on a database from before it
+    (plug-meter-watchdog plan T9; A19, A26, A32)."""
+    url = _pg_url()
+    _wipe(url)
+    env = {
+        **os.environ,
+        "DATA_DIR": str(tmp_path),
+        "DISPATCH_TEST_POSTGRES_URL": _async_url(url),
+        "BAMDUDE_LOCK_ORDER_STRICT": "1",
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "backend/tests/integration/test_plug_meter_watch_on_postgres.py",
+            "-q",
+            "--timeout=120",
+            "--tb=short",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
+
+
 @pytest.mark.timeout(420)
 def test_queue_bulk_retry_concurrency(tmp_path):
     """The same real-runner matrix on independent PostgreSQL connections."""

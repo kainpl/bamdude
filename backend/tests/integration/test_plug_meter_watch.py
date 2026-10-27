@@ -1724,3 +1724,251 @@ async def test_a_history_over_budget_is_refused_before_it_is_read(db_session, te
     finally:
         event.remove(test_engine.sync_engine, "before_cursor_execute", count)
     assert chunks == []
+
+
+# ---- the rest of the acceptance matrix (A06, A09, A14, A15, A18, A29) ---------------------------
+
+
+async def test_a06_a_neighbour_decides_nothing(db_session, factory):
+    """Two plugs under the same load: only the one whose own counter stood still is suspected."""
+    now = datetime.now(timezone.utc)
+    stalled = await _plug(db_session, name="stalled")
+    healthy = await _plug(db_session, name="healthy")
+    for plug in (stalled, healthy):
+        await _power(db_session, plug.id, now - timedelta(hours=3), now, 200.0)
+    for minutes in (180, 120, 90):
+        await _snapshot(db_session, stalled.id, now - timedelta(minutes=minutes), 10.0)
+        await _snapshot(db_session, healthy.id, now - timedelta(minutes=minutes), 20.0 + (180 - minutes) / 300)
+
+    assert await MeterWatch().sweep(factory, 60, force=True) == 2
+
+    incidents = (await db_session.execute(select(SmartPlugMeterIncident))).scalars().all()
+    assert [incident.plug_id for incident in incidents] == [stalled.id]
+
+
+async def test_a09_an_estimate_never_reaches_the_counter_or_a_range_total(db_session, printer_factory, factory):
+    from backend.app.services.statistics.energy import sum_snapshot_deltas
+
+    def counter_rows():
+        return select(SmartPlugEnergySnapshot.recorded_at, SmartPlugEnergySnapshot.lifetime_kwh).order_by(
+            SmartPlugEnergySnapshot.id
+        )
+
+    printer, plug, archive = await _stalled_print(db_session, printer_factory)
+    before = (await db_session.execute(counter_rows())).all()
+    power_rows = await db_session.scalar(select(func.count()).select_from(SmartPlugPowerHistory))
+
+    with _end_reading(10.0):
+        await main._record_print_energy(archive.id, printer.id)
+
+    await db_session.refresh(archive)
+    assert archive.energy_kwh == pytest.approx(0.2, abs=1e-3)
+    after = (await db_session.execute(counter_rows())).all()
+    assert after[: len(before)] == before
+    # What the end read wrote is what the counter said, never the counter plus the estimate.
+    assert {row.lifetime_kwh for row in after} == {10.0}
+    assert await db_session.scalar(select(func.count()).select_from(SmartPlugPowerHistory)) == power_rows
+    total, _ = await sum_snapshot_deltas(db_session, dt_from=None, dt_to=None)
+    assert total == pytest.approx(0.0)
+
+
+async def _tariff(db, value: str):
+    from backend.app.models.settings import Settings
+
+    row = (await db.execute(select(Settings).where(Settings.key == "energy_cost_per_kwh"))).scalar_one_or_none()
+    if row is None:
+        db.add(Settings(key="energy_cost_per_kwh", value=value))
+    else:
+        row.value = value
+    await db.commit()
+
+
+async def test_a14_a_later_print_and_a_new_tariff_leave_an_earlier_figure_alone(db_session, printer_factory, factory):
+    """Two prints back to back over one flat counter: each is priced at the tariff of its own end, and
+    neither the next print nor a late callback of the first moves the first print's window."""
+    printer = await printer_factory()
+    plug = await _plug(db_session, printer.id)
+    base = datetime.now(timezone.utc) - timedelta(hours=3)
+    await _power(db_session, plug.id, base - timedelta(minutes=1), base + timedelta(minutes=121), 200.0)
+    for minutes in (0, 30, 90):
+        await _snapshot(db_session, plug.id, base + timedelta(minutes=minutes), 10.0)
+    first = await _archive(db_session, printer.id, plug, base, base + timedelta(minutes=60), 10.0)
+    second = await _archive(
+        db_session, printer.id, plug, base + timedelta(minutes=60), base + timedelta(minutes=120), 10.0
+    )
+
+    await _tariff(db_session, "0.20")
+    with _end_reading(10.0):
+        await main._record_print_energy(first.id, printer.id)
+    await db_session.refresh(first)
+    settled = (first.energy_kwh, first.energy_cost, dict(first.extra_data))
+    assert first.energy_cost == pytest.approx(first.energy_kwh * 0.20)
+
+    await _tariff(db_session, "0.50")
+    with _end_reading(10.0):
+        await main._record_print_energy(second.id, printer.id)
+        await main._record_print_energy(first.id, printer.id)  # a late callback of the first
+
+    await db_session.refresh(first)
+    await db_session.refresh(second)
+    assert (first.energy_kwh, first.energy_cost, first.extra_data) == settled
+    assert second.energy_kwh == pytest.approx(0.2, abs=1e-3)
+    assert second.energy_cost == pytest.approx(second.energy_kwh * 0.50)
+
+
+async def test_a15_a_print_never_waits_for_a_sweep_that_is_still_evaluating(
+    db_session, printer_factory, real_sessions, monkeypatch
+):
+    """The evaluation runs outside the source lock: while a sweep is half way through a plug, a print's
+    start reading and the history flush go through -- the watch is no gate on the print path."""
+    import asyncio
+    import threading
+
+    from backend.app.services import meter_watch as watch
+
+    printer = await printer_factory()
+    plug = await _plug(db_session, printer.id)
+    now = datetime.now(timezone.utc)
+    await _power(db_session, plug.id, now - timedelta(hours=2), now, 200.0)
+    for minutes in (120, 60, 5):
+        await _snapshot(db_session, plug.id, now - timedelta(minutes=minutes), 10.0)
+    loop = asyncio.get_running_loop()
+    evaluating = asyncio.Event()
+    release = threading.Event()
+    real_detect = watch.detect
+
+    def held_detect(*args, **kwargs):
+        loop.call_soon_threadsafe(evaluating.set)
+        release.wait(30)
+        return real_detect(*args, **kwargs)
+
+    monkeypatch.setattr(watch, "detect", held_detect)
+    sweep = asyncio.create_task(MeterWatch().sweep(real_sessions, 60, force=True))
+    try:
+        await asyncio.wait_for(evaluating.wait(), 10)
+        archive = PrintArchive(printer_id=printer.id, filename="a.3mf", file_path="", file_size=1, status="printing")
+        db_session.add(archive)
+        await db_session.commit()
+        with _end_reading(10.0):
+            assert await asyncio.wait_for(main._record_energy_start(archive, printer.id, db_session), 5) is True
+        measurement_buffer.record_power(plug.id, 200.0, source_token=TOKEN)
+        async with real_sessions() as db:
+            assert await asyncio.wait_for(flush_buffered(db), 5) == 1
+        assert not sweep.done()
+    finally:
+        release.set()
+        await sweep
+
+
+@pytest.mark.parametrize(
+    ("plug_type", "fields"),
+    [
+        ("mqtt", {}),
+        ("tasmota", {"ip_address": "192.0.2.20"}),
+        ("rest", {"rest_status_url": "http://192.0.2.21/status"}),
+        ("home_assistant", {"ha_entity_id": "switch.printer"}),
+        ("zigbee", {}),
+    ],
+)
+async def test_a18_the_watch_never_asks_a_device(plug_type, fields, db_session, factory, monkeypatch):
+    """Each of the five plug types is judged from what is already stored: the sweep resolves no driver
+    -- no reading, no refresh, no switching."""
+    from backend.app.services.smart_plug_manager import smart_plug_manager
+
+    asked = []
+
+    async def no_device(*args, **kwargs):
+        asked.append(args)
+        raise AssertionError("the meter watch asked a device")
+
+    monkeypatch.setattr(smart_plug_manager, "get_service_for_plug", no_device)
+    now = datetime.now(timezone.utc)
+    plug = await _plug(db_session, plug_type=plug_type, **fields)
+    await _power(db_session, plug.id, now - timedelta(hours=2), now, 200.0)
+    for minutes in (120, 60, 5):
+        await _snapshot(db_session, plug.id, now - timedelta(minutes=minutes), 10.0)
+
+    assert await MeterWatch().sweep(factory, 60, force=True) == 1
+
+    incident = (await db_session.execute(select(SmartPlugMeterIncident))).scalar_one()
+    assert (incident.plug_id, incident.status) == (plug.id, "active")
+    assert asked == []
+
+
+def _interleavings() -> list[str]:
+    """Every order of the flush's hand-off D (take into flight) < C (commit) < A (acknowledge) with the
+    reader's M (memory copy) < Q (fresh read of the database): ten (consilium r3, O12)."""
+    from itertools import combinations
+
+    orders = []
+    for m, q in combinations(range(5), 2):
+        handoff = iter("DCA")
+        orders.append("".join("M" if slot == m else "Q" if slot == q else next(handoff) for slot in range(5)))
+    return orders
+
+
+async def _handoff_step(step: str, sessions, state: dict):
+    from backend.app.services.measurement_history import _write_power
+
+    if step == "D":
+        state["taken"] = measurement_buffer.take_power()
+    elif step == "C":
+        async with sessions() as db:
+            await _write_power(db, state["taken"])
+            await db.commit()
+    elif step == "A":
+        measurement_buffer.ack_power()
+
+
+@pytest.mark.parametrize("order", _interleavings())
+async def test_a29_a_reading_is_never_lost_whatever_the_flush_does_meanwhile(
+    order, db_session, real_sessions, monkeypatch
+):
+    from backend.app.services import meter_watch as watch
+    from backend.app.services.meter_source import cadence_of
+
+    plug = await _plug(db_session)
+    measurement_buffer.record_power(plug.id, 200.0, source_token=TOKEN)
+    state: dict = {}
+    before_m, rest = order.split("M")
+    between, after_q = rest.split("Q")
+    real_rows = watch._power_rows
+
+    async def rows_after_the_copy(db, plug_, start, end):
+        for step in between:
+            await _handoff_step(step, real_sessions, state)
+        return await real_rows(db, plug_, start, end)
+
+    monkeypatch.setattr(watch, "_power_rows", rows_after_the_copy)
+    for step in before_m:
+        await _handoff_step(step, real_sessions, state)
+    now = datetime.now(timezone.utc)
+    history = await watch.read_history(
+        real_sessions, plug, now - timedelta(minutes=10), now + timedelta(minutes=1), cadence_of(plug, 60)
+    )
+    for step in after_q:
+        await _handoff_step(step, real_sessions, state)
+
+    assert len(_interleavings()) == 10
+    assert [(point.watts, point.usable) for point in history.power] == [(200.0, True)]
+
+
+async def test_a29_reading_the_database_before_the_memory_would_lose_the_reading(db_session, real_sessions):
+    """The negative control: Q before D and M after A -- the order the reader must never take -- sees
+    the reading in neither place, so the ten orders above do not pass by construction."""
+    from backend.app.services import meter_watch as watch
+
+    plug = await _plug(db_session)
+    measurement_buffer.record_power(plug.id, 200.0, source_token=TOKEN)
+    now = datetime.now(timezone.utc)
+    state: dict = {}
+
+    async with real_sessions() as db:
+        rows = await watch._power_rows(db, plug, now - timedelta(minutes=10), now + timedelta(minutes=1))
+    for step in "DCA":
+        await _handoff_step(step, real_sessions, state)
+    memory, _ = measurement_buffer.peek_power(plug.id)
+
+    assert rows == [] and memory == []
+    async with real_sessions() as db:  # it did land: the reader only looked in the wrong order
+        assert await db.scalar(select(func.count()).select_from(SmartPlugPowerHistory)) == 1

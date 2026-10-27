@@ -62,9 +62,13 @@ async def test_the_query_index_exists(tmp_path):
 async def test_the_models_and_the_migration_agree_on_the_columns(tmp_path):
     """A table is created in two places — the model for fresh installs and the
     migration for existing ones. They drift in silence, and only one of them is
-    exercised by everything else."""
+    exercised by everything else.
+
+    The model is today's, so it is compared with m125 AND every later migration
+    that adds to these tables — m211 (the power history's unusable-reading
+    marker). A new one that adds a column here belongs in this chain too."""
     from backend.app.core.database import Base
-    from backend.app.migrations import m125_measurement_history as m
+    from backend.app.migrations import m125_measurement_history as m, m211_plug_meter_watch as m211
 
     # The referenced tables have to be on the metadata too, or create_all
     # cannot resolve the foreign keys — importing only the two new models
@@ -94,7 +98,13 @@ async def test_the_models_and_the_migration_agree_on_the_columns(tmp_path):
 
     upgraded = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'upgraded.db'}")
     async with upgraded.begin() as conn:
+        # The tables the history hangs off exist before m125 on a real install; m211 adds to them too.
+        await conn.run_sync(
+            Base.metadata.create_all,
+            tables=[Base.metadata.tables[t] for t in ("smart_plugs", "smart_sensors", "printer_locations")],
+        )
         await m.upgrade(conn)
+        await m211.upgrade(conn)
         from_migration = await conn.run_sync(columns_of)
     await upgraded.dispose()
 
