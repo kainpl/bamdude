@@ -1469,3 +1469,174 @@ async def test_unknown_commit_markers_survive_overflow_through_the_database(db_s
     )
     window = integrate(history.power, moments[0], moments[100], gap_limit=180, edge_limit=180)
     assert not window.sufficient, window
+
+
+# ---- review r2 MW2-R1 / MW2-R2 -----------------------------------------------------------------
+
+
+async def test_review_r2_writer_preserves_heavy_print_despite_old_quiet_history(db_session, printer_factory, factory):
+    """MW2-R1 end to end: two quiet hours long before the print must not hide the print's 200 Wh."""
+    printer, plug, start, end = await _print(db_session, printer_factory)
+    await _power(db_session, plug.id, start - timedelta(hours=4), start - timedelta(hours=2), 10.0)
+    await _power(db_session, plug.id, start, end, 200.0)
+    for hours in (4, 3, 2, 1):
+        await _snapshot(db_session, plug.id, start - timedelta(hours=hours), 10.0)
+    await _snapshot(db_session, plug.id, start, 10.0)
+    archive = await _archive(db_session, printer.id, plug, start, end, 10.0)
+
+    with _end_reading(10.0):
+        await main._record_print_energy(archive.id, printer.id)
+
+    await db_session.refresh(archive)
+    assert archive.energy_kwh == pytest.approx(0.2, abs=1e-3)
+    assert archive.extra_data["energy_provenance"]["kind"] == "estimated"
+
+
+async def _watched_plug(db, *, min_wh=None, mqtt_interval=None):
+    """A plug whose last two hours are flat under 200 W -- 400 Wh the counter missed."""
+    now = datetime.now(timezone.utc)
+    plug = await _plug(db, meter_min_expected_wh=min_wh, mqtt_expected_power_interval_seconds=mqtt_interval)
+    await _power(db, plug.id, now - timedelta(hours=2), now, 200.0)
+    for minutes in (120, 60, 5):
+        await _snapshot(db, plug.id, now - timedelta(minutes=minutes), 10.0)
+    return plug
+
+
+async def _change_policy(sessions, plug_id, **fields):
+    """The real plug route, in a session of its own."""
+    from backend.app.api.routes.smart_plugs import update_smart_plug
+    from backend.app.schemas.smart_plug import SmartPlugUpdate
+
+    async with sessions() as db:
+        await update_smart_plug(plug_id, SmartPlugUpdate(**fields), db, None)
+
+
+async def _episodes(sessions):
+    async with sessions() as db:
+        active = (
+            (await db.execute(select(SmartPlugMeterIncident).where(SmartPlugMeterIncident.status == "active")))
+            .scalars()
+            .all()
+        )
+        inbox = await db.scalar(
+            select(func.count()).select_from(UserNotification).where(UserNotification.event_type == EVENT)
+        )
+        plug = (await db.execute(select(SmartPlug))).scalar_one()
+    return active, inbox, plug
+
+
+async def _sweep_changing_policy_after_read(sessions, monkeypatch, plug_id, **fields):
+    from backend.app.services import meter_watch as watch
+
+    original = watch.read_history
+
+    async def change_after_read(*args, **kwargs):
+        history = await original(*args, **kwargs)
+        await _change_policy(sessions, plug_id, **fields)
+        return history
+
+    monkeypatch.setattr(watch, "read_history", change_after_read)
+    concluded = await MeterWatch()._evaluate_plug(sessions, plug_id, 60)
+    monkeypatch.setattr(watch, "read_history", original)
+    return concluded
+
+
+async def test_review_r2_policy_change_during_read_does_not_open_old_threshold_episode(
+    db_session, real_sessions, monkeypatch
+):
+    """MW2-R2: the threshold rises to 500 Wh while the sweep reads 400 Wh -- no episode, no warning, and
+    the route's cursor reset survives, so the next sweep evaluates under the new threshold."""
+    plug = await _watched_plug(db_session)
+    await _user(db_session)
+
+    assert (
+        await _sweep_changing_policy_after_read(real_sessions, monkeypatch, plug.id, meter_min_expected_wh=500) is False
+    )
+    active, inbox, current = await _episodes(real_sessions)
+    assert (active, inbox, current.meter_watch_cursor) == ([], 0, None)
+
+    await MeterWatch()._evaluate_plug(real_sessions, plug.id, 60)
+    active, inbox, current = await _episodes(real_sessions)
+    assert (active, inbox) == ([], 0)
+    assert current.meter_watch_cursor is not None  # evaluated, under 500 Wh
+
+
+async def test_review_r2_a_lowered_threshold_is_evaluated_again_not_lost(db_session, real_sessions, monkeypatch):
+    plug = await _watched_plug(db_session, min_wh=1000.0)
+    await _user(db_session)
+
+    assert (
+        await _sweep_changing_policy_after_read(real_sessions, monkeypatch, plug.id, meter_min_expected_wh=200) is False
+    )
+    active, _, current = await _episodes(real_sessions)
+    assert (active, current.meter_watch_cursor) == ([], None)
+
+    await MeterWatch()._evaluate_plug(real_sessions, plug.id, 60)
+    active, inbox, _ = await _episodes(real_sessions)
+    assert len(active) == 1 and inbox == 1
+
+
+async def test_review_r2_an_mqtt_interval_change_during_read_discards_the_evaluation(
+    db_session, real_sessions, monkeypatch
+):
+    plug = await _watched_plug(db_session)
+
+    assert (
+        await _sweep_changing_policy_after_read(
+            real_sessions, monkeypatch, plug.id, mqtt_expected_power_interval_seconds=60
+        )
+        is False
+    )
+    active, _, current = await _episodes(real_sessions)
+    assert (active, current.meter_watch_cursor) == ([], None)
+
+
+async def test_review_r2_a_policy_change_cannot_land_between_the_check_and_the_commit(
+    db_session, real_sessions, monkeypatch
+):
+    """The barrier: the route waits for the sweep's commit, then its cursor reset stands."""
+    import asyncio
+
+    from backend.app.services import meter_watch as watch
+
+    plug = await _watched_plug(db_session)
+    real_apply = watch.MeterWatch.apply
+    route = {}
+
+    async def apply_while_the_route_tries(self, db, plug_, detection, incident, now_, counters=()):
+        route["task"] = asyncio.create_task(_change_policy(real_sessions, plug_.id, meter_min_expected_wh=500))
+        await asyncio.sleep(0.2)
+        route["blocked"] = not route["task"].done()
+        await real_apply(self, db, plug_, detection, incident, now_, counters)
+
+    monkeypatch.setattr(watch.MeterWatch, "apply", apply_while_the_route_tries)
+    assert await MeterWatch()._evaluate_plug(real_sessions, plug.id, 60) is True
+    await route["task"]
+
+    assert route["blocked"] is True
+    _, _, current = await _episodes(real_sessions)
+    assert (current.meter_min_expected_wh, current.meter_watch_cursor) == (500, None)
+
+
+async def test_review_r2_a_print_opens_no_episode_under_a_policy_it_did_not_assess(db_session, real_sessions):
+    from backend.app.services import meter_watch as watch
+    from backend.app.services.meter_detector import Detection, FlatSeries
+    from backend.app.services.power_integrator import Integration
+
+    now = datetime.now(timezone.utc)
+    plug = await _plug(db_session)
+    await _user(db_session)
+    assessed = SmartPlug(
+        id=plug.id,
+        measurement_source_id=plug.measurement_source_id,
+        measurement_source_since=plug.measurement_source_since,
+        meter_min_expected_wh=None,
+        mqtt_expected_power_interval_seconds=None,
+    )
+    await _change_policy(real_sessions, plug.id, meter_min_expected_wh=500)
+    series = FlatSeries(now - timedelta(hours=1), now, 10.0, Integration(0.2, 3600, 3600, 60, 60, 0, 0, ()))
+
+    opened = await watch.open_incident_from_print(real_sessions, assessed, Detection("suspicious", [series]), now)
+
+    active, inbox, _ = await _episodes(real_sessions)
+    assert (opened, active, inbox) == (None, [], 0)

@@ -115,6 +115,35 @@ async def read_source(db, plug_id: int) -> tuple[str | None, datetime | None] | 
     return None if row is None else (row[0], row[1])
 
 
+def watch_basis(plug) -> tuple:
+    """What an evaluation of the plug's history rests on (review r2 MW2-R2): its source and cutoff, and
+    the watch policy -- the threshold and the MQTT publish interval. A policy change keeps the source
+    (the same meter), yet a result reached under the old policy is not the plug's any more."""
+    return (
+        plug.measurement_source_id,
+        plug.measurement_source_since,
+        plug.meter_min_expected_wh,
+        plug.mqtt_expected_power_interval_seconds,
+    )
+
+
+async def read_watch_basis(db, plug_id: int) -> tuple | None:
+    """``watch_basis`` as the database holds it now -- a fresh column read; None for no plug."""
+    from backend.app.models.smart_plug import SmartPlug
+
+    row = (
+        await db.execute(
+            select(
+                SmartPlug.measurement_source_id,
+                SmartPlug.measurement_source_since,
+                SmartPlug.meter_min_expected_wh,
+                SmartPlug.mqtt_expected_power_interval_seconds,
+            ).where(SmartPlug.id == plug_id)
+        )
+    ).first()
+    return None if row is None else tuple(row)
+
+
 def admits(source, token: str | None, moment: datetime) -> bool:
     """Whether a fact captured under ``token`` at ``moment`` belongs to the plug's current source (W2).
 
@@ -165,12 +194,25 @@ async def rotate_source(db, plug, now: datetime | None = None) -> str:
     plug.measurement_source_id = new_token()
     plug.measurement_source_since = cutoff
     plug.meter_watch_cursor = None
+    await reset_watch_cursor(db, plug.id)
     await db.execute(
         update(SmartPlugMeterIncident)
         .where(SmartPlugMeterIncident.plug_id == plug.id, SmartPlugMeterIncident.status == "active")
         .values(status="closed", closed_at=current, close_reason="source_changed")
     )
     return plug.measurement_source_id
+
+
+async def reset_watch_cursor(db, plug_id: int) -> None:
+    """Clear the sweep's cursor in SQL, whatever the caller's session loaded.
+
+    The caller holds ``source_guard``. Setting the attribute is not enough: a session that loaded the
+    plug before a sweep committed its cursor still holds the old value, and assigning the same value
+    again is no change to the ORM -- the reset would be silently lost (review r2 MW2-R2).
+    """
+    from backend.app.models.smart_plug import SmartPlug
+
+    await db.execute(update(SmartPlug).where(SmartPlug.id == plug_id).values(meter_watch_cursor=None))
 
 
 def phantom_risk(plug) -> bool:

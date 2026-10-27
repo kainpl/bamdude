@@ -147,3 +147,55 @@ def test_a_long_flat_day_with_holes_is_evaluated_within_budget():
 
     assert result.state == "suspicious"
     assert elapsed < 2.0, elapsed
+
+
+# ---- review r2 MW2-R1: the energy threshold is part of choosing the stretch ---------------------
+
+
+def _quiet_then_heavy():
+    """Two quiet hours (10 W = 20 Wh), two hours without history, one heavy hour (200 W = 200 Wh)."""
+    quiet = [Sample(at(t), 10.0) for t in range(0, 2 * 3600 + 1, 60)]
+    heavy = [Sample(at(t), 200.0) for t in range(4 * 3600, 5 * 3600 + 1, 60)]
+    return quiet, heavy
+
+
+def test_review_r2_heavy_short_stretch_is_not_hidden_by_long_quiet_stretch():
+    quiet, heavy = _quiet_then_heavy()
+    hourly = counters(*[(h * 3600, 10.0) for h in range(6)])
+
+    result = run(hourly, normalize(quiet + heavy))
+
+    assert result.state == "suspicious"
+    (series,) = result.suspicious
+    assert series.integral.kwh == pytest.approx(0.2)
+
+
+def test_review_r2_the_mirrored_order_finds_the_heavy_stretch_too():
+    heavy = [Sample(at(t), 200.0) for t in range(0, 3600 + 1, 60)]
+    quiet = [Sample(at(t), 10.0) for t in range(3 * 3600, 5 * 3600 + 1, 60)]
+    hourly = counters(*[(h * 3600, 10.0) for h in range(6)])
+
+    result = run(hourly, normalize(heavy + quiet))
+
+    assert result.state == "suspicious"
+    assert result.suspicious[0].integral.kwh == pytest.approx(0.2)
+
+
+def test_review_r2_a_plugs_own_threshold_decides():
+    quiet, heavy = _quiet_then_heavy()
+    hourly = counters(*[(h * 3600, 10.0) for h in range(6)])
+    points = normalize(quiet + heavy)
+
+    assert run(hourly, points, min_wh=150.0).suspicious
+    assert run(hourly, points, min_wh=250.0).suspicious == []
+
+
+def test_review_r2_no_stretch_reaching_the_threshold_is_no_signal():
+    quiet = [Sample(at(t), 10.0) for t in range(0, 2 * 3600 + 1, 60)]
+    light = [Sample(at(t), 50.0) for t in range(4 * 3600, 5 * 3600 + 1, 60)]  # 50 Wh
+    hourly = counters(*[(h * 3600, 10.0) for h in range(6)])
+
+    result = run(hourly, normalize(quiet + light))
+
+    assert result.suspicious == []
+    assert result.state != "suspicious"

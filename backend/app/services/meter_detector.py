@@ -103,12 +103,15 @@ class _History:
         return integrate(self.points[lo:hi], start, end, gap_limit=gap_limit, edge_limit=edge_limit)
 
 
-def _proven_stretch(run, history: _History, *, gap_limit: float, edge_limit: float):
-    """The longest stretch of ``run`` the history covers well enough, as (start, end, energy kWh).
+def _proven_stretch(run, history: _History, *, gap_limit: float, edge_limit: float, min_kwh: float):
+    """The longest stretch of ``run`` that meets EVERY condition of a suspicion -- at least ``MIN_FLAT``
+    long, covered well enough at both edges, and at least ``min_kwh`` of energy -- as (start, end,
+    energy kWh), or None; and whether any stretch at all is covered well enough.
 
-    Coverage, energy and the edges are added up per pair of neighbouring counter points -- exactly
-    what one integral over the stretch gives, because the integrator clips segments linearly at the
-    window's edges. None when no stretch of at least ``MIN_FLAT`` is covered.
+    The energy is a condition of the choice, never a test of one winner chosen by length (review r2
+    MW2-R1): two quiet covered hours must not hide a shorter heavy one. Coverage, energy and the edges
+    are added up per pair of neighbouring counter points -- exactly what one integral over the stretch
+    gives, because the integrator clips segments linearly at the window's edges.
     """
     times = [c.at for c in run]
     parts = [
@@ -128,6 +131,7 @@ def _proven_stretch(run, history: _History, *, gap_limit: float, edge_limit: flo
     for m in range(len(parts)):
         prev_covered[m] = m if parts[m].covered_seconds > 0 else (prev_covered[m - 1] if m else None)
     best = None
+    any_covered = False
     for i in range(len(parts)):
         first = next_covered[i]
         if first is None:
@@ -144,10 +148,13 @@ def _proven_stretch(run, history: _History, *, gap_limit: float, edge_limit: flo
             tail = (times[j] - times[last + 1]).total_seconds() + parts[last].tail_gap
             if tail > edge_limit or (covered[j] - covered[i]) / span < MIN_COVERAGE - 1e-12:
                 continue
+            any_covered = True
+            if energy[j] - energy[i] < min_kwh - 1e-12:
+                continue  # covered but light: a shorter stretch from i may still be heavy enough
             if best is None or span > best[3] or (span == best[3] and times[j] > best[1]):
                 best = (times[i], times[j], energy[j] - energy[i], span)
             break
-    return None if best is None else best[:3]
+    return (None if best is None else best[:3]), any_covered
 
 
 def detect(
@@ -168,10 +175,13 @@ def detect(
         start, end = run[0].at, run[-1].at
         run_state = "short"
         if len(run) >= 2 and end - start >= MIN_FLAT:
-            proven = _proven_stretch(run, history, gap_limit=gap_limit, edge_limit=edge_limit)
+            proven, any_covered = _proven_stretch(
+                run, history, gap_limit=gap_limit, edge_limit=edge_limit, min_kwh=min_wh / 1000.0
+            )
             if proven is None:
-                run_state = "insufficient"
-            elif proven[2] * 1000.0 >= min_wh:
+                # Covered somewhere but nowhere heavy enough is a healthy zero; covered nowhere is not known.
+                run_state = "short" if any_covered else "insufficient"
+            else:
                 integral = history.integrate(proven[0], proven[1], gap_limit=gap_limit, edge_limit=edge_limit)
                 if integral.sufficient:  # the sums agree with one integral; never trust them over it
                     detection.suspicious.append(FlatSeries(start, end, run[0].total_kwh, integral))

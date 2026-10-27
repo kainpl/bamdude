@@ -692,7 +692,13 @@ async def update_smart_plug(
     _: User | None = RequirePermission(Permission.SMART_PLUGS_UPDATE),
 ):
     """Update a smart plug."""
-    from backend.app.services.meter_source import identity_of, phantom_risk, rotate_source, source_guard
+    from backend.app.services.meter_source import (
+        identity_of,
+        phantom_risk,
+        reset_watch_cursor,
+        rotate_source,
+        source_guard,
+    )
 
     result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
     plug = result.scalar_one_or_none()
@@ -759,12 +765,18 @@ async def update_smart_plug(
     # What the readings mean changed: a new measurement source, with a strict cutoff, in the same
     # step as the flush's token check (spec plug-meter-watchdog W2). A rename rotates nothing.
     rotated = identity_of(plug) != identity_before
-    if (plug.meter_min_expected_wh, plug.mqtt_expected_power_interval_seconds) != watch_policy_before:
+    policy_changed = (plug.meter_min_expected_wh, plug.mqtt_expected_power_interval_seconds) != watch_policy_before
+    if policy_changed:
         # The same source under another policy: its last day is evaluated again (spec r4 W4/W5).
         plug.meter_watch_cursor = None
-    if rotated:
+    if rotated or policy_changed:
+        # Under the lock the sweep checks its basis under, so an evaluation of the old source or the
+        # old policy is either committed before this or discarded after it (review r2 MW2-R2).
         async with source_guard():
-            await rotate_source(db, plug)
+            if rotated:
+                await rotate_source(db, plug)
+            else:
+                await reset_watch_cursor(db, plug.id)
             await db.commit()
     else:
         await db.commit()

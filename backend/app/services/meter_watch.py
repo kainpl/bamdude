@@ -34,8 +34,9 @@ from backend.app.services.meter_source import (
     cadence_of,
     min_expected_wh,
     naive_utc,
-    read_source,
+    read_watch_basis,
     source_guard,
+    watch_basis,
 )
 from backend.app.services.power_integrator import Integration, Sample, as_utc, integrate, normalize
 
@@ -448,12 +449,14 @@ class MeterWatch:
                 edge_limit=cadence.edge_seconds,
                 min_wh=min_expected_wh(plug),
             )
-            # The history was read for this source: conclude nothing for another one (review r1
-            # MW-R6). The read transaction ends first -- on SQLite it would still see the old row --
-            # and the check, the episode and the cursor commit under the lock a rotation holds.
+            # The history was read and judged for this source under this policy: conclude nothing for
+            # another one (review r1 MW-R6, r2 MW2-R2). The read transaction ends first -- on SQLite it
+            # would still see the old row -- and the check, the episode and the cursor commit under the
+            # lock every writer of the source and the policy holds; a discarded result writes no cursor,
+            # so a reset the route made stands.
             await db.commit()
             async with source_guard():
-                if (await read_source(db, plug.id)) != (plug.measurement_source_id, plug.measurement_source_since):
+                if (await read_watch_basis(db, plug.id)) != watch_basis(plug):
                     await db.rollback()
                     logger.info(
                         "Meter watch: plug %s was reconfigured during its evaluation; nothing concluded", plug_id
@@ -557,11 +560,14 @@ async def open_incident_from_print(session_factory, plug, detection: Detection, 
     if not detection.suspicious:
         return None
     # Read once: after a refused flush the session's objects are expired and must not be touched.
-    plug_id, source_id = plug.id, plug.measurement_source_id
+    plug_id, basis = plug.id, watch_basis(plug)
     async with source_guard(), session_factory() as db:
-        # Under the lock a rotation holds: an episode is opened only for the source still in place.
+        # Under the lock every writer of the source and the policy holds: an episode is opened only for
+        # the source and the policy the print was assessed under (review r2 MW2-R2).
+        if (await read_watch_basis(db, plug_id)) != basis:
+            return None
         fresh = await db.get(SmartPlug, plug_id)
-        if fresh is None or fresh.measurement_source_id != source_id:
+        if fresh is None:
             return None
         existing = (
             await db.execute(
