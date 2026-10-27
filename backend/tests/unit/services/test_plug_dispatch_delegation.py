@@ -137,7 +137,11 @@ class TestTheEndOfAPrintAsksThePlugItself:
             energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, completed_at=None, extra_data=None
         )
         db = SimpleNamespace(
-            get=AsyncMock(return_value=archive), commit=AsyncMock(), scalar=AsyncMock(return_value=None)
+            get=AsyncMock(return_value=archive),
+            commit=AsyncMock(),
+            scalar=AsyncMock(return_value=None),
+            # The plug's source as read before a snapshot and under the write: a pre-m211 plug's.
+            execute=AsyncMock(return_value=SimpleNamespace(first=lambda: (None, None))),
         )
 
         @asynccontextmanager
@@ -185,7 +189,11 @@ class TestTheEndOfAPrintAsksThePlugItself:
             energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, completed_at=None, extra_data={"notes": "x"}
         )
         db = SimpleNamespace(
-            get=AsyncMock(return_value=archive), commit=AsyncMock(), scalar=AsyncMock(return_value=None)
+            get=AsyncMock(return_value=archive),
+            commit=AsyncMock(),
+            scalar=AsyncMock(return_value=None),
+            # The plug's source as read before a snapshot and under the write: a pre-m211 plug's.
+            execute=AsyncMock(return_value=SimpleNamespace(first=lambda: (None, None))),
         )
 
         @asynccontextmanager
@@ -225,7 +233,11 @@ class TestTheEndOfAPrintAsksThePlugItself:
             energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, completed_at=None, extra_data={}
         )
         db = SimpleNamespace(
-            get=AsyncMock(return_value=archive), commit=AsyncMock(), scalar=AsyncMock(return_value=None)
+            get=AsyncMock(return_value=archive),
+            commit=AsyncMock(),
+            scalar=AsyncMock(return_value=None),
+            # The plug's source as read before a snapshot and under the write: a pre-m211 plug's.
+            execute=AsyncMock(return_value=SimpleNamespace(first=lambda: (None, None))),
         )
 
         @asynccontextmanager

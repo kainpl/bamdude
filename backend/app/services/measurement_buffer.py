@@ -30,6 +30,13 @@ the batch back; a commit whose outcome is unknown turns it into
 than silently empty. Overflow drops the OLDEST readings and keeps where they
 were, per plug and source, as ``buffer_loss`` markers. One short thread lock,
 no await under it: MQTT readings arrive on paho's thread.
+
+Overflow never drops a ``batch_unknown`` marker (review r1 MW-R3): its commit
+may have landed, so the database may hold a valid copy of that moment, and only
+the marker beside it keeps the copy unusable -- two edge markers of a loss span
+would leave every copy between them usable again. The markers wait in their own
+queue and newer readings give way to them instead. Memory stays bounded: the
+markers come from one in-flight batch, which never holds more than the buffer.
 """
 
 from __future__ import annotations
@@ -92,6 +99,8 @@ class MeasurementBuffer:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._power: deque[PowerSample] = deque()
+        # Markers of a commit whose outcome is unknown: never evicted (see the module docstring).
+        self._unknown: deque[PowerSample] = deque()
         # deque with maxlen drops from the LEFT when full, keeping the newest —
         # which is the right end to lose: an old reading nobody has drawn yet
         # matters less than the one describing what is happening now.
@@ -148,12 +157,23 @@ class MeasurementBuffer:
             logger.debug("Measurement buffer: sensor reading ignored: %s", exc)
 
     def _append(self, sample: PowerSample) -> None:
-        while len(self._power) >= MAX_BUFFERED:
-            dropped = self._power.popleft()
-            span = self._loss.setdefault((dropped.plug_id, dropped.source_token), [dropped.recorded_at] * 2)
-            span[0] = min(span[0], dropped.recorded_at)
-            span[1] = max(span[1], dropped.recorded_at)
+        """Keep ``sample`` within the bound; what gives way is the oldest ordinary reading, never a marker
+        of an unknown commit -- and when only those markers are left, the new reading itself."""
+        while len(self._unknown) + len(self._power) >= MAX_BUFFERED and self._power:
+            self._lose(self._power.popleft())
+        if len(self._unknown) + len(self._power) >= MAX_BUFFERED:
+            self._lose(sample)
+            return
         self._power.append(sample)
+
+    def _lose(self, dropped: PowerSample) -> None:
+        span = self._loss.setdefault((dropped.plug_id, dropped.source_token), [dropped.recorded_at] * 2)
+        span[0] = min(span[0], dropped.recorded_at)
+        span[1] = max(span[1], dropped.recorded_at)
+
+    def _trim(self) -> None:
+        while len(self._unknown) + len(self._power) > MAX_BUFFERED and self._power:
+            self._lose(self._power.popleft())
 
     def _loss_markers(self) -> list[PowerSample]:
         markers = []
@@ -169,7 +189,8 @@ class MeasurementBuffer:
         with self._lock:
             if self._in_flight:  # one flush at a time; the previous batch is still unanswered
                 return []
-            batch = list(self._power) + self._loss_markers()
+            batch = list(self._unknown) + list(self._power) + self._loss_markers()
+            self._unknown.clear()
             self._power.clear()
             self._loss.clear()
             self._in_flight = batch
@@ -188,14 +209,24 @@ class MeasurementBuffer:
     def mark_unknown(self) -> None:
         """The in-flight batch's commit has an unknown outcome: each reading's moment becomes a marker."""
         with self._lock:
-            self._requeue([replace(s, power=0.0, reason=BATCH_UNKNOWN) for s in self._in_flight])
+            self._requeue(
+                [s if s.reason == BUFFER_LOSS else replace(s, power=0.0, reason=BATCH_UNKNOWN) for s in self._in_flight]
+            )
 
     def _requeue(self, older: list[PowerSample]) -> None:
-        newer = list(self._power)
-        self._power.clear()
+        """Put a batch back: its unknown-commit markers into their own queue, its loss edges back into their
+        spans, its readings in front of the newer ones -- then the oldest ordinary readings give way."""
         self._in_flight = []
-        for sample in older + newer:
-            self._append(sample)
+        readings = []
+        for sample in older:
+            if sample.reason == BATCH_UNKNOWN:
+                self._unknown.append(sample)
+            elif sample.reason == BUFFER_LOSS:
+                self._lose(sample)
+            else:
+                readings.append(sample)
+        self._power.extendleft(reversed(readings))
+        self._trim()
 
     # ---- readers --------------------------------------------------------------
 
@@ -206,7 +237,8 @@ class MeasurementBuffer:
         and only then opens a fresh database read: a reading is then in one of the two, or in both.
         """
         with self._lock:
-            pending = [s for s in self._power if s.plug_id == plug_id]
+            pending = [s for s in self._unknown if s.plug_id == plug_id]
+            pending += [s for s in self._power if s.plug_id == plug_id]
             flying = [s for s in self._in_flight if s.plug_id == plug_id]
             lost = [m for m in self._loss_markers() if m.plug_id == plug_id]
             return pending + flying + lost, self._retired
@@ -225,7 +257,8 @@ class MeasurementBuffer:
         when the process last ran.
         """
         with self._lock:
-            power = list(self._power) + self._loss_markers()
+            power = list(self._unknown) + list(self._power) + self._loss_markers()
+            self._unknown.clear()
             self._power.clear()
             self._loss.clear()
             self._in_flight = []
@@ -239,6 +272,7 @@ class MeasurementBuffer:
         A restart follows every restore, and it brings a fresh buffer.
         """
         with self._lock:
+            self._unknown.clear()
             self._power.clear()
             self._sensors.clear()
             self._in_flight = []
@@ -246,7 +280,7 @@ class MeasurementBuffer:
             self._retired = True
 
     def pending(self) -> int:
-        return len(self._power) + len(self._sensors)
+        return len(self._unknown) + len(self._power) + len(self._sensors)
 
     @property
     def retired(self) -> bool:

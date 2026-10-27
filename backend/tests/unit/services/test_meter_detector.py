@@ -101,3 +101,49 @@ def test_a_move_after_the_stall_is_the_recovery():
 def test_float_noise_does_not_break_a_flat_series():
     result = run(counters((0, 12.5), (1800, 12.5 + 1e-12), (3600, 12.5)), power(200.0))
     assert result.state == "suspicious"
+
+
+# ---- review r1 MW-R1: an old hole must not hide a proven flat stretch ----------------------------
+
+
+def test_clean_flat_suffix_survives_earlier_missing_history():
+    """Three equal readings an hour apart; only the last hour has history, and it shows 200 Wh."""
+    points = power(200.0, start=3600, until=7200, step=60)
+    assert run(counters((3600, 10.0), (7200, 10.0)), points).suspicious  # the hour alone is proven
+    result = run(counters((0, 10.0), (3600, 10.0), (7200, 10.0)), points)
+    assert result.state == "suspicious"
+    (series,) = result.suspicious
+    # The run is the counter's flat stretch; the proof is the covered hour inside it.
+    assert (series.start, series.end) == (at(0), at(7200))
+    assert series.integral.kwh == pytest.approx(0.2)
+    assert series.integral.sufficient
+
+
+def test_a_proven_stretch_after_a_hole_in_the_middle_counts():
+    points = power(200.0, start=0, until=1800, step=60) + power(200.0, start=5400, until=9000, step=60)
+    result = run(counters((0, 10.0), (1800, 10.0), (5400, 10.0), (9000, 10.0)), points)
+    assert result.state == "suspicious"
+    assert result.suspicious[0].integral.kwh == pytest.approx(0.2)
+
+
+def test_an_old_hole_beside_a_light_stretch_stays_no_signal():
+    """The control: 20 Wh of covered history is a healthy quantized zero, whatever came before it."""
+    points = power(20.0, start=3600, until=7200, step=60)
+    result = run(counters((0, 10.0), (3600, 10.0), (7200, 10.0)), points)
+    assert result.suspicious == []
+    assert result.state != "suspicious"
+
+
+def test_a_long_flat_day_with_holes_is_evaluated_within_budget():
+    import time
+
+    readings = [Sample(at(t), 200.0) for t in range(0, 24 * 3600 + 1, 10) if (t // 3600) % 3 != 0]
+    points = normalize(readings)
+    hourly = counters(*[(h * 3600, 10.0) for h in range(25)])
+
+    started = time.perf_counter()
+    result = run(hourly, points)
+    elapsed = time.perf_counter() - started
+
+    assert result.state == "suspicious"
+    assert elapsed < 2.0, elapsed

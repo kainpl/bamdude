@@ -266,7 +266,7 @@ class SmartPlugManager:
 
             if not readings:
                 return
-            from backend.app.services.meter_source import naive_utc, source_guard
+            from backend.app.services.meter_source import admits, naive_utc, source_guard
 
             captured = 0
             async with source_guard():
@@ -279,10 +279,9 @@ class SmartPlugManager:
                     )
                 }
                 for plug_id, token, read_at, lifetime in readings:
-                    source = current.get(plug_id)
-                    moment = naive_utc(read_at)
-                    if source is None or source[0] != token or (source[1] is not None and moment <= source[1]):
+                    if not admits(current.get(plug_id), token, read_at):
                         continue
+                    moment = naive_utc(read_at)
                     db.add(SmartPlugEnergySnapshot(plug_id=plug_id, recorded_at=moment, lifetime_kwh=lifetime))
                     captured += 1
                 if captured:

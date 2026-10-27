@@ -100,6 +100,35 @@ def naive_utc(moment: datetime | None = None) -> datetime:
     return moment
 
 
+async def read_source(db, plug_id: int) -> tuple[str | None, datetime | None] | None:
+    """The plug's current source as the database holds it now: (token, cutoff), or None for no plug.
+
+    A fresh column read, never the identity map -- the caller compares it with what it captured.
+    """
+    from backend.app.models.smart_plug import SmartPlug
+
+    row = (
+        await db.execute(
+            select(SmartPlug.measurement_source_id, SmartPlug.measurement_source_since).where(SmartPlug.id == plug_id)
+        )
+    ).first()
+    return None if row is None else (row[0], row[1])
+
+
+def admits(source, token: str | None, moment: datetime) -> bool:
+    """Whether a fact captured under ``token`` at ``moment`` belongs to the plug's current source (W2).
+
+    The same token, and strictly after the source's cutoff: a fact of the very instant belongs to the
+    source before, and after the clock went back the cutoff may lie ahead of now -- nothing before it
+    is the new source's (review r1 MW-R5). One rule for the flush, every counter snapshot and the
+    print's start and end.
+    """
+    if source is None:
+        return False
+    current, since = source
+    return current == token and (since is None or naive_utc(moment) > naive_utc(since))
+
+
 def identity_of(plug) -> tuple:
     return tuple(getattr(plug, field, None) for field in IDENTITY_FIELDS)
 

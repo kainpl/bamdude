@@ -29,7 +29,14 @@ from sqlalchemy import select
 
 from backend.app.services.measurement_buffer import measurement_buffer
 from backend.app.services.meter_detector import CounterPoint, Detection, detect
-from backend.app.services.meter_source import Cadence, cadence_of, min_expected_wh, naive_utc
+from backend.app.services.meter_source import (
+    Cadence,
+    cadence_of,
+    min_expected_wh,
+    naive_utc,
+    read_source,
+    source_guard,
+)
 from backend.app.services.power_integrator import Integration, Sample, as_utc, integrate, normalize
 
 logger = logging.getLogger(__name__)
@@ -403,6 +410,25 @@ class MeterWatch:
             plug = await db.get(SmartPlug, plug_id)
             if plug is None or not plug.measurement_source_id:
                 return False
+            # An episode of a source the plug no longer has is over, whether or not the new source
+            # has said anything yet (review r1 MW-R6): never left active, never listed.
+            stale = (
+                (
+                    await db.execute(
+                        select(SmartPlugMeterIncident).where(
+                            SmartPlugMeterIncident.plug_id == plug.id,
+                            SmartPlugMeterIncident.status == "active",
+                            SmartPlugMeterIncident.source_id != plug.measurement_source_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for old in stale:
+                old.status, old.closed_at, old.close_reason = "closed", naive_utc(now), "source_changed"
+            if stale:
+                await db.commit()
             cursor = plug.meter_watch_cursor
             latest = await _newest_counter_at(db, plug)
             if latest is None or (cursor is not None and naive_utc(latest) <= cursor):
@@ -422,16 +448,27 @@ class MeterWatch:
                 edge_limit=cadence.edge_seconds,
                 min_wh=min_expected_wh(plug),
             )
-            incident = (
-                await db.execute(
-                    select(SmartPlugMeterIncident).where(
-                        SmartPlugMeterIncident.plug_id == plug.id, SmartPlugMeterIncident.status == "active"
-                    )
-                )
-            ).scalar_one_or_none()
-            await self.apply(db, plug, detection, incident, now, history.counters)
-            plug.meter_watch_cursor = naive_utc(latest)
+            # The history was read for this source: conclude nothing for another one (review r1
+            # MW-R6). The read transaction ends first -- on SQLite it would still see the old row --
+            # and the check, the episode and the cursor commit under the lock a rotation holds.
             await db.commit()
+            async with source_guard():
+                if (await read_source(db, plug.id)) != (plug.measurement_source_id, plug.measurement_source_since):
+                    await db.rollback()
+                    logger.info(
+                        "Meter watch: plug %s was reconfigured during its evaluation; nothing concluded", plug_id
+                    )
+                    return False
+                incident = (
+                    await db.execute(
+                        select(SmartPlugMeterIncident).where(
+                            SmartPlugMeterIncident.plug_id == plug.id, SmartPlugMeterIncident.status == "active"
+                        )
+                    )
+                ).scalar_one_or_none()
+                await self.apply(db, plug, detection, incident, now, history.counters)
+                plug.meter_watch_cursor = naive_utc(latest)
+                await db.commit()
         return True
 
     async def apply(self, db, plug, detection: Detection, incident, now: datetime, counters=()) -> None:
@@ -521,7 +558,8 @@ async def open_incident_from_print(session_factory, plug, detection: Detection, 
         return None
     # Read once: after a refused flush the session's objects are expired and must not be touched.
     plug_id, source_id = plug.id, plug.measurement_source_id
-    async with session_factory() as db:
+    async with source_guard(), session_factory() as db:
+        # Under the lock a rotation holds: an episode is opened only for the source still in place.
         fresh = await db.get(SmartPlug, plug_id)
         if fresh is None or fresh.measurement_source_id != source_id:
             return None

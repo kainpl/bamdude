@@ -831,7 +831,7 @@ async def _record_print_energy(
                 logger.info("[ENERGY-BG] No start kWh recorded for archive %s", archive_id)
                 return
             started = archive.extra_data or {}
-            if (started.get(ENERGY_PROVENANCE_KEY) or {}).get("final"):
+            if _energy_settled(started):
                 logger.info("[ENERGY-BG] Archive %s already has its final energy figure", archive_id)
                 return
             start_source = started.get(ENERGY_SOURCE_KEY)
@@ -885,17 +885,19 @@ async def _record_print_energy(
             # though the per-print delta derived from it is not. Only as
             # the source it was read from (spec plug-meter-watchdog W2).
             from backend.app.services.measurement_buffer import measurement_buffer
-            from backend.app.services.meter_source import source_guard
+            from backend.app.services.meter_source import admits, read_source, source_guard
 
             async with source_guard():
                 if measurement_buffer.retired:
                     # A restore replaced the storage while the plug was read: nothing of this print is its.
                     logger.info("[ENERGY-BG] Archive %s: storage replaced by a restore; nothing written", archive_id)
                     return
-                current_source = await db.scalar(select(SmartPlug.measurement_source_id).where(SmartPlug.id == plug.id))
-                if current_source == token_before:
+                source = await read_source(db, plug.id)
+                end_admitted = admits(source, token_before, read_at)
+                if end_admitted:
                     await smart_plug_manager.record_energy_snapshot(db, plug.id, energy["total"], at=read_at)
                 await db.commit()
+            current_source = source[0] if source is not None else None
             source_changed = current_source != token_before or (
                 start_source is not None and current_source != start_source
             )
@@ -903,7 +905,7 @@ async def _record_print_energy(
             energy_used = round(energy["total"] - starting_kwh, 4)
             logger.info("[ENERGY-BG] Per-print energy: %s kWh", energy_used)
 
-            async def source_changed_under_the_print() -> None:
+            async def left_unknown(reason: str) -> None:
                 await _write_print_energy(
                     db,
                     archive_id,
@@ -911,15 +913,20 @@ async def _record_print_energy(
                     kwh=None,
                     cost_per_kwh=None,
                     approximate=approximate,
-                    record={"version": 1, "kind": "unavailable", "unavailable_reason": "source_changed", "final": True},
+                    record={"version": 1, "kind": "unavailable", "unavailable_reason": reason, "final": True},
                 )
-                logger.info("[ENERGY-BG] Archive %s: the plug's measurement source changed under the print", archive_id)
+                logger.info("[ENERGY-BG] Archive %s: energy unknown (%s)", archive_id, reason)
 
             # Changed under the end's own read, or since the start was read: the difference of two
             # readings is not one meter's (A24). A start from before m211 knows no source; only a
             # change under its end read can be proven then.
             if source_changed:
-                await source_changed_under_the_print()
+                await left_unknown("source_changed")
+                return
+            if not end_admitted:
+                # The same source, but read at or before its cutoff: the clock went back after the
+                # source began, and this reading is not inside its window (review r1 MW-R5).
+                await left_unknown("clock_before_source")
                 return
             if energy_used < 0:
                 logging.getLogger(__name__).warning(
@@ -939,7 +946,18 @@ async def _record_print_energy(
             energy_cost_per_kwh = await get_setting(db, "energy_cost_per_kwh")
             cost_per_kwh = float(energy_cost_per_kwh) if energy_cost_per_kwh else 0.15
 
-            kind, kwh, record = "measured", energy_used, None
+            # Every figure this writer settles is final, a measured one too (W9, review r1 MW-R4):
+            # a later callback reads a later counter -- idle draw or the next job, never this print.
+            kind, kwh = "measured", energy_used
+            record = {
+                "version": 1,
+                "kind": "measured",
+                "plug_id": plug.id,
+                "source_id": token_before,
+                "counter_delta_kwh": round(energy_used, 6),
+                "tariff": cost_per_kwh,
+                "final": True,
+            }
             if start_source is not None and start_at is not None:
                 from backend.app.services import meter_watch as watch
                 from backend.app.services.measurement_history import resolve_sample_seconds
@@ -948,7 +966,7 @@ async def _record_print_energy(
                 if plug.measurement_source_id != token_before:
                     # Rotated after the end read's check: its history now starts at the new cutoff,
                     # and an empty window would read as a healthy counter (plan T6).
-                    await source_changed_under_the_print()
+                    await left_unknown("source_changed")
                     return
                 window_end = end_at or read_at
                 assessment = await watch.assess_print_window(
@@ -964,7 +982,19 @@ async def _record_print_energy(
                 if assessment.kind == "storage_replaced":
                     logger.info("[ENERGY-BG] Archive %s: storage replaced by a restore; nothing written", archive_id)
                     return
-                if assessment.kind != "measured":
+                if assessment.kind == "measured":
+                    record = watch.provenance(
+                        assessment,
+                        plug,
+                        start_at=start_at,
+                        end_at=window_end,
+                        counter_delta=energy_used,
+                        tariff=cost_per_kwh,
+                    )
+                    record["final"] = True
+                    if started.get("energy_start_partial"):
+                        record["start_partial"] = True
+                else:
                     if assessment.incident_id is None and assessment.detection is not None:
                         # Best effort: the episode and its warning are the sweep's to retry, the
                         # print's figure is not (spec §9 — a failed inbox write stops nothing else).
@@ -995,6 +1025,8 @@ async def _record_print_energy(
                 cost_per_kwh=cost_per_kwh,
                 approximate=approximate,
                 record=record,
+                plug_id=plug.id,
+                expected_source=token_before,
             )
     except Exception as e:
         logger.warning("[ENERGY-BG] Failed: %s", e)
@@ -1017,7 +1049,30 @@ def _utc_or_none(value) -> datetime | None:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
-async def _write_print_energy(db, archive_id: int, *, kind: str, kwh, cost_per_kwh, approximate: bool, record) -> None:
+def _energy_settled(extra: dict | None) -> bool:
+    """A figure no later callback may change (W9, review r1 MW-R4): one this writer finalised, or an
+    operator's own reconstruction -- marked ``energy_reconstructed_from`` without any provenance.
+
+    A bare number from before the watch is neither and stays writable, as it always was.
+    """
+    extra = extra or {}
+    if (extra.get(ENERGY_PROVENANCE_KEY) or {}).get("final"):
+        return True
+    return ENERGY_PROVENANCE_KEY not in extra and extra.get("energy_reconstructed_from") is not None
+
+
+async def _write_print_energy(
+    db,
+    archive_id: int,
+    *,
+    kind: str,
+    kwh,
+    cost_per_kwh,
+    approximate: bool,
+    record,
+    plug_id: int | None = None,
+    expected_source: str | None = None,
+) -> None:
     """Write one print's energy figure and where it came from (W9).
 
     The row was read before the plug's round-trip, and the 3MF may have landed
@@ -1025,25 +1080,39 @@ async def _write_print_energy(db, archive_id: int, *, kind: str, kwh, cost_per_k
     first, and the archive is written from a fresh read under its own write
     scope, merging only what this writer adds (swap-source-lifecycle spec r4
     §7). No I/O under the scope, no notification under it.
+
+    A figure read off a plug (``plug_id`` + ``expected_source``) is written only
+    while that source is still the plug's: the check and the write run under
+    ``source_guard``, the lock a rotation holds, so a reconfiguration during the
+    assessment cannot slip in between (review r1 MW-R2). The guard is taken
+    before the archive's locks and SQLite's writer -- the order the flush and a
+    rotation keep too -- and nothing under it waits on the network.
     """
     from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
     from backend.app.services.measurement_buffer import measurement_buffer
+    from backend.app.services.meter_source import read_source, source_guard
 
     logger = logging.getLogger(__name__)
-    if measurement_buffer.retired:
-        logger.info("[ENERGY-BG] Archive %s: storage replaced by a restore; nothing written", archive_id)
-        return
     await db.commit()
-    async with archive_write_scope(db, archive_id):
+    async with source_guard(), archive_write_scope(db, archive_id):
+        if measurement_buffer.retired:
+            await db.rollback()
+            logger.info("[ENERGY-BG] Archive %s: storage replaced by a restore; nothing written", archive_id)
+            return
         fresh = await load_active_archive_for_write(db, archive_id)
         if fresh is None:
             await db.rollback()
             logger.warning("[ENERGY-BG] Archive %s no longer exists", archive_id)
             return
         extra = dict(fresh.extra_data or {})
-        if (extra.get(ENERGY_PROVENANCE_KEY) or {}).get("final"):
+        if _energy_settled(extra):
             await db.rollback()
-            return  # finalised by an earlier callback: never overwritten
+            return  # finalised by an earlier callback, or the operator's own: never overwritten
+        if plug_id is not None and kind != "unavailable":
+            source = await read_source(db, plug_id)
+            if source is None or source[0] != expected_source:
+                kind, kwh = "unavailable", None
+                record = {"version": 1, "kind": "unavailable", "unavailable_reason": "source_changed", "final": True}
         if kind == "unavailable":
             fresh.energy_kwh = None
             fresh.energy_cost = None
@@ -1154,17 +1223,22 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
             return False
         read_at = datetime.now(timezone.utc)
         from backend.app.services.measurement_buffer import measurement_buffer
-        from backend.app.services.meter_source import source_guard
+        from backend.app.services.meter_source import admits, read_source, source_guard
 
+        # This function commits the caller's session anyway; doing it before the lock means no
+        # holder of SQLite's writer ever waits on it (the flush holds it and then wants the writer).
+        await db.commit()
         async with source_guard():
             if measurement_buffer.retired:
                 _logger.info("[ENERGY] Storage replaced by a restore; no start recorded for archive %s", archive.id)
                 return False
-            current_source = await db.scalar(select(SmartPlug.measurement_source_id).where(SmartPlug.id == plug.id))
-            if current_source != token:
-                # Reconfigured while it was being read: the counter is another source's.
-                _logger.info("[ENERGY] Plug %s changed while its start was read (archive %s)", plug.id, archive.id)
+            source = await read_source(db, plug.id)
+            if not admits(source, token, read_at):
+                # Reconfigured while it was being read, or read at or before the source's cutoff (the
+                # clock went back): the counter is not this source's. No baseline, never a borrowed one.
+                _logger.info("[ENERGY] Plug %s: start reading outside its source (archive %s)", plug.id, archive.id)
                 return False
+            current_source = source[0]
             archive.energy_start_kwh = float(energy["total"])
             # The end reads THIS meter (``_record_print_energy``), of THIS measurement
             # source, and the estimate's window starts at THIS reading (W2, W10).

@@ -54,6 +54,12 @@ describe('ArchiveEnergyFact', () => {
     expect(screen.queryByText(/\$0/)).not.toBeInTheDocument();
   });
 
+  it('says when the clock went back before the source began', () => {
+    show(fact({ energy_status: 'unavailable', energy_reason: 'clock_before_source' }));
+
+    expect(screen.getByText('Energy unknown').closest('[title]')?.getAttribute('title')).toMatch(/clock went back/);
+  });
+
   it('falls back to a general reason it does not know', () => {
     show(fact({ energy_status: 'unavailable', energy_reason: 'something_new' }));
 

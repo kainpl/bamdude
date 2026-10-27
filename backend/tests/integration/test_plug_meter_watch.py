@@ -7,6 +7,7 @@ with its source fence, the power chart with its unusable moments, a configuratio
 migration and a plug's delete.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -191,7 +192,9 @@ async def test_a02_a_short_light_print_with_no_counter_step_stays_a_measured_zer
 
     await db_session.refresh(archive)
     assert archive.energy_kwh == 0.0
-    assert "energy_provenance" not in archive.extra_data
+    # Measured, and final: a later callback cannot replace it (review r1 MW-R4).
+    assert archive.extra_data["energy_provenance"]["kind"] == "measured"
+    assert archive.extra_data["energy_provenance"]["final"] is True
     assert "energy_is_approximate" not in archive.extra_data
     assert (await db_session.execute(select(SmartPlugMeterIncident))).first() is None
 
@@ -208,7 +211,9 @@ async def test_a03_a_healthy_counter_stays_the_measurement(db_session, printer_f
 
     await db_session.refresh(archive)
     assert archive.energy_kwh == pytest.approx(0.19)
-    assert "energy_provenance" not in archive.extra_data
+    # Measured, and final: a later callback cannot replace it (review r1 MW-R4).
+    assert archive.extra_data["energy_provenance"]["kind"] == "measured"
+    assert archive.extra_data["energy_provenance"]["final"] is True
 
 
 async def test_a03_an_episode_the_counter_left_before_the_print_does_not_mark_it(db_session, printer_factory, factory):
@@ -237,7 +242,9 @@ async def test_a03_an_episode_the_counter_left_before_the_print_does_not_mark_it
 
     await db_session.refresh(archive)
     assert archive.energy_kwh == pytest.approx(0.2)
-    assert "energy_provenance" not in archive.extra_data
+    # Measured, and final: a later callback cannot replace it (review r1 MW-R4).
+    assert archive.extra_data["energy_provenance"]["kind"] == "measured"
+    assert archive.extra_data["energy_provenance"]["final"] is True
 
 
 async def test_a04_a_flat_tail_after_growth_estimates_the_whole_window_once(db_session, printer_factory, factory):
@@ -351,7 +358,9 @@ async def test_a10_an_archive_from_before_the_watch_keeps_the_old_rule(db_sessio
 
     await db_session.refresh(archive)
     assert archive.energy_kwh == 0.0
-    assert "energy_provenance" not in archive.extra_data
+    # Measured, and final: a later callback cannot replace it (review r1 MW-R4).
+    assert archive.extra_data["energy_provenance"]["kind"] == "measured"
+    assert archive.extra_data["energy_provenance"]["final"] is True
 
 
 async def test_a10_a_final_figure_is_never_overwritten(db_session, printer_factory, factory):
@@ -436,7 +445,9 @@ async def test_a25_an_unknown_end_over_a_healthy_counter_keeps_the_approximate_d
     await db_session.refresh(archive)
     assert archive.energy_kwh == pytest.approx(0.4)
     assert archive.extra_data["energy_is_approximate"] is True
-    assert "energy_provenance" not in archive.extra_data
+    # Measured, and final: a later callback cannot replace it (review r1 MW-R4).
+    assert archive.extra_data["energy_provenance"]["kind"] == "measured"
+    assert archive.extra_data["energy_provenance"]["final"] is True
 
 
 async def test_restore_retires_the_writer(db_session, printer_factory, factory):
@@ -1006,7 +1017,9 @@ async def test_a_print_after_a_reset_and_a_rise_is_measured_again(db_session, pr
 
     await db_session.refresh(archive)
     assert archive.energy_kwh == pytest.approx(0.2)
-    assert "energy_provenance" not in archive.extra_data
+    # Measured, and final: a later callback cannot replace it (review r1 MW-R4).
+    assert archive.extra_data["energy_provenance"]["kind"] == "measured"
+    assert archive.extra_data["energy_provenance"]["final"] is True
 
 
 async def test_a_failed_episode_write_does_not_cost_the_print_its_figure(
@@ -1125,3 +1138,334 @@ async def test_a_new_threshold_or_interval_re_evaluates_the_plug(async_client: A
     await db_session.refresh(plug)
     assert plug.meter_watch_cursor is None
     assert plug.measurement_source_id == TOKEN
+
+
+# ---- Codex review r1 (MW-R1..R6) ---------------------------------------------------------------
+
+
+@pytest.fixture
+def real_sessions(test_engine, monkeypatch):
+    """Separate sessions on the test engine: a rotation from another session is a real interleaving."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    sessions = async_sessionmaker(test_engine, expire_on_commit=False)
+    monkeypatch.setattr(main, "async_session", sessions)
+    return sessions
+
+
+async def _rotate(sessions, plug_id, ip="192.0.2.77"):
+    from backend.app.services.meter_source import rotate_source, source_guard
+
+    async with source_guard(), sessions() as db:
+        plug = await db.get(SmartPlug, plug_id)
+        plug.ip_address = ip
+        await rotate_source(db, plug)
+        await db.commit()
+
+
+async def _stalled_print(db, printer_factory):
+    """An hour at 200 W over a flat counter: the estimate is 0.2 kWh."""
+    printer, plug, start, end = await _print(db, printer_factory)
+    await _power(db, plug.id, start - timedelta(minutes=1), end + timedelta(minutes=1), 200.0)
+    await _snapshot(db, plug.id, start, 10.0)
+    await _snapshot(db, plug.id, start + timedelta(minutes=30), 10.0)
+    archive = await _archive(db, printer.id, plug, start, end, 10.0)
+    return printer, plug, archive
+
+
+async def _archive_row(sessions, archive_id):
+    async with sessions() as db:
+        return await db.get(PrintArchive, archive_id)
+
+
+async def test_missing_older_history_does_not_turn_complete_print_into_zero(db_session, printer_factory, factory):
+    """MW-R1: a reading an hour before the print with no history beside it hid the print's proven hour."""
+    printer, plug, start, end = await _print(db_session, printer_factory)
+    await _power(db_session, plug.id, start, end, 200.0)
+    for moment in (start - timedelta(hours=1), start, start + timedelta(minutes=30)):
+        await _snapshot(db_session, plug.id, moment, 10.0)
+    archive = await _archive(db_session, printer.id, plug, start, end, 10.0)
+
+    with _end_reading(10.0):
+        await main._record_print_energy(archive.id, printer.id)
+
+    await db_session.refresh(archive)
+    assert archive.energy_kwh == pytest.approx(0.2, abs=1e-3)
+    assert archive.extra_data["energy_provenance"]["kind"] == "estimated"
+
+
+async def test_source_rotation_during_assessment_cannot_write_old_estimate(
+    db_session, printer_factory, real_sessions, monkeypatch
+):
+    """MW-R2: the source is checked again under the archive write, not only before the assessment."""
+    from backend.app.services import meter_watch as watch
+
+    printer, plug, archive = await _stalled_print(db_session, printer_factory)
+    original = watch.assess_print_window
+
+    async def rotate_after(*args, **kwargs):
+        answer = await original(*args, **kwargs)
+        assert answer.kind == "estimated"
+        await _rotate(real_sessions, plug.id)
+        return answer
+
+    monkeypatch.setattr(watch, "assess_print_window", rotate_after)
+    with _end_reading(10.0):
+        await main._record_print_energy(archive.id, printer.id)
+
+    row = await _archive_row(real_sessions, archive.id)
+    assert row.energy_kwh is None
+    assert row.extra_data["energy_provenance"]["unavailable_reason"] == "source_changed"
+
+
+async def test_source_rotation_during_assessment_cannot_write_old_measurement(
+    db_session, printer_factory, real_sessions, monkeypatch
+):
+    from backend.app.services import meter_watch as watch
+
+    printer, plug, start, end = await _print(db_session, printer_factory)
+    await _snapshot(db_session, plug.id, start, 10.0)
+    archive = await _archive(db_session, printer.id, plug, start, end, 10.0)
+    original = watch.assess_print_window
+
+    async def rotate_after(*args, **kwargs):
+        answer = await original(*args, **kwargs)
+        assert answer.kind == "measured"
+        await _rotate(real_sessions, plug.id)
+        return answer
+
+    monkeypatch.setattr(watch, "assess_print_window", rotate_after)
+    with _end_reading(10.2):
+        await main._record_print_energy(archive.id, printer.id)
+
+    row = await _archive_row(real_sessions, archive.id)
+    assert row.energy_kwh is None
+    assert row.extra_data["energy_provenance"]["unavailable_reason"] == "source_changed"
+
+
+async def test_a_rotation_just_before_the_write_of_a_pre_watch_archive_is_unknown(
+    db_session, printer_factory, real_sessions, monkeypatch
+):
+    """A legacy baseline knows no source; the end read's token is what the write must still find."""
+    from backend.app.api.routes import settings as settings_routes
+
+    printer, plug, start, end = await _print(db_session, printer_factory)
+    archive = PrintArchive(
+        printer_id=printer.id,
+        filename="a.3mf",
+        file_path="x/a.3mf",
+        file_size=1,
+        status="completed",
+        completed_at=_naive(end),
+        energy_start_kwh=10.0,
+        extra_data={"energy_plug_id": plug.id},
+    )
+    db_session.add(archive)
+    await db_session.commit()
+    real_get_setting = settings_routes.get_setting
+
+    async def rotate_then_read(db, key):
+        await _rotate(real_sessions, plug.id)
+        return await real_get_setting(db, key)
+
+    monkeypatch.setattr(settings_routes, "get_setting", rotate_then_read)
+    with _end_reading(10.3):
+        await main._record_print_energy(archive.id, printer.id)
+
+    row = await _archive_row(real_sessions, archive.id)
+    assert row.energy_kwh is None
+    assert row.extra_data["energy_provenance"]["unavailable_reason"] == "source_changed"
+
+
+async def test_final_measured_result_is_not_overwritten_by_later_callback(db_session, printer_factory, factory):
+    """MW-R4: a later callback reads a later counter -- idle draw or the next job, never this print."""
+    printer, plug, start, end = await _print(db_session, printer_factory)
+    await _snapshot(db_session, plug.id, start, 10.0)
+    archive = await _archive(db_session, printer.id, plug, start, end, 10.0)
+
+    with _end_reading(10.1):
+        await main._record_print_energy(archive.id, printer.id)
+    with _end_reading(10.2):
+        await main._record_print_energy(archive.id, printer.id)
+
+    await db_session.refresh(archive)
+    assert archive.energy_kwh == pytest.approx(0.1)
+    record = archive.extra_data["energy_provenance"]
+    assert (record["kind"], record["final"]) == ("measured", True)
+
+
+async def test_a_final_unknown_figure_is_not_overwritten(db_session, printer_factory, factory):
+    printer, plug, start, end = await _print(db_session, printer_factory)
+    archive = await _archive(db_session, printer.id, plug, start, end, 10.0, source="b" * 32)
+    with _end_reading(10.3):
+        await main._record_print_energy(archive.id, printer.id)
+    await db_session.execute(
+        text("UPDATE print_archives SET extra_data = :e WHERE id = :a"),
+        {
+            "e": json.dumps(
+                {
+                    "energy_plug_id": plug.id,
+                    "energy_source_id": TOKEN,
+                    "energy_start_at": start.isoformat(),
+                    "energy_provenance": {"kind": "unavailable", "unavailable_reason": "source_changed", "final": True},
+                }
+            ),
+            "a": archive.id,
+        },
+    )
+    await db_session.commit()
+
+    with _end_reading(10.4):
+        await main._record_print_energy(archive.id, printer.id)
+
+    await db_session.refresh(archive)
+    assert archive.energy_kwh is None
+    assert archive.extra_data["energy_provenance"]["unavailable_reason"] == "source_changed"
+
+
+async def test_a_manual_reconstruction_is_never_overwritten(db_session, printer_factory, factory):
+    """The 2026-09-04 reconstructions carry their own marks and no provenance: they are the operator's."""
+    printer, plug, start, end = await _print(db_session, printer_factory)
+    archive = await _archive(
+        db_session,
+        printer.id,
+        plug,
+        start,
+        end,
+        10.0,
+        energy_is_approximate=True,
+        energy_reconstructed_from="power_history",
+    )
+    archive.energy_kwh = 0.31
+    await db_session.commit()
+
+    with _end_reading(10.5):
+        await main._record_print_energy(archive.id, printer.id)
+
+    await db_session.refresh(archive)
+    assert archive.energy_kwh == pytest.approx(0.31)
+    assert "energy_provenance" not in archive.extra_data
+
+
+async def test_start_baseline_respects_clock_cutoff(db_session, printer_factory):
+    """MW-R5: after the clock went back, the source's cutoff can lie ahead of now; nothing before it counts."""
+    printer = await printer_factory()
+    await _plug(db_session, printer.id, since=datetime.now(timezone.utc) + timedelta(hours=1))
+    archive = PrintArchive(printer_id=printer.id, filename="a.3mf", file_path="", file_size=1, status="printing")
+    db_session.add(archive)
+    await db_session.commit()
+
+    with _end_reading(10.0):
+        assert await main._record_energy_start(archive, printer.id, db_session) is False
+
+    await db_session.refresh(archive)
+    assert archive.energy_start_kwh is None
+    assert await db_session.scalar(select(func.count()).select_from(SmartPlugEnergySnapshot)) == 0
+
+
+async def test_an_end_read_before_the_cutoff_is_unknown_and_stores_no_snapshot(db_session, printer_factory, factory):
+    printer, plug, start, end = await _print(db_session, printer_factory)
+    archive = await _archive(db_session, printer.id, plug, start, end, 10.0)
+    plug.measurement_source_since = _naive(datetime.now(timezone.utc) + timedelta(hours=1))
+    await db_session.commit()
+
+    with _end_reading(10.2):
+        await main._record_print_energy(archive.id, printer.id)
+
+    await db_session.refresh(archive)
+    assert archive.energy_kwh is None
+    assert archive.extra_data["energy_provenance"]["unavailable_reason"] == "clock_before_source"
+    assert await db_session.scalar(select(func.count()).select_from(SmartPlugEnergySnapshot)) == 0
+
+
+async def test_rotated_source_does_not_publish_old_episode_and_leave_it_active(db_session, real_sessions, monkeypatch):
+    """MW-R6: a rotation while the sweep reads history; the new source has no counter point yet."""
+    from backend.app.services import meter_watch as watch
+
+    now = datetime.now(timezone.utc)
+    plug = await _plug(db_session)
+    await _user(db_session)
+    await _power(db_session, plug.id, now - timedelta(hours=2), now, 200.0)
+    for minutes in (120, 60, 5):
+        await _snapshot(db_session, plug.id, now - timedelta(minutes=minutes), 10.0)
+    original = watch.read_history
+
+    async def rotate_after_read(*args, **kwargs):
+        history = await original(*args, **kwargs)
+        await _rotate(real_sessions, plug.id)
+        return history
+
+    monkeypatch.setattr(watch, "read_history", rotate_after_read)
+    await MeterWatch()._evaluate_plug(real_sessions, plug.id, 60)
+    monkeypatch.setattr(watch, "read_history", original)
+    await MeterWatch()._evaluate_plug(real_sessions, plug.id, 60)
+
+    async with real_sessions() as db:
+        active = (
+            (await db.execute(select(SmartPlugMeterIncident).where(SmartPlugMeterIncident.status == "active")))
+            .scalars()
+            .all()
+        )
+        inbox = await db.scalar(
+            select(func.count()).select_from(UserNotification).where(UserNotification.event_type == EVENT)
+        )
+    assert active == []
+    assert inbox == 0  # never a warning for a configuration that was already discarded
+
+
+async def test_an_old_source_episode_closes_without_a_new_counter_point(
+    async_client: AsyncClient, db_session, real_sessions
+):
+    """However it got there, an episode of a discarded source is closed and never listed."""
+    now = datetime.now(timezone.utc)
+    plug = await _plug(db_session, since=now)
+    await _active_incident(db_session, plug, flat_since=now - timedelta(hours=3), flat_until=now - timedelta(hours=2))
+    await db_session.execute(text("UPDATE smart_plug_meter_incidents SET source_id = :s"), {"s": "e" * 32})
+    await db_session.commit()
+
+    listed = (await async_client.get("/api/v1/smart-plugs/meter-incidents")).json()
+    assert listed == []
+
+    await MeterWatch().sweep(real_sessions, 60, force=True)
+
+    async with real_sessions() as db:
+        incident = (await db.execute(select(SmartPlugMeterIncident))).scalar_one()
+    assert (incident.status, incident.close_reason) == ("closed", "source_changed")
+
+
+async def test_unknown_commit_markers_survive_overflow_through_the_database(db_session, monkeypatch):
+    """MW-R3 end to end: a commit that landed but whose answer was lost, an overflow while it was in
+    flight, the next flush, and a restart -- the batch's moments stay unusable throughout."""
+    from backend.app.services import meter_watch as watch
+    from backend.app.services.meter_source import Cadence
+    from backend.app.services.power_integrator import integrate
+
+    monkeypatch.setattr(buffer_module, "MAX_BUFFERED", 101)
+    plug_id = (await _plug(db_session)).id
+    start = datetime.now(timezone.utc) - timedelta(hours=5)
+    moments = [start + timedelta(minutes=i) for i in range(202)]
+    for moment in moments[:101]:
+        monkeypatch.setattr(buffer_module, "_now", lambda m=moment: m)
+        measurement_buffer.record_power(plug_id, 200.0, source_token=TOKEN)
+    real_commit = db_session.commit
+
+    async def landed_but_lost():
+        await real_commit()
+        for moment in moments[101:]:  # reports keep arriving while the answer is lost
+            monkeypatch.setattr(buffer_module, "_now", lambda m=moment: m)
+            measurement_buffer.record_power(plug_id, 200.0, source_token=TOKEN)
+        raise ConnectionError("the answer was lost")
+
+    monkeypatch.setattr(db_session, "commit", landed_but_lost)
+    with pytest.raises(ConnectionError):
+        await flush_buffered(db_session)
+    monkeypatch.setattr(db_session, "commit", real_commit)
+    await flush_buffered(db_session)  # the markers and the new readings land
+
+    measurement_buffer.drain()  # a restart: only the database remains
+    plug = await db_session.get(SmartPlug, plug_id)
+    history = await watch.read_history(
+        lambda: _SessionProxy(db_session), plug, moments[0], moments[100], Cadence(60, 180, 180)
+    )
+    window = integrate(history.power, moments[0], moments[100], gap_limit=180, edge_limit=180)
+    assert not window.sufficient, window

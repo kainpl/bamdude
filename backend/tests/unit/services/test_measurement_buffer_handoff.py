@@ -112,3 +112,32 @@ def test_readings_from_another_thread_during_a_hand_off_are_never_lost(buf):
     worker.join()
     seen += len(buf.take_power())
     assert seen == 5000
+
+
+def test_unknown_commit_markers_survive_overflow(monkeypatch):
+    """MW-R3: a batch whose commit may have landed keeps every moment unusable, whatever arrives after it.
+
+    Folding its markers into the two edges of a loss span would leave the DB copies between them
+    usable again; newer readings give way instead.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from backend.app.services import measurement_buffer as bm
+
+    monkeypatch.setattr(bm, "MAX_BUFFERED", 101)
+    buffer = bm.MeasurementBuffer()
+    start = datetime(2026, 10, 27, 12, tzinfo=timezone.utc)
+    for i in range(101):
+        monkeypatch.setattr(bm, "_now", lambda at=start + timedelta(minutes=i): at)
+        buffer.record_power(1, 200.0, source_token="t")
+    buffer.take_power()
+    for i in range(101, 202):
+        monkeypatch.setattr(bm, "_now", lambda at=start + timedelta(minutes=i): at)
+        buffer.record_power(1, 200.0, source_token="t")
+    buffer.mark_unknown()
+
+    samples, _ = buffer.peek_power(1)
+    unknown = sorted(s.recorded_at for s in samples if s.reason == bm.BATCH_UNKNOWN)
+    assert unknown == [start + timedelta(minutes=i) for i in range(101)]
+    # Memory stays bounded: the newer readings that did not fit are a loss span, not kept.
+    assert len([s for s in samples if s.reason is None]) <= 2

@@ -556,10 +556,15 @@ async def list_meter_incidents(
     """
     from backend.app.models.smart_plug_meter_incident import SmartPlugMeterIncident
 
+    # Only the plug's current source: an episode of a discarded configuration is never shown (MW-R6).
     rows = (
         await db.execute(
             select(SmartPlugMeterIncident)
-            .where(SmartPlugMeterIncident.status == "active")
+            .join(SmartPlug, SmartPlug.id == SmartPlugMeterIncident.plug_id)
+            .where(
+                SmartPlugMeterIncident.status == "active",
+                SmartPlugMeterIncident.source_id == SmartPlug.measurement_source_id,
+            )
             .order_by(SmartPlugMeterIncident.plug_id)
         )
     ).scalars()

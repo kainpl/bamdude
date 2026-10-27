@@ -2,7 +2,13 @@ import { Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ArchiveEnergyFields } from '../utils/archiveEnergy';
 
-const KNOWN_REASONS = new Set(['insufficient_history', 'unknown_end', 'source_changed', 'insufficient_budget']);
+const KNOWN_REASONS = new Set([
+  'insufficient_history',
+  'unknown_end',
+  'source_changed',
+  'clock_before_source',
+  'insufficient_budget',
+]);
 
 /**
  * An archive's energy, as the server says it was obtained (spec plug-meter-watchdog W11) — never

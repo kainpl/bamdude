@@ -822,11 +822,16 @@ async def test_energy_merge_cannot_erase_concurrent_attach_fact(db_session, test
     archive = await a_pending_finished_archive(db_session, printer.id, energy_start_kwh=10.0)
     factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(main_module, "async_session", factory)
-    # A plug from before m211: no measurement source.
+    # A plug from before m211: no measurement source -- but a real row, which the write checks it against.
+    from backend.app.models.smart_plug import SmartPlug
+
+    plug = SmartPlug(name="meter", plug_type="tasmota", ip_address="10.0.0.9", enabled=True)
+    db_session.add(plug)
+    await db_session.commit()
     monkeypatch.setattr(
         main_module,
         "_energy_plug_for_printer",
-        AsyncMock(return_value=SimpleNamespace(id=1, measurement_source_id=None)),
+        AsyncMock(return_value=SimpleNamespace(id=plug.id, measurement_source_id=None)),
     )
     monkeypatch.setattr(main_module.smart_plug_manager, "record_energy_snapshot", AsyncMock())
     phases: list[str] = []

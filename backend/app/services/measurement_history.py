@@ -103,7 +103,7 @@ async def flush_buffered(db) -> int:
 
 
 async def _write_power(db, power) -> int:
-    from backend.app.services.meter_source import naive_utc
+    from backend.app.services.meter_source import admits, naive_utc
 
     if not power:
         return 0
@@ -118,12 +118,9 @@ async def _write_power(db, power) -> int:
     written = 0
     for sample in power:
         source = sources.get(sample.plug_id)
-        if source is None:
+        if not admits(source, sample.source_token, sample.recorded_at):
             continue
-        token, since = source
         moment = naive_utc(sample.recorded_at)
-        if sample.source_token != token or (since is not None and moment <= since):
-            continue
         db.add(
             SmartPlugPowerHistory(
                 plug_id=sample.plug_id,

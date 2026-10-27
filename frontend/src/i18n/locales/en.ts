@@ -1730,6 +1730,7 @@ export default {
         insufficient_history: 'The plug\'s energy counter stood still and its power history does not cover this print well enough to estimate it.',
         unknown_end: 'The plug\'s energy counter stood still and the end of this print was not observed.',
         source_changed: 'The plug was reconfigured or replaced during this print, so its two readings do not belong to one meter.',
+        clock_before_source: 'The server clock went back: this print\'s last reading is dated before the plug\'s measurement began, so it is not used.',
         insufficient_budget: 'There was too much power history to evaluate for this print.',
         other: 'There is no reliable energy figure for this print.',
       },
