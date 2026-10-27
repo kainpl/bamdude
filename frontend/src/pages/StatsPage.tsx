@@ -218,7 +218,8 @@ function EnergyWidget({
   // (spec plug-meter-watchdog W11): say both, beside the numbers, never as a silent zero.
   const estimated = stats?.print_energy_estimated ?? 0;
   const unknown = stats?.print_energy_unavailable ?? 0;
-  const approx = estimated > 0 ? '≈ ' : '';
+  // A no-break space: in a narrow widget the mark must not wrap away from its number.
+  const approx = estimated > 0 ? '≈ ' : '';
   const printNotes = [
     estimated > 0 ? t('stats.energyEstimatedNote', { count: estimated }) : null,
     unknown > 0 ? t('stats.energyUnknownNote', { count: unknown }) : null,

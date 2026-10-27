@@ -1725,6 +1725,7 @@ export default {
     energy: {
       estimated: '≈ {{kwh}} kWh, estimated from the plug\'s power history ({{coverage}}% of the print covered): its energy counter stood still.',
       approximate: '≈ {{kwh}} kWh, approximate: the counter was read at a moment other than the print\'s own start or end.',
+      measured: 'Energy used: {{kwh}} kWh',
       unknown: 'Energy unknown',
       reasons: {
         insufficient_history: 'The plug\'s energy counter stood still and its power history does not cover this print well enough to estimate it.',
@@ -6533,7 +6534,7 @@ export default {
         cost: 'cost: {{parts}}',
         costFilament: 'filament {{amount}}',
         costEnergy: 'electricity {{amount}}',
-        costEnergyEstimated: 'electricity ≈ {{amount}}',
+        costEnergyEstimated: 'electricity ≈ {{amount}}',
         energyUnknown_one: '{{count}} print without a reliable energy figure',
         energyUnknown_other: '{{count}} prints without a reliable energy figure',
         costPurchases: 'purchases {{amount}}',
@@ -11266,6 +11267,7 @@ export default {
         clearConfirmBody: 'Remove every notification matching the current filters? This cannot be undone.',
         cleared: '{{count}} removed',
         delete: 'Delete',
+        openPlugs: 'Open smart plugs',
         notificationCount_one: 'notification',
         notificationCount_other: 'notifications',
         unread: 'Unread'

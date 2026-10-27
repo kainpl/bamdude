@@ -293,7 +293,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 - **Zigbee environment sensors** — pair temperature / humidity sensors onto the same dongle, name them, place them, and set how often each one reports. Battery devices are deliberately never polled, since a sleeper answers on its own schedule
 - **Sensor alarms** — a lowest and/or a highest value on anything a sensor measures, including its own battery. The two are independent rather than a range, so "never above 30" needs no invented floor
 - **Measurement history** — power draw and room conditions recorded as they arrive and kept for a month, charted over 6 h / a day / two days / a week per plug and per sensor. Written above the plug drivers, so all five plug types are covered
-- Energy consumption tracking, per print as well as over time
+- Energy consumption tracking, per print as well as over time. A plug whose energy counter stands still while its power history shows a load is flagged with one in-app warning, and its prints get an estimate from that history marked *≈* — or "unknown" with the reason when the history is too thin — instead of a zero; plug totals and date ranges stay what the counter measured
 - **Nested locations** — a workshop holds shelves, a shelf holds printers; printers, sensors and spool storage attach at whichever level fits, and the printers, queues and maintenance pages group by them
 - Auto power-on/off
 - Background print dispatch with WebSocket progress

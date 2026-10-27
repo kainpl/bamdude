@@ -179,6 +179,15 @@ describe('OrderFigures · the line of other figures (E05, E07)', () => {
     expect(screen.getByTestId('order-cost-breakdown')).toHaveTextContent('cost: filament $10.00 + electricity $2.50');
   });
 
+  it('marks estimated electricity and counts the prints with no reliable figure, never as zero', () => {
+    mount(
+      makeFigures({ total_cost: 2.5, total_filament_cost: 0, total_energy_cost: 2.5, procurement_cost: 0, energy_estimated: 1, energy_unavailable: 2 }),
+    );
+    // The mark never wraps away from its amount onto a line of its own.
+    expect(screen.getByTestId('order-cost-breakdown').textContent).toContain('electricity ≈ $2.50');
+    expect(screen.getByTestId('order-energy-unknown')).toHaveTextContent('2 prints without a reliable energy figure');
+  });
+
   it('keeps the purchases of an order that printed nothing (R07)', () => {
     const { unmount } = mount(
       makeFigures({ total_cost: 0, total_filament_cost: 0, total_energy_cost: 0, procurement_cost: 5, procurement_known_cost: 5 }),

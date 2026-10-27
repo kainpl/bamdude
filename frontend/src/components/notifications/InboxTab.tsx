@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router';
 import { CheckCheck, Trash2 } from 'lucide-react';
 import { api, type InboxFilters, type InboxSeverity } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
@@ -208,9 +209,10 @@ export function InboxTab() {
                     and nesting is what forced the old stopPropagation. Because
                     <button> takes phrasing content only, everything inside is a
                     <span>. (Precedent: FolderTreePicker.) */}
+                <div className="min-w-0 flex-1">
                 <button
                   type="button"
-                  className="min-w-0 flex-1 text-left"
+                  className="w-full text-left"
                   aria-expanded={expandedId === item.id}
                   onClick={() => onRowClick(item.id, unread)}
                 >
@@ -234,6 +236,14 @@ export function InboxTab() {
                     <span>{formatRelativeTime(item.created_at, 'system', t)}</span>
                   </span>
                 </button>
+                {/* A warning about a plug leads to the plugs, whose card shows the episode (spec
+                    plug-meter-watchdog T7) -- a sibling of the row button, never inside it. */}
+                {item.event_type === 'plug_meter_stalled' && (
+                  <Link to="/settings?tab=plugs" className="inline-block mt-1 text-xs text-bambu-green hover:underline">
+                    {t('notifications.center.inbox.openPlugs')}
+                  </Link>
+                )}
+                </div>
                 <button
                   type="button"
                   aria-label={t('notifications.center.inbox.delete')}

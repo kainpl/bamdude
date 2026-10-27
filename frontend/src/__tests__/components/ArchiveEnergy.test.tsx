@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { screen } from '@testing-library/react';
 
+import i18n from '../../i18n';
 import { render } from '../utils';
 import { ArchiveEnergyFact } from '../../components/ArchiveEnergy';
 import { hasEnergyFact } from '../../utils/archiveEnergy';
@@ -29,7 +30,7 @@ describe('ArchiveEnergyFact', () => {
     show(fact({ energy_kwh: 0.2, energy_cost: 0.04, energy_status: 'estimated', energy_coverage: 0.97 }));
 
     const shown = screen.getByText(/0\.04/);
-    expect(shown).toHaveTextContent('≈ $0.04');
+    expect(shown.textContent).toBe('≈ $0.04');
     expect(shown.getAttribute('title')).toMatch(/0\.200 kWh/);
     expect(shown.getAttribute('title')).toMatch(/97%/);
   });
@@ -44,6 +45,19 @@ describe('ArchiveEnergyFact', () => {
     show(fact({ energy_kwh: 0.1, energy_cost: 0.02, energy_status: 'measured' }));
 
     expect(screen.getByText(/0\.02/)).toHaveTextContent(/^\$0\.02$/);
+  });
+
+  it('names a measured figure in the same unit as an estimate beside it', async () => {
+    await i18n.changeLanguage('uk');
+    try {
+      show(fact({ energy_kwh: 0.12, energy_cost: 0.03, energy_status: 'measured' }));
+      show(fact({ energy_kwh: 0.2, energy_cost: 0.04, energy_status: 'estimated', energy_coverage: 0.97 }));
+
+      expect(screen.getByText(/0\.03/).getAttribute('title')).toMatch(/0\.120 кВт·год/);
+      expect(screen.getByText(/0\.04/).getAttribute('title')).toMatch(/0\.200 кВт·год/);
+    } finally {
+      await i18n.changeLanguage('en');
+    }
   });
 
   it('says an untrusted figure is unknown, with the reason, never a zero', () => {

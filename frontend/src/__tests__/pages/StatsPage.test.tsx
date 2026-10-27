@@ -252,7 +252,8 @@ describe('StatsPage', () => {
       const notes = await screen.findByTestId('print-energy-notes');
       expect(notes).toHaveTextContent('2 prints are estimated from power history');
       expect(notes).toHaveTextContent('1 print has no reliable energy figure and is not counted as zero');
-      expect(screen.getByText('≈ 1.500 kWh')).toBeInTheDocument();
+      // The mark never wraps away from its number onto a line of its own in a narrow widget.
+      expect(screen.getByText('≈ 1.500 kWh').textContent).toBe('≈ 1.500 kWh');
     });
 
     it('shows both energy costs — printing, and everything the plugs counted', async () => {

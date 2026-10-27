@@ -1744,6 +1744,7 @@ export default {
     energy: {
       estimated: '≈ {{kwh}} кВт·год, оцінено за історією потужності розетки (покрито {{coverage}}% друку): її лічильник енергії стояв.',
       approximate: '≈ {{kwh}} кВт·год, приблизно: лічильник прочитано не в момент власного початку чи кінця друку.',
+      measured: 'Використано енергії: {{kwh}} кВт·год',
       unknown: 'Енергія невідома',
       reasons: {
         insufficient_history: 'Лічильник енергії розетки стояв, а історія потужності покриває цей друк недостатньо, щоб його оцінити.',
@@ -6620,7 +6621,7 @@ export default {
         cost: 'собівартість: {{parts}}',
         costFilament: 'філамент {{amount}}',
         costEnergy: 'електрика {{amount}}',
-        costEnergyEstimated: 'електрика ≈ {{amount}}',
+        costEnergyEstimated: 'електрика ≈ {{amount}}',
         energyUnknown_one: '{{count}} друк без надійного виміру енергії',
         energyUnknown_few: '{{count}} друки без надійного виміру енергії',
         energyUnknown_many: '{{count}} друків без надійного виміру енергії',
@@ -11457,6 +11458,7 @@ export default {
         clearConfirmBody: 'Прибрати всі сповіщення, що відповідають поточним фільтрам? Цю дію не скасувати.',
         cleared: 'Прибрано: {{count}}',
         delete: 'Видалити',
+        openPlugs: 'Відкрити розетки',
         notificationCount_one: 'сповіщення',
         notificationCount_few: 'сповіщення',
         notificationCount_many: 'сповіщень',

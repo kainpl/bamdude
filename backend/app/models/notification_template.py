@@ -343,8 +343,8 @@ DEFAULT_TEMPLATES = [
     },
     {
         "event_type": "plug_meter_stalled",
-        "name": "Plug Meter Stalled",
-        "title_template": "Plug Meter Stalled",
+        "name": "Plug Energy Counter Stalled",
+        "title_template": "Plug Energy Counter Stalled",
         "body_template": (
             "The energy counter of plug {plug} has not changed since {since}, although its power history "
             "shows a load. Print energy may be estimated or unknown. Check where the plug's total comes "

@@ -44,11 +44,11 @@ export function ArchiveEnergyFact({
       ? t('archives.energy.estimated', { kwh, coverage: Math.round((archive.energy_coverage ?? 0) * 100) })
       : archive.energy_status === 'approximate'
         ? t('archives.energy.approximate', { kwh })
-        : `${t('stats.energyUsed')}: ${kwh} kWh`;
+        : t('archives.energy.measured', { kwh });
   return (
     <span className={className} title={title}>
       <Zap className={iconClassName} />
-      {approximate ? '≈ ' : ''}
+      {approximate ? '≈ ' : ''}
       {currency}
       {archive.energy_cost.toFixed(2)}
     </span>

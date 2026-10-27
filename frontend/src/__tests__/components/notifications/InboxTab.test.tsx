@@ -137,4 +137,21 @@ describe('InboxTab', () => {
     await waitFor(() => expect(asked.some((q) => q.includes('page=2'))).toBe(true));
   });
 
+
+  it('links a plug-meter warning to the smart plugs it is about', async () => {
+    // Spec plug-meter-watchdog T7: the warning leads to the plug, whose card shows the episode.
+    const warning = {
+      id: 3, event_type: 'plug_meter_stalled', severity: 'warning', group: 'sensors', title: 'Plug Energy Counter Stalled',
+      message: 'The energy counter of plug Bench has not changed since 2026-10-27 08:00 UTC',
+      printer_id: null, printer_name: null, extra_data: { plug_id: 7, incident_id: 1 },
+      created_at: new Date().toISOString(), read_at: null,
+    };
+    server.use(http.get('/api/v1/inbox/', () => HttpResponse.json(pageOf([warning, items[1]], 1))));
+    render(<InboxTab />);
+
+    const link = await screen.findByRole('link', { name: 'Open smart plugs' });
+    expect(link).toHaveAttribute('href', '/settings?tab=plugs');
+    // Only the warning about a plug carries one.
+    expect(screen.getAllByRole('link', { name: 'Open smart plugs' })).toHaveLength(1);
+  });
 });
