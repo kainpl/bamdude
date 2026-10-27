@@ -237,6 +237,68 @@ async def test_resume_callback_uses_current_runout_without_sending_printer_comma
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+@pytest.mark.parametrize("first_tray", [255, 254])
+async def test_generic_p1s_runout_gains_source_proof_then_claims_once(
+    db_session, printer_factory, tmp_path, first_tray
+):
+    from sqlalchemy import delete
+
+    from backend.app.services.print_usage_journal import record_runout
+    from backend.tests.unit.services.test_external_stock_generic_runout import client
+
+    p, old, new, archive, pm, state, event = await setup(db_session, printer_factory, tmp_path)
+    await db_session.execute(delete(PrintUsageEvent))
+    await db_session.commit()
+    mqtt = client()
+    state.layer_num = 160
+    mqtt.state.feed_telemetry.ams_known = False
+    mqtt.state.tray_now = first_tray
+    mqtt._detect_runout_signals()
+    _, kind, tray, layer = mqtt.on_usage_event.call_args.args
+    await record_runout(
+        db_session,
+        printer_id=p.id,
+        archive_id=archive.id,
+        layer_num=layer,
+        kind=kind,
+        global_tray_id=tray,
+        spool_id=old.id if tray is not None else None,
+    )
+    await db_session.commit()
+    assert (await claim_on_external_resume(db_session, printer_id=p.id, event=event, manager=pm))["reason"] == (
+        "no_unambiguous_external_runout"
+    )
+
+    mqtt.state.feed_telemetry.ams_known = True
+    mqtt.state.tray_now = 254
+    mqtt._detect_runout_signals()
+    _, kind, tray, layer = mqtt.on_usage_event.call_args.args
+    assert (kind, tray) == (KIND_EXTERNAL, 254)
+    await record_runout(
+        db_session,
+        printer_id=p.id,
+        archive_id=archive.id,
+        layer_num=layer,
+        kind=kind,
+        global_tray_id=tray,
+        spool_id=old.id,
+    )
+    await db_session.commit()
+    runouts = (await db_session.execute(select(PrintUsageEvent))).scalars().all()
+    # A tray-less sighting remains forensic history; only the later positively
+    # named holder is eligible for a claim. A known-tray sighting upgrades in place.
+    assert len(runouts) == (2 if first_tray == 255 else 1)
+    named = [row for row in runouts if row.global_tray_id == 254]
+    assert len(named) == 1
+    assert (named[0].kind, named[0].spool_id) == (KIND_EXTERNAL, old.id)
+    assert (await claim_on_external_resume(db_session, printer_id=p.id, event=event, manager=pm))["spool_id"] == new.id
+    assert (await claim_on_external_resume(db_session, printer_id=p.id, event=event, manager=pm))["reason"] == (
+        "no_unambiguous_external_runout"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 @pytest.mark.parametrize("change", ["reconnect", "feed_changed", "finished"])
 async def test_external_resume_rechecks_live_state_after_stock_lookup(db_session, printer_factory, tmp_path, change):
     p, old, new, archive, pm, state, event = await setup(db_session, printer_factory, tmp_path)

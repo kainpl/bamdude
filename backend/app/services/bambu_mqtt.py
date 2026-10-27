@@ -16,7 +16,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import wraps
 from itertools import count
@@ -8230,8 +8230,9 @@ class BambuMQTTClient:
     def _detect_runout_signals(self) -> None:
         """Scan active error codes for the runout family and fire events once.
 
-        Full-ecode classification only (``classify_runout_ecode``): the short
-        MMMM_EEEE form collapses runout vs jam on the A1 mini holder. Fires
+        Classify full ecodes (``classify_runout_ecode``): the short
+        MMMM_EEEE form collapses runout vs jam on the A1 mini holder. A generic
+        runout needs positive feed facts to identify an external source. Fires
         ``on_usage_event("runout", kind, tray, layer)`` once per tray per
         print; a pause-kind may upgrade to autoswitch exactly once (the AMS
         backup took over mid-purge).
@@ -8262,6 +8263,22 @@ class BambuMQTTClient:
             match = classify_runout_ecode(getattr(err, "full_code", "") or "")
             if match is None:
                 continue
+            # 03008004 says filament ran out, but does not identify its source.
+            # A single-nozzle machine with a positively observed absent AMS,
+            # exactly one reported external holder and that feed loaded has
+            # no competing source. Reuse the connection-scoped feed reader:
+            # an absent AMS field or a virtual tray alone is not that proof.
+            feed = self.state.feed_telemetry
+            if (
+                err.full_code == "03008004"
+                and not self._is_dual_nozzle
+                and self.state.tray_now == 254
+                and feed.ams_known
+                and not feed.ams_present
+                and feed.external_known
+                and set(feed.external) == {254}
+            ):
+                match = replace(match, kind="external", scope="external", external_tray=254)
             tray = self._resolve_runout_tray(match)
             active_runout_trays.add(tray)
             fired = self._runout_fired.get(tray)
@@ -8282,8 +8299,8 @@ class BambuMQTTClient:
                 self._runout_fired[tray] = "autoswitch"
                 self.on_usage_event("runout", "autoswitch", tray, self.state.layer_num)
             elif fired == "ambiguous" and match.kind != "ambiguous" and not match.transitional:
-                # The firmware escalated its own diagnosis (jam → ran out)
-                # while the pause is still active — the definite kind owns the
+                # A later diagnosis or positive feed evidence established the
+                # definite kind while the pause is still active — it owns the
                 # episode; record_runout upgrades the row in place.
                 self._runout_fired[tray] = match.kind
                 self.on_usage_event("runout", match.kind, tray, self.state.layer_num)
