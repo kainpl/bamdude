@@ -182,6 +182,38 @@ def test_plug_meter_watch_on_postgres(tmp_path):
     assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
 
 
+@pytest.mark.timeout(600)
+def test_rebalance_job_feasibility_on_postgres(tmp_path):
+    """Rebalancing by job feasibility on PostgreSQL: the pass's printer and plate reads, the
+    previous-success lookups and the final check after the target copy (rebalance-job-feasibility
+    plan §5)."""
+    url = _pg_url()
+    _wipe(url)
+    env = {
+        **os.environ,
+        "DATA_DIR": str(tmp_path),
+        "DISPATCH_TEST_POSTGRES_URL": _async_url(url),
+        "BAMDUDE_LOCK_ORDER_STRICT": "1",
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "backend/tests/integration/test_rebalance_job_feasibility_on_postgres.py",
+            "-q",
+            "--timeout=120",
+            "--tb=short",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=540,
+    )
+    assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
+
+
 @pytest.mark.timeout(420)
 def test_queue_bulk_retry_concurrency(tmp_path):
     """The same real-runner matrix on independent PostgreSQL connections."""

@@ -139,6 +139,22 @@ async def test_the_companions_inherit_the_source_rows_job_flags(
 
 
 @pytest.mark.asyncio
+async def test_the_companions_keep_the_jobs_base_material_choice(db_session, printer_factory, tmp_path):
+    """The move's result carries the routing policy its fit was judged by (spec
+    rebalance-job-feasibility R4): a strict-profile job's companions do not take the schema's
+    «any base material will do» default."""
+    farm = await rebalance_farm(db_session, printer_factory, tmp_path)
+    farm.item.allow_base_material_match = False
+    await db_session.commit()
+    result = await _move(db_session, farm)
+    assert (result.converted, result.created) == (1, 2), result.skipped
+    db_session.expire_all()
+    rows = await _pending(db_session)
+    assert len(rows) == 3
+    assert [row.allow_base_material_match for row in rows] == [False, False, False]
+
+
+@pytest.mark.asyncio
 async def test_line_button_ignores_the_cooldown(committing_client, db_session, printer_factory, tmp_path):
     farm = await rebalance_farm(db_session, printer_factory, tmp_path)
     p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
