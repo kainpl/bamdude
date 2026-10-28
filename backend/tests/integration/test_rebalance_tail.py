@@ -712,11 +712,11 @@ async def test_the_farms_staggered_start_dates_the_second_target_print(
         assert (result.converted, result.created, result.skipped) == (1, 1, [])
 
 
-async def test_the_decision_runs_off_the_loop_with_the_collector_paused(
+async def test_the_decision_runs_off_the_loop_and_leaves_the_collector_alone(
     db_session, printer_factory, tmp_path, monkeypatch
 ):
-    """T21 / T22: the replay and the plans run in a worker thread — never on the event loop's —
-    with the cyclic collector paused, and the collector is back once the pass is over."""
+    """T21 / T22: the replay and the plans run in a worker thread — never on the event loop's — and
+    the cyclic collector stays as the process has it (Codex r1 T-R4: pausing it is no pass's call)."""
     import gc
     import threading
 
@@ -734,7 +734,7 @@ async def test_the_decision_runs_off_the_loop_with_the_collector_paused(
     with p_elig, p_sched:
         result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
     assert result.converted == 1
-    assert seen and all(entry == (False, False) for entry in seen), seen
+    assert seen and all(entry == (False, True) for entry in seen), seen
     assert gc.isenabled()
 
 

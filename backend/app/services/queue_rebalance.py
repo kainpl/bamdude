@@ -47,12 +47,9 @@ have nothing to move to.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import gc
 import hashlib
 import json
 import logging
-import threading
 import uuid
 from dataclasses import dataclass, field, replace as replace_job
 from datetime import datetime, timezone
@@ -1409,49 +1406,15 @@ def _machines(
     return machines
 
 
-_collector_lock = threading.Lock()
-_collector_holds = 0
-_collector_was_enabled = False
-
-
-@contextlib.contextmanager
-def _collector_paused():
-    """The cyclic collector waits while a pass decides (spec T22, measured 2026-10-28).
-
-    A full collection stops every thread, the event loop's too, for as long as the whole heap
-    takes — and a decision's short-lived replays, promoted by the young collections they set
-    off, were what started one in the middle of a pass. The decision makes no reference
-    cycles, so its garbage goes with its references and nothing waits for the collector.
-    Counted: two passes deciding at once hand it back once, when the last ends, and a
-    collector somebody else switched off stays off.
-    """
-    global _collector_holds, _collector_was_enabled
-    with _collector_lock:
-        if _collector_holds == 0:
-            _collector_was_enabled = gc.isenabled()
-            gc.disable()
-        _collector_holds += 1
-    try:
-        yield
-    finally:
-        with _collector_lock:
-            _collector_holds -= 1
-            if _collector_holds == 0 and _collector_was_enabled:
-                gc.enable()
-
-
 async def _decide(fn, *args, **kwargs):
-    """One step of the decision — CPU work over plain data — in a worker thread, off the
-    event loop, with the cyclic collector paused (spec T21–T22). A cancelled pass stops
-    using the answer; the thread still finishes: its replays are bounded by the pass's
-    budget, and the fit answers it asks (one resolve per distinct job, printer and feed) are
-    not counted against it — measured small beside the replays (stage 4)."""
-
-    def run():
-        with _collector_paused():
-            return fn(*args, **kwargs)
-
-    return await asyncio.to_thread(run)
+    """One step of the decision — CPU work over plain data — in a worker thread, off the event
+    loop (spec T21–T22). A cancelled pass stops using the answer; the thread still finishes: its
+    replays are bounded by the pass's budget, and the fit answers it asks (one resolve per
+    distinct job, printer and feed) are not counted against it — measured small beside the
+    replays (stage 4). The cyclic collector is left as the process has it: pausing it moved a full
+    collection from this thread onto the loop and never made one rarer (Codex r1 T-R4, paired
+    measurements)."""
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 @dataclass

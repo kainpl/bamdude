@@ -847,29 +847,49 @@ def test_the_plan_says_what_the_forecast_gave_each_job_at_home():
     assert plan.home == {1: ("known", 160.0), 2: ("unknown", None), 3: ("none", None)}
 
 
-def test_the_collector_waits_while_a_pass_decides_and_comes_back_once():
-    """T22: a full collection stops every thread, the event loop's too; the decision makes no
-    reference cycles, so the cyclic collector waits while it runs. Two passes deciding at once
-    hand it back once, when the last one ends — and a collector somebody else switched off
-    stays off."""
-    import gc
+async def test_a_cancelled_pass_stops_waiting_while_its_thread_finishes():
+    """T21: the pass awaiting its decision is cancelled while the worker thread still runs. The
+    cancellation reaches the pass at once; the thread finishes its bounded work on its own."""
+    import asyncio
+    import threading
 
-    from backend.app.services.queue_rebalance import _collector_paused
+    from backend.app.services.queue_rebalance import _decide
 
-    assert gc.isenabled()
-    with _collector_paused():
-        assert not gc.isenabled()
-        with _collector_paused():
-            assert not gc.isenabled()
-        assert not gc.isenabled()
-    assert gc.isenabled()
-    gc.disable()
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def work():
+        started.set()
+        release.wait(10)
+        finished.set()
+        return "decided"
+
+    task = asyncio.create_task(_decide(work))
     try:
-        with _collector_paused():
-            pass
-        assert not gc.isenabled()
+        assert await asyncio.to_thread(started.wait, 10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not finished.is_set()
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 10)
     finally:
-        gc.enable()
+        release.set()
+
+
+def test_no_application_code_switches_the_collector():
+    """Codex r1 T-R4: the cyclic collector is the process's, not a pass's. A pause around the
+    decision (measured 2026-10-28, paired with the router on the same stands) moved a full
+    collection from the worker onto the loop and never made one rarer; switching it is a
+    process-wide policy nobody authorised. Code that wants to switch it is an owner's decision."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3] / "app"
+    switch = re.compile(r"\bgc\.(?:disable|enable|freeze|unfreeze|set_threshold)\(|from gc import")
+    offenders = sorted(
+        str(path.relative_to(root)) for path in root.rglob("*.py") if switch.search(path.read_text(encoding="utf-8"))
+    )
+    assert offenders == []
 
 
 def test_a_trial_stops_once_its_print_can_no_longer_start_in_time(monkeypatch):
