@@ -12,18 +12,30 @@ each move through the writer every enqueue uses.
 
 ⚠️ **Routing is not dispatching, and this is routing.** Nothing here starts a
 print, gates the ROUTER on readiness, or touches ``find_eligible_printer`` /
-``_assign``. "Idle" is asked only to decide who may RECEIVE moved work: a
-printer with an empty queue that still waits for a plate clear only looks
-free, and moving work to it would move it nowhere — so the receiver test is
-the busy set AND ``PrintScheduler._is_printer_idle``, both readiness signals
-the router's ranking already uses.
+``_assign``. "Ready" is asked only to decide who may RECEIVE moved work, and
+whether a home printer would take the job now: a printer with an empty queue
+that still waits for a plate clear, or that a Home Assistant interlock holds,
+only looks free, and moving work to it would move it nowhere — so readiness is
+the busy set AND ``PrintScheduler._is_printer_idle`` AND the tick's interlock
+set, the readiness signals the router's ranking already uses.
+
+⚠️ **A printer is asked about THIS job, never about its model** (spec
+rebalance-job-feasibility r2). A free P2S holding PLA and ABS is no home for a
+PETG plate: it neither vetoes the move (``home_model_idle``) nor stands in for
+the home's finish time, and a P1S without PETG is no receiver. Each answer is
+the shared resolver's (``resolve_filament_routing``) over the job's own
+requirements and policy and the printer's feed snapshot — see
+:class:`_FitOracle`; a busy home is asked too, about the filament it holds now,
+because the router's own facts never cover a busy printer (it checks busy
+before it resolves). Capacity lives in one per-pass ledger, printer id →
+seconds until free (:func:`plan_moves`).
 
 The cheap verdicts are reached before the expensive load: a cooling line, and a
-row whose own model has an idle machine, are both answered without reading
-anything. What is left genuinely needs the plan engine's catalog — "an idle
-model with no candidate plate for THESE lines" cannot be answered from the
-queue rows alone, and there is no cheaper source for it than the plates
-themselves.
+row with a free home printer that can print it (or might, unread), are both
+answered without the plan engine's catalog. What is left genuinely needs it —
+"a free printer with no candidate plate for THESE lines" cannot be answered
+from the queue rows alone, and there is no cheaper source for it than the
+plates themselves.
 
 ⚠️ **Never moved:** assigned, scheduled for a time, staged (``manual_start``),
 pinned (slot-bound ``filament_overrides``), aimed at a location, sourced from
@@ -34,11 +46,13 @@ have nothing to move to.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -58,8 +72,15 @@ from backend.app.services import queue_sources
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.auto_queue_eligibility import busy_printer_ids
 from backend.app.services.farm_forecast import FarmSnapshot, load_snapshot, model_key, rank_active_orders
+from backend.app.services.filament_intake import (
+    enrich_family_filament_types,
+    read_item_requirements,
+    resolve_source_path,
+)
 from backend.app.services.filament_policy import auto_policy
-from backend.app.services.filament_requirements import PrintRequirementsCache
+from backend.app.services.filament_preflight import feed_signature
+from backend.app.services.filament_requirements import PrintRequirements, PrintRequirementsCache
+from backend.app.services.filament_routing import RoutingPolicy, resolve_filament_routing
 from backend.app.services.order_metrics import attribute, batch_contexts, line_accepts_materials
 from backend.app.services.order_print_options import override_options
 from backend.app.services.order_queue import awaiting_auto_row_conditions
@@ -83,6 +104,9 @@ from backend.app.services.queue_source_capture import (
     staged_requirements,
 )
 from backend.app.utils.model_compatibility import model_compatibility
+
+if TYPE_CHECKING:
+    from backend.app.services.printer_feed_snapshot import PrinterFeedSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +133,14 @@ SKIP_REASONS = (
     "no_faster_model",
     "cooldown",
     "order_resources",
+    # A home printer that would take the job now, but whose fit is unread (its feed not
+    # reported yet, a nozzle unknown): the router may place the job there seconds from
+    # now, so it is not moved away on a guess. Also: no fit receiver, but some unread.
+    "eligibility_unknown",
+    # No alternative plate of the line has a free printer that can print it.
+    "no_eligible_target",
+    # What the move was decided on changed while the target file was copied.
+    "eligibility_changed",
 )
 
 #: How a capture refusal (spec §6's taxonomy) is reported on the panel.
@@ -181,16 +213,62 @@ class MovableItem:
     seconds: int | None  # t_m
 
 
-@dataclass
-class FarmView:
-    """The farm as the decision sees it: who may receive, and when each model is next free.
+Verdict = Literal["yes", "no", "unknown"]
 
-    A model absent from ``free_at_by_model`` has no machine that accepts new
-    work — an item whose home that is moves whenever anything can take it.
+#: The reason a TARGET fit is unknown because the alternative plate's own file
+#: could not be read: reported as the existing ``source_unreadable`` when nothing
+#: else stood in the way (spec R17 — source errors keep their reasons).
+TARGET_SOURCE_UNREADABLE = "target_source_unreadable"
+
+
+@dataclass(frozen=True)
+class Fit:
+    """Can one printer print one job — the shared resolver's answer, reduced to what the decision reads.
+
+    ``yes`` carries the plan's colour matches, the router's third ranking key. A
+    plan itself never leaves the oracle: the router resolves its own at placement.
     """
 
-    idle_by_model: dict[str, int]
-    free_at_by_model: dict[str, float]  # seconds from now
+    verdict: Verdict
+    reason: str | None = None
+    color_matches: int = 0
+
+
+@dataclass(frozen=True)
+class Machine:
+    """One online printer that organisationally accepts new auto-queue work.
+
+    ``ready`` is a fact of the pass, never derived from the ledger: a printer
+    awaiting its plate clear, held by a Home Assistant interlock or in the busy
+    set may well be forecast at 0 s (spec A19), and still receives nothing.
+    ``free_after`` is its ledger seed — 0 when ready, else the forecast.
+    """
+
+    printer_id: int
+    model: str  # ``model_key`` of the printer's effective model
+    ready: bool
+    free_after: float
+
+
+class FitSource(Protocol):
+    """Where the pure decision asks its feasibility questions (:class:`_FitOracle` in a run)."""
+
+    def home(self, item_id: int, printer_id: int) -> Fit: ...
+
+    def target(self, item_id: int, plate: PlateOption, printer_id: int) -> Fit: ...
+
+
+@dataclass
+class FarmView:
+    """The farm as the decision sees it: the machines that may take new work, and who can print what.
+
+    A printer absent from ``machines`` (offline, parked, archived) neither
+    vetoes a move, nor dates a home, nor receives — an item whose every home
+    machine is absent moves whenever a fit receiver can take it.
+    """
+
+    machines: dict[int, Machine]
+    fits: FitSource
     allow_compatible: bool = False
 
 
@@ -206,6 +284,9 @@ class Move:
     finish: float
     surplus: int  # k × plate yield − item yield, always < plate yield
     moved_parts: int  # the item's yield — what the move is for
+    #: The fit, ready printers the estimate put the k prints on, in the router's
+    #: order. An estimate, never a reservation: the router places the rows.
+    receivers: tuple[int, ...] = ()
 
 
 @dataclass
@@ -217,20 +298,80 @@ class MovePlan:
 # ---------- the decision ----------
 
 
-def _best_plate(options, model: str, wanted: int) -> PlateOption | None:
-    """The line's best plate of ``model`` for covering ``wanted`` parts — by the plan engine's own key.
+def _model_verdict(job_model: str, machine_model: str, allow_compatible: bool) -> str | None:
+    """``exact`` / ``compatible`` when the router would offer this machine the job's model, else None."""
+    if job_model == machine_model:
+        return "exact"
+    if allow_compatible and model_compatibility(job_model, machine_model) == "compatible":
+        return "compatible"
+    return None
 
-    Most useful parts per hour first, then least waste, then the shorter print,
-    then the lower plate id. A plate without an estimate is never chosen: its
-    finish could not be compared with waiting at home.
+
+def _home_verdict(
+    item: MovableItem, machines: list[Machine], farm: FarmView, ledger: dict[int, float]
+) -> tuple[str | None, float | None]:
+    """Whether the job stays home, and when its earliest fit home printer is free.
+
+    ``home_model_idle`` when a home printer is ready, free in the ledger and can
+    print the job; ``eligibility_unknown`` when none can but one such printer's
+    answer is unknown (spec R8 — the router may place it there as soon as the
+    feed is read). Otherwise ``None`` and the earliest ledger time among the
+    homes that CAN print it, busy or not ready included (Q2: the current feed of
+    a busy printer, with its forecast) — ``None`` when no home can. A home that
+    cannot print it, or whose answer is unknown while it is busy or not ready,
+    dates nothing.
     """
-    candidates = [o for o in options if o.model == model and o.yield_parts > 0 and o.seconds is not None]
-    if not candidates:
-        return None
-    return min(
-        candidates,
-        key=lambda o: _pick_key(min(o.yield_parts, wanted), max(0, o.yield_parts - wanted), o.seconds, o.plate_id),
-    )
+    home_free: float | None = None
+    unknown_ready = False
+    for machine in machines:
+        if _model_verdict(item.home_model, machine.model, farm.allow_compatible) is None:
+            continue
+        fit = farm.fits.home(item.item_id, machine.printer_id)
+        free = ledger[machine.printer_id]
+        free_now = machine.ready and free == 0
+        if fit.verdict == "yes":
+            if free_now:
+                return "home_model_idle", None
+            home_free = free if home_free is None else min(home_free, free)
+        elif fit.verdict == "unknown" and free_now:
+            unknown_ready = True
+    return ("eligibility_unknown" if unknown_ready else None), home_free
+
+
+def _receivers(
+    item: MovableItem,
+    plate: PlateOption,
+    machines: list[Machine],
+    farm: FarmView,
+    ledger: dict[int, float],
+    unknown: set[str | None],
+) -> list[int]:
+    """The ready, free printers that can print ``plate`` for this job — in the router's order.
+
+    The router ranks ``(ready, exact, color_matches, -printer_id)``; every one
+    here is ready, so exact model first, then colour matches, then the lower id.
+    An unknown answer gives no capacity (spec R8) and is remembered for the reason.
+    """
+    ranked = []
+    for machine in machines:
+        verdict = _model_verdict(plate.model, machine.model, farm.allow_compatible)
+        if verdict is None or not machine.ready or ledger[machine.printer_id] != 0:
+            continue
+        fit = farm.fits.target(item.item_id, plate, machine.printer_id)
+        if fit.verdict == "yes":
+            ranked.append((verdict == "exact", fit.color_matches, -machine.printer_id))
+        elif fit.verdict == "unknown":
+            unknown.add(fit.reason)
+    ranked.sort(reverse=True)
+    return [-key[2] for key in ranked]
+
+
+def _no_target_reason(unknown: set[str | None]) -> str:
+    if not unknown:
+        return "no_eligible_target"
+    if unknown == {TARGET_SOURCE_UNREADABLE}:
+        return "source_unreadable"
+    return "eligibility_unknown"
 
 
 def plan_moves(
@@ -240,68 +381,75 @@ def plan_moves(
     *,
     cooling: frozenset[int] | set[int] = frozenset(),
 ) -> MovePlan:
-    """The decision, item by item, in the order ``items`` arrive (spec §3.2).
+    """The decision, item by item, in the order ``items`` arrive.
 
-    Pure. The caller sorts the items — order rank, then queue order — and hands
-    in the farm as it is now; this walks them once, consuming capacity as it
-    goes, so an urgent order takes idle printers first and one pass never
-    floods a model. Per item: skip if its line is cooling or its own model has
-    an idle printer (the normal pass is about to place it); otherwise find,
-    for every other model with capacity, the best plate, ``k = ceil(y_m / y_X)``
-    prints of it and their finish ``ceil(k / c_X) × t_X``; move to the earliest
-    finish that is not later than ``free_at(home) + t_m``.
+    Pure, given ``farm.fits``. The caller sorts the items — order rank, then
+    queue order — and this walks them once over ONE ledger, printer id →
+    seconds until free (spec R12), so an urgent order takes the free printers
+    first and no printer is capacity twice, across plates, lines or compatible
+    models.
 
-    ``t_m`` unknown compares as 0 (home looks instant, so the item moves only
-    when the other model finishes before home is even free). When a receiver's
-    capacity reaches zero its ``free_at`` becomes the shortest chain a machine
-    of it now holds, ``(k // c_X) × t_X``, so a later item whose HOME is that
-    model sees the farm as it will be.
+    Per item: skip if its line is cooling, or a home printer would take it now
+    (:func:`_home_verdict`). Otherwise every alternative plate of another model
+    gets its OWN receivers — ready, free in the ledger, and able to print it
+    (:func:`_receivers`); per model the plan engine's key picks the best plate
+    that has any, ``k = ceil(y_m / y_X)`` prints of it on ``c = min(k, n)`` of
+    its receivers finish at ``ceil(k / c) × t_X``, and the item moves to the
+    earliest finish not later than ``home_free + t_m`` — or to any fit target
+    when no home can print it at all. ``t_m`` unknown compares as 0.
+
+    A move writes its rounds into the ledger: ``q, r = divmod(k, c)``, the first
+    ``r`` receivers ``(q + 1) × t``, the rest ``q × t``. A used printer is no
+    longer free, and its time is what a later item whose home it is compares
+    against. Alternatives that were not chosen change nothing.
     """
-    idle = dict(farm.idle_by_model)
-    free_at = dict(farm.free_at_by_model)
+    ledger = {pid: (0.0 if m.ready else float(m.free_after)) for pid, m in farm.machines.items()}
+    machines = sorted(farm.machines.values(), key=lambda m: m.printer_id)
     plan = MovePlan()
     for item in items:
         if item.line_id in cooling:
             plan.skipped.append((item.item_id, "cooldown"))
             continue
-        if idle.get(item.home_model, 0) > 0 or (
-            farm.allow_compatible
-            and any(
-                count > 0 and model_compatibility(item.home_model, model) == "compatible"
-                for model, count in idle.items()
-            )
-        ):
-            plan.skipped.append((item.item_id, "home_model_idle"))
+        stay, home_free = _home_verdict(item, machines, farm, ledger)
+        if stay is not None:
+            plan.skipped.append((item.item_id, stay))
             continue
-        home_free = free_at.get(item.home_model)
-        if farm.allow_compatible:
-            fallback_times = [
-                seconds
-                for model, seconds in free_at.items()
-                if model_compatibility(item.home_model, model) == "compatible"
-            ]
-            if fallback_times:
-                home_free = min(home_free, *fallback_times) if home_free is not None else min(fallback_times)
         home_finish = None if home_free is None else home_free + (item.seconds or 0)
-        best: tuple[tuple[float, int, str], str, PlateOption, int, float, int] | None = None
-        for model, capacity in idle.items():
-            if capacity <= 0 or model == item.home_model:
+        unknown: set[str | None] = set()
+        by_model: dict[str, list[tuple[PlateOption, list[int]]]] = {}
+        for plate in options_by_line.get(item.line_id, ()):
+            # A plate without an estimate is never a target: its finish could not be compared.
+            if plate.model == item.home_model or plate.yield_parts <= 0 or plate.seconds is None:
                 continue
-            plate = _best_plate(options_by_line.get(item.line_id, ()), model, item.yield_parts)
-            if plate is None:
-                continue
+            receivers = _receivers(item, plate, machines, farm, ledger, unknown)
+            if receivers:
+                by_model.setdefault(plate.model, []).append((plate, receivers))
+        best: tuple[tuple[float, int, str], str, PlateOption, list[int], int, float, int] | None = None
+        for model, candidates in by_model.items():
+            # The plan engine's own key, among the plates that have a fit receiver:
+            # most useful parts per hour, least waste, the shorter print, the lower id.
+            plate, receivers = min(
+                candidates,
+                key=lambda pair: _pick_key(
+                    min(pair[0].yield_parts, item.yield_parts),
+                    max(0, pair[0].yield_parts - item.yield_parts),
+                    pair[0].seconds,
+                    pair[0].plate_id,
+                ),
+            )
             k = -(-item.yield_parts // plate.yield_parts)
-            finish = float(-(-k // capacity) * (plate.seconds or 0))
+            chosen = receivers[: min(k, len(receivers))]
+            finish = float(-(-k // len(chosen)) * plate.seconds)
             if home_finish is not None and finish > home_finish:
                 continue
             surplus = k * plate.yield_parts - item.yield_parts
             key = (finish, surplus, model)
             if best is None or key < best[0]:
-                best = (key, model, plate, k, finish, surplus)
+                best = (key, model, plate, chosen, k, finish, surplus)
         if best is None:
-            plan.skipped.append((item.item_id, "no_faster_model"))
+            plan.skipped.append((item.item_id, "no_faster_model" if by_model else _no_target_reason(unknown)))
             continue
-        _key, model, plate, k, finish, surplus = best
+        _key, model, plate, chosen, k, finish, surplus = best
         plan.moves.append(
             Move(
                 item_id=item.item_id,
@@ -314,36 +462,27 @@ def plan_moves(
                 finish=finish,
                 surplus=surplus,
                 moved_parts=item.yield_parts,
+                receivers=tuple(chosen),
             )
         )
-        capacity = idle[model]
-        idle[model] = max(0, capacity - k)
-        if idle[model] == 0:
-            free_at[model] = max(free_at.get(model, 0.0), float((k // capacity) * (plate.seconds or 0)))
+        rounds, extra = divmod(k, len(chosen))
+        for index, printer_id in enumerate(chosen):
+            ledger[printer_id] = float((rounds + (1 if index < extra else 0)) * plate.seconds)
     return plan
 
 
-def home_wait_by_model(snapshot: FarmSnapshot) -> dict[str, float]:
-    """``model_key → seconds until the earliest machine of that model that accepts work is free``.
+def free_after_by_printer(snapshot: FarmSnapshot) -> dict[int, float]:
+    """``printer_id → seconds until it is free``, the ledger's seed for a printer that is not ready.
 
     The same estimate the ETA uses (``farm_forecast.load_snapshot``): the head
     of the queue is the running print's remaining seconds, then the pending rows
-    in position order; a row without an estimate counts nothing. A parked
-    machine (``accepts_new_work=False``) never sets the figure — what it holds is
-    not somewhere new work could go.
+    in position order; a row without an estimate counts nothing.
     """
-    out: dict[str, float] = {}
-    for machine in snapshot.printers:
-        if not machine.accepts_new_work:
-            continue
-        key = model_key(machine.model)
-        if key is None:
-            continue
-        busy_for = max(0.0, float(machine.running_seconds)) + float(
-            sum(row.seconds for row in machine.queued if row.seconds and row.seconds > 0)
-        )
-        out[key] = min(out[key], busy_for) if key in out else busy_for
-    return out
+    return {
+        machine.printer_id: max(0.0, float(machine.running_seconds))
+        + float(sum(row.seconds for row in machine.queued if row.seconds and row.seconds > 0))
+        for machine in snapshot.printers
+    }
 
 
 # ---------- loading what the decision needs ----------
@@ -376,19 +515,31 @@ def refusal(item: AutoQueueItem) -> str | None:
     return None
 
 
-async def idle_printers_by_model(db: AsyncSession, busy: set[int]) -> dict[str, int]:
-    """``model_key → printers that may RECEIVE moved work right now``.
+@dataclass(frozen=True)
+class PassPrinter:
+    """One printer as a rebalancing pass sees it — its facts read ONCE for the whole pass (spec R14)."""
+
+    printer_id: int
+    model_name: str  # the effective model, as the resolver and ``model_compatibility`` read it
+    key: str  # its ``model_key``
+    snapshot: PrinterFeedSnapshot
+    ready: bool
+
+
+async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int]) -> dict[int, PassPrinter]:
+    """The online printers that may take new auto-queue work, with their feed snapshot and readiness.
 
     The same population ``printers_for_item`` routes over (active, not archived,
-    auto-distribute eligible, queue not paused), minus the busy set, keeping only
-    machines that are connected and idle by ``_is_printer_idle`` with the
-    plate-clear gate honoured. ⚠️ Both halves, deliberately: an empty queue on a
-    printer still waiting for its plate clear only looks free.
+    auto-distribute eligible, queue not paused) — narrowed to a queue that
+    ``print_scheduler.check_queue`` would dispatch from: ⚠️ ``status in
+    ("paused", "error")`` is what it refuses, so work moved onto such a queue
+    would sit there. An offline printer is left out whole (spec R7): it neither
+    vetoes, nor dates a home, nor receives — not waiting for it to come back.
 
-    ⚠️ ``status in ("paused", "error")`` is what ``print_scheduler.check_queue``
-    refuses to dispatch from, mirrored here so a receiver is a machine that will
-    actually PRINT what it is given: work moved onto such a queue would sit
-    there while every later tick answered ``home_model_idle``.
+    ``ready`` = outside the busy set, idle by ``_is_printer_idle`` with the
+    plate-clear gate honoured, and not held by a Home Assistant interlock of
+    THIS pass's set (C3-1): ⚠️ an empty queue on a printer still waiting for its
+    plate clear, or behind an alerting sensor, only looks free.
     """
     rows = (
         await db.execute(
@@ -403,15 +554,153 @@ async def idle_printers_by_model(db: AsyncSession, busy: set[int]) -> dict[str, 
             )
         )
     ).all()
+    printers: dict[int, PassPrinter] = {}
     # By printer id, so a printer that somehow answered the query twice (a
-    # second queue row of its own) is still one machine of capacity.
-    by_model: dict[str, set[int]] = {}
+    # second queue row of its own) is still one machine.
     for printer_id, model in rows:
-        key = model_key(printer_manager.effective_model_for(printer_id, model))
-        if key is None or printer_id in busy or not scheduler._is_printer_idle(printer_id, require_plate_clear=True):
+        if printer_id in printers:
             continue
-        by_model.setdefault(key, set()).add(printer_id)
-    return {key: len(ids) for key, ids in by_model.items()}
+        name = printer_manager.effective_model_for(printer_id, model)
+        key = model_key(name)
+        if key is None:
+            continue
+        snapshot = printer_manager.get_feed_snapshot(printer_id)
+        if not snapshot.connected:
+            continue
+        ready = (
+            printer_id not in busy
+            and printer_id not in interlocked
+            and scheduler._is_printer_idle(printer_id, require_plate_clear=True)
+        )
+        printers[printer_id] = PassPrinter(printer_id, name, key, snapshot, ready)
+    return printers
+
+
+def _content_key(req: PrintRequirements) -> str:
+    """What a requirement says, without where it was read from — the staged copy is compared with it."""
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "model": req.model,
+                "plate": req.resolved_plate_id,
+                "filaments": req.used_filaments,
+                "nozzles": req.nozzle_constraints,
+            },
+            sort_keys=True,
+            default=str,
+        ).encode()
+    ).hexdigest()
+
+
+@dataclass(frozen=True)
+class _Job:
+    requirements: PrintRequirements
+    key: tuple  # (source identity, content) — the requirements' identity in the verdict cache
+    policy: RoutingPolicy
+    policy_fingerprint: str
+    require_previous_success: bool
+
+
+def fit_of(result) -> Fit:
+    """A ``RoutingResult`` as the decision reads it."""
+    if result.status == "compatible":
+        return Fit("yes", None, result.plan.color_matches)
+    return Fit("no" if result.status == "incompatible" else "unknown", result.reason)
+
+
+class _FitOracle:
+    """«Can printer P print job J now» for one pass — the shared resolver over frozen snapshots.
+
+    ⚠️ **Never ``find_eligible_printer``.** The router writes the plate and the
+    model onto the row it routes, and answers nothing about a busy printer: it
+    checks busy BEFORE it resolves, so its waiting facts cannot say whether a
+    busy home could print the job (spec O2). This asks the same pieces the router
+    asks, in the router's order — the model, ``require_previous_success``, then
+    ``resolve_filament_routing`` under the job's own ``auto_policy`` — of every
+    printer, without touching the row, and the router is left exactly as it was.
+
+    Verdicts are cached for the pass by the requirements' identity, the policy's
+    own fingerprint (``RoutingPolicy.fingerprint``: ``feed_signature`` does not
+    name the policy — one snapshot under strict colour on and off answers two
+    different questions), the printer, its ``feed_signature``, the exactness of
+    its model and ``prefer_lowest`` — so 358 copies of one job cost one resolve
+    per printer. ``require_previous_success`` is the JOB's condition and is
+    applied outside the cache: one job's flag is never another's answer.
+    """
+
+    def __init__(self, printers: dict[int, PassPrinter], *, prefer_lowest: bool, previous_ok: dict[int, bool]):
+        self._printers = printers
+        self._prefer_lowest = prefer_lowest
+        self._previous_ok = previous_ok
+        self._jobs: dict[int, _Job] = {}
+        self._plates: dict[int, tuple[PrintRequirements, tuple] | None] = {}
+        self._verdicts: dict[tuple, Fit] = {}
+        self._signatures: dict[tuple[int, bool], tuple] = {}
+        self.resolves = 0
+        self.hits = 0
+
+    def add_job(self, item: AutoQueueItem, requirements: PrintRequirements, policy: RoutingPolicy) -> None:
+        self._jobs[item.id] = _Job(
+            requirements,
+            (requirements.source_identity, _content_key(requirements)),
+            policy,
+            policy.fingerprint,
+            bool(item.require_previous_success),
+        )
+
+    def add_plate(self, plate_id: int, requirements: PrintRequirements | None) -> None:
+        """An alternative plate's requirements, read from its library file; ``None`` = unreadable."""
+        if requirements is None:
+            self._plates[plate_id] = None
+        else:
+            key = (requirements.source_identity, _content_key(requirements))
+            self._plates[plate_id] = (requirements, key)
+
+    def plate_content(self, plate_id: int) -> str | None:
+        entry = self._plates.get(plate_id)
+        return None if entry is None else entry[1][1]
+
+    def policy_fingerprint(self, item_id: int) -> str:
+        return self._jobs[item_id].policy_fingerprint
+
+    def home(self, item_id: int, printer_id: int) -> Fit:
+        job = self._jobs[item_id]
+        return self._fit(job, job.requirements, job.key, printer_id)
+
+    def target(self, item_id: int, plate: PlateOption, printer_id: int) -> Fit:
+        entry = self._plates.get(plate.plate_id)
+        if entry is None:
+            return Fit("unknown", TARGET_SOURCE_UNREADABLE)
+        requirements, key = entry
+        return self._fit(self._jobs[item_id], requirements, key, printer_id)
+
+    def _fit(self, job: _Job, requirements: PrintRequirements, req_key: tuple, printer_id: int) -> Fit:
+        if job.require_previous_success and not self._previous_ok.get(printer_id, False):
+            return Fit("no", "previous_print_failed")
+        printer = self._printers[printer_id]
+        verdict = model_compatibility(requirements.model, printer.model_name)
+        if verdict not in ("exact", "compatible"):
+            return Fit("no", "model_mismatch")
+        allow_base = job.policy.allow_base_material_match
+        signature = self._signatures.get((printer_id, allow_base))
+        if signature is None:
+            signature = self._signatures[(printer_id, allow_base)] = feed_signature(job.policy, printer.snapshot)
+        key = (req_key, job.policy_fingerprint, printer_id, signature, verdict == "exact", self._prefer_lowest)
+        fit = self._verdicts.get(key)
+        if fit is not None:
+            self.hits += 1
+            return fit
+        self.resolves += 1
+        fit = self._verdicts[key] = fit_of(
+            resolve_filament_routing(
+                requirements,
+                job.policy,
+                printer.snapshot,
+                exact_model=verdict == "exact",
+                prefer_lowest=self._prefer_lowest,
+            )
+        )
+        return fit
 
 
 @dataclass
@@ -566,15 +855,20 @@ async def rebalance(
     force: bool = False,
     current_user: User | None = None,
     busy_printers: set[int] | None = None,
+    interlocked_printers: set[int] | None = None,
+    requirements_cache: PrintRequirementsCache | None = None,
     now: datetime | None = None,
 ) -> RebalanceResult:
     """Run the procedure (spec §3) over the whole router, one line, or named items.
 
     ``force`` ignores the per-line cooldown — both manual routes pass it; the
-    tick does not. ``busy_printers`` lets the tick hand in the set it just
-    updated; anybody else gets it freshly from ``busy_printer_ids``. Every
-    conversion and creation is logged at INFO with the line, the models, ``k``
-    and the two finish times compared.
+    tick does not. It sets aside nothing else: who can print a job is asked the
+    same way on every door. ``busy_printers`` and ``interlocked_printers`` let
+    the tick hand in the sets its router pass just used — an empty set is a
+    snapshot like any other, not «unknown»; anybody else gets them freshly, the
+    interlocks read once. ``requirements_cache`` lets the tick share the parses
+    its router pass already paid for. Every conversion and creation is logged at
+    INFO with the line, the models, ``k`` and the two finish times compared.
     """
     now = now or _utcnow()
     result = RebalanceResult()
@@ -619,24 +913,31 @@ async def rebalance(
         return result
 
     busy = busy_printers if busy_printers is not None else await busy_printer_ids(db)
-    idle = await idle_printers_by_model(db, busy)
-    if not idle:
-        # ``no_faster_model`` here means no printer of any model is free — the
-        # closed list has no separate code, and to the operator the answer is
-        # the same.
-        result.skipped.extend((row.id, "no_faster_model") for row in movable_rows)
+    if interlocked_printers is None:
+        # A manual door reads the interlocks once; the tick hands in the set its
+        # router pass read (an empty set included). A failed read is the
+        # caller's error, never «nothing is interlocked».
+        from backend.app.services.ha_sensor_manager import ha_sensor_manager
+
+        interlocked_printers = set(await ha_sensor_manager.blocked_printers(db))
+    printers = await load_printers(db, busy, set(interlocked_printers))
+    if not any(printer.ready for printer in printers.values()):
+        # No printer is free: nothing can receive, and nothing can hold a job at
+        # home either — answered without reading a single file.
+        result.skipped.extend((row.id, "no_eligible_target") for row in movable_rows)
         return result
 
     # The cheap verdicts BEFORE the catalog: everything below this loads every
     # archive of every affected order, and a tick where every movable row is
-    # cooling or has a machine of its own model standing free must not pay for
-    # it. ``plan_moves`` keeps the same two checks — pure, cheap and the
-    # decision's own — so it stays correct whoever calls it.
+    # cooling or has a free home printer that can print it must not pay for it.
+    # ``plan_moves`` keeps the same checks — pure and the decision's own — so it
+    # stays correct whoever calls it.
     cooling = set() if force else await cooling_lines(db, {row.project_line_id for row in movable_rows}, now)
-    homes: dict[int, str] = {}
-    candidates: list[AutoQueueItem] = []
     setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
     allow_compatible = isinstance(setting, str) and setting.lower() == "true"
+    prefer_lowest = await scheduler._get_bool_setting(db, "prefer_lowest_filament", default=True)
+    cache = requirements_cache if requirements_cache is not None else PrintRequirementsCache()
+    jobs: list[tuple[AutoQueueItem, str, PrintRequirements]] = []
     for row in movable_rows:
         if row.project_line_id in cooling:
             result.skipped.append((row.id, "cooldown"))
@@ -645,11 +946,35 @@ async def rebalance(
         if home is None:
             result.skipped.append((row.id, "no_yield"))
             continue
-        if idle.get(home, 0) > 0 or (
-            allow_compatible
-            and any(count > 0 and model_compatibility(home, model) == "compatible" for model, count in idle.items())
-        ):
-            result.skipped.append((row.id, "home_model_idle"))
+        # The job's ACCEPTED source — its captured bytes, never the library's
+        # current copy (spec R4). Unreadable: this job alone stays (R7).
+        requirements = await read_item_requirements(db, row, cache)
+        if requirements.status != "ok":
+            result.skipped.append((row.id, _source_skip(requirements.reason)))
+            continue
+        jobs.append((row, home, requirements))
+    if not jobs:
+        return result
+    previous_ok: dict[int, bool] = {}
+    if any(row.require_previous_success for row, _home, _req in jobs):
+        # A printer's fact, read once; whether it applies is each job's own flag.
+        previous_ok = {pid: await scheduler.previous_print_succeeded(db, pid) for pid in sorted(printers)}
+    oracle = _FitOracle(printers, prefer_lowest=prefer_lowest, previous_ok=previous_ok)
+    unseeded = FarmView(
+        machines={pid: Machine(pid, p.key, p.ready, 0.0) for pid, p in printers.items()},
+        fits=oracle,
+        allow_compatible=allow_compatible,
+    )
+    machines_by_id = sorted(unseeded.machines.values(), key=lambda m: m.printer_id)
+    zero_ledger = dict.fromkeys(unseeded.machines, 0.0)
+    homes: dict[int, str] = {}
+    candidates: list[AutoQueueItem] = []
+    for row, home, requirements in jobs:
+        oracle.add_job(row, requirements, auto_policy(row))
+        probe = MovableItem(item_id=row.id, line_id=row.project_line_id, home_model=home, yield_parts=0, seconds=None)
+        stay, _home_free = _home_verdict(probe, machines_by_id, unseeded, zero_ledger)
+        if stay is not None:
+            result.skipped.append((row.id, stay))
             continue
         homes[row.id] = home
         candidates.append(row)
@@ -666,9 +991,16 @@ async def rebalance(
         ).all()
     )
     catalog = await load_line_catalog(db, sorted(set(line_projects.values())))
+    await _read_alternative_plates(db, catalog, candidates, cache, oracle)
     rank = {project_id: i for i, project_id in enumerate(await rank_active_orders(db))}
-    snapshot = await load_snapshot(db, now)
-    free_at = home_wait_by_model(snapshot)
+    seeds = free_after_by_printer(await load_snapshot(db, now))
+    farm = FarmView(
+        machines={
+            pid: Machine(pid, p.key, p.ready, 0.0 if p.ready else seeds.get(pid, 0.0)) for pid, p in printers.items()
+        },
+        fits=oracle,
+        allow_compatible=allow_compatible,
+    )
 
     keyed: list[tuple[tuple[int, int, int], MovableItem]] = []
     for row in candidates:
@@ -692,19 +1024,141 @@ async def rebalance(
     keyed.sort(key=lambda pair: pair[0])
     # ``cooling`` is handed in although no cooling row reached here: the pure
     # function's own guarantee should not depend on a caller's pre-filter.
-    plan = plan_moves(
-        [item for _key, item in keyed],
-        catalog.options_by_line,
-        FarmView(idle_by_model=idle, free_at_by_model=free_at, allow_compatible=snapshot.allow_compatible),
-        cooling=cooling,
-    )
+    plan = plan_moves([item for _key, item in keyed], catalog.options_by_line, farm, cooling=cooling)
     result.skipped.extend(plan.skipped)
+    logger.debug(
+        "Rebalance: %d candidate(s), %d move(s); fit resolves %d, cache hits %d",
+        len(keyed),
+        len(plan.moves),
+        oracle.resolves,
+        oracle.hits,
+    )
 
     by_id = {row.id: row for row in candidates}
-    cache = PrintRequirementsCache()
+    recheck = _Recheck(
+        printers=printers,
+        interlocked=set(interlocked_printers),
+        prefer_lowest=prefer_lowest,
+        oracle=oracle,
+    )
     for move in plan.moves:
-        await _apply(db, by_id[move.item_id], move, now=now, cache=cache, current_user=current_user, result=result)
+        await _apply(
+            db,
+            by_id[move.item_id],
+            move,
+            now=now,
+            cache=cache,
+            current_user=current_user,
+            result=result,
+            recheck=recheck,
+        )
     return result
+
+
+def _source_skip(reason: str | None) -> str:
+    """How an unreadable HOME source is reported — the capture buckets' own split (spec R17)."""
+    return "source_copy_busy" if reason == "source_check_busy" else "source_unreadable"
+
+
+async def _read_alternative_plates(
+    db: AsyncSession,
+    catalog: LineCatalog,
+    candidates: list[AutoQueueItem],
+    cache: PrintRequirementsCache,
+    oracle: _FitOracle,
+) -> None:
+    """The strict requirements of every alternative plate the candidates could move to.
+
+    Read from the plate's library file — the bytes a move would capture — once
+    per plate, enriched the way the router reads the moved row afterwards. An
+    unreadable or trashed file is an unknown target (no capacity), never a guess.
+    """
+    plates = {
+        option.plate_id: option
+        for row in candidates
+        for option in catalog.options_by_line.get(row.project_line_id, ())
+        if option.seconds is not None and option.yield_parts > 0
+    }
+    if not plates:
+        return
+    files = {
+        file.id: file
+        for file in (
+            await db.execute(
+                LibraryFile.active().where(LibraryFile.id.in_({option.library_file_id for option in plates.values()}))
+            )
+        )
+        .scalars()
+        .all()
+    }
+    for plate_id, option in plates.items():
+        file = files.get(option.library_file_id)
+        if file is None:
+            oracle.add_plate(plate_id, None)
+            continue
+        requirements = await cache.read(resolve_source_path(None, file), option.plate_index)
+        if requirements.status != "ok":
+            oracle.add_plate(plate_id, None)
+            continue
+        oracle.add_plate(plate_id, await enrich_family_filament_types(db, requirements))
+
+
+@dataclass
+class _Recheck:
+    """What the final check before a move compares against — the pass's own facts (spec R15)."""
+
+    printers: dict[int, PassPrinter]
+    interlocked: set[int]
+    prefer_lowest: bool
+    oracle: _FitOracle
+
+
+async def _still_holds(
+    db: AsyncSession, item: AutoQueueItem, move: Move, staged: PrintRequirements, recheck: _Recheck
+) -> str | None:
+    """Whether the move is still the one decided — after the target bytes were copied, before one write.
+
+    Fresh facts, never the pass's verdicts: the row read again (still movable,
+    the same policy), the copied plate's requirements against the ones the
+    decision read, and every receiver it put prints on — a fresh busy set, its
+    live feed, idleness and ``require_previous_success`` — resolved again. The
+    interlocks are NOT read again (C3-1): the pass's set stands, and no sensor is
+    polled under a capture. ``None`` = holds; otherwise the reason it is skipped,
+    with no cooldown (a refused move sets no ``rebalanced_at``).
+    """
+    fresh = await db.get(AutoQueueItem, item.id, populate_existing=True)
+    if fresh is None:
+        return "not_found"
+    why = refusal(fresh)
+    if why:
+        return why
+    policy = auto_policy(fresh)
+    if policy.fingerprint != recheck.oracle.policy_fingerprint(item.id):
+        return "eligibility_changed"
+    if _content_key(staged) != recheck.oracle.plate_content(move.plate.plate_id):
+        return "eligibility_changed"
+    busy = await busy_printer_ids(db)
+    for printer_id in move.receivers:
+        printer = recheck.printers[printer_id]
+        snapshot = printer_manager.get_feed_snapshot(printer_id)
+        if (
+            not snapshot.connected
+            or printer_id in busy
+            or printer_id in recheck.interlocked
+            or not scheduler._is_printer_idle(printer_id, require_plate_clear=True)
+        ):
+            return "eligibility_changed"
+        if fresh.require_previous_success and not await scheduler.previous_print_succeeded(db, printer_id):
+            return "eligibility_changed"
+        verdict = model_compatibility(staged.model, printer.model_name)
+        if verdict not in ("exact", "compatible"):
+            return "eligibility_changed"
+        result = resolve_filament_routing(
+            staged, policy, snapshot, exact_model=verdict == "exact", prefer_lowest=recheck.prefer_lowest
+        )
+        if result.status != "compatible":
+            return "eligibility_changed"
+    return None
 
 
 async def _apply(
@@ -716,8 +1170,15 @@ async def _apply(
     cache: PrintRequirementsCache,
     current_user: User | None,
     result: RebalanceResult,
+    recheck: _Recheck,
 ) -> None:
     """One move, all-or-nothing: read and prepare EVERYTHING first, then write.
+
+    ⚠️ **The decision is checked again between the copy and the first write**
+    (:func:`_still_holds`): the copy released the transaction, and a feed, a
+    queue or the row itself may have moved meanwhile. A move whose evidence went
+    is skipped as ``eligibility_changed`` with no cooldown — the next pass reads
+    the farm afresh.
 
     Order matters three times over. The **bytes of the target file** are captured,
     the strict source read comes out of that copy, and the receiving model's
@@ -794,6 +1255,18 @@ async def _apply(
         req = await staged_requirements(
             staged, cache, None, file, move.plate.plate_index, product_plate_id=move.plate.plate_id
         )
+        changed = await _still_holds(db, item, move, await enrich_family_filament_types(db, req), recheck)
+        if changed is not None:
+            await discard_staged(staged)
+            logger.info(
+                "Rebalance: item %s stays on %s — %s after the copy of plate %s",
+                item.id,
+                item.target_model,
+                changed,
+                move.plate.plate_id,
+            )
+            result.skipped.append((item.id, changed))
+            return
 
         from_model = item.target_model or move.from_model
         to_model = req.model or move.plate.model_label
@@ -821,6 +1294,10 @@ async def _apply(
                 "auto_off_after": item.auto_off_after,
                 "require_previous_success": item.require_previous_success,
                 "force_color_match": item.force_color_match,
+                # The job's routing policy is the one its fit was judged by (spec R4):
+                # a companion that took the schema's default would route looser than
+                # the row it is a copy of.
+                "allow_base_material_match": item.allow_base_material_match,
             }
         blob = await publish_staged(staged, _no_rows_of_our_own)
     except HTTPException as exc:

@@ -389,7 +389,15 @@ class AutoQueueScheduler:
                 and await _get_bool_setting(db, REBALANCE_SETTING_KEY)
             ):
                 try:
-                    moved = await queue_rebalance.rebalance(db, busy_printers=busy_printers)
+                    # The same busy set, interlock snapshot and parses the router
+                    # pass just used: one HA read per tick, and readiness that
+                    # cannot disagree with the ranking it mirrors (C3-1).
+                    moved = await queue_rebalance.rebalance(
+                        db,
+                        busy_printers=busy_printers,
+                        interlocked_printers=interlocked_printers,
+                        requirements_cache=requirements_cache,
+                    )
                 except Exception:
                     complete = False
                     logger.exception("AutoQueueScheduler: rebalancing failed")

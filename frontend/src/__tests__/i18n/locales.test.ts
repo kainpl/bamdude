@@ -163,6 +163,11 @@ describe('the rebalance refusal codes are the backend’s closed list', () => {
     'home_model_idle',
     'no_faster_model',
     'cooldown',
+    // rebalance-job-feasibility: a printer is asked about the JOB, and an unread or
+    // changed answer has a reason of its own rather than «no faster model».
+    'eligibility_unknown',
+    'no_eligible_target',
+    'eligibility_changed',
   ];
 
   it('en has exactly those keys', () => {

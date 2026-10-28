@@ -22,6 +22,7 @@ from backend.app.models.user import User
 from backend.app.services import queue_rebalance, queue_sources
 from backend.app.services.farm_forecast import model_key
 from backend.tests.integration.test_auto_queue_scheduler import (
+    _idle_status,
     _make_printer_with_queue,
     _patch_printer_manager,
     rebalance_farm,
@@ -113,11 +114,15 @@ async def test_the_companions_inherit_the_source_rows_job_flags(
     farm.project.auto_eject_settings = {"difference_threshold": 1, "skip_check": False}
     await db_session.commit()
 
-    p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
+    # An external-only job moves only to a printer that holds the filament on its
+    # EXTERNAL spool (spec rebalance-job-feasibility A08): the mini gets one.
+    external = _idle_status(["PLA"])
+    external.raw_data["vt_tray"] = [{"id": 254, "tray_type": "PLA", "tray_color": "#FFFFFF", "tray_info_idx": ""}]
+    p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id}, status_map={farm.mini.id: external})
     with p_elig, p_sched:
         r = await committing_client.post(f"/api/v1/projects/{farm.project.id}/lines/{farm.line.id}/rebalance")
     assert r.status_code == 200, r.text
-    assert (r.json()["converted"], r.json()["created"]) == (1, 2)
+    assert (r.json()["converted"], r.json()["created"]) == (1, 2), r.json()["skipped"]
 
     db_session.expire_all()
     rows = await _pending(db_session)
@@ -270,11 +275,16 @@ def clean_spool_state():
 async def _plant_blob(db, path: Path) -> QueueSource:
     """A ``queue_sources`` row for bytes that were captured before this test.
 
-    Only the row: nothing in the rebalance reads a blob's file, and the point of
-    planting one is that the row starts out naming the OLD model's copy — which is
-    exactly the state Task 6's C1 leaves behind and what a restore must put back.
+    The point of planting one is that the row starts out naming the OLD model's
+    copy — which is exactly the state Task 6's C1 leaves behind and what a restore
+    must put back. The object's bytes are written too: the rebalance asks whether
+    a home printer can print the job from the job's ACCEPTED source (spec
+    rebalance-job-feasibility R4), and a blob with no file is an unreadable job.
     """
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    target = queue_sources.object_path(digest, FORMAT_3MF)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(path.read_bytes())
     row = QueueSource(
         sha256=digest,
         size_bytes=path.stat().st_size,
