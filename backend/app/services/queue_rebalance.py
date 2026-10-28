@@ -46,11 +46,15 @@ have nothing to move to.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import gc
 import hashlib
 import json
 import logging
+import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as replace_job
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -72,8 +76,14 @@ from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.project import RebalanceOut, RebalanceSkipped
 from backend.app.services import queue_sources
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
-from backend.app.services.auto_queue_eligibility import busy_printer_ids
-from backend.app.services.farm_forecast import FarmSnapshot, load_snapshot, model_key, rank_active_orders
+from backend.app.services.auto_queue_eligibility import busy_printer_ids, router_view_conditions
+from backend.app.services.farm_forecast import (
+    FarmSnapshot,
+    StaggerPolicy,
+    load_snapshot,
+    model_key,
+    rank_active_orders,
+)
 from backend.app.services.filament_intake import (
     enrich_family_filament_types,
     read_item_requirements,
@@ -95,6 +105,7 @@ from backend.app.services.plan_engine import (
 )
 from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.print_scheduler import scheduler
+from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
 from backend.app.services.queue_source_capture import (
@@ -105,15 +116,33 @@ from backend.app.services.queue_source_capture import (
     publish_staged,
     staged_requirements,
 )
+from backend.app.services.rebalance_replay import (
+    Held,
+    Job,
+    Lane,
+    Replay,
+    ReplayBudget,
+    components,
+    replay,
+)
 from backend.app.utils.model_compatibility import model_compatibility
 
 if TYPE_CHECKING:
+    from backend.app.services.forecast_operator_hours import OperatorHours
     from backend.app.services.printer_feed_snapshot import PrinterFeedSnapshot
 
 logger = logging.getLogger(__name__)
 
 REBALANCE_COOLDOWN_SECONDS = 300
 REBALANCE_SETTING_KEY = "auto_queue_rebalance_models"
+#: The router's SJF switch (``auto_queue_scheduler.SJF_SETTING_KEY``; not imported — that module imports this one).
+SJF_SETTING_KEY = "queue_shortest_first"
+#: Replay work units for one pass, every replay of the baseline and the trials together (spec T20).
+#: Measured 2026-10-28 (stage 4): the reporter's 47-printer farm with 394 jobs, 358 × 16 and
+#: 1000 × 32 spend 28 000–73 000 units; a 1000 × 32 farm where most trials are turned down over
+#: one giant part spends 451 000 (≈ 2 s of decision). Beyond this the pass answers
+#: ``forecast_budget`` and the moves already made stand.
+REBALANCE_WORK_BUDGET = 600_000
 
 #: The closed list of reasons an item is left where it is. The frontend
 #: translates them under ``autoQueue.rebalance.skipped.<code>`` — adding one
@@ -143,6 +172,15 @@ SKIP_REASONS = (
     "no_eligible_target",
     # What the move was decided on changed while the target file was copied.
     "eligibility_changed",
+    # The forecast cannot date the job at home, or every transferred print: a print without
+    # an estimate, a printer held with no forecast release (spec rebalance-tail-time T18–T19).
+    "forecast_incomplete",
+    # The pass's forecast budget ran out before this job was decided (T20).
+    "forecast_budget",
+    # The owner's rule (T23): one automatic move per row, then by hand only.
+    "already_rebalanced_auto",
+    # An earlier move of this pass did not apply; the rest was decided in a world where it did (T17).
+    "plan_invalidated_after_apply_failure",
 )
 
 #: How a capture refusal (spec §6's taxonomy) is reported on the panel.
@@ -208,11 +246,20 @@ class PlateOption:
 
 @dataclass(frozen=True)
 class MovableItem:
+    """A pending row — a candidate to move, or (in ``FarmView.tail``) a job the router deals out
+    ahead of or beside the candidates, which therefore takes printer time."""
+
     item_id: int
-    line_id: int
+    line_id: int | None
     home_model: str  # ``model_key`` of the item's target_model
     yield_parts: int  # y_m — what this item covers for its line
-    seconds: int | None  # t_m
+    seconds: int | None  # t_m; None = no estimate, never 0
+    position: int = 0
+    #: The router's SJF grouping column — the row's raw ``target_model``.
+    group: str | None = None
+    been_jumped: bool = False
+    auto_eject: bool = False
+    prep: float = 0.0  # what it pays before its start
 
 
 Verdict = Literal["yes", "no", "unknown"]
@@ -238,18 +285,34 @@ class Fit:
 
 @dataclass(frozen=True)
 class Machine:
-    """One online printer that organisationally accepts new auto-queue work.
+    """One printer of the pass — a lane of the replay (:mod:`rebalance_replay`).
 
-    ``ready`` is a fact of the pass, never derived from the ledger: a printer
+    ``ready`` is a fact of the pass, never derived from a forecast: a printer
     awaiting its plate clear, held by a Home Assistant interlock or in the busy
-    set may well be forecast at 0 s (spec A19), and still receives nothing.
-    ``free_after`` is its ledger seed — 0 when ready, else the forecast.
+    set may well be forecast at 0 s (spec A19), and still receives nothing. It is
+    also the router's rank (``find_eligible_printer``: idle, plate clear, not
+    interlocked). ``dispatchable`` is whether ``check_queue`` would start anything
+    from its queue: the router places on a queue in error all the same, where
+    the work waits for the operator — routed to, its start unknown, and never a
+    receiver of moved work. ``held`` is what it already holds — its running print
+    and its own queue — read from the forecast's snapshot; without it, a printer
+    that is not ready holds one running print of ``free_after`` seconds (the pure
+    tests' farm). A printer that may not receive new work (``routable`` False)
+    still finishes what it holds, and its starts still take stagger windows.
     """
 
     printer_id: int
     model: str  # ``model_key`` of the printer's effective model
     ready: bool
-    free_after: float
+    free_after: float = 0.0
+    held: tuple[Held, ...] | None = None
+    routable: bool = True
+    waiting: float = 0.0  # what holds its next start now
+    hold_unknown: bool = False  # held with no forecast release: an HA interlock, a snapshot the router reads otherwise
+    gap: float = 0.0
+    requires_operator: bool = False
+    interval: float = 0.0
+    dispatchable: bool = True
 
 
 class FitSource(Protocol):
@@ -276,6 +339,16 @@ class FarmView:
     #: pair for the pass: a pass asks it per job and printer, and the matrix lookup
     #: is not free (review I2 — 1000 jobs × 32 printers blocked the loop for seconds).
     model_verdicts: dict[tuple[str, str], str | None] = field(default_factory=dict, repr=False)
+    #: Every other job the router can see — they take printer time too (spec T6).
+    tail: tuple[MovableItem, ...] = ()
+    sjf: bool = False
+    stagger: StaggerPolicy | None = None
+    operator_hours: OperatorHours | None = None
+    #: The highest position among ALL pending rows: the writer files companions after it (T14).
+    #: None = the highest among the jobs here.
+    max_position: int | None = None
+    #: Replay work units for the whole pass (spec T20); None = unbounded.
+    budget: int | None = None
 
 
 @dataclass(frozen=True)
@@ -299,6 +372,10 @@ class Move:
 class MovePlan:
     moves: list[Move] = field(default_factory=list)
     skipped: list[tuple[int, str]] = field(default_factory=list)  # (item_id, reason)
+    #: Each candidate's home outcome as the decision read it — ``("known", seconds)``,
+    #: ``("unknown", None)`` or ``("none", None)`` (no printer of its own can print it);
+    #: absent when the pass had no forecast left for it. A read model, never stored.
+    home: dict[int, tuple[str, float | None]] = field(default_factory=dict)
 
 
 # ---------- the decision ----------
@@ -317,35 +394,154 @@ def _model_verdict(job_model: str, machine_model: str, farm: FarmView) -> str | 
     return farm.model_verdicts[key]
 
 
-def _home_verdict(
-    item: MovableItem, machines: list[Machine], farm: FarmView, ledger: dict[int, float]
-) -> tuple[str | None, float | None]:
-    """Whether the job stays home, and when its earliest fit home printer is free.
+def _lane(machine: Machine) -> Lane:
+    """A machine as a lane of the replay. Without its own ``held``, a printer that is not ready
+    holds one running print of ``free_after`` seconds — the pure tests' farm."""
+    held = machine.held
+    if held is None:
+        held = (Held(float(machine.free_after), started=True),) if not machine.ready and machine.free_after > 0 else ()
+    return Lane(
+        printer_id=machine.printer_id,
+        held=held,
+        routable=machine.routable,
+        ready=machine.ready,
+        waiting=machine.waiting,
+        hold_unknown=machine.hold_unknown or not machine.dispatchable,
+        gap=machine.gap,
+        requires_operator=machine.requires_operator,
+        interval=machine.interval,
+    )
 
-    ``home_model_idle`` when a home printer is ready, free in the ledger and can
-    print the job; ``eligibility_unknown`` when none can but one such printer's
-    answer is unknown (spec R8 — the router may place it there as soon as the
-    feed is read). Otherwise ``None`` and the earliest ledger time among the
-    homes that CAN print it, busy or not ready included (Q2: the current feed of
-    a busy printer, with its forecast) — ``None`` when no home can. A home that
-    cannot print it, or whose answer is unknown while it is busy or not ready,
-    dates nothing.
-    """
-    home_free: float | None = None
-    unknown_ready = False
+
+def _home_job(item: MovableItem, machines: list[Machine], farm: FarmView) -> Job:
+    """The row as the router sees it: every printer of its model (or a compatible one, with the
+    setting) that may receive work and CAN print it — the shared resolver's yes, nothing else."""
+    fits = []
     for machine in machines:
-        if _model_verdict(item.home_model, machine.model, farm) is None:
+        if not machine.routable:
+            continue
+        verdict = _model_verdict(item.home_model, machine.model, farm)
+        if verdict is None:
             continue
         fit = farm.fits.home(item.item_id, machine.printer_id)
-        free = ledger[machine.printer_id]
-        free_now = machine.ready and free == 0
         if fit.verdict == "yes":
-            if free_now:
-                return "home_model_idle", None
-            home_free = free if home_free is None else min(home_free, free)
-        elif fit.verdict == "unknown" and free_now:
-            unknown_ready = True
-    return ("eligibility_unknown" if unknown_ready else None), home_free
+            fits.append((machine.printer_id, verdict == "exact", fit.color_matches))
+    return Job(
+        job_id=item.item_id,
+        position=item.position,
+        group=item.group,
+        # T19: a zero estimate is no estimate — never an instant print.
+        seconds=float(item.seconds) if item.seconds is not None and item.seconds > 0 else None,
+        fits=tuple(fits),
+        been_jumped=item.been_jumped,
+        auto_eject=item.auto_eject,
+        prep=item.prep,
+    )
+
+
+class _Projection:
+    """The pass's baseline — the router's whole tail, replayed — kept per independent part.
+
+    A part (:func:`rebalance_replay.components`) is a set of printers and jobs that cannot
+    affect any other; a trial replays only the part its prints land in, and a committed move
+    re-plays only the parts whose jobs changed (spec T21.3). The work of every replay counts
+    against the pass's one budget (T20).
+    """
+
+    def __init__(self, lanes: list[Lane], jobs: dict[int, Job], farm: FarmView):
+        self.lanes = {lane.printer_id: lane for lane in lanes}
+        self.jobs = dict(jobs)
+        self.farm = farm
+        self.work = 0
+        self._parts: dict[frozenset[int], tuple[frozenset[int], Replay]] = {}
+        self._part_of: dict[int, frozenset[int]] = {}
+        #: ``(printers, jobs)`` of every printer's part and, with SJF, of every model group's —
+        #: jobless parts included.
+        self._by_lane: dict[int, tuple[frozenset[int], frozenset[int]]] = {}
+        self._by_group: dict[str, tuple[frozenset[int], frozenset[int]]] = {}
+        self._replay_changed(set(self.jobs))
+
+    @property
+    def exhausted(self) -> bool:
+        return self.farm.budget is not None and self.work >= self.farm.budget
+
+    def _replay(
+        self, printers: frozenset[int], jobs: list[Job], *, watch: set[int] | None = None, until: float | None = None
+    ) -> Replay:
+        remaining = None if self.farm.budget is None else max(0, self.farm.budget - self.work)
+        try:
+            result = replay(
+                [self.lanes[pid] for pid in printers],
+                jobs,
+                sjf=self.farm.sjf,
+                stagger=self.farm.stagger,
+                operator_hours=self.farm.operator_hours,
+                budget=remaining,
+                watch=watch,
+                until=until,
+            )
+        except ReplayBudget:
+            # What was left is spent: no later replay of this pass is tried, so an earlier
+            # candidate is never passed over for a later, cheaper one.
+            self.work = self.farm.budget
+            raise
+        self.work += result.work
+        return result
+
+    def _split(self, jobs: dict[int, Job]) -> list[tuple[frozenset[int], frozenset[int]]]:
+        return components(list(self.lanes.values()), list(jobs.values()), sjf=self.farm.sjf, stagger=self.farm.stagger)
+
+    def _replay_changed(self, changed: set[int]) -> None:
+        parts: dict[frozenset[int], tuple[frozenset[int], Replay]] = {}
+        by_lane: dict[int, tuple[frozenset[int], frozenset[int]]] = {}
+        by_group: dict[str, tuple[frozenset[int], frozenset[int]]] = {}
+        for printers, members in self._split(self.jobs):
+            part = (printers, members)
+            for pid in printers:
+                by_lane[pid] = part
+            if self.farm.sjf:
+                for job_id in members:
+                    group = self.jobs[job_id].group
+                    if group is not None:
+                        by_group[group] = part
+            if not members:
+                continue
+            kept = self._parts.get(members)
+            if kept is not None and kept[0] == printers and not (members & changed):
+                parts[members] = kept
+            else:
+                parts[members] = (printers, self._replay(printers, [self.jobs[j] for j in members]))
+        self._parts = parts
+        self._part_of = {job_id: members for members in parts for job_id in members}
+        self._by_lane = by_lane
+        self._by_group = by_group
+
+    def result_of(self, job_id: int) -> Replay:
+        return self._parts[self._part_of[job_id]][1]
+
+    def trial(self, jobs: dict[int, Job], transferred: list[int], *, until: float | None = None) -> Replay:
+        """Replay only the part of ``jobs`` the transferred prints land in, and only until each
+        of them has started — or the clock passed ``until``, the home's finish, after which a
+        print not yet started can only end later (spec T20–T21)."""
+        wanted = set(transferred)
+        # The baseline's parts the moved prints touch — through a printer they fit or, with SJF,
+        # their model group — stay closed in the trial: each holds every printer its jobs fit and
+        # every printer sharing a start group with them, the moved prints fit only printers among
+        # them, and the job taken off its home leaves a part it no longer touches as it was. A
+        # union of independent parts replays as each alone (T21.3), so no new split is needed.
+        touched: set[tuple[frozenset[int], frozenset[int]]] = set()
+        for job_id in transferred:
+            job = jobs[job_id]
+            touched.update(self._by_lane[pid] for pid, _exact, _colour in job.fits)
+            if self.farm.sjf and job.group in self._by_group:
+                touched.add(self._by_group[job.group])
+        printers = frozenset().union(*(part[0] for part in touched))
+        members = frozenset().union(*(part[1] for part in touched)) | wanted
+        return self._replay(printers, [jobs[j] for j in members], watch=wanted, until=until)
+
+    def commit(self, jobs: dict[int, Job], changed: set[int]) -> None:
+        self.jobs = dict(jobs)
+        self._replay_changed(changed)
 
 
 def _receivers(
@@ -353,20 +549,20 @@ def _receivers(
     plate: PlateOption,
     machines: list[Machine],
     farm: FarmView,
-    ledger: dict[int, float],
+    idle: set[int],
     unknown: set[str | None],
-) -> list[int]:
-    """The ready, free printers that can print ``plate`` for this job — in the router's order.
+) -> list[tuple[int, bool, int]]:
+    """The ready printers, free now and not spent by a move of this pass, that can print
+    ``plate`` for this job — ``(printer, exact, colour matches)`` in the router's order.
 
-    The router ranks ``(ready, exact, color_matches, -printer_id)``; every one
-    here is ready, so exact model first, then colour matches, then the lower id.
-    An unknown answer gives no capacity (spec R8) and is remembered for the reason.
+    The pool the trial may put the moved prints on (spec T15): a forecast that needs any other
+    printer is no proof. An unknown answer gives no capacity (R8) and is remembered for the reason.
     """
     ranked = []
     for machine in machines:
-        # The free-and-ready test first: once the free printers are taken, a pass
+        # The free-and-ready test first: once the free printers are spent, a pass
         # walks hundreds of jobs that ask nothing more of any printer.
-        if not machine.ready or ledger[machine.printer_id] != 0:
+        if not (machine.ready and machine.dispatchable) or machine.printer_id not in idle:
             continue
         verdict = _model_verdict(plate.model, machine.model, farm)
         if verdict is None:
@@ -377,7 +573,23 @@ def _receivers(
         elif fit.verdict == "unknown":
             unknown.add(fit.reason)
     ranked.sort(reverse=True)
-    return [-key[2] for key in ranked]
+    return [(-pid, exact, colour) for exact, colour, pid in ranked]
+
+
+def _target_fits(item: MovableItem, plate: PlateOption, machines: list[Machine], farm: FarmView):
+    """Every printer that can print ``plate`` for this job — the moved rows as the router will
+    see them once the move is made, no longer only the trial's pool."""
+    fits = []
+    for machine in machines:
+        if not machine.routable:
+            continue
+        verdict = _model_verdict(plate.model, machine.model, farm)
+        if verdict is None:
+            continue
+        fit = farm.fits.target(item.item_id, plate, machine.printer_id)
+        if fit.verdict == "yes":
+            fits.append((machine.printer_id, verdict == "exact", fit.color_matches))
+    return tuple(fits)
 
 
 def _no_target_reason(unknown: set[str | None]) -> str:
@@ -388,82 +600,197 @@ def _no_target_reason(unknown: set[str | None]) -> str:
     return "eligibility_unknown"
 
 
+def _lower_bound(k: int, receivers: int, seconds: float) -> float:
+    """T21.1: ``k`` prints of ``seconds`` on ``receivers`` printers cannot all end before
+    ``ceil(k / receivers)`` of them back to back from now — preparation, staggered starts and
+    other work on those printers only add to it. Never the target's baseline clock: removing
+    the original from its home can free a start window there earlier."""
+    return -(-k // receivers) * seconds
+
+
+def start_projection(items: list[MovableItem], farm: FarmView) -> _Projection:
+    """The baseline of a pass over ``items`` and ``farm.tail`` — built once, so a caller can ask
+    the cheap verdicts first (no catalog) and decide the rest on the same replay. May raise
+    :class:`ReplayBudget`."""
+    machines = sorted(farm.machines.values(), key=lambda m: m.printer_id)
+    jobs = {job.item_id: _home_job(job, machines, farm) for job in (*farm.tail, *items)}
+    return _Projection([_lane(m) for m in machines], jobs, farm)
+
+
 def plan_moves(
     items: list[MovableItem],
     options_by_line: dict[int, list[PlateOption]],
     farm: FarmView,
     *,
     cooling: frozenset[int] | set[int] = frozenset(),
+    projection: _Projection | None = None,
 ) -> MovePlan:
-    """The decision, item by item, in the order ``items`` arrive.
+    """The decision, item by item, in the order ``items`` arrive (spec rebalance-tail-time r2).
 
-    Pure, given ``farm.fits``. The caller sorts the items — order rank, then
-    queue order — and this walks them once over ONE ledger, printer id →
-    seconds until free (spec R12), so an urgent order takes the free printers
-    first and no printer is capacity twice, across plates, lines or compatible
-    models.
+    Pure, given ``farm.fits``. The baseline is the router's whole tail replayed
+    (:mod:`rebalance_replay`): the candidates and ``farm.tail`` — every job the router can see —
+    dealt out over the printers with what they already hold, in the router's order, with the
+    forecast's preparation, plate service, operator hours and staggered starts. A candidate's
+    home finish is when THAT job ends there, not when its model first frees.
 
-    Per item: skip if its line is cooling, or a home printer would take it now
-    (:func:`_home_verdict`). Otherwise every alternative plate of another model
-    gets its OWN receivers — ready, free in the ledger, and able to print it
-    (:func:`_receivers`); per model the plan engine's key picks the best plate
-    that has any, ``k = ceil(y_m / y_X)`` prints of it on ``c = min(k, n)`` of
-    its receivers finish at ``ceil(k / c) × t_X``, and the item moves to the
-    earliest finish not later than ``home_free + t_m`` — or to any fit target
-    when no home can print it at all. ``t_m`` unknown compares as 0.
+    Per item: skip if its line is cooling; if the baseline gives it a READY printer now
+    (``home_model_idle``); if a ready, free printer of its model cannot yet answer for it
+    (``eligibility_unknown``, R8); if its home finish is unknown (``forecast_incomplete`` —
+    never 0). Otherwise every alternative plate of another model gets its own pool: the ready
+    printers, free now and not spent by an earlier move of this pass, that can print it; per
+    model the plan engine's key picks the plate; a plate whose lower bound — ``ceil(k / c) ×
+    t``, the pool printing nothing else — already ends after the home finish is out without a
+    trial (T21.1). The trial replaces the row as the writer does — the same id and position,
+    the plate's model and time — and files ``k − 1`` companions after every pending row (T14);
+    the moved rows may land only on the pool. The transferred work ends when the last of them
+    does, behind whatever the router puts ahead of them. The item moves to the earliest such
+    finish not later than its home finish — or to any when no printer of its model can print it.
 
-    A move writes its rounds into the ledger: ``q, r = divmod(k, c)``, the first
-    ``r`` receivers ``(q + 1) × t``, the rest ``q × t``. A used printer is no
-    longer free, and its time is what a later item whose home it is compares
-    against. Alternatives that were not chosen change nothing.
+    A move spends the printers its prints landed on for the rest of the pass, and the baseline
+    becomes the trial's world: the original no longer waits at home, its prints wait on their
+    printers as the router will see them. A trial that was not chosen changes nothing. When the
+    pass's budget runs out (T20), no later replay is tried: a candidate whose verdict needs a
+    trial answers ``forecast_budget``, one the baseline answers alone still gets its verdict.
+    A move whose own decision was whole stands even when replaying its consequences runs out —
+    then every later candidate answers ``forecast_budget``, the baseline being behind the plan.
     """
-    ledger = {pid: (0.0 if m.ready else float(m.free_after)) for pid, m in farm.machines.items()}
     machines = sorted(farm.machines.values(), key=lambda m: m.printer_id)
+    lanes = [_lane(m) for m in machines]
+    idle = {lane.printer_id for lane in lanes if lane.routable and not lane.held}
+    if projection is not None:
+        jobs = projection.jobs
+    else:
+        jobs = {job.item_id: _home_job(job, machines, farm) for job in (*farm.tail, *items)}
+    max_position = farm.max_position
+    if max_position is None:
+        max_position = max((job.position for job in jobs.values()), default=0)
     plan = MovePlan()
+    next_id = min([0, *jobs]) - 1
+    #: A move's own replay ran out: the move stands — its decision was whole — but the baseline
+    #: is behind the plan, so nothing later is read from it.
+    stale = False
     for item in items:
         if item.line_id in cooling:
             plan.skipped.append((item.item_id, "cooldown"))
             continue
-        stay, home_free = _home_verdict(item, machines, farm, ledger)
-        if stay is not None:
-            plan.skipped.append((item.item_id, stay))
+        if stale:
+            plan.skipped.append((item.item_id, "forecast_budget"))
             continue
-        home_finish = None if home_free is None else home_free + (item.seconds or 0)
-        unknown: set[str | None] = set()
-        by_model: dict[str, list[tuple[PlateOption, list[int]]]] = {}
-        for plate in options_by_line.get(item.line_id, ()):
-            # A plate without an estimate is never a target: its finish could not be compared.
-            if plate.model == item.home_model or plate.yield_parts <= 0 or plate.seconds is None:
+        try:
+            if projection is None:
+                projection = _Projection(lanes, jobs, farm)
+        except ReplayBudget:
+            stale = True
+            plan.skipped.append((item.item_id, "forecast_budget"))
+            continue
+        try:
+            base = projection.result_of(item.item_id)
+            plan.home[item.item_id] = base.outcome(item.item_id)
+            if (
+                base.routed_at.get(item.item_id) == 0.0
+                and base.ready_when_routed.get(item.item_id)
+                and not projection.lanes[base.lane_of[item.item_id]].hold_unknown
+            ):
+                plan.skipped.append((item.item_id, "home_model_idle"))
                 continue
-            receivers = _receivers(item, plate, machines, farm, ledger, unknown)
-            if receivers:
-                by_model.setdefault(plate.model, []).append((plate, receivers))
-        best: tuple[tuple[float, int, str], str, PlateOption, list[int], int, float, int] | None = None
-        for model, candidates in by_model.items():
-            # The plan engine's own key, among the plates that have a fit receiver:
-            # most useful parts per hour, least waste, the shorter print, the lower id.
-            plate, receivers = min(
-                candidates,
-                key=lambda pair: _pick_key(
-                    min(pair[0].yield_parts, item.yield_parts),
-                    max(0, pair[0].yield_parts - item.yield_parts),
-                    pair[0].seconds,
-                    pair[0].plate_id,
-                ),
-            )
-            k = -(-item.yield_parts // plate.yield_parts)
-            chosen = receivers[: min(k, len(receivers))]
-            finish = float(-(-k // len(chosen)) * plate.seconds)
-            if home_finish is not None and finish > home_finish:
+            if any(
+                machine.ready
+                and machine.dispatchable
+                and machine.printer_id in idle
+                and _model_verdict(item.home_model, machine.model, farm) is not None
+                and farm.fits.home(item.item_id, machine.printer_id).verdict == "unknown"
+                for machine in machines
+            ):
+                plan.skipped.append((item.item_id, "eligibility_unknown"))
                 continue
-            surplus = k * plate.yield_parts - item.yield_parts
-            key = (finish, surplus, model)
-            if best is None or key < best[0]:
-                best = (key, model, plate, chosen, k, finish, surplus)
+            state, home_finish = base.outcome(item.item_id)
+            if state == "unknown":
+                plan.skipped.append((item.item_id, "forecast_incomplete"))
+                continue
+            unknown: set[str | None] = set()
+            by_model: dict[str, list[tuple[PlateOption, list[tuple[int, bool, int]]]]] = {}
+            for plate in options_by_line.get(item.line_id, ()):
+                # A plate without an estimate is never a target: its finish could not be compared.
+                if plate.model == item.home_model or plate.yield_parts <= 0 or not plate.seconds or plate.seconds < 0:
+                    continue
+                pool = _receivers(item, plate, machines, farm, idle, unknown)
+                if pool:
+                    by_model.setdefault(plate.model, []).append((plate, pool))
+            best = None
+            incomplete = False
+            for model, candidates in by_model.items():
+                # The plan engine's own key, among the plates that have a fit receiver:
+                # most useful parts per hour, least waste, the shorter print, the lower id.
+                plate, pool = min(
+                    candidates,
+                    key=lambda pair: _pick_key(
+                        min(pair[0].yield_parts, item.yield_parts),
+                        max(0, pair[0].yield_parts - item.yield_parts),
+                        pair[0].seconds,
+                        pair[0].plate_id,
+                    ),
+                )
+                k = -(-item.yield_parts // plate.yield_parts)
+                if home_finish is not None and _lower_bound(k, len(pool), plate.seconds) > home_finish:
+                    continue  # T21.1: even the pool printing nothing else ends later
+                if projection.exhausted:
+                    # A trial is due and nothing is left to replay it with (T20): no verdict
+                    # from a comparison that was not made.
+                    raise ReplayBudget()
+                seconds = float(plate.seconds)
+                converted = Job(
+                    job_id=item.item_id,
+                    position=item.position,
+                    group=plate.model_label,
+                    seconds=seconds,
+                    fits=tuple(pool),
+                    been_jumped=item.been_jumped,
+                    auto_eject=item.auto_eject,
+                    prep=item.prep,
+                )
+                companions = [
+                    Job(
+                        job_id=next_id - i,
+                        position=max_position + 1 + i,
+                        group=plate.model_label,
+                        seconds=seconds,
+                        fits=tuple(pool),
+                        auto_eject=item.auto_eject,
+                        prep=item.prep,
+                    )
+                    for i in range(k - 1)
+                ]
+                trial_jobs = {**projection.jobs, item.item_id: converted, **{c.job_id: c for c in companions}}
+                moved = [item.item_id, *(c.job_id for c in companions)]
+                # A moved print not started by home − (preparation + its time) ends after home.
+                latest = None if home_finish is None else home_finish - (item.prep + seconds)
+                result = projection.trial(trial_jobs, moved, until=latest)
+                outcomes = [result.outcome(job_id) for job_id in moved]
+                if any(state == "unknown" for state, _ in outcomes):
+                    incomplete = True
+                    continue
+                if any(state != "known" for state, _ in outcomes):
+                    # Cut at the home's finish with a print not started: it can only end later.
+                    continue
+                finish = max(t for _state, t in outcomes)
+                if home_finish is not None and finish > home_finish:
+                    continue
+                used = tuple(dict.fromkeys(result.lane_of[job_id] for job_id in moved))
+                surplus = k * plate.yield_parts - item.yield_parts
+                key = (finish, surplus, model)
+                if best is None or key < best[0]:
+                    best = (key, model, plate, k, finish, surplus, used, converted, companions)
+        except ReplayBudget:
+            plan.skipped.append((item.item_id, "forecast_budget"))
+            continue
         if best is None:
-            plan.skipped.append((item.item_id, "no_faster_model" if by_model else _no_target_reason(unknown)))
+            if incomplete:
+                reason = "forecast_incomplete"
+            else:
+                reason = "no_faster_model" if by_model else _no_target_reason(unknown)
+            plan.skipped.append((item.item_id, reason))
             continue
-        _key, model, plate, chosen, k, finish, surplus = best
+        _key, model, plate, k, finish, surplus, used, converted, companions = best
         plan.moves.append(
             Move(
                 item_id=item.item_id,
@@ -476,27 +803,25 @@ def plan_moves(
                 finish=finish,
                 surplus=surplus,
                 moved_parts=item.yield_parts,
-                receivers=tuple(chosen),
+                receivers=used,
             )
         )
-        rounds, extra = divmod(k, len(chosen))
-        for index, printer_id in enumerate(chosen):
-            ledger[printer_id] = float((rounds + (1 if index < extra else 0)) * plate.seconds)
+        idle -= set(used)
+        max_position += k - 1
+        next_id -= k - 1
+        # The world after the move: the moved rows as the router will see them — every
+        # printer that can print the plate, not only the trial's pool (T15).
+        widened = _target_fits(item, plate, machines, farm)
+        committed = {
+            **projection.jobs,
+            item.item_id: replace_job(converted, fits=widened),
+            **{c.job_id: replace_job(c, fits=widened) for c in companions},
+        }
+        try:
+            projection.commit(committed, {item.item_id, *(c.job_id for c in companions)})
+        except ReplayBudget:
+            stale = True
     return plan
-
-
-def free_after_by_printer(snapshot: FarmSnapshot) -> dict[int, float]:
-    """``printer_id → seconds until it is free``, the ledger's seed for a printer that is not ready.
-
-    The same estimate the ETA uses (``farm_forecast.load_snapshot``): the head
-    of the queue is the running print's remaining seconds, then the pending rows
-    in position order; a row without an estimate counts nothing.
-    """
-    return {
-        machine.printer_id: max(0.0, float(machine.running_seconds))
-        + float(sum(row.seconds for row in machine.queued if row.seconds and row.seconds > 0))
-        for machine in snapshot.printers
-    }
 
 
 # ---------- loading what the decision needs ----------
@@ -529,15 +854,21 @@ def refusal(item: AutoQueueItem) -> str | None:
     return None
 
 
-def _accepts_new_work() -> tuple:
-    """A printer that may take new auto-queue work: the pass's population, and the final check's too."""
+def _router_population() -> tuple:
+    """The printers the router places on — ``printers_for_item``'s population: active, not
+    archived, auto-distribute eligible, the queue not paused by the operator."""
     return (
         Printer.is_active.is_(True),
         Printer.archived.is_(False),
         PrinterQueue.auto_distribute_eligible.is_(True),
         PrinterQueue.is_paused.is_(False),
-        PrinterQueue.status.not_in(("paused", "error")),
     )
+
+
+def _accepts_new_work() -> tuple:
+    """A printer that may RECEIVE moved work: the router's population, narrowed to a queue
+    ``print_scheduler.check_queue`` would dispatch from — the final check's population too."""
+    return (*_router_population(), PrinterQueue.status.not_in(("paused", "error")))
 
 
 @dataclass(frozen=True)
@@ -549,34 +880,39 @@ class PassPrinter:
     key: str  # its ``model_key``
     snapshot: PrinterFeedSnapshot
     ready: bool
+    location_id: int | None = None
+    dispatchable: bool = True
 
 
 async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int]) -> dict[int, PassPrinter]:
-    """The online printers that may take new auto-queue work, with their feed snapshot and readiness.
+    """The online printers the router may place on, with their feed snapshot and readiness.
 
     The same population ``printers_for_item`` routes over (active, not archived,
-    auto-distribute eligible, queue not paused) — narrowed to a queue that
-    ``print_scheduler.check_queue`` would dispatch from: ⚠️ ``status in
-    ("paused", "error")`` is what it refuses, so work moved onto such a queue
-    would sit there. An offline printer is left out whole (spec R7): it neither
-    vetoes, nor dates a home, nor receives — not waiting for it to come back.
+    auto-distribute eligible, queue not paused) — the forecast deals the tail out
+    over exactly the printers the router does. ``dispatchable`` says whether
+    ``print_scheduler.check_queue`` would dispatch from its queue: ⚠️ ``status in
+    ("paused", "error")`` is what it refuses, so such a printer is never a receiver
+    of moved work, and what the router places there waits for the operator. An
+    offline printer is left out whole (spec R7): it neither vetoes, nor dates a
+    home, nor receives — not waiting for it to come back.
 
     ``ready`` = outside the busy set, idle by ``_is_printer_idle`` with the
     plate-clear gate honoured, and not held by a Home Assistant interlock of
-    THIS pass's set (C3-1): ⚠️ an empty queue on a printer still waiting for its
-    plate clear, or behind an alerting sensor, only looks free.
+    THIS pass's set (C3-1) — the router's own rank: ⚠️ an empty queue on a
+    printer still waiting for its plate clear, or behind an alerting sensor, only
+    looks free.
     """
     rows = (
         await db.execute(
-            select(Printer.id, Printer.model)
+            select(Printer.id, Printer.model, Printer.location_id, PrinterQueue.status)
             .join(PrinterQueue, PrinterQueue.printer_id == Printer.id)
-            .where(*_accepts_new_work())
+            .where(*_router_population())
         )
     ).all()
     printers: dict[int, PassPrinter] = {}
     # By printer id, so a printer that somehow answered the query twice (a
     # second queue row of its own) is still one machine.
-    for printer_id, model in rows:
+    for printer_id, model, location_id, queue_status in rows:
         if printer_id in printers:
             continue
         name = printer_manager.effective_model_for(printer_id, model)
@@ -591,7 +927,8 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
             and printer_id not in interlocked
             and scheduler._is_printer_idle(printer_id, require_plate_clear=True)
         )
-        printers[printer_id] = PassPrinter(printer_id, name, key, snapshot, ready)
+        dispatchable = queue_status not in ("paused", "error")
+        printers[printer_id] = PassPrinter(printer_id, name, key, snapshot, ready, location_id, dispatchable)
     return printers
 
 
@@ -618,6 +955,9 @@ class _Job:
     policy: RoutingPolicy
     policy_fingerprint: str
     require_previous_success: bool
+    #: The printers the job may run on at all — its location's subtree and its order's
+    #: resources, as ``printers_for_item`` gates them; None = no such limit.
+    allowed: frozenset[int] | None = None
 
 
 def fit_of(result) -> Fit:
@@ -665,11 +1005,19 @@ class _FitOracle:
         self.resolves = 0
         self.hits = 0
 
-    def add_job(self, item: AutoQueueItem, requirements: PrintRequirements, policy: RoutingPolicy) -> None:
+    def add_job(
+        self,
+        item: AutoQueueItem,
+        requirements: PrintRequirements,
+        policy: RoutingPolicy,
+        allowed: frozenset[int] | None = None,
+    ) -> None:
         key = self._req_keys.get(id(requirements))
         if key is None:
             key = self._req_keys[id(requirements)] = (requirements.source_identity, _content_key(requirements))
-        self._jobs[item.id] = _Job(requirements, key, policy, policy.fingerprint, bool(item.require_previous_success))
+        self._jobs[item.id] = _Job(
+            requirements, key, policy, policy.fingerprint, bool(item.require_previous_success), allowed
+        )
 
     def add_plate(self, plate_id: int, requirements: PrintRequirements | None, *, file_path: str | None = None) -> None:
         """An alternative plate's requirements, read from its library file; ``None`` = unreadable."""
@@ -704,6 +1052,8 @@ class _FitOracle:
         return self._fit(self._jobs[item_id], requirements, key, printer_id)
 
     def _fit(self, job: _Job, requirements: PrintRequirements, req_key: tuple, printer_id: int) -> Fit:
+        if job.allowed is not None and printer_id not in job.allowed:
+            return Fit("no", "not_allowed")
         if job.require_previous_success and not self._previous_ok.get(printer_id, False):
             return Fit("no", "previous_print_failed")
         printer = self._printers[printer_id]
@@ -886,6 +1236,316 @@ class RebalanceResult:
         )
 
 
+def _tail_item(row: AutoQueueItem, home: str, prep: float) -> MovableItem:
+    """A pending row as a job of the forecast — its own time, place in the router's order and
+    SJF group; ``yield_parts`` is the decision's business and filled in for candidates."""
+    return MovableItem(
+        item_id=row.id,
+        line_id=row.project_line_id,
+        home_model=home,
+        yield_parts=0,
+        seconds=row.print_time_seconds,
+        position=row.position or 0,
+        group=row.target_model,
+        been_jumped=bool(row.been_jumped),
+        auto_eject=bool(row.auto_eject),
+        prep=float(prep),
+    )
+
+
+def _machines(
+    snapshot: FarmSnapshot, printers: dict[int, PassPrinter], busy: set[int], interlocked: set[int]
+) -> dict[int, Machine]:
+    """Every printer of the forecast's snapshot as the replay's lane — what it holds and what
+    holds it, read exactly as ``farm_forecast._initial_state`` reads them.
+
+    It may receive work only when the pass found it routable (``load_printers``: the router's
+    population, online); every other one still finishes what it holds and still takes stagger
+    windows. A routable lane is free now exactly when the router may place on it now — outside
+    the busy set (spec T-A25). What has no forecast release is unknown, never 0 (spec T12, T19):
+    an HA interlock; a printer busy for the router with nothing timed to show for it (a claim
+    before its archive exists, a print past its estimate, a row of an order that may not print
+    here); a printer the router counts free while the snapshot says it holds work (an
+    inconsistent snapshot, T-A05) — routed to now, its start unknown.
+    """
+    from backend.app.services.order_resources import permits
+
+    machines: dict[int, Machine] = {}
+    for state in snapshot.printers:
+        pid = state.printer_id
+        passing = printers.get(pid)
+        held: list[Held] = []
+        for row in state.queued:
+            # A row of an order that may not use this printer is never dispatched here.
+            if not (row.started or permits(snapshot.order_resources.get(row.order_id), pid, state.model)):
+                continue
+            seconds = None if row.seconds is None else float(row.seconds)
+            if seconds is not None and seconds <= 0:
+                if row.started and (pid not in busy or passing is None):
+                    continue  # past its estimate: over, unless the router still counts it printing
+                seconds = None  # past its estimate, or estimated at nothing: it ends, nobody knows when
+            held.append(Held(seconds, prep=float(row.prep_seconds), started=row.started, auto_eject=row.auto_eject))
+        hold_unknown = pid in interlocked
+        if passing is not None and pid in busy and not held:
+            held = [Held(None, started=True)]
+        elif passing is not None and held and pid not in busy:
+            held = []
+            hold_unknown = True
+        gap = max(0.0, float(state.plate_clear_seconds))
+        waiting = max(0.0, float(state.waiting_seconds))
+        if snapshot.operator_hours and state.awaiting_operator:
+            waiting = snapshot.operator_hours.service_finish(max(0.0, waiting - gap), gap)
+        machines[pid] = Machine(
+            printer_id=pid,
+            model=passing.key if passing else (model_key(state.model) or ""),
+            ready=bool(passing and passing.ready),
+            held=tuple(held),
+            routable=passing is not None,
+            waiting=waiting,
+            hold_unknown=hold_unknown,
+            gap=gap,
+            requires_operator=state.requires_operator or gap > 0,
+            interval=float(state.stagger_interval_seconds or 0),
+            dispatchable=bool(passing is None or passing.dispatchable),
+        )
+    return machines
+
+
+_collector_lock = threading.Lock()
+_collector_holds = 0
+_collector_was_enabled = False
+
+
+@contextlib.contextmanager
+def _collector_paused():
+    """The cyclic collector waits while a pass decides (spec T22, measured 2026-10-28).
+
+    A full collection stops every thread, the event loop's too, for as long as the whole heap
+    takes — and a decision's short-lived replays, promoted by the young collections they set
+    off, were what started one in the middle of a pass. The decision makes no reference
+    cycles, so its garbage goes with its references and nothing waits for the collector.
+    Counted: two passes deciding at once hand it back once, when the last ends, and a
+    collector somebody else switched off stays off.
+    """
+    global _collector_holds, _collector_was_enabled
+    with _collector_lock:
+        if _collector_holds == 0:
+            _collector_was_enabled = gc.isenabled()
+            gc.disable()
+        _collector_holds += 1
+    try:
+        yield
+    finally:
+        with _collector_lock:
+            _collector_holds -= 1
+            if _collector_holds == 0 and _collector_was_enabled:
+                gc.enable()
+
+
+async def _decide(fn, *args, **kwargs):
+    """One step of the decision — CPU work over plain data — in a worker thread, off the
+    event loop, with the cyclic collector paused (spec T21–T22). A cancelled pass stops
+    using the answer; the thread finishes within the pass's budget."""
+
+    def run():
+        with _collector_paused():
+            return fn(*args, **kwargs)
+
+    return await asyncio.to_thread(run)
+
+
+@dataclass
+class _PassContext:
+    """What one pass reads of the farm before it reads a single job — once, for the whole pass,
+    never kept for the next one (spec rebalance-tail-time r2, T21)."""
+
+    printers: dict[int, PassPrinter]
+    busy: set[int]
+    interlocked: set[int]
+    resources: dict[int, object]
+    allow_compatible: bool
+    prefer_lowest: bool
+    sjf: bool
+    cache: PrintRequirementsCache
+    #: One read per distinct source for the whole pass (spec R14): 358 copies of one
+    #: job are one stat, one parse and one family lookup, not 358 of each.
+    read: dict[tuple, PrintRequirements] = field(default_factory=dict)
+
+    async def requirements_of(self, db: AsyncSession, row: AutoQueueItem) -> PrintRequirements:
+        source = _source_key(row)
+        found = self.read.get(source)
+        if found is None:
+            found = self.read[source] = await read_item_requirements(db, row, self.cache)
+        return found
+
+
+async def _order_resources(db: AsyncSession) -> dict[int, object]:
+    """Every order's printer-resources policy, by order id — only the orders that name one."""
+    from backend.app.models.project import Project
+
+    return dict(
+        (
+            await db.execute(
+                select(Project.id, Project.printer_resources).where(Project.printer_resources.is_not(None))
+            )
+        ).all()
+    )
+
+
+async def _pass_context(
+    db: AsyncSession,
+    *,
+    resources: dict[int, object],
+    busy: set[int] | None,
+    interlocked: set[int] | None,
+    cache: PrintRequirementsCache | None,
+) -> _PassContext:
+    """The pass's printers and settings. ``busy`` / ``interlocked`` are the tick's sets when it
+    hands them in — an empty set is a snapshot like any other, not «unknown» — and are read
+    freshly otherwise: the interlocks once, a failed read the caller's error, never «nothing is
+    interlocked»."""
+    if busy is None:
+        busy = await busy_printer_ids(db)
+    if interlocked is None:
+        from backend.app.services.ha_sensor_manager import ha_sensor_manager
+
+        interlocked = set(await ha_sensor_manager.blocked_printers(db))
+    interlocked = set(interlocked)
+    return _PassContext(
+        printers=await load_printers(db, busy, interlocked),
+        busy=busy,
+        interlocked=interlocked,
+        resources=resources,
+        allow_compatible=await _compatible_models_allowed(db),
+        prefer_lowest=await scheduler._get_bool_setting(db, "prefer_lowest_filament", default=True),
+        sjf=await scheduler._get_bool_setting(db, SJF_SETTING_KEY),
+        cache=cache if cache is not None else PrintRequirementsCache(),
+    )
+
+
+class _PassGroups:
+    """A stagger resolver asked once per printer for the whole pass: every replay and every
+    ``_admit`` asks it again on each start, and its answers cannot change within a pass."""
+
+    def __init__(self, resolver):
+        self._resolver = resolver
+        self._groups: dict[int, frozenset] = {}
+        self._caps: dict[tuple, int] = {}
+
+    def groups_for(self, printer_id: int) -> frozenset:
+        found = self._groups.get(printer_id)
+        if found is None:
+            found = self._groups[printer_id] = frozenset(self._resolver.groups_for(printer_id))
+        return found
+
+    def cap_for(self, key, global_cap: int) -> int:
+        found = self._caps.get((key, global_cap))
+        if found is None:
+            found = self._caps[(key, global_cap)] = self._resolver.cap_for(key, global_cap)
+        return found
+
+
+@dataclass
+class _Forecast:
+    """The pass's world as plain data — the farm view (its lanes, the router's tail, the frozen
+    fit oracle) and the candidates as jobs. Everything the decision's worker thread reads, and
+    nothing that talks to a session or a live client (spec T21)."""
+
+    farm: FarmView
+    oracle: _FitOracle
+    probes: list[MovableItem]
+    #: candidate id → the row as the decision read it (:func:`_row_identity`).
+    evaluated: dict[int, tuple]
+
+
+async def _load_forecast(
+    db: AsyncSession, ctx: _PassContext, candidates: list[tuple[AutoQueueItem, str]], now: datetime
+) -> _Forecast:
+    """The forecast's world (spec rebalance-tail-time r2): what every printer already holds, and
+    every job the router can see — the candidates among them, and all the others, each with the
+    printers it may be routed to. Reads the database and the sources; returns plain data."""
+    from backend.app.services.order_resources import constrained, permits
+
+    snapshot = await load_snapshot(db, now)
+    router_rows = list(
+        (
+            await db.execute(
+                select(AutoQueueItem)
+                .where(*router_view_conditions(datetime.now(timezone.utc)))
+                .order_by(AutoQueueItem.position, AutoQueueItem.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    candidate_ids = {row.id for row, _home in candidates}
+    tail_rows = [row for row in router_rows if row.id not in candidate_ids]
+    requirements_by_row = {row.id: await ctx.requirements_of(db, row) for row in tail_rows}
+    for row, _home in candidates:
+        requirements_by_row[row.id] = await ctx.requirements_of(db, row)
+    previous_ok: dict[int, bool] = {}
+    if any(row.require_previous_success for row in (*tail_rows, *(row for row, _home in candidates))):
+        # A printer's fact, read once; whether it applies is each job's own flag.
+        previous_ok = {pid: await scheduler.previous_print_succeeded(db, pid) for pid in sorted(ctx.printers)}
+    oracle = _FitOracle(ctx.printers, prefer_lowest=ctx.prefer_lowest, previous_ok=previous_ok)
+    tree = await load_tree(db) if any(row.target_location_id for row in tail_rows) else {}
+    line_orders = dict(
+        (
+            await db.execute(
+                select(ProjectLine.id, ProjectLine.project_id).where(
+                    ProjectLine.id.in_({row.project_line_id for row in tail_rows if row.project_line_id is not None})
+                )
+            )
+        ).all()
+    )
+
+    def allowed(row: AutoQueueItem) -> frozenset[int] | None:
+        """``printers_for_item``'s two gates: the location subtree and the order's resources."""
+        gate: set[int] | None = None
+        if row.target_location_id:
+            places = set(subtree_ids(tree, row.target_location_id))
+            gate = {pid for pid, p in ctx.printers.items() if p.location_id in places}
+        policy = ctx.resources.get(row.project_id or line_orders.get(row.project_line_id))
+        if constrained(policy):
+            permitted = {pid for pid, p in ctx.printers.items() if permits(policy, pid, p.model_name)}
+            gate = permitted if gate is None else gate & permitted
+        return None if gate is None else frozenset(gate)
+
+    tail: list[MovableItem] = []
+    for row in tail_rows:
+        requirements = requirements_by_row[row.id]
+        if requirements.status != "ok":
+            # The router fails or waits on an unreadable source: it never takes a printer.
+            home = ""
+        else:
+            oracle.add_job(row, requirements, auto_policy(row), allowed(row))
+            home = model_key(row.target_model or requirements.model) or ""
+        tail.append(_tail_item(row, home, snapshot.prep_seconds))
+    evaluated: dict[int, tuple] = {}
+    for row, _home in candidates:
+        oracle.add_job(row, requirements_by_row[row.id], auto_policy(row))
+        evaluated[row.id] = _row_identity(row)
+    max_position = await db.scalar(
+        select(func.coalesce(func.max(AutoQueueItem.position), 0)).where(AutoQueueItem.status == "pending")
+    )
+    stagger = snapshot.stagger
+    if stagger is not None:
+        stagger = replace_job(stagger, resolver=_PassGroups(stagger.resolver))
+    farm = FarmView(
+        machines=_machines(snapshot, ctx.printers, ctx.busy, ctx.interlocked),
+        fits=oracle,
+        allow_compatible=ctx.allow_compatible,
+        tail=tuple(tail),
+        sjf=ctx.sjf,
+        stagger=stagger,
+        operator_hours=snapshot.operator_hours,
+        max_position=int(max_position or 0),
+        budget=REBALANCE_WORK_BUDGET,
+    )
+    probes = [_tail_item(row, home, snapshot.prep_seconds) for row, home in candidates]
+    return _Forecast(farm=farm, oracle=oracle, probes=probes, evaluated=evaluated)
+
+
 async def rebalance(
     db: AsyncSession,
     *,
@@ -918,16 +1578,9 @@ async def rebalance(
         # refused once, not twice — ``skipped`` is one verdict per item.
         result.skipped.extend((item_id, "not_found") for item_id in dict.fromkeys(item_ids) if item_id not in found)
     movable_rows: list[AutoQueueItem] = []
-    from backend.app.models.project import Project
     from backend.app.services.order_resources import constrained
 
-    resources = dict(
-        (
-            await db.execute(
-                select(Project.id, Project.printer_resources).where(Project.printer_resources.is_not(None))
-            )
-        ).all()
-    )
+    resources = await _order_resources(db)
     resource_orders = dict(
         (
             await db.execute(
@@ -951,37 +1604,25 @@ async def rebalance(
     if not movable_rows:
         return result
 
-    busy = busy_printers if busy_printers is not None else await busy_printer_ids(db)
-    if interlocked_printers is None:
-        # A manual door reads the interlocks once; the tick hands in the set its
-        # router pass read (an empty set included). A failed read is the
-        # caller's error, never «nothing is interlocked».
-        from backend.app.services.ha_sensor_manager import ha_sensor_manager
-
-        interlocked_printers = set(await ha_sensor_manager.blocked_printers(db))
-    printers = await load_printers(db, busy, set(interlocked_printers))
-    if not any(printer.ready for printer in printers.values()):
+    ctx = await _pass_context(
+        db, resources=resources, busy=busy_printers, interlocked=interlocked_printers, cache=requirements_cache
+    )
+    if not any(printer.ready and printer.dispatchable for printer in ctx.printers.values()):
         # No printer is free: nothing can receive, and nothing can hold a job at
         # home either — answered without reading a single file.
         result.skipped.extend((row.id, "no_eligible_target") for row in movable_rows)
         return result
 
-    # The cheap verdicts BEFORE the catalog: everything below this loads every
-    # archive of every affected order, and a tick where every movable row is
-    # cooling or has a free home printer that can print it must not pay for it.
-    # ``plan_moves`` keeps the same checks — pure and the decision's own — so it
-    # stays correct whoever calls it.
     cooling = set() if force else await cooling_lines(db, {row.project_line_id for row in movable_rows}, now)
-    allow_compatible = await _compatible_models_allowed(db)
-    prefer_lowest = await scheduler._get_bool_setting(db, "prefer_lowest_filament", default=True)
-    cache = requirements_cache if requirements_cache is not None else PrintRequirementsCache()
-    jobs: list[tuple[AutoQueueItem, str, PrintRequirements]] = []
-    # One read per distinct source for the whole pass (spec R14): 358 copies of one
-    # job are one stat, one parse and one family lookup, not 358 of each.
-    read: dict[tuple, PrintRequirements] = {}
+    candidates: list[tuple[AutoQueueItem, str]] = []
     for row in movable_rows:
         if row.project_line_id in cooling:
             result.skipped.append((row.id, "cooldown"))
+            continue
+        if not force and (row.rebalanced_at is not None or row.rebalanced_from_model):
+            # T23 (the owner's decision): one automatic move per row, then by hand only.
+            # The row stays in the forecast's tail and routes as any other.
+            result.skipped.append((row.id, "already_rebalanced_auto"))
             continue
         home = model_key(row.target_model)
         if home is None:
@@ -989,41 +1630,30 @@ async def rebalance(
             continue
         # The job's ACCEPTED source — its captured bytes, never the library's
         # current copy (spec R4). Unreadable: this job alone stays (R7).
-        source = _source_key(row)
-        requirements = read.get(source)
-        if requirements is None:
-            requirements = read[source] = await read_item_requirements(db, row, cache)
+        requirements = await ctx.requirements_of(db, row)
         if requirements.status != "ok":
             result.skipped.append((row.id, _source_skip(requirements.reason)))
             continue
-        jobs.append((row, home, requirements))
-    if not jobs:
+        candidates.append((row, home))
+    if not candidates:
         return result
-    previous_ok: dict[int, bool] = {}
-    if any(row.require_previous_success for row, _home, _req in jobs):
-        # A printer's fact, read once; whether it applies is each job's own flag.
-        previous_ok = {pid: await scheduler.previous_print_succeeded(db, pid) for pid in sorted(printers)}
-    oracle = _FitOracle(printers, prefer_lowest=prefer_lowest, previous_ok=previous_ok)
-    unseeded = FarmView(
-        machines={pid: Machine(pid, p.key, p.ready, 0.0) for pid, p in printers.items()},
-        fits=oracle,
-        allow_compatible=allow_compatible,
-    )
-    machines_by_id = sorted(unseeded.machines.values(), key=lambda m: m.printer_id)
-    zero_ledger = dict.fromkeys(unseeded.machines, 0.0)
-    homes: dict[int, str] = {}
-    candidates: list[AutoQueueItem] = []
-    evaluated: dict[int, tuple] = {}
-    for row, home, requirements in jobs:
-        oracle.add_job(row, requirements, auto_policy(row))
-        evaluated[row.id] = _row_identity(row)
-        probe = MovableItem(item_id=row.id, line_id=row.project_line_id, home_model=home, yield_parts=0, seconds=None)
-        stay, _home_free = _home_verdict(probe, machines_by_id, unseeded, zero_ledger)
-        if stay is not None:
-            result.skipped.append((row.id, stay))
-            continue
-        homes[row.id] = home
-        candidates.append(row)
+
+    forecast = await _load_forecast(db, ctx, candidates, now)
+    farm = forecast.farm
+    try:
+        projection = await _decide(start_projection, forecast.probes, farm)
+    except ReplayBudget:
+        result.skipped.extend((row.id, "forecast_budget") for row, _home in candidates)
+        return result
+    # The cheap verdicts BEFORE the catalog: everything below this loads every
+    # archive of every affected order, and a pass where every candidate has a
+    # ready home printer that takes it now, or no known home finish, must not pay
+    # for it. With no plates, ``plan_moves`` answers only those — and
+    # ``no_eligible_target`` for everyone else, who goes on.
+    early = await _decide(plan_moves, forecast.probes, {}, farm, projection=projection)
+    held = {item_id: reason for item_id, reason in early.skipped if reason != "no_eligible_target"}
+    result.skipped.extend((row.id, held[row.id]) for row, _home in candidates if row.id in held)
+    candidates = [(row, home) for row, home in candidates if row.id not in held]
     if not candidates:
         return result
 
@@ -1031,74 +1661,73 @@ async def rebalance(
         (
             await db.execute(
                 select(ProjectLine.id, ProjectLine.project_id).where(
-                    ProjectLine.id.in_({row.project_line_id for row in candidates})
+                    ProjectLine.id.in_({row.project_line_id for row, _home in candidates})
                 )
             )
         ).all()
     )
     catalog = await load_line_catalog(db, sorted(set(line_projects.values())))
-    await _read_alternative_plates(db, catalog, candidates, homes, cache, oracle)
+    homes = {row.id: home for row, home in candidates}
+    await _read_alternative_plates(db, catalog, [row for row, _home in candidates], homes, ctx.cache, forecast.oracle)
     rank = {project_id: i for i, project_id in enumerate(await rank_active_orders(db))}
-    seeds = free_after_by_printer(await load_snapshot(db, now))
-    farm = FarmView(
-        machines={
-            pid: Machine(pid, p.key, p.ready, 0.0 if p.ready else seeds.get(pid, 0.0)) for pid, p in printers.items()
-        },
-        fits=oracle,
-        allow_compatible=allow_compatible,
-    )
 
+    probe_of = {probe.item_id: probe for probe in forecast.probes}
     keyed: list[tuple[tuple[int, int, int], MovableItem]] = []
-    for row in candidates:
+    for row, _home in candidates:
         parts = catalog.yield_of(row.project_line_id, row.library_file_id, row.plate_id)
         if parts <= 0:
             result.skipped.append((row.id, "no_yield"))
             continue
         order_rank = rank.get(line_projects.get(row.project_line_id), len(rank))
-        keyed.append(
-            (
-                (order_rank, row.position, row.id),
-                MovableItem(
-                    item_id=row.id,
-                    line_id=row.project_line_id,
-                    home_model=homes[row.id],
-                    yield_parts=parts,
-                    seconds=row.print_time_seconds,
-                ),
-            )
-        )
+        keyed.append(((order_rank, row.position, row.id), replace_job(probe_of[row.id], yield_parts=parts)))
     keyed.sort(key=lambda pair: pair[0])
     # ``cooling`` is handed in although no cooling row reached here: the pure
     # function's own guarantee should not depend on a caller's pre-filter.
-    plan = plan_moves([item for _key, item in keyed], catalog.options_by_line, farm, cooling=cooling)
+    plan = await _decide(
+        plan_moves,
+        [item for _key, item in keyed],
+        catalog.options_by_line,
+        farm,
+        cooling=cooling,
+        projection=projection,
+    )
     result.skipped.extend(plan.skipped)
     logger.debug(
-        "Rebalance: %d candidate(s), %d move(s); fit resolves %d, cache hits %d",
+        "Rebalance: %d candidate(s), %d move(s); fit resolves %d, cache hits %d, replay work %d",
         len(keyed),
         len(plan.moves),
-        oracle.resolves,
-        oracle.hits,
+        forecast.oracle.resolves,
+        forecast.oracle.hits,
+        projection.work,
     )
 
-    by_id = {row.id: row for row in candidates}
+    by_id = {row.id: row for row, _home in candidates}
     recheck = _Recheck(
-        interlocked=set(interlocked_printers),
-        prefer_lowest=prefer_lowest,
-        oracle=oracle,
-        rows=evaluated,
+        interlocked=set(ctx.interlocked),
+        prefer_lowest=ctx.prefer_lowest,
+        oracle=forecast.oracle,
+        rows=forecast.evaluated,
         projects=line_projects,
     )
-    for move in plan.moves:
+    for index, move in enumerate(plan.moves):
+        before = result.converted
         await _apply(
             db,
             by_id[move.item_id],
             move,
             now=now,
-            cache=cache,
+            cache=ctx.cache,
             current_user=current_user,
             result=result,
             recheck=recheck,
         )
+        if result.converted == before:
+            # T17: the rest of the plan was decided in a world where this move happened.
+            # It is not rebuilt in this call — the next one reads the new farm.
+            result.skipped.extend(
+                (later.item_id, "plan_invalidated_after_apply_failure") for later in plan.moves[index + 1 :]
+            )
+            break
     return result
 
 

@@ -52,7 +52,13 @@ from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import normalize_mode
 from backend.app.services import queue_rebalance, swap_compatibility
-from backend.app.services.auto_queue_eligibility import busy_printer_ids, find_eligible_printer, offline_candidates_for
+from backend.app.services.auto_queue_eligibility import (
+    busy_printer_ids,
+    find_eligible_printer,
+    offline_candidates_for,
+    router_order,
+    router_view_conditions,
+)
 from backend.app.services.auto_queue_waiting import WaitingNotice, freeze, more_issues
 from backend.app.services.filament_intake import (
     fail_auto_source,
@@ -578,26 +584,14 @@ class AutoQueueScheduler:
         """Return pending auto items in scheduling order.
 
         SJF on:  ``ORDER BY target_model, been_jumped DESC,
-                  print_time_seconds ASC NULLS LAST, position``
-        SJF off: ``ORDER BY position``
+                  print_time_seconds ASC NULLS LAST, position, id``
+        SJF off: ``ORDER BY position, id``
+
+        Which rows and in what order are ``auto_queue_eligibility.router_view_conditions`` /
+        ``router_order`` — the rebalancer's forecast replays exactly this.
         """
         now = datetime.now(timezone.utc)
-        base = (
-            select(AutoQueueItem)
-            .where(AutoQueueItem.status == "pending")
-            .where(AutoQueueItem.cancelled_at.is_(None))
-            .where(AutoQueueItem.manual_start.is_(False))
-            .where(or_(AutoQueueItem.scheduled_time.is_(None), AutoQueueItem.scheduled_time <= now))
-        )
-        if sjf:
-            stmt = base.order_by(
-                AutoQueueItem.target_model,
-                AutoQueueItem.been_jumped.desc(),
-                AutoQueueItem.print_time_seconds.asc().nullslast(),
-                AutoQueueItem.position,
-            )
-        else:
-            stmt = base.order_by(AutoQueueItem.position)
+        stmt = select(AutoQueueItem).where(*router_view_conditions(now)).order_by(*router_order(sjf))
         result = await db.execute(stmt.execution_options(populate_existing=True))
         return result.scalars().all()
 

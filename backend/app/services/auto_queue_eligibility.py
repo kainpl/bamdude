@@ -46,7 +46,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.i18n import current_language, t
@@ -76,6 +76,35 @@ from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
+
+
+def router_view_conditions(now) -> tuple:
+    """The rows the router deals out on a pass (``AutoQueueScheduler._fetch_pending``): pending,
+    not cancelled, not staged for a manual start, not scheduled for later. The rebalancer's
+    forecast reads exactly these as the tail ahead of and beside its candidates (spec
+    rebalance-tail-time T6) — one definition, so the two cannot drift."""
+    return (
+        AutoQueueItem.status == "pending",
+        AutoQueueItem.cancelled_at.is_(None),
+        AutoQueueItem.manual_start.is_(False),
+        or_(AutoQueueItem.scheduled_time.is_(None), AutoQueueItem.scheduled_time <= now),
+    )
+
+
+def router_order(sjf: bool) -> tuple:
+    """The router's order. SJF: the model column, ``been_jumped`` DESC, the time with no estimate
+    last, the position; otherwise the position. The id is the last key on both — ties between
+    rows were undefined before (heap order on PostgreSQL), and the rebalancer's replay
+    (``rebalance_replay.router_key``) breaks them the same way (spec T8)."""
+    if sjf:
+        return (
+            AutoQueueItem.target_model,
+            AutoQueueItem.been_jumped.desc(),
+            AutoQueueItem.print_time_seconds.asc().nullslast(),
+            AutoQueueItem.position,
+            AutoQueueItem.id,
+        )
+    return (AutoQueueItem.position, AutoQueueItem.id)
 
 
 async def busy_printer_ids(db: AsyncSession) -> set[int]:

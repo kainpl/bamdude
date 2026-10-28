@@ -168,6 +168,12 @@ describe('the rebalance refusal codes are the backend’s closed list', () => {
     'eligibility_unknown',
     'no_eligible_target',
     'eligibility_changed',
+    // rebalance-tail-time: an unknown finish, the pass's budget, the owner's one automatic
+    // move, and a plan that lost its premise when an earlier move did not apply.
+    'forecast_incomplete',
+    'forecast_budget',
+    'already_rebalanced_auto',
+    'plan_invalidated_after_apply_failure',
   ];
 
   it('en has exactly those keys', () => {

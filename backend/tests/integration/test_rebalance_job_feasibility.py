@@ -566,18 +566,18 @@ async def test_a_refusal_writes_nothing_and_commands_nothing(db_session, printer
 async def test_an_interlocked_home_that_can_print_the_job_does_not_hold_it(
     db_session, printer_factory, tmp_path, alt_seconds, moves
 ):
-    """The P2S holds PETG but a sensor holds the printer: no ``home_model_idle``. Its forecast still
-    dates the home (like a plate clear), so a faster P1S plate wins and a slower one does not."""
+    """The P2S holds PETG but a sensor holds the printer: no ``home_model_idle``. C-10 exception
+    (spec rebalance-tail-time T12 / T19, was «its forecast still dates the home like a plate
+    clear»): the router still gives the job its only home, and an interlock has no forecast
+    release, so the home finish is unknown — never 0 — and nothing moves on a guess, whether the
+    P1S plate is faster (``moves`` was True) or slower."""
     farm = await petg_farm(db_session, printer_factory, tmp_path, home_trays=("PETG",), alt_seconds=alt_seconds)
     p_elig, p_sched = _live(farm)
     with p_elig, p_sched:
         result = await queue_rebalance.rebalance(
             db_session, line_ids=[farm.line.id], force=True, interlocked_printers={farm.home.id}
         )
-    if moves:
-        assert (result.converted, result.skipped) == (1, [])
-    else:
-        assert result.skipped == [(farm.item.id, "no_faster_model")]
+    assert (moves, result.converted, result.skipped) == (moves, 0, [(farm.item.id, "forecast_incomplete")])
 
 
 @pytest.mark.asyncio
@@ -616,7 +616,9 @@ async def test_a_manual_door_reads_the_interlocks_once_and_a_failed_read_is_not_
     with p_elig, p_sched:
         result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
     assert reads.await_count == 1
-    assert (result.converted, result.skipped) == (1, []), "the Door interlock made the P2S not ready"
+    # C-10 exception (T12 / T19, was a move): the Door interlock made the P2S not ready — no
+    # ``home_model_idle`` — and with no forecast release its home finish is unknown.
+    assert (result.converted, result.skipped) == (0, [(farm.item.id, "forecast_incomplete")])
     monkeypatch.setattr(ha_sensor_manager, "blocked_printers", AsyncMock(side_effect=RuntimeError("db down")))
     with p_elig, p_sched, pytest.raises(RuntimeError):
         await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
