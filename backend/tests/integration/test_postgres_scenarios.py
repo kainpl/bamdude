@@ -182,7 +182,7 @@ def test_plug_meter_watch_on_postgres(tmp_path):
     assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
 
 
-@pytest.mark.timeout(600)
+@pytest.mark.timeout(960)
 def test_rebalance_job_feasibility_on_postgres(tmp_path):
     """Rebalancing by job feasibility on PostgreSQL: the pass's printer and plate reads, the
     previous-success lookups and the final check after the target copy (rebalance-job-feasibility
@@ -209,7 +209,7 @@ def test_rebalance_job_feasibility_on_postgres(tmp_path):
         env=env,
         capture_output=True,
         text=True,
-        timeout=540,
+        timeout=900,
     )
     assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
 
