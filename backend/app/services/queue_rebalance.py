@@ -86,6 +86,7 @@ from backend.app.services.farm_forecast import (
 )
 from backend.app.services.filament_intake import (
     enrich_family_filament_types,
+    loaded_descriptor,
     read_item_requirements,
     resolve_source_path,
 )
@@ -406,7 +407,8 @@ def _lane(machine: Machine) -> Lane:
         routable=machine.routable,
         ready=machine.ready,
         waiting=machine.waiting,
-        hold_unknown=machine.hold_unknown or not machine.dispatchable,
+        hold_unknown=machine.hold_unknown,
+        stuck=not machine.dispatchable,
         gap=machine.gap,
         requires_operator=machine.requires_operator,
         interval=machine.interval,
@@ -562,7 +564,8 @@ def _receivers(
     for machine in machines:
         # The free-and-ready test first: once the free printers are spent, a pass
         # walks hundreds of jobs that ask nothing more of any printer.
-        if not (machine.ready and machine.dispatchable) or machine.printer_id not in idle:
+        # A printer held with no known release is no receiver: whatever lands there ends unknown.
+        if not (machine.ready and machine.dispatchable) or machine.hold_unknown or machine.printer_id not in idle:
             continue
         verdict = _model_verdict(plate.model, machine.model, farm)
         if verdict is None:
@@ -690,6 +693,7 @@ def plan_moves(
                 base.routed_at.get(item.item_id) == 0.0
                 and base.ready_when_routed.get(item.item_id)
                 and not projection.lanes[base.lane_of[item.item_id]].hold_unknown
+                and not projection.lanes[base.lane_of[item.item_id]].stuck
             ):
                 plan.skipped.append((item.item_id, "home_model_idle"))
                 continue
@@ -741,7 +745,7 @@ def plan_moves(
                 converted = Job(
                     job_id=item.item_id,
                     position=item.position,
-                    group=plate.model_label,
+                    group=plate.model_label or None,
                     seconds=seconds,
                     fits=tuple(pool),
                     been_jumped=item.been_jumped,
@@ -752,7 +756,7 @@ def plan_moves(
                     Job(
                         job_id=next_id - i,
                         position=max_position + 1 + i,
-                        group=plate.model_label,
+                        group=plate.model_label or None,
                         seconds=seconds,
                         fits=tuple(pool),
                         auto_eject=item.auto_eject,
@@ -1225,6 +1229,9 @@ class RebalanceResult:
     cancelled: int = 0  # always 0 in this design; see ``RebalanceOut``
     moved_parts: int = 0
     skipped: list[tuple[int, str]] = field(default_factory=list)
+    #: Each candidate's home outcome as the decision read it (``MovePlan.home``) — the early,
+    #: catalog-free verdicts included. A read model for the explanation, not in the response.
+    home: dict[int, tuple[str, float | None]] = field(default_factory=dict)
 
     def as_response(self) -> RebalanceOut:
         return RebalanceOut(
@@ -1253,40 +1260,64 @@ def _tail_item(row: AutoQueueItem, home: str, prep: float) -> MovableItem:
     )
 
 
+#: How long a print past its estimate is still taken to run: the forecast's own reckoning has
+#: it over (``farm_forecast``: never negative, so 0), and the router still counts the printer
+#: busy this pass — so it frees just after now, never in the router's current wave.
+OVERDUE_SECONDS = 1.0
+
+
 def _machines(
-    snapshot: FarmSnapshot, printers: dict[int, PassPrinter], busy: set[int], interlocked: set[int]
+    snapshot: FarmSnapshot,
+    printers: dict[int, PassPrinter],
+    busy: set[int],
+    interlocked: set[int],
+    dispatching: dict[int, float | None] | None = None,
 ) -> dict[int, Machine]:
     """Every printer of the forecast's snapshot as the replay's lane — what it holds and what
-    holds it, read exactly as ``farm_forecast._initial_state`` reads them.
+    holds it, read as ``farm_forecast._initial_state`` reads them.
 
     It may receive work only when the pass found it routable (``load_printers``: the router's
     population, online); every other one still finishes what it holds and still takes stagger
     windows. A routable lane is free now exactly when the router may place on it now — outside
-    the busy set (spec T-A25). What has no forecast release is unknown, never 0 (spec T12, T19):
-    an HA interlock; a printer busy for the router with nothing timed to show for it (a claim
-    before its archive exists, a print past its estimate, a row of an order that may not print
-    here); a printer the router counts free while the snapshot says it holds work (an
+    the busy set (spec T-A25). What the forecast can date is dated (final review C1): a print
+    being dispatched — its claim taken, its archive not yet there — is its own estimate plus
+    the preparation (``dispatching``: printer → seconds, ``None`` for no estimate); one past its
+    estimate is over (``OVERDUE_SECONDS``). A row of an order that may not use this printer
+    keeps it busy for the router for good (a ``blocked`` run, I1). Only what has no forecast
+    release is unknown, never 0 (T12, T19): an HA interlock; a busy printer with nothing at all
+    to show for it; a printer the router counts free while the snapshot says it holds work (an
     inconsistent snapshot, T-A05) — routed to now, its start unknown.
     """
     from backend.app.services.order_resources import permits
 
+    dispatching = dispatching or {}
     machines: dict[int, Machine] = {}
     for state in snapshot.printers:
         pid = state.printer_id
         passing = printers.get(pid)
+        claimed = passing is not None and pid in busy
         held: list[Held] = []
+        blocked = False
         for row in state.queued:
-            # A row of an order that may not use this printer is never dispatched here.
             if not (row.started or permits(snapshot.order_resources.get(row.order_id), pid, state.model)):
+                # A row of an order that may not use this printer is never dispatched here.
+                blocked = True
                 continue
             seconds = None if row.seconds is None else float(row.seconds)
             if seconds is not None and seconds <= 0:
-                if row.started and (pid not in busy or passing is None):
-                    continue  # past its estimate: over, unless the router still counts it printing
-                seconds = None  # past its estimate, or estimated at nothing: it ends, nobody knows when
+                if row.started and not claimed:
+                    continue  # past its estimate, and the router already counts the printer free
+                # Past its estimate: over, a second after now; estimated at nothing: no estimate.
+                seconds = OVERDUE_SECONDS if row.started else None
             held.append(Held(seconds, prep=float(row.prep_seconds), started=row.started, auto_eject=row.auto_eject))
+        if claimed and pid in dispatching and not any(h.started for h in held):
+            seconds = dispatching[pid]
+            head = None if seconds is None else float(snapshot.prep_seconds) + float(seconds)
+            held.insert(0, Held(head, started=True))
+        if claimed and blocked:
+            held.append(Held(None, blocked=True))
         hold_unknown = pid in interlocked
-        if passing is not None and pid in busy and not held:
+        if claimed and not held:
             held = [Held(None, started=True)]
         elif passing is not None and held and pid not in busy:
             held = []
@@ -1345,7 +1376,9 @@ def _collector_paused():
 async def _decide(fn, *args, **kwargs):
     """One step of the decision — CPU work over plain data — in a worker thread, off the
     event loop, with the cyclic collector paused (spec T21–T22). A cancelled pass stops
-    using the answer; the thread finishes within the pass's budget."""
+    using the answer; the thread still finishes: its replays are bounded by the pass's
+    budget, and the fit answers it asks (one resolve per distinct job, printer and feed) are
+    not counted against it — measured small beside the replays (stage 4)."""
 
     def run():
         with _collector_paused():
@@ -1363,6 +1396,8 @@ class _PassContext:
     busy: set[int]
     interlocked: set[int]
     resources: dict[int, object]
+    #: line → order, for every line a pending auto-queue row is filed under — read once a pass.
+    line_orders: dict[int, int]
     allow_compatible: bool
     prefer_lowest: bool
     sjf: bool
@@ -1392,6 +1427,17 @@ async def _order_resources(db: AsyncSession) -> dict[int, object]:
     )
 
 
+async def _line_orders(db: AsyncSession) -> dict[int, int]:
+    """line → order for every line a pending auto-queue row is filed under: the candidates', the
+    router tail's and the resources check's — one read a pass."""
+    lines = select(AutoQueueItem.project_line_id).where(
+        AutoQueueItem.status == "pending", AutoQueueItem.project_line_id.is_not(None)
+    )
+    return dict(
+        (await db.execute(select(ProjectLine.id, ProjectLine.project_id).where(ProjectLine.id.in_(lines)))).all()
+    )
+
+
 async def _pass_context(
     db: AsyncSession,
     *,
@@ -1399,6 +1445,7 @@ async def _pass_context(
     busy: set[int] | None,
     interlocked: set[int] | None,
     cache: PrintRequirementsCache | None,
+    line_orders: dict[int, int] | None = None,
 ) -> _PassContext:
     """The pass's printers and settings. ``busy`` / ``interlocked`` are the tick's sets when it
     hands them in — an empty set is a snapshot like any other, not «unknown» — and are read
@@ -1416,6 +1463,7 @@ async def _pass_context(
         busy=busy,
         interlocked=interlocked,
         resources=resources,
+        line_orders=line_orders if line_orders is not None else await _line_orders(db),
         allow_compatible=await _compatible_models_allowed(db),
         prefer_lowest=await scheduler._get_bool_setting(db, "prefer_lowest_filament", default=True),
         sjf=await scheduler._get_bool_setting(db, SJF_SETTING_KEY),
@@ -1458,6 +1506,57 @@ class _Forecast:
     evaluated: dict[int, tuple]
 
 
+async def _dispatching(db: AsyncSession, snapshot: FarmSnapshot, ctx: _PassContext) -> dict[int, float | None]:
+    """The prints being dispatched, timed: printer → seconds (``None`` for no estimate).
+
+    A dispatch takes the printer's claim (a ``printing`` queue row) before its archive exists —
+    for the whole upload and preheat the snapshot shows the printer holding nothing (final
+    review C1). Asked only of claimed printers with no running archive, timed by the reader the
+    queue and the forecast use (``print_time_for_row``).
+    """
+    from sqlalchemy.orm import selectinload
+
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.services.queue_times import print_time_for_row
+
+    claimed = [
+        state.printer_id
+        for state in snapshot.printers
+        if state.printer_id in ctx.printers
+        and state.printer_id in ctx.busy
+        and not any(row.started for row in state.queued)
+    ]
+    if not claimed:
+        return {}
+    rows = (
+        (
+            await db.execute(
+                select(PrintQueueItem)
+                .options(
+                    selectinload(PrintQueueItem.archive),
+                    selectinload(PrintQueueItem.library_file),
+                    selectinload(PrintQueueItem.queue_source),
+                )
+                .where(PrintQueueItem.status == "printing", PrintQueueItem.queue_id.in_(claimed))
+                .order_by(PrintQueueItem.queue_id, PrintQueueItem.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    dispatching: dict[int, float | None] = {}
+    for item in rows:
+        seconds = print_time_for_row(
+            archive=item.archive,
+            library_file=item.library_file,
+            plate_id=item.plate_id,
+            descriptor=loaded_descriptor(item),
+        )
+        # T19: a zero estimate is no estimate.
+        dispatching[item.queue_id] = float(seconds) if seconds else None
+    return dispatching
+
+
 async def _load_forecast(
     db: AsyncSession, ctx: _PassContext, candidates: list[tuple[AutoQueueItem, str]], now: datetime
 ) -> _Forecast:
@@ -1467,6 +1566,7 @@ async def _load_forecast(
     from backend.app.services.order_resources import constrained, permits
 
     snapshot = await load_snapshot(db, now)
+    dispatching = await _dispatching(db, snapshot, ctx)
     router_rows = list(
         (
             await db.execute(
@@ -1489,15 +1589,7 @@ async def _load_forecast(
         previous_ok = {pid: await scheduler.previous_print_succeeded(db, pid) for pid in sorted(ctx.printers)}
     oracle = _FitOracle(ctx.printers, prefer_lowest=ctx.prefer_lowest, previous_ok=previous_ok)
     tree = await load_tree(db) if any(row.target_location_id for row in tail_rows) else {}
-    line_orders = dict(
-        (
-            await db.execute(
-                select(ProjectLine.id, ProjectLine.project_id).where(
-                    ProjectLine.id.in_({row.project_line_id for row in tail_rows if row.project_line_id is not None})
-                )
-            )
-        ).all()
-    )
+    line_orders = ctx.line_orders
 
     def allowed(row: AutoQueueItem) -> frozenset[int] | None:
         """``printers_for_item``'s two gates: the location subtree and the order's resources."""
@@ -1532,7 +1624,7 @@ async def _load_forecast(
     if stagger is not None:
         stagger = replace_job(stagger, resolver=_PassGroups(stagger.resolver))
     farm = FarmView(
-        machines=_machines(snapshot, ctx.printers, ctx.busy, ctx.interlocked),
+        machines=_machines(snapshot, ctx.printers, ctx.busy, ctx.interlocked, dispatching),
         fits=oracle,
         allow_compatible=ctx.allow_compatible,
         tail=tuple(tail),
@@ -1581,17 +1673,9 @@ async def rebalance(
     from backend.app.services.order_resources import constrained
 
     resources = await _order_resources(db)
-    resource_orders = dict(
-        (
-            await db.execute(
-                select(ProjectLine.id, ProjectLine.project_id).where(
-                    ProjectLine.id.in_({row.project_line_id for row in rows if row.project_line_id is not None})
-                )
-            )
-        ).all()
-    )
+    line_orders = await _line_orders(db)
     for row in rows:
-        if constrained(resources.get(resource_orders.get(row.project_line_id, row.project_id))):
+        if constrained(resources.get(line_orders.get(row.project_line_id, row.project_id))):
             # A constrained order uses its reviewed fleet replan, not the
             # model-wide idle counters of the opportunistic rebalancer.
             result.skipped.append((row.id, "order_resources"))
@@ -1605,7 +1689,12 @@ async def rebalance(
         return result
 
     ctx = await _pass_context(
-        db, resources=resources, busy=busy_printers, interlocked=interlocked_printers, cache=requirements_cache
+        db,
+        resources=resources,
+        busy=busy_printers,
+        interlocked=interlocked_printers,
+        cache=requirements_cache,
+        line_orders=line_orders,
     )
     if not any(printer.ready and printer.dispatchable for printer in ctx.printers.values()):
         # No printer is free: nothing can receive, and nothing can hold a job at
@@ -1651,21 +1740,18 @@ async def rebalance(
     # for it. With no plates, ``plan_moves`` answers only those — and
     # ``no_eligible_target`` for everyone else, who goes on.
     early = await _decide(plan_moves, forecast.probes, {}, farm, projection=projection)
+    result.home.update(early.home)
     held = {item_id: reason for item_id, reason in early.skipped if reason != "no_eligible_target"}
     result.skipped.extend((row.id, held[row.id]) for row, _home in candidates if row.id in held)
     candidates = [(row, home) for row, home in candidates if row.id not in held]
     if not candidates:
         return result
 
-    line_projects: dict[int, int] = dict(
-        (
-            await db.execute(
-                select(ProjectLine.id, ProjectLine.project_id).where(
-                    ProjectLine.id.in_({row.project_line_id for row, _home in candidates})
-                )
-            )
-        ).all()
-    )
+    line_projects: dict[int, int] = {
+        row.project_line_id: ctx.line_orders[row.project_line_id]
+        for row, _home in candidates
+        if row.project_line_id in ctx.line_orders
+    }
     catalog = await load_line_catalog(db, sorted(set(line_projects.values())))
     homes = {row.id: home for row, home in candidates}
     await _read_alternative_plates(db, catalog, [row for row, _home in candidates], homes, ctx.cache, forecast.oracle)
@@ -1692,6 +1778,7 @@ async def rebalance(
         projection=projection,
     )
     result.skipped.extend(plan.skipped)
+    result.home.update(plan.home)
     logger.debug(
         "Rebalance: %d candidate(s), %d move(s); fit resolves %d, cache hits %d, replay work %d",
         len(keyed),

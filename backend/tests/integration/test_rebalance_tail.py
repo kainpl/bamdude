@@ -738,3 +738,69 @@ async def test_the_router_breaks_every_tie_by_id(db_session, printer_factory, tm
 
     fetched = [row.id for row in await AutoQueueScheduler()._fetch_pending(db_session, sjf)]
     assert fetched == ids
+
+
+async def test_a_printer_mid_dispatch_is_dated_and_does_not_stop_the_farm(db_session, printer_factory, tmp_path):
+    """Final review C1/I3: a dispatch takes the printer's claim before its archive exists, so for
+    the whole upload the printer is busy with nothing in the forecast's snapshot. Read as an
+    unknown release, it made every job that could reach it — and, with one start group, every
+    job on the farm — unforecastable. It is its own estimate plus the preparation: a third P1S
+    is mid-dispatch, another order's P1S jobs outnumber the free P1S (one waits, and could go to
+    it), starts are staggered, and the PETG job still moves to a P1S."""
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.models.settings import Settings
+    from backend.tests.integration.test_auto_queue_scheduler import _drying_status, _make_printer_with_queue
+
+    farm = await petg_farm(db_session, printer_factory, tmp_path)
+    busy = (await _make_printer_with_queue(db_session, printer_factory, name="P1S-3", model="P1S"))[0]
+    await db_session.execute(
+        PrinterQueue.__table__.update().where(PrinterQueue.id == busy.id).values(status="printing")
+    )
+    db_session.add(
+        PrintQueueItem(queue_id=busy.id, status="printing", position=0, library_file_id=farm.alt_file.id, plate_id=1)
+    )
+    other = Project(name="Other", status="active")
+    db_session.add(other)
+    await db_session.flush()
+    # More of them than free P1S: one still waits when the dispatching printer's release is asked.
+    db_session.add_all(
+        [
+            AutoQueueItem(
+                library_file_id=farm.alt_file.id,
+                plate_id=1,
+                project_id=other.id,
+                target_model="P1S",
+                required_filament_types=json.dumps(["PETG"]),
+                print_time_seconds=2000,
+                status="pending",
+                position=0,
+            )
+            for _ in range(3)
+        ]
+    )
+    db_session.add_all(
+        [
+            Settings(key="stagger_enabled", value="true"),
+            Settings(key="stagger_concurrent", value="2"),
+            Settings(key="stagger_interval_minutes", value="1"),
+        ]
+    )
+    await db_session.commit()
+    status = {**farm.status, busy.id: _drying_status(["PETG"])}
+    p_elig, p_sched = _live(farm, connected={farm.home.id, busy.id, *(p.id for p in farm.receivers)}, status=status)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    assert (result.converted, result.skipped) == (1, []), result.skipped
+
+
+async def test_the_result_carries_every_candidates_home_forecast(db_session, printer_factory, tmp_path):
+    """Final review M1, for the explanation (package D): a candidate answered before the catalog —
+    here a ready home that takes the job now — still has its home forecast in the result."""
+    farm = await petg_farm(db_session, printer_factory, tmp_path, home_trays=("PETG",))
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    assert result.skipped == [(farm.item.id, "home_model_idle")]
+    state, finish = result.home[farm.item.id]
+    assert state == "known" and finish > 3600

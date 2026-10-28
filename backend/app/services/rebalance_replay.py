@@ -53,6 +53,9 @@ class Held:
     prep: float = 0.0
     started: bool = False
     auto_eject: bool = False
+    #: Never starts here: a row of an order that may not use this printer keeps it busy for the
+    #: router for good, and nothing behind it starts either.
+    blocked: bool = False
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,11 @@ class Lane:
     waiting: float = 0.0
     #: Held now with no forecast release: an HA interlock, a busy claim with no timed print.
     hold_unknown: bool = False
+    #: Its queue starts nothing (paused or in error): the router still places a job there, where
+    #: it waits for the operator — no finish (``"none"``, as no home at all: the agreed exclusion of
+    #: such a printer) — and the printer never frees in the forecast. Nothing starts, so it takes
+    #: no start window and makes no other job uncertain.
+    stuck: bool = False
     gap: float = 0.0  # plate service after every print that is not auto-ejected
     requires_operator: bool = False
     #: Its own stagger interval; 0 = the farm's (``farm_forecast``: ``stagger_interval_seconds or`` the policy's).
@@ -109,7 +117,8 @@ class Replay:
     cut: bool = False
 
     def outcome(self, job_id: int) -> tuple[str, float | None]:
-        """``("known", t)``, ``("unknown", None)``, or ``("none", None)`` — never routed: no printer fits it."""
+        """``("known", t)``, ``("unknown", None)``, or ``("none", None)`` — it never prints in the
+        forecast: no printer fits it, or the one it is placed on starts nothing (``Lane.stuck``)."""
         if job_id in self.unknown:
             return "unknown", None
         if job_id in self.finish:
@@ -148,6 +157,7 @@ class _Run:
     auto_eject: bool
     started: bool = False
     job: int | None = None
+    blocked: bool = False
 
 
 def replay(
@@ -260,10 +270,23 @@ def replay(
         for other in peers.get(pid, ()):
             taint(other, at)
 
+    def has_pending(c: int) -> bool:
+        members = class_jobs[c]
+        at = cursor[c]
+        while at < len(members) and done[members[at]]:
+            at += 1
+        cursor[c] = at
+        return at < len(members)
+
     def freeze(pid: int, at: float) -> None:
-        """The lane's future is unknown from ``at``: whatever waits on it ends unknown."""
+        """The lane's future is unknown from ``at``: whatever waits on it ends unknown.
+
+        Its start group shares the uncertainty only when something can still start there — a
+        queued run, or a pending job that may be routed to it once it frees: a printer nothing
+        can reach takes no window, whenever its print ends (final review C1)."""
         taint(pid, at)
-        taint_groups(pid, at)
+        if any(not run.started for run in queue[pid]) or any(has_pending(c) for c in lane_classes.get(pid, ())):
+            taint_groups(pid, at)
         for run in queue[pid]:
             if run.job is not None:
                 out.unknown.add(run.job)
@@ -279,7 +302,9 @@ def replay(
         pid = lane.printer_id
         held = [h for h in lane.held if h.seconds is None or h.seconds > 0]
         for h in held:
-            queue[pid].append(_Run(h.seconds, 0.0 if h.started else h.prep, h.auto_eject, started=h.started))
+            queue[pid].append(
+                _Run(h.seconds, 0.0 if h.started else h.prep, h.auto_eject, started=h.started, blocked=h.blocked)
+            )
         if held:
             if held[0].started:
                 heapq.heappush(heap, (0.0, 1, pid))
@@ -319,7 +344,9 @@ def replay(
             if sjf and job.group is not None:
                 group_taint[job.group] = min(group_taint.get(job.group, inf), t)
         queue[pid].append(_Run(job.seconds, job.prep, job.auto_eject, job=job.job_id))
-        if ready_at[pid] == inf:
+        if by_pid[pid].stuck:
+            pass  # never prints there without the operator: no finish, and the printer never frees
+        elif ready_at[pid] == inf:
             freeze(pid, t)
         else:
             heapq.heappush(heap, (max(t, ready_at[pid]), 1, pid))
@@ -366,15 +393,17 @@ def replay(
         if not queue[pid]:
             return
         run = queue[pid][0]
+        if not run.started and (lane.stuck or run.blocked):
+            return  # starts nothing, for good: the printer stays held, with no window
+        if not run.started and lane.hold_unknown:
+            freeze(pid, t)  # held with no forecast release: when it starts nobody knows
+            return
         if not run.started and stagger is not None:
             admit = _admit(t, lane, windows, stagger)
             if admit > t:
                 heapq.heappush(heap, (admit, 1, pid))
                 return
             windows[pid] = t + (run.prep if stagger.wait_for_bed else 0.0) + (lane.interval or stagger.interval_seconds)
-        if not run.started and lane.hold_unknown:
-            freeze(pid, t)  # held with no forecast release: when it starts nobody knows
-            return
         queue[pid].popleft()
         doubtful = tainted.get(pid, inf) <= t
         if doubtful and not run.started:

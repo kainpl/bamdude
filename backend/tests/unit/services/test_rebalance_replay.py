@@ -267,6 +267,37 @@ def test_a_running_print_without_an_estimate_is_unknown_and_reaches_its_stagger_
     assert result.outcome(2) == ("unknown", None)
 
 
+def test_a_printer_no_job_can_reach_taints_no_start_group():
+    """Final review C1: printer 1 runs a print with no estimate, and no pending job fits it, so
+    nothing new can start there before the forecast's end — its start group stays known. J (lane
+    2) starts at once, K follows on the same printer (its own window never blocks it). With a job that could reach
+    printer 1, its unknown release reaches the group, and K is unknown."""
+    lanes = [_busy(1, None), _free(2)]
+    jobs = [_job(1, 2, seconds=100, position=1), _job(2, 2, seconds=100, position=2)]
+    for result in (replay(lanes, jobs, stagger=_one_bucket()), reference_replay(lanes, jobs, stagger=_one_bucket())):
+        assert result.outcome(1) == ("known", 100) and result.outcome(2) == ("known", 200)
+    reach = [*jobs, _job(3, 1, 2, seconds=100, position=3)]
+    for result in (replay(lanes, reach, stagger=_one_bucket()), reference_replay(lanes, reach, stagger=_one_bucket())):
+        assert result.outcome(2) == ("unknown", None)
+
+
+def test_a_queue_that_starts_nothing_holds_its_job_and_nobody_else():
+    """Final review I1: a queue in error starts nothing, so the job the router places there
+    waits for the operator (no finish, as no home) and the printer never frees in the forecast — but it takes
+    no start window and leaves every other job known. A row an order forbids on a busy printer
+    is the same: the printer never frees."""
+    lanes = [Lane(1, ready=True, stuck=True), _free(2), Lane(3, held=(Held(None, blocked=True),))]
+    jobs = [
+        _job(1, 1, 2, seconds=100, position=1, colour=0),
+        _job(2, 2, 3, seconds=100, position=2),
+        _job(3, 1, 2, 3, seconds=100, position=3),
+    ]
+    for result in (replay(lanes, jobs, stagger=_one_bucket()), reference_replay(lanes, jobs, stagger=_one_bucket())):
+        assert result.lane_of[1] == 1 and result.outcome(1) == ("none", None)
+        assert result.outcome(2) == ("known", 100)
+        assert result.lane_of[3] == 2 and result.outcome(3) == ("known", 200)
+
+
 def test_the_budget_is_a_refusal_never_a_partial_answer():
     with pytest.raises(ReplayBudget):
         replay([_free(1)], [_job(i, 1, position=i) for i in range(50)], budget=20)
@@ -283,6 +314,9 @@ def _random_farm(rng):
             lanes.append(_busy(pid, rng.choice([None, 50.0, 120.0, 400.0]) if rng.random() < 0.9 else 300.0))
         elif kind < 0.45:
             lanes.append(Lane(pid, held=(Held(200.0, prep=10.0),), waiting=rng.choice([0.0, 30.0])))
+        elif kind < 0.5:
+            # Busy for good: a running print, then a row an order forbids here.
+            lanes.append(Lane(pid, held=(Held(150.0, started=True), Held(None, blocked=True))))
         else:
             lanes.append(
                 Lane(
@@ -290,6 +324,7 @@ def _random_farm(rng):
                     ready=rng.random() < 0.7,
                     waiting=rng.choice([0.0, 0.0, 90.0]),
                     hold_unknown=rng.random() < 0.08,
+                    stuck=rng.random() < 0.08,
                     gap=rng.choice([0.0, 25.0]),
                     routable=rng.random() < 0.95,
                     interval=rng.choice([0.0, 0.0, 150.0]),

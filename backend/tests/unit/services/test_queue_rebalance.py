@@ -577,30 +577,40 @@ def _state(pid, *queued):
 
 
 def test_what_a_printer_holds_is_read_as_the_router_reads_it():
-    """T12 / T19 / T-A25: a routable printer is free now exactly when it is outside the router's
-    busy set, and what has no forecast release is unknown — never 0, never dropped."""
+    """T12 / T19 / T-A25 + final review C1/I1: a routable printer is free now exactly when it is
+    outside the router's busy set; what the forecast can date is dated, and only what it cannot
+    is unknown. A print being dispatched (claim taken, no archive yet) is its own estimate plus
+    the preparation; one past its estimate is over by the forecast's reckoning, one second after
+    now (the router still counts it busy this pass); a row an order forbids here keeps the
+    printer busy for good."""
     running_over = QueuedRow(order_id=None, seconds=0, started=True)
     queued = QueuedRow(order_id=None, seconds=600, prep_seconds=120)
+    forbidden = QueuedRow(order_id=77, seconds=600, prep_seconds=120)
     snapshot = SimpleNamespace(
         printers=[
-            _state(1),  # claimed for a print whose archive does not exist yet
+            _state(1),  # claimed for a print whose archive does not exist yet, nothing dispatching
             _state(2, running_over, queued),  # claimed, printing past its estimate, a job behind it
             _state(3, QueuedRow(order_id=None, seconds=0)),  # a queued job estimated at nothing
             _state(4, running_over),  # past its estimate and no claim left: over
             _state(5, QueuedRow(order_id=None, seconds=900, started=True)),  # printing, no claim
             _state(6, QueuedRow(order_id=None, seconds=900, started=True)),  # printing, claimed
+            _state(7, queued),  # dispatching an 800 s print, a job queued behind it
+            _state(8, forbidden),  # busy only with a row its order may not print here
         ],
-        order_resources={},
+        order_resources={77: {"models": None, "printer_ids": [99]}},
         operator_hours=None,
+        prep_seconds=120,
     )
-    printers = {pid: PassPrinter(pid, "P1S", "p1s", None, False) for pid in range(1, 7)}
-    machines = _machines(snapshot, printers, busy={1, 2, 3, 6}, interlocked=set())
+    printers = {pid: PassPrinter(pid, "P1S", "p1s", None, False) for pid in range(1, 9)}
+    machines = _machines(snapshot, printers, busy={1, 2, 3, 6, 7, 8}, interlocked=set(), dispatching={7: 800})
     assert machines[1].held == (Held(None, started=True),) and not machines[1].hold_unknown
-    assert machines[2].held == (Held(None, started=True), Held(600.0, prep=120.0))
+    assert machines[2].held == (Held(1.0, started=True), Held(600.0, prep=120.0))
     assert machines[3].held == (Held(None),)
     assert machines[4].held == () and not machines[4].hold_unknown
     assert machines[5].held == () and machines[5].hold_unknown
     assert machines[6].held == (Held(900.0, started=True),) and not machines[6].hold_unknown
+    assert machines[7].held == (Held(920.0, started=True), Held(600.0, prep=120.0))
+    assert machines[8].held == (Held(None, blocked=True),)
 
 
 def test_an_unknown_home_holds_its_own_job_and_no_independent_one():
@@ -871,3 +881,36 @@ def test_a_trial_stops_once_its_print_can_no_longer_start_in_time(monkeypatch):
     item = MovableItem(1, 10, "p2s", 1, seconds=3000, prep=120.0)
     plan_moves([item], {10: [_opt(110, "x1c", 1, seconds=1000)]}, _farm((1, "p2s", False, 400), (2, "x1c", True, 0)))
     assert asked == [400 + 120 + 3000 - (120 + 1000)]
+
+
+def test_a_queue_that_starts_nothing_is_no_home_and_no_receiver_and_poisons_nothing():
+    """Final review I1/I2: a P2S whose queue is in error is where the router puts the job now, and it never prints
+    there without the operator: no home finish, so any able target wins (the exclusion the
+    previous package agreed). It takes the job the router would place
+    there and never frees — not a home with a date, not a receiver, and no reason to doubt the
+    rest of the farm. A printer held with no known release that looks ready is no receiver
+    either: the moved print goes to the X1C whose start is known."""
+    stagger = StaggerPolicy(
+        concurrent=2, interval_seconds=60, wait_for_bed=False, resolver=StaggerGroupResolver.global_only()
+    )
+    farm = _farm((2, "p2s", False, 600), (3, "p2s", False, 900), (5, "x1c", True, 0))
+    farm.machines[1] = Machine(1, "p2s", False, dispatchable=False)
+    farm.machines[4] = Machine(4, "x1c", True, hold_unknown=True)
+    farm.stagger = stagger
+    plan = plan_moves([_item(1, 10, "p2s", 1, seconds=100)], {10: [_opt(110, "x1c", 1, seconds=50)]}, farm)
+    [move] = plan.moves
+    assert (move.home_finish, move.finish, move.receivers) == (None, 50, (5,))
+
+
+def test_an_empty_model_label_is_no_sjf_group():
+    """Final review M2: a plate whose recipe names no printer model has no SJF group — None,
+    as the router's NULL target model, never a group spelled ''."""
+    farm = _farm((1, "p2s", False, 3 * H), (2, "x1c", True, 0))
+    farm.sjf = True
+    plate = PlateOption(
+        plate_id=200, library_file_id=200, plate_index=0, model="x1c", model_label="", yield_parts=6, seconds=H
+    )
+    projection = start_projection([_item(1, 10, "p2s", 6)], farm)
+    plan = plan_moves([_item(1, 10, "p2s", 6)], {10: [plate]}, farm, projection=projection)
+    assert [m.item_id for m in plan.moves] == [1]
+    assert projection.jobs[1].group is None

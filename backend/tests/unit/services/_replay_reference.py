@@ -45,8 +45,9 @@ def reference_replay(lanes, jobs, *, sjf=False, stagger=None, operator_hours=Non
 
     def freeze(pid, at):
         taint(pid, at)
-        for other in peers.get(pid, ()):
-            taint(other, at)
+        if any(not run["started"] for run in queue[pid]) or any(pid in fit[jid] for jid in pending):
+            for other in peers.get(pid, ()):
+                taint(other, at)
         for run in queue[pid]:
             if run["job"] is not None:
                 out.unknown.add(run["job"])
@@ -68,6 +69,7 @@ def reference_replay(lanes, jobs, *, sjf=False, stagger=None, operator_hours=Non
                 "auto": h.auto_eject,
                 "started": h.started,
                 "job": None,
+                "blocked": h.blocked,
             }
             for h in held
         ]
@@ -93,6 +95,11 @@ def reference_replay(lanes, jobs, *, sjf=False, stagger=None, operator_hours=Non
         if not queue[pid]:
             return
         run = queue[pid][0]
+        if not run["started"] and (lane.stuck or run["blocked"]):
+            return
+        if not run["started"] and lane.hold_unknown:
+            freeze(pid, t)
+            return
         if not run["started"] and stagger is not None:
             admit = _admit(t, lane, windows, stagger)
             if admit > t:
@@ -101,9 +108,6 @@ def reference_replay(lanes, jobs, *, sjf=False, stagger=None, operator_hours=Non
             windows[pid] = (
                 t + (run["prep"] if stagger.wait_for_bed else 0.0) + (lane.interval or stagger.interval_seconds)
             )
-        if not run["started"] and lane.hold_unknown:
-            freeze(pid, t)
-            return
         queue[pid].pop(0)
         doubtful = tainted.get(pid, inf) <= t
         if doubtful and not run["started"]:
@@ -159,9 +163,18 @@ def reference_replay(lanes, jobs, *, sjf=False, stagger=None, operator_hours=Non
                     if sjf and job.group is not None:
                         group_taint[job.group] = min(group_taint.get(job.group, inf), t)
                 queue[pid].append(
-                    {"seconds": job.seconds, "prep": job.prep, "auto": job.auto_eject, "started": False, "job": jid}
+                    {
+                        "seconds": job.seconds,
+                        "prep": job.prep,
+                        "auto": job.auto_eject,
+                        "started": False,
+                        "job": jid,
+                        "blocked": False,
+                    }
                 )
-                if ready_at[pid] == inf:
+                if by_pid[pid].stuck:
+                    pass
+                elif ready_at[pid] == inf:
                     freeze(pid, t)
                 else:
                     events.append((max(t, ready_at[pid]), 1, pid))
