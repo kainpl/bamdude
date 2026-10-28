@@ -1065,6 +1065,14 @@ class _FitOracle:
     def refuse(self, assign_key: tuple, printer_id: int, reason: str) -> None:
         self._refusals[(assign_key, printer_id)] = reason
 
+    def accepted(self, assign_key: tuple, printer_id: int) -> bool:
+        """Whether the decision found the router would take this assignment on this printer."""
+        return (assign_key, printer_id) not in self._refusals
+
+    def target_keys(self, item_id: int, plate_id: int) -> tuple[tuple, tuple] | None:
+        """The assignments a move's prints were judged by: (the converted row's, the companions')."""
+        return self._targets.get((item_id, plate_id))
+
     def set_target(self, item_id: int, plate_id: int, converted: tuple, companions: tuple, prep: float) -> None:
         self._targets[(item_id, plate_id)] = (converted, companions)
         self._target_prep[(item_id, plate_id)] = prep
@@ -1523,6 +1531,30 @@ class _PassGroups:
         return found
 
 
+def assignment_refusal(profile, choices: dict | None, model: str | None, printer_model, swap_mode: bool, fact):
+    """Why the router's ``_assign`` would turn this printer away for this job — ``None`` when it
+    would not. Its two refusals, in its order: the order's choices that do not fit the printer
+    (``compose_options`` → ``incompatible_target``) and a request for our swap macros the job's
+    source cannot honour (``resolve_request``). The decision and a move's final check ask it alike
+    (Codex review r1 T-R3, r2 T2-R1)."""
+    from backend.app.services import auto_queue_scheduler as router
+
+    try:
+        options = router.compose_options(profile, choices, model, printer_model)
+    except ValueError:
+        return "incompatible_target"
+    try:
+        swap_compatibility.resolve_request(
+            fact,
+            execute=options.get("execute_swap_macros", False),
+            events=options.get("swap_macro_events"),
+            printer_swap_mode=swap_mode,
+        )
+    except swap_compatibility.SwapRequestRefused as exc:
+        return exc.reason
+    return None
+
+
 class _Assignments:
     """The router's own assignment answers for this pass, read before the decision (Codex review
     r1, T-R1/T-R3).
@@ -1563,20 +1595,11 @@ class _Assignments:
             profile_key = (key[0], printer.raw_model)
             if profile_key not in self._profiles:
                 self._profiles[profile_key] = await router.preference_options(self._db, owner, printer.raw_model)
-            try:
-                options = router.compose_options(self._profiles[profile_key], choices, model, printer.raw_model)
-            except ValueError:
-                self._oracle.refuse(key, printer_id, "incompatible_target")
-                continue
-            try:
-                swap_compatibility.resolve_request(
-                    fact,
-                    execute=options.get("execute_swap_macros", False),
-                    events=options.get("swap_macro_events"),
-                    printer_swap_mode=printer.swap_mode,
-                )
-            except swap_compatibility.SwapRequestRefused as exc:
-                self._oracle.refuse(key, printer_id, exc.reason)
+            refused = assignment_refusal(
+                self._profiles[profile_key], choices, model, printer.raw_model, printer.swap_mode, fact
+            )
+            if refused:
+                self._oracle.refuse(key, printer_id, refused)
         return key
 
     def prep(self, choices: dict | None, model: str | None) -> float:
@@ -1962,7 +1985,10 @@ def _source_key(item: AutoQueueItem) -> tuple:
 def _row_identity(item: AutoQueueItem) -> tuple:
     """The row as the decision read it: what another run's move of the same job would change
     (source, model, move stamp), and the rest of what the decision took from it — the line, the
-    job's own time (the home's finish) and its previous-success condition (who may receive it)."""
+    job's own time (the home's finish), its previous-success condition (who may receive it), and
+    its assignment's own inputs: the order's choices (its preparation at home and on the target,
+    which printers would refuse it) and its creator (whose profile it is written with) — Codex
+    review r2, T2-R1: an edit of the job's preheat during the copy moved its home finish."""
     return (
         _source_key(item),
         item.target_model,
@@ -1970,6 +1996,8 @@ def _row_identity(item: AutoQueueItem) -> tuple:
         item.project_line_id,
         item.print_time_seconds,
         bool(item.require_previous_success),
+        json.dumps(item.order_print_options, sort_keys=True, default=str),
+        item.created_by_id,
     )
 
 
@@ -2084,6 +2112,7 @@ async def _still_holds(
     staged: StagedSource,
     requirements: PrintRequirements,
     recheck: _Recheck,
+    mover: User | None = None,
 ) -> str | None:
     """Whether the move is still the one decided — after the target bytes were copied, before one write.
 
@@ -2104,7 +2133,12 @@ async def _still_holds(
       work, a fresh busy set, its live feed, idleness, ``require_previous_success``,
       its model read from its row and the farm's «compatible models» setting read
       again (RB-R2: the router stops giving a compatible printer the job the
-      moment that setting is off) — resolved again.
+      moment that setting is off) — resolved again;
+    * every receiver the decision found would take the converted row, or its
+      companions, still takes them by the router's own assignment rule
+      (:func:`_assignment_changed` — Codex review r2, T2-R1): its swap mode and
+      model read from its row, the owners' saved profiles and the declaration the
+      copy carries. The order's choices and the creator are the row's identity.
 
     The interlocks are NOT read again (C3-1): the pass's set stands, and no sensor
     is polled under a capture. ``None`` = holds; otherwise the reason it is
@@ -2142,16 +2176,17 @@ async def _still_holds(
         or catalog.yield_of(fresh.project_line_id, fresh.library_file_id, fresh.plate_id) != move.moved_parts
     ):
         return "eligibility_changed"
-    models = {
-        printer_id: printer_manager.effective_model_for(printer_id, model)
-        for printer_id, model in (
+    rows = {
+        printer_id: (model, bool(swap_mode))
+        for printer_id, model, swap_mode in (
             await db.execute(
-                select(Printer.id, Printer.model)
+                select(Printer.id, Printer.model, Printer.swap_mode_enabled)
                 .join(PrinterQueue, PrinterQueue.printer_id == Printer.id)
                 .where(Printer.id.in_(move.receivers), *_accepts_new_work())
             )
         ).all()
     }
+    models = {printer_id: printer_manager.effective_model_for(printer_id, row[0]) for printer_id, row in rows.items()}
     allow_compatible = await _compatible_models_allowed(db)
     busy = await busy_printer_ids(db)
     policy = auto_policy(fresh)
@@ -2175,6 +2210,51 @@ async def _still_holds(
         )
         if result.status != "compatible":
             return "eligibility_changed"
+    return await _assignment_changed(fresh, move, staged, requirements, rows, recheck, mover)
+
+
+async def _assignment_changed(
+    fresh: AutoQueueItem,
+    move: Move,
+    staged: StagedSource,
+    requirements: PrintRequirements,
+    receivers: dict[int, tuple[str | None, bool]],
+    recheck: _Recheck,
+    mover: User | None,
+) -> str | None:
+    """Whether a receiver the decision assigned the moved prints to would now be refused by the
+    router (Codex review r2, T2-R1) — ``eligibility_changed``, else ``None``.
+
+    The converted row keeps its creator and the companions are written by the mover, each judged
+    as the decision judged it (:meth:`_FitOracle.target_keys`), by :func:`assignment_refusal` over
+    fresh inputs: the receiver's raw model and swap mode as read from its row (``receivers``), the
+    owner's saved profile and the declaration the COPY carries — confirmed against the hash of the
+    bytes it captured, which is what the router will assign the moved row by, not the library
+    row's. The profiles are read in a session of its own: this one still holds every preference
+    row the decision loaded and would hand them back as they were. Only a printer the decision
+    found would take an assignment is asked; one it refused stays out of the prints either way.
+    """
+    keys = recheck.oracle.target_keys(fresh.id, move.plate.plate_id)
+    if keys is None:
+        return None
+    from backend.app.services import auto_queue_scheduler as router
+
+    fact = staged.receipt.swap_fact.value
+    owners = [(keys[0], fresh.created_by_id)]
+    if move.k > 1:
+        owners.append((keys[1], getattr(mover, "id", None)))
+    async with _database.async_session() as current:
+        for decided, owner_id in owners:
+            owner = await current.get(User, owner_id) if owner_id is not None else None
+            for printer_id in move.receivers:
+                if not recheck.oracle.accepted(decided, printer_id):
+                    continue
+                printer_model, swap_mode = receivers[printer_id]
+                profile = await router.preference_options(current, owner, printer_model)
+                if assignment_refusal(
+                    profile, fresh.order_print_options, requirements.model, printer_model, swap_mode, fact
+                ):
+                    return "eligibility_changed"
     return None
 
 
@@ -2310,7 +2390,7 @@ async def _apply(
         req = await staged_requirements(
             staged, cache, None, file, move.plate.plate_index, product_plate_id=move.plate.plate_id
         )
-        changed = await _still_holds(db, item, move, file, staged, req, recheck)
+        changed = await _still_holds(db, item, move, file, staged, req, recheck, current_user)
         if changed is not None:
             await discard_staged(staged)
             logger.info(
