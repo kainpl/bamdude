@@ -208,7 +208,7 @@ export default {
       heater: { bed: 'bed', chamber: 'chamber', airduct: 'air duct' },
     },
     episode: {
-      attempts_one: 'Start deferred once without progress over {{seconds}} s.',
+      attempts_one: 'Start deferred {{count}} time without progress over {{seconds}} s.',
       attempts_other: 'Start deferred {{count}} times without progress over {{seconds}} s.',
       inactive: 'No new attempt for {{seconds}} s: the episode is inactive, not resolved.',
       job: 'Job #{{item}}',

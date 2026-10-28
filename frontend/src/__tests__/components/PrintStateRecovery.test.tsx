@@ -236,7 +236,7 @@ describe('A finished run held in memory', () => {
     expect(screen.queryByText(/does not match the records/)).not.toBeInTheDocument();
   });
 
-  it('says a stall that went quiet is inactive, not resolved, and counts attempts in words', async () => {
+  it('says a stall that went quiet is inactive, not resolved, and counts its attempts', async () => {
     const quiet = {
       ...held, kind: 'episode', target_id: 11, item_id: 11, code: 'dispatch_no_progress', actions: [],
       blocked_reasons: ['current_run_conflict'], attempts: 1, span_seconds: 0, related: null,
@@ -244,7 +244,7 @@ describe('A finished run held in memory', () => {
     } as unknown as PrintStateIssue;
     vi.mocked(api.getPrintStateIssues).mockResolvedValue(page([quiet]));
     panel();
-    expect(await screen.findByText(/Start deferred once without progress/)).toBeInTheDocument();
+    expect(await screen.findByText(/Start deferred 1 time without progress/)).toBeInTheDocument();
     expect(screen.getByText(/No new attempt for 420 s/)).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Show what holds the printer' })).not.toBeInTheDocument();
   });
