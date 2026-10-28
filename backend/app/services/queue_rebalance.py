@@ -636,17 +636,18 @@ class _FitOracle:
         self._plates: dict[int, tuple[PrintRequirements, tuple] | None] = {}
         self._verdicts: dict[tuple, Fit] = {}
         self._signatures: dict[tuple[int, bool], tuple] = {}
+        #: ``id(requirements)`` → its cache key: copies of one job share one read (R14),
+        #: so the key is computed once per distinct source, not once per row.
+        self._req_keys: dict[int, tuple] = {}
+        self._models: dict[tuple[str | None, int], str] = {}
         self.resolves = 0
         self.hits = 0
 
     def add_job(self, item: AutoQueueItem, requirements: PrintRequirements, policy: RoutingPolicy) -> None:
-        self._jobs[item.id] = _Job(
-            requirements,
-            (requirements.source_identity, _content_key(requirements)),
-            policy,
-            policy.fingerprint,
-            bool(item.require_previous_success),
-        )
+        key = self._req_keys.get(id(requirements))
+        if key is None:
+            key = self._req_keys[id(requirements)] = (requirements.source_identity, _content_key(requirements))
+        self._jobs[item.id] = _Job(requirements, key, policy, policy.fingerprint, bool(item.require_previous_success))
 
     def add_plate(self, plate_id: int, requirements: PrintRequirements | None) -> None:
         """An alternative plate's requirements, read from its library file; ``None`` = unreadable."""
@@ -678,7 +679,11 @@ class _FitOracle:
         if job.require_previous_success and not self._previous_ok.get(printer_id, False):
             return Fit("no", "previous_print_failed")
         printer = self._printers[printer_id]
-        verdict = model_compatibility(requirements.model, printer.model_name)
+        verdict = self._models.get((requirements.model, printer_id))
+        if verdict is None:
+            verdict = self._models[(requirements.model, printer_id)] = model_compatibility(
+                requirements.model, printer.model_name
+            )
         if verdict not in ("exact", "compatible"):
             return Fit("no", "model_mismatch")
         allow_base = job.policy.allow_base_material_match
@@ -938,6 +943,9 @@ async def rebalance(
     prefer_lowest = await scheduler._get_bool_setting(db, "prefer_lowest_filament", default=True)
     cache = requirements_cache if requirements_cache is not None else PrintRequirementsCache()
     jobs: list[tuple[AutoQueueItem, str, PrintRequirements]] = []
+    # One read per distinct source for the whole pass (spec R14): 358 copies of one
+    # job are one stat, one parse and one family lookup, not 358 of each.
+    read: dict[tuple, PrintRequirements] = {}
     for row in movable_rows:
         if row.project_line_id in cooling:
             result.skipped.append((row.id, "cooldown"))
@@ -948,7 +956,10 @@ async def rebalance(
             continue
         # The job's ACCEPTED source — its captured bytes, never the library's
         # current copy (spec R4). Unreadable: this job alone stays (R7).
-        requirements = await read_item_requirements(db, row, cache)
+        source = _source_key(row)
+        requirements = read.get(source)
+        if requirements is None:
+            requirements = read[source] = await read_item_requirements(db, row, cache)
         if requirements.status != "ok":
             result.skipped.append((row.id, _source_skip(requirements.reason)))
             continue
@@ -1053,6 +1064,18 @@ async def rebalance(
             recheck=recheck,
         )
     return result
+
+
+def _source_key(item: AutoQueueItem) -> tuple:
+    """What a job's requirements are read from: two rows with the same key read the same bytes.
+
+    A captured job reads its blob through its own snapshot (``item_descriptor``),
+    so the snapshot is part of the key; a legacy row reads its original rows.
+    """
+    if item.queue_source_id:
+        snapshot = json.dumps(item.source_snapshot, sort_keys=True, default=str)
+        return ("blob", item.queue_source_id, item.plate_id, snapshot)
+    return ("original", item.archive_id, item.library_file_id, item.plate_id)
 
 
 def _source_skip(reason: str | None) -> str:

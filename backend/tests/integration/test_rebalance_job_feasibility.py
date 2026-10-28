@@ -735,3 +735,41 @@ async def test_the_next_pass_reads_the_farm_again(db_session, printer_factory, t
     with p_elig, p_sched:
         second = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id])
     assert (second.converted, second.skipped) == (1, [])
+
+
+# ---------- R14: one read per distinct source, not per copy ----------
+
+
+@pytest.mark.asyncio
+async def test_copies_of_one_job_read_their_source_once(db_session, printer_factory, tmp_path, monkeypatch):
+    """358 copies of one job must not read the same bytes 358 times (spec R14): one read per
+    distinct accepted source and plate, whatever the number of rows."""
+    farm = await petg_farm(db_session, printer_factory, tmp_path, targets=1, with_alternative=False)
+    for position in range(2, 6):
+        db_session.add(
+            AutoQueueItem(
+                library_file_id=farm.home_file.id,
+                plate_id=1,
+                project_id=farm.project.id,
+                project_line_id=farm.line.id,
+                target_model="P2S",
+                required_filament_types=json.dumps(["PETG"]),
+                print_time_seconds=3600,
+                status="pending",
+                position=position,
+            )
+        )
+    await db_session.commit()
+    real = queue_rebalance.read_item_requirements
+    reads = []
+
+    async def counting(db, item, cache=None):
+        reads.append(item.id)
+        return await real(db, item, cache)
+
+    monkeypatch.setattr(queue_rebalance, "read_item_requirements", counting)
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    assert len(result.skipped) == 5
+    assert len(reads) == 1, reads
