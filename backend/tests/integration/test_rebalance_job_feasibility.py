@@ -18,7 +18,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
@@ -29,6 +30,7 @@ from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.settings import Settings
+from backend.app.models.user_filament import UserFilamentFamily
 from backend.app.services import queue_rebalance
 from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
 from backend.app.services.farm_forecast import model_key
@@ -1138,30 +1140,140 @@ async def test_a_target_file_rewritten_during_the_copy_is_not_moved_on_the_old_e
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["target-yield", "target-seconds", "home-yield"])
-async def test_a_recipe_that_changed_during_the_copy_stops_the_move(
-    db_session, printer_factory, tmp_path, monkeypatch, clean_spool, change
+@pytest.mark.parametrize(
+    "change", ["unchanged", "target-yield", "target-seconds", "home-yield", "part-renamed", "target-unlinked"]
+)
+async def test_a_recipe_another_session_changed_during_the_copy_stops_the_move(
+    db_session, test_engine, printer_factory, tmp_path, monkeypatch, clean_spool, change
 ):
-    """RB-R3: what the move's k, finish and moved parts were computed from is the plan engine's
-    recipe of both plates. The library's record of a plate changes while the file is copied —
-    fewer hooks on the target (k would be 2, not 1), a longer print, fewer hooks on the job's own
-    plate — and the move stays for the next pass to decide afresh."""
+    """RB-R3 + Codex review r2 (RB2-R1): what the move's k, finish and moved parts were computed from
+    is the plan engine's recipe of both plates. Another writer — a session of its own, as the
+    library scan or the product editor is — commits a change while the file is copied: fewer hooks
+    on the target (k would be 2, not 1), a longer print, fewer hooks on the job's own plate, the
+    part renamed so no object counts, the target plate unlinked from the product. The move stays
+    for the next pass to decide afresh. ⚠️ The rebalance's own session still holds what it loaded
+    for the decision (it never expires on commit), so the check must not read the catalog through
+    it — a change made through that same session would refresh it and prove nothing."""
     farm = await _busy_fit_home(db_session, printer_factory, tmp_path)
-    file, metadata = {
-        "target-yield": (farm.alt_file, _plate_metadata("P1S", seconds=2000, hooks=3)),
-        "target-seconds": (farm.alt_file, _plate_metadata("P1S", seconds=45000, hooks=6)),
-        "home-yield": (farm.home_file, _plate_metadata("P2S", seconds=3600, hooks=4)),
-    }[change]
+    alt_id, home_id, product_id = farm.alt_file.id, farm.home_file.id, farm.line.product_id
+    metadata = {
+        "target-yield": (alt_id, _plate_metadata("P1S", seconds=2000, hooks=3)),
+        "target-seconds": (alt_id, _plate_metadata("P1S", seconds=45000, hooks=6)),
+        "home-yield": (home_id, _plate_metadata("P2S", seconds=3600, hooks=4)),
+    }
 
-    async def recorded_again():
-        await db_session.execute(update(LibraryFile).where(LibraryFile.id == file.id).values(file_metadata=metadata))
-        await db_session.commit()
+    async def another_writer():
+        if change == "unchanged":
+            return
+        async with AsyncSession(test_engine, expire_on_commit=False) as other:
+            if change in metadata:
+                file_id, values = metadata[change]
+                await other.execute(update(LibraryFile).where(LibraryFile.id == file_id).values(file_metadata=values))
+            elif change == "part-renamed":
+                await other.execute(
+                    update(ProductPart)
+                    .where(ProductPart.product_id == product_id)
+                    .values(name="pin", name_key="pin", aliases=["pin"])
+                )
+            else:
+                await other.execute(delete(ProductPlate).where(ProductPlate.library_file_id == alt_id))
+            await other.commit()
 
-    _during_capture(monkeypatch, recorded_again)
+    _during_capture(monkeypatch, another_writer)
     p_elig, p_sched = _live(farm)
     with p_elig, p_sched:
         result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
-    await _assert_untouched(db_session, farm, result)
+    if change == "unchanged":
+        assert (result.converted, result.skipped) == (1, [])
+    else:
+        await _assert_untouched(db_session, farm, result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retyped", [False, True], ids=["family-kept", "family-retyped"])
+async def test_a_filament_family_another_session_retyped_during_the_copy_stops_the_move(
+    db_session, test_engine, printer_factory, tmp_path, monkeypatch, clean_spool, retyped
+):
+    """Codex review r2: the copied plate's requirements are enriched again with each channel's
+    family material, read fresh too. The target plate names a user filament family; another
+    session re-types that family from PETG to PLA while the file is copied — what the plate needs
+    is no longer what the move was decided on, and no receiver holds it.
+
+    ⚠️ The family is kept referenced for the whole run. A session's identity map holds its rows
+    weakly: one nothing references is collected and read afresh, so a stale read shows only while
+    something still holds the row — which is exactly when it does harm, and what a test that let
+    it go would never see."""
+    farm = await _busy_fit_home(db_session, printer_factory, tmp_path)
+    family = UserFilamentFamily(
+        filament_id="PFUSREBAL1", ecosystem="bambu", alias="Shop PETG", filament_type="PETG", origin="local"
+    )
+    db_session.add(family)
+    await db_session.commit()
+    write_routing_3mf(
+        Path(farm.alt_file.file_path),
+        {1: [{"id": 1, "type": "PETG", "color": WHITE, "used_g": "1", "tray_info_idx": "PFUSREBAL1"}]},
+        model="P1S",
+        prediction=2000,
+    )
+
+    async def another_writer():
+        if retyped:
+            async with AsyncSession(test_engine, expire_on_commit=False) as other:
+                await other.execute(
+                    update(UserFilamentFamily)
+                    .where(UserFilamentFamily.filament_id == "PFUSREBAL1")
+                    .values(filament_type="PLA")
+                )
+                await other.commit()
+
+    _during_capture(monkeypatch, another_writer)
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    assert family.filament_id == "PFUSREBAL1"  # held to here
+    if retyped:
+        await _assert_untouched(db_session, farm, result)
+    else:
+        assert (result.converted, result.skipped) == (1, [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("moved", [False, True], ids=["file-stays", "file-row-moved"])
+async def test_a_target_file_row_moved_after_the_decision_is_copied_from_where_it_is_now(
+    db_session, test_engine, printer_factory, tmp_path, monkeypatch, clean_spool, moved
+):
+    """Codex review r2: the move reads the target's library row again before it copies — a row
+    held from the decision would send the copy to where the file USED to be. Another session
+    repoints the row at a re-sliced file after the decision and before the move: the copy is taken
+    from the new place, it is not the revision the decision read, and nothing moves."""
+    farm = await _busy_fit_home(db_session, printer_factory, tmp_path)
+    alt_id = farm.alt_file.id
+    elsewhere = write_routing_3mf(
+        tmp_path / "pin-alt-moved.gcode.3mf",
+        {1: [{"id": 1, "type": "PETG", "color": WHITE, "used_g": "1"}]},
+        model="P1S",
+        prediction=45000,
+    )
+    real_rank = queue_rebalance.rank_active_orders
+
+    async def rank_then_the_library_moves_the_file(db):
+        ranked = await real_rank(db)
+        if moved:
+            async with AsyncSession(test_engine, expire_on_commit=False) as other:
+                await other.execute(
+                    update(LibraryFile).where(LibraryFile.id == alt_id).values(file_path=str(elsewhere))
+                )
+                await other.commit()
+        return ranked
+
+    monkeypatch.setattr(queue_rebalance, "rank_active_orders", rank_then_the_library_moves_the_file)
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    if moved:
+        await _assert_untouched(db_session, farm, result)
+    else:
+        assert (result.converted, result.skipped) == (1, [])
 
 
 @pytest.mark.asyncio

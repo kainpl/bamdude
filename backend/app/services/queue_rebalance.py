@@ -58,6 +58,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core import database as _database
 from backend.app.core.database import take_write_lock
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
@@ -1230,9 +1231,10 @@ async def _still_holds(
       the copy can keep its model, plate and filaments and still take 45 000
       seconds where the move was decided on 2000), and its requirements are the
       ones the decision read;
-    * the plan engine's catalog of the line read again: the target plate's recipe
-      (its yield and time — the move's ``k`` and finish) and the job's own yield
-      (its moved parts) are still the numbers the move was computed from;
+    * the plan engine's catalog of the line read again, in a session of its own
+      (with the copy's family enrichment): the target plate's recipe (its yield
+      and time — the move's ``k`` and finish) and the job's own yield (its moved
+      parts) are still the numbers the move was computed from;
     * every receiver the estimate put prints on — its queue still accepting new
       work, a fresh busy set, its live feed, idleness, ``require_previous_success``,
       its model read from its row and the farm's «compatible models» setting read
@@ -1253,10 +1255,20 @@ async def _still_holds(
         return changed
     if _target_revision(file, staged) != recheck.oracle.plate_revision(move.plate.plate_id):
         return "eligibility_changed"
+    project_id = recheck.projects.get(fresh.project_line_id)
+    # ⚠️ A session of its own (codex review r2, RB2-R1). This one still holds every
+    # file, plate, product and part the decision loaded — it never expires on
+    # commit — and a new SELECT hands back those objects as they were then, so a
+    # recipe another writer committed during the copy would be compared with
+    # itself. A fresh session reads what is committed now; the catalog keeps only
+    # plain values, so nothing is loaded through it after it closes. Never
+    # ``expire_all`` here instead: the rows of this pass would then load lazily,
+    # which an async session cannot do.
+    async with _database.async_session() as current:
+        requirements = await enrich_family_filament_types(current, requirements)
+        catalog = await load_line_catalog(current, [project_id] if project_id is not None else [])
     if _content_key(requirements) != recheck.oracle.plate_content(move.plate.plate_id):
         return "eligibility_changed"
-    project_id = recheck.projects.get(fresh.project_line_id)
-    catalog = await load_line_catalog(db, [project_id] if project_id is not None else [])
     option = next(
         (o for o in catalog.options_by_line.get(fresh.project_line_id, ()) if o.plate_id == move.plate.plate_id), None
     )
@@ -1411,8 +1423,15 @@ async def _apply(
     (SQLite honours no FK action) cannot make the creation refuse.
     """
 
+    # ``populate_existing``: the decision loaded this row into the session, which
+    # never expires on commit — without it a plain SELECT hands back the row as it
+    # was then, and the copy would go to where the file USED to be (codex review r2).
     file = (
-        await db.execute(LibraryFile.active().where(LibraryFile.id == move.plate.library_file_id))
+        await db.execute(
+            LibraryFile.active()
+            .where(LibraryFile.id == move.plate.library_file_id)
+            .execution_options(populate_existing=True)
+        )
     ).scalar_one_or_none()
     if file is None:
         # Trashed or deleted between the plan and here. There is no source to
@@ -1426,7 +1445,7 @@ async def _apply(
         req = await staged_requirements(
             staged, cache, None, file, move.plate.plate_index, product_plate_id=move.plate.plate_id
         )
-        changed = await _still_holds(db, item, move, file, staged, await enrich_family_filament_types(db, req), recheck)
+        changed = await _still_holds(db, item, move, file, staged, req, recheck)
         if changed is not None:
             await discard_staged(staged)
             logger.info(
