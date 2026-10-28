@@ -58,6 +58,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.database import take_write_lock
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
 from backend.app.models.printer import Printer
@@ -651,6 +652,9 @@ class _FitOracle:
         self._previous_ok = previous_ok
         self._jobs: dict[int, _Job] = {}
         self._plates: dict[int, tuple[PrintRequirements, tuple] | None] = {}
+        #: plate id → the revision of its file the decision read: the library row's path and the
+        #: original's size and ``st_mtime_ns`` (:func:`_target_revision`).
+        self._revisions: dict[int, tuple] = {}
         self._verdicts: dict[tuple, Fit] = {}
         self._signatures: dict[tuple[int, bool], tuple] = {}
         #: ``id(requirements)`` → its cache key: copies of one job share one read (R14),
@@ -666,17 +670,23 @@ class _FitOracle:
             key = self._req_keys[id(requirements)] = (requirements.source_identity, _content_key(requirements))
         self._jobs[item.id] = _Job(requirements, key, policy, policy.fingerprint, bool(item.require_previous_success))
 
-    def add_plate(self, plate_id: int, requirements: PrintRequirements | None) -> None:
+    def add_plate(self, plate_id: int, requirements: PrintRequirements | None, *, file_path: str | None = None) -> None:
         """An alternative plate's requirements, read from its library file; ``None`` = unreadable."""
         if requirements is None:
             self._plates[plate_id] = None
         else:
             key = (requirements.source_identity, _content_key(requirements))
             self._plates[plate_id] = (requirements, key)
+            identity = requirements.source_identity
+            if identity is not None:
+                self._revisions[plate_id] = (file_path, identity.size, identity.mtime_ns)
 
     def plate_content(self, plate_id: int) -> str | None:
         entry = self._plates.get(plate_id)
         return None if entry is None else entry[1][1]
+
+    def plate_revision(self, plate_id: int) -> tuple | None:
+        return self._revisions.get(plate_id)
 
     def policy_fingerprint(self, item_id: int) -> str:
         return self._jobs[item_id].policy_fingerprint
@@ -791,6 +801,12 @@ async def load_line_catalog(db: AsyncSession, project_ids: list[int]) -> LineCat
                 )
             options_by_line[line.id] = options
     return LineCatalog(options_by_line, counted_by_line, product_by_line, by_plate, by_file)
+
+
+async def _compatible_models_allowed(db: AsyncSession) -> bool:
+    """The farm's «compatible models» setting — the router's own condition for a compatible printer."""
+    setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
+    return isinstance(setting, str) and setting.lower() == "true"
 
 
 def _utcnow() -> datetime:
@@ -955,8 +971,7 @@ async def rebalance(
     # ``plan_moves`` keeps the same checks — pure and the decision's own — so it
     # stays correct whoever calls it.
     cooling = set() if force else await cooling_lines(db, {row.project_line_id for row in movable_rows}, now)
-    setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
-    allow_compatible = isinstance(setting, str) and setting.lower() == "true"
+    allow_compatible = await _compatible_models_allowed(db)
     prefer_lowest = await scheduler._get_bool_setting(db, "prefer_lowest_filament", default=True)
     cache = requirements_cache if requirements_cache is not None else PrintRequirementsCache()
     jobs: list[tuple[AutoQueueItem, str, PrintRequirements]] = []
@@ -1066,11 +1081,11 @@ async def rebalance(
 
     by_id = {row.id: row for row in candidates}
     recheck = _Recheck(
-        printers=printers,
         interlocked=set(interlocked_printers),
         prefer_lowest=prefer_lowest,
         oracle=oracle,
         rows=evaluated,
+        projects=line_projects,
     )
     for move in plan.moves:
         await _apply(
@@ -1099,8 +1114,17 @@ def _source_key(item: AutoQueueItem) -> tuple:
 
 
 def _row_identity(item: AutoQueueItem) -> tuple:
-    """The row as the decision read it — what another run's move of the same job would change."""
-    return (_source_key(item), item.target_model, item.rebalanced_at)
+    """The row as the decision read it: what another run's move of the same job would change
+    (source, model, move stamp), and the rest of what the decision took from it — the line, the
+    job's own time (the home's finish) and its previous-success condition (who may receive it)."""
+    return (
+        _source_key(item),
+        item.target_model,
+        item.rebalanced_at,
+        item.project_line_id,
+        item.print_time_seconds,
+        bool(item.require_previous_success),
+    )
 
 
 def _source_skip(reason: str | None) -> str:
@@ -1151,66 +1175,113 @@ async def _read_alternative_plates(
         if requirements.status != "ok":
             oracle.add_plate(plate_id, None)
             continue
-        oracle.add_plate(plate_id, await enrich_family_filament_types(db, requirements))
+        oracle.add_plate(plate_id, await enrich_family_filament_types(db, requirements), file_path=file.file_path)
 
 
 @dataclass
 class _Recheck:
     """What the final check before a move compares against — the pass's own facts (spec R15)."""
 
-    printers: dict[int, PassPrinter]
     interlocked: set[int]
     prefer_lowest: bool
     oracle: _FitOracle
     rows: dict[int, tuple]  # item id → :func:`_row_identity` as the decision read it
+    projects: dict[int, int]  # line id → its order, whose catalog the move's numbers came from
 
 
-async def _still_holds(
-    db: AsyncSession, item: AutoQueueItem, move: Move, staged: PrintRequirements, recheck: _Recheck
-) -> str | None:
-    """Whether the move is still the one decided — after the target bytes were copied, before one write.
-
-    Fresh facts, never the pass's verdicts: the row read again (still movable,
-    the same policy, and still the source, model and move stamp the decision
-    read — ⚠️ a button's run and the tick may both decide to move one job, and the
-    second conversion would add another k − 1 companions), the copied plate's
-    requirements against the ones the decision read, and every receiver it put
-    prints on — its queue still accepting new work, a fresh busy set, its live
-    feed, idleness and ``require_previous_success`` — resolved again. The
-    interlocks are NOT read again (C3-1): the pass's set stands, and no sensor is
-    polled under a capture. ``None`` = holds; otherwise the reason it is skipped,
-    with no cooldown (a refused move sets no ``rebalanced_at``).
-    """
-    fresh = await db.get(AutoQueueItem, item.id, populate_existing=True)
+def _row_changed(fresh: AutoQueueItem | None, item_id: int, recheck: _Recheck) -> str | None:
+    """Why the row is no longer the one the move was decided on — ``None`` when it still is."""
     if fresh is None:
         return "not_found"
     why = refusal(fresh)
     if why:
         return why
-    if _row_identity(fresh) != recheck.rows.get(item.id):
+    if _row_identity(fresh) != recheck.rows.get(item_id):
         return "eligibility_changed"
-    policy = auto_policy(fresh)
-    if policy.fingerprint != recheck.oracle.policy_fingerprint(item.id):
+    if auto_policy(fresh).fingerprint != recheck.oracle.policy_fingerprint(item_id):
         return "eligibility_changed"
-    if _content_key(staged) != recheck.oracle.plate_content(move.plate.plate_id):
+    return None
+
+
+def _target_revision(file: LibraryFile, staged: StagedSource) -> tuple:
+    """Which revision of the target file the copy is: the library row's path and the original's
+    size and ``st_mtime_ns`` as the copy proved them unchanged for its whole read — the same
+    stat :class:`SourceIdentity` names an original by, so it compares with what the decision read."""
+    return (file.file_path, staged.receipt.size_bytes, staged.receipt.source_mtime_ns)
+
+
+async def _still_holds(
+    db: AsyncSession,
+    item: AutoQueueItem,
+    move: Move,
+    file: LibraryFile,
+    staged: StagedSource,
+    requirements: PrintRequirements,
+    recheck: _Recheck,
+) -> str | None:
+    """Whether the move is still the one decided — after the target bytes were copied, before one write.
+
+    Fresh facts, never the pass's verdicts:
+
+    * the row read again — still movable, the same policy, and still what the
+      decision read of it (:func:`_row_identity`);
+    * the copy is the revision of the target file the decision read
+      (:func:`_target_revision` — codex review r1, RB-R3: a plate re-sliced during
+      the copy can keep its model, plate and filaments and still take 45 000
+      seconds where the move was decided on 2000), and its requirements are the
+      ones the decision read;
+    * the plan engine's catalog of the line read again: the target plate's recipe
+      (its yield and time — the move's ``k`` and finish) and the job's own yield
+      (its moved parts) are still the numbers the move was computed from;
+    * every receiver the estimate put prints on — its queue still accepting new
+      work, a fresh busy set, its live feed, idleness, ``require_previous_success``,
+      its model read from its row and the farm's «compatible models» setting read
+      again (RB-R2: the router stops giving a compatible printer the job the
+      moment that setting is off) — resolved again.
+
+    The interlocks are NOT read again (C3-1): the pass's set stands, and no sensor
+    is polled under a capture. ``None`` = holds; otherwise the reason it is
+    skipped, with no cooldown (a refused move sets no ``rebalanced_at``).
+
+    ⚠️ This is evidence, not ownership: it runs before the publication and the
+    profile read. That the row is still the decided one when it is WRITTEN is
+    :func:`_claim_row`'s, under the row's lock.
+    """
+    fresh = await db.get(AutoQueueItem, item.id, populate_existing=True)
+    changed = _row_changed(fresh, item.id, recheck)
+    if changed:
+        return changed
+    if _target_revision(file, staged) != recheck.oracle.plate_revision(move.plate.plate_id):
         return "eligibility_changed"
-    accepting = set(
-        (
+    if _content_key(requirements) != recheck.oracle.plate_content(move.plate.plate_id):
+        return "eligibility_changed"
+    project_id = recheck.projects.get(fresh.project_line_id)
+    catalog = await load_line_catalog(db, [project_id] if project_id is not None else [])
+    option = next(
+        (o for o in catalog.options_by_line.get(fresh.project_line_id, ()) if o.plate_id == move.plate.plate_id), None
+    )
+    if (
+        option != move.plate
+        or catalog.yield_of(fresh.project_line_id, fresh.library_file_id, fresh.plate_id) != move.moved_parts
+    ):
+        return "eligibility_changed"
+    models = {
+        printer_id: printer_manager.effective_model_for(printer_id, model)
+        for printer_id, model in (
             await db.execute(
-                select(Printer.id)
+                select(Printer.id, Printer.model)
                 .join(PrinterQueue, PrinterQueue.printer_id == Printer.id)
                 .where(Printer.id.in_(move.receivers), *_accepts_new_work())
             )
-        )
-        .scalars()
-        .all()
-    )
+        ).all()
+    }
+    allow_compatible = await _compatible_models_allowed(db)
     busy = await busy_printer_ids(db)
+    policy = auto_policy(fresh)
     for printer_id in move.receivers:
-        printer = recheck.printers[printer_id]
         snapshot = printer_manager.get_feed_snapshot(printer_id)
         if (
-            printer_id not in accepting
+            printer_id not in models
             or not snapshot.connected
             or printer_id in busy
             or printer_id in recheck.interlocked
@@ -1219,15 +1290,44 @@ async def _still_holds(
             return "eligibility_changed"
         if fresh.require_previous_success and not await scheduler.previous_print_succeeded(db, printer_id):
             return "eligibility_changed"
-        verdict = model_compatibility(staged.model, printer.model_name)
-        if verdict not in ("exact", "compatible"):
+        verdict = model_compatibility(requirements.model, models[printer_id])
+        if verdict != "exact" and not (verdict == "compatible" and allow_compatible):
             return "eligibility_changed"
         result = resolve_filament_routing(
-            staged, policy, snapshot, exact_model=verdict == "exact", prefer_lowest=recheck.prefer_lowest
+            requirements, policy, snapshot, exact_model=verdict == "exact", prefer_lowest=recheck.prefer_lowest
         )
         if result.status != "compatible":
             return "eligibility_changed"
     return None
+
+
+async def _claim_row(db: AsyncSession, item: AutoQueueItem, recheck: _Recheck) -> str | None:
+    """Read the row again UNDER ITS LOCK, after every long await, and compare it with the decision.
+
+    Codex review r1, RB-R1: two runs — the tick's and a button's — may both decide
+    to move one job, and both pass :func:`_still_holds`; the first converts it and
+    adds k − 1 companions, and a second conversion from the row this session
+    read before the publication would add k − 1 more and overwrite where the job
+    came from. A lock taken AFTER a read does not make that read fresh, so the
+    row is read here, inside the lock, and written only if it is still the row
+    the decision read — the router's claim, a cancel (the row is deleted) and
+    the other run's conversion each leave it something else.
+
+    The order is the router's own (``_assign``): the order's row first
+    (:func:`order_resources.policy_for`, taken by the caller), then the job's.
+    On SQLite ``take_write_lock`` takes the one write lock before the read; on
+    PostgreSQL ``FOR UPDATE`` waits for a writer that holds the row and then
+    reads what it committed. Nothing long runs under it: the copy and the
+    publication are already done.
+    """
+    await take_write_lock(db, AutoQueueItem.__table__, item.id)
+    fresh = await db.scalar(
+        select(AutoQueueItem)
+        .where(AutoQueueItem.id == item.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return _row_changed(fresh, item.id, recheck)
 
 
 async def _apply(
@@ -1245,9 +1345,11 @@ async def _apply(
 
     ⚠️ **The decision is checked again between the copy and the first write**
     (:func:`_still_holds`): the copy released the transaction, and a feed, a
-    queue or the row itself may have moved meanwhile. A move whose evidence went
-    is skipped as ``eligibility_changed`` with no cooldown — the next pass reads
-    the farm afresh.
+    queue, the target file, its recipe or the row itself may have moved
+    meanwhile. A move whose evidence went is skipped as ``eligibility_changed``
+    with no cooldown — the next pass reads the farm afresh. And the row is read
+    once more under its lock right before it is written (:func:`_claim_row`): two
+    runs that both passed the check must not both convert one job.
 
     Order matters three times over. The **bytes of the target file** are captured,
     the strict source read comes out of that copy, and the receiving model's
@@ -1324,7 +1426,7 @@ async def _apply(
         req = await staged_requirements(
             staged, cache, None, file, move.plate.plate_index, product_plate_id=move.plate.plate_id
         )
-        changed = await _still_holds(db, item, move, await enrich_family_filament_types(db, req), recheck)
+        changed = await _still_holds(db, item, move, file, staged, await enrich_family_filament_types(db, req), recheck)
         if changed is not None:
             await discard_staged(staged)
             logger.info(
@@ -1337,14 +1439,64 @@ async def _apply(
             result.skipped.append((item.id, changed))
             return
 
-        from_model = item.target_model or move.from_model
         to_model = req.model or move.plate.model_label
-        batch_id = item.batch_id or (str(uuid.uuid4()) if move.k > 1 else None)
-        # Everything the creation needs, read while the row is still untouched.
-        payload: dict | None = None
+        # The receiving model's saved profile — nothing of the row's, so it is read
+        # before the row is claimed; what the row says is read after.
+        profile_options: dict | None = None
         if move.k > 1:
             profile = await preference_options(db, current_user, to_model)
-            options = profile.for_auto_queue() if profile else {}
+            profile_options = profile.for_auto_queue() if profile else {}
+        blob = await publish_staged(staged, _no_rows_of_our_own)
+    except HTTPException as exc:
+        await discard_staged(staged)
+        logger.info(
+            "Rebalance: item %s stays on %s — plate %s of the copied file was refused: %s",
+            item.id,
+            item.target_model,
+            move.plate.plate_id,
+            exc.detail,
+        )
+        result.skipped.append((item.id, capture_skip_reason(exc)))
+        return
+    except BaseException:
+        # A DB error, a cancellation at shutdown: give the staged bytes back rather
+        # than leaving a ``.part`` for the grace window (§5 step 4).
+        await discard_staged(staged)
+        raise
+
+    # Pinned across the handover: the blob is published and, until the commit
+    # below, nobody owns it — a pin is what §9 offers for exactly that gap.
+    async with queue_sources.pin(blob.id):
+        from backend.app.services.order_resources import constrained, policy_for
+
+        # Capturing a source releases the transaction. An operator may have
+        # narrowed the order while that copy ran; never convert its queued file
+        # using the earlier unrestricted snapshot.
+        policy = await policy_for(db, item.project_id, project_line_id=item.project_line_id, lock=True)
+        if constrained(policy):
+            result.skipped.append((item.id, "order_resources"))
+            return
+        claimed = await _claim_row(db, item, recheck)
+        if claimed is not None:
+            # The blob stays published and unowned once the pin goes — the
+            # collector's grace window, as after ``creation_failed``.
+            await db.commit()
+            logger.info(
+                "Rebalance: item %s not moved to plate %s — %s when it was to be written",
+                item.id,
+                move.plate.plate_id,
+                claimed,
+            )
+            result.skipped.append((item.id, claimed))
+            return
+
+        # From here to the commit the row is the one the decision read, and nobody
+        # else can change it: everything taken from it is read now.
+        from_model = item.target_model or move.from_model
+        batch_id = item.batch_id or (str(uuid.uuid4()) if move.k > 1 else None)
+        payload: dict | None = None
+        if profile_options is not None:
+            options = dict(profile_options)
             options.update(override_options(item.order_print_options, to_model))
             # The companions are router rows, whose swap fields are inert: their assignment decides per
             # printer from the captured declaration (swap-source-lifecycle spec r4 §8), not this library row.
@@ -1368,72 +1520,42 @@ async def _apply(
                 # the row it is a copy of.
                 "allow_base_material_match": item.allow_base_material_match,
             }
-        blob = await publish_staged(staged, _no_rows_of_our_own)
-    except HTTPException as exc:
-        await discard_staged(staged)
         logger.info(
-            "Rebalance: item %s stays on %s — plate %s of the copied file was refused: %s",
+            "Rebalance: line %s item %s %s → %s: %d print(s) of plate %s (yield %d, %d parts, surplus %d), "
+            "finish %.0fs vs home %s",
+            item.project_line_id,
             item.id,
-            item.target_model,
+            from_model,
+            to_model,
+            move.k,
             move.plate.plate_id,
-            exc.detail,
+            move.plate.yield_parts,
+            move.moved_parts,
+            move.surplus,
+            move.finish,
+            "none" if move.home_finish is None else f"{move.home_finish:.0f}s",
         )
-        result.skipped.append((item.id, capture_skip_reason(exc)))
-        return
-    except BaseException:
-        # A DB error, a cancellation at shutdown: give the staged bytes back rather
-        # than leaving a ``.part`` for the grace window (§5 step 4).
-        await discard_staged(staged)
-        raise
-
-    logger.info(
-        "Rebalance: line %s item %s %s → %s: %d print(s) of plate %s (yield %d, %d parts, surplus %d), "
-        "finish %.0fs vs home %s",
-        item.project_line_id,
-        item.id,
-        from_model,
-        to_model,
-        move.k,
-        move.plate.plate_id,
-        move.plate.yield_parts,
-        move.moved_parts,
-        move.surplus,
-        move.finish,
-        "none" if move.home_finish is None else f"{move.home_finish:.0f}s",
-    )
-    # The row as it is, so the creation step below can put it back. ⚠️ The two
-    # snapshot columns are part of it: a row restored to the source model's file
-    # while keeping the target file's bytes would be the same wrong-file print as
-    # C1, arrived at from the other direction.
-    before = {
-        field_name: getattr(item, field_name)
-        for field_name in (
-            "archive_id",
-            "library_file_id",
-            "plate_id",
-            "target_model",
-            "required_filament_types",
-            "print_time_seconds",
-            "waiting_reason",
-            "batch_id",
-            "rebalanced_at",
-            "rebalanced_from_model",
-            "queue_source_id",
-            "source_snapshot",
-        )
-    }
-    # Pinned across the handover: the blob is published and, until the commit
-    # below, nobody owns it — a pin is what §9 offers for exactly that gap.
-    async with queue_sources.pin(blob.id):
-        from backend.app.services.order_resources import constrained, policy_for
-
-        # Capturing a source releases the transaction. An operator may have
-        # narrowed the order while that copy ran; never convert its queued file
-        # using the earlier unrestricted snapshot.
-        policy = await policy_for(db, item.project_id, project_line_id=item.project_line_id, lock=True)
-        if constrained(policy):
-            result.skipped.append((item.id, "order_resources"))
-            return
+        # The row as it is, so the creation step below can put it back. ⚠️ The two
+        # snapshot columns are part of it: a row restored to the source model's file
+        # while keeping the target file's bytes would be the same wrong-file print as
+        # C1, arrived at from the other direction.
+        before = {
+            field_name: getattr(item, field_name)
+            for field_name in (
+                "archive_id",
+                "library_file_id",
+                "plate_id",
+                "target_model",
+                "required_filament_types",
+                "print_time_seconds",
+                "waiting_reason",
+                "batch_id",
+                "rebalanced_at",
+                "rebalanced_from_model",
+                "queue_source_id",
+                "source_snapshot",
+            )
+        }
         item.archive_id = None
         item.library_file_id = file.id
         item.plate_id = req.resolved_plate_id

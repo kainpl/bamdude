@@ -18,11 +18,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
@@ -36,6 +37,7 @@ from backend.tests.integration.test_auto_queue_scheduler import (
     _idle_status,
     _make_printer_with_queue,
     _patch_printer_manager,
+    _test_models,
 )
 
 pytestmark = pytest.mark.integration
@@ -56,6 +58,22 @@ async def tick_scheduler(monkeypatch, db_session):
     return AutoQueueScheduler()
 
 
+def _plate_metadata(model: str, *, seconds: int, hooks: int, filament: str = "PETG") -> dict:
+    """What the library records of a sliced single-plate file — the recipe the plan engine reads."""
+    return {
+        "sliced_for_model": model,
+        "print_time_seconds": seconds,
+        "plates": [
+            {
+                "index": 1,
+                "printable_objects": {str(i + 1): ("hook" if i == 0 else f"hook_{i + 1}") for i in range(hooks)},
+                "print_time_seconds": seconds,
+                "filaments": [{"slot_id": 1, "type": filament}],
+            }
+        ],
+    }
+
+
 def _plate_file(tmp_path, filename: str, model: str, *, seconds: int, hooks: int, filament: str) -> LibraryFile:
     """A sliced single-plate file for ``model``: ``hooks`` hooks in ``seconds``, one ``filament`` channel."""
     path = write_routing_3mf(
@@ -69,18 +87,7 @@ def _plate_file(tmp_path, filename: str, model: str, *, seconds: int, hooks: int
         file_path=str(path),
         file_size=path.stat().st_size,
         file_type="gcode",
-        file_metadata={
-            "sliced_for_model": model,
-            "print_time_seconds": seconds,
-            "plates": [
-                {
-                    "index": 1,
-                    "printable_objects": {str(i + 1): ("hook" if i == 0 else f"hook_{i + 1}") for i in range(hooks)},
-                    "print_time_seconds": seconds,
-                    "filaments": [{"slot_id": 1, "type": filament}],
-                }
-            ],
-        },
+        file_metadata=_plate_metadata(model, seconds=seconds, hooks=hooks, filament=filament),
     )
 
 
@@ -664,7 +671,20 @@ def _staging_files(queue_sources) -> list:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "change", ["feed", "busy", "policy", "assigned", "source", "queue_paused", "queue_error", "auto_off", "inactive"]
+    "change",
+    [
+        "feed",
+        "busy",
+        "policy",
+        "assigned",
+        "source",
+        "queue_paused",
+        "queue_error",
+        "auto_off",
+        "inactive",
+        "job_time",
+        "previous_success",
+    ],
 )
 async def test_evidence_that_moves_during_the_copy_stops_the_move_before_any_write(
     db_session, printer_factory, tmp_path, monkeypatch, clean_spool, change
@@ -700,6 +720,14 @@ async def test_evidence_that_moves_during_the_copy_stops_the_move_before_any_wri
             }[change]
             await db_session.execute(PrinterQueue.__table__.update().where(PrinterQueue.id == p1s.id).values(**values))
             await db_session.commit()
+        elif change in ("job_time", "previous_success"):
+            # What the decision took from the row beside its source: the job's own time
+            # dated the home, and its previous-success condition chose the receivers.
+            values = {"job_time": {"print_time_seconds": 600}, "previous_success": {"require_previous_success": True}}
+            await db_session.execute(
+                AutoQueueItem.__table__.update().where(AutoQueueItem.id == farm.item.id).values(**values[change])
+            )
+            await db_session.commit()
         elif change == "inactive":
             from backend.app.models.printer import Printer
 
@@ -721,7 +749,7 @@ async def test_evidence_that_moves_during_the_copy_stops_the_move_before_any_wri
     assert (result.converted, result.skipped) == (0, [(farm.item.id, expected)])
     await db_session.refresh(farm.item)
     after = _job_columns(farm.item)
-    for column in ("status", "allow_base_material_match"):
+    for column in ("status", "allow_base_material_match", "print_time_seconds", "require_previous_success"):
         after.pop(column)
         before.pop(column, None)
     assert after == {k: v for k, v in before.items() if k in after}, "the row changed before the check"
@@ -1000,6 +1028,142 @@ async def test_a_job_another_run_moved_during_the_copy_is_not_moved_twice(
     assert (farm.item.rebalanced_at, farm.item.rebalanced_from_model) == (stamp, "P2S")
 
 
+async def _assert_untouched(db_session, farm, result, reason="eligibility_changed"):
+    assert (result.converted, result.created, result.skipped) == (0, 0, [(farm.item.id, reason)])
+    await db_session.refresh(farm.item)
+    assert (farm.item.target_model, farm.item.library_file_id, farm.item.rebalanced_at) == (
+        "P2S",
+        farm.home_file.id,
+        None,
+    )
+    assert len((await db_session.execute(select(AutoQueueItem))).scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("receiver_model", "setting_after", "moves"),
+    [("X1C", "false", False), ("X1C", "true", True), ("P1S", "false", True)],
+    ids=["compatible-receiver-turned-off", "compatible-receiver-kept", "exact-receiver-with-the-setting-off"],
+)
+async def test_the_compatible_models_setting_is_read_again_after_the_copy(
+    db_session, printer_factory, tmp_path, monkeypatch, clean_spool, receiver_model, setting_after, moves
+):
+    """Codex review r1, RB-R2: the only receiver of the P1S plate is an X1C, which takes it only
+    while compatible models are allowed. The operator switches that off while the file is copied:
+    the router will no longer give the X1C a P1S job, so the move would leave the job with no
+    printer it may go to. An exact receiver is no question of the setting."""
+    farm = await petg_farm(db_session, printer_factory, tmp_path, targets=1)
+    receiver = farm.receivers[0]
+    receiver.model = receiver_model
+    _test_models[receiver.id] = receiver_model
+    db_session.add(Settings(key="auto_queue_compatible_models", value="true"))
+    await db_session.commit()
+
+    async def the_operator_saves():
+        await db_session.execute(
+            update(Settings).where(Settings.key == "auto_queue_compatible_models").values(value=setting_after)
+        )
+        await db_session.commit()
+
+    _during_capture(monkeypatch, the_operator_saves)
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    if moves:
+        assert (result.converted, result.skipped) == (1, [])
+    else:
+        await _assert_untouched(db_session, farm, result)
+
+
+@pytest.mark.asyncio
+async def test_a_receiver_whose_model_changed_during_the_copy_receives_nothing(
+    db_session, printer_factory, tmp_path, monkeypatch, clean_spool
+):
+    """RB-R2: the receiver's model is read again, not taken from the pass — a P1S re-registered
+    as an A1 while the file is copied cannot print the P1S plate. Only the printer's row changes:
+    the router reads the model from the row (``effective_model_for``) on its next pass, whatever
+    the live feed still reports."""
+    farm = await petg_farm(db_session, printer_factory, tmp_path, targets=1)
+    receiver = farm.receivers[0]
+
+    async def remodelled():
+        await db_session.execute(update(Printer).where(Printer.id == receiver.id).values(model="A1"))
+        await db_session.commit()
+
+    _during_capture(monkeypatch, remodelled)
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    await _assert_untouched(db_session, farm, result)
+
+
+async def _busy_fit_home(db_session, printer_factory, tmp_path):
+    """The review's farm: the home P2S can print the PETG job but is busy, so the home is dated
+    and the 2000-second P1S plate finishes first."""
+    farm = await petg_farm(db_session, printer_factory, tmp_path, targets=1, home_trays=("PETG",))
+    farm.status[farm.home.id].state = "RUNNING"
+    farm.status[farm.home.id].remaining_time = 100
+    return farm
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rewritten", [False, True], ids=["same-file", "rewritten-for-45000s"])
+async def test_a_target_file_rewritten_during_the_copy_is_not_moved_on_the_old_estimate(
+    db_session, printer_factory, tmp_path, monkeypatch, clean_spool, rewritten
+):
+    """Codex review r1, RB-R3: the plate is re-sliced while it is copied — the same model, plate,
+    filament, colour and weight, but 45 000 seconds where the move was decided on 2000. The copy
+    is not the file the decision read, so nothing moves on the old proof."""
+    farm = await _busy_fit_home(db_session, printer_factory, tmp_path)
+
+    async def resliced():
+        if rewritten:
+            write_routing_3mf(
+                Path(farm.alt_file.file_path),
+                {1: [{"id": 1, "type": "PETG", "color": WHITE, "used_g": "1"}]},
+                model="P1S",
+                prediction=45000,
+            )
+
+    _during_capture(monkeypatch, resliced)
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    if rewritten:
+        await _assert_untouched(db_session, farm, result)
+    else:
+        assert (result.converted, result.skipped) == (1, [])
+        await db_session.refresh(farm.item)
+        assert farm.item.print_time_seconds == 2000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["target-yield", "target-seconds", "home-yield"])
+async def test_a_recipe_that_changed_during_the_copy_stops_the_move(
+    db_session, printer_factory, tmp_path, monkeypatch, clean_spool, change
+):
+    """RB-R3: what the move's k, finish and moved parts were computed from is the plan engine's
+    recipe of both plates. The library's record of a plate changes while the file is copied —
+    fewer hooks on the target (k would be 2, not 1), a longer print, fewer hooks on the job's own
+    plate — and the move stays for the next pass to decide afresh."""
+    farm = await _busy_fit_home(db_session, printer_factory, tmp_path)
+    file, metadata = {
+        "target-yield": (farm.alt_file, _plate_metadata("P1S", seconds=2000, hooks=3)),
+        "target-seconds": (farm.alt_file, _plate_metadata("P1S", seconds=45000, hooks=6)),
+        "home-yield": (farm.home_file, _plate_metadata("P2S", seconds=3600, hooks=4)),
+    }[change]
+
+    async def recorded_again():
+        await db_session.execute(update(LibraryFile).where(LibraryFile.id == file.id).values(file_metadata=metadata))
+        await db_session.commit()
+
+    _during_capture(monkeypatch, recorded_again)
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    await _assert_untouched(db_session, farm, result)
+
+
 @pytest.mark.asyncio
 async def test_plates_of_the_jobs_own_model_are_never_read_as_alternatives(
     db_session, printer_factory, tmp_path, monkeypatch
@@ -1013,9 +1177,9 @@ async def test_plates_of_the_jobs_own_model_are_never_read_as_alternatives(
     asked = []
     real = queue_rebalance._FitOracle.add_plate
 
-    def add_plate(self, plate_id, requirements):
+    def add_plate(self, plate_id, requirements, **kwargs):
         asked.append(plate_id)
-        return real(self, plate_id, requirements)
+        return real(self, plate_id, requirements, **kwargs)
 
     monkeypatch.setattr(queue_rebalance._FitOracle, "add_plate", add_plate)
     p_elig, p_sched = _live(farm)
