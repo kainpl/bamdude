@@ -341,6 +341,26 @@ def test_an_unknown_target_gives_no_capacity_and_says_why():
     assert plan_moves([_item(1, 10, "p1s", 6)], options, farm).skipped == [(1, "source_unreadable")]
 
 
+def test_model_compatibility_is_asked_once_per_pair_of_models(monkeypatch):
+    """Review I2: with compatible models ON, 1000 jobs × 32 printers must not ask the compatibility
+    matrix per job and printer — a handful of model pairs exist, and the decision runs on the loop."""
+    from backend.app.services import queue_rebalance
+
+    calls = []
+    real = queue_rebalance.model_compatibility
+
+    def counting(a, b):
+        calls.append((a, b))
+        return real(a, b)
+
+    monkeypatch.setattr(queue_rebalance, "model_compatibility", counting)
+    items = [_item(i, 10, "p2s", 1) for i in range(1, 201)]
+    options = {10: [_opt(100, "p1s", 1), _opt(101, "x1c", 1)]}
+    machines = [(pid, "p1s" if pid % 2 else "x1c", pid > 4, 0 if pid > 4 else 9 * H) for pid in range(1, 33)]
+    plan_moves(items, options, _farm(*machines, allow_compatible=True))
+    assert calls and len(calls) == len(set(calls)), f"{len(calls)} calls for {len(set(calls))} pairs"
+
+
 def test_free_after_is_each_printers_running_print_and_queue():
     snapshot = FarmSnapshot(
         printers=[

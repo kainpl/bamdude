@@ -663,7 +663,9 @@ def _staging_files(queue_sources) -> list:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["feed", "busy", "policy", "assigned", "source"])
+@pytest.mark.parametrize(
+    "change", ["feed", "busy", "policy", "assigned", "source", "queue_paused", "queue_error", "auto_off", "inactive"]
+)
 async def test_evidence_that_moves_during_the_copy_stops_the_move_before_any_write(
     db_session, printer_factory, tmp_path, monkeypatch, clean_spool, change
 ):
@@ -689,6 +691,19 @@ async def test_evidence_that_moves_during_the_copy_stops_the_move_before_any_wri
             await db_session.execute(
                 AutoQueueItem.__table__.update().where(AutoQueueItem.id == farm.item.id).values(status="assigned")
             )
+            await db_session.commit()
+        elif change in ("queue_paused", "queue_error", "auto_off"):
+            values = {
+                "queue_paused": {"is_paused": True},
+                "queue_error": {"status": "error"},
+                "auto_off": {"auto_distribute_eligible": False},
+            }[change]
+            await db_session.execute(PrinterQueue.__table__.update().where(PrinterQueue.id == p1s.id).values(**values))
+            await db_session.commit()
+        elif change == "inactive":
+            from backend.app.models.printer import Printer
+
+            await db_session.execute(Printer.__table__.update().where(Printer.id == p1s.id).values(is_active=False))
             await db_session.commit()
         else:  # the alternative plate was re-sliced for PLA while it was being copied
             write_routing_3mf(
@@ -773,3 +788,238 @@ async def test_copies_of_one_job_read_their_source_once(db_session, printer_fact
         result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
     assert len(result.skipped) == 5
     assert len(reads) == 1, reads
+
+
+# ---------- A04 / A06 on the real resolver (both reproduce the defect on the base) ----------
+
+
+async def _busy_home(db_session, printer_factory, *, trays=("PETG",), running_seconds=7200):
+    """A second P2S, printing for ``running_seconds`` and holding ``trays``."""
+    from backend.app.models.archive import PrintArchive
+
+    printer, queue = await _make_printer_with_queue(db_session, printer_factory, name="P2S_43", model="P2S")
+    queue.status = "printing"
+    db_session.add(
+        PrintArchive(
+            printer_id=printer.id,
+            status="printing",
+            print_time_seconds=running_seconds,
+            filename="running",
+            file_path="",
+            file_size=0,
+        )
+    )
+    await db_session.commit()
+    return printer, _idle_status(list(trays), [WHITE] * len(trays))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("alt_seconds", "moves"), [(2000, True), (20000, False)])
+async def test_an_unfit_free_home_and_a_fit_busy_one_date_the_home_by_the_busy_one(
+    db_session, printer_factory, tmp_path, alt_seconds, moves
+):
+    """A04: the free P2S holds PLA/ABS, the busy P2S holds PETG and frees in 2 h. Home is the busy
+    one's 2 h + 1 h: a 2000 s P1S plate wins, a 20000 s one loses — the unfit free P2S decides
+    neither (on the base it answered ``home_model_idle`` for both)."""
+    farm = await petg_farm(db_session, printer_factory, tmp_path, alt_seconds=alt_seconds)
+    busy, busy_status = await _busy_home(db_session, printer_factory)
+    status = {**farm.status, busy.id: busy_status}
+    connected = {farm.home.id, busy.id, *(p.id for p in farm.receivers)}
+    p_elig, p_sched = _live(farm, connected=connected, status=status)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    if moves:
+        assert (result.converted, result.skipped) == (1, [])
+    else:
+        assert result.skipped == [(farm.item.id, "no_faster_model")]
+
+
+@pytest.mark.asyncio
+async def test_an_unprintable_favourite_plate_does_not_hide_a_printable_one(db_session, printer_factory, tmp_path):
+    """A06: the line has two P1S plates; the plan engine's favourite (faster) needs ASA, which no
+    P1S holds. The job moves onto the slower PETG plate — on the base it was converted onto the
+    ASA plate nobody can print. (The PLA/ABS P2S is off here, so the base's model-wide veto does
+    not hide the plate choice.)"""
+    farm = await petg_farm(db_session, printer_factory, tmp_path, alt_seconds=2000)
+    busy, busy_status = await _busy_home(db_session, printer_factory, trays=("PLA",))
+    asa = _plate_file(tmp_path, "pin-asa.gcode.3mf", "P1S", seconds=1000, hooks=6, filament="ASA")
+    db_session.add(asa)
+    await db_session.flush()
+    product_id = (
+        await db_session.execute(select(ProjectLine.product_id).where(ProjectLine.id == farm.line.id))
+    ).scalar_one()
+    db_session.add(ProductPlate(product_id=product_id, library_file_id=asa.id, plate_index=0))
+    await db_session.commit()
+    connected = {busy.id, *(p.id for p in farm.receivers)}
+    p_elig, p_sched = _live(farm, connected=connected, status={**farm.status, busy.id: busy_status})
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    assert (result.converted, result.skipped) == (1, [])
+    await db_session.refresh(farm.item)
+    assert farm.item.library_file_id == farm.alt_file.id
+
+
+# ---------- A05 / A08: channels, nozzle and profile are the resolver's ----------
+
+
+def _status_with(trays, *, nozzle=None):
+    """A live status with explicit trays ``(type, colour, profile id)`` and, optionally, the nozzle fitted."""
+    status = SimpleNamespace(
+        state="IDLE",
+        raw_data={
+            "ams": [
+                {
+                    "id": 0,
+                    "tray": [
+                        {"id": i, "tray_type": t, "tray_color": c, "tray_info_idx": idx}
+                        for i, (t, c, idx) in enumerate(trays)
+                    ],
+                }
+            ],
+            "vt_tray": [],
+            "ams_extruder_map": {},
+        },
+    )
+    if nozzle is not None:
+        status.raw_data["device"] = {"nozzle": {"info": [{"id": 0, "diameter": nozzle}]}}
+    return status
+
+
+async def _rewrite_plates(farm, filaments, *, settings=None):
+    """Slice both of the farm's plates again with ``filaments`` (and project ``settings``)."""
+    for file in (farm.home_file, farm.alt_file):
+        write_routing_3mf(
+            Path(file.file_path),
+            {1: filaments},
+            model="P2S" if file is farm.home_file else "P1S",
+            prediction=3600 if file is farm.home_file else 2000,
+            settings=settings,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("receiver_trays", "moves"), [(("PETG",), False), (("PETG", "PLA"), True)])
+async def test_a_two_filament_job_needs_both_on_the_receiver(
+    db_session, printer_factory, tmp_path, receiver_trays, moves
+):
+    """A05/A08: the plate uses PETG and PLA; a P1S holding only PETG has too few channels."""
+    farm = await petg_farm(db_session, printer_factory, tmp_path, targets=1)
+    await _rewrite_plates(
+        farm,
+        [
+            {"id": 1, "type": "PETG", "color": WHITE, "used_g": "1"},
+            {"id": 2, "type": "PLA", "color": WHITE, "used_g": "1"},
+        ],
+    )
+    [p1s] = farm.receivers
+    status = {**farm.status, p1s.id: _status_with([(t, WHITE, "") for t in receiver_trays])}
+    p_elig, p_sched = _live(farm, status=status)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    if moves:
+        assert (result.converted, result.skipped) == (1, [])
+    else:
+        assert result.skipped == [(farm.item.id, "no_eligible_target")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("fitted", "moves"), [(0.6, False), (0.4, True)])
+async def test_the_receivers_nozzle_must_be_the_plates(db_session, printer_factory, tmp_path, fitted, moves):
+    """A08: the plates are sliced for a 0.4 mm nozzle; a P1S with 0.6 mm fitted takes nothing."""
+    farm = await petg_farm(db_session, printer_factory, tmp_path, targets=1)
+    await _rewrite_plates(
+        farm, [{"id": 1, "type": "PETG", "color": WHITE, "used_g": "1"}], settings={"nozzle_diameter": ["0.4"]}
+    )
+    [p1s] = farm.receivers
+    status = {
+        farm.home.id: _status_with([("PLA", WHITE, ""), ("ABS", WHITE, "")], nozzle=0.4),
+        p1s.id: _status_with([("PETG", WHITE, "")], nozzle=fitted),
+    }
+    p_elig, p_sched = _live(farm, status=status)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    if moves:
+        assert (result.converted, result.skipped) == (1, [])
+    else:
+        assert result.skipped == [(farm.item.id, "no_eligible_target")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("allow_base", "moves"), [(True, True), (False, False)])
+async def test_another_profile_of_the_material_follows_the_jobs_base_material_choice(
+    db_session, printer_factory, tmp_path, allow_base, moves
+):
+    """A08: the plate names one PETG profile, the P1S hold another. «Any PETG» moves; a job that
+    asked for its exact profile does not."""
+    farm = await petg_farm(db_session, printer_factory, tmp_path, targets=1)
+    await _rewrite_plates(farm, [{"id": 1, "type": "PETG", "color": WHITE, "used_g": "1", "tray_info_idx": "GFG02"}])
+    farm.item.allow_base_material_match = allow_base
+    await db_session.commit()
+    [p1s] = farm.receivers
+    status = {**farm.status, p1s.id: _status_with([("PETG", WHITE, "GFG00")])}
+    p_elig, p_sched = _live(farm, status=status)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    if moves:
+        assert (result.converted, result.skipped) == (1, [])
+    else:
+        assert result.skipped == [(farm.item.id, "no_eligible_target")]
+
+
+@pytest.mark.asyncio
+async def test_a_job_another_run_moved_during_the_copy_is_not_moved_twice(
+    db_session, printer_factory, tmp_path, monkeypatch, clean_spool
+):
+    """R15 (review I1): the tick is copying the target file while a button's run moves the same job.
+    The second conversion must not happen — it would create another k − 1 companions and overwrite
+    where the job came from."""
+    farm = await petg_farm(db_session, printer_factory, tmp_path, targets=1, alt_hooks=2)
+    stamp = datetime(2026, 10, 28, 9, 0)
+
+    async def the_other_run():
+        await db_session.execute(
+            AutoQueueItem.__table__.update()
+            .where(AutoQueueItem.id == farm.item.id)
+            .values(
+                library_file_id=farm.alt_file.id,
+                target_model="P1S",
+                rebalanced_at=stamp,
+                rebalanced_from_model="P2S",
+            )
+        )
+        await db_session.commit()
+
+    _during_capture(monkeypatch, the_other_run)
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    assert (result.converted, result.created, result.skipped) == (0, 0, [(farm.item.id, "eligibility_changed")])
+    rows = (await db_session.execute(select(AutoQueueItem))).scalars().all()
+    assert len(rows) == 1
+    await db_session.refresh(farm.item)
+    assert (farm.item.rebalanced_at, farm.item.rebalanced_from_model) == (stamp, "P2S")
+
+
+@pytest.mark.asyncio
+async def test_plates_of_the_jobs_own_model_are_never_read_as_alternatives(
+    db_session, printer_factory, tmp_path, monkeypatch
+):
+    """Review m4: the decision never asks about a plate of the job's home model, so its file is not
+    parsed for it either."""
+    farm = await petg_farm(db_session, printer_factory, tmp_path)
+    home_plate = (
+        await db_session.execute(select(ProductPlate.id).where(ProductPlate.library_file_id == farm.home_file.id))
+    ).scalar_one()
+    asked = []
+    real = queue_rebalance._FitOracle.add_plate
+
+    def add_plate(self, plate_id, requirements):
+        asked.append(plate_id)
+        return real(self, plate_id, requirements)
+
+    monkeypatch.setattr(queue_rebalance._FitOracle, "add_plate", add_plate)
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    assert result.converted == 1
+    assert home_plate not in asked and asked

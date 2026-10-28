@@ -270,6 +270,10 @@ class FarmView:
     machines: dict[int, Machine]
     fits: FitSource
     allow_compatible: bool = False
+    #: ``(job model, machine model)`` → the compatible-models verdict, asked once per
+    #: pair for the pass: a pass asks it per job and printer, and the matrix lookup
+    #: is not free (review I2 — 1000 jobs × 32 printers blocked the loop for seconds).
+    model_verdicts: dict[tuple[str, str], str | None] = field(default_factory=dict, repr=False)
 
 
 @dataclass(frozen=True)
@@ -298,13 +302,17 @@ class MovePlan:
 # ---------- the decision ----------
 
 
-def _model_verdict(job_model: str, machine_model: str, allow_compatible: bool) -> str | None:
+def _model_verdict(job_model: str, machine_model: str, farm: FarmView) -> str | None:
     """``exact`` / ``compatible`` when the router would offer this machine the job's model, else None."""
     if job_model == machine_model:
         return "exact"
-    if allow_compatible and model_compatibility(job_model, machine_model) == "compatible":
-        return "compatible"
-    return None
+    if not farm.allow_compatible:
+        return None
+    key = (job_model, machine_model)
+    if key not in farm.model_verdicts:
+        compatible = model_compatibility(job_model, machine_model) == "compatible"
+        farm.model_verdicts[key] = "compatible" if compatible else None
+    return farm.model_verdicts[key]
 
 
 def _home_verdict(
@@ -324,7 +332,7 @@ def _home_verdict(
     home_free: float | None = None
     unknown_ready = False
     for machine in machines:
-        if _model_verdict(item.home_model, machine.model, farm.allow_compatible) is None:
+        if _model_verdict(item.home_model, machine.model, farm) is None:
             continue
         fit = farm.fits.home(item.item_id, machine.printer_id)
         free = ledger[machine.printer_id]
@@ -354,8 +362,12 @@ def _receivers(
     """
     ranked = []
     for machine in machines:
-        verdict = _model_verdict(plate.model, machine.model, farm.allow_compatible)
-        if verdict is None or not machine.ready or ledger[machine.printer_id] != 0:
+        # The free-and-ready test first: once the free printers are taken, a pass
+        # walks hundreds of jobs that ask nothing more of any printer.
+        if not machine.ready or ledger[machine.printer_id] != 0:
+            continue
+        verdict = _model_verdict(plate.model, machine.model, farm)
+        if verdict is None:
             continue
         fit = farm.fits.target(item.item_id, plate, machine.printer_id)
         if fit.verdict == "yes":
@@ -515,6 +527,17 @@ def refusal(item: AutoQueueItem) -> str | None:
     return None
 
 
+def _accepts_new_work() -> tuple:
+    """A printer that may take new auto-queue work: the pass's population, and the final check's too."""
+    return (
+        Printer.is_active.is_(True),
+        Printer.archived.is_(False),
+        PrinterQueue.auto_distribute_eligible.is_(True),
+        PrinterQueue.is_paused.is_(False),
+        PrinterQueue.status.not_in(("paused", "error")),
+    )
+
+
 @dataclass(frozen=True)
 class PassPrinter:
     """One printer as a rebalancing pass sees it — its facts read ONCE for the whole pass (spec R14)."""
@@ -545,13 +568,7 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
         await db.execute(
             select(Printer.id, Printer.model)
             .join(PrinterQueue, PrinterQueue.printer_id == Printer.id)
-            .where(
-                Printer.is_active.is_(True),
-                Printer.archived.is_(False),
-                PrinterQueue.auto_distribute_eligible.is_(True),
-                PrinterQueue.is_paused.is_(False),
-                PrinterQueue.status.not_in(("paused", "error")),
-            )
+            .where(*_accepts_new_work())
         )
     ).all()
     printers: dict[int, PassPrinter] = {}
@@ -980,8 +997,10 @@ async def rebalance(
     zero_ledger = dict.fromkeys(unseeded.machines, 0.0)
     homes: dict[int, str] = {}
     candidates: list[AutoQueueItem] = []
+    evaluated: dict[int, tuple] = {}
     for row, home, requirements in jobs:
         oracle.add_job(row, requirements, auto_policy(row))
+        evaluated[row.id] = _row_identity(row)
         probe = MovableItem(item_id=row.id, line_id=row.project_line_id, home_model=home, yield_parts=0, seconds=None)
         stay, _home_free = _home_verdict(probe, machines_by_id, unseeded, zero_ledger)
         if stay is not None:
@@ -1002,7 +1021,7 @@ async def rebalance(
         ).all()
     )
     catalog = await load_line_catalog(db, sorted(set(line_projects.values())))
-    await _read_alternative_plates(db, catalog, candidates, cache, oracle)
+    await _read_alternative_plates(db, catalog, candidates, homes, cache, oracle)
     rank = {project_id: i for i, project_id in enumerate(await rank_active_orders(db))}
     seeds = free_after_by_printer(await load_snapshot(db, now))
     farm = FarmView(
@@ -1051,6 +1070,7 @@ async def rebalance(
         interlocked=set(interlocked_printers),
         prefer_lowest=prefer_lowest,
         oracle=oracle,
+        rows=evaluated,
     )
     for move in plan.moves:
         await _apply(
@@ -1078,6 +1098,11 @@ def _source_key(item: AutoQueueItem) -> tuple:
     return ("original", item.archive_id, item.library_file_id, item.plate_id)
 
 
+def _row_identity(item: AutoQueueItem) -> tuple:
+    """The row as the decision read it — what another run's move of the same job would change."""
+    return (_source_key(item), item.target_model, item.rebalanced_at)
+
+
 def _source_skip(reason: str | None) -> str:
     """How an unreadable HOME source is reported — the capture buckets' own split (spec R17)."""
     return "source_copy_busy" if reason == "source_check_busy" else "source_unreadable"
@@ -1087,6 +1112,7 @@ async def _read_alternative_plates(
     db: AsyncSession,
     catalog: LineCatalog,
     candidates: list[AutoQueueItem],
+    homes: dict[int, str],
     cache: PrintRequirementsCache,
     oracle: _FitOracle,
 ) -> None:
@@ -1095,12 +1121,14 @@ async def _read_alternative_plates(
     Read from the plate's library file — the bytes a move would capture — once
     per plate, enriched the way the router reads the moved row afterwards. An
     unreadable or trashed file is an unknown target (no capacity), never a guess.
+    A plate of the job's own model is never a target (:func:`plan_moves`), so it
+    is not read for that job.
     """
     plates = {
         option.plate_id: option
         for row in candidates
         for option in catalog.options_by_line.get(row.project_line_id, ())
-        if option.seconds is not None and option.yield_parts > 0
+        if option.seconds is not None and option.yield_parts > 0 and option.model != homes[row.id]
     }
     if not plates:
         return
@@ -1134,6 +1162,7 @@ class _Recheck:
     interlocked: set[int]
     prefer_lowest: bool
     oracle: _FitOracle
+    rows: dict[int, tuple]  # item id → :func:`_row_identity` as the decision read it
 
 
 async def _still_holds(
@@ -1142,9 +1171,12 @@ async def _still_holds(
     """Whether the move is still the one decided — after the target bytes were copied, before one write.
 
     Fresh facts, never the pass's verdicts: the row read again (still movable,
-    the same policy), the copied plate's requirements against the ones the
-    decision read, and every receiver it put prints on — a fresh busy set, its
-    live feed, idleness and ``require_previous_success`` — resolved again. The
+    the same policy, and still the source, model and move stamp the decision
+    read — ⚠️ a button's run and the tick may both decide to move one job, and the
+    second conversion would add another k − 1 companions), the copied plate's
+    requirements against the ones the decision read, and every receiver it put
+    prints on — its queue still accepting new work, a fresh busy set, its live
+    feed, idleness and ``require_previous_success`` — resolved again. The
     interlocks are NOT read again (C3-1): the pass's set stands, and no sensor is
     polled under a capture. ``None`` = holds; otherwise the reason it is skipped,
     with no cooldown (a refused move sets no ``rebalanced_at``).
@@ -1155,17 +1187,31 @@ async def _still_holds(
     why = refusal(fresh)
     if why:
         return why
+    if _row_identity(fresh) != recheck.rows.get(item.id):
+        return "eligibility_changed"
     policy = auto_policy(fresh)
     if policy.fingerprint != recheck.oracle.policy_fingerprint(item.id):
         return "eligibility_changed"
     if _content_key(staged) != recheck.oracle.plate_content(move.plate.plate_id):
         return "eligibility_changed"
+    accepting = set(
+        (
+            await db.execute(
+                select(Printer.id)
+                .join(PrinterQueue, PrinterQueue.printer_id == Printer.id)
+                .where(Printer.id.in_(move.receivers), *_accepts_new_work())
+            )
+        )
+        .scalars()
+        .all()
+    )
     busy = await busy_printer_ids(db)
     for printer_id in move.receivers:
         printer = recheck.printers[printer_id]
         snapshot = printer_manager.get_feed_snapshot(printer_id)
         if (
-            not snapshot.connected
+            printer_id not in accepting
+            or not snapshot.connected
             or printer_id in busy
             or printer_id in recheck.interlocked
             or not scheduler._is_printer_idle(printer_id, require_plate_clear=True)
