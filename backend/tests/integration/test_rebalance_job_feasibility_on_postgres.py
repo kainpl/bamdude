@@ -1,7 +1,8 @@
 """Rebalancing by job feasibility on PostgreSQL (spec rebalance-job-feasibility r2, plan §5).
 
 The same bodies as ``test_rebalance_job_feasibility.py``, ``test_rebalance_moves_one_job_once.py``
-and ``test_rebalance_tail.py`` on a real server, each test in a schema of its own: the pass's printer population and
+``test_rebalance_tail.py`` and ``test_rebalance_assignment.py`` on a real server, each test in a
+schema of its own: the pass's printer population and
 alternative-plate reads, the previous-success lookups, the final check's fresh reads after the
 target copy released the transaction, and two runs on two connections that both decided to move
 one job — the row's ``FOR UPDATE`` is what lets only one of them convert it.
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.core.config import settings
 from backend.app.core.database import Base, _strip_tz_from_params, import_all_models
+from backend.tests.integration.test_rebalance_assignment import *  # noqa: F403
 from backend.tests.integration.test_rebalance_job_feasibility import *  # noqa: F403
 from backend.tests.integration.test_rebalance_moves_one_job_once import *  # noqa: F403
 from backend.tests.integration.test_rebalance_tail import *  # noqa: F403

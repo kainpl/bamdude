@@ -57,15 +57,22 @@ def _item(item_id, line_id, home, yield_parts, seconds=H):
 class _Fits:
     """Which printer can print which job. Everything is ``yes`` unless named otherwise."""
 
-    def __init__(self, home=None, target=None):
+    def __init__(self, home=None, target=None, target_prep=None, companions=None):
         self._home = home or {}  # (item_id, printer_id) → Fit
         self._target = target or {}  # (item_id, plate_id, printer_id) → Fit
+        self._prep = target_prep or {}  # (item_id, plate_id) → seconds of preparation on the target
+        self._companions = companions or {}  # (item_id, plate_id, printer_id) → Fit for the companions
 
     def home(self, item_id, printer_id):
         return self._home.get((item_id, printer_id), YES)
 
-    def target(self, item_id, plate, printer_id):
+    def target(self, item_id, plate, printer_id, *, companion=False):
+        if companion and (item_id, plate.plate_id, printer_id) in self._companions:
+            return self._companions[(item_id, plate.plate_id, printer_id)]
         return self._target.get((item_id, plate.plate_id, printer_id), YES)
+
+    def target_prep(self, item_id, plate):
+        return self._prep.get((item_id, plate.plate_id))
 
 
 def _farm(*machines, fits=None, allow_compatible=False):
@@ -914,3 +921,46 @@ def test_an_empty_model_label_is_no_sjf_group():
     plan = plan_moves([_item(1, 10, "p2s", 6)], {10: [plate]}, farm, projection=projection)
     assert [m.item_id for m in plan.moves] == [1]
     assert projection.jobs[1].group is None
+
+
+@pytest.mark.parametrize(("target_prep", "moved"), [(0.0, True), (1200.0, False)])
+def test_a_trial_prepares_as_the_targets_own_entry_says(target_prep, moved):
+    """Codex r1 T-R1: the home job pays its own model's preparation (1200 s): it ends at
+    100 + 1200 + 100 = 1400 s. The moved print pays the target model's entry, not the home's:
+    off — 1000 s, it moves; on — 1200 + 1000 = 2200 s, it stays."""
+    fits = _Fits(target_prep={(1, 110): target_prep})
+    farm = _farm((1, "p1s", False, 100), (2, "x1c", True, 0), fits=fits)
+    item = MovableItem(1, 10, "p1s", 1, seconds=100, prep=1200.0)
+    plan = plan_moves([item], {10: [_opt(110, "x1c", 1, seconds=1000)]}, farm)
+    if moved:
+        [move] = plan.moves
+        assert (move.home_finish, move.finish) == (1400, 1000)
+    else:
+        assert plan.moves == [] and plan.skipped == [(1, "no_faster_model")]
+
+
+def test_companions_land_only_where_their_own_creator_is_accepted():
+    """Codex r1 T-R3: the converted row may go to both X1C, its companion — written by
+    whoever moved it — is refused by printer 2. Two prints still fit: the row on 2, the
+    companion on 3. With 3 refusing the companion too, nothing can take it and the job stays."""
+    no = Fit("no", "swap_source_unknown")
+    options = {10: [_opt(110, "x1c", 1, seconds=H)]}
+    item = _item(1, 10, "p1s", 2)
+    farm = _farm((1, "p1s", False, 5 * H), (2, "x1c", True, 0), (3, "x1c", True, 0))
+    farm.fits = _Fits(companions={(1, 110, 2): no})
+    [move] = plan_moves([item], options, farm).moves
+    assert (move.k, move.finish, move.receivers) == (2, H, (2, 3))
+    farm.fits = _Fits(companions={(1, 110, 2): no, (1, 110, 3): no})
+    plan = plan_moves([item], options, farm)
+    assert plan.moves == [] and plan.skipped == [(1, "no_eligible_target")]
+
+
+def test_a_saved_profile_sets_no_preparation():
+    """The forecast takes a job's preparation from the order's entry for its own model alone
+    (one per job, whatever printer it lands on) because the saved profile carries none. A
+    profile that gains a preheat field breaks that: the preparation would then depend on the
+    printer's model, and the replay would have to carry it per printer."""
+    from backend.app.services.print_option_defaults import PrinterOnlyQueueOptions, SharedQueueOptions
+
+    keys = set(SharedQueueOptions.__annotations__) | set(PrinterOnlyQueueOptions.__annotations__)
+    assert not {key for key in keys if "preheat" in key}

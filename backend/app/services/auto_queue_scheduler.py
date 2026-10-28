@@ -144,6 +144,20 @@ async def _get_bool_setting(db: AsyncSession, key: str, default: bool = False) -
     return default
 
 
+def compose_options(profile, order_print_options, requirements_model: str | None, printer_model: str | None) -> dict:
+    """The options a job is written with on a printer of ``printer_model``: the creator's saved profile
+    for that model, then the order's explicit choices for the job's own model — validated for the
+    printer (``ValueError`` when they do not fit it: ``incompatible_target``).
+
+    One composition for ``_assign`` and for the rebalancer's forecast (Codex review r1, T-R1/T-R3):
+    the preparation a job is dated with and the swap request a printer may refuse come from here.
+    The profile is read by the caller through this module's ``preference_options``.
+    """
+    options = profile.for_printer_queue() if profile else {}
+    options.update(override_options(order_print_options, requirements_model, printer_model))
+    return options
+
+
 class AutoQueueScheduler:
     """Background loop that routes AutoQueueItems to idle printers."""
 
@@ -783,9 +797,8 @@ class AutoQueueScheduler:
             # the file was put into a mixed-model auto queue.
             owner = await db.get(User, item.created_by_id) if item.created_by_id is not None else None
             profile = await preference_options(db, owner, printer.model)
-            options = profile.for_printer_queue() if profile else {}
             try:
-                options.update(override_options(item.order_print_options, requirements.model, printer.model))
+                options = compose_options(profile, item.order_print_options, requirements.model, printer.model)
             except ValueError as exc:
                 logger.info("Auto item %s: explicit print options do not fit target model %s", item.id, printer.model)
                 raise AutoPlacementConflict("incompatible_target") from exc

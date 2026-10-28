@@ -75,7 +75,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.project import RebalanceOut, RebalanceSkipped
-from backend.app.services import queue_sources
+from backend.app.services import queue_sources, swap_compatibility
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.auto_queue_eligibility import busy_printer_ids, router_view_conditions
 from backend.app.services.farm_forecast import (
@@ -87,6 +87,7 @@ from backend.app.services.farm_forecast import (
 )
 from backend.app.services.filament_intake import (
     enrich_family_filament_types,
+    item_descriptor,
     loaded_descriptor,
     read_item_requirements,
     resolve_source_path,
@@ -322,7 +323,13 @@ class FitSource(Protocol):
 
     def home(self, item_id: int, printer_id: int) -> Fit: ...
 
-    def target(self, item_id: int, plate: PlateOption, printer_id: int) -> Fit: ...
+    #: ``companion``: asked for the job's companions, written by whoever moves it (their own
+    #: creator's profile decides a swap refusal), not for the converted row (Codex r1 T-R3).
+    def target(self, item_id: int, plate: PlateOption, printer_id: int, *, companion: bool = False) -> Fit: ...
+
+    #: The preparation the moved prints are written with — the order's entry for the target's
+    #: model (Codex r1 T-R1); ``None`` = the job's own.
+    def target_prep(self, item_id: int, plate: PlateOption) -> float | None: ...
 
 
 @dataclass
@@ -559,6 +566,8 @@ def _receivers(
     farm: FarmView,
     idle: set[int],
     unknown: set[str | None],
+    *,
+    companion: bool = False,
 ) -> list[tuple[int, bool, int]]:
     """The ready printers, free now and not spent by a move of this pass, that can print
     ``plate`` for this job — ``(printer, exact, colour matches)`` in the router's order.
@@ -576,7 +585,7 @@ def _receivers(
         verdict = _model_verdict(plate.model, machine.model, farm)
         if verdict is None:
             continue
-        fit = farm.fits.target(item.item_id, plate, machine.printer_id)
+        fit = farm.fits.target(item.item_id, plate, machine.printer_id, companion=companion)
         if fit.verdict == "yes":
             ranked.append((verdict == "exact", fit.color_matches, -machine.printer_id))
         elif fit.verdict == "unknown":
@@ -585,7 +594,9 @@ def _receivers(
     return [(-pid, exact, colour) for exact, colour, pid in ranked]
 
 
-def _target_fits(item: MovableItem, plate: PlateOption, machines: list[Machine], farm: FarmView):
+def _target_fits(
+    item: MovableItem, plate: PlateOption, machines: list[Machine], farm: FarmView, *, companion: bool = False
+):
     """Every printer that can print ``plate`` for this job — the moved rows as the router will
     see them once the move is made, no longer only the trial's pool."""
     fits = []
@@ -595,7 +606,7 @@ def _target_fits(item: MovableItem, plate: PlateOption, machines: list[Machine],
         verdict = _model_verdict(plate.model, machine.model, farm)
         if verdict is None:
             continue
-        fit = farm.fits.target(item.item_id, plate, machine.printer_id)
+        fit = farm.fits.target(item.item_id, plate, machine.printer_id, companion=companion)
         if fit.verdict == "yes":
             fits.append((machine.printer_id, verdict == "exact", fit.color_matches))
     return tuple(fits)
@@ -718,36 +729,45 @@ def plan_moves(
                 plan.skipped.append((item.item_id, "forecast_incomplete"))
                 continue
             unknown: set[str | None] = set()
-            by_model: dict[str, list[tuple[PlateOption, list[tuple[int, bool, int]]]]] = {}
+            by_model: dict[str, list[tuple[PlateOption, list, list]]] = {}
             for plate in options_by_line.get(item.line_id, ()):
                 # A plate without an estimate is never a target: its finish could not be compared.
                 if plate.model == item.home_model or plate.yield_parts <= 0 or not plate.seconds or plate.seconds < 0:
                     continue
                 pool = _receivers(item, plate, machines, farm, idle, unknown)
-                if pool:
-                    by_model.setdefault(plate.model, []).append((plate, pool))
+                # The companions are written by whoever moves the job: a printer that refuses them
+                # (their creator's swap request, Codex r1 T-R3) is no place for them.
+                spare = pool
+                if pool and item.yield_parts > plate.yield_parts:
+                    spare = _receivers(item, plate, machines, farm, idle, unknown, companion=True)
+                if pool and spare:
+                    by_model.setdefault(plate.model, []).append((plate, pool, spare))
             best = None
             incomplete = False
             for model, candidates in by_model.items():
                 # The plan engine's own key, among the plates that have a fit receiver:
                 # most useful parts per hour, least waste, the shorter print, the lower id.
-                plate, pool = min(
+                plate, pool, spare = min(
                     candidates,
-                    key=lambda pair: _pick_key(
-                        min(pair[0].yield_parts, item.yield_parts),
-                        max(0, pair[0].yield_parts - item.yield_parts),
-                        pair[0].seconds,
-                        pair[0].plate_id,
+                    key=lambda entry: _pick_key(
+                        min(entry[0].yield_parts, item.yield_parts),
+                        max(0, entry[0].yield_parts - item.yield_parts),
+                        entry[0].seconds,
+                        entry[0].plate_id,
                     ),
                 )
                 k = -(-item.yield_parts // plate.yield_parts)
-                if home_finish is not None and _lower_bound(k, len(pool), plate.seconds) > home_finish:
+                lanes = len({entry[0] for entry in (*pool, *spare)})
+                if home_finish is not None and _lower_bound(k, lanes, plate.seconds) > home_finish:
                     continue  # T21.1: even the pool printing nothing else ends later
                 if projection.exhausted:
                     # A trial is due and nothing is left to replay it with (T20): no verdict
                     # from a comparison that was not made.
                     raise ReplayBudget()
                 seconds = float(plate.seconds)
+                # The moved prints are written with the order's entry for the TARGET's model.
+                target_prep = farm.fits.target_prep(item.item_id, plate)
+                prep = item.prep if target_prep is None else float(target_prep)
                 converted = Job(
                     job_id=item.item_id,
                     position=item.position,
@@ -756,7 +776,7 @@ def plan_moves(
                     fits=tuple(pool),
                     been_jumped=item.been_jumped,
                     auto_eject=item.auto_eject,
-                    prep=item.prep,
+                    prep=prep,
                 )
                 companions = [
                     Job(
@@ -764,16 +784,16 @@ def plan_moves(
                         position=max_position + 1 + i,
                         group=plate.model_label or None,
                         seconds=seconds,
-                        fits=tuple(pool),
+                        fits=tuple(spare),
                         auto_eject=item.auto_eject,
-                        prep=item.prep,
+                        prep=prep,
                     )
                     for i in range(k - 1)
                 ]
                 trial_jobs = {**projection.jobs, item.item_id: converted, **{c.job_id: c for c in companions}}
                 moved = [item.item_id, *(c.job_id for c in companions)]
                 # A moved print not started by home − (preparation + its time) ends after home.
-                latest = None if home_finish is None else home_finish - (item.prep + seconds)
+                latest = None if home_finish is None else home_finish - (prep + seconds)
                 result = projection.trial(trial_jobs, moved, until=latest)
                 outcomes = [result.outcome(job_id) for job_id in moved]
                 if any(state == "unknown" for state, _ in outcomes):
@@ -822,10 +842,11 @@ def plan_moves(
         # The world after the move: the moved rows as the router will see them — every
         # printer that can print the plate, not only the trial's pool (T15).
         widened = _target_fits(item, plate, machines, farm)
+        widened_spare = _target_fits(item, plate, machines, farm, companion=True) if companions else widened
         committed = {
             **projection.jobs,
             item.item_id: replace_job(converted, fits=widened),
-            **{c.job_id: replace_job(c, fits=widened) for c in companions},
+            **{c.job_id: replace_job(c, fits=widened_spare) for c in companions},
         }
         try:
             projection.commit(committed, {item.item_id, *(c.job_id for c in companions)})
@@ -892,6 +913,10 @@ class PassPrinter:
     ready: bool
     location_id: int | None = None
     dispatchable: bool = True
+    #: The printer row's own model and swap mode — what the router's assignment reads for the
+    #: profile, the order's choices and the swap rule (Codex r1 T-R1/T-R3).
+    raw_model: str | None = None
+    swap_mode: bool = False
 
 
 async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int]) -> dict[int, PassPrinter]:
@@ -914,7 +939,7 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
     """
     rows = (
         await db.execute(
-            select(Printer.id, Printer.model, Printer.location_id, PrinterQueue.status)
+            select(Printer.id, Printer.model, Printer.location_id, PrinterQueue.status, Printer.swap_mode_enabled)
             .join(PrinterQueue, PrinterQueue.printer_id == Printer.id)
             .where(*_router_population())
         )
@@ -922,7 +947,7 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
     printers: dict[int, PassPrinter] = {}
     # By printer id, so a printer that somehow answered the query twice (a
     # second queue row of its own) is still one machine.
-    for printer_id, model, location_id, queue_status in rows:
+    for printer_id, model, location_id, queue_status, swap_mode in rows:
         if printer_id in printers:
             continue
         name = printer_manager.effective_model_for(printer_id, model)
@@ -938,7 +963,9 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
             and scheduler._is_printer_idle(printer_id, require_plate_clear=True)
         )
         dispatchable = queue_status not in ("paused", "error")
-        printers[printer_id] = PassPrinter(printer_id, name, key, snapshot, ready, location_id, dispatchable)
+        printers[printer_id] = PassPrinter(
+            printer_id, name, key, snapshot, ready, location_id, dispatchable, model, bool(swap_mode)
+        )
     return printers
 
 
@@ -968,6 +995,9 @@ class _Job:
     #: The printers the job may run on at all — its location's subtree and its order's
     #: resources, as ``printers_for_item`` gates them; None = no such limit.
     allowed: frozenset[int] | None = None
+    #: Its assignment's identity (:class:`_Assignments`): which printers the router's own
+    #: ``_assign`` turns it away from.
+    assign_key: tuple | None = None
 
 
 def fit_of(result) -> Fit:
@@ -1012,6 +1042,11 @@ class _FitOracle:
         #: so the key is computed once per distinct source, not once per row.
         self._req_keys: dict[int, tuple] = {}
         self._models: dict[tuple[str | None, int], str] = {}
+        #: (assignment key, printer) → why the router's ``_assign`` refuses it (Codex r1 T-R3).
+        self._refusals: dict[tuple, str] = {}
+        #: (job, plate) → the assignment keys of the converted row and of its companions.
+        self._targets: dict[tuple[int, int], tuple[tuple, tuple]] = {}
+        self._target_prep: dict[tuple[int, int], float] = {}
         self.resolves = 0
         self.hits = 0
 
@@ -1021,13 +1056,24 @@ class _FitOracle:
         requirements: PrintRequirements,
         policy: RoutingPolicy,
         allowed: frozenset[int] | None = None,
+        assign_key: tuple | None = None,
     ) -> None:
         key = self._req_keys.get(id(requirements))
         if key is None:
             key = self._req_keys[id(requirements)] = (requirements.source_identity, _content_key(requirements))
         self._jobs[item.id] = _Job(
-            requirements, key, policy, policy.fingerprint, bool(item.require_previous_success), allowed
+            requirements, key, policy, policy.fingerprint, bool(item.require_previous_success), allowed, assign_key
         )
+
+    def refuse(self, assign_key: tuple, printer_id: int, reason: str) -> None:
+        self._refusals[(assign_key, printer_id)] = reason
+
+    def set_target(self, item_id: int, plate_id: int, converted: tuple, companions: tuple, prep: float) -> None:
+        self._targets[(item_id, plate_id)] = (converted, companions)
+        self._target_prep[(item_id, plate_id)] = prep
+
+    def target_prep(self, item_id: int, plate: PlateOption) -> float | None:
+        return self._target_prep.get((item_id, plate.plate_id))
 
     def add_plate(self, plate_id: int, requirements: PrintRequirements | None, *, file_path: str | None = None) -> None:
         """An alternative plate's requirements, read from its library file; ``None`` = unreadable."""
@@ -1052,16 +1098,25 @@ class _FitOracle:
 
     def home(self, item_id: int, printer_id: int) -> Fit:
         job = self._jobs[item_id]
-        return self._fit(job, job.requirements, job.key, printer_id)
+        return self._fit(job, job.requirements, job.key, printer_id, job.assign_key)
 
-    def target(self, item_id: int, plate: PlateOption, printer_id: int) -> Fit:
+    def target(self, item_id: int, plate: PlateOption, printer_id: int, *, companion: bool = False) -> Fit:
         entry = self._plates.get(plate.plate_id)
         if entry is None:
             return Fit("unknown", TARGET_SOURCE_UNREADABLE)
         requirements, key = entry
-        return self._fit(self._jobs[item_id], requirements, key, printer_id)
+        keys = self._targets.get((item_id, plate.plate_id))
+        assign_key = None if keys is None else keys[1 if companion else 0]
+        return self._fit(self._jobs[item_id], requirements, key, printer_id, assign_key)
 
-    def _fit(self, job: _Job, requirements: PrintRequirements, req_key: tuple, printer_id: int) -> Fit:
+    def _fit(
+        self,
+        job: _Job,
+        requirements: PrintRequirements,
+        req_key: tuple,
+        printer_id: int,
+        assign_key: tuple | None = None,
+    ) -> Fit:
         if job.allowed is not None and printer_id not in job.allowed:
             return Fit("no", "not_allowed")
         if job.require_previous_success and not self._previous_ok.get(printer_id, False):
@@ -1082,17 +1137,23 @@ class _FitOracle:
         fit = self._verdicts.get(key)
         if fit is not None:
             self.hits += 1
-            return fit
-        self.resolves += 1
-        fit = self._verdicts[key] = fit_of(
-            resolve_filament_routing(
-                requirements,
-                job.policy,
-                printer.snapshot,
-                exact_model=verdict == "exact",
-                prefer_lowest=self._prefer_lowest,
+        else:
+            self.resolves += 1
+            fit = self._verdicts[key] = fit_of(
+                resolve_filament_routing(
+                    requirements,
+                    job.policy,
+                    printer.snapshot,
+                    exact_model=verdict == "exact",
+                    prefer_lowest=self._prefer_lowest,
+                )
             )
-        )
+        # After the feed, as the router asks: a printer whose assignment would refuse the job —
+        # its options do not fit it, or the swap rule turns its source away — is no capacity.
+        if fit.verdict == "yes" and assign_key is not None:
+            refused = self._refusals.get((assign_key, printer_id))
+            if refused is not None:
+                return Fit("no", refused)
         return fit
 
 
@@ -1499,6 +1560,73 @@ class _PassGroups:
         return found
 
 
+class _Assignments:
+    """The router's own assignment answers for this pass, read before the decision (Codex review
+    r1, T-R1/T-R3).
+
+    ``_assign`` writes a job with the creator's saved profile for the printer's model, then the
+    order's explicit choices for the job's own model (``auto_queue_scheduler.compose_options``,
+    the profile read through that module's ``preference_options``) — which set its preparation —
+    and turns a printer away when those choices do not fit it or when the swap rule refuses the
+    request for the job's source. A job's assignment is the tuple (creator, order choices, its
+    model, its source's fact): copies share it, and each one is asked of every printer once. The
+    refusals land in the oracle; nothing here reaches the decision's thread.
+    """
+
+    def __init__(self, db: AsyncSession, printers: dict[int, PassPrinter], gates, oracle: _FitOracle):
+        self._db = db
+        self._printers = printers
+        self._gates = gates
+        self._oracle = oracle
+        self._owners: dict[int, User | None] = {}
+        self._profiles: dict[tuple, object] = {}
+        self._keys: set[tuple] = set()
+
+    async def owner(self, user_id: int | None) -> User | None:
+        if user_id is None:
+            return None
+        if user_id not in self._owners:
+            self._owners[user_id] = await self._db.get(User, user_id)
+        return self._owners[user_id]
+
+    async def key_for(self, owner: User | None, choices: dict | None, model: str | None, fact) -> tuple:
+        from backend.app.services import auto_queue_scheduler as router
+
+        key = (getattr(owner, "id", None), json.dumps(choices, sort_keys=True, default=str), model, fact)
+        if key in self._keys:
+            return key
+        self._keys.add(key)
+        for printer_id, printer in self._printers.items():
+            profile_key = (key[0], printer.raw_model)
+            if profile_key not in self._profiles:
+                self._profiles[profile_key] = await router.preference_options(self._db, owner, printer.raw_model)
+            try:
+                options = router.compose_options(self._profiles[profile_key], choices, model, printer.raw_model)
+            except ValueError:
+                self._oracle.refuse(key, printer_id, "incompatible_target")
+                continue
+            try:
+                swap_compatibility.resolve_request(
+                    fact,
+                    execute=options.get("execute_swap_macros", False),
+                    events=options.get("swap_macro_events"),
+                    printer_swap_mode=printer.swap_mode,
+                )
+            except swap_compatibility.SwapRequestRefused as exc:
+                self._oracle.refuse(key, printer_id, exc.reason)
+        return key
+
+    def prep(self, choices: dict | None, model: str | None) -> float:
+        """The preparation the job is written with: the order's entry for its own model
+        (``preheat_override``). The saved profile carries none, so it is one per job whatever
+        printer takes it (``test_a_saved_profile_sets_no_preparation`` pins that)."""
+        try:
+            chosen = override_options(choices, model).get("preheat_override", "inherit")
+        except ValueError:
+            chosen = "inherit"  # choices nobody can read: refused on every printer anyway
+        return float(self._gates.prep_for(chosen))
+
+
 @dataclass
 class _Forecast:
     """The pass's world as plain data — the farm view (its lanes, the router's tail, the frozen
@@ -1510,6 +1638,9 @@ class _Forecast:
     probes: list[MovableItem]
     #: candidate id → the row as the decision read it (:func:`_row_identity`).
     evaluated: dict[int, tuple]
+    #: The router's assignment answers, read on the loop before the decision — the targets'
+    #: are added once the catalog names the plates (:func:`_read_alternative_plates`).
+    assignments: _Assignments | None = None
 
 
 async def _dispatching(db: AsyncSession, snapshot: FarmSnapshot, ctx: _PassContext) -> dict[int, float | None]:
@@ -1609,19 +1740,38 @@ async def _load_forecast(
             gate = permitted if gate is None else gate & permitted
         return None if gate is None else frozenset(gate)
 
+    from backend.app.services.farm_forecast import _load_gates
+
+    assignments = _Assignments(db, ctx.printers, await _load_gates(db), oracle)
+    facts: dict[tuple, object] = {}
+
+    async def assignment(row: AutoQueueItem, requirements: PrintRequirements) -> tuple[tuple, float]:
+        source = _source_key(row)
+        if source not in facts:
+            # The job's own captured declaration, as ``_assign`` reads it.
+            descriptor = await item_descriptor(db, row)
+            facts[source] = descriptor.swap_fact.value if descriptor is not None else None
+        owner = await assignments.owner(row.created_by_id)
+        key = await assignments.key_for(owner, row.order_print_options, requirements.model, facts[source])
+        return key, assignments.prep(row.order_print_options, requirements.model)
+
     tail: list[MovableItem] = []
     for row in tail_rows:
         requirements = requirements_by_row[row.id]
+        prep = snapshot.prep_seconds
         if requirements.status != "ok":
             # The router fails or waits on an unreadable source: it never takes a printer.
             home = ""
         else:
-            oracle.add_job(row, requirements, auto_policy(row), allowed(row))
+            key, prep = await assignment(row, requirements)
+            oracle.add_job(row, requirements, auto_policy(row), allowed(row), key)
             home = model_key(row.target_model or requirements.model) or ""
-        tail.append(_tail_item(row, home, snapshot.prep_seconds))
+        tail.append(_tail_item(row, home, prep))
     evaluated: dict[int, tuple] = {}
+    preps: dict[int, float] = {}
     for row, _home in candidates:
-        oracle.add_job(row, requirements_by_row[row.id], auto_policy(row))
+        key, preps[row.id] = await assignment(row, requirements_by_row[row.id])
+        oracle.add_job(row, requirements_by_row[row.id], auto_policy(row), assign_key=key)
         evaluated[row.id] = _row_identity(row)
     max_position = await db.scalar(
         select(func.coalesce(func.max(AutoQueueItem.position), 0)).where(AutoQueueItem.status == "pending")
@@ -1641,8 +1791,8 @@ async def _load_forecast(
         null_group_first=not is_postgres(),
         budget=REBALANCE_WORK_BUDGET,
     )
-    probes = [_tail_item(row, home, snapshot.prep_seconds) for row, home in candidates]
-    return _Forecast(farm=farm, oracle=oracle, probes=probes, evaluated=evaluated)
+    probes = [_tail_item(row, home, preps[row.id]) for row, home in candidates]
+    return _Forecast(farm=farm, oracle=oracle, probes=probes, evaluated=evaluated, assignments=assignments)
 
 
 async def rebalance(
@@ -1761,7 +1911,16 @@ async def rebalance(
     }
     catalog = await load_line_catalog(db, sorted(set(line_projects.values())))
     homes = {row.id: home for row, home in candidates}
-    await _read_alternative_plates(db, catalog, [row for row, _home in candidates], homes, ctx.cache, forecast.oracle)
+    await _read_alternative_plates(
+        db,
+        catalog,
+        [row for row, _home in candidates],
+        homes,
+        ctx.cache,
+        forecast.oracle,
+        forecast.assignments,
+        current_user,
+    )
     rank = {project_id: i for i, project_id in enumerate(await rank_active_orders(db))}
 
     probe_of = {probe.item_id: probe for probe in forecast.probes}
@@ -1863,6 +2022,8 @@ async def _read_alternative_plates(
     homes: dict[int, str],
     cache: PrintRequirementsCache,
     oracle: _FitOracle,
+    assignments: _Assignments | None = None,
+    mover: User | None = None,
 ) -> None:
     """The strict requirements of every alternative plate the candidates could move to.
 
@@ -1890,6 +2051,7 @@ async def _read_alternative_plates(
         .scalars()
         .all()
     }
+    read: dict[int, tuple[PrintRequirements, LibraryFile]] = {}
     for plate_id, option in plates.items():
         file = files.get(option.library_file_id)
         if file is None:
@@ -1900,6 +2062,23 @@ async def _read_alternative_plates(
             oracle.add_plate(plate_id, None)
             continue
         oracle.add_plate(plate_id, await enrich_family_filament_types(db, requirements), file_path=file.file_path)
+        read[plate_id] = (requirements, file)
+    if assignments is None:
+        return
+    # How the router will assign the moved rows (Codex r1 T-R1/T-R3): the converted row keeps its
+    # creator, the companions are written by whoever moves it; both carry the order's choices and
+    # the target file's declaration, which the move captures with its bytes.
+    for row in candidates:
+        owner = await assignments.owner(row.created_by_id)
+        for option in catalog.options_by_line.get(row.project_line_id, ()):
+            if option.plate_id not in read:
+                continue
+            requirements, file = read[option.plate_id]
+            fact = swap_compatibility.library_source(file)[0].value
+            converted = await assignments.key_for(owner, row.order_print_options, requirements.model, fact)
+            spare = await assignments.key_for(mover, row.order_print_options, requirements.model, fact)
+            prep = assignments.prep(row.order_print_options, requirements.model)
+            oracle.set_target(row.id, option.plate_id, converted, spare, prep)
 
 
 @dataclass

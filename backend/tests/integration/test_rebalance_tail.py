@@ -251,19 +251,8 @@ def _finished_status(trays):
     return finished(trays)
 
 
-@pytest.mark.parametrize(
-    ("sjf", "compatible", "edge"),
-    [
-        (False, False, None),
-        (True, False, None),
-        (True, True, None),
-        (True, True, "zero_time"),
-        (True, True, "null_model"),
-    ],
-    ids=["position", "sjf", "sjf-shared-pool", "sjf-zero-time", "sjf-null-model"],
-)
-async def test_the_forecasts_first_wave_is_the_routers_placement(
-    db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf, compatible, edge
+async def _first_wave_parity(
+    db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf, compatible, edge=None
 ):
     """T-A25: on one snapshot, the jobs the forecast deals out now — and the printer each goes
     to — are exactly the ones the router's tick places, with the router's readiness, colour,
@@ -342,6 +331,25 @@ async def test_the_forecasts_first_wave_is_the_routers_placement(
         ).scalars()
         assert set(marked) == expected
         assert expected, "the farm exercises the starvation guard"
+
+
+@pytest.mark.parametrize(
+    ("sjf", "compatible"), [(False, False), (True, False), (True, True)], ids=["position", "sjf", "sjf-shared-pool"]
+)
+async def test_the_forecasts_first_wave_is_the_routers_placement(
+    db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf, compatible
+):
+    """T-A25 / T-A26 / T-A07 — see :func:`_first_wave_parity`."""
+    await _first_wave_parity(db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf, compatible)
+
+
+@pytest.mark.parametrize("edge", ["zero_time", "null_model"])
+async def test_the_first_wave_holds_on_edge_metadata(
+    db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, edge
+):
+    """Codex r1 T-R2: a stored 0 sorts before every estimate; a row with no model sorts where
+    the database puts NULL — first on SQLite, last on PostgreSQL (bites there)."""
+    await _first_wave_parity(db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, True, True, edge=edge)
 
 
 # ---------- T-A23 / T-A24: one automatic move per row ----------
