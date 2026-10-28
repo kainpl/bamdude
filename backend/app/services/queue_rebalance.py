@@ -64,6 +64,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import database as _database
 from backend.app.core.database import take_write_lock
+from backend.app.core.db_dialect import is_postgres
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
 from backend.app.models.printer import Printer
@@ -350,6 +351,8 @@ class FarmView:
     max_position: int | None = None
     #: Replay work units for the whole pass (spec T20); None = unbounded.
     budget: int | None = None
+    #: Where the router's ``ORDER BY target_model`` puts NULL: first on SQLite, last on PostgreSQL.
+    null_group_first: bool = True
 
 
 @dataclass(frozen=True)
@@ -434,6 +437,8 @@ def _home_job(item: MovableItem, machines: list[Machine], farm: FarmView) -> Job
         group=item.group,
         # T19: a zero estimate is no estimate — never an instant print.
         seconds=float(item.seconds) if item.seconds is not None and item.seconds > 0 else None,
+        # Its place in the SJF order is the stored time, a 0 included (Codex r1 T-R2).
+        order_seconds=None if item.seconds is None else float(item.seconds),
         fits=tuple(fits),
         been_jumped=item.been_jumped,
         auto_eject=item.auto_eject,
@@ -478,6 +483,7 @@ class _Projection:
                 sjf=self.farm.sjf,
                 stagger=self.farm.stagger,
                 operator_hours=self.farm.operator_hours,
+                null_group_first=self.farm.null_group_first,
                 budget=remaining,
                 watch=watch,
                 until=until,
@@ -1632,6 +1638,7 @@ async def _load_forecast(
         stagger=stagger,
         operator_hours=snapshot.operator_hours,
         max_position=int(max_position or 0),
+        null_group_first=not is_postgres(),
         budget=REBALANCE_WORK_BUDGET,
     )
     probes = [_tail_item(row, home, snapshot.prep_seconds) for row, home in candidates]

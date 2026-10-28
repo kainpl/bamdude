@@ -138,6 +138,35 @@ def test_a_mark_reorders_the_next_wave_and_never_the_open_one():
     assert result.lane_of == {3: 1, 2: 2, 1: 1}
 
 
+def test_a_zero_estimate_sorts_and_marks_as_the_router_reads_it():
+    """Codex r1 T-R2: the router orders SJF by the stored time, NULL last — a stored 0 comes
+    before 100. Its duration is unknown (T19), its place is not: A (0, position 2) goes first, and
+    placing it marks B (100, ahead of it) as jumped, as `_mark_jumped_peers` does with 0."""
+    a = Job(1, 2, "P1S", None, fits=((1, True, 0),), order_seconds=0.0)
+    b = _job(2, 1, seconds=100, position=1)
+    for result in (replay([_free(1)], [a, b], sjf=True), reference_replay([_free(1)], [a, b], sjf=True)):
+        assert result.routed_at[1] == 0 and 2 not in result.routed_at or result.routed_at[2] > 0
+        assert result.lane_of[1] == 1
+    assert jumps(a, b, peer_jumped=False)
+    assert router_key(a, sjf=True) < router_key(b, sjf=True)
+
+
+def test_a_job_with_no_model_sorts_where_the_database_sorts_null():
+    """Codex r1 T-R2: `ORDER BY target_model` puts NULL first on SQLite and last on
+    PostgreSQL; the router's SQL is not changed, so the replay follows the database it reads."""
+    blank = Job(1, 0, None, 100.0, fits=((1, True, 0),))
+    named = Job(2, 0, "P1S", 100.0, fits=((1, True, 0),))
+    assert router_key(blank, sjf=True) < router_key(named, sjf=True)
+    assert router_key(blank, sjf=True, null_group_first=False) > router_key(named, sjf=True, null_group_first=False)
+    lanes = [_free(1)]
+    for null_first, first in ((True, 1), (False, 2)):
+        for result in (
+            replay(lanes, [blank, named], sjf=True, null_group_first=null_first),
+            reference_replay(lanes, [blank, named], sjf=True, null_group_first=null_first),
+        ):
+            assert result.routed_at[first] == 0
+
+
 def test_a_mark_inside_a_wave_leaves_that_wave_in_its_order():
     """T10: printers 1 and 2 free together. The wave's order is J2 (40 s), J3 (100 s), J1
     (250 s). Placing J2 marks J1 (earlier, longer) as jumped — for the NEXT wave: printer 2
@@ -338,7 +367,9 @@ def _random_farm(rng):
                 job_id=job_id,
                 position=rng.randint(0, 6),
                 group=rng.choice(["A1", "P1S", "X1C", None]),
-                seconds=rng.choice([None, 40.0, 100.0, 100.0, 250.0]) if rng.random() < 0.95 else 100.0,
+                seconds=(seconds := rng.choice([None, 40.0, 100.0, 100.0, 250.0]) if rng.random() < 0.95 else 100.0),
+                # A stored 0: no duration, yet its place in the SJF order (Codex r1 T-R2).
+                order_seconds=0.0 if seconds is None and rng.random() < 0.3 else None,
                 fits=tuple((pid, rng.random() < 0.8, rng.randint(0, 2)) for pid in pids),
                 been_jumped=rng.random() < 0.1,
                 auto_eject=rng.random() < 0.2,
@@ -365,8 +396,9 @@ def test_the_fast_replay_matches_the_reference(seed):
     rng = random.Random(seed)
     lanes, jobs, stagger = _random_farm(rng)
     sjf = rng.random() < 0.5
-    fast = replay(lanes, jobs, sjf=sjf, stagger=stagger)
-    slow = reference_replay(lanes, jobs, sjf=sjf, stagger=stagger)
+    null_first = rng.random() < 0.5  # SQLite's NULL order, or PostgreSQL's
+    fast = replay(lanes, jobs, sjf=sjf, stagger=stagger, null_group_first=null_first)
+    slow = reference_replay(lanes, jobs, sjf=sjf, stagger=stagger, null_group_first=null_first)
     assert _as_tuple(fast) == _as_tuple(slow)
 
 

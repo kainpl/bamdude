@@ -98,6 +98,14 @@ class Job:
     been_jumped: bool = False
     auto_eject: bool = False
     prep: float = 0.0
+    #: The row's stored time as the router's ORDER BY and its jump marks read it (Codex r1
+    #: T-R2): a stored 0 sorts as 0 although its duration is unknown (``seconds`` None, T19).
+    #: ``None`` = the same as ``seconds``.
+    order_seconds: float | None = None
+
+
+def _order_seconds(job: Job) -> float | None:
+    return job.order_seconds if job.order_seconds is not None else job.seconds
 
 
 class ReplayBudget(Exception):
@@ -126,7 +134,7 @@ class Replay:
         return "none", None
 
 
-def router_key(job: Job, *, sjf: bool, jumped: bool | None = None) -> tuple:
+def router_key(job: Job, *, sjf: bool, jumped: bool | None = None, null_group_first: bool = True) -> tuple:
     """The router's order (``auto_queue_scheduler._fetch_pending``), with the id as its last key.
 
     SJF: the model column first (NULL first, as SQLite sorts it), ``been_jumped`` DESC, the
@@ -136,18 +144,22 @@ def router_key(job: Job, *, sjf: bool, jumped: bool | None = None) -> tuple:
     if not sjf:
         return (job.position, job.job_id)
     marked = job.been_jumped if jumped is None else jumped
-    group = (0, "") if job.group is None else (1, job.group)
-    seconds = (0, job.seconds) if job.seconds is not None else (1, 0.0)
+    # ``ORDER BY target_model`` puts NULL first on SQLite and last on PostgreSQL; the router's
+    # SQL is left as it is, so the replay follows the database it reads (Codex r1 T-R2).
+    group = ((0 if null_group_first else 2), "") if job.group is None else (1, job.group)
+    stored = _order_seconds(job)
+    seconds = (0, stored) if stored is not None else (1, 0.0)
     return (group, 0 if marked else 1, seconds, job.position, job.job_id)
 
 
 def jumps(started: Job, peer: Job, *, peer_jumped: bool) -> bool:
     """Whether placing ``started`` marks ``peer`` ``been_jumped`` (``_mark_jumped_peers``)."""
-    if started.seconds is None or peer_jumped or started.group is None or peer.group != started.group:
+    mine, theirs = _order_seconds(started), _order_seconds(peer)
+    if mine is None or peer_jumped or started.group is None or peer.group != started.group:
         return False
     if peer.position >= started.position:
         return False
-    return peer.seconds is None or peer.seconds > started.seconds
+    return theirs is None or theirs > mine
 
 
 @dataclass(slots=True)
@@ -170,6 +182,7 @@ def replay(
     budget: int | None = None,
     watch: frozenset[int] | set[int] | None = None,
     until: float | None = None,
+    null_group_first: bool = True,
 ) -> Replay:
     """Deal ``jobs`` out over ``lanes`` from now on, as the router would; see the module docstring.
 
@@ -213,7 +226,7 @@ def replay(
     #: The earliest moment any printer of a class is tainted — ``uncertain`` in one lookup.
     class_taint: list[float] = [inf] * len(fit)
     jumped = [job.been_jumped for job in jobs]
-    keys = [router_key(job, sjf=sjf) for job in jobs]
+    keys = [router_key(job, sjf=sjf, null_group_first=null_group_first) for job in jobs]
     done = [False] * n
     group_jobs: dict[str, list[int]] = {}
     if sjf:
@@ -350,11 +363,11 @@ def replay(
             freeze(pid, t)
         else:
             heapq.heappush(heap, (max(t, ready_at[pid]), 1, pid))
-        if sjf and job.seconds is not None and job.group is not None:
+        if sjf and _order_seconds(job) is not None and job.group is not None:
             for k in group_jobs[job.group]:
                 if not done[k] and jumps(job, jobs[k], peer_jumped=jumped[k]):
                     jumped[k] = True
-                    keys[k] = router_key(jobs[k], sjf=True, jumped=True)
+                    keys[k] = router_key(jobs[k], sjf=True, jumped=True, null_group_first=null_group_first)
                     dirty = True
 
     def wave(t: float) -> None:

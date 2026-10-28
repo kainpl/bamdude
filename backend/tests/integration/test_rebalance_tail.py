@@ -252,10 +252,18 @@ def _finished_status(trays):
 
 
 @pytest.mark.parametrize(
-    ("sjf", "compatible"), [(False, False), (True, False), (True, True)], ids=["position", "sjf", "sjf-shared-pool"]
+    ("sjf", "compatible", "edge"),
+    [
+        (False, False, None),
+        (True, False, None),
+        (True, True, None),
+        (True, True, "zero_time"),
+        (True, True, "null_model"),
+    ],
+    ids=["position", "sjf", "sjf-shared-pool", "sjf-zero-time", "sjf-null-model"],
 )
 async def test_the_forecasts_first_wave_is_the_routers_placement(
-    db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf, compatible
+    db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf, compatible, edge
 ):
     """T-A25: on one snapshot, the jobs the forecast deals out now — and the printer each goes
     to — are exactly the ones the router's tick places, with the router's readiness, colour,
@@ -272,6 +280,19 @@ async def test_the_forecasts_first_wave_is_the_routers_placement(
     status, connected, awaiting, interlocked = await _parity_farm(
         db_session, printer_factory, tmp_path, compatible=compatible
     )
+    if edge is not None:
+        # Codex r1 T-R2: a stored 0 sorts before every estimate; a row with no model sorts where
+        # the database puts NULL (first on SQLite, last on PostgreSQL).
+        row = (
+            await db_session.execute(
+                select(AutoQueueItem).where(AutoQueueItem.target_model == "P1S", AutoQueueItem.position == 8)
+            )
+        ).scalar_one()
+        if edge == "zero_time":
+            row.print_time_seconds = 0
+        else:
+            row.target_model = None
+        await db_session.commit()
     if sjf:
         db_session.add(Settings(key=queue_rebalance.SJF_SETTING_KEY, value="true"))
         await db_session.commit()

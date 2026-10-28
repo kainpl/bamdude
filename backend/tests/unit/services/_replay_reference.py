@@ -8,10 +8,10 @@ re-sort. A difference between the two is a bug in the fast one's bookkeeping.
 from math import inf
 
 from backend.app.services.farm_forecast import _admit
-from backend.app.services.rebalance_replay import Replay, jumps, router_key
+from backend.app.services.rebalance_replay import Replay, _order_seconds, jumps, router_key
 
 
-def reference_replay(lanes, jobs, *, sjf=False, stagger=None, operator_hours=None) -> Replay:
+def reference_replay(lanes, jobs, *, sjf=False, stagger=None, operator_hours=None, null_group_first=True) -> Replay:
     out = Replay()
     lanes = sorted(lanes, key=lambda lane: lane.printer_id)
     by_pid = {lane.printer_id: lane for lane in lanes}
@@ -140,7 +140,10 @@ def reference_replay(lanes, jobs, *, sjf=False, stagger=None, operator_hours=Non
             events.remove(e)
         free = {pid for _t, _p, pid in frees}
         if free:
-            order = sorted(pending, key=lambda jid: router_key(by_id[jid], sjf=sjf, jumped=jumped[jid]))
+            order = sorted(
+                pending,
+                key=lambda jid: router_key(by_id[jid], sjf=sjf, jumped=jumped[jid], null_group_first=null_group_first),
+            )
             for jid in order:
                 if not free:
                     break
@@ -178,7 +181,7 @@ def reference_replay(lanes, jobs, *, sjf=False, stagger=None, operator_hours=Non
                     freeze(pid, t)
                 else:
                     events.append((max(t, ready_at[pid]), 1, pid))
-                if sjf and job.seconds is not None and job.group is not None:
+                if sjf and _order_seconds(job) is not None and job.group is not None:
                     for other in pending:
                         if jumps(job, by_id[other], peer_jumped=jumped[other]):
                             jumped[other] = True
