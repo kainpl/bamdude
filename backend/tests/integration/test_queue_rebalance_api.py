@@ -452,7 +452,7 @@ async def test_a_refused_capture_leaves_the_job_exactly_as_it_was(db_session, pr
 async def test_a_failed_companion_creation_restores_the_old_bytes_too(
     db_session, printer_factory, tmp_path, monkeypatch
 ):
-    """The undo is field by field, and the two snapshot columns are two of them.
+    """The conversion and its companions are one transaction, so a failure takes the new bytes back too.
 
     A converted row whose companions were never created under-covers its line;
     one that kept the new bytes while every other column went back would print the
@@ -461,7 +461,7 @@ async def test_a_failed_companion_creation_restores_the_old_bytes_too(
     farm = await _a_captured_farm(db_session, printer_factory, tmp_path)
     item_id, big_id, old_blob_id = farm.item.id, farm.big.id, farm.old_blob.id
     monkeypatch.setattr(
-        queue_rebalance, "add_items_to_auto_queue", AsyncMock(side_effect=RuntimeError("the writer is down"))
+        queue_rebalance, "build_auto_queue_rows", AsyncMock(side_effect=RuntimeError("the writer is down"))
     )
 
     result = await _move(db_session, farm)
@@ -483,12 +483,12 @@ async def test_the_pin_is_held_before_the_reference_is_even_computed(
 ):
     """§9, the pin's own window: published, nothing owns it yet, and the collector cannot touch it.
 
-    ``snapshot_for`` is a production call **inside** the window — under the pin,
-    before the conversion's commit — so a spy there enters it without instrumenting
-    the session. Two claims:
+    ``_write_group`` is entered **inside** the window — under the pin, before one row of
+    the move is written or flushed — so a spy there sees the blob published and owned
+    by nobody. Two claims:
 
     * the blob is already pinned at that point, which fails immediately if anyone
-      moves the ``pin`` below the assignments or replaces it;
+      moves the ``pin`` below the write or replaces it;
     * and the **real** collector, run from inside the window, leaves the row's
       ``unreferenced_at`` alone. That is the behavioural claim ("the grace never
       beats a live pin") asked of the thing itself rather than of a mock: without
@@ -502,24 +502,15 @@ async def test_the_pin_is_held_before_the_reference_is_even_computed(
     """
     farm = await _a_captured_farm(db_session, printer_factory, tmp_path)
     window: dict = {}
-    real_snapshot_for = queue_sources.snapshot_for
-    real_commit = db_session.commit
+    real_write = queue_rebalance._write_group
 
-    def snapshot_spy(receipt, source):
+    async def write_spy(*args, **kwargs):
         window["pinned"] = queue_sources.pinned_source_ids()
-        window["blob_id"] = source.id
-        window["armed"] = True
-        return real_snapshot_for(receipt, source)
+        window["blob_id"] = args[6].id
+        window["report"] = await queue_sources.collect(force=True)
+        return await real_write(*args, **kwargs)
 
-    async def commit_spy(*args, **kwargs):
-        if window.pop("armed", False):
-            # Still inside the window: the blob is published, the row that will own
-            # it is not committed, and the collector is about to be asked.
-            window["report"] = await queue_sources.collect(force=True)
-        return await real_commit(*args, **kwargs)
-
-    monkeypatch.setattr(queue_sources, "snapshot_for", snapshot_spy)
-    monkeypatch.setattr(db_session, "commit", commit_spy)
+    monkeypatch.setattr(queue_rebalance, "_write_group", write_spy)
     result = await _move(db_session, farm)
 
     assert result.converted == 1, result.skipped
@@ -535,19 +526,13 @@ async def test_the_pin_is_held_before_the_reference_is_even_computed(
 
 
 @pytest.mark.asyncio
-async def test_an_undo_with_no_companions_created_is_still_committed(
-    db_session, test_engine, printer_factory, tmp_path, monkeypatch
-):
-    """The conversion is durable before the companions are attempted.
-
-    So an undo that only assigned the old values back in memory would leave the
-    converted row on disk — which is why the undo's commit is unconditional now,
-    where it used to happen only when rows had been created.
-    """
+async def test_a_failed_move_leaves_nothing_durable(db_session, test_engine, printer_factory, tmp_path, monkeypatch):
+    """Nothing of the move is committed before its companions are (spec B1, B-R3): the database
+    still holds the job exactly as it was — no compensating second transaction undid anything."""
     farm = await _a_captured_farm(db_session, printer_factory, tmp_path)
     item_id, big_id, old_blob_id = farm.item.id, farm.big.id, farm.old_blob.id
     monkeypatch.setattr(
-        queue_rebalance, "add_items_to_auto_queue", AsyncMock(side_effect=RuntimeError("the writer is down"))
+        queue_rebalance, "build_auto_queue_rows", AsyncMock(side_effect=RuntimeError("the writer is down"))
     )
 
     result = await _move(db_session, farm)

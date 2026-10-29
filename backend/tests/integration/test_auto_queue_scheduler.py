@@ -1164,21 +1164,15 @@ class TestRebalanceAcrossModels:
     async def test_a_creation_that_refuses_leaves_the_row_exactly_as_it_was(
         self, monkeypatch, db_session, scheduler, printer_factory, tmp_path
     ) -> None:
-        """A move is all-or-nothing, and the writer refusing is where that is decided.
+        """A move is all-or-nothing, and the companions' order check refusing is where that is decided.
 
-        ``add_items_to_auto_queue`` refuses the companions (a dangling
-        ``project_id``, a line that is not the order's) and the tick's blanket
-        ``except`` swallows it, so without the field-by-field restore below the
-        line would keep ONE print of a 2-hook plate where six hooks were owed
-        and never learn that four went missing.
-
-        ⚠️ The *mechanism* that makes a half-move durable changed on
-        2026-09-13: the writer now commits FIRST and copies the bytes into the
-        queue spool afterwards, so durability no longer needs an autoflush or
-        the tick's commit — the converted row is already on disk while the copy
-        runs. The restore this test pins is what covers a writer refusal; the
-        crash-during-copy window is named in ``queue_rebalance._apply`` and is
-        closed by capturing before the row is mutated.
+        The order the companions are filed under is checked as the public add
+        checks it (a dangling ``project_id``, a line that is not the order's, a
+        closed order) and the tick's blanket ``except`` swallows a refusal, so a
+        conversion that outlived it would leave the line ONE print of a 2-hook
+        plate where six hooks were owed, and never say that four went missing.
+        The conversion and the companions are one transaction (spec
+        rebalance-companion-atomicity B-R3): the refusal rolls both back.
         """
         from backend.app.services import queue_rebalance
 
@@ -1189,7 +1183,7 @@ class TestRebalanceAcrossModels:
         async def _refuse(*_args, **_kwargs):
             raise HTTPException(404, "Project not found")
 
-        monkeypatch.setattr(queue_rebalance, "add_items_to_auto_queue", _refuse)
+        monkeypatch.setattr(queue_rebalance, "resolve_link", _refuse)
 
         p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
         with p_elig, p_sched:
@@ -1216,17 +1210,16 @@ class TestRebalanceAcrossModels:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_companions_the_writer_already_committed_are_deleted_when_the_stamping_fails(
+    async def test_companions_built_but_never_committed_vanish_with_the_conversion(
         self, monkeypatch, db_session, scheduler, printer_factory, tmp_path
     ) -> None:
-        """The writer COMMITS, so forgetting its rows is not undoing them.
+        """Nothing of a move is committed before all of it is.
 
-        ``add_items_to_auto_queue`` succeeds and commits — the converted row and
-        its two companions are durable — and the ``flush`` of the stamping loop
-        right after it fails. Restoring the row's fields is then only half the
-        undo: the companions would stay, filed under the line, unstamped (so no
+        The builder writes the two companions and flushes them beside the
+        converted row, and the move fails right after. One rollback takes all
+        three back: no companion stays filed under the line, unstamped (so no
         cooldown holds the line) and covering parts nobody owes — six hooks
-        queued as ten.
+        queued as ten — and nothing had to be deleted to get there.
         """
         from backend.app.services import queue_rebalance
 
@@ -1234,26 +1227,20 @@ class TestRebalanceAcrossModels:
         db_session.add(Settings(key="auto_queue_rebalance_models", value="true"))
         await db_session.commit()
 
-        real_writer = queue_rebalance.add_items_to_auto_queue
-        real_flush = db_session.flush
+        real_builder = queue_rebalance.build_auto_queue_rows
 
-        async def _fail_once(*args, **kwargs):
-            db_session.flush = real_flush  # only the stamping flush fails; the undo needs the real one
-            raise RuntimeError("flush failed")
+        async def _built_then_fail(*args, **kwargs):
+            await real_builder(*args, **kwargs)
+            raise RuntimeError("the move failed after its companions were flushed")
 
-        async def _commit_then_arm_the_flush(*args, **kwargs):
-            rows = await real_writer(*args, **kwargs)
-            db_session.flush = _fail_once
-            return rows
-
-        monkeypatch.setattr(queue_rebalance, "add_items_to_auto_queue", _commit_then_arm_the_flush)
+        monkeypatch.setattr(queue_rebalance, "build_auto_queue_rows", _built_then_fail)
 
         p_elig, p_sched = _patch_printer_manager({farm.p1s.id, farm.mini.id})
         with p_elig, p_sched:
             await scheduler.tick()
 
         rows = await _pending_rows(db_session)
-        assert len(rows) == 1, "the two committed companions were deleted"
+        assert len(rows) == 1, "the companions went back with the conversion"
         await db_session.refresh(farm.item)
         assert (farm.item.library_file_id, farm.item.plate_id, farm.item.target_model) == (farm.big.id, 1, "P1S")
         assert (farm.item.print_time_seconds, farm.item.batch_id) == (3600, None)
