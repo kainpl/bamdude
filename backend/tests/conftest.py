@@ -25,6 +25,13 @@ os.environ["DEBUG"] = "false"
 # rather than on the code - which is exactly what happened on 2026-09-17.
 # ``setdefault``, so a deliberate override from the command line still wins.
 os.environ.setdefault("BAMDUDE_IGNORE_DOTENV", "1")
+# ⚠️ The suite never freezes the collector: several tests enter the application's
+# lifespan, and freezing a pytest worker's heap is no production boundary — it
+# would keep every earlier test's leftovers forever. Assigned, not setdefault, so
+# an operator's own value in the shell cannot switch it on for the suite. The
+# real start-up runs in children of its own that remove this
+# (integration/test_process_gc_startup.py).
+os.environ["BAMDUDE_GC_STARTUP_FREEZE"] = "off"
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402

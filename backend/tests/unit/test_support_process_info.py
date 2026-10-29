@@ -40,6 +40,11 @@ class TestCollectsSomethingUseful:
         vanishing without saying so.
         """
         info = support_routes._collect_process_info()
+        # The census walks only what is not frozen (core/process_gc.py freezes the start-up heap),
+        # so the bundle says how much it does not walk, census or no census.
+        import gc
+
+        assert info["gc_frozen_objects"] == gc.get_freeze_count()
         if "gc_census" in info:
             assert "skipped" in info["gc_census"]
             return
@@ -133,6 +138,7 @@ class TestHeapCensusGate:
         assert "gc_tracked_objects" not in info
         assert "skipped" in info["gc_census"]
         assert info["num_threads"] == 40  # the useful part survives the skip
+        assert isinstance(info["gc_frozen_objects"], int)
 
 
 def test_the_issue_pack_shares_the_collector_it_is_wired_into():

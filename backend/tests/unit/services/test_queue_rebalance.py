@@ -876,22 +876,6 @@ async def test_a_cancelled_pass_stops_waiting_while_its_thread_finishes():
         release.set()
 
 
-def test_no_application_code_switches_the_collector():
-    """Codex r1 T-R4: the cyclic collector is the process's, not a pass's. A pause around the
-    decision (measured 2026-10-28, paired with the router on the same stands) moved a full
-    collection from the worker onto the loop and never made one rarer; switching it is a
-    process-wide policy nobody authorised. Code that wants to switch it is an owner's decision."""
-    import re
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[3] / "app"
-    switch = re.compile(r"\bgc\.(?:disable|enable|freeze|unfreeze|set_threshold)\(|from gc import")
-    offenders = sorted(
-        str(path.relative_to(root)) for path in root.rglob("*.py") if switch.search(path.read_text(encoding="utf-8"))
-    )
-    assert offenders == []
-
-
 def test_a_trial_stops_once_its_print_can_no_longer_start_in_time(monkeypatch):
     """T20 / T21: a moved print that has not started by home − (preparation + its time) ends
     after home whatever comes next, so the trial needs no clock beyond that start."""

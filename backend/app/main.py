@@ -104,7 +104,7 @@ from backend.app.api.routes import (
 )
 from backend.app.api.routes.maintenance import _get_printer_maintenance_internal, ensure_default_types
 from backend.app.api.routes.support import init_debug_logging
-from backend.app.core import query_timing
+from backend.app.core import process_gc, query_timing
 from backend.app.core.config import APP_VERSION, settings as app_settings
 from backend.app.core.database import async_session, engine, init_db
 from backend.app.core.tasks import spawn_background_task
@@ -12419,6 +12419,9 @@ from backend.app.services.farm_startup_guard import FarmReadyMiddleware, FarmSta
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ⚠️ First, before the farm guard, the database or any manager: the start-up heap is frozen
+    # once per process, and a server that has started must never be (core/process_gc.py).
+    process_gc.prepare_startup_heap()
     farm_startup_guard.start(Path(app_settings.data_dir))
     try:
         async with _application_lifespan(app):

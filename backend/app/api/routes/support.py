@@ -783,6 +783,10 @@ def _collect_process_info() -> dict:
     # RSS cost 175 ms end to end (35 ms to materialise, 140 ms to count). Roughly
     # linear, so the gate caps the worst case at a couple of seconds — tolerable
     # off the event loop, which is where the caller runs it.
+    # The start-up heap is frozen (core/process_gc.py) and ``gc.get_objects()`` never lists the
+    # frozen generation, so the census counts what the running server created; how much it
+    # does not walk is one counter, read whatever the gate below decides.
+    out["gc_frozen_objects"] = gc.get_freeze_count()
     rss = out.get("rss_bytes")
     if rss is not None and rss > _GC_CENSUS_RSS_LIMIT:
         out["gc_census"] = (
