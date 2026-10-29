@@ -92,11 +92,40 @@ def run(scenario: str) -> dict:
 
     sentinels: list = []
 
+    async def runtime_objects():
+        """G-A05: what a running server creates and closes — a task, a session, an HTTP client, an
+        MQTT client fed a status push, an engine of its own — each a graph with cycles."""
+        import httpx
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        task = asyncio.create_task(asyncio.sleep(0))
+        await task
+        sentinels.append(weakref.ref(task))
+        async with database.async_session() as session:
+            await session.execute(text("SELECT 1"))
+        sentinels.append(weakref.ref(session))
+        async with httpx.AsyncClient() as client:
+            pass
+        sentinels.append(weakref.ref(client))
+        mqtt = BambuMQTTClient("192.0.2.1", "GCPROBE00001", "12345678", model="P1S")
+        mqtt._process_message({"print": {"command": "push_status", "gcode_state": "IDLE", "mc_percent": 0}})
+        sentinels.append(weakref.ref(mqtt))
+        engine = create_async_engine("sqlite+aiosqlite:///" + str(database.settings.base_dir) + "/probe.sqlite")
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        await engine.dispose()
+        sentinels.append(weakref.ref(engine))
+
     @asynccontextmanager
     async def farm(app, *, fail=False, restore=False):
         marks.append(["farm_start", gc.get_freeze_count()])
         await database.init_db()
         sentinels.append(_cycle())
+        if scenario == "runtime_objects":
+            await runtime_objects()
         if fail:
             raise RuntimeError("start-up failed after the boundary")
         if restore:

@@ -108,6 +108,14 @@ def test_a_restore_rebuilds_the_engine_without_freezing_anything(tmp_path):
     assert out["sentinels_alive"] == [False, False]
 
 
+def test_what_the_running_server_creates_and_closes_is_collected(tmp_path):
+    """G-A05: a task, a session, an HTTP client, an MQTT client and an engine created after the
+    boundary and closed are freed by the ordinary collector — none of them was frozen."""
+    out = _child(tmp_path, "runtime_objects")
+    _enabled(out)
+    assert out["sentinels_alive"] == [False] * 6
+
+
 @pytest.mark.parametrize(
     ("scenario", "policy", "reason", "level"),
     [
