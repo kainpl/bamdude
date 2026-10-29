@@ -106,6 +106,33 @@ def from_context(ctx, recipes, queued, price, *, baseline=None):
     return Inputs(ctx, baseline, recipes, token, price, source_tokens)
 
 
+def entry_identity(entry: dict) -> tuple:
+    return tuple(entry.get(key) for key in ("entry_id", "line_id", "plate_id", "line_token", "source_token"))
+
+
+async def preview_projection(db, data: Inputs, entries: list[DraftEntry], *, visible=None):
+    """Only a currently retained identity can explain an absent order line.
+
+    Keep its unknown work in issues, never as a synthetic simulation row.
+    The same saved snapshot is also the forecast comparison's authority.
+    """
+    from backend.app.models.order_working_plan import OrderWorkingPlan
+
+    stored = await db.get(OrderWorkingPlan, data.ctx.project.id, populate_existing=True)
+    identities = {entry_identity(e) for e in stored.entries} if stored else set()
+    lines = {line.id for line in data.ctx.lines}
+    regular, missing = [], []
+    for entry in entries:
+        if entry.line_id in lines:
+            regular.append(entry)
+        elif entry_identity(entry.model_dump()) in identities:
+            missing.append({"entry_id": entry.entry_id, "code": "line_unavailable"})
+        else:
+            raise HTTPException(422, {"code": "invalid_draft", "message": "Order line does not belong to this order"})
+    plan, coverage, issues, targets = project(data, regular, visible=visible)
+    return plan, coverage, issues + missing, targets, stored
+
+
 def project(data: Inputs, entries: list[DraftEntry], *, visible=None):
     lines = {line.line_id: replace(line, rows=[]) for line in data.baseline.lines}
     requested = {line.id: line for line in data.ctx.lines}
@@ -285,7 +312,7 @@ async def preview(
         raise HTTPException(
             409, {"code": "inputs_changed", "message": "Planning inputs changed", "inputs_token": data.token}
         )
-    plan, coverage, issues, _ = project(data, entries, visible=visible)
+    plan, coverage, issues, _, stored = await preview_projection(db, data, entries, visible=visible)
     complete = not issues and not any(p["missing"] for p in coverage)
     answer = {
         "schema_version": 1,
@@ -310,6 +337,7 @@ async def preview(
         visible=visible,
         saved_revision=saved_revision,
         epoch=comparison_epoch,
+        working_row=stored,
     )
     try:
         snapshot = await ff.load_snapshot(db, now)

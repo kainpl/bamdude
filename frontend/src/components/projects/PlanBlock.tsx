@@ -99,6 +99,9 @@ export function PlanBlock({
   }) } : withWorkingEntries(receivedPlan, working.state), [frozenPlan, receivedPlan, working.state, localEditsCurrent]);
   const { refreshInputs, change: changeWorking } = working;
   const [planAction, setPlanAction] = useState(false);
+  const [confirmPlanAction, setConfirmPlanAction] = useState<'reload' | 'rebuild'>();
+  const [planNotice, setPlanNotice] = useState<string>();
+  const [needsPlanRead, setNeedsPlanRead] = useState(false);
   const [proposal, setProposal] = useState<{ kind: 'remainder' | 'rebuild'; value: PlanProposal }>();
   const [submission, setSubmission] = useState<PlanSubmission>();
   const [adminCancel, setAdminCancel] = useState(false);
@@ -251,7 +254,7 @@ export function PlanBlock({
   const filesFuture = canFileFuturePrint(hasPermission);
   const missingContext = !!working.state && working.state.revision > 0 && working.state.entries.some(e => !receivedPlan?.lines.some(l => l.line_id === e.line_id && l.rows.some(r => [r, ...r.alternatives].some(p => p.plate_id === e.plate_id))));
   const contextBehind = missingContext || !!working.state && !!receivedPlan && ((receivedPlan.working_revision ?? 0) < working.state.revision || receivedPlan.inputs_token !== working.state.inputs_token);
-  const frozen = !!working.state?.active_operation || submissionUncertain || !!working.error || planAction;
+  const frozen = !!working.state?.active_operation || submissionUncertain || !!working.error || working.recovering || needsPlanRead || planAction;
   const canQueue = canEdit && filesFuture && hasPermission('queue:create') && !!working.state && !frozen;
   const canPrint = filesFuture && hasPermission('printers:control');
   const canRebalance = canEdit && filesFuture && hasPermission('queue:update_all');
@@ -267,12 +270,16 @@ export function PlanBlock({
   }, [queryClient, order.id]);
 
   const resetEditor = async (refresh = true) => {
-    clearLocal(); // no old overlays may render under the returned revision
     await working.reload();
+    // reload's generation deactivates overlays atomically with its snapshot.
+    // A failed read never reaches this cleanup and preserves the local input.
     editBase.current = undefined;
     setFrozenPlan(undefined);
     seenSignatures.current = {};
     setCounts({}); setChosen({}); setSplit({}); setAdded({});
+    setProposal(undefined);
+    setPlanNotice(undefined);
+    setNeedsPlanRead(false);
     if (refresh) await refetch();
     setPreviewRevision(value => value + 1);
   };
@@ -589,18 +596,34 @@ export function PlanBlock({
     await resetEditor();
   });
   const prepareReplan = (kind: 'remainder' | 'rebuild') => runPlanAction(async () => {
-    const state = await flushPlan();
-    const value = await api.replanWorkingPlan(order.id, { expected_revision: state.revision, kind, inputs_token: state.inputs_token }) as PlanProposal;
-    setProposal({ kind, value });
+    setPlanNotice(undefined);
+    try {
+      const state = await flushPlan();
+      const value = await api.replanWorkingPlan(order.id, { expected_revision: state.revision, kind, inputs_token: state.inputs_token }) as PlanProposal;
+      setProposal({ kind, value });
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'source_review_required') setPlanNotice(t('workingPlan.reviewRemainder'));
+      else throw error;
+    }
   });
-  const applyReplan = () => runPlanAction(async () => {
+  const applyReplan = async () => {
     if (!proposal) return;
-    if (proposal.kind === 'rebuild' && !window.confirm(t('workingPlan.rebuildConfirm'))) return;
-    const state = await flushPlan();
-    await api.replanWorkingPlan(order.id, { expected_revision: state.revision, kind: proposal.kind,
-      inputs_token: proposal.value.inputs_token, apply: true, proposal_token: proposal.value.proposal_token, proposal_entries: proposal.value.entries });
-    setProposal(undefined); await resetEditor();
-  });
+    try {
+      const state = await flushPlan();
+      await api.replanWorkingPlan(order.id, { expected_revision: state.revision, kind: proposal.kind,
+        inputs_token: proposal.value.inputs_token, apply: true, proposal_token: proposal.value.proposal_token, proposal_entries: proposal.value.entries });
+      await resetEditor();
+    } catch (error) {
+      const stale = error instanceof ApiError ? ['inputs_changed', 'plan_conflict'].includes(error.code ?? '')
+        : error instanceof Error && error.message === 'workingPlan.conflict';
+      const uncertain = !(error instanceof ApiError) || error.status >= 500;
+      if (!stale && !uncertain) throw error;
+      setProposal(undefined);
+      setConfirmPlanAction(undefined);
+      setNeedsPlanRead(uncertain);
+      setPlanNotice(t(uncertain ? 'workingPlan.applyUncertain' : 'workingPlan.proposalStale'));
+    }
+  };
   const resumeSubmission = (action: 'execute' | 'cancel') => runPlanAction(async () => {
     const operation = working.state?.active_operation ?? submissionAttempt.current?.id ?? submission?.operation_id;
     if (!operation) return;
@@ -837,10 +860,21 @@ export function PlanBlock({
     <section id="order-plan" className="space-y-3" data-testid="plan-block">
       {navigationGuard}
       {queueConfirmation}
+      {confirmPlanAction && <ActionConfirm title={t(confirmPlanAction === 'reload' ? 'workingPlan.reload' : 'workingPlan.rebuild')}
+        body={t(confirmPlanAction === 'reload' ? 'workingPlan.reloadConfirm' : 'workingPlan.rebuildConfirm')}
+        primaryLabel={t(confirmPlanAction === 'reload' ? 'workingPlan.reload' : 'workingPlan.apply')}
+        onClose={() => setConfirmPlanAction(undefined)} send={async () => {
+          setPlanAction(true);
+          try {
+            if (confirmPlanAction === 'reload') await resetEditor();
+            else await applyReplan();
+          } catch (error) { throw new Error(planErrorText(error, t)); }
+          finally { setPlanAction(false); }
+        }} />}
       {intro}
       <div className="rounded-xl border border-bambu-dark-tertiary p-3 space-y-2" data-testid="working-plan-controls">
         <p className="text-sm text-bambu-gray-light" role="status">
-          {t(working.saving ? 'workingPlan.saving' : working.dirty ? 'workingPlan.unsaved' : !working.state ? 'common.loading' : working.state.revision ? 'workingPlan.autosaved' : 'workingPlan.notSaved')}
+          {t(working.recovering ? 'workingPlan.reading' : working.saving ? 'workingPlan.saving' : working.dirty ? 'workingPlan.unsaved' : !working.state ? 'common.loading' : working.state.revision ? 'workingPlan.autosaved' : 'workingPlan.notSaved')}
         </p>
         <p className="text-xs text-bambu-gray">{working.state?.saved_at
           ? t('workingPlan.baseline', { who: working.state.saved_by, when: formatDateTime(working.state.saved_at, settings?.time_format, settings?.date_format) })
@@ -858,8 +892,16 @@ export function PlanBlock({
         </details>}
         {working.state?.saved_epoch != null && working.state.saved_epoch !== working.state.epoch &&
           <p className="text-sm text-amber-700 dark:text-amber-400">{t('workingPlan.scopeChanged')}</p>}
-        {working.error && <div role="alert" className="text-sm text-amber-700 dark:text-amber-400">
-          {planErrorText(working.error, t)} <Button size="sm" onClick={() => { if (window.confirm(t('workingPlan.reloadConfirm'))) void runPlanAction(resetEditor); }}>{t('workingPlan.reload')}</Button>
+        {planNotice && <p role="alert" className="text-sm text-amber-700 dark:text-amber-400">{planNotice}</p>}
+        {(working.error || needsPlanRead) && <div role="alert" className="text-sm text-amber-700 dark:text-amber-400">
+          {working.error && planErrorText(working.error, t)} <Button size="sm" disabled={planAction || working.recovering} onClick={() => setConfirmPlanAction('reload')}>{t('workingPlan.reload')}</Button>
+        </div>}
+        {proposal && <div className="text-sm space-y-2" data-testid="working-plan-proposal">
+          <p>{t('workingPlan.proposal', { before: proposal.value.previous_count ?? '—', after: proposal.value.count ?? '—' })}</p>
+          {proposal.value.removed_issue_entry_count != null && <p>{t('workingPlan.removedIssues', { count: proposal.value.removed_issue_entry_count })}</p>}
+          <Button size="sm" disabled={frozen} onClick={() => proposal.kind === 'rebuild' ? setConfirmPlanAction('rebuild') : void runPlanAction(applyReplan)}>{t('workingPlan.apply')}</Button>
+          <Button size="sm" variant="secondary" disabled={planAction} onClick={() => setProposal(undefined)}>{t('common.cancel')}</Button>
+          <details><summary>{t('workingPlan.proposalDetails')}</summary><ul>{proposal.value.entries.map(e => <li key={e.entry_id}>{entryCaption(e)}: {e.count} ({t('workingPlan.protected', { count: e.protected_count })})</li>)}</ul></details>
         </div>}
         {canEdit && <div className="flex flex-wrap gap-2">
           <Button size="sm" disabled={frozen || !working.state || overCap || splitOff} onClick={() => void savePlan()}>{t('workingPlan.save')}</Button>
@@ -880,7 +922,7 @@ export function PlanBlock({
           </div>
         </div>}
         {working.state?.issues.map(issue => <div key={`${issue.entry_id}-${issue.code}`} className="text-sm text-amber-700 dark:text-amber-400">
-          <p>{t(issue.code === 'order_resources_changed' ? 'orderResources.errors.order_resources_changed' : issue.code.startsWith('target_') ? 'workingPlan.targetIssue' : 'workingPlan.sourceIssue')} ({entryCaption(working.state!.entries.find(e => e.entry_id === issue.entry_id) ?? { line_id: -1, plate_id: -1 })})</p>
+          <p>{t(issue.code === 'line_unavailable' ? 'workingPlan.lineIssue' : issue.code === 'source_unavailable' ? 'workingPlan.unavailableIssue' : issue.code === 'source_changed' ? 'workingPlan.changedIssue' : issue.code === 'order_resources_changed' ? 'orderResources.errors.order_resources_changed' : issue.code.startsWith('target_') ? 'workingPlan.targetIssue' : 'workingPlan.sourceIssue')} ({entryCaption(working.state!.entries.find(e => e.entry_id === issue.entry_id) ?? { line_id: -1, plate_id: -1 })})</p>
           {canEdit && !frozen && <div className="flex flex-wrap gap-2">
             {issue.code.startsWith('target_') && <Button size="sm" variant="secondary" onClick={() => void runPlanAction(async () => {
               working.change(canonicalRef.current.map(e => e.entry_id === issue.entry_id ? { ...e, target: { kind: 'auto' }, manual: true, protected_count: e.count } : e));
@@ -897,12 +939,6 @@ export function PlanBlock({
             })}>{t('workingPlan.removeEntry')}</Button>
           </div>}
         </div>)}
-        {proposal && <div className="text-sm space-y-2" data-testid="working-plan-proposal">
-          <p>{t('workingPlan.proposal', { before: proposal.value.previous_count ?? proposal.value.previous_entries.reduce((n, e) => n + e.count, 0), after: proposal.value.count ?? proposal.value.entries.reduce((n, e) => n + e.count, 0) })}</p>
-          <ul>{proposal.value.entries.map(e => <li key={e.entry_id}>{entryCaption(e)}: {e.count} ({t('workingPlan.protected', { count: e.protected_count })})</li>)}</ul>
-          <Button size="sm" disabled={planAction} onClick={() => void applyReplan()}>{t('workingPlan.apply')}</Button>
-          <Button size="sm" variant="secondary" onClick={() => setProposal(undefined)}>{t('common.cancel')}</Button>
-        </div>}
       </div>
       {adminCancel && submission && <ActionConfirm title={t('workingPlan.adminCancel')}
         body={<div className="space-y-3"><p>{t('workingPlan.adminCancelDescription')}</p><label className="block">{t('workingPlan.cancelReason')}<textarea value={cancelReason} maxLength={500} onChange={e => setCancelReason(e.target.value)} className="block w-full bg-bambu-dark border border-bambu-gray rounded p-2" /></label></div>}

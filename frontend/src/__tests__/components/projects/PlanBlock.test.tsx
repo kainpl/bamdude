@@ -13,7 +13,7 @@ import { mockWorkingPlanApi } from '../../fixtures/workingPlan';
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within, cleanup, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { QueryClientProvider, QueryClient, onlineManager, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -372,6 +372,68 @@ describe('PlanBlock', () => {
     vi.spyOn(api, 'getModelCompatibility').mockResolvedValue({ models: {} });
     vi.spyOn(api, 'getOrderForecast').mockResolvedValue(EMPTY_FORECAST);
     vi.spyOn(api, 'getOrderFilament').mockResolvedValue(EMPTY_NEEDS);
+  });
+
+  it.each(['success', 'failed', 'focus'])('confirmed recovery preserves edits: %s', async mode => {
+    const state = { ...await api.getWorkingPlan(1), revision: 1,
+      entries: [{ entry_id: 'row-10-100', line_id: 10, plate_id: 100, count: 20,
+        target: { kind: 'auto' as const }, manual: true, protected_count: 20 }] };
+    vi.mocked(api.getWorkingPlan).mockResolvedValue(state);
+    vi.mocked(api.getOrderPlan).mockResolvedValue({ ...plan, working_revision: 1, inputs_token: state.inputs_token });
+    vi.mocked(api.writeWorkingPlan).mockRejectedValue(new ApiError('Inputs changed', 409, 'inputs_changed'));
+    render(<PlanBlock order={order} canEdit />);
+    const input = await screen.findByTestId('plan-row-10-100-count');
+    fireEvent.change(input, { target: { value: '18' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Read shared plan again' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(input).toHaveValue(18);
+    let finish: (() => void) | undefined;
+    if (mode === 'failed') vi.mocked(api.getWorkingPlan).mockRejectedValue(new Error('workingPlan.conflict'));
+    if (mode === 'focus') vi.mocked(api.getWorkingPlan).mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => { finish = resolve; });
+      return { ...state, revision: 2, entries: [{ ...state.entries[0], count: 14 }] };
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Read shared plan again' }));
+    if (mode === 'focus') {
+      await waitFor(() => expect(finish).toBeDefined());
+      const calls = vi.mocked(api.getWorkingPlan).mock.calls.length;
+      fireEvent.focus(window);
+      expect(api.getWorkingPlan).toHaveBeenCalledTimes(calls);
+      await act(async () => { finish!(); });
+    }
+    if (mode === 'failed') {
+      await within(dialog).findByText(/Could not save. Your edits are still here/);
+      expect(input).toHaveValue(18);
+      expect(dialog).not.toHaveTextContent('workingPlan.conflict');
+    } else {
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(input).toHaveValue(mode === 'focus' ? 14 : 20);
+      expect(input).not.toBeDisabled();
+      expect(screen.queryByText('Local changes are not saved yet')).toBeNull();
+    }
+    expect(api.writeWorkingPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the server rebuild summary and discards a stale proposal with its dialog', async () => {
+    const save = vi.spyOn(api, 'actWorkingPlan');
+    const replan = vi.spyOn(api, 'replanWorkingPlan').mockResolvedValue({
+      proposal_token: 'reviewed', inputs_token: 'inputs', entries: [], previous_entries: [],
+      previous_count: 2, count: 0, removed_issue_entry_count: 17,
+    });
+    render(<PlanBlock order={order} canEdit />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Rebuild whole draft' }));
+    const proposal = await screen.findByTestId('working-plan-proposal');
+    expect(proposal).toHaveTextContent('Problem entries removed or replaced: 17');
+    expect(proposal).toHaveTextContent('Not applied yet');
+    fireEvent.click(within(proposal).getByRole('button', { name: 'Apply to draft' }));
+    const dialog = await screen.findByRole('dialog');
+    replan.mockRejectedValue(new ApiError('Changed', 409, 'inputs_changed'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply to draft' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByTestId('working-plan-proposal')).toBeNull();
+    expect(screen.getByText(/Calculate a new proposal/)).toBeInTheDocument();
+    expect(save).not.toHaveBeenCalled();
+    expect(api.registerPlanSubmission).not.toHaveBeenCalled();
   });
 
   it('replaces acknowledged local overlays with a foreign working revision even while metadata still has old counts', async () => {

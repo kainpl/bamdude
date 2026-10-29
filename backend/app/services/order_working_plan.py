@@ -290,9 +290,11 @@ async def state(db, row, data, *, visible=None):
     return out
 
 
-async def comparison(db, data, plan, entries, coverage, issues, *, visible=None, saved_revision=None, epoch=None):
+async def comparison(
+    db, data, plan, entries, coverage, issues, *, working_row, visible=None, saved_revision=None, epoch=None
+):
     """Prepare nominal comparison before live farm reads; never move its base."""
-    row = await db.get(OrderWorkingPlan, data.ctx.project.id, populate_existing=True)
+    row = working_row
     if saved_revision is not None and saved_revision != (row.saved_revision if row else 0):
         return {"status": "baseline_changed"}, None
     if row is None or row.saved_entries is None:
@@ -491,6 +493,9 @@ async def replan(db, project_id, request, access):
     proposed = [e.model_dump(mode="json") for e in validated.entries]
     proposal = proposal_signature(project_id, request, row.revision, data.token, proposed, access.identity)
     if not request.apply:
+        old_state = await state(db, row, data, visible=visible)
+        bad = {issue["entry_id"] for issue in old_state["issues"]}
+        proposed_identities = {draft.entry_identity(entry) for entry in proposed}
         return {
             "proposal_token": proposal,
             "inputs_token": data.token,
@@ -498,6 +503,9 @@ async def replan(db, project_id, request, access):
             "previous_entries": deepcopy(row.entries),
             "previous_count": sum(e["count"] for e in row.entries),
             "count": sum(e["count"] for e in proposed),
+            "removed_issue_entry_count": sum(
+                e["entry_id"] in bad and draft.entry_identity(e) not in proposed_identities for e in row.entries
+            ),
         }
     if not request.proposal_token or not hmac.compare_digest(proposal, request.proposal_token):
         raise refusal("inputs_changed")

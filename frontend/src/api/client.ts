@@ -6751,6 +6751,7 @@ export interface PlanSubmission {
   error?: string;
 }
 export interface PlanProposal {
+  removed_issue_entry_count?: number;
   previous_count?: number;
   count?: number;
   proposal_token: string;

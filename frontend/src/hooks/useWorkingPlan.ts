@@ -22,12 +22,14 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
   const [error, setError] = useState<Error>();
   const [baselineChanged, setBaselineChanged] = useState(false);
   const [generation, setGeneration] = useState(0);
+  const [recovering, setRecovering] = useState(false);
   const [, renderLocalChange] = useState(0);
   const current = useRef<WorkingPlan | undefined>(undefined);
   const desired = useRef<WorkingEntry[] | undefined>(undefined);
   const editSequence = useRef(0);
   const inflight = useRef<Promise<WorkingPlan> | null>(null);
   const reading = useRef<Promise<void> | null>(null);
+  const recovery = useRef<Promise<WorkingPlan> | null>(null);
   const readSequence = useRef(0);
   const blocked = useRef(false);
   const confirming = useRef(false);
@@ -51,18 +53,32 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
     mounted.current = true;
     return () => { mounted.current = false; desired.current = undefined; clearTimeout(timer.current); };
   }, []);
-  const reload = useCallback(async () => {
-    if (inflight.current) await inflight.current.catch(() => undefined);
-    const sequence = ++readSequence.current;
-    const value = await api.getWorkingPlan(orderId);
-    if (sequence !== readSequence.current) return current.current ?? value;
-    blocked.current = false;
-    desired.current = undefined;
-    setError(undefined);
-    setBaselineChanged(false);
-    return accept(value, true);
+  const reload = useCallback((): Promise<WorkingPlan> => {
+    if (recovery.current) return recovery.current;
+    clearTimeout(timer.current);
+    setRecovering(true);
+    const task = (async () => {
+      if (inflight.current) await inflight.current.catch(() => undefined);
+      const sequence = ++readSequence.current;
+      reading.current = null; // A superseded background promise cannot be reused.
+      const value = await api.getWorkingPlan(orderId);
+      if (!mounted.current || sequence !== readSequence.current) throw new Error('workingPlan.conflict');
+      // Explicit recovery is authoritative even after restore lowered revision.
+      // accept's generation disables old overlays in this same React commit.
+      blocked.current = false;
+      desired.current = undefined;
+      setError(undefined);
+      setBaselineChanged(false);
+      return accept(value, true);
+    })().finally(() => {
+      if (recovery.current === task) recovery.current = null;
+      if (mounted.current) setRecovering(false);
+    });
+    recovery.current = task;
+    return task;
   }, [orderId, accept]);
   const refreshInputs = useCallback((): Promise<void> => {
+    if (recovery.current) return Promise.resolve();
     if (reading.current) return reading.current;
     const before = current.current?.revision;
     const sequence = ++readSequence.current;
@@ -89,8 +105,9 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
-    void api.getWorkingPlan(orderId).then(value => { if (alive) accept(value); })
-      .catch(e => { if (alive) setError(e); });
+    const sequence = ++readSequence.current;
+    void api.getWorkingPlan(orderId).then(value => { if (alive && sequence === readSequence.current) accept(value); })
+      .catch(e => { if (alive && sequence === readSequence.current) setError(e); });
     return () => { alive = false; };
   }, [orderId, enabled, accept]);
   const flush = useCallback(async (): Promise<WorkingPlan> => {
@@ -101,7 +118,7 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
       return flush();
     }
     if (!mounted.current) return current.current!;
-    if (!current.current || blocked.current) throw new Error('workingPlan.conflict');
+    if (!current.current || blocked.current || recovery.current) throw new Error('workingPlan.conflict');
     if (confirming.current) return current.current;
     const entries = desired.current;
     if (!entries) return current.current;
@@ -131,6 +148,7 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
     return flush();
   }, [accept, orderId]);
   const change = useCallback((entries: WorkingEntry[]) => {
+    if (recovery.current) return;
     editSequence.current += 1;
     desired.current = identified(entries, current.current?.entries ?? []);
     renderLocalChange(value => value + 1);
@@ -141,7 +159,7 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
   const save = useCallback(async (entries: WorkingEntry[]) => {
     // The click names one payload. Later input stays desired and is autosaved
     // after this acknowledgment, never substituted into the baseline.
-    if (confirming.current || blocked.current) throw new Error('workingPlan.conflict');
+    if (confirming.current || blocked.current || recovery.current) throw new Error('workingPlan.conflict');
     confirming.current = true;
     clearTimeout(timer.current);
     const captured = structuredClone(entries);
@@ -172,5 +190,5 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
     }
   }, [accept, orderId, flush]);
   const dirty = !!desired.current && workingSignature(desired.current) !== workingSignature(state?.entries);
-  return { state, saving, error, dirty, baselineChanged, generation, change, flush, save, accept, reload, refreshInputs };
+  return { state, saving, recovering, error, dirty, baselineChanged, generation, change, flush, save, accept, reload, refreshInputs };
 }

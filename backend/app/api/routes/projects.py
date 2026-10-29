@@ -3928,7 +3928,9 @@ async def preview_draft_filament(
     if data.inputs_token and data.inputs_token != inputs.token:
         raise HTTPException(409, {"code": "inputs_changed"})
     scope = await library_name_scope(request, db, user)
-    plan, _, issues, _ = order_draft.project(inputs, data.entries, visible=lambda f: file_name_visible(f, user, scope))
+    plan, _, issues, _, _ = await order_draft.preview_projection(
+        db, inputs, data.entries, visible=lambda f: file_name_visible(f, user, scope)
+    )
     needs = (await filament_needs.needs_of_orders(db, [project_id], plans_override={project_id: plan}))[project_id]
     bad = {i["entry_id"] for i in issues}
     return OrderNeedsOut(
