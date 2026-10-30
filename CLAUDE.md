@@ -29,6 +29,17 @@ community structure) is attached to every release as
 returns a scoped subgraph — usually far smaller than a grep across the tree;
 `graphify update .` refreshes it after your edits without any API key.
 
+## Local research and acceptance artifacts
+
+Keep ad hoc probes, review reports, logs, screenshots and evidence bundles
+outside the Git checkout, under `../research-artifacts/<task>-<date>/` relative
+to this repository root. Do not create `research-artifacts/` inside a checkout
+or stage those bundles. The maintainer's absolute location is recorded in
+`CLAUDE.local.md` and the vault's `80-guides/agent-vault-protocol.md`.
+Durable findings belong in the vault with the evidence path; reusable product
+regression tests still belong in the repository's test directories. Preserve
+existing evidence and checksums when preparing a follow-up package.
+
 ## Commands
 
 ```bash
