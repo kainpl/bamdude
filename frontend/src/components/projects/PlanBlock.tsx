@@ -27,7 +27,7 @@ import { useUiPreferences } from '../../hooks/useUiPreferences';
 import type { PlateFitDraft } from './PlateFitDialog';
 import { useDraftForecast, type DraftForecastState } from '../../hooks/useDraftForecast';
 import { WorkingPlanNavigationGuard } from './WorkingPlanNavigationGuard';
-import { planErrorText } from './planErrorText';
+import { planErrorText, PlanReadError } from './planErrorText';
 import { OrderForecastPanel } from './OrderForecastPanel';
 
 const EMPTY_EDITS = {};
@@ -270,7 +270,14 @@ export function PlanBlock({
   }, [queryClient, order.id]);
 
   const resetEditor = async (refresh = true) => {
-    await working.reload();
+    try {
+      await working.reload();
+    } catch (error) {
+      const message = planErrorText(error, t, 'read_failed');
+      setNeedsPlanRead(true);
+      setPlanNotice(message);
+      throw new PlanReadError(message);
+    }
     // reload's generation deactivates overlays atomically with its snapshot.
     // A failed read never reaches this cleanup and preserves the local input.
     editBase.current = undefined;
@@ -614,9 +621,16 @@ export function PlanBlock({
         inputs_token: proposal.value.inputs_token, apply: true, proposal_token: proposal.value.proposal_token, proposal_entries: proposal.value.entries });
       await resetEditor();
     } catch (error) {
+      if (error instanceof PlanReadError) {
+        // Apply succeeded; only its subsequent refresh failed. Keep the read
+        // recovery action, rather than offering to apply the same proposal.
+        setProposal(undefined);
+        setConfirmPlanAction(undefined);
+        return;
+      }
       const stale = error instanceof ApiError ? ['inputs_changed', 'plan_conflict'].includes(error.code ?? '')
         : error instanceof Error && error.message === 'workingPlan.conflict';
-      const uncertain = !(error instanceof ApiError) || error.status >= 500;
+      const uncertain = !stale && (!(error instanceof ApiError) || error.status >= 500);
       if (!stale && !uncertain) throw error;
       setProposal(undefined);
       setConfirmPlanAction(undefined);
@@ -756,7 +770,11 @@ export function PlanBlock({
   const entryCaption = (entry: { line_id: number; plate_id: number }) => {
     const line = receivedPlan?.lines.find(line => line.line_id === entry.line_id);
     const row = line?.rows.flatMap(row => [row, ...row.alternatives]).find(row => row.plate_id === entry.plate_id);
-    return [line?.product_name ?? t('workingPlan.unavailableLine'), row?.filename || t('workingPlan.unavailableSource')].join(' · ');
+    const unavailable = line?.rows.some(group => group.issue === 'line_unavailable'
+      && [group, ...group.alternatives].some(plate => plate.plate_id === entry.plate_id));
+    const name = line && line.product_id > 0 && !unavailable
+      ? line.product_name ?? t('workingPlan.unavailableLine') : t('workingPlan.unavailableLine');
+    return [name, row?.filename || t('workingPlan.unavailableSource')].join(' · ');
   };
 
   // ⚠️ `plan-block` marks THE BLOCK, on every branch — it answers "is the plan

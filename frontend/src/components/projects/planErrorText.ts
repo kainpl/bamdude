@@ -3,7 +3,11 @@ import { ApiError } from '../../api/client';
 import { QUEUE_SOURCE_REASONS } from '../../utils/queueSource';
 
 const CONFLICTS = ['plan_conflict', 'revision_conflict', 'working_plan_conflict', 'saved_revision_conflict', 'comparison_epoch_changed', 'workingPlan.conflict'];
-export function planErrorText(error: unknown, t: TFunction): string {
+/** A failed refresh after an action is a read failure, not another publication. */
+export class PlanReadError extends Error {}
+
+export function planErrorText(error: unknown, t: TFunction, fallback: 'publication_failed' | 'read_failed' = 'publication_failed'): string {
+  if (error instanceof PlanReadError) return error.message;
   const code = typeof error === 'string' ? error : error instanceof ApiError ? error.code : error instanceof Error ? error.message : '';
   if (code === 'order_resources_changed') return t('orderResources.errors.order_resources_changed');
   if (code === 'submission_pending') return t('workingPlan.pending');
@@ -13,5 +17,5 @@ export function planErrorText(error: unknown, t: TFunction): string {
   // Preserve future human refusals, without rendering an opaque JSON body or
   // an unexpected server failure's exception text in the operator dialog.
   if (error instanceof ApiError && !code && error.status < 500 && error.message.trim() && !/^[{[]/.test(error.message.trim())) return error.message;
-  return t('workingPlan.errors.publication_failed');
+  return t(`workingPlan.errors.${fallback}`);
 }

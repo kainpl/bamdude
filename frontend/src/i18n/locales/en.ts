@@ -12079,7 +12079,8 @@ export default {
         "operation_actor_changed": "Only the original author can continue this submission.",
         "order_closed": "The order is closed. No new work was submitted.",
         "publication_refused": "Publication was refused. Read the submission status before continuing.",
-        "publication_failed": "Could not finish publication. Read the submission status; committed jobs remain in their queues."
+        "publication_failed": "Could not finish publication. Read the submission status; committed jobs remain in their queues.",
+        "read_failed": "Could not read the shared plan. Your edits are still here. Try again."
     }
 ,
     orderRetained: "The order already has submitted work and was kept. Read its submission status before continuing.",

@@ -374,7 +374,7 @@ describe('PlanBlock', () => {
     vi.spyOn(api, 'getOrderFilament').mockResolvedValue(EMPTY_NEEDS);
   });
 
-  it.each(['success', 'failed', 'focus'])('confirmed recovery preserves edits: %s', async mode => {
+  it.each(['success', 'failed', 'focus', 'network', 'server-error'])('confirmed recovery preserves edits: %s', async mode => {
     const state = { ...await api.getWorkingPlan(1), revision: 1,
       entries: [{ entry_id: 'row-10-100', line_id: 10, plate_id: 100, count: 20,
         target: { kind: 'auto' as const }, manual: true, protected_count: 20 }] };
@@ -389,6 +389,8 @@ describe('PlanBlock', () => {
     expect(input).toHaveValue(18);
     let finish: (() => void) | undefined;
     if (mode === 'failed') vi.mocked(api.getWorkingPlan).mockRejectedValue(new Error('workingPlan.conflict'));
+    if (mode === 'network') vi.mocked(api.getWorkingPlan).mockRejectedValue(new TypeError('Failed to fetch'));
+    if (mode === 'server-error') vi.mocked(api.getWorkingPlan).mockRejectedValue(new ApiError('Unavailable', 503));
     if (mode === 'focus') vi.mocked(api.getWorkingPlan).mockImplementationOnce(async () => {
       await new Promise<void>(resolve => { finish = resolve; });
       return { ...state, revision: 2, entries: [{ ...state.entries[0], count: 14 }] };
@@ -401,10 +403,11 @@ describe('PlanBlock', () => {
       expect(api.getWorkingPlan).toHaveBeenCalledTimes(calls);
       await act(async () => { finish!(); });
     }
-    if (mode === 'failed') {
-      await within(dialog).findByText(/Could not save. Your edits are still here/);
+    if (['failed', 'network', 'server-error'].includes(mode)) {
+      await within(dialog).findByText(mode === 'failed' ? /Could not save. Your edits are still here/ : /Could not read the shared plan. Your edits are still here/);
       expect(input).toHaveValue(18);
       expect(dialog).not.toHaveTextContent('workingPlan.conflict');
+      expect(dialog).not.toHaveTextContent(/publication|submission/i);
     } else {
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
       expect(input).toHaveValue(mode === 'focus' ? 14 : 20);
@@ -414,7 +417,52 @@ describe('PlanBlock', () => {
     expect(api.writeWorkingPlan).toHaveBeenCalledTimes(1);
   });
 
-  it('shows the server rebuild summary and discards a stale proposal with its dialog', async () => {
+  it('freezes with an explicit recovery action when the read after discard fails', async () => {
+    const state = { ...await api.getWorkingPlan(1), revision: 1, saved_revision: 1, saved_epoch: 0,
+      entries: [{ entry_id: 'row-10-100', line_id: 10, plate_id: 100, count: 20,
+        target: { kind: 'auto' as const }, manual: true, protected_count: 20 }] };
+    vi.mocked(api.getWorkingPlan).mockResolvedValue(state);
+    vi.mocked(api.getOrderPlan).mockResolvedValue({ ...plan, working_revision: 1, inputs_token: state.inputs_token });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const discard = vi.spyOn(api, 'actWorkingPlan').mockImplementation(async () => {
+      vi.mocked(api.getWorkingPlan).mockRejectedValue(new TypeError('Failed to fetch'));
+      return { ...state, revision: 2, entries: [{ ...state.entries[0], count: 11 }] };
+    });
+    render(<PlanBlock order={order} canEdit />);
+    const input = await screen.findByTestId('plan-row-10-100-count');
+    fireEvent.click(screen.getByRole('button', { name: 'Discard draft changes' }));
+    const recover = await screen.findByRole('button', { name: 'Read shared plan again' });
+    expect(input).toHaveValue(20);
+    expect(input).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save plan' })).toBeDisabled();
+    expect(screen.getAllByText(/Could not read the shared plan/).length).toBeGreaterThan(0);
+    vi.mocked(api.getWorkingPlan).mockResolvedValue({ ...state, revision: 2, entries: [{ ...state.entries[0], count: 11 }] });
+    fireEvent.click(recover);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Read shared plan again' }));
+    await waitFor(() => expect(input).toHaveValue(11));
+    expect(input).not.toBeDisabled();
+    expect(discard).toHaveBeenCalledTimes(1);
+    expect(api.writeWorkingPlan).not.toHaveBeenCalled();
+  });
+
+  it('labels a synthetic deleted line without exposing the question-mark placeholder', async () => {
+    const old = { ...plan.lines[0], line_id: 999, product_id: 0, product_name: '?',
+      rows: [{ ...plan.lines[0].rows[0], issue: 'line_unavailable' }] };
+    const state = { ...await api.getWorkingPlan(1), revision: 1,
+      entries: [{ entry_id: 'deleted', line_id: 999, plate_id: 100, count: 1,
+        target: { kind: 'auto' as const }, manual: true, protected_count: 1 }],
+      issues: [{ entry_id: 'deleted', code: 'line_unavailable' }] };
+    vi.mocked(api.getWorkingPlan).mockResolvedValue(state);
+    vi.mocked(api.getOrderPlan).mockResolvedValue({ ...plan, working_revision: 1, inputs_token: state.inputs_token, lines: [old] });
+    render(<PlanBlock order={order} canEdit />);
+    const message = await screen.findByText(/This order line was removed or replaced/);
+    expect(message).toHaveTextContent('Unavailable order line · big.3mf');
+    expect(message).not.toHaveTextContent('?');
+    expect(screen.getByText('Unavailable order line', { exact: true })).toBeInTheDocument();
+  });
+
+  it.each(['server-stale', 'local-conflict'])('shows the server rebuild summary and discards a stale proposal: %s', async mode => {
     const save = vi.spyOn(api, 'actWorkingPlan');
     const replan = vi.spyOn(api, 'replanWorkingPlan').mockResolvedValue({
       proposal_token: 'reviewed', inputs_token: 'inputs', entries: [], previous_entries: [],
@@ -425,13 +473,22 @@ describe('PlanBlock', () => {
     const proposal = await screen.findByTestId('working-plan-proposal');
     expect(proposal).toHaveTextContent('Problem entries removed or replaced: 17');
     expect(proposal).toHaveTextContent('Not applied yet');
+    if (mode === 'local-conflict') fireEvent.change(screen.getByTestId('plan-row-10-100-count'), { target: { value: '2' } });
     fireEvent.click(within(proposal).getByRole('button', { name: 'Apply to draft' }));
     const dialog = await screen.findByRole('dialog');
-    replan.mockRejectedValue(new ApiError('Changed', 409, 'inputs_changed'));
+    if (mode === 'server-stale') replan.mockRejectedValue(new ApiError('Changed', 409, 'inputs_changed'));
+    else {
+      const state = await api.getWorkingPlan(1);
+      vi.mocked(api.getWorkingPlan).mockResolvedValue({ ...state, revision: state.revision + 1 });
+      fireEvent.focus(window);
+      await screen.findByText(/Could not save. Your edits are still here/);
+    }
     fireEvent.click(within(dialog).getByRole('button', { name: 'Apply to draft' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(screen.queryByTestId('working-plan-proposal')).toBeNull();
     expect(screen.getByText(/Calculate a new proposal/)).toBeInTheDocument();
+    expect(screen.queryByText(/result of applying this proposal is unknown/)).toBeNull();
+    expect(replan).toHaveBeenCalledTimes(mode === 'local-conflict' ? 1 : 2);
     expect(save).not.toHaveBeenCalled();
     expect(api.registerPlanSubmission).not.toHaveBeenCalled();
   });
