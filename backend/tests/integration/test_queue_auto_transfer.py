@@ -613,9 +613,9 @@ async def test_dangling_order_line_preview_is_conflict(async_client, test_engine
 @pytest.mark.parametrize("kind", ["library", "archive"])
 @pytest.mark.parametrize("purge_first", [False, True])
 async def test_original_purge_and_transfer_do_not_deadlock(
-    async_client, db_session, sessions, job, monkeypatch, kind, purge_first
+    async_client, db_session, sessions, job, monkeypatch, test_engine, kind, purge_first
 ):
-    from contextlib import asynccontextmanager
+    from contextvars import ContextVar
 
     from backend.app.models.archive import PrintArchive
     from backend.app.models.library import LibraryFile
@@ -634,23 +634,50 @@ async def test_original_purge_and_transfer_do_not_deadlock(
     setattr(item, "library_file_id" if kind == "library" else "archive_id", original_id)
     await db_session.commit()
     pre = await proposal(async_client, item_id)
-    held, release = asyncio.Event(), asyncio.Event()
-    real = queue_auto_transfer.claim_lanes
+    held, release, attempted, completed = (asyncio.Event() for _ in range(4))
+    competing = ContextVar("purge_competitor", default=False)
+    pids = set()
+    holder_pid = None
+    pg = test_engine.dialect.name == "postgresql"
 
-    @asynccontextmanager
-    async def barrier(*args, **kwargs):
-        async with real(*args, **kwargs):
-            if not purge_first:
-                held.set()
-                await release.wait()
-            yield
+    def blocked_statement(statement):
+        sql = statement.upper()
+        return sql.startswith("BEGIN IMMEDIATE") if purge_first else sql.startswith("UPDATE PRINT_QUEUE ")
 
-    monkeypatch.setattr(queue_auto_transfer, "claim_lanes", barrier)
+    def before_sql(conn, cursor, statement, parameters, context, executemany):
+        if competing.get():
+            if pg:
+                pids.add(conn.connection.driver_connection.get_server_pid())
+                attempted.set()
+            elif blocked_statement(statement):
+                attempted.set()
+
+    def after_sql(conn, cursor, statement, parameters, context, executemany):
+        if competing.get() and not pg and blocked_statement(statement):
+            completed.set()
+
+    async def hold(db):
+        nonlocal holder_pid
+        if pg:
+            conn = await db.connection()
+            holder_pid = conn.sync_connection.connection.driver_connection.get_server_pid()
+        held.set()
+        await release.wait()
+
+    real_facts = queue_auto_transfer._facts
+
+    async def facts(*args, **kwargs):
+        result = await real_facts(*args, **kwargs)
+        # Hold the actual job row, not merely a lane that purge doesn't use.
+        if kwargs.get("lock") and not purge_first:
+            await hold(args[0])
+        return result
+
+    monkeypatch.setattr(queue_auto_transfer, "_facts", facts)
 
     async def purge():
         async with sessions() as db:
             if kind == "archive":
-                # Same archive-before-jobs order as the archive hard-delete writer.
                 row = await db.scalar(select(PrintArchive).where(PrintArchive.id == original_id).with_for_update())
             await queue_source_release.source_purged(
                 db,
@@ -661,15 +688,59 @@ async def test_original_purge_and_transfer_do_not_deadlock(
                 row = await db.get(LibraryFile, original_id)
             await db.delete(row)
             if purge_first:
-                held.set()
-                await release.wait()
+                await hold(db)
             await db.commit()
 
+    async def competitor(operation):
+        token = competing.set(True)
+        try:
+            return await operation
+        finally:
+            competing.reset(token)
+
+    async def prove_wait():
+        await asyncio.wait_for(attempted.wait(), 5)
+        if pg:
+
+            async def observe():
+                async with test_engine.connect() as monitor:
+                    while True:
+                        row = (
+                            await monitor.execute(
+                                text(
+                                    "SELECT pid, wait_event FROM pg_stat_activity WHERE pid=ANY(:pids) "
+                                    "AND wait_event_type='Lock' AND :holder=ANY(pg_blocking_pids(pid))"
+                                ),
+                                {"pids": list(pids), "holder": holder_pid},
+                            )
+                        ).first()
+                        if row:
+                            print("Observed PostgreSQL purge row wait", kind, purge_first, row.pid, row.wait_event)
+                            return
+                        await asyncio.sleep(0.01)
+
+            await asyncio.wait_for(observe(), 5)
+        else:
+            # The first transaction owns SQLite's writer. The competing UPDATE
+            # or BEGIN IMMEDIATE has been submitted but cannot complete yet.
+            assert not completed.is_set()
+        assert not second.done()
+
+    event.listen(test_engine.sync_engine, "before_cursor_execute", before_sql)
+    event.listen(test_engine.sync_engine, "after_cursor_execute", after_sql)
     first = asyncio.create_task(purge() if purge_first else move(async_client, item_id, pre))
-    await asyncio.wait_for(held.wait(), 5)
-    second = asyncio.create_task(move(async_client, item_id, pre) if purge_first else purge())
-    release.set()
-    results = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 10)
+    try:
+        await asyncio.wait_for(held.wait(), 5)
+        second = asyncio.create_task(competitor(move(async_client, item_id, pre) if purge_first else purge()))
+        try:
+            await prove_wait()
+        finally:
+            release.set()
+            results = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 10)
+    finally:
+        release.set()
+        event.remove(test_engine.sync_engine, "before_cursor_execute", before_sql)
+        event.remove(test_engine.sync_engine, "after_cursor_execute", after_sql)
     assert not any(isinstance(result, BaseException) for result in results), results
     response = results[1] if purge_first else results[0]
     assert response.status_code in (200, 409), response.text
@@ -677,6 +748,9 @@ async def test_original_purge_and_transfer_do_not_deadlock(
         source_item = await fresh.get(PrintQueueItem, item_id)
         autos = list((await fresh.scalars(select(AutoQueueItem))).all())
         assert (source_item is not None) + len(autos) == 1
+        for remaining in [source_item, *autos]:
+            if remaining is not None:
+                assert getattr(remaining, "library_file_id" if kind == "library" else "archive_id") is None
 
 
 @pytest.mark.parametrize("dispatch_first", [True, False])

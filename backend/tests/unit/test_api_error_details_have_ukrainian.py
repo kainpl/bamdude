@@ -91,3 +91,28 @@ def test_machine_read_sentences_are_still_raised_somewhere(found):
 def test_codes_are_never_treated_as_sentences(found, catalog):
     codes = sorted(k for k in list(found) + list(catalog) if is_code(k))
     assert not codes, codes
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "transfer_order_closed",
+        "transfer_order_invalid",
+        "transfer_gone",
+        "transfer_forbidden",
+        "transfer_stale",
+        "transfer_started",
+        "queue_selection_changed",
+    ],
+)
+def test_queue_refusals_translate_the_message_without_changing_the_code(code, found):
+    from backend.app.i18n.api_errors import translate_detail
+    from backend.app.services.queue_auto_transfer import refusal
+    from backend.app.services.queue_cancel_scope import selection_changed
+
+    detail = selection_changed().detail if code == "queue_selection_changed" else refusal(code).detail
+    assert detail["message"] in found
+    translated = translate_detail(detail, "uk")
+    assert translated["code"] == code
+    assert translated["message"] != detail["message"]
+    assert re.search("[А-Яа-яІіЇїЄєҐґ]", translated["message"])

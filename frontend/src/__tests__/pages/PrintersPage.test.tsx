@@ -111,6 +111,7 @@ describe('PrintersPage', () => {
       http.get('/api/v1/queue/', () => {
         return HttpResponse.json([]);
       }),
+      http.get('/api/v1/queues/status-summary', () => HttpResponse.json({ attention: null, queues: [] })),
       http.get('/api/v1/printer-tags', () => {
         return HttpResponse.json({
           tags: [
@@ -127,6 +128,28 @@ describe('PrintersPage', () => {
     localStorage.removeItem('printerSortBy');
     localStorage.removeItem('printerSortAsc');
     localStorage.removeItem('printerCardSize');
+  });
+
+  it('shares one compact footer between queue state and archive counters', async () => {
+    localStorage.setItem('printerCardSize', '1');
+    server.use(
+      http.get('/api/v1/queues/', () => HttpResponse.json([{ id: 21, printer_id: 1, pending_count: 2, completed_count: 9, failed_count: 0, cancelled_count: 0 }])),
+      http.get('/api/v1/queues/status-summary', () => HttpResponse.json({ attention: 'paused', queues: [{ queue_id: 21, printer_id: 1, effective_state: 'paused' }] })),
+    );
+    const view = render(<PrintersPage />);
+    try {
+      const counter = await screen.findByRole('link', { name: /2 pending.*9 done/ });
+      const card = document.getElementById('printer-1')!;
+      const state = await within(card).findByRole('link', { name: 'Queue: Paused' });
+      expect(state.closest('a')).toBe(state);
+      expect(counter.parentElement).toHaveClass('flex', 'border-t');
+      expect(state.parentElement?.parentElement).toBe(counter.parentElement);
+      expect(state.parentElement).not.toHaveClass('border-t');
+      expect(counter).not.toHaveClass('border-t');
+    } finally {
+      view.unmount();
+      localStorage.removeItem('printerCardSize');
+    }
   });
 
   it('keeps a saved camera wall preference without showing it to a reader without camera rights', async () => {

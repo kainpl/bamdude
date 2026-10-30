@@ -6522,23 +6522,24 @@ const PrinterCard = memo(function PrinterCard({
         {viewMode === 'expanded' && <PrinterConditions printerId={printer.id} />}
         {viewMode === 'expanded' && <PrinterHASensorRow printerId={printer.id} />}
 
-        {/* Archive summary — counter line mirrors QueueCard footer, links
-            to the archive filtered by this printer. Sits above the action
-            buttons so it reads as part of the printer's "status" row. */}
-        <QueueStateBadge printerId={printer.id} compact={compact} bordered />
-        {printerQueue && (
-          <RouterLink
-            to={`/archives?printer=${printer.id}`}
-            className={`block text-xs text-bambu-gray hover:text-white pt-2 mt-2 border-t border-bambu-dark-tertiary transition-colors ${compactDim}`}
-            title={t('queueCard.footer.viewArchivesTitle')}
-          >
-            {t('queueCard.footer.pending', { count: printerQueue.pending_count })}
-            {' \u00B7 '}
-            {t('queueCard.footer.done', { count: printerQueue.completed_count })}
-            {printerQueue.failed_count > 0 && <>{' \u00B7 '}{t('queueCard.footer.failed', { count: printerQueue.failed_count })}</>}
-            {printerQueue.cancelled_count > 0 && <>{' \u00B7 '}{t('queueCard.footer.cancelled', { count: printerQueue.cancelled_count })}</>}
-          </RouterLink>
-        )}
+        {/* On S cards the queue state and archive counters share one footer.
+            The two destinations remain sibling links, never nested links. */}
+        <div className={compact && (printerQueue || hasPermission('queue:read')) ? 'flex items-center gap-2 pt-2 mt-2 border-t border-bambu-dark-tertiary' : undefined}>
+          <QueueStateBadge printerId={printer.id} compact={compact} bordered={!compact} />
+          {printerQueue && (
+            <RouterLink
+              to={`/archives?printer=${printer.id}`}
+              className={`${compact ? 'min-w-0 flex-1' : 'block pt-2 mt-2 border-t border-bambu-dark-tertiary'} text-xs text-bambu-gray hover:text-white transition-colors ${compactDim}`}
+              title={t('queueCard.footer.viewArchivesTitle')}
+            >
+              {t('queueCard.footer.pending', { count: printerQueue.pending_count })}
+              {' \u00B7 '}
+              {t('queueCard.footer.done', { count: printerQueue.completed_count })}
+              {printerQueue.failed_count > 0 && <>{' \u00B7 '}{t('queueCard.footer.failed', { count: printerQueue.failed_count })}</>}
+              {printerQueue.cancelled_count > 0 && <>{' \u00B7 '}{t('queueCard.footer.cancelled', { count: printerQueue.cancelled_count })}</>}
+            </RouterLink>
+          )}
+        </div>
 
         {/* Connection Info & Actions - hidden in compact mode */}
         {viewMode === 'expanded' && (

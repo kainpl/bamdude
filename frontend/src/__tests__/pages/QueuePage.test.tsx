@@ -448,7 +448,7 @@ describe('QueuePage', () => {
         .toHaveLength(4);
     });
 
-    it('keeps the mark inside the row it belongs to, changing no geometry', async () => {
+    it('keeps the source mark in its row metadata below the readable filename', async () => {
       server.use(
         byStatus({
           pending: [spoolItem({ id: 201, archive_name: 'Saved one', source_storage: 'ready' })],
@@ -459,11 +459,13 @@ describe('QueuePage', () => {
       const name = await screen.findByText('Saved one');
       const row = name.closest('div[class*="py-1.5"]')!;
       expect(row).not.toBeNull();
-      // The mark lives in the row's own name line, beside the plate icon.
-      expect(row.querySelector('[role="img"][aria-label="File saved"]')).not.toBeNull();
-      // And the row is still the compact row it always was.
+      // Metadata belongs to this name's column, on the line below the name.
+      const mark = row.querySelector('[role="img"][aria-label="File saved"]');
+      expect(mark).not.toBeNull();
+      expect(name.nextElementSibling).toContainElement(mark as HTMLElement);
+      // The accepted queue layout keeps the same compact vertical padding.
       expect(row.className).toContain('py-1.5');
-      expect(row.className).toContain('px-2');
+      expect(row.className).toContain('px-1.5');
     });
 
     it('says a failed row is holding its file on purpose until it is removed', async () => {

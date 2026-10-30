@@ -69,16 +69,27 @@ _CARRY = (
 
 
 def refusal(code, status=409):
-    messages = {
-        "transfer_order_closed": "The order is closed. Nothing was moved.",
-        "transfer_order_invalid": "The order or its line is missing or no longer belongs to this job. Nothing was moved.",
-        "transfer_gone": "The printer job is no longer available.",
-        "transfer_forbidden": "You do not have permission to move this job.",
-        "transfer_stale": "The proposal is no longer valid. Read a new proposal before moving the job.",
-    }
-    return HTTPException(
-        status, {"code": code, "message": messages.get(code, "This job cannot be moved. Review its source and state.")}
-    )
+    # Keep prose at HTTPException sites so api_error_catalog can enforce it.
+    if code == "transfer_order_closed":
+        return HTTPException(status, {"code": code, "message": "The order is closed. Nothing was moved."})
+    if code == "transfer_order_invalid":
+        return HTTPException(
+            status,
+            {
+                "code": code,
+                "message": "The order or its line is missing or no longer belongs to this job. Nothing was moved.",
+            },
+        )
+    if code == "transfer_gone":
+        return HTTPException(status, {"code": code, "message": "The printer job is no longer available."})
+    if code == "transfer_forbidden":
+        return HTTPException(status, {"code": code, "message": "You do not have permission to move this job."})
+    if code == "transfer_stale":
+        return HTTPException(
+            status,
+            {"code": code, "message": "The proposal is no longer valid. Read a new proposal before moving the job."},
+        )
+    return HTTPException(status, {"code": code, "message": "This job cannot be moved. Review its source and state."})
 
 
 async def _rights(db, actor, item):
