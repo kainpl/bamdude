@@ -147,6 +147,117 @@ async def move(client, item_id, pre, **extra):
     )
 
 
+@pytest.fixture
+def lane_waiter(test_engine, monkeypatch):
+    """Observe the second writer at the real guard, before releasing the first."""
+    from contextvars import ContextVar
+
+    from backend.app.services import queue_ops
+
+    competing_request = ContextVar("competing_lane_request", default=False)
+
+    class Waiter:
+        competitor = None
+        pid = None
+
+        def __init__(self):
+            self.attempted = asyncio.Event()
+            self.acquired = asyncio.Event()
+
+        async def run(self, operation):
+            # Starlette may execute an endpoint in a child task. Context travels
+            # with that request; asyncio.current_task identity does not.
+            token = competing_request.set(True)
+            try:
+                return await operation
+            finally:
+                competing_request.reset(token)
+
+        async def prove_waiting(self):
+            await asyncio.wait_for(self.attempted.wait(), 5)
+            if test_engine.dialect.name == "postgresql":
+
+                async def observed():
+                    async with test_engine.connect() as monitor:
+                        while True:
+                            # This is the server's wait, not merely a task that
+                            # has not yet run or a process-local substitute.
+                            waiting = await monitor.scalar(
+                                text(
+                                    "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) "
+                                    "WHERE l.pid=:pid AND l.locktype='advisory' AND NOT l.granted "
+                                    "AND a.wait_event_type='Lock' AND a.wait_event='advisory'"
+                                ),
+                                {"pid": self.pid},
+                            )
+                            if waiting:
+                                print("Observed PostgreSQL advisory lock wait for competitor", self.pid)
+                                return
+                            await asyncio.sleep(0.01)
+
+                await asyncio.wait_for(observed(), 5)
+            assert not self.acquired.is_set(), "competitor passed the held lane"
+            assert not self.competitor.done(), "competitor returned before the held lane was released"
+
+    waiter = Waiter()
+    if test_engine.dialect.name == "postgresql":
+        original = queue_ops._lane_db_guard
+
+        async def db_guard(db, queue_id):
+            competing = competing_request.get()
+            if competing:
+                waiter.pid = await db.scalar(text("SELECT pg_backend_pid()"))
+                waiter.attempted.set()
+            await original(db, queue_id)
+            if competing:
+                waiter.acquired.set()
+
+        monkeypatch.setattr(queue_ops, "_lane_db_guard", db_guard)
+    else:
+        from collections import defaultdict
+
+        original = queue_ops._queue_claim_locks
+
+        class ObservedLock:
+            def __init__(self, lock):
+                self.lock = lock
+
+            async def __aenter__(self):
+                competing = competing_request.get()
+                if competing:
+                    assert self.lock.locked(), "first writer no longer owns the lane"
+                    waiter.attempted.set()
+                result = await self.lock.__aenter__()
+                if competing:
+                    waiter.acquired.set()
+                return result
+
+            async def __aexit__(self, *args):
+                return await self.lock.__aexit__(*args)
+
+            def locked(self):
+                return self.lock.locked()
+
+        class ObservedLocks(defaultdict):
+            def __missing__(self, key):
+                value = self[key] = ObservedLock(original[key])
+                return value
+
+        monkeypatch.setattr(queue_ops, "_queue_claim_locks", ObservedLocks())
+    return waiter
+
+
+async def finish_lane_race(first, second, release, waiter):
+    waiter.competitor = second
+    try:
+        await waiter.prove_waiting()
+    finally:
+        # A failing proof must still release the writer and close its sessions.
+        release.set()
+        results = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 10)
+    return results
+
+
 async def test_direct_preserves_blob_and_paused_error_queue(async_client, db_session, job):
     item_id, queue_id = job
     original = await db_session.get(PrintQueueItem, item_id)
@@ -306,7 +417,7 @@ async def test_captured_plate_without_prediction_does_not_inherit_original(async
 @pytest.mark.parametrize("cancel_first", [True, False])
 @pytest.mark.parametrize("action", ["cancel", "delete", "auto-cancel"])
 async def test_cancel_delete_and_transfer_share_lane(
-    async_client, db_session, job, monkeypatch, sessions, action, cancel_first
+    async_client, db_session, job, monkeypatch, sessions, lane_waiter, action, cancel_first
 ):
     """Pause while holding the actual lane, then let the competing writer queue."""
     from contextlib import asynccontextmanager
@@ -353,10 +464,8 @@ async def test_cancel_delete_and_transfer_share_lane(
 
     first = asyncio.create_task(cancel() if cancel_first else move(async_client, item_id, pre))
     await asyncio.wait_for(held.wait(), 5)
-    second = asyncio.create_task(move(async_client, item_id, pre) if cancel_first else cancel())
-    await asyncio.sleep(0)  # Let the competitor reach admission; no timing assumption for the assertion.
-    release.set()
-    responses = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 10)
+    second = asyncio.create_task(lane_waiter.run(move(async_client, item_id, pre) if cancel_first else cancel()))
+    responses = await finish_lane_race(first, second, release, lane_waiter)
     assert not any(isinstance(response, BaseException) for response in responses), responses
     assert all(response.status_code in (200, 404, 409) for response in responses), [r.text for r in responses]
     async with sessions() as fresh:
@@ -417,6 +526,88 @@ async def test_existing_order_job_needs_no_new_filing_right(async_client, db_ses
     assert (auto.project_id, auto.project_line_id, auto.created_by_id) == (project.id, line.id, owner.id)
     await db_session.refresh(line)
     assert line.quantity == 7
+
+
+@pytest.mark.parametrize("state", ["completed", "cancelled", "foreign", "deleted"])
+async def test_invalid_order_link_is_a_readable_conflict(async_client, db_session, job, resource_shop, state):
+    from backend.app.models.project import Project
+    from backend.app.models.project_line import ProjectLine
+
+    item_id, _ = job
+    item = await db_session.get(PrintQueueItem, item_id)
+    item.project_id, item.project_line_id = resource_shop["order"], resource_shop["line"]
+    await db_session.commit()
+    pre = await proposal(async_client, item_id)
+    if state in ("completed", "cancelled"):
+        project = await db_session.get(Project, item.project_id)
+        project.status = state
+    elif state == "foreign":
+        other = Project(name="Other order")
+        db_session.add(other)
+        await db_session.flush()
+        item.project_id = other.id
+    else:
+        await db_session.delete(await db_session.get(ProjectLine, item.project_line_id))
+    await db_session.commit()
+    # Real deletion nulls the FK: the old proposal must still conflict. The
+    # foreign/closed preview must refuse without leaking an exception as 500.
+    if state != "deleted":
+        response = await async_client.get(f"/api/v1/queue/{item_id}/auto-transfer-preview")
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["message"]
+    response = await move(async_client, item_id, pre)
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["message"]
+    assert await db_session.get(PrintQueueItem, item_id) is not None
+    assert await db_session.scalar(select(func.count()).select_from(AutoQueueItem)) == 0
+
+
+async def test_waiting_metadata_does_not_expire_transfer(async_client, db_session, job, monkeypatch, printer_factory):
+    from unittest.mock import AsyncMock
+
+    from backend.app.core.websocket import ws_manager
+
+    item_id, _ = job
+    printer = await printer_factory(model="P1P")
+    printer_id = printer.id
+    queue = PrinterQueue(id=109, printer_id=printer_id)
+    db_session.add(queue)
+    await db_session.flush()
+    item = await db_session.get(PrintQueueItem, item_id)
+    item.queue_id = queue.id
+    await db_session.commit()
+    pre = await proposal(async_client, item_id)
+    item.waiting_reason = "Waiting for another print"
+    item.waiting_reason_code = "printer_busy"
+    item.waiting_reason_checked_at = datetime.now(timezone.utc)
+    await db_session.commit()
+    send = AsyncMock()
+    monkeypatch.setattr(ws_manager, "send_queue_changed", send)
+    response = await move(async_client, item_id, pre)
+    assert response.status_code == 200, response.text
+    send.assert_awaited_once_with(printer_id)
+
+
+async def test_dangling_order_line_preview_is_conflict(async_client, test_engine, job, resource_shop):
+    if test_engine.dialect.name != "sqlite":
+        pytest.skip("legacy dangling FK fixture; real deletion is covered on both databases")
+    item_id, _ = job
+    # Model the inconsistent legacy row from a database created without FK
+    # enforcement. Normal deletion (SET NULL) is covered separately above.
+    async with test_engine.connect() as conn:
+        await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        try:
+            await conn.execute(
+                text("UPDATE print_queue SET project_id=:order_id, project_line_id=987654 WHERE id=:id"),
+                {"order_id": resource_shop["order"], "id": item_id},
+            )
+            await conn.commit()
+        finally:
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+    response = await async_client.get(f"/api/v1/queue/{item_id}/auto-transfer-preview")
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "transfer_order_invalid"
+    assert response.json()["detail"]["message"]
 
 
 @pytest.mark.parametrize("kind", ["library", "archive"])
@@ -489,7 +680,9 @@ async def test_original_purge_and_transfer_do_not_deadlock(
 
 
 @pytest.mark.parametrize("dispatch_first", [True, False])
-async def test_real_dispatch_claim_and_transfer(async_client, db_session, sessions, job, monkeypatch, dispatch_first):
+async def test_real_dispatch_claim_and_transfer(
+    async_client, db_session, sessions, job, monkeypatch, lane_waiter, dispatch_first
+):
     from contextlib import asynccontextmanager
     from unittest.mock import AsyncMock
 
@@ -526,9 +719,8 @@ async def test_real_dispatch_claim_and_transfer(async_client, db_session, sessio
 
     first = asyncio.create_task(claim() if dispatch_first else move(async_client, item_id, pre))
     await asyncio.wait_for(held.wait(), 5)
-    second = asyncio.create_task(move(async_client, item_id, pre) if dispatch_first else claim())
-    release.set()
-    results = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 10)
+    second = asyncio.create_task(lane_waiter.run(move(async_client, item_id, pre) if dispatch_first else claim()))
+    results = await finish_lane_race(first, second, release, lane_waiter)
     assert not any(isinstance(r, BaseException) for r in results), results
     dispatch, response = results if dispatch_first else results[::-1]
     assert dispatch.claimed is dispatch_first
@@ -537,7 +729,7 @@ async def test_real_dispatch_claim_and_transfer(async_client, db_session, sessio
 
 @pytest.mark.parametrize("resources_first", [True, False])
 async def test_real_order_resource_apply_and_transfer(
-    async_client, db_session, sessions, job, resource_shop, monkeypatch, resources_first
+    async_client, db_session, sessions, job, resource_shop, monkeypatch, lane_waiter, resources_first
 ):
     from contextlib import asynccontextmanager
 
@@ -580,9 +772,10 @@ async def test_real_order_resource_apply_and_transfer(
 
     first = asyncio.create_task(apply_resources() if resources_first else move(async_client, item_id, pre))
     await asyncio.wait_for(held.wait(), 5)
-    second = asyncio.create_task(move(async_client, item_id, pre) if resources_first else apply_resources())
-    release.set()
-    results = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 10)
+    second = asyncio.create_task(
+        lane_waiter.run(move(async_client, item_id, pre) if resources_first else apply_resources())
+    )
+    results = await finish_lane_race(first, second, release, lane_waiter)
     assert not any(isinstance(r, BaseException) for r in results), results
     assert results[0].status_code == 200, results[0].text
     assert results[1].status_code in (404, 409), results[1].text

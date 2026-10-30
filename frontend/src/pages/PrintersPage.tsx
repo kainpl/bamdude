@@ -6525,7 +6525,7 @@ const PrinterCard = memo(function PrinterCard({
         {/* Archive summary — counter line mirrors QueueCard footer, links
             to the archive filtered by this printer. Sits above the action
             buttons so it reads as part of the printer's "status" row. */}
-        <div className="pt-2 mt-2 border-t border-bambu-dark-tertiary"><QueueStateBadge printerId={printer.id} compact={compact} /></div>
+        <QueueStateBadge printerId={printer.id} compact={compact} bordered />
         {printerQueue && (
           <RouterLink
             to={`/archives?printer=${printer.id}`}

@@ -29,6 +29,8 @@ export default {
     "preheat_chamber_target_override": "Chamber temperature"
   },
   "refusals": {
+    "transfer_order_closed": "The order is closed. Nothing was moved.",
+    "transfer_order_invalid": "The order or its line is unavailable or no longer matches this job. Nothing was moved.",
     "transfer_started": "The job has started or has execution dependencies.",
     "transfer_identity_missing": "The job has no stable identity.",
     "transfer_source_unavailable": "A ready captured sliced source is required. Review or refresh its source.",

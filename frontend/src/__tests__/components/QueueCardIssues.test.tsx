@@ -121,6 +121,38 @@ function answerBulkDelete(answer: (ids: number[]) => Response | { deleted_count:
   return posted;
 }
 
+describe('QueueCard collapsed copies', () => {
+  it('keeps editing and cancellation available in the visible action menu', async () => {
+    const edit = vi.fn();
+    const cancel = vi.spyOn(api, 'cancelQueueItem').mockResolvedValue({ success: true } as never);
+    mockQueue({ pending: [row(1, 'pending')] });
+    render(<QueueCard queue={queue} onEditItem={edit} />);
+    const more = await screen.findByTitle('More');
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit item' }));
+    expect(edit).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }));
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel item' }));
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith(1));
+    cancel.mockRestore();
+  });
+
+  it.each([[[120, 120], '2m'], [[120, 180], '—'], [[120, null], '—']] as const)(
+    'shows a per-copy estimate for %s and only transfers expanded copies', async (times, label) => {
+      localStorage.setItem('queueCollapsedBatches', JSON.stringify(['estimate-batch']));
+      mockQueue({ pending: times.map((seconds, index) => ({ ...row(index + 1, 'pending'),
+        batch_id: 'estimate-batch', print_time_seconds: seconds })) });
+      renderCard();
+      const duration = await screen.findByText(label);
+      expect(duration.title).toMatch(label === '—' ? /differ|unknown/i : /per print/i);
+      expect(screen.queryByRole('button', { name: 'Move to auto queue' })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTitle('Expand batch'));
+      expect(await screen.findAllByRole('button', { name: 'Move to auto queue' })).toHaveLength(2);
+      localStorage.removeItem('queueCollapsedBatches');
+    },
+  );
+});
+
 describe('QueueCard Issues — Delete all', () => {
   let posted: number[][];
 

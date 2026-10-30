@@ -11,6 +11,13 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.services.queue_ops import claim_lanes
 
 
+def selection_changed():
+    return HTTPException(
+        409,
+        {"code": "queue_selection_changed", "message": "The selected jobs changed. Refresh the queue and try again."},
+    )
+
+
 async def _selection(db, ids, auto):
     model = AutoQueueItem if auto else PrintQueueItem
     rows = (await db.scalars(select(model).where(model.id.in_(ids)).execution_options(populate_existing=True))).all()
@@ -42,5 +49,5 @@ async def cancellation_scope(ids, *, auto=False):
         if not current_lanes <= lanes or any(
             current.get(key) != value for key, value in identities.items() if key in current
         ):
-            raise HTTPException(409, {"code": "queue_selection_changed"})
+            raise selection_changed()
         yield db

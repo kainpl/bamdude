@@ -753,12 +753,12 @@ async def cancel_auto_queue_batch(
 
     async with database.async_session() as preflight:
         ids = list((await preflight.scalars(select(AutoQueueItem.id).where(AutoQueueItem.batch_id == batch_id))).all())
-    from backend.app.services.queue_cancel_scope import cancellation_scope
+    from backend.app.services.queue_cancel_scope import cancellation_scope, selection_changed
 
     async with cancellation_scope(ids, auto=True) as db:
         current_ids = set((await db.scalars(select(AutoQueueItem.id).where(AutoQueueItem.batch_id == batch_id))).all())
         if not current_ids <= set(ids):
-            raise HTTPException(409, {"code": "queue_selection_changed"})
+            raise selection_changed()
         pending_result = await db.execute(
             select(AutoQueueItem).where(
                 AutoQueueItem.batch_id == batch_id,

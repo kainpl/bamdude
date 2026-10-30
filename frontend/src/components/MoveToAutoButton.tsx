@@ -62,7 +62,8 @@ function TransferDialog({ itemId, onClose }: { itemId: number; onClose: () => vo
   return <ConfirmModal title={t('queueTransfer.title')} message={t('queueTransfer.help')} onCancel={onClose}
     onConfirm={() => apply.mutate()} confirmText={t('queueTransfer.move')} confirmDisabled={!ready} isLoading={apply.isPending}>
     {preview.isPending && <p>{t('common.loading')}</p>}
-    {(preview.isError || failure) && <p role="alert">{failure ?? t('queueTransfer.readFailed')}</p>}
+    {(preview.isError || failure) && <p role="alert">{failure ?? (preview.error instanceof ApiError && preview.error.code
+      ? t(`queueTransfer.refusals.${preview.error.code}`, { defaultValue: t('queueTransfer.readFailed') }) : t('queueTransfer.readFailed'))}</p>}
     {proposal && !proposal.allowed && <p role="alert">{t(`queueTransfer.refusals.${proposal.refusal}`, { defaultValue: t('queueTransfer.unavailable') })}</p>}
     {allowed && <div className="space-y-3 text-sm">
       <p className="break-words">{proposal.display_name} · {t('printModal.plateNumber', { number: proposal.plate_id ?? 1 })}</p>

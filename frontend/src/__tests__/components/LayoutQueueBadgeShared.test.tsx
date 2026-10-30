@@ -71,4 +71,17 @@ describe('sidebar queue summary', () => {
     await waitFor(() => expect(client.getQueryState(['queue', 'summary'])?.status).toBe('error'), { timeout: 3000 });
     expect(document.querySelector('[title="Queue count unavailable. Open the queue for details."]')).toHaveTextContent('!');
   });
+
+  it('keeps the navigation name in a collapsed status-error tooltip', async () => {
+    localStorage.setItem('sidebarExpanded', 'false');
+    server.use(
+      http.get('/api/v1/queues/status-summary', () => HttpResponse.json({}, { status: 503 })),
+      http.get('/api/v1/maintenance/summary', () => HttpResponse.json({}, { status: 503 })),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    render(<QueryClientProvider client={client}><Layout /></QueryClientProvider>);
+    await waitFor(() => expect(document.querySelector('a[href="/queue"]')).toHaveAttribute('title', 'Queue · Attention status unavailable'), { timeout: 3000 });
+    await waitFor(() => expect(document.querySelector('a[href="/maintenance"]')).toHaveAttribute('title', 'Maintenance · Attention status unavailable'), { timeout: 3000 });
+    localStorage.removeItem('sidebarExpanded');
+  });
 });

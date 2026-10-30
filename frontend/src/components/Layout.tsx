@@ -1125,8 +1125,8 @@ export function Layout() {
                             : 'text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white'
                         }`
                       }
-                      title={id === 'queue' && queueStatus.isError ? t(queueStatus.data ? 'queueOperator.stale' : 'queueOperator.attentionUnavailable')
-                        : id === 'maintenance' && maintenanceAttention.isError ? t(maintenanceAttention.data ? 'queueOperator.stale' : 'queueOperator.attentionUnavailable')
+                      title={id === 'queue' && queueStatus.isError ? `${t(labelKey)} · ${t(queueStatus.data ? 'queueOperator.stale' : 'queueOperator.attentionUnavailable')}`
+                        : id === 'maintenance' && maintenanceAttention.isError ? `${t(labelKey)} · ${t(maintenanceAttention.data ? 'queueOperator.stale' : 'queueOperator.attentionUnavailable')}`
                         : !isSidebarCompact && !sidebarExpanded ? t(labelKey) : undefined}
                     >
                       {sidebarExpanded && !isSidebarCompact && (

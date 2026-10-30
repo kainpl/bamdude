@@ -1,14 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
-import { api, type PrintQueueItem } from '../../api/client';
+import { api, ApiError, type PrintQueueItem } from '../../api/client';
 import { QueueDuration } from '../../components/QueueDuration';
 import { sharedSlicerTime } from '../../utils/slicerTime';
 import { MoveToAutoButton } from '../../components/MoveToAutoButton';
+import { QueueStateBadge } from '../../components/QueueStateBadge';
+
+const rights = vi.hoisted(() => ({ allowed: true }));
 
 vi.mock('../../contexts/AuthContext', async importOriginal => ({
   ...await importOriginal<typeof import('../../contexts/AuthContext')>(),
-  useAuth: () => ({ user: { id: 1 }, hasPermission: () => true }),
+  useAuth: () => ({ authEnabled: true, user: { id: 1 }, hasPermission: () => rights.allowed }),
 }));
 
 const item = { id: 9, created_by_id: 1, status: 'pending' } as PrintQueueItem;
@@ -17,7 +20,21 @@ const proposal = { allowed: true, token: 'signed', manual_start: true, release_p
   option_changes: [{ field: 'timelapse', before: false, after: true }] };
 
 describe('queue operator controls', () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => { vi.restoreAllMocks(); rights.allowed = true; });
+
+  it('renders no bordered queue strip without queue read permission', () => {
+    rights.allowed = false;
+    const { container } = render(<QueueStateBadge printerId={1} bordered />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('explains a closed-order preview refusal in the dialog', async () => {
+    vi.spyOn(api, 'previewQueueAutoTransfer').mockRejectedValue(new ApiError('The order is closed', 409, 'transfer_order_closed'));
+    render(<MoveToAutoButton item={item} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Move to auto queue' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The order is closed. Nothing was moved.');
+    expect(screen.getByRole('button', { name: 'Move' })).toBeDisabled();
+  });
 
   it.each([null, undefined, 0, -1, NaN, Infinity])('does not invent duration for %s', value => {
     render(<QueueDuration seconds={value} />);

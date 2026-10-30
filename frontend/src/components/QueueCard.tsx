@@ -1,5 +1,6 @@
 import { MoveToAutoButton } from './MoveToAutoButton';
 import { QueueDuration } from './QueueDuration';
+import { sharedSlicerTime } from '../utils/slicerTime';
 import { AutoEjectBadge } from './AutoEjectBadge';
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
@@ -33,14 +34,9 @@ import {
   X,
   Loader2,
   CircleCheck,
-  ArrowUp,
-  ArrowDown,
-  ChevronsUp,
-  ChevronsDown,
   Layers,
   Ungroup,
   GripVertical,
-  Pencil,
   MoreVertical,
   Upload,
   Ban,
@@ -1028,6 +1024,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
                     item.batch_id ? () => toggleBatchCollapse(item.batch_id!) : undefined
                   }
                   draggable={dragEnabled}
+                  groupTime={sharedSlicerTime(pending.filter(p => p.batch_id === item.batch_id).map(p => p.print_time_seconds))}
                   batchSize={batchSize}
                   isInBatch={isInBatch}
                   isFirst={isFirst}
@@ -1137,6 +1134,7 @@ interface PendingItemRowProps {
   onToggleBatchCollapse?: () => void;
   draggable: boolean;
   batchSize: number;
+  groupTime: number | null;
   isInBatch: boolean;
   isFirst: boolean;
   isLast: boolean;
@@ -1171,6 +1169,7 @@ function PendingItemRow({
   onToggleBatchCollapse,
   draggable,
   batchSize,
+  groupTime,
   isInBatch,
   isFirst,
   isLast,
@@ -1222,7 +1221,7 @@ function PendingItemRow({
     <>
       <div
         ref={setNodeRef}
-        className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-bambu-dark transition-colors group"
+        className="flex items-center gap-1 py-1.5 px-1.5 rounded hover:bg-bambu-dark transition-colors group"
         style={{
           ...sortableStyle,
           ...(batchAccent ? { borderLeft: `3px solid ${batchAccent.color}`, paddingLeft: '0.5rem' } : {}),
@@ -1270,17 +1269,16 @@ function PendingItemRow({
           {displayNumber}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1">
+          <p className="min-w-0 text-xs text-white truncate flex-1" title={name}>{name}</p>
+          <div className="flex flex-wrap items-center gap-1">
             {(() => {
               // Build-plate indicator so the operator knows which plate to mount
               // before walking to the printer (#1281). Icon-only to fit the
               // compact row; the label is on hover. Hidden when the 3MF carries
               // no curr_bed_type or the slicer used an unknown label.
               //
-              // It sits before the name, not after it: the name takes flex-1, so
-              // a trailing icon is pushed against the hover-only action buttons
-              // and reads as a ragged right edge whenever the row is not hovered.
-              // Anchored to the number instead, it lines up down the column.
+              // Metadata has its own line so time and touch actions cannot
+              // squeeze a long job name down to an unrecognizable few pixels.
               const bed = getBedTypeInfo(item.bed_type);
               if (!bed) return null;
               return (
@@ -1297,20 +1295,19 @@ function PendingItemRow({
                 up down the column and the row keeps its geometry. Renders
                 nothing at all for an external print or an older server. */}
             <AutoEjectBadge mode={item.auto_eject} settings={item.auto_eject_settings} />
-          <QueueSourceIndicator
+            <QueueSourceIndicator
               state={item.source_storage}
               className="w-3 h-3"
             />
-            <p className="min-w-0 text-xs text-white truncate flex-1" title={name}>{name}</p>
             <ModelCompatChip fileModel={item.sliced_for_model} targetModel={targetModel} />
-            {isInBatch && batchAccent && (
-              <span className={`text-[9px] px-1 rounded ${batchAccent.badge} font-medium`}>
-                {t('queueCard.batch.label', { count: batchSize })}
-              </span>
-            )}
             {item.manual_start && (
               <span className="text-[9px] px-1 rounded bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 font-medium">
                 M
+              </span>
+            )}
+            {isInBatch && batchAccent && (
+              <span className={`text-[9px] px-1 rounded ${batchAccent.badge} font-medium`}>
+                {t('queueCard.batch.label', { count: batchSize })}
               </span>
             )}
           </div>
@@ -1318,15 +1315,11 @@ function PendingItemRow({
             <p className="text-[10px] text-yellow-700 dark:text-yellow-400 truncate">{item.waiting_reason}</p>
           )}
         </div>
-        {/* Row actions are always visible. They used to fade in on hover, which
-            is no affordance at all on a touch screen — there is nothing to hover
-            with, so start / reorder / remove were simply undiscoverable on a
-            phone or tablet. The buttons keep their own hover styling; it is only
-            the reveal that is gone. The same applies to the failed / cancelled /
-            skipped rows below. */}
+        {/* Primary actions stay visible on touch screens; reorder, edit and
+            cancellation remain available in the always-visible overflow menu. */}
         <div className="flex items-center gap-0.5 flex-shrink-0">
-          <QueueDuration seconds={item.print_time_seconds} />
-          <MoveToAutoButton item={item} />
+          <QueueDuration seconds={isInBatch && batchCollapsed ? groupTime : item.print_time_seconds} group={isInBatch && batchCollapsed} />
+          {!(isInBatch && batchCollapsed) && <MoveToAutoButton item={item} />}
           {item.manual_start && (
             <button
               onClick={onStart}
@@ -1337,61 +1330,11 @@ function PendingItemRow({
               <Play className="w-3.5 h-3.5" />
             </button>
           )}
-          {!isFirst && (
-            <button
-              onClick={() => onMove('up')}
-              disabled={anyPending || !canUpdate}
-              className="p-0.5 rounded hover:bg-bambu-dark-tertiary text-bambu-gray-light disabled:opacity-30"
-              title={t('queueCard.actions.moveUp')}
-            >
-              <ArrowUp className="w-3.5 h-3.5" />
-            </button>
-          )}
-          {!isLast && (
-            <button
-              onClick={() => onMove('down')}
-              disabled={anyPending || !canUpdate}
-              className="p-0.5 rounded hover:bg-bambu-dark-tertiary text-bambu-gray-light disabled:opacity-30"
-              title={t('queueCard.actions.moveDown')}
-            >
-              <ArrowDown className="w-3.5 h-3.5" />
-            </button>
-          )}
-          {!isFirst && (
-            <button
-              onClick={onBump}
-              disabled={anyPending || !canUpdate}
-              className="p-0.5 rounded hover:bg-bambu-dark-tertiary text-bambu-gray-light disabled:opacity-30"
-              title={t('queueCard.actions.bumpTop')}
-            >
-              <ChevronsUp className="w-3.5 h-3.5" />
-            </button>
-          )}
-          {!isLast && (
-            <button
-              onClick={onBumpBottom}
-              disabled={anyPending || !canUpdate}
-              className="p-0.5 rounded hover:bg-bambu-dark-tertiary text-bambu-gray-light disabled:opacity-30"
-              title={t('queueCard.actions.bumpBottom')}
-            >
-              <ChevronsDown className="w-3.5 h-3.5" />
-            </button>
-          )}
-          {onEdit && (
-            <button
-              onClick={onEdit}
-              disabled={!canUpdate}
-              className="p-0.5 rounded hover:bg-bambu-dark-tertiary text-bambu-gray-light disabled:opacity-30"
-              title={t('queueCard.editItem')}
-            >
-              <Pencil className="w-3.5 h-3.5" />
-            </button>
-          )}
           <div className="relative">
             <button
               onClick={() => setMenuOpen(v => !v)}
               disabled={anyPending}
-              className="p-0.5 rounded hover:bg-bambu-dark-tertiary text-bambu-gray-light disabled:opacity-30"
+              className="p-1.5 rounded hover:bg-bambu-dark-tertiary text-bambu-gray-light disabled:opacity-30"
               title={t('queueCard.actions.more')}
             >
               <MoreVertical className="w-3.5 h-3.5" />
@@ -1401,6 +1344,21 @@ function PendingItemRow({
                 {/* not-a-modal: menu */}
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
                 <div className="absolute right-0 top-full mt-1 z-20 min-w-[180px] rounded-md bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-xl py-1 text-xs">
+                  {[
+                    ...(!isFirst ? [
+                      { label: t('queueCard.actions.moveUp'), run: () => onMove('up') },
+                      { label: t('queueCard.actions.bumpTop'), run: onBump },
+                    ] : []),
+                    ...(!isLast ? [
+                      { label: t('queueCard.actions.moveDown'), run: () => onMove('down') },
+                      { label: t('queueCard.actions.bumpBottom'), run: onBumpBottom },
+                    ] : []),
+                    ...(onEdit ? [{ label: t('queueCard.editItem'), run: onEdit }] : []),
+                  ].map(action => <button key={action.label} disabled={anyPending || !canUpdate}
+                    onClick={() => { setMenuOpen(false); action.run(); }}
+                    className="w-full text-left px-3 py-1.5 text-white hover:bg-bambu-dark disabled:opacity-40">
+                    {action.label}
+                  </button>)}
                   {item.archive_id && (
                     <>
                       <button
@@ -1417,6 +1375,11 @@ function PendingItemRow({
                       <div className="border-t border-bambu-dark-tertiary my-1" />
                     </>
                   )}
+                  <button disabled={cancelPending || !canUpdate}
+                    onClick={() => { setMenuOpen(false); handleCancel(); }}
+                    className="w-full text-left px-3 py-1.5 text-red-700 dark:text-red-400 hover:bg-red-500/10 disabled:opacity-40">
+                    {t('queueCard.cancelItem')}
+                  </button>
                   <button
                     disabled={!canCreate}
                     onClick={() => {
@@ -1493,14 +1456,7 @@ function PendingItemRow({
               </>
             )}
           </div>
-          <button
-            onClick={handleCancel}
-            disabled={cancelPending || !canUpdate}
-            className="p-0.5 rounded hover:bg-red-500/20 text-red-700 dark:text-red-400 disabled:opacity-50"
-            title={t('queueCard.cancelItem')}
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
+
         </div>
       </div>
       {batchDialog === 'cancel' && (

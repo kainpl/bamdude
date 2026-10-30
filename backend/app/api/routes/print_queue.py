@@ -2002,7 +2002,7 @@ async def cancel_batch(
 ):
     """Cancel all pending items in a batch.  Active (printing) item is unaffected."""
     from backend.app.core import database
-    from backend.app.services.queue_cancel_scope import cancellation_scope
+    from backend.app.services.queue_cancel_scope import cancellation_scope, selection_changed
     from backend.app.services.queue_counters import update_queue_counters
     from backend.app.services.queue_ops import get_batch_pending_items, set_status_for_batch
 
@@ -2015,7 +2015,7 @@ async def cancel_batch(
             (await db.scalars(select(PrintQueueItem.id).where(PrintQueueItem.batch_id == batch_id))).all()
         )
         if not current_ids <= set(ids):
-            raise HTTPException(409, {"code": "queue_selection_changed"})
+            raise selection_changed()
         pending = await get_batch_pending_items(db, batch_id)
         if not pending:
             return {"cancelled": 0}

@@ -69,7 +69,16 @@ _CARRY = (
 
 
 def refusal(code, status=409):
-    return HTTPException(status, {"code": code})
+    messages = {
+        "transfer_order_closed": "The order is closed. Nothing was moved.",
+        "transfer_order_invalid": "The order or its line is missing or no longer belongs to this job. Nothing was moved.",
+        "transfer_gone": "The printer job is no longer available.",
+        "transfer_forbidden": "You do not have permission to move this job.",
+        "transfer_stale": "The proposal is no longer valid. Read a new proposal before moving the job.",
+    }
+    return HTTPException(
+        status, {"code": code, "message": messages.get(code, "This job cannot be moved. Review its source and state.")}
+    )
 
 
 async def _rights(db, actor, item):
@@ -111,9 +120,13 @@ async def _rights(db, actor, item):
 
 
 def _row_basis(row):
-    # All persistent columns, not relationships or cached DTOs. This fences
-    # changes to position/options as well as reuse of SQLite integer ids.
-    return {column.key: getattr(row, column.key) for column in row.__table__.columns}
+    # Waiting diagnostics are refreshed by the scheduler, not operator intent.
+    # Keep position/options and stable identity fenced, as in order_resources.
+    return {
+        column.key: getattr(row, column.key)
+        for column in row.__table__.columns
+        if column.key not in {"waiting_reason", "waiting_reason_code", "waiting_reason_checked_at", "updated_at"}
+    }
 
 
 async def _navigation_links(db, item):
@@ -214,7 +227,14 @@ async def _facts(db, item_id, actor, *, lock=False):
             raise refusal("transfer_plate_changed")
     elif backrefs:
         raise refusal("transfer_ancestor_changed")
-    await order_filing.resolve_link(db, item.project_id, item.project_line_id)
+    try:
+        await order_filing.resolve_link(db, item.project_id, item.project_line_id)
+    except HTTPException as exc:
+        # An existing job's invalid filing is a conflict, not a missing job.
+        # resolve_link uses {error, message} for closed orders and prose for 404.
+        if exc.status_code not in (404, 409):
+            raise
+        raise refusal("transfer_order_closed" if exc.status_code == 409 else "transfer_order_invalid") from exc
     return item, queue, printer, source, descriptor, ancestor, policy
 
 
@@ -293,9 +313,10 @@ async def preview(item_id, actor):
     try:
         result = await _preflight(item_id, actor)
     except HTTPException as exc:
-        if exc.status_code in (403, 404):
+        code = exc.detail.get("code") if isinstance(exc.detail, dict) else None
+        if exc.status_code in (403, 404) or code is None or code in ("transfer_order_closed", "transfer_order_invalid"):
             raise
-        return {"allowed": False, "refusal": exc.detail["code"]}
+        return {"allowed": False, "refusal": code}
     public = {
         key: value
         for key, value in result.items()
@@ -342,6 +363,7 @@ async def apply(item_id, actor, payload):
         await order_resources.policy_for(db, pre["project_id"], project_line_id=pre["project_line_id"], lock=True)
         facts = await _facts(db, item_id, actor, lock=True)
         item, queue, printer, source, descriptor, ancestor, policy = facts
+        printer_id = printer.id
         if (item.queue_id, item.project_id, item.project_line_id) != (
             pre["queue_id"],
             pre["project_id"],
@@ -396,5 +418,5 @@ async def apply(item_id, actor, payload):
     )
     from backend.app.core.websocket import ws_manager
 
-    await ws_manager.broadcast({"type": "queue_changed"})
+    await ws_manager.send_queue_changed(printer_id)
     return result
