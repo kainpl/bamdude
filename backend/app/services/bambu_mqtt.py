@@ -5665,6 +5665,47 @@ class BambuMQTTClient:
                 self.state.subtask_name or "",
             )
 
+        # Detect print start (state changes TO RUNNING with a file)
+        current_file = self.state.gcode_file or self.state.current_print
+        is_new_print = (
+            self.state.state == "RUNNING"
+            # ``_previous_gcode_state is None`` means we haven't seen any
+            # prior gcode_state in THIS process lifetime yet — either a fresh
+            # BamDude start observing a printer already mid-print (the
+            # reporter's #1304 scenario in upstream Bambuddy), or a brand-new
+            # client that hasn't yet received its first push. In neither case
+            # is this a real IDLE→RUNNING transition. Skipping start-fire here
+            # is safe: ``_was_running`` still flips below in its own block, so
+            # completion detection isn't affected. Mid-print stale reconnects
+            # are unaffected — our reconnect path carries ``_previous_gcode_state``
+            # across client recreation, so this guard only fires on genuine
+            # process-fresh catch-up.
+            and self._previous_gcode_state is not None
+            and self._previous_gcode_state != "RUNNING"
+            and current_file
+            and not self._was_running  # Prevent duplicates when resuming from PAUSE
+        )
+        # Also detect if file changed while running (new print started)
+        is_file_change = (
+            self.state.state == "RUNNING"
+            and current_file
+            and current_file != self._previous_gcode_file
+            and self._previous_gcode_file is not None
+        )
+
+        new_print_boundary = is_new_print or is_file_change
+        boundary_layer_edge = None
+        if new_print_boundary:
+            # Clear the previous print BEFORE applying this frame's counters.
+            # The lifecycle reset below must not erase these fresh values.
+            self.state.layer_num = 0
+            self.state.total_layers = 0
+            self._last_valid_layer_num = 0
+            if "total_layer_num" in data:
+                new_total = int(data["total_layer_num"])
+                if new_total > 0:
+                    self.state.total_layers = new_total
+
         if "mc_percent" in data:
             # Save last non-zero progress for usage tracking (firmware resets to 0 on cancel)
             if self.state.progress > 0:
@@ -5691,7 +5732,12 @@ class BambuMQTTClient:
             # reported: a "fire at layer N" consumer needs to know whether the
             # print crossed N, and dropped reports mean it can jump over it.
             if new_layer > old_layer and self.on_layer_change:
-                self.on_layer_change(new_layer, old_layer)
+                if is_new_print:
+                    boundary_layer_edge = (new_layer, old_layer)
+                elif not is_file_change:
+                    self.on_layer_change(new_layer, old_layer)
+                # A file-change-only boundary may still have the old print's
+                # timelapse/macro memory. Its next edge uses this fresh layer.
             # Finish-photo on the last-layer edge (#1867). On models that skip the
             # stg_cur=22 stage (e.g. A1 Mini) the stage-22 trigger below never fires and
             # the FINISH fallback only lands after the user's End G-code has run (parked /
@@ -5700,7 +5746,8 @@ class BambuMQTTClient:
             # so the stage-22 / FINISH paths become no-ops for this print.
             total_for_finish = self.state.total_layers or 0
             if (
-                total_for_finish > 0
+                not new_print_boundary
+                and total_for_finish > 0
                 and new_layer >= total_for_finish
                 and old_layer < total_for_finish
                 and self._was_running
@@ -5724,7 +5771,8 @@ class BambuMQTTClient:
                         "timelapse_was_active": self._timelapse_during_print,
                     }
                 )
-        if "total_layer_num" in data:
+        if not new_print_boundary and "total_layer_num" in data:
+            # Keep layer-before-total ordering on ordinary/catch-up frames.
             # Guard against the firmware's end-of-print total_layer_num=0 push clobbering the
             # cached total — a zeroed total zeroed the linear-usage denominator and credited
             # every gram of an AMS-Backup mid-print spool swap to the 2nd spool (#1771).
@@ -5855,7 +5903,8 @@ class BambuMQTTClient:
             # — those signals only line up at the real end. Edge-only
             # (prev != 22) so the trigger fires once per stage entry.
             if (
-                incoming_stg_for_finish_photo == 22
+                not new_print_boundary
+                and incoming_stg_for_finish_photo == 22
                 and prev_stg_for_finish_photo != 22
                 and self._was_running
                 and not self._finish_photo_captured
@@ -7160,34 +7209,6 @@ class BambuMQTTClient:
                 f"file: {self.state.gcode_file}, subtask: {self.state.subtask_name}"
             )
 
-        # Detect print start (state changes TO RUNNING with a file)
-        current_file = self.state.gcode_file or self.state.current_print
-        is_new_print = (
-            self.state.state == "RUNNING"
-            # ``_previous_gcode_state is None`` means we haven't seen any
-            # prior gcode_state in THIS process lifetime yet — either a fresh
-            # BamDude start observing a printer already mid-print (the
-            # reporter's #1304 scenario in upstream Bambuddy), or a brand-new
-            # client that hasn't yet received its first push. In neither case
-            # is this a real IDLE→RUNNING transition. Skipping start-fire here
-            # is safe: ``_was_running`` still flips below in its own block, so
-            # completion detection isn't affected. Mid-print stale reconnects
-            # are unaffected — our reconnect path carries ``_previous_gcode_state``
-            # across client recreation, so this guard only fires on genuine
-            # process-fresh catch-up.
-            and self._previous_gcode_state is not None
-            and self._previous_gcode_state != "RUNNING"
-            and current_file
-            and not self._was_running  # Prevent duplicates when resuming from PAUSE
-        )
-        # Also detect if file changed while running (new print started)
-        is_file_change = (
-            self.state.state == "RUNNING"
-            and current_file
-            and current_file != self._previous_gcode_file
-            and self._previous_gcode_file is not None
-        )
-
         # Track RUNNING state for more robust completion detection
         running_first_observed = False
         if self.state.state == "RUNNING" and current_file:
@@ -7211,11 +7232,6 @@ class BambuMQTTClient:
         if is_new_print or is_file_change:
             # Clear any old HMS errors when a new print starts
             self.state.hms_errors = []
-            # Reset layer tracking for new print (needed for layer-based timelapse)
-            self.state.layer_num = 0
-            # Reset total_layers too so the next print's linear-usage denominator starts clean
-            # (paired with the total_layer_num>0 guard above, #1771)
-            self.state.total_layers = 0
             # Reset completion tracking for new print
             self._was_running = True
             self._completion_triggered = False
@@ -7228,9 +7244,8 @@ class BambuMQTTClient:
             self._runout_watch.clear()
             # #1721: rearm the end-of-print finish-photo trigger for the new print
             self._finish_photo_captured = False
-            # Reset last valid progress/layer for usage tracking
+            # The layer memory was reset before this frame's counters above.
             self._last_valid_progress = 0.0
-            self._last_valid_layer_num = 0
             # Clear and seed tray change log for mid-print usage splitting
             self.state.tray_change_log.clear()
             tn = self.state.tray_now
@@ -7322,6 +7337,11 @@ class BambuMQTTClient:
                     "_journal_generation": journal_generation,
                 }
             )
+
+        # A real new print announces its start before its first layer edge.
+        # This orders callback invocation, not completion of their async work.
+        if boundary_layer_edge is not None and self.on_layer_change:
+            self.on_layer_change(*boundary_layer_edge)
 
         # Detect print completion (FINISH = success, FAILED = error, IDLE = aborted)
         # Use _was_running flag in addition to _previous_gcode_state for more robust detection

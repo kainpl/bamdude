@@ -44,7 +44,7 @@ class TestFinishPhotoMoment:
 
         self._start_running(mqtt_client)
 
-        # End of print: high progress, all layers done, then stage 22.
+        # Stage-only end report; the last-layer edge is tested separately.
         mqtt_client._process_message(
             {
                 "print": {
@@ -52,7 +52,6 @@ class TestFinishPhotoMoment:
                     "gcode_file": "/data/Metadata/test.gcode",
                     "subtask_name": "Test",
                     "mc_percent": 100,
-                    "layer_num": 100,
                     "total_layer_num": 100,
                     "stg_cur": 22,
                 }
@@ -153,7 +152,7 @@ class TestFinishPhotoMoment:
 
         self._start_running(mqtt_client)
 
-        # End-of-print stage 22 fires the stage_22 trigger.
+        # Stage-only end report fires stage_22, without a last-layer edge.
         mqtt_client._process_message(
             {
                 "print": {
@@ -161,7 +160,6 @@ class TestFinishPhotoMoment:
                     "gcode_file": "/data/Metadata/test.gcode",
                     "subtask_name": "Test",
                     "mc_percent": 100,
-                    "layer_num": 100,
                     "total_layer_num": 100,
                     "stg_cur": 22,
                 }
