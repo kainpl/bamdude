@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Retry all includes cancelled printer-queue jobs.** The Issues action appears for failed or cancelled jobs, previews both counts, and returns only the reviewed jobs whose state still matches. Skipped jobs and paused queues stay unchanged. Pending rows show the build-plate and saved-file icons before the filename again, with the name kept on one ellipsized line.
+
 - Adding or editing an order line refreshes the plan editor's input context even when the draft revision stays the same. Both cached-reader directions are reconciled without a refresh loop; entered counts stay in place, and autosave waits for the current draft read before using its refreshed token. A failed reconciliation read offers explicit recovery instead of writing stale inputs. A transient background focus-read failure stays quiet and does not block editing; reconciliation takes a fresh snapshot after any older read finishes.
 
 - Printer cards now show their queue state separately from the live printer. Right-aligned sidebar dots flag paused queues, queue errors and upcoming or overdue maintenance while keeping the queue count. Pending jobs show the selected captured plate’s slicer estimate; grouped copies show one-print time only when their estimates agree. On printer queue cards, secondary controls are in More and source markers sit below the name so a phone still shows a recognizable job name.

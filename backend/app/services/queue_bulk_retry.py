@@ -1,4 +1,4 @@
-"""Re-arm a confirmed failed block under the scheduler's final lane guard."""
+"""Re-arm a confirmed failed/cancelled block under the scheduler's final lane guard."""
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -16,10 +16,11 @@ from backend.app.services.queue_ops import claim_lanes
 from backend.app.services.swap_source_declarations import fresh_api_key
 
 
-async def retry_block(db, queue_id, item_ids, *, actor, granted_scope, key_hash):
+async def retry_block(db, queue_id, item_ids, *, actor, granted_scope, key_hash, cancelled_item_ids=()):
     from backend.app.services.queue_counters import update_queue_counters
 
     ids = list(dict.fromkeys(item_ids))
+    cancelled = set(cancelled_item_ids)
     # Preflight/identity reads must end before the process lane and SQLite writer.
     await db.rollback()
     try:
@@ -70,7 +71,7 @@ async def retry_block(db, queue_id, item_ids, *, actor, granted_scope, key_hash)
                     "missing"
                     if row is None
                     else "not_failed"
-                    if row.status != "failed"
+                    if row.status != ("cancelled" if item_id in cancelled else "failed")
                     else "source_unavailable"
                     if row.queue_source_id
                     and (row.queue_source_id not in blobs or blobs[row.queue_source_id].state != STATE_READY)

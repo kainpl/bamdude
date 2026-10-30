@@ -352,21 +352,31 @@ describe('QueueCard Issues — Retry all failed', () => {
     const dialog = await screen.findByRole('dialog');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' })); return dialog;
   }
+  it('offers Retry all for cancelled-only issues and confirms each status count', async () => {
+    mockQueue({ cancelled: [row(8, 'cancelled')], skipped: [row(9, 'skipped')] });
+    renderCard();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry all…' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('failed: 0, cancelled: 1');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toEqual({ queue_id: 7, item_ids: [8], cancelled_item_ids: [8] });
+  });
   it('loads all pages then sends one frozen confirmed block', async () => {
     mockQueue({ failed: Array.from({ length: 101 }, (_, index) => row(index + 1, 'failed')), cancelled: [row(102, 'cancelled')] });
     renderCard(); fireEvent.click(await screen.findByRole('button', { name: 'Retry all…' }));
     const dialog = await screen.findByRole('dialog');
-    expect(dialog).toHaveTextContent('101'); expect(dialog).toHaveTextContent('A1-07'); expect(requests).toEqual([]);
+    expect(dialog).toHaveTextContent('failed: 101, cancelled: 1'); expect(dialog).toHaveTextContent('A1-07'); expect(requests).toEqual([]);
     mockQueue({ failed: [row(999, 'failed')] });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText('101 returned to the queue')).toBeInTheDocument();
-    expect(requests).toEqual([{ queue_id: 7, item_ids: Array.from({ length: 101 }, (_, index) => index + 1) }]);
+    expect(await screen.findByText('102 returned to the queue')).toBeInTheDocument();
+    expect(requests).toEqual([{ queue_id: 7, item_ids: Array.from({ length: 102 }, (_, index) => index + 1), cancelled_item_ids: [102] }]);
   });
   it('reports every refusal category and not attempted', async () => {
     mockQueue({ failed: [row(1, 'failed'), row(2, 'failed'), row(5, 'failed'), row(6, 'failed')] });
     server.use(http.post('/api/v1/queue/bulk-retry', () => HttpResponse.json({ retried: [1], left_in_place: [{ id: 2, reason: 'source_unavailable' }, { id: 5, reason: 'not_failed' }], not_attempted: [6] })));
     renderCard(); await confirm(); const toast = await screen.findByText(/Confirmed for 1 of 4 jobs/);
-    expect(toast).toHaveTextContent('Saved source unavailable: 1'); expect(toast).toHaveTextContent('No longer failed: 1'); expect(toast).toHaveTextContent('Not attempted: 1');
+    expect(toast).toHaveTextContent('Saved source unavailable: 1'); expect(toast).toHaveTextContent('Job state changed: 1'); expect(toast).toHaveTextContent('Not attempted: 1');
   });
   it.each([403, 503])('does not replay an unconfirmed result (%s)', async status => {
     let calls = 0;
@@ -374,6 +384,7 @@ describe('QueueCard Issues — Retry all failed', () => {
     renderCard(); await confirm(); expect(await screen.findByText(/Retry result could not be confirmed/)).toBeInTheDocument(); expect(calls).toBe(1);
   });
   it('owns the full operation past card unmount', async () => {
+    mockQueue({ failed: [row(1, 'failed'), row(2, 'failed')] });
     let release = () => {};
     const barrier = new Promise<void>(resolve => { release = resolve; });
     server.use(http.post('/api/v1/queue/bulk-retry', async ({ request }) => {

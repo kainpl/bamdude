@@ -31,6 +31,13 @@ UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)
 class PrintQueueBulkRetry(BaseModel):
     queue_id: int = Field(gt=0)
     item_ids: list[Annotated[int, Field(gt=0)]] = Field(min_length=1, max_length=10000)
+    cancelled_item_ids: list[Annotated[int, Field(gt=0)]] = Field(default_factory=list, max_length=10000)
+
+    @model_validator(mode="after")
+    def cancelled_ids_are_confirmed(self):
+        if not set(self.cancelled_item_ids).issubset(self.item_ids):
+            raise ValueError("Cancelled item IDs must belong to the confirmed block")
+        return self
 
 
 class PrintQueueItemCreate(FilamentRoutingChoices, AutoEjectSelection):

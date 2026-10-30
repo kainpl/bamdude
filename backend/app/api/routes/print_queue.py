@@ -1834,7 +1834,7 @@ async def retry_failed_block(
     db: AsyncSession = Depends(get_db),
     user: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
-    """Retry only the confirmed, still failed jobs in one committed block."""
+    """Retry confirmed failed/cancelled jobs whose reviewed status still matches."""
     from backend.app.models.api_key import APIKey
     from backend.app.services.queue_bulk_retry import retry_block
     from backend.app.services.swap_source_declarations import actor_for
@@ -1848,6 +1848,7 @@ async def retry_failed_block(
         actor=actor,
         granted_scope=key_printer_scope(request),
         key_hash=key.key_hash if key else None,
+        cancelled_item_ids=data.cancelled_item_ids,
     )
     _end_capture_cooldowns(result["retried"])
     return result

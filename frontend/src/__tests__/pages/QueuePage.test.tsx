@@ -448,10 +448,10 @@ describe('QueuePage', () => {
         .toHaveLength(4);
     });
 
-    it('keeps the source mark in its row metadata below the readable filename', async () => {
+    it('keeps the plate and source icons before the readable filename on the same line', async () => {
       server.use(
         byStatus({
-          pending: [spoolItem({ id: 201, archive_name: 'Saved one', source_storage: 'ready' })],
+          pending: [spoolItem({ id: 201, archive_name: 'Saved one', source_storage: 'ready', bed_type: 'Textured PEI Plate' })],
         }),
       );
       render(<QueuePage />);
@@ -459,10 +459,14 @@ describe('QueuePage', () => {
       const name = await screen.findByText('Saved one');
       const row = name.closest('div[class*="py-1.5"]')!;
       expect(row).not.toBeNull();
-      // Metadata belongs to this name's column, on the line below the name.
       const mark = row.querySelector('[role="img"][aria-label="File saved"]');
       expect(mark).not.toBeNull();
-      expect(name.nextElementSibling).toContainElement(mark as HTMLElement);
+      expect(name.parentElement).toContainElement(mark as HTMLElement);
+      expect(mark!.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      const bed = row.querySelector('img');
+      expect(bed).not.toBeNull();
+      expect(name.parentElement).toContainElement(bed);
+      expect(bed!.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       // The accepted queue layout keeps the same compact vertical padding.
       expect(row.className).toContain('py-1.5');
       expect(row.className).toContain('px-1.5');

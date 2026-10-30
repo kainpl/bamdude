@@ -1078,6 +1078,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
             queueId={queue.id}
             issueCount={issueCount}
             failedCount={issueCounts?.failed_count ?? 0}
+            cancelledCount={issueCounts?.cancelled_count ?? 0}
             queueKey={['queue', queue.printer_id]}
             printerName={queue.printer_name ?? String(queue.printer_id)}
             hasPermission={hasPermission}
@@ -1269,16 +1270,14 @@ function PendingItemRow({
           {displayNumber}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="min-w-0 text-xs text-white truncate flex-1" title={name}>{name}</p>
-          <div className="flex flex-wrap items-center gap-1">
+          <div className="flex min-w-0 items-center gap-1">
             {(() => {
               // Build-plate indicator so the operator knows which plate to mount
               // before walking to the printer (#1281). Icon-only to fit the
               // compact row; the label is on hover. Hidden when the 3MF carries
               // no curr_bed_type or the slicer used an unknown label.
               //
-              // Metadata has its own line so time and touch actions cannot
-              // squeeze a long job name down to an unrecognizable few pixels.
+              // The plate and source icons precede the name on the same line.
               const bed = getBedTypeInfo(item.bed_type);
               if (!bed) return null;
               return (
@@ -1299,6 +1298,9 @@ function PendingItemRow({
               state={item.source_storage}
               className="w-3 h-3"
             />
+            <p className="min-w-0 text-xs text-white truncate flex-1" title={name}>{name}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-1">
             <ModelCompatChip fileModel={item.sliced_for_model} targetModel={targetModel} />
             {item.manual_start && (
               <span className="text-[9px] px-1 rounded bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 font-medium">
@@ -1505,6 +1507,7 @@ interface IssuesSectionProps {
   queueId: number;
   issueCount: number;
   failedCount: number;
+  cancelledCount: number;
   queueKey: (string | number)[];
   printerName: string;
   hasPermission: (perm: Permission) => boolean;
@@ -1525,6 +1528,7 @@ function IssuesSection({
   queueId,
   issueCount,
   failedCount,
+  cancelledCount,
   queueKey,
   printerName,
   hasPermission,
@@ -1599,15 +1603,20 @@ function IssuesSection({
     failed: number;
     cancelled: number;
   } | null>(null);
-  const [confirmRetryAll, setConfirmRetryAll] = useState<number[] | null>(null);
+  const [confirmRetryAll, setConfirmRetryAll] = useState<{
+    ids: number[];
+    failed: number;
+    cancelled: number[];
+  } | null>(null);
   const retryAllInFlight = useRef(false);
 
   // Mutation callbacks own the request/result even if a virtualized card unmounts.
   const retryRequests = useIsMutating({ mutationKey: ['queue-bulk-retry', queueId] });
   const retryAllMutation = useMutation({
     mutationKey: ['queue-bulk-retry', queueId],
-    mutationFn: (ids: number[]) => api.bulkRetryQueueItems(queueId, ids),
-    onSuccess: (result, ids) => {
+    mutationFn: (selection: NonNullable<typeof confirmRetryAll>) => api.bulkRetryQueueItems(queueId, selection.ids, selection.cancelled),
+    onSuccess: (result, selection) => {
+      const ids = selection.ids;
       if (mounted.current) setConfirmRetryAll(null);
       const complete = result.retried.length === ids.length;
       const summary = t(complete ? 'queueCard.issues.retryAllDone' : 'queueCard.issues.retryAllPartial', { count: result.retried.length, total: ids.length });
@@ -1660,9 +1669,11 @@ function IssuesSection({
       } while (cursor !== undefined);
       if (controller.signal.aborted) return;
       if (action === 'retry') {
-        const ids = [...new Set(rows.filter(item => item.status === 'failed').map(item => item.id))];
+        const failed = rows.filter(item => item.status === 'failed');
+        const cancelled = rows.filter(item => item.status === 'cancelled');
+        const ids = [...new Set([...failed, ...cancelled].map(item => item.id))];
         if (!ids.length) showToast(t('queueCard.issues.retryAllNone'), 'info');
-        else setConfirmRetryAll(ids);
+        else setConfirmRetryAll({ ids, failed: new Set(failed.map(item => item.id)).size, cancelled: [...new Set(cancelled.map(item => item.id))] });
         return;
       }
       const failed = rows.filter(item => item.status === 'failed' && canModify('queue', 'delete', item.created_by_id));
@@ -1701,7 +1712,7 @@ function IssuesSection({
           <AlertCircle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
           <span>{t('queueCard.issues.header', { count: issueCount })}</span>
         </button>
-        {canUpdate && failedCount > 0 && <button
+        {canUpdate && failedCount + cancelledCount > 0 && <button
           onClick={e => {
             e.stopPropagation();
             if (loadingAction === 'retry') bulkLoadRef.current?.abort();
@@ -1860,7 +1871,8 @@ function IssuesSection({
       )}
       {confirmRetryAll && <ConfirmModal
         title={t('queueCard.issues.retryAllTitle')}
-        message={t('queueCard.issues.retryAllMessage', { count: confirmRetryAll.length, printer: printerName })}
+        message={t('queueCard.issues.retryAllMessage', { count: confirmRetryAll.ids.length,
+          failed: confirmRetryAll.failed, cancelled: confirmRetryAll.cancelled.length, printer: printerName })}
         confirmText={t('queueCard.issues.retryAllConfirm')}
         isLoading={retryAllMutation.isPending}
         loadingText={t('queueCard.issues.retryAllSending')}

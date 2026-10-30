@@ -11932,12 +11932,13 @@ export const api = {
     request<{ manual_start: boolean; item_id: number }>(`/queue/${id}/manual-start`, { method: 'PATCH' }),
   retryQueueItem: (id: number) =>
     request<PrintQueueItem>(`/queue/${id}/retry`, { method: 'POST' }),
-  bulkRetryQueueItems: (queueId: number, itemIds: number[]) =>
+  bulkRetryQueueItems: (queueId: number, itemIds: number[], cancelledItemIds: number[] = []) =>
     request<{
       retried: number[];
       left_in_place: { id: number; reason: 'missing' | 'different_queue' | 'not_failed' | 'source_unavailable' }[];
       not_attempted: number[];
-    }>('/queue/bulk-retry', { method: 'POST', body: JSON.stringify({ queue_id: queueId, item_ids: itemIds }) }),
+    }>('/queue/bulk-retry', { method: 'POST', body: JSON.stringify({ queue_id: queueId, item_ids: itemIds,
+      ...(cancelledItemIds.length ? { cancelled_item_ids: cancelledItemIds } : {}) }) }),
   // Batch operations
   groupItemsIntoBatch: (itemIds: number[]) =>
     request<{ batch_id: string; count: number }>(`/queue/batch`, {

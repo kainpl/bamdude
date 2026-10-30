@@ -48,6 +48,52 @@ async def test_only_confirmed_still_failed_rows_reenter_at_end_together(async_cl
 
 
 @pytest.mark.asyncio
+async def test_confirmed_failed_and_cancelled_rows_retry_but_skipped_stays(async_client, db_session, failed_block):
+    queue_id, ids = failed_block
+    skipped = PrintQueueItem(queue_id=queue_id, status="skipped", position=9)
+    db_session.add(skipped)
+    await db_session.commit()
+    skipped_id = skipped.id
+    response = await async_client.post(
+        "/api/v1/queue/bulk-retry",
+        json={"queue_id": queue_id, "item_ids": [ids[0], ids[2], skipped_id], "cancelled_item_ids": [ids[2]]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["retried"] == [ids[0], ids[2]]
+    assert response.json()["left_in_place"] == [{"id": skipped_id, "reason": "not_failed"}]
+    db_session.expire_all()
+    rows = (await db_session.scalars(select(PrintQueueItem).where(PrintQueueItem.id.in_([ids[0], ids[2]])))).all()
+    assert [row.position for row in rows] == [7, 8]
+    assert all(row.status == "pending" and row.require_previous_success for row in rows)
+    queue = await db_session.get(PrinterQueue, queue_id)
+    assert queue.status == "paused" and queue.pending_count == 3
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_review_is_not_silently_retried(async_client, db_session, failed_block):
+    queue_id, ids = failed_block
+    row = await db_session.get(PrintQueueItem, ids[0])
+    row.status = "cancelled"
+    await db_session.commit()
+    response = await async_client.post(
+        "/api/v1/queue/bulk-retry", json={"queue_id": queue_id, "item_ids": [ids[0]], "cancelled_item_ids": []}
+    )
+    assert response.status_code == 200
+    assert response.json()["retried"] == []
+    assert response.json()["left_in_place"] == [{"id": ids[0], "reason": "not_failed"}]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_review_ids_must_belong_to_the_confirmed_block(async_client, failed_block):
+    queue_id, ids = failed_block
+    response = await async_client.post(
+        "/api/v1/queue/bulk-retry",
+        json={"queue_id": queue_id, "item_ids": [ids[0]], "cancelled_item_ids": [ids[2]]},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_counter_failure_rolls_back_the_whole_block(async_client, db_session, failed_block, monkeypatch):
     from backend.app.services import queue_counters
 
@@ -82,7 +128,8 @@ async def test_a_restricted_key_cannot_name_another_queue(async_client, failed_b
 
 
 @pytest.mark.asyncio
-async def test_unready_source_stays_failed_while_its_sibling_retries(async_client, db_session, failed_block):
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+async def test_unready_source_stays_terminal_while_its_sibling_retries(async_client, db_session, failed_block, status):
     from backend.app.models.queue_source import QueueSource
 
     queue_id, ids = failed_block
@@ -91,8 +138,16 @@ async def test_unready_source_stays_failed_while_its_sibling_retries(async_clien
     await db_session.flush()
     row = await db_session.get(PrintQueueItem, ids[1])
     row.queue_source_id = blob.id
+    row.status = status
     await db_session.commit()
-    response = await async_client.post("/api/v1/queue/bulk-retry", json={"queue_id": queue_id, "item_ids": ids[:2]})
+    response = await async_client.post(
+        "/api/v1/queue/bulk-retry",
+        json={
+            "queue_id": queue_id,
+            "item_ids": ids[:2],
+            "cancelled_item_ids": [ids[1]] if status == "cancelled" else [],
+        },
+    )
     assert response.status_code == 200, response.text
     assert response.json() == {
         "retried": ids[:1],
