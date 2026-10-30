@@ -1,3 +1,4 @@
+import { useQueueStatus, useMaintenanceAttention } from '../hooks/useQueueStatus';
 import { FarmStartupBanner } from './FarmStartupBanner';
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router';
@@ -345,6 +346,8 @@ export function Layout() {
   // separate: a read-own queue user may not read the auto queue at all.
   const canReadQueue = !authEnabled || (!!user && (hasPermission('queue:read_all') || hasPermission('queue:read_own')));
   const canReadAutoQueue = !authEnabled || (!!user && hasPermission('queue:read'));
+  const queueStatus = useQueueStatus(true);
+  const maintenanceAttention = useMaintenanceAttention();
   const { data: queueSummary, isError: queueSummaryError } = useQueueSummary(canReadQueue);
   const { data: autoQueueSummary, isError: autoQueueSummaryError } = useAutoQueuePendingSummary(canReadAutoQueue);
   const queueBadgeUnavailable = queueSummaryError || autoQueueSummaryError;
@@ -950,7 +953,7 @@ export function Layout() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 p-2 overflow-y-auto">
+        <nav className={`flex-1 overflow-y-auto ${!isSidebarCompact && !sidebarExpanded ? 'px-0 py-2' : 'p-2'}`}>
           <ul className="space-y-2">
             {orderedSidebarIds.map((id, index) => {
               const isExternal = isExternalLinkId(id);
@@ -1019,7 +1022,7 @@ export function Layout() {
                         href={link.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className={`flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-1.5 rounded-lg transition-colors group text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white`}
+                        className={`relative flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-1.5 rounded-lg transition-colors group text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white`}
                         title={!isSidebarCompact && !sidebarExpanded ? link.name : undefined}
                       >
                         {sidebarExpanded && !isSidebarCompact && (
@@ -1100,7 +1103,14 @@ export function Layout() {
                 const showInboxBadge = id === 'notifications' && unreadCount > 0;
                 const badgeCount = showQueueBadge ? (queueBadgeUnavailable ? '!' : pendingQueueCount) : showInboxBadge ? unreadCount : 0;
                 const showBadge = showQueueBadge || showInboxBadge;
-                const showClearPlateDot = id === 'printers' && needsClearPlate;
+                const severity = id === 'queue' ? queueStatus.data?.attention
+                  : id === 'maintenance' ? maintenanceAttention.data?.total_due ? 'error'
+                    : maintenanceAttention.data?.total_warning ? 'paused' : 'none'
+                  : id === 'printers' && needsClearPlate ? 'paused' : 'none';
+                const dotTitle = id === 'printers' ? t('queueOperator.plateClear')
+                  : id === 'maintenance' ? t(severity === 'error' ? 'queueOperator.maintenanceDue' : 'queueOperator.maintenanceWarning')
+                  : t(severity === 'error' ? 'queueOperator.queueError' : 'queueOperator.queuePaused');
+                const stale = id === 'queue' ? queueStatus.isError : id === 'maintenance' && maintenanceAttention.isError;
 
                 return (
                   <Fragment key={id}>
@@ -1109,29 +1119,34 @@ export function Layout() {
                     <NavLink
                       to={to}
                       className={({ isActive }) =>
-                        `flex items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 px-4' : 'justify-center px-2'} py-1.5 rounded-lg transition-colors group ${
+                        `relative flex w-full items-center ${isSidebarCompact || sidebarExpanded ? 'gap-3 pl-4 pr-9' : 'justify-center pl-2 pr-5'} py-1.5 rounded-lg transition-colors group ${
                           isActive
                             ? 'bg-bambu-green text-white'
                             : 'text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white'
                         }`
                       }
-                      title={!isSidebarCompact && !sidebarExpanded ? t(labelKey) : undefined}
+                      title={id === 'queue' && queueStatus.isError ? t(queueStatus.data ? 'queueOperator.stale' : 'queueOperator.attentionUnavailable')
+                        : id === 'maintenance' && maintenanceAttention.isError ? t(maintenanceAttention.data ? 'queueOperator.stale' : 'queueOperator.attentionUnavailable')
+                        : !isSidebarCompact && !sidebarExpanded ? t(labelKey) : undefined}
                     >
                       {sidebarExpanded && !isSidebarCompact && (
                         <GripVertical className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing -ml-1" />
                       )}
                       <div className="relative">
                         <Icon className="w-5 h-5 flex-shrink-0" />
-                        {showClearPlateDot && (
-                          <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-yellow-500 rounded-full border-2 border-bambu-dark-secondary" />
-                        )}
                         {showBadge && (
                           <span title={queueBadgeUnavailable && id === 'queue' ? t('queue.summaryUnavailable') : undefined} className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-bold rounded-full bg-yellow-500 text-black">
                             {typeof badgeCount === 'number' && badgeCount > 99 ? '99+' : badgeCount}
                           </span>
                         )}
                       </div>
-                      {(isSidebarCompact || sidebarExpanded) && <span>{t(labelKey)}</span>}
+                      {(isSidebarCompact || sidebarExpanded) && <span className="min-w-0 flex-1 truncate">{t(labelKey)}</span>}
+                      <span className="absolute right-1 top-1/2 -translate-y-1/2 flex w-2.5 shrink-0 justify-center" data-nav-attention-slot>
+                        {(severity === 'error' || severity === 'paused') && <span
+                          data-testid={`nav-attention-${id}`} role="img" aria-label={dotTitle}
+                          title={`${dotTitle}${stale ? ` · ${t('queueOperator.stale')}` : ''}`}
+                          className={`block h-2.5 w-2.5 rounded-full ${severity === 'error' ? 'bg-red-500' : 'bg-yellow-500'}`} />}
+                      </span>
                     </NavLink>
                   </li>
                   </Fragment>

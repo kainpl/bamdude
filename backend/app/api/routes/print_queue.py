@@ -46,6 +46,7 @@ from backend.app.schemas.print_queue import (
     PrintQueueItemUpdate,
     PrintQueueNextBatchCreate,
     PrintQueueReorder,
+    QueueAutoTransferApply,
     QueueCopySourceProfile,
     QueueIssuesResponse,
     QueueSummaryGroup,
@@ -397,12 +398,9 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         # Captured bytes outrank original metadata even when the latter was
         # edited or the source row has since disappeared.
         response.sliced_for_model = intent.get("file_model") if isinstance(intent, dict) else None
-        # LAST, so the frozen copy outranks both rows. Each value is applied only
-        # when the snapshot actually has it: a plate with no ``prediction`` leaves
-        # the row's own recorded COLUMN standing, which came out of these same
-        # bytes — the original's *file* was already excluded above.
-        if snapshot_time is not None:
-            response.print_time_seconds = snapshot_time
+        # Missing prediction on the selected captured plate is unknown; an
+        # original file/another plate cannot supply its display estimate.
+        response.print_time_seconds = snapshot_time
         if snapshot_grams > 0:
             response.filament_used_grams = snapshot_grams
         if snapshot_bed:
@@ -841,42 +839,45 @@ async def bulk_delete_queue_items(
     if not data.item_ids:
         raise HTTPException(400, "No item IDs provided")
 
-    result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id.in_(data.item_ids)))
-    items = result.scalars().all()
+    from backend.app.services.queue_cancel_scope import cancellation_scope
 
-    candidates: list[PrintQueueItem] = []
-    skipped = len(set(data.item_ids)) - len(items)  # ids that are already gone
-    for item in items:
-        if item.status not in _BULK_DELETABLE_STATUSES:
-            skipped += 1
-            continue
-        if not can_modify_all and (user is None or item.created_by_id != user.id):
-            skipped += 1
-            continue
-        candidates.append(item)
+    async with cancellation_scope(data.item_ids, auto=False) as db:
+        result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id.in_(data.item_ids)))
+        items = result.scalars().all()
 
-    claimed = await _claim_still_deletable(db, [item.id for item in candidates])
-    to_delete = [item for item in candidates if item.id in claimed]
-    skipped += len(candidates) - len(to_delete)  # retried (or otherwise changed) since the read
+        candidates: list[PrintQueueItem] = []
+        skipped = len(set(data.item_ids)) - len(items)  # ids that are already gone
+        for item in items:
+            if item.status not in _BULK_DELETABLE_STATUSES:
+                skipped += 1
+                continue
+            if not can_modify_all and (user is None or item.created_by_id != user.id):
+                skipped += 1
+                continue
+            candidates.append(item)
 
-    if to_delete:
-        from backend.app.services.queue_counters import detach_print_queue_refs, update_queue_counters
+        claimed = await _claim_still_deletable(db, [item.id for item in candidates])
+        to_delete = [item for item in candidates if item.id in claimed]
+        skipped += len(candidates) - len(to_delete)  # retried (or otherwise changed) since the read
 
-        await detach_print_queue_refs(db, [item.id for item in to_delete])
-        queue_ids = {item.queue_id for item in to_delete}
-        for item in to_delete:
-            await db.delete(item)
-        for queue_id in queue_ids:
-            await update_queue_counters(db, queue_id)
-        await db.commit()
-        _end_capture_cooldowns(item.id for item in to_delete)
+        if to_delete:
+            from backend.app.services.queue_counters import detach_print_queue_refs, update_queue_counters
 
-    logger.info("Bulk deleted %s queue items, skipped %s", len(to_delete), skipped)
-    return PrintQueueBulkDeleteResponse(
-        deleted_count=len(to_delete),
-        skipped_count=skipped,
-        message=f"Deleted {len(to_delete)} items" + (f", skipped {skipped}" if skipped else ""),
-    )
+            await detach_print_queue_refs(db, [item.id for item in to_delete])
+            queue_ids = {item.queue_id for item in to_delete}
+            for item in to_delete:
+                await db.delete(item)
+            for queue_id in queue_ids:
+                await update_queue_counters(db, queue_id)
+            await db.commit()
+            _end_capture_cooldowns(item.id for item in to_delete)
+
+        logger.info("Bulk deleted %s queue items, skipped %s", len(to_delete), skipped)
+        return PrintQueueBulkDeleteResponse(
+            deleted_count=len(to_delete),
+            skipped_count=skipped,
+            message=f"Deleted {len(to_delete)} items" + (f", skipped {skipped}" if skipped else ""),
+        )
 
 
 def _read_copy_source_plates(path: Path) -> list[dict]:
@@ -959,6 +960,39 @@ async def get_queue_copy_source(
         plates=plates,
         is_multi_plate=len(plates) > 1,
     )
+
+
+@router.get("/{item_id}/auto-transfer-preview")
+async def preview_auto_transfer(
+    item_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.QUEUE_CREATE, Permission.QUEUE_READ),
+    _: tuple = Depends(require_ownership_permission(Permission.QUEUE_DELETE_ALL, Permission.QUEUE_DELETE_OWN)),
+):
+    """Read-only proposal to move one never-started job to the distributor."""
+    from backend.app.services import queue_auto_transfer
+    from backend.app.services.swap_source_declarations import actor_for
+
+    actor = await actor_for(request, db, user)
+    return await queue_auto_transfer.preview(item_id, actor)
+
+
+@router.post("/{item_id}/move-to-auto")
+async def move_to_auto(
+    item_id: int,
+    data: QueueAutoTransferApply,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.QUEUE_CREATE, Permission.QUEUE_READ),
+    _: tuple = Depends(require_ownership_permission(Permission.QUEUE_DELETE_ALL, Permission.QUEUE_DELETE_OWN)),
+):
+    """Atomically hand this copy to AutoQueue; never republish the working plan."""
+    from backend.app.services import queue_auto_transfer
+    from backend.app.services.swap_source_declarations import actor_for
+
+    actor = await actor_for(request, db, user)
+    return await queue_auto_transfer.apply(item_id, actor, data)
 
 
 @router.get("/{item_id}", response_model=PrintQueueItemResponse)
@@ -1210,31 +1244,34 @@ async def delete_queue_item(
     """Remove an item from the queue."""
     user, can_modify_all = auth_result
 
-    result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
-    item = result.scalar_one_or_none()
-    if not item:
-        raise HTTPException(404, "Queue item not found")
+    from backend.app.services.queue_cancel_scope import cancellation_scope
 
-    # Ownership check
-    if not can_modify_all:
-        if item.created_by_id != user.id:
-            raise HTTPException(403, "You can only delete your own queue items")
+    async with cancellation_scope([item_id], auto=False) as db:
+        result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
+        item = result.scalar_one_or_none()
+        if not item:
+            raise HTTPException(404, "Queue item not found")
 
-    if item.status == "printing":
-        raise HTTPException(400, "Cannot delete item that is currently printing")
+        # Ownership check
+        if not can_modify_all:
+            if item.created_by_id != user.id:
+                raise HTTPException(403, "You can only delete your own queue items")
 
-    queue_id = item.queue_id
+        if item.status == "printing":
+            raise HTTPException(400, "Cannot delete item that is currently printing")
 
-    from backend.app.services.queue_counters import detach_print_queue_refs, update_queue_counters
+        queue_id = item.queue_id
 
-    await detach_print_queue_refs(db, [item.id])
-    await db.delete(item)
-    await update_queue_counters(db, queue_id)
-    await db.commit()
-    _end_capture_cooldowns([item_id])
+        from backend.app.services.queue_counters import detach_print_queue_refs, update_queue_counters
 
-    logger.info("Deleted queue item %s", item_id)
-    return {"message": "Queue item deleted"}
+        await detach_print_queue_refs(db, [item.id])
+        await db.delete(item)
+        await update_queue_counters(db, queue_id)
+        await db.commit()
+        _end_capture_cooldowns([item_id])
+
+        logger.info("Deleted queue item %s", item_id)
+        return {"message": "Queue item deleted"}
 
 
 @router.post("/reorder")
@@ -1269,29 +1306,32 @@ async def cancel_queue_item(
     """Cancel a pending queue item."""
     user, can_modify_all = auth_result
 
-    result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
-    item = result.scalar_one_or_none()
-    if not item:
-        raise HTTPException(404, "Queue item not found")
+    from backend.app.services.queue_cancel_scope import cancellation_scope
 
-    # Ownership check
-    if not can_modify_all:
-        if item.created_by_id != user.id:
-            raise HTTPException(403, "You can only cancel your own queue items")
+    async with cancellation_scope([item_id], auto=False) as db:
+        result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
+        item = result.scalar_one_or_none()
+        if not item:
+            raise HTTPException(404, "Queue item not found")
 
-    if item.status not in ("pending",):
-        raise HTTPException(400, f"Cannot cancel item with status '{item.status}'")
+        # Ownership check
+        if not can_modify_all:
+            if item.created_by_id != user.id:
+                raise HTTPException(403, "You can only cancel your own queue items")
 
-    item.status = "cancelled"
-    item.completed_at = datetime.now(timezone.utc)
+        if item.status not in ("pending",):
+            raise HTTPException(400, f"Cannot cancel item with status '{item.status}'")
 
-    from backend.app.services.queue_counters import update_queue_counters
+        item.status = "cancelled"
+        item.completed_at = datetime.now(timezone.utc)
 
-    await update_queue_counters(db, item.queue_id)
-    await db.commit()
+        from backend.app.services.queue_counters import update_queue_counters
 
-    logger.info("Cancelled queue item %s", item_id)
-    return {"message": "Queue item cancelled"}
+        await update_queue_counters(db, item.queue_id)
+        await db.commit()
+
+        logger.info("Cancelled queue item %s", item_id)
+        return {"message": "Queue item cancelled"}
 
 
 @router.post("/{item_id}/stop")
@@ -1961,17 +2001,29 @@ async def cancel_batch(
     _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
     """Cancel all pending items in a batch.  Active (printing) item is unaffected."""
+    from backend.app.core import database
+    from backend.app.services.queue_cancel_scope import cancellation_scope
     from backend.app.services.queue_counters import update_queue_counters
     from backend.app.services.queue_ops import get_batch_pending_items, set_status_for_batch
 
-    pending = await get_batch_pending_items(db, batch_id)
-    if not pending:
-        return {"cancelled": 0}
-    queue_id = pending[0].queue_id
-    count = await set_status_for_batch(db, batch_id, "cancelled")
-    await update_queue_counters(db, queue_id)
-    await db.commit()
-    return {"cancelled": count, "batch_id": batch_id}
+    async with database.async_session() as preflight:
+        ids = list(
+            (await preflight.scalars(select(PrintQueueItem.id).where(PrintQueueItem.batch_id == batch_id))).all()
+        )
+    async with cancellation_scope(ids) as db:
+        current_ids = set(
+            (await db.scalars(select(PrintQueueItem.id).where(PrintQueueItem.batch_id == batch_id))).all()
+        )
+        if not current_ids <= set(ids):
+            raise HTTPException(409, {"code": "queue_selection_changed"})
+        pending = await get_batch_pending_items(db, batch_id)
+        if not pending:
+            return {"cancelled": 0}
+        queue_id = pending[0].queue_id
+        count = await set_status_for_batch(db, batch_id, "cancelled")
+        await update_queue_counters(db, queue_id)
+        await db.commit()
+        return {"cancelled": count, "batch_id": batch_id}
 
 
 @router.post("/batch/{batch_id}/skip")

@@ -1,3 +1,4 @@
+import { QueueDuration } from './QueueDuration';
 import { useEffect } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Clock, Calendar, ChevronRight, Loader2, CircleCheck, RotateCcw } from 'lucide-react';
@@ -93,11 +94,12 @@ export function PrinterQueueWidget({ printerId, printerModel, printerState, awai
           <Calendar className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="text-xs text-bambu-gray">{t('queue.nextInQueue')}</p>
-            <p className="text-sm text-white truncate">
+            <p className="text-sm text-white truncate" title={displayItem?.archive_name || displayItem?.library_file_name || undefined}>
               {displayItem?.archive_name || displayItem?.library_file_name || `File #${displayItem?.archive_id || displayItem?.library_file_id}`}
             </p>
             <ModelCompatChip fileModel={displayItem?.sliced_for_model} targetModel={printerModel} />
           </div>
+          <QueueDuration seconds={displayItem?.print_time_seconds} />
           {totalPending > 1 && (
             <span className="text-xs px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 rounded flex-shrink-0">
               +{totalPending - 1}
@@ -154,13 +156,14 @@ export function PrinterQueueWidget({ printerId, printerModel, printerState, awai
           <Calendar className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="text-xs text-bambu-gray">{t('queue.nextInQueue')}</p>
-            <p className="text-sm text-white truncate">
+            <p className="text-sm text-white truncate" title={nextItem?.archive_name || nextItem?.library_file_name || undefined}>
               {nextItem?.archive_name || nextItem?.library_file_name || `File #${nextItem?.archive_id || nextItem?.library_file_id}`}
             </p>
             <ModelCompatChip fileModel={nextItem?.sliced_for_model} targetModel={printerModel} />
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          <QueueDuration seconds={nextItem?.print_time_seconds} />
           <span className="text-xs text-bambu-gray flex items-center gap-1">
             <Clock className="w-3 h-3" />
             {nextItem?.scheduled_time ? formatRelativeTime(nextItem.scheduled_time, 'system', t) : t('time.waiting')}

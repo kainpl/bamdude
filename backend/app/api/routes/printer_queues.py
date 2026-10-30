@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.api_key_scope import in_key_scope
+from backend.app.core.api_key_scope import in_key_scope, key_printer_scope
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -16,9 +16,15 @@ from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.user import User
 from backend.app.schemas.printer_location import PrinterLocationOut
-from backend.app.schemas.printer_queue import PrinterQueueResponse, PrinterQueueUpdate
+from backend.app.schemas.printer_queue import (
+    PrinterQueueResponse,
+    PrinterQueueUpdate,
+    QueueStatusRow,
+    QueueStatusSummary,
+)
 from backend.app.schemas.printer_tag import PrinterTagOut
 from backend.app.services.queue_counters import get_queue_terminal_counts
+from backend.app.services.queue_status import effective_queue_state
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +114,37 @@ async def list_queues(
     queues = [q for q in result.scalars().all() if in_key_scope(request, q.printer_id)]
     counts_by_queue = await _bulk_terminal_counts(db, [q.id for q in queues])
     return [_to_response(q, counts_by_queue.get(q.id, {})) for q in queues]
+
+
+@router.get("/status-summary", response_model=QueueStatusSummary)
+async def queue_status_summary(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
+):
+    query = (
+        select(PrinterQueue.id, PrinterQueue.printer_id, PrinterQueue.status, PrinterQueue.is_paused)
+        .join(Printer, Printer.id == PrinterQueue.printer_id)
+        .where(Printer.archived.is_(False))
+        .order_by(PrinterQueue.id)
+    )
+    scope = key_printer_scope(request)
+    if scope is not None:
+        query = query.where(PrinterQueue.printer_id.in_(scope))
+    rows = [
+        QueueStatusRow(
+            queue_id=qid,
+            printer_id=pid,
+            status=status,
+            is_paused=paused,
+            effective_state=effective_queue_state(status, paused),
+        )
+        for qid, pid, status, paused in (await db.execute(query)).all()
+    ]
+    states = {row.effective_state for row in rows}
+    return QueueStatusSummary(
+        queues=rows, attention="error" if "error" in states else "paused" if "paused" in states else "none"
+    )
 
 
 @router.get("/{queue_id}", response_model=PrinterQueueResponse)

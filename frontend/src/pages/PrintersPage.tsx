@@ -1,3 +1,5 @@
+import { QueueStateBadge } from '../components/QueueStateBadge';
+import { QueueDuration } from '../components/QueueDuration';
 import { useState, useEffect, useId, useLayoutEffect, useMemo, useRef, useCallback, memo } from 'react';
 import { PlateDetectionAreaEditor } from '../components/PlateDetectionAreaEditor';
 import type { PlateDetectionROI, PlatePoint, PlateDetectionResult } from '../api/client';
@@ -2625,6 +2627,7 @@ const PrinterCard = memo(function PrinterCard({
       <span className="min-w-0 truncate" title={`${t('queue.nextInQueue')}: ${nextQueuedName}`}>
         {t('printers.queueStrip.next', { name: nextQueuedName })}
       </span>
+      <QueueDuration seconds={nextQueued.print_time_seconds} />
       {pendingQueue.length > 1 && (
         <span className="shrink-0 rounded-full bg-yellow-500/20 px-1.5 py-px text-[length:var(--pc-t10,10px)] font-medium leading-none text-yellow-400">
           +{pendingQueue.length - 1}
@@ -6522,6 +6525,7 @@ const PrinterCard = memo(function PrinterCard({
         {/* Archive summary — counter line mirrors QueueCard footer, links
             to the archive filtered by this printer. Sits above the action
             buttons so it reads as part of the printer's "status" row. */}
+        <div className="pt-2 mt-2 border-t border-bambu-dark-tertiary"><QueueStateBadge printerId={printer.id} compact={compact} /></div>
         {printerQueue && (
           <RouterLink
             to={`/archives?printer=${printer.id}`}

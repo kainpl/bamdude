@@ -1,11 +1,26 @@
 """Pydantic schemas for printer queue management."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from backend.app.schemas.printer_location import PrinterLocationOut
 from backend.app.schemas.printer_tag import PrinterTagOut
+from backend.app.services.queue_status import QueueState
+
+
+class QueueStatusRow(BaseModel):
+    queue_id: int
+    printer_id: int
+    status: str
+    is_paused: bool
+    effective_state: QueueState
+
+
+class QueueStatusSummary(BaseModel):
+    queues: list[QueueStatusRow]
+    attention: Literal["none", "paused", "error"]
 
 
 class PrinterQueueResponse(BaseModel):

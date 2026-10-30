@@ -11,6 +11,13 @@ from backend.app.services.queue_source_descriptor import SourceStorageState
 from backend.app.utils.temperature_limits import MAX_CHAMBER_TEMP_C
 
 
+class QueueAutoTransferApply(BaseModel):
+    token: str = Field(min_length=1, max_length=8192)
+    allow_automatic_start: bool = False
+    allow_automatic_filament: bool = False
+    accept_profile_changes: bool = False
+
+
 # Custom serializer to ensure UTC datetimes have Z suffix
 def serialize_utc_datetime(dt: datetime | None) -> str | None:
     if dt is None:

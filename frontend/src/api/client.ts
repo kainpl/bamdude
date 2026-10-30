@@ -6895,6 +6895,23 @@ export interface PrintQueueItemUpdate {
   preheat_chamber_target_override?: number | null;
 }
 
+export interface QueueAutoTransferPreview {
+  allowed: boolean; refusal?: string; token?: string; item_id?: number; display_name?: string;
+  plate_id?: number | null; printer_name?: string; target_model?: string | null;
+  target_location_id?: number | null; manual_start?: boolean; release_pins?: boolean;
+  default_profile?: boolean; comparison_model?: string;
+  option_changes?: { field: string; before: unknown; after: unknown }[];
+}
+export interface QueueAutoTransferApply {
+  token: string; allow_automatic_start: boolean; allow_automatic_filament: boolean; accept_profile_changes: boolean;
+}
+
+export interface QueueStatusSummary {
+  queues: { queue_id: number; printer_id: number; status: string; is_paused: boolean;
+    effective_state: 'error' | 'paused' | 'printing' | 'idle' | 'unknown' }[];
+  attention: 'none' | 'paused' | 'error';
+}
+
 export interface PrinterQueue {
   id: number;
   printer_id: number;
@@ -12059,6 +12076,11 @@ export const api = {
     }),
 
   // Printer Queues (queue-level operations)
+  previewQueueAutoTransfer: (id: number) => request<QueueAutoTransferPreview>(`/queue/${id}/auto-transfer-preview`),
+  moveQueueToAuto: (id: number, data: QueueAutoTransferApply) =>
+    request<{ old_item_id: number; resulting_auto_item_id: number; mode: 'rearmed' | 'created' }>(`/queue/${id}/move-to-auto`, { method: 'POST', body: JSON.stringify(data) }),
+  getQueueStatusSummary: (options?: { signal?: AbortSignal }) =>
+    request<QueueStatusSummary>('/queues/status-summary', { signal: options?.signal }),
   getQueues: (options?: { signal?: AbortSignal }) =>
     request<PrinterQueue[]>('/queues/', { signal: options?.signal }),
   updateQueue: (queueId: number, data: { status?: 'idle' | 'paused'; is_paused?: boolean; auto_distribute_eligible?: boolean }) =>
@@ -13036,7 +13058,7 @@ export const api = {
     if (printerId) params.set('printer_id', String(printerId));
     return request<MaintenanceHistoryPage>(`/maintenance/history?${params}`);
   },
-  getMaintenanceSummary: () => request<MaintenanceSummary>('/maintenance/summary'),
+  getMaintenanceSummary: (options?: { signal?: AbortSignal }) => request<MaintenanceSummary>('/maintenance/summary', { signal: options?.signal }),
   setPrinterHours: (printerId: number, totalHours: number) =>
     request<{ printer_id: number; total_hours: number; archive_hours: number; offset_hours: number }>(
       `/maintenance/printers/${printerId}/hours?total_hours=${totalHours}`,

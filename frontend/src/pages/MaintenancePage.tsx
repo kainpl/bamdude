@@ -1547,6 +1547,7 @@ export function MaintenancePage() {
       api.updateMaintenanceItem(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceSummary'] });
     },
     onError: (error: Error) => {
       showToast(error.message, 'error');
@@ -1562,6 +1563,7 @@ export function MaintenancePage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceSummary'] });
       showToast(t('maintenance.typeUpdated'));
     },
     onError: (error: Error) => {
@@ -1574,6 +1576,7 @@ export function MaintenancePage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceSummary'] });
       showToast(t('maintenance.typeDeleted'));
     },
     onError: (error: Error) => {
@@ -1586,6 +1589,7 @@ export function MaintenancePage() {
     onSuccess: (data: { restored: number }) => {
       queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceSummary'] });
       showToast(t('maintenance.defaultsRestored', { count: data.restored }));
     },
     onError: (error: Error) => {
@@ -1611,6 +1615,7 @@ export function MaintenancePage() {
       api.assignMaintenanceType(printerId, typeId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceSummary'] });
       showToast(t('maintenance.printerAssigned'));
     },
     onError: (error: Error) => {
@@ -1622,6 +1627,7 @@ export function MaintenancePage() {
     mutationFn: api.removeMaintenanceItem,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceSummary'] });
       showToast(t('maintenance.printerRemoved'));
     },
     onError: (error: Error) => {
@@ -1848,6 +1854,7 @@ export function MaintenancePage() {
               }
               queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });
               queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceSummary'] });
               showToast(t('maintenance.typeUpdated'));
             }}
             onUpdateType={(id, data) => updateTypeMutation.mutate({ id, data })}

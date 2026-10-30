@@ -61,7 +61,13 @@ _QUEUE_ROUTER_ITEM_KEYS = frozenset({"item_ids"})
 _FARM_WIDE_ROUTERS = ("/api/v1/auto-queue",)
 # The Workshop's doors onto the same distributor (WS-13 E13 O14): a line's rebalance always,
 # an order plan sent to the auto-queue (``target.kind == "auto"``) — the distributor picks the printer.
-_FARM_WIDE_ROUTES = frozenset({"/api/v1/projects/{project_id}/lines/{line_id}/rebalance"})
+_FARM_WIDE_ROUTES = frozenset(
+    {
+        "/api/v1/projects/{project_id}/lines/{line_id}/rebalance",
+        "/api/v1/queue/{item_id}/auto-transfer-preview",
+        "/api/v1/queue/{item_id}/move-to-auto",
+    }
+)
 _FARM_WIDE_WHEN_AUTO = frozenset({"/api/v1/projects/{project_id}/plan/enqueue"})
 
 

@@ -1,3 +1,5 @@
+import { MoveToAutoButton } from '../components/MoveToAutoButton';
+import { QueueDuration } from '../components/QueueDuration';
 import { useEffect, useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -484,7 +486,7 @@ export function QueuePage() {
                   >
                     <span className="text-xs text-bambu-gray w-6 text-center shrink-0">#{idx + 1}</span>
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm text-white truncate">
+                      <p className="text-sm text-white truncate" title={item.archive_name || item.library_file_name || `#${item.id}`}>
                         {item.archive_name || item.library_file_name || `#${item.id}`}
                       </p>
                       <p className="text-xs text-bambu-gray truncate">
@@ -494,6 +496,8 @@ export function QueuePage() {
                         )}
                       </p>
                     </div>
+                    <QueueDuration seconds={item.print_time_seconds} />
+                    <MoveToAutoButton item={item} />
                     {item.manual_start && (
                       <span className="text-xs px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 rounded shrink-0">
                         {t('queueCard.manualStart')}

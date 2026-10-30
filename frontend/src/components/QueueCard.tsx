@@ -1,3 +1,5 @@
+import { MoveToAutoButton } from './MoveToAutoButton';
+import { QueueDuration } from './QueueDuration';
 import { AutoEjectBadge } from './AutoEjectBadge';
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
@@ -1299,7 +1301,7 @@ function PendingItemRow({
               state={item.source_storage}
               className="w-3 h-3"
             />
-            <p className="text-xs text-white truncate flex-1">{name}</p>
+            <p className="min-w-0 text-xs text-white truncate flex-1" title={name}>{name}</p>
             <ModelCompatChip fileModel={item.sliced_for_model} targetModel={targetModel} />
             {isInBatch && batchAccent && (
               <span className={`text-[9px] px-1 rounded ${batchAccent.badge} font-medium`}>
@@ -1323,6 +1325,8 @@ function PendingItemRow({
             the reveal that is gone. The same applies to the failed / cancelled /
             skipped rows below. */}
         <div className="flex items-center gap-0.5 flex-shrink-0">
+          <QueueDuration seconds={item.print_time_seconds} />
+          <MoveToAutoButton item={item} />
           {item.manual_start && (
             <button
               onClick={onStart}

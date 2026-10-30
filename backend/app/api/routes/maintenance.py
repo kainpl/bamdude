@@ -4,11 +4,12 @@ import logging
 import math
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -140,6 +141,22 @@ def _should_apply_to_printer(type_code: str | None, printer_model: str | None) -
         return rod_requirement == "carbon"
 
     return rod_type == rod_requirement
+
+
+def _scope_printers(query, request):
+    scope = key_printer_scope(request)
+    return query if scope is None else query.where(Printer.id.in_(scope))
+
+
+def _scope_history(query, request):
+    scope = key_printer_scope(request)
+    if scope is None:
+        return query
+    return query.where(
+        MaintenanceHistory.printer_maintenance_id.in_(
+            select(PrinterMaintenance.id).where(PrinterMaintenance.printer_id.in_(scope))
+        )
+    )
 
 
 async def get_printer_total_hours(db: AsyncSession, printer_id: int) -> float:
@@ -334,11 +351,31 @@ async def _get_printer_maintenance_internal(
     )
     existing_items = {item.maintenance_type_id: item for item in result.scalars().all()}
 
+    now = datetime.now(timezone.utc)
+    overview = _maintenance_overview(printer, total_hours, all_types, existing_items, now)
+    # Only the existing detail workflow materializes missing system items.
+    for status in overview.maintenance_items:
+        if status.id == 0:
+            item = PrinterMaintenance(
+                printer_id=printer_id,
+                maintenance_type_id=status.maintenance_type_id,
+                enabled=True,
+                last_performed_hours=0.0,
+            )
+            db.add(item)
+            await db.flush()
+            status.id = item.id
+    if commit:
+        await db.commit()
+    return overview
+
+
+def _maintenance_overview(printer, total_hours, all_types, existing_items, now):
+    """Pure detail/summary calculator; missing system items are virtual defaults."""
+    printer_id = printer.id
     maintenance_items = []
     due_count = 0
     warning_count = 0
-
-    now = datetime.now(timezone.utc)
 
     for maint_type in all_types:
         # Skip system types that don't apply to this printer model
@@ -375,27 +412,16 @@ async def _get_printer_maintenance_internal(
             except (ValueError, TypeError):
                 type_models = ["*"]
             if "*" not in type_models:
-                printer_result = await db.execute(select(Printer.model).where(Printer.id == printer_id))
-                printer_model = printer_result.scalar()
-                if printer_model and printer_model not in type_models:
+                if printer.model and printer.model not in type_models:
                     continue
 
-            # Create default entry for this printer/type
-            item = PrinterMaintenance(
-                printer_id=printer_id,
-                maintenance_type_id=maint_type.id,
-                enabled=True,
-                last_performed_hours=0.0,
-            )
-            db.add(item)
-            await db.flush()
+            item_id = 0  # Virtual system default; summary is a read, never an assignment.
 
             interval = maint_type.default_interval_hours
             interval_type = default_interval_type
             enabled = True
             last_performed_hours = 0.0
             last_performed_at = None
-            item_id = item.id
 
         # Calculate status based on interval type
         if interval_type == "days":
@@ -463,9 +489,6 @@ async def _get_printer_maintenance_internal(
             )
         )
 
-    if commit:
-        await db.commit()
-
     return PrinterMaintenanceOverview(
         printer_id=printer_id,
         printer_name=printer.name,
@@ -490,6 +513,7 @@ async def get_printer_maintenance(
 
 @router.get("/overview", response_model=list[PrinterMaintenanceOverview])
 async def get_all_maintenance_overview(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.MAINTENANCE_READ),
 ):
@@ -497,10 +521,9 @@ async def get_all_maintenance_overview(
     await ensure_default_types(db)
 
     result = await db.execute(
-        select(Printer)
-        .where(Printer.is_active.is_(True))
-        .where(Printer.archived.is_(False))
-        .order_by(Printer.name, Printer.id)
+        _scope_printers(
+            select(Printer).where(Printer.is_active.is_(True), Printer.archived.is_(False)), request
+        ).order_by(Printer.name, Printer.id)
     )
     printers = result.scalars().all()
 
@@ -705,6 +728,7 @@ async def perform_maintenance(
 
 @router.get("/history/export")
 async def export_maintenance_history(
+    request: Request,
     printer_id: int | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.MAINTENANCE_READ),
@@ -732,7 +756,7 @@ async def export_maintenance_history(
         query = query.join(
             PrinterMaintenance, MaintenanceHistory.printer_maintenance_id == PrinterMaintenance.id
         ).where(PrinterMaintenance.printer_id == printer_id)
-    result = await db.execute(query)
+    result = await db.execute(_scope_history(query, request))
     items = result.scalars().all()
 
     wb = Workbook()
@@ -795,6 +819,7 @@ async def export_maintenance_history(
 
 @router.get("/history")
 async def get_all_maintenance_history(
+    request: Request,
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=25, ge=1, le=100),
     sort_by: str = Query(default="date"),
@@ -810,7 +835,7 @@ async def get_all_maintenance_history(
     count_query = select(func.count()).select_from(MaintenanceHistory)
     if printer_id is not None:
         count_query = count_query.join(PrinterMaintenance).where(PrinterMaintenance.printer_id == printer_id)
-    count_result = await db.execute(count_query)
+    count_result = await db.execute(_scope_history(count_query, request))
     total = count_result.scalar() or 0
 
     # Build order clause
@@ -832,7 +857,8 @@ async def get_all_maintenance_history(
         query = query.where(PrinterMaintenance.printer_id == printer_id)
 
     result = await db.execute(
-        query.options(
+        _scope_history(query, request)
+        .options(
             selectinload(MaintenanceHistory.performed_by_user),
             selectinload(MaintenanceHistory.performed_by_chat),
             selectinload(MaintenanceHistory.printer_maintenance).selectinload(PrinterMaintenance.maintenance_type),
@@ -909,24 +935,31 @@ async def get_maintenance_history(
 
 @router.get("/summary")
 async def get_maintenance_summary(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.MAINTENANCE_READ),
 ):
     """Get a summary of maintenance status across all printers."""
-    await ensure_default_types(db)
-
-    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False)))
+    result = await db.execute(
+        _scope_printers(select(Printer).where(Printer.is_active.is_(True), Printer.archived.is_(False)), request)
+    )
     printers = result.scalars().all()
-
-    total_due = 0
-    total_warning = 0
+    all_types = (await db.scalars(select(MaintenanceType).where(MaintenanceType.is_deleted.is_(False)))).all()
+    items = (
+        await db.scalars(select(PrinterMaintenance).where(PrinterMaintenance.printer_id.in_([p.id for p in printers])))
+    ).all()
+    by_printer = {}
+    for item in items:
+        by_printer.setdefault(item.printer_id, {})[item.maintenance_type_id] = item
+    total_due = total_warning = 0
     printers_with_issues = []
-
+    now = datetime.now(timezone.utc)
     for printer in printers:
-        overview = await get_printer_maintenance(printer.id, db)
+        hours = (printer.runtime_seconds or 0) / 3600.0 + (printer.print_hours_offset or 0.0)
+        overview = _maintenance_overview(printer, hours, all_types, by_printer.get(printer.id, {}), now)
         total_due += overview.due_count
         total_warning += overview.warning_count
-        if overview.due_count > 0 or overview.warning_count > 0:
+        if overview.due_count or overview.warning_count:
             printers_with_issues.append(
                 {
                     "printer_id": printer.id,

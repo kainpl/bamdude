@@ -1,3 +1,5 @@
+import { QueueDuration } from '../QueueDuration';
+import { sharedSlicerTime } from '../../utils/slicerTime';
 import { AutoEjectBadge } from '../AutoEjectBadge';
 import { useMemo, useRef, useState, type DragEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -360,6 +362,7 @@ export function AutoQueuePanel() {
                     sortableId={entry.id}
                     item={head}
                     countBadge={entry.run.items.length}
+                    groupTime={sharedSlicerTime(entry.run.items.map(row => row.print_time_seconds))}
                     draggable={dragEnabled}
                     onExpand={() => setExpandedRuns((prev) => new Set(prev).add(entry.run.key))}
                     onEdit={
@@ -496,7 +499,7 @@ export function AutoQueuePanel() {
 // ── Sortable row (a collapsed xN run or a single copy) ───────────────────────
 
 function AutoQueueRow({
-  sortableId, item, countBadge, copyLabel, draggable, busy,
+  sortableId, item, countBadge, groupTime, copyLabel, draggable, busy,
   onExpand, onCollapse, onEdit, onAssignNow, onRebalance, onDelete, t,
 }: {
   sortableId: string;
@@ -504,6 +507,7 @@ function AutoQueueRow({
   /** Collapsed run: how many copies this block carries. */
   countBadge?: number;
   /** Expanded copy: its "i/N" position inside the run. */
+  groupTime?: number | null;
   copyLabel?: string;
   draggable: boolean;
   busy: boolean;
@@ -541,7 +545,7 @@ function AutoQueueRow({
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-sm text-white truncate">
-          <span className="truncate">{label}</span>
+          <span className="min-w-0 truncate" title={label}>{label}</span>
           {item.status === 'failed' && <span className="text-red-700 dark:text-red-400">{t('autoQueue.sourceFailed')}</span>}
           {countBadge != null && countBadge > 1 && (
             <button
@@ -603,6 +607,7 @@ function AutoQueueRow({
         </div>
       </div>
 
+      {item.status === 'pending' && <QueueDuration seconds={countBadge != null ? groupTime : item.print_time_seconds} group={countBadge != null} />}
       {onEdit && item.status !== 'failed' && (
         <button
           type="button"

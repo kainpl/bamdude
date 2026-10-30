@@ -1,4 +1,57 @@
 export default {
+  queueTransfer: {
+  anyLocation: 'Any location',
+  values: {"on": "On", "off": "Off", "auto": "Automatic", "inherit": "Default", "internal": "Internal", "external": "External"},
+  "title": "Move to auto queue",
+  "move": "Move",
+  "help": "Move this one copy. AutoQueue may assign and start it immediately, including on this printer again.",
+  "profileHelp": "Print options will use the original creator’s profile. Comparison model: {{model}}. A compatible receiver may use a different model profile.",
+  "defaultProfile": "No saved creator profile: standard defaults apply.",
+  "acceptProfile": "I accept the option changes shown above",
+  "acceptStart": "Allow automatic assignment and start; remove manual start on this printer",
+  "acceptFilament": "Allow automatic filament selection instead of physical slot pins",
+  "reresolve": "Swap and selected macros, AMS use and physical mappings are resolved again by the router. No macro runs during this move.",
+  "success": "Job moved to auto queue",
+  "stale": "The proposal is no longer valid. Close this dialog and read a new proposal.",
+  "unknown": "The result is unknown. Check the auto queue and printer queue before taking another action.",
+  "readFailed": "Could not read the proposal. Nothing was moved.",
+  "unavailable": "This job cannot be moved. Review its source and state.",
+  "fields": {
+    "bed_levelling": "Bed levelling",
+    "flow_cali": "Flow calibration",
+    "nozzle_offset_cali": "Nozzle offset calibration",
+    "layer_inspect": "Layer inspection",
+    "timelapse": "Timelapse",
+    "timelapse_storage": "Timelapse storage",
+    "mesh_mode_fast_check": "Fast mesh check",
+    "gcode_injection": "G-code injection",
+    "preheat_override": "Preheat",
+    "preheat_chamber_target_override": "Chamber temperature"
+  },
+  "refusals": {
+    "transfer_started": "The job has started or has execution dependencies.",
+    "transfer_identity_missing": "The job has no stable identity.",
+    "transfer_source_unavailable": "A ready captured sliced source is required. Review or refresh its source.",
+    "transfer_rack_choice": "The physical nozzle rack choice cannot be moved to AutoQueue.",
+    "transfer_policy_invalid": "The filament choices require review.",
+    "transfer_ancestor_changed": "The linked AutoQueue job changed or is inconsistent.",
+    "swap_declaration_changed": "The two jobs have different swap declarations; the newer declaration will not be discarded.",
+    "transfer_plate_changed": "The plate differs from the router’s accepted selection.",
+    "transfer_profile_invalid": "The creator’s options are incompatible with this sliced model."
+  }
+},
+  queueOperator: {
+    attentionUnavailable: 'Attention status unavailable',
+    state: { idle: 'Idle', printing: 'Printing', paused: 'Paused', error: 'Error', unknown: 'Unavailable' },
+    stale: 'Last known state; refresh failed',
+    queuePaused: 'A printer queue is paused', queueError: 'A printer queue has an error',
+    plateClear: 'A printer is waiting for its plate to be cleared',
+    maintenanceDue: 'Maintenance overdue', maintenanceWarning: 'Maintenance due soon',
+    lessThanMinute: '<1m', hoursMinutes: '{{hours}}h {{minutes}}m', minutes: '{{minutes}}m',
+    slicerTime: 'Slicer estimate', slicerPerPrint: 'Slicer estimate per print',
+    unknownTime: 'Slicer estimate unavailable', mixedTime: 'Copy durations differ or are unknown; expand the group',
+  },
+
   orderResources: {
     title: 'Printers for this order',
     configure: 'Configure restrictions',

@@ -559,51 +559,54 @@ async def cancel_auto_queue_item(
     while the row still exists — and because ``_to_response`` reads them,
     which under an ``AsyncSession`` cannot lazy-load.
     """
-    result = await db.execute(
-        select(AutoQueueItem)
-        .options(
-            selectinload(AutoQueueItem.archive),
-            selectinload(AutoQueueItem.queue_source),
-            selectinload(AutoQueueItem.library_file),
-            selectinload(AutoQueueItem.created_by),
-            selectinload(AutoQueueItem.assigned_to)
-            .selectinload(PrintQueueItem.queue)
-            .selectinload(PrinterQueue.printer),
+    from backend.app.services.queue_cancel_scope import cancellation_scope
+
+    async with cancellation_scope([item_id], auto=True) as db:
+        result = await db.execute(
+            select(AutoQueueItem)
+            .options(
+                selectinload(AutoQueueItem.archive),
+                selectinload(AutoQueueItem.queue_source),
+                selectinload(AutoQueueItem.library_file),
+                selectinload(AutoQueueItem.created_by),
+                selectinload(AutoQueueItem.assigned_to)
+                .selectinload(PrintQueueItem.queue)
+                .selectinload(PrinterQueue.printer),
+            )
+            .where(AutoQueueItem.id == item_id)
         )
-        .where(AutoQueueItem.id == item_id)
-    )
-    item = result.scalar_one_or_none()
-    if not item:
-        raise HTTPException(404, "Auto-queue item not found")
-    if item.status == "cancelled":
-        return _to_response(item)
+        item = result.scalar_one_or_none()
+        if not item:
+            raise HTTPException(404, "Auto-queue item not found")
+        if item.status == "cancelled":
+            return _to_response(item)
 
-    now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
 
-    if item.status in ("pending", "failed") and item.assigned_to_item_id is None:
-        # Snapshot before the row stops existing. The client asked for a
-        # cancel and gets the item back in the state it asked for; the two
-        # fields are the response's alone, never written.
-        response = _to_response(item)
-        response.status = "cancelled"
-        response.cancelled_at = now
-        await db.delete(item)
+        if item.status in ("pending", "failed") and item.assigned_to_item_id is None:
+            # Snapshot before the row stops existing. The client asked for a
+            # cancel and gets the item back in the state it asked for; the two
+            # fields are the response's alone, never written.
+            response = _to_response(item)
+            response.status = "cancelled"
+            response.cancelled_at = now
+            await db.delete(item)
+            await db.commit()
+            logger.info("Deleted un-routed auto-queue item %s on cancel", item_id)
+            return response
+
+        item.status = "cancelled"
+        item.cancelled_at = now
+
+        if item.assigned_to_item_id:
+            pq_result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item.assigned_to_item_id))
+            pq_item = pq_result.scalar_one_or_none()
+            if pq_item and pq_item.status == "pending":
+                pq_item.status = "cancelled"
+
         await db.commit()
-        logger.info("Deleted un-routed auto-queue item %s on cancel", item_id)
-        return response
-
-    item.status = "cancelled"
-    item.cancelled_at = now
-
-    if item.assigned_to_item_id:
-        pq_result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item.assigned_to_item_id))
-        pq_item = pq_result.scalar_one_or_none()
-        if pq_item and pq_item.status == "pending":
-            pq_item.status = "cancelled"
-
-    await db.commit()
-    await db.refresh(item)
-    return _to_response(item)
+        await db.refresh(item)
+        return _to_response(item)
 
 
 @router.post("/reorder")
@@ -746,54 +749,64 @@ async def cancel_auto_queue_batch(
     is deleted rather than parked in ``status='cancelled'``, because nothing
     can read such a row back. Items already routed keep their row.
     """
-    pending_result = await db.execute(
-        select(AutoQueueItem).where(
-            AutoQueueItem.batch_id == batch_id,
-            AutoQueueItem.status.in_(["pending", "failed"]),
-        )
-    )
-    pending = list(pending_result.scalars().all())
+    from backend.app.core import database
 
-    # The per-printer clean-up runs first, while every row of the batch is
-    # still there to be matched against: the ``source_auto_item_id`` lookup
-    # below has to see the pending ids too, in case the scheduler routed one
-    # of them between our read and this transaction.
-    if pending:
-        assigned_ids = [it.assigned_to_item_id for it in pending if it.assigned_to_item_id is not None]
-        # Pending in this batch shouldn't have assigned_to set, but defensive:
-        if assigned_ids:
-            pq_result = await db.execute(
+    async with database.async_session() as preflight:
+        ids = list((await preflight.scalars(select(AutoQueueItem.id).where(AutoQueueItem.batch_id == batch_id))).all())
+    from backend.app.services.queue_cancel_scope import cancellation_scope
+
+    async with cancellation_scope(ids, auto=True) as db:
+        current_ids = set((await db.scalars(select(AutoQueueItem.id).where(AutoQueueItem.batch_id == batch_id))).all())
+        if not current_ids <= set(ids):
+            raise HTTPException(409, {"code": "queue_selection_changed"})
+        pending_result = await db.execute(
+            select(AutoQueueItem).where(
+                AutoQueueItem.batch_id == batch_id,
+                AutoQueueItem.status.in_(["pending", "failed"]),
+            )
+        )
+        pending = list(pending_result.scalars().all())
+
+        # The per-printer clean-up runs first, while every row of the batch is
+        # still there to be matched against: the ``source_auto_item_id`` lookup
+        # below has to see the pending ids too, in case the scheduler routed one
+        # of them between our read and this transaction.
+        if pending:
+            assigned_ids = [it.assigned_to_item_id for it in pending if it.assigned_to_item_id is not None]
+            # Pending in this batch shouldn't have assigned_to set, but defensive:
+            if assigned_ids:
+                pq_result = await db.execute(
+                    select(PrintQueueItem).where(
+                        PrintQueueItem.id.in_(assigned_ids),
+                        PrintQueueItem.status == "pending",
+                    )
+                )
+                for pq_item in pq_result.scalars().all():
+                    pq_item.status = "cancelled"
+
+        # Also cancel assigned-but-pending items linked via source_auto_item_id
+        auto_in_batch_ids_result = await db.execute(select(AutoQueueItem.id).where(AutoQueueItem.batch_id == batch_id))
+        auto_ids = [row[0] for row in auto_in_batch_ids_result.all()]
+        if auto_ids:
+            pq_pending_result = await db.execute(
                 select(PrintQueueItem).where(
-                    PrintQueueItem.id.in_(assigned_ids),
+                    PrintQueueItem.source_auto_item_id.in_(auto_ids),
                     PrintQueueItem.status == "pending",
                 )
             )
-            for pq_item in pq_result.scalars().all():
+            for pq_item in pq_pending_result.scalars().all():
                 pq_item.status = "cancelled"
 
-    # Also cancel assigned-but-pending items linked via source_auto_item_id
-    auto_in_batch_ids_result = await db.execute(select(AutoQueueItem.id).where(AutoQueueItem.batch_id == batch_id))
-    auto_ids = [row[0] for row in auto_in_batch_ids_result.all()]
-    if auto_ids:
-        pq_pending_result = await db.execute(
-            select(PrintQueueItem).where(
-                PrintQueueItem.source_auto_item_id.in_(auto_ids),
-                PrintQueueItem.status == "pending",
-            )
-        )
-        for pq_item in pq_pending_result.scalars().all():
-            pq_item.status = "cancelled"
+        now = datetime.now(timezone.utc)
+        for item in pending:
+            if item.assigned_to_item_id is None:
+                await db.delete(item)
+            else:
+                item.status = "cancelled"
+                item.cancelled_at = now
 
-    now = datetime.now(timezone.utc)
-    for item in pending:
-        if item.assigned_to_item_id is None:
-            await db.delete(item)
-        else:
-            item.status = "cancelled"
-            item.cancelled_at = now
-
-    await db.commit()
-    return AutoQueueBatchActionResponse(affected=len(pending), batch_id=batch_id)
+        await db.commit()
+        return AutoQueueBatchActionResponse(affected=len(pending), batch_id=batch_id)
 
 
 # Avoid unused-import warnings — these are referenced via type hints / FK strings

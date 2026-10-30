@@ -218,14 +218,15 @@ function RailParent({
         onKeyUp={(e) => {
           if (e.key === ' ') e.preventDefault();
         }}
-        className={`w-full flex items-center justify-center px-2 py-1.5 rounded-lg transition-colors ${
+        className={`relative w-full flex items-center justify-center pl-2 pr-5 py-1.5 rounded-lg transition-colors ${
           inside ? 'bg-bambu-green text-white' : 'text-bambu-gray-light hover:bg-bambu-dark-tertiary hover:text-white'
         }`}
       >
         <span className="relative">
           <Icon className="w-5 h-5 flex-shrink-0" />
-          {hasCount && dot}
+
         </span>
+        <span className="absolute right-1 top-1/2 -translate-y-1/2 flex w-2.5 justify-center" data-nav-attention-slot>{hasCount && dot}</span>
       </button>
       {open &&
         createPortal(
@@ -289,7 +290,8 @@ export function NavParentItem({ item, expanded, showGrip, badges, liProps }: Nav
   const dot: ReactNode = (
     <span
       data-testid={`nav-dot-${item.id}`}
-      className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-bambu-green rounded-full border-2 border-bambu-dark-secondary"
+      role="img" aria-label={t(item.labelKey)} title={t(item.labelKey)}
+      className="w-2.5 h-2.5 bg-bambu-green rounded-full"
     />
   );
 
@@ -303,9 +305,10 @@ export function NavParentItem({ item, expanded, showGrip, badges, liProps }: Nav
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        aria-label={t(item.labelKey)}
         aria-expanded={open}
         data-inside={inside}
-        className={`w-full flex items-center gap-3 px-4 py-1.5 rounded-lg transition-colors group ${
+        className={`relative w-full flex items-center gap-3 pl-4 pr-9 py-1.5 rounded-lg transition-colors group ${
           folded && inside
             ? 'bg-bambu-green text-white'
             : inside
@@ -318,10 +321,11 @@ export function NavParentItem({ item, expanded, showGrip, badges, liProps }: Nav
         )}
         <span className="relative">
           <Icon className="w-5 h-5 flex-shrink-0" />
-          {folded && hasCount && dot}
+
         </span>
-        <span className="flex-1 text-left">{t(item.labelKey)}</span>
-        {open ? <ChevronUp className="w-4 h-4" aria-hidden /> : <ChevronDown className="w-4 h-4" aria-hidden />}
+        <span className="min-w-0 flex-1 truncate text-left">{t(item.labelKey)}</span>
+        {open ? <ChevronUp className="w-4 h-4 shrink-0" aria-hidden /> : <ChevronDown className="w-4 h-4 shrink-0" aria-hidden />}
+        <span className="absolute right-1 top-1/2 -translate-y-1/2 flex w-2.5 justify-center" data-nav-attention-slot>{folded && hasCount && dot}</span>
       </button>
       {open && (
         <ul className="mt-1 mb-0.5 ml-[1.6rem] pl-3 border-l border-dashed border-bambu-gray/40 space-y-0.5">
