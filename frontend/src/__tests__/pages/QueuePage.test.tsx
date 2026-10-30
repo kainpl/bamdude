@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import userEvent from '@testing-library/user-event';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { render } from '../utils';
 import { QueuePage } from '../../pages/QueuePage';
 import { http, HttpResponse } from 'msw';
@@ -448,10 +448,10 @@ describe('QueuePage', () => {
         .toHaveLength(4);
     });
 
-    it('keeps the plate and source icons before the readable filename on the same line', async () => {
+    it('keeps the plate, manual-start and source markers before the filename in that order', async () => {
       server.use(
         byStatus({
-          pending: [spoolItem({ id: 201, archive_name: 'Saved one', source_storage: 'ready', bed_type: 'Textured PEI Plate' })],
+          pending: [spoolItem({ id: 201, archive_name: 'Saved one', source_storage: 'ready', bed_type: 'Textured PEI Plate', manual_start: true })],
         }),
       );
       render(<QueuePage />);
@@ -467,6 +467,10 @@ describe('QueuePage', () => {
       expect(bed).not.toBeNull();
       expect(name.parentElement).toContainElement(bed);
       expect(bed!.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      const manual = within(name.parentElement!).getByText('M');
+      expect(name.parentElement).toContainElement(manual);
+      expect(bed!.compareDocumentPosition(manual) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(manual.compareDocumentPosition(mark!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       // The accepted queue layout keeps the same compact vertical padding.
       expect(row.className).toContain('py-1.5');
       expect(row.className).toContain('px-1.5');

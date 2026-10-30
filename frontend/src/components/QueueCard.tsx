@@ -1289,6 +1289,11 @@ function PendingItemRow({
                 />
               );
             })()}
+            {item.manual_start && (
+              <span className="text-[9px] px-1 rounded bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 font-medium flex-shrink-0">
+                M
+              </span>
+            )}
             {/* Does this job own the bytes it prints (m173)? Same place and
                 same size as the plate icon above, for the same reason: it lines
                 up down the column and the row keeps its geometry. Renders
@@ -1302,11 +1307,6 @@ function PendingItemRow({
           </div>
           <div className="flex flex-wrap items-center gap-1">
             <ModelCompatChip fileModel={item.sliced_for_model} targetModel={targetModel} />
-            {item.manual_start && (
-              <span className="text-[9px] px-1 rounded bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 font-medium">
-                M
-              </span>
-            )}
             {isInBatch && batchAccent && (
               <span className={`text-[9px] px-1 rounded ${batchAccent.badge} font-medium`}>
                 {t('queueCard.batch.label', { count: batchSize })}
