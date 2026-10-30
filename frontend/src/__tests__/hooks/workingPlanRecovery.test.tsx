@@ -30,6 +30,40 @@ async function conflicted() {
 }
 
 describe('confirmed read must recover independently of background focus', () => {
+  it('a transient focus read failure leaves local input writable', async () => {
+    const get = vi.spyOn(api, 'getWorkingPlan').mockResolvedValue(initial);
+    const write = vi.spyOn(api, 'writeWorkingPlan').mockImplementation(async (_, body) => ({
+      ...initial, revision: 2, entries: body.entries,
+    }));
+    const { result } = renderHook(() => useWorkingPlan(1, true));
+    await waitFor(() => expect(result.current.state).toEqual(initial));
+    act(() => { result.current.change([entry(18)]); });
+    get.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await act(async () => { window.dispatchEvent(new Event('focus')); await Promise.resolve(); });
+    expect(result.current.error).toBeUndefined();
+    expect(result.current.dirty).toBe(true);
+    await act(async () => { await result.current.flush(); });
+    expect(write).toHaveBeenCalledWith(1, expect.objectContaining({ entries: [entry(18)] }));
+  });
+
+  it('resumes autosave when a pending focus read fails', async () => {
+    const get = vi.spyOn(api, 'getWorkingPlan').mockResolvedValue(initial);
+    const write = vi.spyOn(api, 'writeWorkingPlan').mockImplementation(async (_, body) => ({
+      ...initial, revision: 2, entries: body.entries,
+    }));
+    const { result } = renderHook(() => useWorkingPlan(1, true));
+    await waitFor(() => expect(result.current.state).toEqual(initial));
+    let fail!: (error: Error) => void;
+    get.mockReturnValueOnce(new Promise<WorkingPlan>((_, reject) => { fail = reject; }));
+    act(() => { window.dispatchEvent(new Event('focus')); result.current.change([entry(18)]); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 700)); });
+    expect(write).not.toHaveBeenCalled();
+    await act(async () => { fail(new TypeError('Failed to fetch')); });
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+    expect(result.current.error).toBeUndefined();
+    expect(write).toHaveBeenCalledWith(1, expect.objectContaining({ entries: [entry(18)] }));
+  });
+
   it('holds autosave only until the current input read finishes, preserving local input', async () => {
     const get = vi.spyOn(api, 'getWorkingPlan').mockResolvedValue(initial);
     const write = vi.spyOn(api, 'writeWorkingPlan').mockImplementation(async (_, body) => ({

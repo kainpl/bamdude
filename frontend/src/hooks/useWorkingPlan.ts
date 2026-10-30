@@ -77,24 +77,31 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
     recovery.current = task;
     return task;
   }, [orderId, accept]);
-  const refreshInputs = useCallback((): Promise<WorkingPlan | undefined> => {
+  const refreshInputs = useCallback(({ reconcile = false } = {}): Promise<WorkingPlan | undefined> => {
     if (recovery.current) return Promise.resolve(undefined);
-    if (reading.current) return reading.current;
-    const before = current.current?.revision;
+    if (reading.current && !reconcile) return reading.current;
+    const previous = reading.current;
     const sequence = ++readSequence.current;
-    const task = api.getWorkingPlan(orderId).then(value => {
-      if (!mounted.current || sequence !== readSequence.current) return;
-      if (current.current && current.current.revision !== before && value.revision <= current.current.revision) return;
-      if (current.current && value.revision !== current.current.revision) {
-        if (!desired.current) { accept(value); return current.current; }
-        blocked.current = true;
-        setError(new Error('workingPlan.conflict'));
-        return;
-      }
-      accept(value); // Keep unacknowledged local input; refresh its context.
-      return current.current;
-    }).catch((e: Error) => {
-      if (mounted.current && sequence === readSequence.current) {
+    const read = () => {
+      if (!mounted.current || sequence !== readSequence.current || recovery.current) return Promise.resolve(undefined);
+      const before = current.current?.revision;
+      return api.getWorkingPlan(orderId).then(value => {
+        if (!mounted.current || sequence !== readSequence.current) return;
+        if (current.current && current.current.revision !== before && value.revision <= current.current.revision) return;
+        if (current.current && value.revision !== current.current.revision) {
+          if (!desired.current) { accept(value); return current.current; }
+          blocked.current = true;
+          setError(new Error('workingPlan.conflict'));
+          return;
+        }
+        accept(value); // Keep unacknowledged local input; refresh its context.
+        return current.current;
+      });
+    };
+    // A reconciliation owns a read started after the observed mismatch, not
+    // an older focus snapshot. Keep the writer fenced across both reads.
+    const task = (previous ? previous.catch(() => undefined).then(read) : read()).catch((e: Error) => {
+      if (reconcile && mounted.current && sequence === readSequence.current) {
         blocked.current = true;
         setError(e);
       }
@@ -127,7 +134,7 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
     // A known input read fences only its own lifetime, not a token mismatch
     // with another cached reader. Resume the same desired entries afterwards.
     if (reading.current) {
-      await reading.current;
+      await reading.current.catch(() => undefined);
       return flush();
     }
     if (!mounted.current) return current.current!;
@@ -181,7 +188,7 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
     const expected = current.current;
     try {
       if (inflight.current) await inflight.current;
-      if (reading.current) await reading.current;
+      if (reading.current) await reading.current.catch(() => undefined);
       if (!current.current || blocked.current || recovery.current) throw new Error('workingPlan.conflict');
       let value = current.current;
       if (!value.revision || workingSignature(value.entries) !== workingSignature(captured)) {

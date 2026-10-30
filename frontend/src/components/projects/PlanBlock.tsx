@@ -381,13 +381,13 @@ export function PlanBlock({
     // resource. Read working first, then metadata once if working stayed put.
     if (revision === working.state.revision && mismatch) {
       const before = working.state;
-      void refreshInputs().then(next => {
+      void refreshInputs({ reconcile: true }).then(next => {
         if (!next || !currentAttempt()) return;
         if (next.revision === revision && next.inputs_token === before.inputs_token &&
           next.inputs_token !== receivedPlan.inputs_token) return readPlan(next);
       }).catch(readFailed);
     } else if (revision > working.state.revision) {
-      void refreshInputs().catch(readFailed);
+      void refreshInputs({ reconcile: true }).catch(readFailed);
     } else void readPlan().catch(readFailed);
   }, [receivedPlan, working.state, working.error, working.recovering, needsPlanRead, isFetching, refreshInputs, refetch, enqueue.isPending, planAction, queryClient, order.id, missingContext, t]);
 

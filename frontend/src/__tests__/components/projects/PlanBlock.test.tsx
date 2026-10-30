@@ -450,6 +450,32 @@ describe('PlanBlock', () => {
     expect(screen.queryByRole('button', { name: 'Read shared plan again' })).not.toBeInTheDocument();
   });
 
+  it('reads its own context after a focus read started before the input change', async () => {
+    const state = { ...await api.getWorkingPlan(1), revision: 1,
+      entries: [{ entry_id: 'row-10-100', line_id: 10, plate_id: 100, count: 20,
+        target: { kind: 'auto' as const }, manual: true, protected_count: 20 }] };
+    let finishBackground!: (value: WorkingPlan) => void;
+    const background = new Promise<WorkingPlan>(resolve => { finishBackground = resolve; });
+    const get = vi.mocked(api.getWorkingPlan).mockReset().mockResolvedValueOnce(state)
+      .mockReturnValueOnce(background).mockResolvedValue({ ...state, inputs_token: 'new-inputs' });
+    const readPlan = vi.mocked(api.getOrderPlan).mockReset()
+      .mockResolvedValueOnce({ ...plan, working_revision: 1, inputs_token: state.inputs_token })
+      .mockResolvedValue({ ...plan, working_revision: 1, inputs_token: 'new-inputs' });
+    const preview = vi.spyOn(api, 'previewOrderDraft');
+    render(<><PlanBlock order={order} canEdit /><Refetcher id={order.id} /></>);
+    await screen.findByTestId('plan-row-10-100-count');
+    fireEvent.focus(window);
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByTestId('force-refetch'));
+    await waitFor(() => expect(readPlan).toHaveBeenCalledTimes(2));
+    await act(async () => { finishBackground(state); });
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(order.id,
+      expect.objectContaining({ inputs_token: 'new-inputs' }), expect.anything()));
+    expect(readPlan).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('button', { name: 'Read shared plan again' })).not.toBeInTheDocument();
+  });
+
   it('bounds an unchanged mismatched context and offers explicit recovery', async () => {
     const state = { ...await api.getWorkingPlan(1), revision: 1, inputs_token: 'working-token' };
     const get = vi.mocked(api.getWorkingPlan).mockReset().mockImplementation(async () => ({ ...state }));
