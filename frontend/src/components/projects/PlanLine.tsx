@@ -196,7 +196,7 @@ export function PlanLine({
       <div className="flex items-start justify-between gap-3 flex-wrap" data-testid={`plan-line-${line.line_id}-head`}>
         <div className="min-w-0">
           <p className="text-white">
-            <span className="font-semibold">{line.product_id > 0 && !line.rows.some(row => row.issue === 'line_unavailable')
+            <span className="font-semibold">{line.product_id > 0
               ? line.product_name : t('workingPlan.unavailableLine')}</span>
             {configLabel && <small className="ml-1.5 text-xs text-bambu-gray">{configLabel}</small>}
           </p>

@@ -462,6 +462,27 @@ describe('PlanBlock', () => {
     expect(screen.getByText('Unavailable order line', { exact: true })).toBeInTheDocument();
   });
 
+  it('keeps the live product heading when a reused line id has an unavailable old entry', async () => {
+    const live = { ...plan.lines[0], rows: [
+      { ...plan.lines[0].rows[0], issue: 'line_unavailable' },
+      plan.lines[0].rows[1],
+    ] };
+    const state = { ...await api.getWorkingPlan(1), revision: 1,
+      entries: [100, 200].map(plate_id => ({ entry_id: `entry-${plate_id}`, line_id: 10, plate_id, count: 1,
+        target: { kind: 'auto' as const }, manual: true, protected_count: 1 })),
+      issues: [{ entry_id: 'entry-100', code: 'line_unavailable' }] };
+    vi.mocked(api.getWorkingPlan).mockResolvedValue(state);
+    vi.mocked(api.getOrderPlan).mockResolvedValue({ ...plan, working_revision: 1,
+      inputs_token: state.inputs_token, lines: [live] });
+    render(<PlanBlock order={order} canEdit />);
+    const message = await screen.findByText(/This order line was removed or replaced/);
+    expect(message).toHaveTextContent('Unavailable order line · big.3mf');
+    const heading = screen.getByTestId('plan-line-10-head');
+    expect(heading).toHaveTextContent('Flask');
+    expect(heading).not.toHaveTextContent('Unavailable order line');
+    expect(screen.getByTestId('plan-row-10-200-count')).toBeInTheDocument();
+  });
+
   it.each(['server-stale', 'local-conflict'])('shows the server rebuild summary and discards a stale proposal: %s', async mode => {
     const save = vi.spyOn(api, 'actWorkingPlan');
     const replan = vi.spyOn(api, 'replanWorkingPlan').mockResolvedValue({
