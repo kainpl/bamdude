@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Calculator, Loader2, Send } from 'lucide-react';
 import { api, ApiError } from '../../api/client';
-import type { Order, OrderPlan, PlanProposal, PlanSubmission, PlanEnqueueItem, PlanRow as PlanRowData } from '../../api/client';
+import type { Order, OrderPlan, PlanProposal, PlanSubmission, PlanEnqueueItem, PlanRow as PlanRowData, WorkingPlan } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { canFileFuturePrint } from '../../utils/workshopRights';
 import { useToast } from '../../contexts/ToastContext';
@@ -91,6 +91,8 @@ export function PlanBlock({
   const [frozenPlan, setFrozenPlan] = useState<OrderPlan>();
   const onDraftCommitted = useCallback(() => invalidateOrderViews(queryClient, { orderId: order.id }), [queryClient, order.id]);
   const working = useWorkingPlan(order.id, order.id > 0, onDraftCommitted);
+  const latestWorking = useRef(working.state);
+  latestWorking.current = working.state;
   const localGeneration = useRef(working.generation);
   const localEditsCurrent = localGeneration.current === working.generation;
   const plan = useMemo(() => localEditsCurrent && frozenPlan ? { ...frozenPlan, lines: frozenPlan.lines.map(line => {
@@ -109,6 +111,8 @@ export function PlanBlock({
   const [submissionUncertain, setSubmissionUncertain] = useState(false);
   const submissionAttempt = useRef<{ id: string; registered: boolean } | undefined>(undefined);
   const requestedContext = useRef<string | undefined>(undefined);
+  const contextBusy = useRef(false);
+  useEffect(() => () => { requestedContext.current = undefined; }, [order.id]);
   useEffect(() => {
     const operation = working.state?.active_operation;
     if (!operation) return;
@@ -270,6 +274,7 @@ export function PlanBlock({
   }, [queryClient, order.id]);
 
   const resetEditor = async (refresh = true) => {
+    requestedContext.current = undefined;
     try {
       await working.reload();
     } catch (error) {
@@ -346,8 +351,9 @@ export function PlanBlock({
     },
   });
 
+  contextBusy.current = frozen || enqueue.isPending;
   useEffect(() => {
-    if (!working.state || !receivedPlan || working.error || enqueue.isPending || planAction ||
+    if (!working.state || !receivedPlan || contextBusy.current ||
       queryClient.getQueryState(['project-plan', order.id])?.fetchStatus === 'fetching') return;
     const revision = receivedPlan.working_revision ?? 0;
     const mismatch = revision !== working.state.revision || receivedPlan.inputs_token && receivedPlan.inputs_token !== working.state.inputs_token;
@@ -355,11 +361,35 @@ export function PlanBlock({
     const key = JSON.stringify([working.state.revision, working.state.inputs_token, revision, receivedPlan.inputs_token]);
     if (requestedContext.current === key) return;
     requestedContext.current = key;
-    // Read the resource that is behind. A stable stale context must never
-    // sustain a working-plan GET loop merely by returning a new JS object.
-    if (revision > working.state.revision) void refreshInputs().catch(() => undefined);
-    else void refetch({ cancelRefetch: false });
-  }, [receivedPlan, working.state, working.error, isFetching, refreshInputs, refetch, enqueue.isPending, planAction, queryClient, order.id, missingContext]);
+    const currentAttempt = () => requestedContext.current === key && !contextBusy.current;
+    const readFailed = (error: unknown) => {
+      if (requestedContext.current !== key) return;
+      setNeedsPlanRead(true);
+      setPlanNotice(planErrorText(error, t, 'read_failed'));
+    };
+    const readPlan = async (expected?: WorkingPlan) => {
+      const result = await refetch({ cancelRefetch: false });
+      if (!currentAttempt()) return;
+      if (result.isError) { readFailed(result.error); return; }
+      const current = latestWorking.current;
+      if (expected && current?.revision === expected.revision && current.inputs_token === expected.inputs_token &&
+        ((result.data?.working_revision ?? 0) !== current.revision || result.data?.inputs_token !== current.inputs_token)) {
+        setNeedsPlanRead(true); // A bounded read did not reconcile the context.
+      }
+    };
+    // Equal revisions don't date the tokens: focus may have refreshed either
+    // resource. Read working first, then metadata once if working stayed put.
+    if (revision === working.state.revision && mismatch) {
+      const before = working.state;
+      void refreshInputs().then(next => {
+        if (!next || !currentAttempt()) return;
+        if (next.revision === revision && next.inputs_token === before.inputs_token &&
+          next.inputs_token !== receivedPlan.inputs_token) return readPlan(next);
+      }).catch(readFailed);
+    } else if (revision > working.state.revision) {
+      void refreshInputs().catch(readFailed);
+    } else void readPlan().catch(readFailed);
+  }, [receivedPlan, working.state, working.error, working.recovering, needsPlanRead, isFetching, refreshInputs, refetch, enqueue.isPending, planAction, queryClient, order.id, missingContext, t]);
 
   // The line's Rebalance button (spec 2026-09-10): the same procedure the tick
   // runs behind its setting, forced for this one line. Router rows move, so the
@@ -560,8 +590,6 @@ export function PlanBlock({
     workingLoaded && !working.error && !working.saving && !working.dirty &&
     working.state!.entries.length === 0 && working.state!.issues.length === 0 &&
     !frozen && !proposal && !queueRequest && lines.length === 0;
-  const latestWorking = useRef(working.state);
-  latestWorking.current = working.state;
   useEffect(() => {
     if (canEdit && localEditsCurrent && editBase.current && latestWorking.current && !latestWorking.current.active_operation && !overCap && !splitOff) changeWorking(canonicalRef.current);
     // A server acknowledgment cannot turn the previous displayed payload into

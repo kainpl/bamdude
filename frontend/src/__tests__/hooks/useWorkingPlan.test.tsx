@@ -73,13 +73,18 @@ describe('shared working draft writer', () => {
     let release!: (value: WorkingPlan) => void;
     vi.spyOn(api, 'getWorkingPlan').mockResolvedValueOnce(initial)
       .mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
-    vi.spyOn(api, 'writeWorkingPlan').mockImplementation(async (_, body) => ({ ...initial, revision: 2, entries: body.entries }));
+    let finishWrite!: () => void;
+    vi.spyOn(api, 'writeWorkingPlan').mockImplementation((_, body) => new Promise(resolve => {
+      finishWrite = () => resolve({ ...initial, revision: 2, entries: body.entries });
+    }));
     const { result } = renderHook(() => useWorkingPlan(1, true));
     await waitFor(() => expect(result.current.state?.revision).toBe(1));
-    let context!: Promise<void>;
+    let context!: ReturnType<typeof result.current.refreshInputs>, flushed!: Promise<WorkingPlan>;
+    act(() => { result.current.change([entry(18)]); flushed = result.current.flush(); });
     act(() => { context = result.current.refreshInputs(); });
-    await act(async () => { result.current.change([entry(18)]); await result.current.flush(); });
-    await act(async () => { release(initial); await context; });
+    await act(async () => { finishWrite(); });
+    await waitFor(() => expect(result.current.state?.revision).toBe(2));
+    await act(async () => { release(initial); await context; await flushed; });
     expect(result.current.state?.revision).toBe(2);
     expect(result.current.error).toBeUndefined();
   });

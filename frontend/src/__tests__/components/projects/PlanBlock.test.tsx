@@ -30,6 +30,7 @@ import type {
   Permission,
   PlateRecipe,
   Printer,
+  WorkingPlan,
 } from '../../../api/client';
 import { DEFAULT_PRINT_OPTIONS } from '../../../components/PrintModal/types';
 import { PlanBlock } from '../../../components/projects/PlanBlock';
@@ -372,6 +373,92 @@ describe('PlanBlock', () => {
     vi.spyOn(api, 'getModelCompatibility').mockResolvedValue({ models: {} });
     vi.spyOn(api, 'getOrderForecast').mockResolvedValue(EMPTY_FORECAST);
     vi.spyOn(api, 'getOrderFilament').mockResolvedValue(EMPTY_NEEDS);
+  });
+
+  it.each([0, 1].flatMap(revision => ['plan-newer', 'working-newer'].map(direction => ({ revision, direction }))))(
+    'reconciles equal revisions in both directions: $direction, revision $revision', async ({ revision, direction }) => {
+    const state = { ...await api.getWorkingPlan(1), revision,
+      entries: [{ entry_id: 'row-10-100', line_id: 10, plate_id: 100, count: 20,
+        target: { kind: 'auto' as const }, manual: true, protected_count: 20 }] };
+    const old = { ...state, inputs_token: 'old-inputs' };
+    const fresh = { ...state, inputs_token: 'new-inputs' };
+    const get = vi.mocked(api.getWorkingPlan).mockReset()
+      .mockResolvedValueOnce(direction === 'plan-newer' ? old : fresh).mockResolvedValue(fresh);
+    const readPlan = vi.mocked(api.getOrderPlan).mockReset()
+      .mockResolvedValueOnce({ ...plan, working_revision: revision || null, inputs_token: direction === 'plan-newer' ? 'new-inputs' : 'old-inputs' })
+      .mockResolvedValue({ ...plan, working_revision: revision || null, inputs_token: 'new-inputs' });
+    const preview = vi.spyOn(api, 'previewOrderDraft');
+    render(<PlanBlock order={order} canEdit />);
+    await screen.findByTestId('plan-row-10-100-count');
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(readPlan).toHaveBeenCalledTimes(direction === 'plan-newer' ? 1 : 2));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(order.id,
+      expect.objectContaining({ inputs_token: 'new-inputs' }), expect.anything()));
+    expect(screen.queryByRole('button', { name: 'Read shared plan again' })).not.toBeInTheDocument();
+  });
+
+  it.each(['plan-newer', 'working-newer', 'read-fails'])('keeps live counts while reconciling input context: %s', async direction => {
+    let state: WorkingPlan = { ...await api.getWorkingPlan(1), revision: 1, inputs_token: 'new-inputs',
+      entries: [{ entry_id: 'row-10-100', line_id: 10, plate_id: 100, count: 20,
+        target: { kind: 'auto' }, manual: true, protected_count: 20 }] };
+    let finishRead!: (value: WorkingPlan) => void, failRead!: (reason: Error) => void;
+    const reading = new Promise<WorkingPlan>((resolve, reject) => { finishRead = resolve; failRead = reject; });
+    const get = vi.mocked(api.getWorkingPlan).mockReset()
+      .mockResolvedValueOnce({ ...state, inputs_token: direction === 'working-newer' ? 'new-inputs' : 'old-inputs' })
+      .mockReturnValue(reading);
+    let finishPlan!: (value: OrderPlan) => void;
+    const metadata = () => ({ ...plan, working_revision: state.revision, inputs_token: state.inputs_token });
+    const planRead = new Promise<OrderPlan>(resolve => { finishPlan = resolve; });
+    const readPlan = vi.mocked(api.getOrderPlan).mockReset()
+      .mockResolvedValueOnce({ ...metadata(), inputs_token: 'old-inputs' })
+      .mockImplementation(() => direction === 'working-newer' ? planRead : Promise.resolve(metadata()));
+    let finishWrite!: () => void;
+    const writeResponse = new Promise<void>(resolve => { finishWrite = resolve; });
+    const write = vi.mocked(api.writeWorkingPlan).mockImplementation(async (_, body) => {
+      expect(body.inputs_token).toBe('new-inputs');
+      if (direction === 'working-newer') await writeResponse;
+      state = { ...state, revision: state.revision + 1, entries: body.entries };
+      return structuredClone(state);
+    });
+    render(<><PlanBlock order={order} canEdit /><Refetcher id={order.id} /></>);
+    const input = await screen.findByTestId('plan-row-10-100-count');
+    fireEvent.change(input, { target: { value: '18' } });
+    if (direction !== 'working-newer') fireEvent.click(screen.getByTestId('force-refetch'));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 700)); });
+    expect(write).not.toHaveBeenCalled();
+    expect(input).toHaveValue(18);
+    if (direction === 'read-fails') {
+      await act(async () => { failRead(new TypeError('Failed to fetch')); });
+      await screen.findByRole('button', { name: 'Read shared plan again' });
+      expect(screen.getAllByText(/Could not read the shared plan/).length).toBeGreaterThan(0);
+      expect(input).toHaveValue(18);
+      expect(write).not.toHaveBeenCalled();
+      return;
+    }
+    await act(async () => { finishRead(structuredClone(state)); });
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+    if (direction === 'working-newer') {
+      // Metadata is still unresolved and mismatched: it must not hold a valid
+      // CAS write after the working read has already finished (A2).
+      expect(readPlan).toHaveBeenCalledTimes(2);
+      await act(async () => { finishPlan(metadata()); });
+      await act(async () => { finishWrite(); });
+    }
+    expect(write).toHaveBeenCalledWith(order.id, expect.objectContaining({ entries: [expect.objectContaining({ count: 18 })] }));
+    expect(input).toHaveValue(18);
+    expect(screen.queryByRole('button', { name: 'Read shared plan again' })).not.toBeInTheDocument();
+  });
+
+  it('bounds an unchanged mismatched context and offers explicit recovery', async () => {
+    const state = { ...await api.getWorkingPlan(1), revision: 1, inputs_token: 'working-token' };
+    const get = vi.mocked(api.getWorkingPlan).mockReset().mockImplementation(async () => ({ ...state }));
+    const readPlan = vi.mocked(api.getOrderPlan).mockReset()
+      .mockImplementation(async () => ({ ...plan, working_revision: 1, inputs_token: 'plan-token' }));
+    render(<PlanBlock order={order} canEdit />);
+    await screen.findByRole('button', { name: 'Read shared plan again' });
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(readPlan).toHaveBeenCalledTimes(2);
   });
 
   it.each(['success', 'failed', 'focus', 'network', 'server-error'])('confirmed recovery preserves edits: %s', async mode => {

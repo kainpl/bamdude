@@ -30,6 +30,26 @@ async function conflicted() {
 }
 
 describe('confirmed read must recover independently of background focus', () => {
+  it('holds autosave only until the current input read finishes, preserving local input', async () => {
+    const get = vi.spyOn(api, 'getWorkingPlan').mockResolvedValue(initial);
+    const write = vi.spyOn(api, 'writeWorkingPlan').mockImplementation(async (_, body) => ({
+      ...fresh, revision: 2, entries: body.entries,
+    }));
+    const { result } = renderHook(() => useWorkingPlan(1, true));
+    await waitFor(() => expect(result.current.state).toEqual(initial));
+    const read = deferred<WorkingPlan>();
+    get.mockReturnValueOnce(read.promise);
+    let refreshing!: ReturnType<typeof result.current.refreshInputs>;
+    act(() => { refreshing = result.current.refreshInputs(); result.current.change([entry(18)]); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 700)); });
+    expect(write).not.toHaveBeenCalled();
+    expect(result.current.dirty).toBe(true);
+    await act(async () => { read.resolve(fresh); await refreshing; });
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+    expect(write).toHaveBeenCalledWith(1, expect.objectContaining({ inputs_token: 'new-inputs', entries: [entry(18)] }));
+    expect(result.current.error).toBeUndefined();
+  });
+
   it('control: ordinary confirmed reload clears conflict without writing', async () => {
     const { result, get, write } = await conflicted();
     get.mockResolvedValue(fresh);
@@ -82,7 +102,7 @@ describe('confirmed read must recover independently of background focus', () => 
     const { result, get } = await conflicted();
     const background = deferred<WorkingPlan>(), manual = deferred<WorkingPlan>();
     get.mockReset().mockReturnValueOnce(background.promise).mockReturnValueOnce(manual.promise);
-    let bg!: Promise<void>, accepted!: Promise<WorkingPlan>;
+    let bg!: ReturnType<typeof result.current.refreshInputs>, accepted!: Promise<WorkingPlan>;
     act(() => { bg = result.current.refreshInputs(); });
     act(() => { accepted = result.current.reload(); });
     await act(async () => { manual.resolve(fresh); await accepted; });

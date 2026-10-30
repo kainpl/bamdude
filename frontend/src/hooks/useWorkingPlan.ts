@@ -28,7 +28,7 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
   const desired = useRef<WorkingEntry[] | undefined>(undefined);
   const editSequence = useRef(0);
   const inflight = useRef<Promise<WorkingPlan> | null>(null);
-  const reading = useRef<Promise<void> | null>(null);
+  const reading = useRef<Promise<WorkingPlan | undefined> | null>(null);
   const recovery = useRef<Promise<WorkingPlan> | null>(null);
   const readSequence = useRef(0);
   const blocked = useRef(false);
@@ -77,8 +77,8 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
     recovery.current = task;
     return task;
   }, [orderId, accept]);
-  const refreshInputs = useCallback((): Promise<void> => {
-    if (recovery.current) return Promise.resolve();
+  const refreshInputs = useCallback((): Promise<WorkingPlan | undefined> => {
+    if (recovery.current) return Promise.resolve(undefined);
     if (reading.current) return reading.current;
     const before = current.current?.revision;
     const sequence = ++readSequence.current;
@@ -86,12 +86,19 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
       if (!mounted.current || sequence !== readSequence.current) return;
       if (current.current && current.current.revision !== before && value.revision <= current.current.revision) return;
       if (current.current && value.revision !== current.current.revision) {
-        if (!desired.current) { accept(value); return; }
+        if (!desired.current) { accept(value); return current.current; }
         blocked.current = true;
         setError(new Error('workingPlan.conflict'));
         return;
       }
       accept(value); // Keep unacknowledged local input; refresh its context.
+      return current.current;
+    }).catch((e: Error) => {
+      if (mounted.current && sequence === readSequence.current) {
+        blocked.current = true;
+        setError(e);
+      }
+      throw e;
     }).finally(() => { if (reading.current === task) reading.current = null; });
     reading.current = task;
     return task;
@@ -115,6 +122,12 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
     if (inflight.current) {
       await inflight.current;
       if (!mounted.current) return current.current!;
+      return flush();
+    }
+    // A known input read fences only its own lifetime, not a token mismatch
+    // with another cached reader. Resume the same desired entries afterwards.
+    if (reading.current) {
+      await reading.current;
       return flush();
     }
     if (!mounted.current) return current.current!;
@@ -168,7 +181,8 @@ export function useWorkingPlan(orderId: number, enabled: boolean, onCommit?: () 
     const expected = current.current;
     try {
       if (inflight.current) await inflight.current;
-      if (!current.current) throw new Error('workingPlan.conflict');
+      if (reading.current) await reading.current;
+      if (!current.current || blocked.current || recovery.current) throw new Error('workingPlan.conflict');
       let value = current.current;
       if (!value.revision || workingSignature(value.entries) !== workingSignature(captured)) {
         value = accept(await api.writeWorkingPlan(orderId, { expected_revision: value.revision, inputs_token: value.inputs_token, entries: captured }), false, true);

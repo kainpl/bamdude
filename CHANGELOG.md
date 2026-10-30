@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Adding or editing an order line refreshes the plan editor's input context even when the draft revision stays the same. Both cached-reader directions are reconciled without a refresh loop; entered counts stay in place, and autosave waits for the current draft read before using its refreshed token. A failed read offers explicit recovery instead of writing stale inputs.
+
 - Printer cards now show their queue state separately from the live printer. Right-aligned sidebar dots flag paused queues, queue errors and upcoming or overdue maintenance while keeping the queue count. Pending jobs show the selected captured plate’s slicer estimate; grouped copies show one-print time only when their estimates agree. On printer queue cards, secondary controls are in More and source markers sit below the name so a phone still shows a recognizable job name.
 - A never-started printer-queue job can be moved to the auto queue as one atomic change. Review the creator-profile option differences and explicitly allow automatic start or filament selection where needed. Captured bytes, order attribution and one-copy quantity stay intact; moving does not resume the printer queue or return quantities to the working plan. Expand a batch to select its individual copy. Closed orders and invalid order lines give an explicit refusal.
 
