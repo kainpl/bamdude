@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-- **Printer cards keep the layer count reported at the start of a print.** Starting a new print no longer erases the layer and total just received, so the counter does not depend on the printer repeating its total later. A new print clears the previous print's counters, and changing files cannot trigger a finish photo using the old print's layers. Pause, reconnect and ordinary finish-photo behavior remain unchanged.
+- **Printer cards keep the layer count reported at the start of a print.** Starting a new print no longer erases the layer and total just received, so the counter does not depend on the printer repeating its total later. A new print clears the previous print's counters, and changing files cannot trigger a finish photo using the old print's layers. For printers that report the total only at the start, the finish photo can now be taken on the last layer rather than waiting for stage 22 or FINISH. Pause and reconnect handling remain unchanged.
 
 - **Retry all includes cancelled printer-queue jobs.** The Issues action appears for failed or cancelled jobs, previews both counts, and returns only the reviewed jobs whose state still matches. Skipped jobs and paused queues stay unchanged. Pending rows show the build-plate and saved-file icons before the filename again, with the name kept on one ellipsized line.
 
