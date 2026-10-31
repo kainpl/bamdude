@@ -142,6 +142,25 @@ describe('QueuePage', () => {
   });
 
   describe('queue cards', () => {
+    it.each(['RUNNING', 'PAUSE'])('shows current-print filament usage below time and layers while %s', async (state) => {
+      const live = { connected: true, state, subtask_name: 'Current print', progress: 50,
+        remaining_time: 10, layer_num: 100, total_layers: 200, current_archive_id: 6 };
+      server.use(
+        http.get('/api/v1/queues/', () => HttpResponse.json([mockQueues[1]])),
+        http.get('/api/v1/printers/2/status', () => HttpResponse.json(live)),
+        http.get('/api/v1/printers/status/batch', () => HttpResponse.json({ 2: live })),
+        http.get('/api/v1/printers/2/usage-projection', () => HttpResponse.json({
+          active: true, archive_id: 6,
+          slots: [{ slot_id: 1, consumed_g: 18, estimate_g: 344 }],
+        })),
+      );
+      render(<QueuePage />);
+      const usage = await screen.findByTestId('usage-projection');
+      expect(usage).toHaveTextContent('18');
+      expect(usage).toHaveTextContent('344');
+      expect(screen.getByText('100/200').parentElement?.nextElementSibling).toBe(usage);
+    });
+
     it('renders one card per printer queue', async () => {
       render(<QueuePage />);
       await waitFor(() => {

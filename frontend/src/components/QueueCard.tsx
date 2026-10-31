@@ -1,5 +1,6 @@
 import { MoveToAutoButton } from './MoveToAutoButton';
 import { QueueDuration } from './QueueDuration';
+import { UsageProjection } from './UsageProjection';
 import { sharedSlicerTime } from '../utils/slicerTime';
 import { AutoEjectBadge } from './AutoEjectBadge';
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
@@ -820,6 +821,11 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
                         </span>
                       )}
                     </div>
+                    <UsageProjection
+                      printerId={queue.printer_id}
+                      printing
+                      archiveId={status.current_archive_id}
+                    />
                   </>
                 ) : (
                   <div className="flex items-center gap-2">
