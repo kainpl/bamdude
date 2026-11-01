@@ -11,7 +11,9 @@ through this one, so the LDAP-DN redaction added for #2681 would have covered
 the scanner and missed the bundle. This module is the single sanitizer.
 """
 
+import json
 import logging
+import os
 import re
 
 from pydantic import BaseModel
@@ -56,6 +58,20 @@ LOG_LINE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3})\s
 # they email us is not.
 _LDAP_RDN = r"(?:CN|OU|DC|UID|O|L|ST|C|SN|GN|DN|E|MAIL|STREET|GIVENNAME|SURNAME)=[^,\n<>;+]+"
 _LDAP_DN_PATTERN = re.compile(rf"(?i)\b{_LDAP_RDN}(?:\s*,\s*{_LDAP_RDN})+")
+
+# Shape rules complement known-value matching. No entropy heuristic: content
+# hashes are useful diagnostic evidence and must survive.
+_SECRET_SHAPES = (
+    r"(?im)\b(?:authorization\s*[:=]\s*)?bearer\s+[^\s,;\"']+",
+    r"(?im)\b(?:x-api-key|cookie|set-cookie)[\"']?\s*[:=][^\r\n]+",
+    r"\b(?:bd_|bb_)[A-Za-z0-9_-]+",
+    r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
+    r"\b\d{6,12}:[A-Za-z0-9_-]{25,}\b",
+    r"https?://[^\s\"'<>]*(?:/api/webhooks/|hooks\.slack\.com/services/)[^\s\"'<>]+",
+    r"(?i)[\"']?\b(?:password|passwd|secret|token|api_key|apikey|access_code|client_secret)[\"']?\s*[:=]\s*(?:\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|[^\s,;}]+)",
+    r"(?:fernet:)?gAAAAA[A-Za-z0-9_=-]+",
+    r"(?ims)\bDETAIL\s*:.*?(?=\n\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}\s|\Z)",
+)
 
 
 class LogEntry(BaseModel):
@@ -185,6 +201,9 @@ def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None 
                 continue  # Skip very short strings to prevent over-redaction
             content = re.sub(re.escape(value), label, content)
 
+    for pattern in _SECRET_SHAPES:
+        content = re.sub(pattern, "[REDACTED]", content)
+
     # Replace credentials in URLs (e.g. http://user:pass@host, rtsps://bblp:code@host).
     #
     # Shares its pattern with the log-pipeline redaction in ``core.logging_filters``
@@ -220,6 +239,8 @@ def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None 
     content = re.sub(r"/home/[^/\s]+/", "/home/[user]/", content)
     content = re.sub(r"/Users/[^/\s]+/", "/Users/[user]/", content)
     content = re.sub(r"/opt/[^/\s]+/", "/opt/[user]/", content)
+    content = re.sub(r"(?i)[A-Z]:[\\/]Users[\\/][^\\/\r\n\"']+", r"[HOME]", content)
+    content = re.sub(r"(/(?:home|Users)/)[^/\r\n\"']+(?=/|$)", r"\1[user]", content)
 
     return content
 
@@ -258,3 +279,69 @@ async def collect_sensitive_strings(db: AsyncSession) -> dict[str, str]:
         sensitive_strings[cloud_email] = "[EMAIL]"
 
     return sensitive_strings
+
+
+# Only explicitly credential-bearing settings/config fields. Never dump Settings
+# or try to recover hashed API keys. Values stay in the short database phase.
+DIAGNOSTIC_SECRET_SETTINGS = frozenset(
+    {
+        "telegram_bot_token",
+        "smtp_username",
+        "smtp_password",
+        "ha_token",
+        "mqtt_username",
+        "mqtt_password",
+        "tasmota_password",
+        "spoolman_api_key",
+        "spoolman_token",
+        "oidc_client_secret",
+        "ldap_bind_password",
+    }
+)
+PROVIDER_SECRET_FIELDS = frozenset(
+    {
+        "bot_token",
+        "webhook_url",
+        "password",
+        "username",
+        "auth_token",
+        "apikey",
+        "api_key",
+        "user_key",
+        "app_token",
+        "device_key",
+    }
+)
+
+
+async def collect_diagnostic_sensitive_strings(db: AsyncSession) -> dict[str, str]:
+    from backend.app.core.encryption import mfa_decrypt
+    from backend.app.models.notification import NotificationProvider
+    from backend.app.models.oidc_provider import OIDCProvider
+    from backend.app.models.smart_plug import SmartPlug
+
+    values = await collect_sensitive_strings(db)
+
+    def add(value):
+        if isinstance(value, str) and value:
+            # Do not discard short exact credentials like the general PII pass.
+            values[value] = "[REDACTED]"
+
+    for value in (await db.scalars(select(Settings.value).where(Settings.key.in_(DIAGNOSTIC_SECRET_SETTINGS)))).all():
+        add(value)
+    add(os.environ.get("HA_TOKEN"))  # existing settings reader's only credential env override
+    for username, password in (await db.execute(select(SmartPlug.username, SmartPlug.password))).all():
+        add(username)
+        add(password)
+    for raw in (await db.scalars(select(NotificationProvider.config))).all():
+        config = json.loads(raw)
+        if not isinstance(config, dict):
+            raise ValueError("invalid_secret_configuration")
+        for name in PROVIDER_SECRET_FIELDS:
+            add(config.get(name))
+        # ntfy topic is a capability path; redact the configured complete URL too.
+        if config.get("server") and config.get("topic"):
+            add(str(config["server"]).rstrip("/") + "/" + str(config["topic"]))
+    for encrypted in (await db.scalars(select(OIDCProvider._client_secret_enc))).all():
+        add(mfa_decrypt(encrypted) if encrypted.startswith("fernet:") else encrypted)
+    return values

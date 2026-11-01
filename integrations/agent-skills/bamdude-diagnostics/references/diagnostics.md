@@ -30,13 +30,26 @@ claim to have inspected a printer, archive, queue, spool or energy reading when
 the diagnostic module is absent. Additional modules are usable only when
 capabilities explicitly advertise them.
 
-The first diagnostics slice supplies a scoped farm overview, one-printer
-inspection and unrestricted local-service health. Only use these when present
-in `tool_names`; energy, timeline, logs, period summaries and recovery
-explanations are not available in this slice. Overview is paginated and is not
+The diagnostics module supplies a scoped farm overview, one-printer inspection,
+unrestricted local-service health, archive-owned print timelines and opt-in
+sanitized application logs. Only use tools present in `tool_names`; energy,
+period summaries and recovery explanations are not available yet. Overview is paginated and is not
 an atomic farm snapshot. A printing queue claim does not prove it is stale.
 Camera metrics do not prove when a photo was captured or sent to Telegram.
 Plug schedules describe current rules, not a history of yesterday's decisions.
+
+For a print timeline, use its archive ID, never a similar filename. Current
+status is not a history of all transitions. Slicer-derived end times are estimates;
+missing retained feed events do not prove that no runout or replacement occurred.
+Spool identity and grams require inventory-read permission. The timeline applies
+the accounting reader's stale-refill filter without changing the forensic journal.
+
+Logs require an unrestricted printer scope and a separate key opt-in. They are
+bounded and sanitized before literal search; unknown secrets in arbitrary prose
+may remain. Log timestamps have no recorded offset and are converted from server
+local time. A truncated/partial result is not the whole log. After `log_changed`,
+discard the old cursor and restart the narrow query. A busy reader stays occupied
+until its actual file I/O finishes, even if an earlier request timed out.
 
 When a diagnostic module is available, choose the smallest relevant query.
 Report: observed facts and evidence times; hypotheses separately; missing or

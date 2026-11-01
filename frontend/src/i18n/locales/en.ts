@@ -3570,7 +3570,7 @@ export default {
     mcpKeyPreset: 'MCP: diagnostics',
     mcp: {
       title: 'Connect an AI assistant',
-      intro: 'Connect your own assistant to BamDude. Capabilities list the available tools: farm overview, printer inspection and local service health. Other diagnostics are still in development.',
+      intro: 'Connect your own assistant to BamDude. Capabilities show which read-only tools your key can use. Farm diagnostics are being added in stages.',
       serverStep: '1. Set up the server', enabled: 'Enable MCP', address: 'Address used by the assistant',
       networkHint: 'Use https://your-farm/mcp outside this computer. A cloud connector cannot reach a private LAN. Saving this address also adds its exact host and port to the allowed hosts.',
       certificateHint: 'For a self-signed certificate, explicitly choose its CA file in the local connector. If you connect by IP, that IP must be listed in the certificate. Never disable TLS verification.',

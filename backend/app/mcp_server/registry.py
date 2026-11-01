@@ -114,12 +114,14 @@ def create_server():
             return error("state_changed")
         if tool not in TOOLS:
             try:
-                result = await diagnostics.read(tool.name, granted, arguments, request_id)
+                result = await diagnostics.read(
+                    tool.name, granted, arguments, request_id, owner=scope["bamdude_mcp_runtime"]
+                )
             except DiagnosticError as exc:
                 code = str(exc)
                 return error(
                     code
-                    if code in {"forbidden", "not_found", "invalid_cursor", "state_changed"}
+                    if code in {"forbidden", "not_found", "invalid_cursor", "state_changed", "busy", "log_changed"}
                     else "source_unavailable"
                 )
             except Exception:
@@ -148,7 +150,7 @@ def create_server():
                     "concurrent_calls_per_process": CONCURRENT_CALLS_PER_PROCESS,
                     "calls_per_minute_per_key": CALLS_PER_MINUTE_PER_KEY,
                 },
-                "limitations": ["read_only", "diagnostics_partial_overview_printer_health_only"],
+                "limitations": ["read_only", "diagnostics_partial_overview_printer_health_timeline_logs"],
             }
         else:
             try:

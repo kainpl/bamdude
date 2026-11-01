@@ -34,6 +34,7 @@ class McpRuntime:
         self._lock = asyncio.Lock()
         self._requests: set[asyncio.Task] = set()
         self._auth_tasks: set[asyncio.Task] = set()
+        self._db_tasks: set[asyncio.Task] = set()
         self._key_calls: dict[int, int] = {}
         self._rate: OrderedDict[int, deque] = OrderedDict()
         self._connected: OrderedDict[int, datetime] = OrderedDict()
@@ -111,11 +112,24 @@ class McpRuntime:
     async def _drain(self):
         for task in tuple(self._requests):
             task.cancel()
-        pending = self._requests | self._auth_tasks
+        pending = self._requests | self._auth_tasks | self._db_tasks
         if pending:
             _, remaining = await asyncio.wait(pending, timeout=10)
             return not remaining
         return True
+
+    async def database_read(self, coroutine):
+        """Retain short DB work through requester cancellation and restore drain."""
+        task = asyncio.create_task(coroutine, name="mcp-database-read")
+        self._db_tasks.add(task)
+
+        def done(completed):
+            self._db_tasks.discard(completed)
+            if not completed.cancelled():
+                completed.exception()
+
+        task.add_done_callback(done)
+        return await asyncio.shield(task)
 
     async def quiesce_for_restore(self):
         self._restore_hold = True
@@ -135,8 +149,11 @@ class McpRuntime:
             self._lock.release()
 
     async def shutdown(self):
+        from backend.app.services.farm_diagnostics.logs import file_reader
+
         if await self.configure(McpConfig()):
             self._restore_hold = False
+        await file_reader.drain()
         self._connected.clear()
         self._rate.clear()
 
@@ -223,6 +240,7 @@ class McpRuntime:
             auth_task.add_done_callback(auth_done)
             access = await asyncio.shield(auth_task)
             scope["bamdude_diagnostic_access"] = access
+            scope["bamdude_mcp_runtime"] = self
             self._observed(access.key_id)
             body = bytearray()
             while True:

@@ -31,6 +31,10 @@ def _actor(access: DiagnosticAccess) -> str:
 
 
 def encode(access: DiagnosticAccess, tool: str, filters: dict, *, last: int, upper: int) -> str:
+    return encode_position(access, tool, filters, {"last": last, "upper": upper})
+
+
+def encode_position(access: DiagnosticAccess, tool: str, filters: dict, position: dict) -> str:
     payload = json.dumps(
         {
             "v": 1,
@@ -38,8 +42,7 @@ def encode(access: DiagnosticAccess, tool: str, filters: dict, *, last: int, upp
             "filters": _digest(filters),
             "actor": _actor(access),
             "epoch": access.epoch,
-            "last": last,
-            "upper": upper,
+            "position": position,
             "expires": int(time.time()) + 600,
         },
         sort_keys=True,
@@ -49,7 +52,7 @@ def encode(access: DiagnosticAccess, tool: str, filters: dict, *, last: int, upp
     return base64.urlsafe_b64encode(payload + signature).decode().rstrip("=")
 
 
-def decode(token: str, access: DiagnosticAccess, tool: str, filters: dict) -> tuple[int, int]:
+def decode_position(token: str, access: DiagnosticAccess, tool: str, filters: dict) -> dict:
     try:
         if len(token) > 2048:
             raise ValueError
@@ -67,8 +70,15 @@ def decode(token: str, access: DiagnosticAccess, tool: str, filters: dict) -> tu
             or data["expires"] <= time.time()
         ):
             raise ValueError
-        if type(data["last"]) is not int or type(data["upper"]) is not int or not 0 < data["last"] <= data["upper"]:
+        if not isinstance(data["position"], dict):
             raise ValueError
-        return data["last"], data["upper"]
+        return data["position"]
     except (ValueError, TypeError, KeyError):
         raise DiagnosticError("invalid_cursor") from None
+
+
+def decode(token: str, access: DiagnosticAccess, tool: str, filters: dict) -> tuple[int, int]:
+    data = decode_position(token, access, tool, filters)
+    if type(data.get("last")) is not int or type(data.get("upper")) is not int or not 0 < data["last"] <= data["upper"]:
+        raise DiagnosticError("invalid_cursor")
+    return data["last"], data["upper"]
