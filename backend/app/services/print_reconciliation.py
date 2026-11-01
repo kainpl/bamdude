@@ -1147,6 +1147,12 @@ async def reconcile_printer_prints(
     except Exception:  # noqa: BLE001 — the connect path survives it; Info shows the attempt
         logger.exception("reconcile: interrupted-dispatch recheck failed for printer %d", printer_id)
 
+    # Finished rows a later print has superseded -- a held swap's record and its router row -- can never
+    # settle any more: they are the ordinary cleanup that was skipped (queue-leftovers spec Q3). Never raises.
+    from backend.app.services.queue_leftovers import retire_for_printer
+
+    await retire_for_printer(printer_id)
+
 
 async def _stranded_swaps(printer_id: int, *, exclude: set[int]) -> tuple[list[int], list[int]]:
     """The completed run that still holds this printer's queue with our change_table unsettled.

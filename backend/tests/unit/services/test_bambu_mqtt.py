@@ -804,6 +804,85 @@ class TestAMSDataMerging:
         assert ams_data[1]["tray"][0]["tray_type"] == "PETG", "Shutdown must not clear AMS 1 slot 0"
         assert ams_data[1]["tray"][1]["tray_type"] == "PETG", "Shutdown must not clear AMS 1 slot 1"
 
+    # The AMS object of a live X2D push (recorded 2026-11-01), every slot empty.
+    # ``power_on_flag`` is the "read spools on power-on" setting, which H2-class
+    # firmware always reports False; ``ams_exist_bits`` says the unit is there.
+    X2D_EMPTY_AMS = {
+        "ams": [
+            {
+                "id": "0",
+                "tray": [
+                    {"id": "0", "state": 10},
+                    {"id": "1", "state": 26},
+                    {"id": "2", "state": 0},
+                    {"id": "3", "state": 10},
+                ],
+            }
+        ],
+        "ams_exist_bits": "1",
+        "insert_flag": True,
+        "power_on_flag": False,
+        "tray_exist_bits": "0",
+        "tray_is_bbl_bits": "0",
+        "tray_now": "255",
+    }
+
+    def test_an_empty_ams_the_frame_reports_present_is_empty_not_a_shutdown(self, mqtt_client):
+        """All four slots of a present AMS are empty — never "loaded, not configured".
+
+        The slots carry firmware states (26, 0) that the card's state fallback
+        does not know as empty, so only the presence bit can say it.
+        """
+        import copy
+
+        mqtt_client._handle_ams_data(copy.deepcopy(self.X2D_EMPTY_AMS))
+
+        trays = mqtt_client.state.raw_data["ams"][0]["tray"]
+        assert [t.get("exists") for t in trays] == [False, False, False, False]
+        assert [t.get("state") for t in trays] == [9, 9, 9, 9]
+
+    def test_the_last_spool_leaving_a_present_ams_clears_its_presence(self, mqtt_client):
+        """A removal down to zero spools must not leave the previous ``exists`` behind."""
+        import copy
+
+        loaded = {
+            "ams": [
+                {
+                    "id": "0",
+                    "tray": [
+                        {"id": str(i), "tray_type": "PLA", "tray_color": "FF0000FF", "state": 11} for i in range(4)
+                    ],
+                }
+            ],
+            "ams_exist_bits": "1",
+            "power_on_flag": False,
+            "tray_exist_bits": "6",
+        }
+        mqtt_client._handle_ams_data(loaded)
+        assert [t.get("exists") for t in mqtt_client.state.raw_data["ams"][0]["tray"]] == [False, True, True, False]
+
+        mqtt_client._handle_ams_data(copy.deepcopy(self.X2D_EMPTY_AMS))
+
+        trays = mqtt_client.state.raw_data["ams"][0]["tray"]
+        assert [t.get("exists") for t in trays] == [False, False, False, False]
+        assert [t.get("tray_type") for t in trays] == ["", "", "", ""]
+
+    def test_shutdown_frame_reporting_the_ams_absent_still_preserves_slots(self, mqtt_client):
+        """#765 with the unit bit stated: ``ams_exist_bits`` 0 is the printer going down."""
+        loaded = {
+            "ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA", "tray_color": "FF0000FF"}]}],
+            "ams_exist_bits": "1",
+            "tray_exist_bits": "1",
+            "power_on_flag": True,
+        }
+        mqtt_client._handle_ams_data(loaded)
+
+        mqtt_client._handle_ams_data({"ams_exist_bits": "0", "tray_exist_bits": "0", "power_on_flag": False})
+
+        tray = mqtt_client.state.raw_data["ams"][0]["tray"][0]
+        assert tray["tray_type"] == "PLA"
+        assert tray["exists"] is True
+
     def test_genuine_removal_still_clears_with_power_on(self, mqtt_client):
         """Genuine spool removal (power_on_flag=True) must still clear slot data.
 
@@ -1136,6 +1215,28 @@ class TestApplyTrayExistBitsHelper:
         # Slot preserved — wiping here would propagate phantom empties on
         # every printer-off push.
         assert units[0]["tray"][0]["tray_type"] == "PLA"
+
+    def test_zero_bits_with_power_off_apply_when_the_frame_reports_an_ams_unit(self):
+        """``power_on_flag`` is a setting, not power: a present unit with no spools is empty."""
+        from backend.app.services.bambu_mqtt import apply_tray_exist_bits
+
+        units = [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA", "tray_color": "FF0000FF"}]}]
+        cleared = apply_tray_exist_bits(units, "0", power_on_flag=False, ams_exist_bits="1", annotate_exists=True)
+        assert cleared == 1
+        assert units[0]["tray"][0]["tray_type"] == ""
+        assert units[0]["tray"][0]["exists"] is False
+
+    def test_shutdown_guard_holds_unless_a_unit_is_positively_reported(self):
+        """No unit bit, a zero unit mask or an unreadable one keeps the #765 guard."""
+        from backend.app.services.bambu_mqtt import apply_tray_exist_bits
+
+        for ams_exist_bits in (None, "", "0", 0, "zz", True):
+            units = [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA", "exists": True}]}]
+            cleared = apply_tray_exist_bits(
+                units, "0", power_on_flag=False, ams_exist_bits=ams_exist_bits, annotate_exists=True
+            )
+            assert cleared == 0, ams_exist_bits
+            assert units[0]["tray"][0] == {"id": 0, "tray_type": "PLA", "exists": True}, ams_exist_bits
 
     def test_zero_bits_with_power_on_still_clears(self):
         from backend.app.services.bambu_mqtt import apply_tray_exist_bits

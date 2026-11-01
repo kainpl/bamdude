@@ -49,6 +49,11 @@ from backend.app.schemas.print_queue import (
     QueueAutoTransferApply,
     QueueCopySourceProfile,
     QueueIssuesResponse,
+    QueueLeftoverOut,
+    QueueLeftoverSkipped,
+    QueueLeftoversResponse,
+    QueueLeftoversRetire,
+    QueueLeftoversRetireResult,
     QueueSummaryGroup,
     QueueSummaryResponse,
 )
@@ -508,6 +513,68 @@ async def queue_issues(
     return QueueIssuesResponse(
         items=[_enrich_response(item) for item in rows[:limit]],
         next_cursor=rows[limit - 1].id if len(rows) > limit else None,
+    )
+
+
+@router.get("/leftovers", response_model=QueueLeftoversResponse)
+async def list_queue_leftovers(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_READ_ALL),
+):
+    """Rows nothing will ever clean up: superseded finished rows and orphan router assignments.
+
+    A key with a printer list sees its printers' rows only, and no orphan assignment (it has no printer).
+    """
+    from backend.app.services import queue_leftovers
+
+    found = await queue_leftovers.find(db, printer_ids=key_printer_scope(request))
+    return QueueLeftoversResponse(
+        items=[
+            QueueLeftoverOut(
+                kind=leftover.kind,
+                item_id=leftover.item_id,
+                auto_item_id=leftover.auto_item_id,
+                printer_id=leftover.printer_id,
+                printer_name=leftover.printer_name,
+                archive_id=leftover.archive_id,
+                name=leftover.name,
+                completed_at=leftover.completed_at,
+                hold_reason=leftover.hold_reason,
+                retirable=leftover.keep_reason is None,
+                keep_reason=leftover.keep_reason,
+            )
+            for leftover in found
+        ]
+    )
+
+
+@router.post("/leftovers/retire", response_model=QueueLeftoversRetireResult)
+async def retire_queue_leftovers(
+    data: QueueLeftoversRetire,
+    request: Request,
+    _: User | None = RequirePermission(Permission.QUEUE_DELETE_ALL),
+):
+    """Retire the named leftovers the policy still allows; the rest come back with the reason.
+
+    ``item_ids`` are read by the API-key printer-scope gate like any queue item list. Orphan assignments have
+    no printer, so a key with a printer list does not retire them: they come back as ``out_of_scope``.
+    """
+    from backend.app.services import queue_leftovers
+
+    scoped = key_printer_scope(request) is not None
+    result = await queue_leftovers.retire(item_ids=data.item_ids, auto_item_ids=() if scoped else data.orphan_ids)
+    skipped = [
+        QueueLeftoverSkipped(kind=s.kind, item_id=s.item_id, auto_item_id=s.auto_item_id, reason=s.reason)
+        for s in result.skipped
+    ]
+    if scoped:
+        skipped += [
+            QueueLeftoverSkipped(kind="orphan_assignment", auto_item_id=auto_id, reason="out_of_scope")
+            for auto_id in sorted(set(data.orphan_ids))
+        ]
+    return QueueLeftoversRetireResult(
+        retired_item_ids=result.retired_items, retired_orphan_ids=result.retired_autos, skipped=skipped
     )
 
 

@@ -649,6 +649,10 @@ class MQTTBridge:
             # Defensive deep copy on store so the cache is fully decoupled
             # from the freshly-parsed tree and from any reader's reference.
             new_state = copy.deepcopy(print_data)
+            # The unit mask of THIS push, read before the merge below carries the
+            # cached one over: it alone may say the AMS is present and empty.
+            incoming_ams = print_data.get("ams")
+            incoming_ams_exist_bits = incoming_ams.get("ams_exist_bits") if isinstance(incoming_ams, dict) else None
             # Bambu firmware sends two kinds of push_status: full pushall
             # responses (on ``pushall`` requests / printer reconnect) which
             # include the full top-level field set (AMS, vt_tray, net,
@@ -723,6 +727,7 @@ class MQTTBridge:
                     units if isinstance(units, list) else [],
                     merged_ams_dict.get("tray_exist_bits"),
                     power_on_flag=merged_ams_dict.get("power_on_flag", True),
+                    ams_exist_bits=incoming_ams_exist_bits,
                     log_label=self.vp_name,
                 )
             self._latest_print_state = new_state

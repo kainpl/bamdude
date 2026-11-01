@@ -42,6 +42,30 @@ export default {
     "transfer_profile_invalid": "The creator’s options are incompatible with this sliced model."
   }
 },
+  // Queue rows nothing will ever clean up (backend services/queue_leftovers.py), on the Info page.
+  queueLeftovers: {
+    title: 'Queue leftovers',
+    description: 'Finished queue rows that nothing will clean up any more — for example one kept by a held table swap — once another print has started on the same printer, and AutoQueue assignments whose printer job is gone. BamDude removes them by itself when a printer reconnects or finishes a print. Removing them deletes only these queue records: archives, photos and print history stay, and nothing is sent to printers.',
+    refresh: 'Refresh',
+    failed: 'Could not read the queue leftovers.',
+    empty: 'No leftovers.',
+    finishedRow: '{{printer}} · {{name}} · finished {{when}}',
+    orphan: 'AutoQueue assignment #{{id}} with no printer job',
+    keep: {
+      current_item: 'Kept: it is still the current job of its queue.',
+      plate_gate: 'Kept: the printer is waiting for a Clear plate / Repeat answer about this print.',
+      archive_open: 'Kept: its archive is not finished yet.',
+      swap_owed: 'Kept: the table swap for this print is still owed.',
+      archive_copy_missing: 'Kept: the archive does not have its own copy of the file yet, and this row still holds it.',
+      unknown: 'Kept.',
+    },
+    retire: 'Remove ({{count}})',
+    confirmTitle: 'Remove queue leftovers?',
+    confirmMessage: 'This deletes {{count}} queue record(s) that will never be used again. Archives, photos and print history stay as they are, and nothing is sent to printers.',
+    done: 'Removed: {{count}}',
+    skipped: 'skipped: {{count}} — they changed meanwhile',
+    retireFailed: 'Could not remove the queue leftovers.',
+  },
   queueOperator: {
     attentionUnavailable: 'Attention status unavailable',
     state: { idle: 'Idle', printing: 'Printing', paused: 'Paused', error: 'Error', unknown: 'Unavailable' },

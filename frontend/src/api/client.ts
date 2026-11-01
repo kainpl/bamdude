@@ -42,6 +42,22 @@ export interface PrintStateLastRepair {
 }
 /** Since when the stalled-start records reach back, and how many were dropped. */
 export interface PrintStateStallTracking { since_seconds: number; evicted: number }
+/** A queue row nothing will ever clean up (backend ``services/queue_leftovers.py``). */
+export interface QueueLeftover {
+  kind: 'finished_row' | 'orphan_assignment';
+  item_id: number | null; auto_item_id: number | null;
+  printer_id: number | null; printer_name: string | null;
+  archive_id: number | null; name: string | null; completed_at: string | null;
+  /** The archive's swap hold, when that is what kept the row. */
+  hold_reason: string | null;
+  retirable: boolean;
+  /** Why a superseded row is still kept; null when it may be retired. */
+  keep_reason: string | null;
+}
+export interface QueueLeftoversRetireResult {
+  retired_item_ids: number[]; retired_orphan_ids: number[];
+  skipped: { kind: QueueLeftover['kind']; item_id: number | null; auto_item_id: number | null; reason: string }[];
+}
 export interface PrintStateIssue extends Partial<PrintStateRuntimeView>, Partial<PrintStateEpisodeView> {
   /** Shown for information and never counted as a problem: a phase still under way, a stall gone quiet. */
   observation?: boolean;
@@ -13961,6 +13977,9 @@ export const api = {
     if (params.cursor) query.set('cursor', params.cursor);
     return request<PrintStateIssuePage>(`/system/print-state-issues?${query}`);
   },
+  getQueueLeftovers: () => request<{ items: QueueLeftover[] }>('/queue/leftovers'),
+  retireQueueLeftovers: (data: { item_ids: number[]; orphan_ids: number[] }) =>
+    request<QueueLeftoversRetireResult>('/queue/leftovers/retire', { method: 'POST', body: JSON.stringify(data) }),
   previewPrintState: (printerId: number, input: PrintStatePreviewInput) => request<PrintStatePreview>(
     `/system/printers/${printerId}/print-state/preview`, { method: 'POST', body: JSON.stringify(input) }),
   applyPrintState: (printerId: number, previewToken: string) => request<PrintStateAudit>(

@@ -35,6 +35,7 @@ import { LoadingBlock } from '../components/LoadingBlock';
 import { ConnectionDiagnosticModal } from '../components/ConnectionDiagnostic';
 import { SystemHealthPanel } from '../components/SystemHealthPanel';
 import { PrintStateIssuesPanel } from '../components/PrintStateIssuesPanel';
+import { QueueLeftoversPanel } from '../components/QueueLeftoversPanel';
 import { LogArchivesPanel } from '../components/LogArchivesPanel';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { StepPreviewComponentRow } from '../components/StepPreviewComponentRow';
@@ -495,6 +496,7 @@ export function SystemInfoPage() {
 
           {/* Historical archives — daily-rotated bamdude-YYYY-MM-DD.log files */}
           <PrintStateIssuesPanel />
+          <QueueLeftoversPanel />
           <LogArchivesPanel />
         </div>
       </Section>
