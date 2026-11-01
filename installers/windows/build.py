@@ -381,6 +381,9 @@ def stage_backend(frontend_dist: Path) -> None:
         ),
     )
 
+    # The MCP guide and portable skill share these canonical sources.
+    shutil.copytree(REPO_ROOT / "integrations" / "agent-skills", app / "integrations" / "agent-skills")
+
     # Frontend bundle — FastAPI's StaticFiles mounts from app/static.
     # Strip macOS metadata files (.DS_Store, ._.*) that the dev box leaks
     # in; they'd just bloat the installer and never be served anyway.

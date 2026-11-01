@@ -4461,6 +4461,8 @@ export interface APIKey {
   can_control_printer: boolean;
   can_read_status: boolean;
   can_access_cloud: boolean;
+  can_access_mcp?: boolean;
+  can_read_mcp_logs?: boolean;
   /** Narrowly-scoped opt-in for POST /settings/electricity-price so HA
    *  dynamic-tariff integrations can update energy_cost_per_kwh. Does NOT
    *  grant general SETTINGS_UPDATE. Default false. */
@@ -4490,6 +4492,8 @@ export interface APIKeyCreate {
   can_control_printer?: boolean;
   can_read_status?: boolean;
   can_access_cloud?: boolean;
+  can_access_mcp?: boolean;
+  can_read_mcp_logs?: boolean;
   can_update_energy_cost?: boolean;
   can_manage_library?: boolean;
   can_manage_inventory?: boolean;
@@ -4511,6 +4515,8 @@ export interface APIKeyUpdate {
   can_control_printer?: boolean;
   can_read_status?: boolean;
   can_access_cloud?: boolean;
+  can_access_mcp?: boolean;
+  can_read_mcp_logs?: boolean;
   can_update_energy_cost?: boolean;
   can_manage_library?: boolean;
   can_manage_inventory?: boolean;

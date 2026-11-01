@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **MCP foundation for AI assistants (disabled by default).** A separate opt-in API-key permission opens a read-only connection for capability discovery and the shared usage guide. The diagnostic key preset grants no queue, printer-control or log access by default. Existing keys keep MCP disabled. Farm investigation tools and the guided plugin installer are still being developed.
+
 - Printer queues now show the current print's live filament usage below its time, ETA and layers, using the same read-only widget as printer cards during printing and pauses.
 
 - **Printer cards keep the layer count reported at the start of a print.** Starting a new print no longer erases the layer and total just received, so the counter does not depend on the printer repeating its total later. A new print clears the previous print's counters, and changing files cannot trigger a finish photo using the old print's layers. For printers that report the total only at the start, the finish photo can now be taken on the last layer rather than waiting for stage 22 or FINISH. Pause and reconnect handling remain unchanged.

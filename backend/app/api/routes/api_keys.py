@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
 
+def _validate_mcp_scopes(access: bool, logs: bool, owner_user_id: int | None) -> None:
+    if access and owner_user_id is None:
+        raise HTTPException(400, "MCP access requires an owning user")
+    if logs and not access:
+        raise HTTPException(400, "MCP log access requires MCP access")
+
+
 def _reject_cloud_without_owner(can_access_cloud: bool, owner_user_id: int | None) -> None:
     """Reject ``can_access_cloud=True`` on keys that have no owner.
 
@@ -65,6 +72,7 @@ async def create_api_key(
     """
     owner_user_id = current_user.id if current_user is not None else None
     _reject_cloud_without_owner(data.can_access_cloud, owner_user_id)
+    _validate_mcp_scopes(data.can_access_mcp, data.can_read_mcp_logs, owner_user_id)
 
     # Generate the key
     full_key, key_hash, key_prefix = generate_api_key()
@@ -78,6 +86,8 @@ async def create_api_key(
         can_control_printer=data.can_control_printer,
         can_read_status=data.can_read_status,
         can_access_cloud=data.can_access_cloud,
+        can_access_mcp=data.can_access_mcp,
+        can_read_mcp_logs=data.can_read_mcp_logs,
         can_update_energy_cost=data.can_update_energy_cost,
         can_manage_library=data.can_manage_library,
         can_manage_inventory=data.can_manage_inventory,
@@ -108,6 +118,8 @@ async def create_api_key(
         can_control_printer=api_key.can_control_printer,
         can_read_status=api_key.can_read_status,
         can_access_cloud=api_key.can_access_cloud,
+        can_access_mcp=api_key.can_access_mcp,
+        can_read_mcp_logs=api_key.can_read_mcp_logs,
         can_update_energy_cost=api_key.can_update_energy_cost,
         can_manage_library=api_key.can_manage_library,
         can_manage_inventory=api_key.can_manage_inventory,
@@ -154,6 +166,13 @@ async def update_api_key(
         raise HTTPException(status_code=404, detail="API key not found")
 
     # Update fields if provided
+    mcp_access = api_key.can_access_mcp if data.can_access_mcp is None else data.can_access_mcp
+    mcp_logs = api_key.can_read_mcp_logs if data.can_read_mcp_logs is None else data.can_read_mcp_logs
+    if data.can_access_mcp is False and data.can_read_mcp_logs is not True:
+        mcp_logs = False
+    _validate_mcp_scopes(mcp_access, mcp_logs, api_key.user_id)
+    api_key.can_access_mcp = mcp_access
+    api_key.can_read_mcp_logs = mcp_logs
     if data.name is not None:
         api_key.name = data.name
     if data.can_queue is not None:

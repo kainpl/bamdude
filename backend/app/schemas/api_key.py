@@ -11,6 +11,8 @@ class APIKeyCreate(BaseModel):
     can_control_printer: bool = False
     can_read_status: bool = True
     can_access_cloud: bool = False
+    can_access_mcp: bool = False
+    can_read_mcp_logs: bool = False
     can_update_energy_cost: bool = False
     can_manage_library: bool = True
     can_manage_inventory: bool = True
@@ -34,6 +36,8 @@ class APIKeyUpdate(BaseModel):
     can_control_printer: bool | None = None
     can_read_status: bool | None = None
     can_access_cloud: bool | None = None
+    can_access_mcp: bool | None = None
+    can_read_mcp_logs: bool | None = None
     can_update_energy_cost: bool | None = None
     can_manage_library: bool | None = None
     can_manage_inventory: bool | None = None
@@ -57,6 +61,8 @@ class APIKeyResponse(BaseModel):
     can_control_printer: bool
     can_read_status: bool
     can_access_cloud: bool
+    can_access_mcp: bool = False
+    can_read_mcp_logs: bool = False
     can_update_energy_cost: bool = False
     can_manage_library: bool = True
     can_manage_inventory: bool = True

@@ -107,6 +107,7 @@ RUN python /opt/render-runtime/render_runtime.py provision --runtime /app/runtim
 
 # Copy backend
 COPY backend/ ./backend/
+COPY integrations/agent-skills/ ./integrations/agent-skills/
 
 # The CAD bundle against the backend it serves, the image's acceptance: a full
 # read-only verify (receipt, rehash, import, and the probe STEP converted and

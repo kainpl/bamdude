@@ -83,6 +83,7 @@ async def get_settings(
             # Parse the value based on the expected type
             if setting.key in [
                 "save_thumbnails",
+                "mcp_enabled",
                 "capture_finish_photo",
                 "camera_light_auto",
                 "camera_light_auto_obico",
@@ -183,6 +184,10 @@ async def get_settings(
                 # serializes None as the literal string "None"; strip it back so
                 # the frontend sees a true null and falls back as intended.
                 settings_dict[setting.key] = setting.value if setting.value and setting.value != "None" else None
+            elif setting.key in {"mcp_allowed_hosts", "mcp_allowed_origins"}:
+                import json
+
+                settings_dict[setting.key] = json.loads(setting.value)
             else:
                 settings_dict[setting.key] = setting.value
 
@@ -268,6 +273,10 @@ async def update_settings(
             str_value = "true" if value else "false"
         elif value is None:
             str_value = "None"
+        elif key in {"mcp_allowed_hosts", "mcp_allowed_origins"}:
+            import json
+
+            str_value = json.dumps(value)
         else:
             str_value = str(value)
         await set_setting(db, key, str_value)
@@ -275,6 +284,11 @@ async def update_settings(
     await db.commit()
     # Expire all objects to ensure fresh reads after commit
     db.expire_all()
+
+    if {"mcp_enabled", "mcp_allowed_hosts", "mcp_allowed_origins"} & update_data.keys():
+        from backend.app.mcp_server.runtime import mcp_runtime
+
+        await mcp_runtime.reload()
 
     # Opt-out: when telemetry is turned off, ask the relay to erase this install.
     if update_data.get("telemetry_enabled") is False:
@@ -849,6 +863,10 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
                 await notify_change()
                 await _quiesce_part_render()
                 await _quiesce_library_previews()
+                from backend.app.mcp_server.runtime import mcp_runtime
+
+                if not await mcp_runtime.quiesce_for_restore():
+                    raise HTTPException(409, "MCP readers have not stopped; retry restore after they finish")
                 if virtual_printer_manager.is_enabled:
                     await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()
@@ -908,6 +926,7 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
             # failure must not put old files beside the already replaced database.
             await reinitialize_database()
             await init_db()
+            await mcp_runtime.reload(after_restore=True)
             logger.info("Restore complete - restart required")
             return {
                 "success": True,

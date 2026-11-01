@@ -61,6 +61,7 @@ import { useTheme, type ThemeStyle, type DarkBackground, type LightBackground, t
 import { useState, useEffect, useId, useRef, useCallback, useMemo } from 'react';
 import { Palette, Search, Settings } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
+import { mcpKeyPreset } from '../lib/mcpKeyPreset';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
 import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPanel';
@@ -321,6 +322,8 @@ export function SettingsPage() {
     can_control_printer: false,
     can_read_status: true,
     can_access_cloud: false,
+    can_access_mcp: false,
+    can_read_mcp_logs: false,
     can_manage_library: true,
     can_manage_inventory: true,
     can_manage_maintenance: true,
@@ -536,6 +539,8 @@ export function SettingsPage() {
       can_control_printer: boolean;
       can_read_status: boolean;
       can_access_cloud: boolean;
+      can_access_mcp: boolean;
+      can_read_mcp_logs: boolean;
       can_manage_library: boolean;
       can_manage_inventory: boolean;
       can_manage_maintenance: boolean;
@@ -5334,7 +5339,21 @@ export function SettingsPage() {
                   </div>
                   <div>
                     <label className="block text-sm text-bambu-gray mb-2">{t('common.permissions')}</label>
+                    <Button variant="secondary" size="sm" className="mb-3" onClick={() => setNewAPIKeyPermissions({ ...mcpKeyPreset })}>
+                      {t('settings.mcpKeyPreset')}
+                    </Button>
                     <div className="space-y-2">
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" className="accent-bambu-green w-4 h-4" checked={newAPIKeyPermissions.can_access_mcp}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_access_mcp: e.target.checked, can_read_mcp_logs: e.target.checked && prev.can_read_mcp_logs }))} />
+                        <div><span className="text-white">{t('settings.mcpAccess')}</span><p className="text-xs text-bambu-gray">{t('settings.mcpAccessDescription')}</p></div>
+                      </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" className="accent-bambu-green w-4 h-4" disabled={!newAPIKeyPermissions.can_access_mcp}
+                          checked={newAPIKeyPermissions.can_read_mcp_logs}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_read_mcp_logs: e.target.checked }))} />
+                        <div><span className="text-white">{t('settings.mcpLogs')}</span><p className="text-xs text-bambu-gray">{t('settings.mcpLogsDescription')}</p></div>
+                      </label>
                       <label className="flex items-center gap-3 cursor-pointer">
                         <input
                           type="checkbox"

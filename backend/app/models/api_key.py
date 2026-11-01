@@ -39,6 +39,10 @@ class APIKey(Base):
     # cloud token; flipping to True at create / update time is rejected for
     # ownerless keys (would have nothing to spend).
     can_access_cloud: Mapped[bool] = mapped_column(Boolean, default=False)
+    # MCP is a distinct, explicit opt-in. Existing read-status keys must not
+    # acquire a new transport (or log access) during an upgrade.
+    can_access_mcp: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    can_read_mcp_logs: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # Narrowly-scoped opt-in for ``POST /settings/electricity-price`` so
     # Home-Assistant dynamic-tariff integrations can update
     # ``energy_cost_per_kwh`` via API key. Does NOT grant general

@@ -3543,6 +3543,11 @@ export default {
     },
     // API Keys section
     apiKeys: 'API Keys',
+    mcpKeyPreset: 'MCP: diagnostics',
+    mcpAccess: 'Allow MCP access',
+    mcpAccessDescription: 'Let your AI assistant use the read-only MCP connection. Your own permissions still apply.',
+    mcpLogs: 'Allow diagnostic log access',
+    mcpLogsDescription: 'Separate opt-in. Logs can contain personal or confidential text despite redaction; the diagnostic module and your permissions must also allow access.',
     apiKeysDescription: 'Create API keys for external integrations and webhooks.',
     createKey: 'Create Key',
     apiKeyCreated: 'API Key Created Successfully',
