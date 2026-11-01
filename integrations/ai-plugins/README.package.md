@@ -9,11 +9,14 @@ and keep log access off unless needed. Your own permissions still apply. Enter
 the key in the client's protected configuration, never in chat or a package.
 Data returned to the assistant may be sent to your chosen model provider.
 
-Claude Desktop: open the MCPB through Desktop Extensions and fill in its user
-configuration. It uses Desktop's bundled Node (22.19 or newer is required).
-MCPB does not install the skill: download the portable skill ZIP in BamDude and
-install it separately using your client's Skills UI. Desktop install/runtime
-compatibility is unverified until documented in the support matrix.
+Claude Desktop: in Settings → Extensions → Advanced settings → Install extension,
+select the MCPB. Enter the address and key, save and enable the extension. Leave
+the optional CA field empty for a normally trusted certificate. It uses Desktop's
+bundled Node (22.19 or newer is required). MCPB does not install the skill:
+download the skill ZIP in BamDude, then use Skills → Add → Upload skill.
+Installation, built-in Node, separate skill and model calls to capabilities and
+guide were verified on Windows with Claude Desktop 4.4212.0 and an isolated
+loopback server. Desktop updates, LAN TLS and macOS remain unverified.
 
 Claude Code: extract its plugin ZIP to a permanent folder. In a terminal, run
 `claude plugin marketplace add "<extracted-folder>"`, then

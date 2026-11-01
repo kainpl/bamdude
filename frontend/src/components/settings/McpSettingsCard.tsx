@@ -144,7 +144,7 @@ function McpSettingsContent() {
       <section className="space-y-3 border-t border-bambu-dark-tertiary pt-5" aria-labelledby="mcp-client-heading">
         <h3 id="mcp-client-heading" className="font-medium text-white">{t('settings.mcp.clientStep')}</h3>
         <label className="block text-sm text-bambu-gray">{t('settings.mcp.client')}<select className={`${inputClass} mt-1 max-w-md`} value={host} onChange={event => { setHost(event.target.value as Host); setSkillInstalled(false); }}>{hosts.map(id => <option key={id} value={id}>{t(`settings.mcp.hosts.${id}`)}</option>)}</select></label>
-        <p className="max-w-3xl text-sm text-amber-400">{t(host === 'chatgpt' ? 'settings.mcp.chatgptUnsupported' : host === 'codex' ? 'settings.mcp.codexVerified' : host === 'claude-code' ? 'settings.mcp.claudeCodeVerified' : 'settings.mcp.clientUnverified')}</p>
+        <p className="max-w-3xl text-sm text-amber-400">{t(host === 'chatgpt' ? 'settings.mcp.chatgptUnsupported' : host === 'codex' ? 'settings.mcp.codexVerified' : host === 'claude-code' ? 'settings.mcp.claudeCodeVerified' : 'settings.mcp.claudeDesktopVerified')}</p>
         {host !== 'chatgpt' && <>
           <p className="max-w-3xl text-sm text-bambu-gray">{t(`settings.mcp.instructions.${host}`)}</p>
           <div className="flex flex-wrap items-center gap-2"><Button variant="secondary" disabled={!downloadable || download.isPending} onClick={() => selectedPackage && download.mutate(selectedPackage)}>{t('settings.mcp.downloadPlugin')}</Button>
