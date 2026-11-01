@@ -264,9 +264,10 @@ class PartRenderRuntime:
             return self.node_reason
         return None
 
-    def health(self) -> dict:
+    def health(self, *, cached_only: bool = False) -> dict:
         """Reads only: the monitor keeps the installation current (R22); a System-page poll hashes nothing on
-        the event loop and never races the monitor's own resolution (final review M4)."""
+        the event loop and never races the monitor's own resolution (final review M4).
+        Passive MCP reads additionally skip opening the installation manifest."""
         if self.uncertain:
             state, reason = "unavailable", "ownership_uncertain"
         elif self.closed:
@@ -281,10 +282,12 @@ class PartRenderRuntime:
             state, reason = "unavailable", self.node_reason
         else:
             state, reason = "ready", None
-        try:
-            pinned = render_runtime.load_manifest().get("pinned_at")
-        except (OSError, ValueError):
-            pinned = None
+        pinned = None
+        if not cached_only:
+            try:
+                pinned = render_runtime.load_manifest().get("pinned_at")
+            except (OSError, ValueError):
+                pass
         return {
             "state": state,
             "reason": reason,
@@ -828,7 +831,7 @@ class PartRenderRuntime:
 runtime: PartRenderRuntime | None = None
 
 
-def get_part_render_health() -> dict:
+def get_part_render_health(*, cached_only: bool = False) -> dict:
     if runtime is None:
         return {
             "state": "unavailable",
@@ -839,7 +842,7 @@ def get_part_render_health() -> dict:
             "last": None,
             "stats": None,
         }
-    return runtime.health()
+    return runtime.health(cached_only=True) if cached_only else runtime.health()
 
 
 def get_part_render_runtime() -> PartRenderRuntime | None:

@@ -45,13 +45,15 @@ async def download_package(package_id: str, _: User | None = RequirePermission(P
 
 @router.get("/status")
 async def status(_: User | None = RequirePermission(Permission.SETTINGS_READ)):
+    from backend.app.mcp_server.registry import REGISTERED_MODULES
+
     return {
         "desired_enabled": mcp_runtime.config.enabled,
         "state": mcp_runtime.state,
         "reason": mcp_runtime.reason,
         "diagnostic_contract": 1,
         "skill_contract": 1,
-        "registered_modules": ["base"],
+        "registered_modules": REGISTERED_MODULES,
     }
 
 

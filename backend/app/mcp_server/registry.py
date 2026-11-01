@@ -1,10 +1,9 @@
 """SDK handlers for the base module, using the canonical packaged guidance."""
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from backend.app.mcp_server.contracts import DiagnosticResult, EmptyInput, GuideInput
 from backend.app.mcp_server.limits import (
@@ -12,6 +11,9 @@ from backend.app.mcp_server.limits import (
     CONCURRENT_CALLS_PER_KEY,
     CONCURRENT_CALLS_PER_PROCESS,
 )
+from backend.app.mcp_server.tools import Tool, diagnostics
+from backend.app.services.farm_diagnostics.access import DiagnosticError
+from backend.app.services.farm_diagnostics.contracts import ReadResult
 from backend.app.services.queue_sources import current_epoch
 
 GUIDE_PATH = (
@@ -32,17 +34,15 @@ def usage_guide() -> str:
     return content.decode("utf-8")
 
 
-@dataclass(frozen=True)
-class Tool:
-    name: str
-    description: str
-    input_model: type[BaseModel]
-
-
 TOOLS = (
     Tool("bamdude_get_capabilities", "Read the available BamDude modules, contracts and limits.", EmptyInput),
     Tool("bamdude_get_usage_guide", "Read BamDude's read-only diagnostic and connection guidance.", GuideInput),
 )
+REGISTERED_MODULES = ["base", "diagnostics"]
+
+
+def tool_names() -> frozenset[str]:
+    return frozenset(tool.name for tool in (*TOOLS, *diagnostics.TOOLS))
 
 
 def create_server():
@@ -56,16 +56,16 @@ def create_server():
         return ctx.request.scope["bamdude_diagnostic_access"]
 
     def catalog(ctx):
-        access(ctx)  # every SDK handler must have passed the request-local gate
+        granted = access(ctx)
         return [
             types.Tool(
                 name=tool.name,
                 description=tool.description,
                 input_schema=tool.input_model.model_json_schema(),
-                output_schema=DiagnosticResult.model_json_schema(),
+                output_schema=(DiagnosticResult if tool in TOOLS else ReadResult).model_json_schema(),
                 annotations=types.ToolAnnotations(read_only_hint=True, destructive_hint=False),
             )
-            for tool in TOOLS
+            for tool in (*TOOLS, *diagnostics.visible(granted))
         ]
 
     async def list_tools(ctx, params):
@@ -103,22 +103,40 @@ def create_server():
                 ],
             )
 
-        tool = next((item for item in TOOLS if item.name == params.name), None)
+        tool = next((item for item in (*TOOLS, *diagnostics.TOOLS) if item.name == params.name), None)
         if tool is None:
             return error("not_found")
         try:
-            tool.input_model.model_validate(params.arguments or {})
+            arguments = tool.input_model.model_validate(params.arguments or {})
         except ValidationError:
             return error("invalid_arguments")
         if granted.epoch != current_epoch():
             return error("state_changed")
+        if tool not in TOOLS:
+            try:
+                result = await diagnostics.read(tool.name, granted, arguments, request_id)
+            except DiagnosticError as exc:
+                code = str(exc)
+                return error(
+                    code
+                    if code in {"forbidden", "not_found", "invalid_cursor", "state_changed"}
+                    else "source_unavailable"
+                )
+            except Exception:
+                return error("source_unavailable")
+            if granted.epoch != current_epoch():
+                return error("state_changed")
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=result.model_dump_json())],
+                structured_content=result.model_dump(mode="json"),
+            )
         if tool.name == "bamdude_get_capabilities":
             data = {
                 "bamdude_version": app_version,
                 "diagnostic_contract": 1,
                 "skill_contract": 1,
-                "enabled_modules": ["base"],
-                "tool_names": [item.name for item in TOOLS],
+                "enabled_modules": REGISTERED_MODULES,
+                "tool_names": [item.name for item in (*TOOLS, *diagnostics.visible(granted))],
                 "auth": "api_key",
                 "transport": "streamable_http",
                 "timezone": "UTC",
@@ -130,7 +148,7 @@ def create_server():
                     "concurrent_calls_per_process": CONCURRENT_CALLS_PER_PROCESS,
                     "calls_per_minute_per_key": CALLS_PER_MINUTE_PER_KEY,
                 },
-                "limitations": ["read_only", "diagnostics_module_not_installed"],
+                "limitations": ["read_only", "diagnostics_partial_overview_printer_health_only"],
             }
         else:
             try:

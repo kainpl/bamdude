@@ -25,10 +25,18 @@ extension from the client next, and optionally disable MCP in BamDude.
 ## Diagnose
 
 Read capabilities before every investigation. The base module supplies only
-capabilities and this guide; it does not yet provide farm diagnostics. Do not
+capabilities and this guide; it does not provide farm diagnostics itself. Do not
 claim to have inspected a printer, archive, queue, spool or energy reading when
 the diagnostic module is absent. Additional modules are usable only when
 capabilities explicitly advertise them.
+
+The first diagnostics slice supplies a scoped farm overview, one-printer
+inspection and unrestricted local-service health. Only use these when present
+in `tool_names`; energy, timeline, logs, period summaries and recovery
+explanations are not available in this slice. Overview is paginated and is not
+an atomic farm snapshot. A printing queue claim does not prove it is stale.
+Camera metrics do not prove when a photo was captured or sent to Telegram.
+Plug schedules describe current rules, not a history of yesterday's decisions.
 
 When a diagnostic module is available, choose the smallest relevant query.
 Report: observed facts and evidence times; hypotheses separately; missing or

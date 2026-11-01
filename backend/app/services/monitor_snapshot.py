@@ -106,9 +106,15 @@ def _waiting(item: PrintQueueItem | None, printer: MonitorPrinter, access: Monit
     return None
 
 
-async def build_snapshot(db: AsyncSession, view: MonitorView, access: MonitorAccess) -> MonitorSnapshot:
+async def build_snapshot(
+    db: AsyncSession, view: MonitorView, access: MonitorAccess, *, printers: list[Printer] | None = None
+) -> MonitorSnapshot:
     now = datetime.now(timezone.utc)
-    printers = list((await db.scalars(select(Printer).where(Printer.archived.is_(False)).order_by(Printer.name))).all())
+    paged = printers is not None
+    if printers is None:
+        printers = list(
+            (await db.scalars(select(Printer).where(Printer.archived.is_(False)).order_by(Printer.name))).all()
+        )
     if access.printer_ids is not None:
         printers = [p for p in printers if p.id in access.printer_ids]
     ids = [p.id for p in printers]
@@ -119,12 +125,13 @@ async def build_snapshot(db: AsyncSession, view: MonitorView, access: MonitorAcc
         queues = {
             q.printer_id: q for q in (await db.scalars(select(PrinterQueue).where(PrinterQueue.printer_id.in_(ids))))
         }
+        queue_ids = [queue.id for queue in queues.values()]
         counts = dict(
             (
                 await db.execute(
                     select(PrintQueueItem.queue_id, func.count())
                     .where(
-                        PrintQueueItem.queue_id.in_(ids),
+                        PrintQueueItem.queue_id.in_(queue_ids),
                         PrintQueueItem.status == "pending",
                     )
                     .group_by(PrintQueueItem.queue_id)
@@ -142,7 +149,7 @@ async def build_snapshot(db: AsyncSession, view: MonitorView, access: MonitorAcc
                 .label("rank"),
             )
             .where(
-                PrintQueueItem.queue_id.in_(ids),
+                PrintQueueItem.queue_id.in_(queue_ids),
                 PrintQueueItem.status.in_(("pending", "printing")),
             )
             .subquery()
@@ -178,7 +185,9 @@ async def build_snapshot(db: AsyncSession, view: MonitorView, access: MonitorAcc
         )
         heads = {(item.queue_id, item.status): item for item in rows}
 
-    dispatch_state = await background_dispatch.get_state()
+    dispatch_state = (
+        await background_dispatch.get_monitor_state(frozenset(ids)) if paged else await background_dispatch.get_state()
+    )
     dispatches = {job["printer_id"]: job for job in dispatch_state["active_jobs"]}
     # Queued dispatch jobs already occupy the printer even before an upload.
     for job in dispatch_state["dispatched_jobs"]:
@@ -232,7 +241,7 @@ async def build_snapshot(db: AsyncSession, view: MonitorView, access: MonitorAcc
             elif derived and derived != "Printing" and state.state == "RUNNING":
                 tile.derived_stage = "preparing"
             if active:
-                running = heads.get((printer.id, "printing"))
+                running = heads.get((queues[printer.id].id, "printing")) if printer.id in queues else None
                 tile.current_job = (
                     _job(running, access)
                     if running

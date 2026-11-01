@@ -66,6 +66,29 @@ def _async_url(url: str) -> str:
     return url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 
+@pytest.mark.timeout(210)
+def test_mcp_diagnostic_readers_on_postgres(tmp_path):
+    env = {**os.environ, "DATA_DIR": str(tmp_path), "DIAGNOSTIC_TEST_POSTGRES_URL": _async_url(_pg_url())}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "backend/tests/integration/test_mcp_diagnostics_on_postgres.py",
+            "-q",
+            "--timeout=90",
+            "--timeout-method=thread",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
+
+
 def test_order_plan_publication_and_cancel_use_database_locks(tmp_path):
     env = {**os.environ, "DATA_DIR": str(tmp_path), "ORDER_PLAN_TEST_POSTGRES_URL": _async_url(_pg_url())}
     result = subprocess.run(

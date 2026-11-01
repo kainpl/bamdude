@@ -76,10 +76,16 @@ async def test_sdk_base_over_real_socket(async_client, runtime, mode):
         ):
             assert client.protocol_version == ("2025-11-25" if mode == "legacy" else "2026-07-28")
             listing = await client.list_tools()
-            assert {tool.name for tool in listing.tools} == {"bamdude_get_capabilities", "bamdude_get_usage_guide"}
+            assert {tool.name for tool in listing.tools} == {
+                "bamdude_get_capabilities",
+                "bamdude_get_usage_guide",
+                "bamdude_get_farm_overview",
+                "bamdude_inspect_printer",
+                "bamdude_get_system_health",
+            }
             result = await client.call_tool("bamdude_get_capabilities", {})
             data = result.structured_content["data"]
-            assert data["enabled_modules"] == ["base"]
+            assert data["enabled_modules"] == ["base", "diagnostics"]
             assert data["auth"] == "api_key"
             guide = await client.call_tool("bamdude_get_usage_guide", {})
             assert "never in a chat" in guide.structured_content["data"]["guide"]

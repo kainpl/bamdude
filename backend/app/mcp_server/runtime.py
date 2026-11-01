@@ -239,11 +239,11 @@ class McpRuntime:
                 payload = json.loads(body) if body else None
                 domain = isinstance(payload, dict) and payload.get("method") == "tools/call"
                 if domain:
+                    from backend.app.mcp_server.registry import tool_names
+
                     params = payload.get("params")
                     name = params.get("name") if isinstance(params, dict) else None
-                    operation = (
-                        name if name in {"bamdude_get_capabilities", "bamdude_get_usage_guide"} else "unknown_tool"
-                    )
+                    operation = name if name in tool_names() else "unknown_tool"
             except (ValueError, UnicodeError):
                 pass  # SDK owns malformed JSON/protocol responses
             if domain:

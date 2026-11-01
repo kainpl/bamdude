@@ -1366,6 +1366,29 @@ class BackgroundDispatchService:
         async with self._lock:
             return self._build_state_payload_unlocked()
 
+    async def get_monitor_state(self, printer_ids: frozenset[int]) -> dict[str, Any]:
+        """Passive, scoped phases only; never copy another actor's job names."""
+        async with self._lock:
+            active = {}
+            for state in self._active_jobs.values():
+                if state.job.printer_id not in printer_ids:
+                    continue
+                progress = None
+                if state.upload_total_bytes and state.upload_total_bytes > 0 and state.upload_bytes is not None:
+                    progress = round(max(0.0, min(100.0, state.upload_bytes / state.upload_total_bytes * 100)), 1)
+                active[state.job.printer_id] = {
+                    "printer_id": state.job.printer_id,
+                    "phase": state.phase,
+                    "upload_progress_pct": progress,
+                }
+            return {
+                "active_jobs": list(active.values()),
+                "dispatched_jobs": [
+                    {"printer_id": pid}
+                    for pid in sorted({job.printer_id for job in self._queued_jobs if job.printer_id in printer_ids})
+                ],
+            }
+
     async def run_from_queue_item(
         self,
         *,
