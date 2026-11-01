@@ -401,6 +401,12 @@ jobs:
       - name: Install dependencies
         working-directory: frontend
         run: npm ci
+      - name: Install local MCP connector test dependencies
+        working-directory: integrations/mcp-adapter
+        run: npm ci --ignore-scripts
+      - name: Test local MCP connector
+        working-directory: integrations/mcp-adapter
+        run: npm test
       - name: Run tests
         # The full suite took 588s on the 0.7.2 runner; keep headroom above
         # that aggregate duration without changing Vitest's per-test limits.
