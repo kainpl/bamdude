@@ -222,12 +222,143 @@ async def test_rest_does_not_mark_mcp_connection_and_restart_clears_marker(async
     assert await runtime.configure(McpConfig(enabled=True))
 
 
-async def test_disable_enable_uses_a_new_manager(async_client, runtime):
-    first = runtime._manager_task
-    assert await runtime.configure(McpConfig())
-    assert first.done()
-    assert await runtime.configure(McpConfig(enabled=True))
-    assert runtime._manager_task is not first
+async def test_disable_enable_uses_a_new_manager(async_client, monkeypatch):
+    from backend.app.mcp_server import registry
+
+    servers = []
+    original = registry.create_server
+
+    def create_server():
+        server = original()
+        servers.append(server)
+        return server
+
+    monkeypatch.setattr(registry, "create_server", create_server)
+    try:
+        assert await mcp_runtime.configure(McpConfig(enabled=True))
+        first = mcp_runtime._manager_task
+        assert await mcp_runtime.configure(McpConfig())
+        assert first.done()
+        assert await mcp_runtime.configure(McpConfig(enabled=True))
+        assert mcp_runtime._manager_task is not first
+        assert len(servers) == 2
+        assert servers[1] is not servers[0]
+    finally:
+        await mcp_runtime.shutdown()
+
+
+async def test_modern_discovery_requires_a_credential(async_client, runtime):
+    discover = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "server/discover",
+        "params": {
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+            }
+        },
+    }
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "MCP-Method": "server/discover",
+    }
+    created = await key(async_client)
+    async with live_app() as url, httpx.AsyncClient() as http:
+        refused = await http.post(url + "/mcp", headers=headers, json=discover)
+        assert refused.status_code == 401, refused.text
+        allowed = await http.post(url + "/mcp", headers={**headers, "X-API-Key": created["key"]}, json=discover)
+        assert allowed.status_code == 200, allowed.text
+        assert "result" in allowed.json()
+
+
+async def test_result_of_an_older_epoch_is_not_published(async_client, runtime, monkeypatch):
+    from backend.app.services import queue_sources
+
+    created = await key(async_client)
+    original = runtime._sdk_app
+    collected = []
+
+    async def restore_after_read(scope, receive, send):
+        async def collect(message):
+            collected.append(message)
+            await send(message)
+
+        await original(scope, receive, collect)
+        # The actual SDK has finished, but the transport has not published its
+        # buffered result. Invalidate the same epoch used by database restore.
+        queue_sources.invalidate_receipts()
+
+    monkeypatch.setattr(runtime, "_sdk_app", restore_after_read)
+    async with live_app() as url, httpx.AsyncClient() as http:
+        response = await http.post(
+            url + "/mcp",
+            headers={"Accept": "application/json, text/event-stream", "X-API-Key": created["key"]},
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "bamdude_get_capabilities"}},
+        )
+    assert collected[0]["status"] == 200
+    body = b"".join(message.get("body", b"") for message in collected)
+    assert "result" in json.loads(body)
+    assert response.status_code == 503, response.text
+    assert response.json()["code"] == "state_changed"
+    assert "result" not in response.json()
+
+
+async def test_mcp_key_loses_access_when_read_status_is_removed(async_client, runtime):
+    created = await key(async_client)
+    call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "bamdude_get_capabilities"}}
+    headers = {"Accept": "application/json, text/event-stream", "X-API-Key": created["key"]}
+    async with live_app() as url, httpx.AsyncClient() as http:
+        allowed = await http.post(url + "/mcp", headers=headers, json=call)
+        assert allowed.status_code == 200, allowed.text
+        changed = await async_client.patch(f"/api/v1/api-keys/{created['id']}", json={"can_read_status": False})
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["can_access_mcp"] is True
+        refused = await http.post(url + "/mcp", headers=headers, json=call)
+        assert refused.status_code == 403, refused.text
+
+
+@pytest.mark.parametrize("origin, status", [("https://assistant.example", 204), ("https://attacker.invalid", 403)])
+async def test_preflight_checks_origin_without_a_key(async_client, runtime, origin, status):
+    assert await runtime.configure(McpConfig(enabled=True, allowed_origins=["https://assistant.example"]))
+    async with live_app() as url, httpx.AsyncClient() as http:
+        response = await http.options(
+            url + "/mcp",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "X-API-Key, MCP-Protocol-Version",
+            },
+        )
+    assert response.status_code == status, response.text
+    assert response.headers["cache-control"] == "no-store"
+    if status == 204:
+        assert response.headers["access-control-allow-origin"] == origin
+        assert "POST" in response.headers["access-control-allow-methods"]
+        assert {"x-api-key", "mcp-protocol-version"} <= {
+            value.strip().lower() for value in response.headers["access-control-allow-headers"].split(",")
+        }
+    else:
+        assert response.json()["code"] == "origin_denied"
+        assert "access-control-allow-origin" not in response.headers
+
+
+async def test_forwarded_host_does_not_override_host_allowlist(async_client, runtime):
+    assert await runtime.configure(McpConfig(enabled=True, allowed_hosts=["farm.example:8443"]))
+    created = await key(async_client)
+    async with live_app() as url, httpx.AsyncClient() as http:
+        response = await http.post(
+            url + "/mcp",
+            headers={
+                "X-API-Key": created["key"],
+                "Host": "attacker.invalid",
+                "X-Forwarded-Host": "farm.example:8443",
+            },
+            json={},
+        )
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "host_denied"
 
 
 async def test_revoke_applies_to_the_next_http_request(async_client, runtime):
