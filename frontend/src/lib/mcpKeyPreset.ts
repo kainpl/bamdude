@@ -4,6 +4,7 @@ export const mcpKeyPreset = {
   can_control_printer: false,
   can_read_status: true,
   can_access_cloud: false,
+  can_update_energy_cost: false,
   can_access_mcp: true,
   can_read_mcp_logs: false,
   can_manage_library: false,

@@ -8,6 +8,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
+    "build": "node ../ai-plugins/build.mjs",
     "test": "node --test --test-timeout=30000 test/*.test.mjs"
   },
   "dependencies": {
@@ -15,6 +16,9 @@
     "undici": "8.12.3"
   },
   "devDependencies": {
+    "@anthropic-ai/mcpb": "2.1.2",
+    "esbuild": "0.28.2",
+    "fflate": "0.8.3",
     "selfsigned": "5.5.0"
   }
 }

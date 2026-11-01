@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-- **MCP foundation for AI assistants (disabled by default).** A separate opt-in API-key permission opens a read-only connection for capability discovery and the shared usage guide. The diagnostic key preset grants no queue, printer-control or log access by default. Existing keys keep MCP disabled. Local connector sources now bridge stdio clients to that endpoint with verified TLS, explicit CA support and no redirects or OAuth discovery. Farm investigation tools, packaged client installation and the guided installer are still being developed.
+- **MCP setup for AI assistants (development preview, disabled by default).** Settings → API Keys now guides server setup, a separate diagnostic key with printer scope, client-package downloads and an observed MCP-request check. Existing keys keep MCP disabled; the preset grants no actions or logs by default. Packages are generated from one canonical skill and include a local connector with explicit CA trust and no redirects/OAuth discovery. Codex direct MCP and workspace-skill discovery were verified on Windows; packaged client installation remains unverified, and the setup panel states those limits. The base module provides capabilities and its guide, with farm investigation tools still to follow. A near-limit result that exceeds the connector's outgoing envelope now returns an error without closing the connection.
 
 - Printer queues now show the current print's live filament usage below its time, ETA and layers, using the same read-only widget as printer cards during printing and pauses.
 

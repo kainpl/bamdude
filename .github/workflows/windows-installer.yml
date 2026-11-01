@@ -114,6 +114,13 @@ jobs:
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" bamdude.iss
         shell: pwsh
 
+      - name: Save AI client build products
+        uses: actions/upload-artifact@v7
+        with:
+          name: bamdude-ai-packages
+          path: installers/windows/build/ai-plugins/*
+          if-no-files-found: error
+
       # What the release gate compares later: this .exe's sha256, the STEP-preview
       # pin's status in the payload, and the install directory limit compiled in.
       - name: Describe the payload
@@ -247,6 +254,12 @@ jobs:
           name: bamdude-windows-installer
           path: installer
 
+      - name: Download AI client packages
+        uses: actions/download-artifact@v7
+        with:
+          name: bamdude-ai-packages
+          path: ai-packages
+
       - name: Download the acceptance
         uses: actions/download-artifact@v7
         with:
@@ -299,7 +312,9 @@ jobs:
       - name: Attach installer to release
         uses: softprops/action-gh-release@v3
         with:
-          files: installer/*.exe
+          files: |
+            installer/*.exe
+            ai-packages/*
           fail_on_unmatched_files: true
           # Only meaningful when this step creates the release; editing an
           # existing one keeps whatever flag it already has.

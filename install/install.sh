@@ -934,6 +934,18 @@ build_frontend() {
     fi
 
     log_success "Frontend built"
+
+    log_info "Building AI client packages..."
+    cd "$INSTALL_PATH/integrations/mcp-adapter"
+    if [[ "$OS_TYPE" == "macos" ]]; then
+        npm ci --ignore-scripts
+        npm run build
+    else
+        sudo -H -u "$SERVICE_USER" npm ci --ignore-scripts
+        sudo -H -u "$SERVICE_USER" npm run build
+    fi
+    log_success "AI client packages built"
+    cd "$INSTALL_PATH/frontend"
 }
 
 create_directories() {

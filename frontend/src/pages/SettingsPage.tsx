@@ -19,6 +19,7 @@ import { LdapUserPicker } from '../components/LdapUserPicker';
 import { ZigbeeCoordinatorCard } from '../components/zigbee/ZigbeeCoordinatorCard';
 import { DryingSchedulesCard } from '../components/settings/DryingSchedulesCard';
 import { DocumentSupplierCard } from '../components/settings/DocumentSupplierCard';
+import { McpSettingsCard } from '../components/settings/McpSettingsCard';
 import { SensorsSection } from '../components/zigbee/SensorsSection';
 import { SmartPlugCard } from '../components/SmartPlugCard';
 import { AddSmartPlugModal } from '../components/AddSmartPlugModal';
@@ -107,6 +108,7 @@ registerSettingsSearch({ labelKey: 'settings.tabs.network', tab: 'network', keyw
 registerSettingsSearch({ labelKey: 'settings.tabs.cloudLink', tab: 'network', keywords: 'cloud link portal remote pairing publish', anchor: 'card-cloud-link' });
 registerSettingsSearch({ labelKey: 'settings.tabs.virtualPrinter', tab: 'virtual-printer', keywords: 'virtual printer proxy archive slicer bambustudio orcaslicer ip bind port', anchor: 'tab-virtual-printer' });
 registerSettingsSearch({ labelKey: 'settings.tabs.apiKeys', tab: 'apikeys', keywords: 'api keys create permission scope webhook endpoint post http browser documentation test token bearer', anchor: 'tab-apikeys' });
+registerSettingsSearch({ labelKey: 'settings.mcp.title', tab: 'apikeys', keywords: 'mcp ai assistant codex claude chatgpt skill plugin', anchor: 'card-mcp' });
 registerSettingsSearch({ labelKey: 'cameraTokens.title', tab: 'apikeys', keywords: 'camera token long-lived home assistant frigate kiosk stream bblt', anchor: 'card-camera-tokens' });
 registerSettingsSearch({ labelKey: 'settings.tabs.failureDetection', labelFallback: 'Failure Detection', tab: 'failure-detection', keywords: 'failure detection ai ml obico spaghetti detect monitoring', anchor: 'card-fd-ml' });
 registerSettingsSearch({ labelKey: 'failureDetection.perPrinterTitle', labelFallback: 'Per-Printer Settings', tab: 'failure-detection', keywords: 'failure detection per printer enable per-printer sensitivity', anchor: 'card-fd-perprinter' });
@@ -5236,6 +5238,7 @@ export function SettingsPage() {
       {/* ══════ API KEYS TAB ══════ */}
       {activeTab === 'apikeys' && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <McpSettingsCard />
           {/* Left Column - API Keys Management */}
           <div>
             <div className="flex items-start justify-between gap-4 mb-4">

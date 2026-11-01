@@ -4678,6 +4678,10 @@ export interface LongLivedTokenCreate {
 
 // Settings types
 export interface AppSettings {
+  mcp_enabled?: boolean;
+  mcp_endpoint_url?: string;
+  mcp_allowed_hosts?: string[];
+  mcp_allowed_origins?: string[];
   save_thumbnails: boolean;
   capture_finish_photo: boolean;
   // Switch the chamber light on for the camera when it is off, and back off after
@@ -16235,6 +16239,27 @@ export const bugReportApi = {
     }),
 
   listReports: () => request<BugReportListResponse>('/bug-report/reports'),
+};
+
+export interface McpStatus {
+  desired_enabled: boolean;
+  state: 'disabled' | 'starting' | 'ready' | 'stopping' | 'unavailable';
+  reason: string | null;
+  diagnostic_contract: number;
+  skill_contract: number;
+  registered_modules: string[];
+}
+export type McpPackageId = 'skill' | 'claude-desktop' | 'claude-code' | 'portable-plugin';
+export interface McpPackageCatalog {
+  package_version: string;
+  packages: { id: McpPackageId; format: string; available: boolean; reason: string | null }[];
+}
+export const mcpApi = {
+  status: () => request<McpStatus>('/integrations/mcp/status'),
+  packages: () => request<McpPackageCatalog>('/integrations/mcp/packages'),
+  connection: (keyId: number) => request<{ observed_at: string | null }>(`/integrations/mcp/keys/${keyId}/connection`),
+  download: (id: McpPackageId) => fetchAuthorizedBlob(id === 'skill'
+    ? `${API_BASE}/integrations/mcp/skill.zip` : `${API_BASE}/integrations/mcp/packages/${id}`),
 };
 
 // Macros API

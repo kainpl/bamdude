@@ -15,6 +15,34 @@ from backend.app.models.user import User
 router = APIRouter(prefix="/integrations/mcp", tags=["integrations"])
 
 
+@router.get("/packages")
+async def packages(_: User | None = RequirePermission(Permission.SETTINGS_READ)):
+    from backend.app.mcp_server.packages import package_catalog
+
+    return package_catalog()
+
+
+@router.get("/packages/{package_id}")
+async def download_package(package_id: str, _: User | None = RequirePermission(Permission.SETTINGS_READ)):
+    from backend.app.mcp_server.packages import PACKAGE_FILES, client_package
+
+    if package_id not in PACKAGE_FILES:
+        raise HTTPException(404, "The BamDude client package was not found")
+    try:
+        content, digest, filename = client_package(package_id)
+    except (OSError, ValueError, TypeError, KeyError):
+        raise HTTPException(503, "The BamDude client package is unavailable or incompatible") from None
+    return Response(
+        content,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-SHA256": digest,
+        },
+    )
+
+
 @router.get("/status")
 async def status(_: User | None = RequirePermission(Permission.SETTINGS_READ)):
     return {

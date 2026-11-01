@@ -357,7 +357,19 @@ def build_frontend() -> Path:
     return dist
 
 
-def stage_backend(frontend_dist: Path) -> None:
+def build_ai_packages() -> Path:
+    """Build immutable client downloads alongside the installer payload."""
+    adapter = REPO_ROOT / "integrations" / "mcp-adapter"
+    output = BUILD_DIR / "ai-plugins"
+    npm = shutil.which("npm")
+    if not npm:
+        raise RuntimeError("npm not found on PATH — install Node.js 22 LTS")
+    subprocess.run([npm, "ci", "--ignore-scripts"], cwd=adapter, check=True, shell=False)
+    subprocess.run([npm, "run", "build", "--", "--out", str(output)], cwd=adapter, check=True, shell=False)
+    return output
+
+
+def stage_backend(frontend_dist: Path, ai_packages: Path | None = None) -> None:
     """Copy backend source + frontend bundle into the staging tree.
 
     The runtime layout under STAGING/app/ mirrors a BamDude checkout:
@@ -383,6 +395,8 @@ def stage_backend(frontend_dist: Path) -> None:
 
     # The MCP guide and portable skill share these canonical sources.
     shutil.copytree(REPO_ROOT / "integrations" / "agent-skills", app / "integrations" / "agent-skills")
+    if ai_packages is not None:
+        shutil.copytree(ai_packages, app / "integrations" / "ai-plugins" / "dist")
 
     # Frontend bundle — FastAPI's StaticFiles mounts from app/static.
     # Strip macOS metadata files (.DS_Store, ._.*) that the dev box leaks
@@ -768,7 +782,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         frontend_dist = build_frontend()
 
-    stage_backend(frontend_dist)
+    stage_backend(frontend_dist, build_ai_packages())
     stage_nssm()
     stage_ffmpeg()
     stage_render_runtime()

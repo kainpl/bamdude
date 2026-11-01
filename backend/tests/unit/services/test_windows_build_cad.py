@@ -65,6 +65,28 @@ def _until(predicate, seconds: float = 30) -> None:
 # --- order and the pin ------------------------------------------------------------------------------------------
 
 
+def test_ai_packages_are_staged_beside_canonical_skill(build, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / "backend").mkdir(parents=True)
+    (repo / "backend" / "__init__.py").write_text("")
+    skill = repo / "integrations" / "agent-skills" / "bamdude-diagnostics"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("canonical skill")
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    (frontend / "index.html").write_text("frontend")
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "packages.json").write_text('{"package_version":"test"}')
+    (assets / "bamdude-claude-desktop.mcpb").write_bytes(b"build product")
+    monkeypatch.setattr(build, "REPO_ROOT", repo)
+    assert build.STAGING.resolve().is_relative_to(tmp_path.resolve())
+    build.stage_backend(frontend, assets)
+    staged = build.STAGING / "app" / "integrations"
+    assert (staged / "agent-skills" / "bamdude-diagnostics" / "SKILL.md").read_text() == "canonical skill"
+    assert (staged / "ai-plugins" / "dist" / "bamdude-claude-desktop.mcpb").read_bytes() == b"build product"
+
+
 @pytest.mark.parametrize("argv", [[], ["--skip-pip"]])
 def test_cad_is_built_exported_and_verified_after_the_backend_also_with_skip_pip(build, monkeypatch, argv):
     calls = []
@@ -82,6 +104,7 @@ def test_cad_is_built_exported_and_verified_after_the_backend_also_with_skip_pip
         "stage_vcruntime": None,
         "install_requirements": None,
         "verify_requirements": None,
+        "build_ai_packages": build.BUILD_DIR / "ai-plugins",
         "stage_backend": None,
         "stage_nssm": None,
         "stage_ffmpeg": None,
@@ -101,6 +124,7 @@ def test_cad_is_built_exported_and_verified_after_the_backend_also_with_skip_pip
     tail = [c for c in calls if c in {"stage_backend", "stage_render_runtime"} or not c.startswith("stage_")]
     order = [c for c in tail if c not in {"install_requirements", "verify_requirements"}]
     assert order == [
+        "build_ai_packages",
         "stage_backend",
         "stage_render_runtime",
         "build_cad_bundle",

@@ -30,6 +30,27 @@ def is_loopback_host(value: str) -> bool:
         return False
 
 
+def canonical_endpoint(value: str) -> str:
+    """An operator-supplied display/config address, never request-derived."""
+    if not value:
+        return ""
+    parsed = urlsplit(value)
+    if (
+        len(value) > 2048
+        or parsed.scheme not in {"http", "https"}
+        or parsed.path != "/mcp"
+        or parsed.username is not None
+        or parsed.password is not None
+        or "?" in value
+        or "#" in value
+    ):
+        raise ValueError("Invalid MCP endpoint")
+    host = exact_host(parsed.netloc)
+    if parsed.scheme == "http" and not is_loopback_host(host):
+        raise ValueError("MCP requires HTTPS outside loopback")
+    return f"{parsed.scheme}://{host}/mcp"
+
+
 class McpConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False

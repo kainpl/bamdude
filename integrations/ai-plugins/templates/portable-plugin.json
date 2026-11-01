@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "bamdude-ai",
+  "version": "@VERSION@",
+  "description": "BamDude read-only capability and usage guidance. Configure the MCP connection separately.",
+  "author": { "name": "BamDude" },
+  "homepage": "https://docs.bamdude.top/addons/ai-assistants/",
+  "license": "AGPL-3.0-only"
+}

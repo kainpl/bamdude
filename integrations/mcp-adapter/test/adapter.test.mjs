@@ -8,6 +8,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createInterface } from 'node:readline';
 import selfsigned from 'selfsigned';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -280,4 +281,31 @@ test('incompatible contracts are refused before exposing local tools', async t =
   farm.state.contract = 2;
   await assert.rejects(client(t, farm));
   assert.ok(!farm.requests.some(request => request.body?.method === 'tools/list'));
+});
+
+test('a larger stdio response envelope returns an error and keeps the connection usable', async t => {
+  const farm = await fixture(t);
+  const child = spawn(process.execPath, [entry], { env: { ...process.env, BAMDUDE_MCP_URL: farm.url, BAMDUDE_MCP_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => { child.stdin.end(); if (child.exitCode === null) child.kill(); });
+  child.stderr.resume();
+  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  const send = message => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
+  const read = async () => JSON.parse((await lines.next()).value);
+  send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'large-id-host', version: '1' } } });
+  assert.equal((await read()).id, 1);
+  send({ method: 'notifications/initialized' });
+  farm.state.handler = (_, response, body) => {
+    if (body?.method !== 'tools/call') return false;
+    const wire = JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: 'x'.repeat(MAX_RESPONSE - 250) }] } });
+    assert.ok(Buffer.byteLength(wire) < MAX_RESPONSE);
+    response.writeHead(200, { 'content-type': 'application/json' }).end(wire);
+    return true;
+  };
+  const largeId = 'id'.repeat(8000);
+  send({ id: largeId, method: 'tools/call', params: { name: 'bamdude_get_usage_guide' } });
+  const error = await read();
+  assert.equal(error.id, largeId);
+  assert.equal(error.error.message, 'response_too_large');
+  send({ id: 3, method: 'tools/list' });
+  assert.equal((await read()).result.tools.length, 2);
 });

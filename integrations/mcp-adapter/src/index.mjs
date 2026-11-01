@@ -83,7 +83,14 @@ async function main() {
     receive(message);
   };
   stdio.send = async message => {
-    if (Buffer.byteLength(JSON.stringify(message)) > MAX_RESPONSE || process.stdout.writableLength > 2 * MAX_RESPONSE) {
+    if (Buffer.byteLength(JSON.stringify(message)) > MAX_RESPONSE) {
+      // The host's request ID can be longer than the SDK's upstream ID.
+      // Report envelope overflow as one bounded error, preserving the connection.
+      if (!('method' in message) && 'id' in message) {
+        message = { jsonrpc: '2.0', id: message.id, error: { code: ErrorCode.InternalError, message: 'response_too_large' } };
+      } else { void stop(1); return; }
+    }
+    if (process.stdout.writableLength > 2 * MAX_RESPONSE) {
       void stop(1); return;
     }
     if (!('method' in message) && 'id' in message) pending.delete(message.id);

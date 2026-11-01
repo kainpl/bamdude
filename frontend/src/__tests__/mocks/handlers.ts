@@ -89,6 +89,8 @@ const mockPrinters = [
 ];
 
 export const handlers = [
+  http.get('/api/v1/integrations/mcp/status', () => HttpResponse.json({ desired_enabled: false, state: 'disabled', reason: null, diagnostic_contract: 1, skill_contract: 1, registered_modules: ['base'] })),
+  http.get('/api/v1/integrations/mcp/packages', () => HttpResponse.json({ package_version: 'test', packages: [{ id: 'skill', format: 'agent-skill-zip', available: true, reason: null }] })),
   http.get('*/api/v1/system/farm-startup', () => HttpResponse.json({
     state: 'running', boot_id: 'test', hold_id: null, reason: null, since: null, ready: true, can_resume: false,
   })),

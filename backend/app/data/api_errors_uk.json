@@ -1,4 +1,6 @@
 {
+  "The BamDude client package was not found": "Пакет клієнта BamDude не знайдено",
+  "The BamDude client package is unavailable or incompatible": "Пакет клієнта BamDude недоступний або несумісний",
   "'{}' already belongs to part '{}'": "«{}» уже належить деталі «{}»",
   "'{}' cannot be set for '{}' on this device.": "«{}» не можна задати для «{}» на цьому пристрої.",
   "'{}' has not been adopted — enable it before printing to it": "Пристрій «{}» ще не прийнято — увімкніть його, перш ніж друкувати на ньому",
