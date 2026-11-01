@@ -2130,6 +2130,31 @@ def _airduct_fans(model: str | None, state) -> list[AirductFan]:
     return fans
 
 
+def wire_tray_state(tray: dict) -> int | None:
+    """The ``state`` both status shapers give an AMS slot — one rule, two payloads.
+
+    P1S / A1 Mini physically-empty-slot signal (#1322 follow-up): for a truly
+    empty slot the firmware sends only ``{"id": N}`` — no state, no tray_type,
+    no anything else. Treat that as the firmware's "no spool" indicator
+    (state=9) so the assign-spool path in inventory.py can short-circuit a MQTT
+    publish the firmware would silently drop anyway. The post-"Reset Slot" A1
+    Mini BMCU case sends a populated payload (state=3, tray_type="") —
+    different shape, doesn't match this guard, still attempts the MQTT push per
+    the #1322 root fix. Steady-state populated-payload empty signal is handled
+    at the MQTT-merge layer in ``bambu_mqtt`` via ``tray_exist_bits``; this
+    stays as belt-and-suspenders for paths that skip that merge.
+
+    ⚠️ The WebSocket payload and the REST status MUST both ask this: the
+    frontend replaces one with the other, and a REST status without the rule
+    turned an empty P1S slot into "spool loaded, slot not configured" on every
+    fallback poll (2026-11-01).
+    """
+    state_val = tray.get("state")
+    if state_val is None and len(tray) == 1 and "id" in tray:
+        state_val = 9
+    return state_val
+
+
 def printer_state_to_dict(
     state: PrinterState,
     printer_id: int | None = None,
@@ -2178,23 +2203,7 @@ def printer_state_to_dict(
                 if k_value is None:
                     k_value = resolve_slot_k(cali_idx, ams_id_int, int(tray.get("id", 0)))
 
-                # P1S / A1 Mini physically-empty-slot signal (#1322
-                # follow-up): for a truly empty slot the firmware sends
-                # only ``{"id": N}`` — no state, no tray_type, no anything
-                # else. Treat that as the firmware's "no spool" indicator
-                # (state=9) so the assign-spool path in inventory.py can
-                # short-circuit a MQTT publish the firmware would silently
-                # drop anyway. The post-"Reset Slot" A1 Mini BMCU case
-                # sends a populated payload (state=3, tray_type="") —
-                # different shape, doesn't match this guard, still
-                # attempts the MQTT push per the #1322 root fix. Steady-
-                # state populated-payload empty signal is handled at the
-                # MQTT-merge layer in ``bambu_mqtt`` via
-                # ``tray_exist_bits``; this stays as belt-and-suspenders
-                # for paths that skip that merge.
-                state_val = tray.get("state")
-                if state_val is None and len(tray) == 1 and "id" in tray:
-                    state_val = 9
+                state_val = wire_tray_state(tray)
 
                 # The spool behind an advertised profile. The live fields stay
                 # exactly as the printer reports them — the browser draws what

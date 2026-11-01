@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Empty AMS slots no longer show "Spool loaded — slot not configured".** When every spool was taken out of an AMS, its slots could stay highlighted as loaded-but-unconfigured — on an X2D and on a P1S, with nothing in the AMS and nothing assigned. The printer reports the "read spools on power-on" setting off together with an all-empty slot mask, and BamDude took that pair for the printer switching off, so it kept the slots' last state. A push that also reports the AMS unit present now counts as an empty AMS, on the printer card, in filament routing and in the Virtual Printer's view for the slicer. The printer-off message, which reports no AMS unit, is still ignored as before. Separately, the printer card's periodic refresh described a P1S empty slot differently from the live updates, so the highlight could come back half a minute after a reconnect had cleared it; both now describe the slot the same way.
+
 - AI client ZIPs include a local catalog for installation with the Codex and Claude Code plugin commands, without writing marketplace JSON. Windows CLI install/remove and skill loading were verified; the setup panel distinguishes those checks from still-unverified Claude Desktop installation.
 
 - AI setup accepts an unfilled optional CA field while keeping TLS verification enabled. Native installation and updates continue with a warning if optional client packages cannot be built. Dismissing a newly created MCP key also releases its cached copy, and the Claude Code manual example explains that it bypasses the local connector.
