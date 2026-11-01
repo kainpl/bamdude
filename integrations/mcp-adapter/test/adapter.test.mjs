@@ -87,6 +87,17 @@ test('configuration allows only exact MCP endpoints and explicit TLS trust', () 
   assert.throws(() => configuration({ BAMDUDE_MCP_URL: 'https://farm.local/mcp', BAMDUDE_MCP_KEY: 'bad\nkey' }), /invalid_key/);
 });
 
+test('an empty optional CA or its exact host placeholder uses system trust, not a TLS bypass', () => {
+  const env = { BAMDUDE_MCP_URL: 'https://farm.local/mcp', BAMDUDE_MCP_KEY: secret };
+  for (const caFile of ['', '${user_config.ca_file}']) {
+    assert.equal(configuration({ ...env, BAMDUDE_MCP_CA_FILE: caFile }).ca, undefined);
+    assert.throws(() => configuration({ ...env, BAMDUDE_MCP_CA_FILE: caFile, NODE_TLS_REJECT_UNAUTHORIZED: '0' }), /tls_bypass_forbidden/);
+  }
+  for (const caFile of ['${user_config.other_file}', '${user_config.ca_file}/missing.pem']) {
+    assert.throws(() => configuration({ ...env, BAMDUDE_MCP_CA_FILE: caFile }), /invalid_ca_file/);
+  }
+});
+
 test('real stdio host discovers tools, calls guide and reads resource/prompt; two keys stay separate', async t => {
   const farm = await fixture(t);
   const first = await client(t, farm);
@@ -149,7 +160,7 @@ test('self-signed TLS refuses by default, accepts explicit CA, and refuses a cha
   const caFile = join(directory, 'ca.pem');
   await writeFile(caFile, certificate.cert);
   const farm = await fixture(t, { key: certificate.private, cert: certificate.cert });
-  const untrusted = connection(configuration({ BAMDUDE_MCP_URL: farm.url, BAMDUDE_MCP_KEY: secret }));
+  const untrusted = connection(configuration({ BAMDUDE_MCP_URL: farm.url, BAMDUDE_MCP_KEY: secret, BAMDUDE_MCP_CA_FILE: '${user_config.ca_file}' }));
   t.after(() => untrusted.close());
   await assert.rejects(untrusted.fetch(farm.url, { method: 'POST', body: '{}' }), /network_or_tls_error/);
   const trusted = connection(configuration({ BAMDUDE_MCP_URL: farm.url, BAMDUDE_MCP_KEY: secret, BAMDUDE_MCP_CA_FILE: caFile }));

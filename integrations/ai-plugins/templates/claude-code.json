@@ -7,7 +7,7 @@
   "userConfig": {
     "endpoint": { "type": "string", "title": "BamDude MCP address", "description": "Exact https://your-farm/mcp address.", "required": true },
     "api_key": { "type": "string", "title": "BamDude MCP key", "description": "A separate MCP-enabled key; never enter it in chat.", "sensitive": true, "required": true },
-    "ca_file": { "type": "file", "title": "Trusted CA file (optional)", "description": "PEM CA for a self-signed server; the certificate must match its hostname or IP." }
+    "ca_file": { "type": "file", "title": "Trusted CA file (optional)", "description": "PEM CA for a self-signed server; the certificate must match its hostname or IP.", "default": "" }
   },
   "mcpServers": {
     "bamdude": {

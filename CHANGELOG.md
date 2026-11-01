@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- AI setup accepts an unfilled optional CA field while keeping TLS verification enabled. Native installation and updates continue with a warning if optional client packages cannot be built. Dismissing a newly created MCP key also releases its cached copy, and the Claude Code manual example explains that it bypasses the local connector.
+
 - **MCP setup for AI assistants (development preview, disabled by default).** Settings → API Keys now guides server setup, a separate diagnostic key with printer scope, client-package downloads and an observed MCP-request check. Existing keys keep MCP disabled; the preset grants no actions or logs by default. Packages are generated from one canonical skill and include a local connector with explicit CA trust and no redirects/OAuth discovery. Codex direct MCP and workspace-skill discovery were verified on Windows; packaged client installation remains unverified, and the setup panel states those limits. The base module provides capabilities and its guide, with farm investigation tools still to follow. A near-limit result that exceeds the connector's outgoing envelope now returns an error without closing the connection.
 
 - Printer queues now show the current print's live filament usage below its time, ETA and layers, using the same read-only widget as printer cards during printing and pauses.

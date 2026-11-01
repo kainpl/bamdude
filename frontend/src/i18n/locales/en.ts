@@ -3569,6 +3569,7 @@ export default {
       checkKey: 'Connection key', chooseKey: 'Choose an MCP key', checkConnection: 'Check connection', observed: 'MCP request observed: {{time}}', notObserved: 'No MCP request observed since this server started', checkFailed: 'Could not read the connection marker. Try again.',
       skillInstalled: 'I installed the skill in this client (checked manually)', restartHint: 'If the farm was unavailable when the connector started, restart the client or its MCP connection after the farm is back. The connector does not retry in the background.',
       manualConfig: 'Manual connection', configHint: 'Examples contain the saved address and an environment-variable placeholder, never your key. The Codex command is shown for PowerShell; set its key environment variable separately.', downloadConfig: 'Download example configuration',
+      directClaudeHint: 'The Claude Code manual HTTP example bypasses the local connector: its CA-file setting and redirect/OAuth protections do not apply. Configure certificate trust in the client itself; never disable TLS verification.',
       disconnect: 'To disconnect fully, revoke the key in BamDude first, remove the client plugin or connector next, and optionally disable MCP.', guide: 'Open the AI assistant setup guide',
     },
     mcpAccess: 'Allow MCP access',

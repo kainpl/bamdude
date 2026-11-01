@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
@@ -49,6 +50,20 @@ describe('McpSettingsCard', () => {
     expect(payload?.can_read_status).toBe(true);
     for (const [name, value] of Object.entries(payload ?? {})) if (name.startsWith('can_') && !['can_access_mcp', 'can_read_status'].includes(name)) expect(value, name).toBe(false);
     expect(screen.getByLabelText(/Also allow diagnostic logs/)).not.toBeChecked();
+  });
+
+  it('dismisses the one-time key and releases its mutation-cache copy', async () => {
+    server.use(http.post('/api/v1/api-keys/', () => HttpResponse.json(key)));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><McpSettingsCard /></QueryClientProvider>);
+    await user.click(await screen.findByLabelText('P1S test'));
+    await user.click(screen.getByRole('button', { name: 'Create diagnostic key' }));
+    await screen.findByText(key.key);
+    expect(JSON.stringify(client.getMutationCache().getAll().map(item => item.state.data))).toContain(key.key);
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByText(key.key)).not.toBeInTheDocument();
+    await waitFor(() => expect(JSON.stringify(client.getMutationCache().getAll().map(item => item.state.data))).not.toContain(key.key));
   });
 
   it('does not equate REST key usage with an MCP observation', async () => {
@@ -114,5 +129,13 @@ describe('McpSettingsCard', () => {
     expect(within(details).getByText(/codex mcp add/).textContent).toContain(endpoint);
     expect(details.textContent).not.toContain(key.key);
     expect(details.textContent).toContain('BAMDUDE_MCP_KEY');
+  });
+
+  it('explains that the Claude Code manual example bypasses the connector', async () => {
+    const user = userEvent.setup();
+    render(<McpSettingsCard />);
+    await user.selectOptions(screen.getByLabelText('AI client'), 'claude-code');
+    await user.click(screen.getByText('Manual connection'));
+    expect(screen.getByText(/bypasses the local connector/)).toBeInTheDocument();
   });
 });

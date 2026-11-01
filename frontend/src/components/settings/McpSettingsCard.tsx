@@ -93,6 +93,7 @@ function McpSettingsContent() {
     onError: failure,
   });
   const create = useMutation({
+    gcTime: 0, // Drop the one-time secret from the mutation cache once reset/unmounted.
     mutationFn: () => api.createAPIKey({ ...mcpKeyPreset, name: keyName.trim(), printer_ids: allPrinters ? null : printerIds, can_read_mcp_logs: logs }),
     onSuccess: data => {
       setCreated(data);
@@ -163,7 +164,7 @@ function McpSettingsContent() {
           <label className="flex items-start gap-2 text-sm"><input className="mt-1" type="checkbox" checked={logs} onChange={event => setLogs(event.target.checked)} />{t('settings.mcp.logConsent')}</label>
           <Button disabled={!keyName.trim() || (!allPrinters && printerIds.length === 0) || create.isPending} onClick={() => create.mutate()}>{t('settings.mcp.createKey')}</Button>
         </> : <p className="text-sm text-bambu-gray">{t('settings.mcp.askKeyManager')}</p>}
-        {created && <div className="space-y-2 rounded-lg border border-bambu-green p-3"><p className="text-sm">{t('settings.apiKeyCopyWarning')}</p><div className="flex min-w-0 items-start gap-2"><code className="min-w-0 flex-1 break-all text-sm text-bambu-green">{created.key}</code><CopyButton value={created.key} /></div><Button size="sm" variant="secondary" onClick={() => setCreated(null)}>{t('common.dismiss')}</Button></div>}
+        {created && <div className="space-y-2 rounded-lg border border-bambu-green p-3"><p className="text-sm">{t('settings.apiKeyCopyWarning')}</p><div className="flex min-w-0 items-start gap-2"><code className="min-w-0 flex-1 break-all text-sm text-bambu-green">{created.key}</code><CopyButton value={created.key} /></div><Button size="sm" variant="secondary" onClick={() => { setCreated(null); create.reset(); }}>{t('common.dismiss')}</Button></div>}
         <p className="max-w-3xl text-sm text-bambu-gray">{t('settings.mcp.providerWarning')}</p>
       </section>}
       <section className="space-y-3 border-t border-bambu-dark-tertiary pt-5" aria-labelledby="mcp-check-heading">
@@ -178,6 +179,7 @@ function McpSettingsContent() {
       {(host === 'codex' || host === 'claude-code') && <details><summary className="cursor-pointer text-sm text-bambu-gray">{t('settings.mcp.manualConfig')}</summary><div className="mt-3 space-y-3">
         {host === 'codex' && command && <div className="flex min-w-0 items-start gap-2"><code className="min-w-0 flex-1 break-all text-xs">{command}</code><CopyButton value={command} /></div>}
         <p className="text-sm text-bambu-gray">{t('settings.mcp.configHint')}</p>
+        {host === 'claude-code' && <p className="text-sm text-bambu-gray">{t('settings.mcp.directClaudeHint')}</p>}
         <Button variant="secondary" disabled={!canonical} onClick={() => saveBlob(new Blob([configuration], { type: 'text/plain' }), host === 'codex' ? 'bamdude-mcp.example.toml' : 'bamdude-mcp.example.json')}>{t('settings.mcp.downloadConfig')}</Button>
       </div></details>}
       <p className="max-w-3xl text-sm text-bambu-gray">{t('settings.mcp.disconnect')}</p>

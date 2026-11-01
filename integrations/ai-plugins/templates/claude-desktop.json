@@ -18,6 +18,6 @@
   "user_config": {
     "endpoint": { "type": "string", "title": "BamDude MCP address", "description": "Exact https://your-farm/mcp address. HTTP is allowed only on loopback.", "required": true },
     "api_key": { "type": "string", "title": "BamDude MCP key", "description": "A separate MCP-enabled API key. Never enter it in chat.", "sensitive": true, "required": true },
-    "ca_file": { "type": "file", "title": "Trusted CA file (optional)", "description": "PEM CA file for a self-signed LAN server. Its certificate must match the hostname or IP.", "required": false }
+    "ca_file": { "type": "file", "title": "Trusted CA file (optional)", "description": "PEM CA file for a self-signed LAN server. Its certificate must match the hostname or IP.", "required": false, "default": "" }
   }
 }

@@ -26,9 +26,12 @@ export function configuration(env) {
   // The connector has no TLS bypass, including inherited Node-wide settings.
   if (env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new ConnectionError('tls_bypass_forbidden');
   let ca;
-  if (env.BAMDUDE_MCP_CA_FILE) {
+  // Some hosts leave an unfilled optional user-config field as its literal placeholder.
+  // System trust still verifies TLS; only this exact optional placeholder means no custom CA.
+  const caFile = env.BAMDUDE_MCP_CA_FILE;
+  if (caFile && caFile !== '${user_config.ca_file}') {
     try {
-      const bytes = readFileSync(env.BAMDUDE_MCP_CA_FILE);
+      const bytes = readFileSync(caFile);
       if (!bytes.length || bytes.length > 1048576) throw new Error();
       ca = bytes.toString('utf8');
     } catch { throw new ConnectionError('invalid_ca_file'); }
