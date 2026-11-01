@@ -351,3 +351,46 @@ class TestLists:
         assert runs.status_code == 200, runs.text
         assert {r["printer_id"] for r in runs.json()} == {a.id}
         assert {r["printer_id"] for r in rules.json()["schedules"]} == {a.id}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestBulkRetryOfCancelledJobs:
+    """``/queue/bulk-retry`` names cancelled jobs in a second list (2026-10-30). The gate reads that list itself:
+    until 2026-11-01 only the body validator (cancelled ⊆ confirmed) kept another printer's job out of it."""
+
+    async def _queue_key(self, async_client, printer_ids):
+        response = await async_client.post(
+            "/api/v1/api-keys/",
+            json={"name": "retry", "can_queue": True, "can_read_status": True, "printer_ids": printer_ids},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["key"]
+
+    async def test_a_cancelled_job_of_another_printer_is_refused_by_the_gate(self, async_client, db_session, farm):
+        a, b, items, *_ = farm
+        items[b.id].status = "cancelled"
+        await db_session.commit()
+        key = await self._queue_key(async_client, [a.id])
+
+        response = await async_client.post(
+            "/api/v1/queue/bulk-retry",
+            json={"queue_id": a.id, "item_ids": [items[a.id].id], "cancelled_item_ids": [items[b.id].id]},
+            headers=_as(key),
+        )
+
+        assert response.status_code == 403, response.text
+
+    async def test_its_own_cancelled_job_passes_the_gate(self, async_client, db_session, farm):
+        a, _b, items, *_ = farm
+        items[a.id].status = "cancelled"
+        await db_session.commit()
+        key = await self._queue_key(async_client, [a.id])
+
+        response = await async_client.post(
+            "/api/v1/queue/bulk-retry",
+            json={"queue_id": a.id, "item_ids": [items[a.id].id], "cancelled_item_ids": [items[a.id].id]},
+            headers=_as(key),
+        )
+
+        assert response.status_code != 403, response.text
