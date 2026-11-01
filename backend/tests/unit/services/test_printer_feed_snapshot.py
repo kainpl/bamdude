@@ -325,3 +325,29 @@ def test_h2d_fixed_hotends_are_not_treated_as_empty():
         "H2D",
     )
     assert snap.nozzle_diameters == {0: (0.4,), 1: (0.4,)}
+
+
+def test_a_present_ams_with_no_spool_offers_no_source_whatever_power_on_flag_says():
+    """``power_on_flag`` is the "read spools on power-on" setting, not the printer's power.
+
+    A push that reports the unit present (``ams_exist_bits``) and no spool in it
+    (``tray_exist_bits`` 0) empties the slots even with the setting off; the
+    printer-off shape, with no unit reported, still leaves them alone.
+    """
+    loaded = {
+        "ams_exist_bits": "1",
+        "tray_exist_bits": "3",
+        "power_on_flag": False,
+        "ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA"}, {"id": 1, "tray_type": "PETG"}]}],
+    }
+    state = PrinterState(connected=True)
+    state.feed_telemetry.observe({"print": {"ams": loaded}}, "P1S")
+    assert [s.id for s in snapshot_from_state(1, "P1S", state).sources] == [0, 1]
+
+    state.feed_telemetry.observe({"print": {"ams": {"tray_exist_bits": "0", "power_on_flag": False}}}, "P1S")
+    assert [s.id for s in snapshot_from_state(1, "P1S", state).sources] == [0, 1]
+
+    state.feed_telemetry.observe(
+        {"print": {"ams": {"ams_exist_bits": "1", "tray_exist_bits": "0", "power_on_flag": False}}}, "P1S"
+    )
+    assert snapshot_from_state(1, "P1S", state).sources == ()

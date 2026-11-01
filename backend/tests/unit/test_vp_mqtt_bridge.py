@@ -667,6 +667,68 @@ class TestPushStatusCache:
 
         await bridge.stop()
 
+    async def _loaded_then(self, bridge, second_ams: dict) -> dict:
+        """A loaded pushall that names its AMS unit, then ``second_ams``; the cached AMS."""
+        for ams in (
+            {
+                "ams": [
+                    {
+                        "id": "0",
+                        "tray": [
+                            {"id": str(i), "tray_type": "PLA", "tray_color": "FF0000FF", "state": 11} for i in range(4)
+                        ],
+                    }
+                ],
+                "ams_exist_bits": "1",
+                "tray_exist_bits": "f",
+                "power_on_flag": False,
+            },
+            second_ams,
+        ):
+            bridge._on_printer_raw(
+                f"device/{H2D_SERIAL}/report",
+                json.dumps({"print": {"command": "push_status", "ams": ams}}).encode(),
+            )
+            await asyncio.sleep(0.01)
+        return bridge.get_latest_print_state()["ams"]
+
+    @pytest.mark.asyncio
+    async def test_a_present_ams_emptied_of_every_spool_clears_the_slicer_cache(self):
+        """H2-class firmware reports ``power_on_flag`` False always; the unit bit decides.
+
+        The second push is a live X2D AMS object (recorded 2026-11-01): the unit
+        is reported present and holds no spool, so BambuStudio must not be shown
+        the four PLA spools that were pulled.
+        """
+        server = _make_server()
+        bridge = _make_bridge(server)
+        await bridge.start()
+
+        cached = await self._loaded_then(
+            bridge,
+            {
+                "ams": [{"id": "0", "tray": [{"id": str(i), "state": s} for i, s in enumerate((10, 26, 0, 10))]}],
+                "ams_exist_bits": "1",
+                "tray_exist_bits": "0",
+                "power_on_flag": False,
+            },
+        )
+
+        assert [t["tray_type"] for t in cached["ams"][0]["tray"]] == ["", "", "", ""]
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_shutdown_push_is_judged_by_its_own_unit_bit_not_the_cached_one(self):
+        """The cache remembers an earlier ``ams_exist_bits`` 1; a push without one proves nothing."""
+        server = _make_server()
+        bridge = _make_bridge(server)
+        await bridge.start()
+
+        cached = await self._loaded_then(bridge, {"tray_exist_bits": "0", "power_on_flag": False})
+
+        assert [t["tray_type"] for t in cached["ams"][0]["tray"]] == ["PLA", "PLA", "PLA", "PLA"]
+        await bridge.stop()
+
     @pytest.mark.asyncio
     async def test_tray_exist_bits_clears_ams_ht_units(self):
         """The slicer-facing cache clears an emptied AMS-HT slot too (#2670).
