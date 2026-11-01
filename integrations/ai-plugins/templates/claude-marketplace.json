@@ -1,0 +1,6 @@
+{
+  "name": "bamdude-ai-local",
+  "description": "Install the BamDude skill and local MCP connector from this downloaded package.",
+  "owner": { "name": "BamDude" },
+  "plugins": [{ "name": "bamdude-ai", "source": "./" }]
+}

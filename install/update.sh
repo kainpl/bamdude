@@ -562,6 +562,16 @@ if [ -f "$FRONTEND_DIR/package.json" ]; then
       cd "$FRONTEND_DIR"
       as_owner npm ci
       as_owner npm run build
+      if [ -f "$INSTALL_DIR/integrations/mcp-adapter/package.json" ]; then
+        if (
+          cd "$INSTALL_DIR/integrations/mcp-adapter" &&
+          as_owner npm ci --ignore-scripts && as_owner npm run build
+        ); then
+          log "AI client packages built"
+        else
+          warn "AI client package build failed; unavailable packages will be disabled in Settings. Update will continue."
+        fi
+      fi
     )
   else
     warn "Skipping frontend build (npm not installed)."

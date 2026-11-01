@@ -13,6 +13,16 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY frontend/ ./
 RUN npm run build
 
+# Generate client packages at build time; the farm never installs Node/npm for MCP.
+FROM node:22-bookworm-slim AS ai-package-builder
+WORKDIR /app
+COPY integrations/mcp-adapter/package*.json ./integrations/mcp-adapter/
+RUN --mount=type=cache,target=/root/.npm npm --prefix integrations/mcp-adapter ci --ignore-scripts
+COPY integrations/ ./integrations/
+COPY LICENSE ./LICENSE
+COPY backend/app/core/config.py ./backend/app/core/config.py
+RUN npm --prefix integrations/mcp-adapter run build
+
 # Production image — Debian Trixie picks up ffmpeg 5→7 and OpenSSL 3.0→3.3.
 # Frontend-builder above stays on Bookworm until Node.js publishes Trixie variants.
 FROM python:3.12-slim-trixie
@@ -107,6 +117,8 @@ RUN python /opt/render-runtime/render_runtime.py provision --runtime /app/runtim
 
 # Copy backend
 COPY backend/ ./backend/
+COPY integrations/agent-skills/ ./integrations/agent-skills/
+COPY --from=ai-package-builder /app/integrations/ai-plugins/dist/ ./integrations/ai-plugins/dist/
 
 # The CAD bundle against the backend it serves, the image's acceptance: a full
 # read-only verify (receipt, rehash, import, and the probe STEP converted and

@@ -20,6 +20,8 @@ build/
 
 # Node
 frontend/node_modules/
+integrations/**/node_modules/
+integrations/ai-plugins/dist/
 frontend/.npm
 
 # IDE

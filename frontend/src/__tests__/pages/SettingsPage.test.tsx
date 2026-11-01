@@ -310,6 +310,27 @@ describe('SettingsPage', () => {
   });
 
   describe('API Keys tab', () => {
+    it('creates an MCP diagnostic key without write or log grants', async () => {
+      const user = userEvent.setup();
+      let submitted: Record<string, unknown> | undefined;
+      server.use(http.post('/api/v1/api-keys/', async ({ request }) => {
+        submitted = await request.json() as Record<string, unknown>;
+        return HttpResponse.json({ id: 51, ...submitted, key: 'bd_synthetic_test_key' });
+      }));
+      render(<SettingsPage />);
+      const tab = (await screen.findAllByText('API Keys')).find((element) => element.tagName === 'BUTTON');
+      await user.click(tab!);
+      await user.click(await screen.findByRole('button', { name: 'Create Key' }));
+      await user.click(screen.getByRole('button', { name: 'MCP: diagnostics' }));
+      await user.click(screen.getAllByRole('button', { name: 'Create Key' }).at(-1)!);
+      await waitFor(() => expect(submitted).toBeDefined());
+      expect(submitted).toMatchObject({ can_access_mcp: true, can_read_status: true, can_read_mcp_logs: false });
+      for (const permission of ['can_queue', 'can_control_printer', 'can_access_cloud', 'can_manage_library',
+        'can_manage_inventory', 'can_manage_maintenance', 'can_manage_archives', 'can_manage_projects', 'can_print_labels']) {
+        expect(submitted![permission]).toBe(false);
+      }
+    });
+
     it('can switch to API Keys tab', async () => {
       const user = userEvent.setup();
       render(<SettingsPage />);

@@ -116,6 +116,7 @@ from backend.app.services.printer_manager import (
     supports_drying,
     supports_drying_while_printing,
     uniform_tray_drying_hint,
+    wire_tray_state,
 )
 from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
 from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
@@ -1316,7 +1317,7 @@ async def _build_printer_status(
                         nozzle_temp_max=tray_data.get("nozzle_temp_max"),
                         drying_temp=tray_data.get("drying_temp"),
                         drying_time=tray_data.get("drying_time"),
-                        state=tray_data.get("state"),
+                        state=wire_tray_state(tray_data),
                         exists=tray_data.get("exists"),
                     )
                 )

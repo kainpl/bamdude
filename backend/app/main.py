@@ -12432,9 +12432,13 @@ async def lifespan(app: FastAPI):
     farm_startup_guard.start(Path(app_settings.data_dir))
     try:
         async with _application_lifespan(app):
+            from backend.app.mcp_server.runtime import mcp_runtime
+
+            await mcp_runtime.reload()
             try:
                 yield
             finally:
+                await mcp_runtime.shutdown()
                 farm_startup_guard.close_admission()
     except BaseException:
         farm_startup_guard.close_admission()
@@ -13148,6 +13152,9 @@ app.include_router(library_tags.router, prefix=app_settings.api_prefix)
 app.include_router(library_trash.router, prefix=app_settings.api_prefix)
 # archive_purge router is registered above before archives.router (route order).
 app.include_router(api_keys.router, prefix=app_settings.api_prefix)
+from backend.app.api.routes import mcp_integration
+
+app.include_router(mcp_integration.router, prefix=app_settings.api_prefix)
 app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
 app.include_router(printer_sensor_history.router, prefix=app_settings.api_prefix)
@@ -13295,6 +13302,13 @@ async def serve_sw_register():
 
 
 # Catch-all route for React Router (must be last)
+# The exact MCP dispatcher is outermost, so neither the SPA nor the ordinary
+# REST-only auth/CORS middleware can answer for this separate key-only path.
+from backend.app.mcp_server.runtime import McpMiddleware
+
+app.add_middleware(McpMiddleware)
+
+
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
     """Serve React app for client-side routing.

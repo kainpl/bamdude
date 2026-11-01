@@ -10,6 +10,7 @@
 # removes the dep or the advisory clears.
 fastapi>=0.109.0,<0.136.0
 uvicorn[standard]>=0.27.0
+mcp==2.3.0  # Embedded read-only MCP; SDK owns both wire profiles and lifecycle.
 
 # Database
 # Floor is 2.0.38, not 2.0.0: core/database._create_engine() passes pool_size/

@@ -1,4 +1,6 @@
 {
+  "The BamDude client package was not found": "Пакет клієнта BamDude не знайдено",
+  "The BamDude client package is unavailable or incompatible": "Пакет клієнта BamDude недоступний або несумісний",
   "'{}' already belongs to part '{}'": "«{}» уже належить деталі «{}»",
   "'{}' cannot be set for '{}' on this device.": "«{}» не можна задати для «{}» на цьому пристрої.",
   "'{}' has not been adopted — enable it before printing to it": "Пристрій «{}» ще не прийнято — увімкніть його, перш ніж друкувати на ньому",
@@ -1129,5 +1131,9 @@
   "«{}»: only {} can be assembled": "«{}»: зібрати можна лише {}",
   "«{}»: only {} can be issued": "«{}»: видати можна лише {}",
   "«{}»: only {} can be received": "«{}»: оприбуткувати можна лише {}",
-  "«{}»: only {} can be written off": "«{}»: списати можна лише {}"
+  "«{}»: only {} can be written off": "«{}»: списати можна лише {}",
+  "MCP access requires an owning user": "Доступ до MCP потребує ключа з власником",
+  "MCP log access requires MCP access": "Читання логів через MCP потребує доступу до MCP",
+  "MCP readers have not stopped; retry restore after they finish": "Читання MCP ще не завершилися; повторіть відновлення після їх завершення",
+  "The BamDude skill package is unavailable": "Пакет skill BamDude недоступний"
 }

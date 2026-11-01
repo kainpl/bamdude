@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import AfterValidator, BaseModel, Field, field_validator
 
 from backend.app.core.timezones import server_timezone
+from backend.app.mcp_server.config import McpConfig, canonical_endpoint
 
 
 def _operator_timezone(value: str) -> str:
@@ -44,6 +45,11 @@ _COMPOSE_DIR_MAX_LEN = 512
 
 class AppSettings(BaseModel):
     """Application settings schema."""
+
+    mcp_enabled: bool = False
+    mcp_endpoint_url: str = ""
+    mcp_allowed_hosts: list[str] = Field(default_factory=list)
+    mcp_allowed_origins: list[str] = Field(default_factory=list)
 
     save_thumbnails: bool = Field(default=True, description="Extract and save preview images from 3MF files")
     capture_finish_photo: bool = Field(
@@ -725,6 +731,27 @@ class AppSettings(BaseModel):
 
 class AppSettingsUpdate(BaseModel):
     """Schema for updating settings (all fields optional)."""
+
+    mcp_enabled: bool | None = None
+    mcp_endpoint_url: str | None = None
+    mcp_allowed_hosts: list[str] | None = Field(default=None, max_length=32)
+    mcp_allowed_origins: list[str] | None = Field(default=None, max_length=32)
+
+    @field_validator("mcp_endpoint_url")
+    @classmethod
+    def validate_mcp_endpoint(cls, value):
+        if value is None:
+            raise ValueError("MCP endpoint cannot be null")
+        return canonical_endpoint(value)
+
+    @field_validator("mcp_allowed_hosts", "mcp_allowed_origins")
+    @classmethod
+    def validate_mcp_lists(cls, value, info):
+        if value is None:
+            raise ValueError("MCP allowlists cannot be null")
+        config_name = info.field_name.removeprefix("mcp_")
+        config = McpConfig.model_validate({config_name: value})
+        return getattr(config, config_name)
 
     save_thumbnails: bool | None = None
     capture_finish_photo: bool | None = None

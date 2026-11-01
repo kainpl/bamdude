@@ -212,6 +212,7 @@ class FeedTelemetry:
                     list(self.units.values()),
                     envelope["tray_exist_bits"],
                     power_on_flag=envelope.get("power_on_flag", True),
+                    ams_exist_bits=bits,
                 )
         dual = is_dual_nozzle_model(normalize_model_name(model))
         # vir_slot is the authoritative dual shape; vt_tray can be a one-tray echo.

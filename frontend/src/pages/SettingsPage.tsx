@@ -19,6 +19,7 @@ import { LdapUserPicker } from '../components/LdapUserPicker';
 import { ZigbeeCoordinatorCard } from '../components/zigbee/ZigbeeCoordinatorCard';
 import { DryingSchedulesCard } from '../components/settings/DryingSchedulesCard';
 import { DocumentSupplierCard } from '../components/settings/DocumentSupplierCard';
+import { McpSettingsCard } from '../components/settings/McpSettingsCard';
 import { SensorsSection } from '../components/zigbee/SensorsSection';
 import { SmartPlugCard } from '../components/SmartPlugCard';
 import { AddSmartPlugModal } from '../components/AddSmartPlugModal';
@@ -61,6 +62,7 @@ import { useTheme, type ThemeStyle, type DarkBackground, type LightBackground, t
 import { useState, useEffect, useId, useRef, useCallback, useMemo } from 'react';
 import { Palette, Search, Settings } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
+import { mcpKeyPreset } from '../lib/mcpKeyPreset';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
 import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPanel';
@@ -106,6 +108,7 @@ registerSettingsSearch({ labelKey: 'settings.tabs.network', tab: 'network', keyw
 registerSettingsSearch({ labelKey: 'settings.tabs.cloudLink', tab: 'network', keywords: 'cloud link portal remote pairing publish', anchor: 'card-cloud-link' });
 registerSettingsSearch({ labelKey: 'settings.tabs.virtualPrinter', tab: 'virtual-printer', keywords: 'virtual printer proxy archive slicer bambustudio orcaslicer ip bind port', anchor: 'tab-virtual-printer' });
 registerSettingsSearch({ labelKey: 'settings.tabs.apiKeys', tab: 'apikeys', keywords: 'api keys create permission scope webhook endpoint post http browser documentation test token bearer', anchor: 'tab-apikeys' });
+registerSettingsSearch({ labelKey: 'settings.mcp.title', tab: 'apikeys', keywords: 'mcp ai assistant codex claude chatgpt skill plugin', anchor: 'card-mcp' });
 registerSettingsSearch({ labelKey: 'cameraTokens.title', tab: 'apikeys', keywords: 'camera token long-lived home assistant frigate kiosk stream bblt', anchor: 'card-camera-tokens' });
 registerSettingsSearch({ labelKey: 'settings.tabs.failureDetection', labelFallback: 'Failure Detection', tab: 'failure-detection', keywords: 'failure detection ai ml obico spaghetti detect monitoring', anchor: 'card-fd-ml' });
 registerSettingsSearch({ labelKey: 'failureDetection.perPrinterTitle', labelFallback: 'Per-Printer Settings', tab: 'failure-detection', keywords: 'failure detection per printer enable per-printer sensitivity', anchor: 'card-fd-perprinter' });
@@ -321,6 +324,8 @@ export function SettingsPage() {
     can_control_printer: false,
     can_read_status: true,
     can_access_cloud: false,
+    can_access_mcp: false,
+    can_read_mcp_logs: false,
     can_manage_library: true,
     can_manage_inventory: true,
     can_manage_maintenance: true,
@@ -536,6 +541,8 @@ export function SettingsPage() {
       can_control_printer: boolean;
       can_read_status: boolean;
       can_access_cloud: boolean;
+      can_access_mcp: boolean;
+      can_read_mcp_logs: boolean;
       can_manage_library: boolean;
       can_manage_inventory: boolean;
       can_manage_maintenance: boolean;
@@ -5231,6 +5238,7 @@ export function SettingsPage() {
       {/* ══════ API KEYS TAB ══════ */}
       {activeTab === 'apikeys' && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <McpSettingsCard />
           {/* Left Column - API Keys Management */}
           <div>
             <div className="flex items-start justify-between gap-4 mb-4">
@@ -5334,7 +5342,21 @@ export function SettingsPage() {
                   </div>
                   <div>
                     <label className="block text-sm text-bambu-gray mb-2">{t('common.permissions')}</label>
+                    <Button variant="secondary" size="sm" className="mb-3" onClick={() => setNewAPIKeyPermissions({ ...mcpKeyPreset })}>
+                      {t('settings.mcpKeyPreset')}
+                    </Button>
                     <div className="space-y-2">
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" className="accent-bambu-green w-4 h-4" checked={newAPIKeyPermissions.can_access_mcp}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_access_mcp: e.target.checked, can_read_mcp_logs: e.target.checked && prev.can_read_mcp_logs }))} />
+                        <div><span className="text-white">{t('settings.mcpAccess')}</span><p className="text-xs text-bambu-gray">{t('settings.mcpAccessDescription')}</p></div>
+                      </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" className="accent-bambu-green w-4 h-4" disabled={!newAPIKeyPermissions.can_access_mcp}
+                          checked={newAPIKeyPermissions.can_read_mcp_logs}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_read_mcp_logs: e.target.checked }))} />
+                        <div><span className="text-white">{t('settings.mcpLogs')}</span><p className="text-xs text-bambu-gray">{t('settings.mcpLogsDescription')}</p></div>
+                      </label>
                       <label className="flex items-center gap-3 cursor-pointer">
                         <input
                           type="checkbox"

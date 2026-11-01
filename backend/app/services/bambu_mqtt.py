@@ -802,11 +802,23 @@ def resolve_rack_plan_mapping(
     return wire, None
 
 
+def _reports_an_ams_unit(ams_exist_bits: str | int | None) -> bool:
+    """Whether a push's AMS unit mask positively names at least one unit."""
+    if isinstance(ams_exist_bits, bool):
+        return False
+    try:
+        mask = ams_exist_bits if isinstance(ams_exist_bits, int) else int(ams_exist_bits, 16)
+    except (TypeError, ValueError):
+        return False
+    return mask > 0
+
+
 def apply_tray_exist_bits(
     units: list,
     tray_exist_bits_str: str | int | None,
     *,
     power_on_flag: bool = True,
+    ams_exist_bits: str | int | None = None,
     log_label: str | None = None,
     annotate_exists: bool = False,
 ) -> int:
@@ -832,6 +844,18 @@ def apply_tray_exist_bits(
     ``power_on_flag=False`` (#765). Non-zero bits with ``power_on_flag=False``
     is valid idle-printer state (#1365 — X1C between prints) and MUST be applied
     so spool removal is detected without requiring a manual reconnect.
+
+    ⚠️ ``power_on_flag`` is the AMS setting "read spools on power-on", not the
+    printer's power: H2-class firmware reports it False always, and any printer
+    whose owner turned the setting off does too. So all-zero bits with it False
+    are ALSO an AMS with no spool in it — the guard used to freeze every slot
+    of such an AMS on its last loaded state, and the card showed "loaded, not
+    configured" on four empty slots (2026-11-01, X2D and P1S). What tells the
+    two apart is the AMS unit mask the SAME push carries: the shutdown push
+    reports no unit (``ams_exist_bits`` 0, the #765 shape), a live empty AMS
+    reports its unit (a recorded X2D push: ``ams_exist_bits`` "1",
+    ``tray_exist_bits`` "0", ``power_on_flag`` False). Only a positively
+    reported unit lifts the guard; a missing or unreadable mask keeps it.
 
     AMS-HT units (``id`` 128-135) are single-tray dry boxes whose presence bit
     is packed as ONE consecutive bit starting at 16 (``16 + (ams_id - 128)``),
@@ -869,7 +893,7 @@ def apply_tray_exist_bits(
         return 0
     if isinstance(tray_exist_bits_str, bool) or tray_exist_bits < 0:
         return 0
-    if tray_exist_bits == 0 and not power_on_flag:
+    if tray_exist_bits == 0 and not power_on_flag and not _reports_an_ams_unit(ams_exist_bits):
         return 0
     if not isinstance(units, list):
         return 0
@@ -4929,6 +4953,7 @@ class BambuMQTTClient:
                 merged_ams,
                 ams_data.get("tray_exist_bits"),
                 power_on_flag=ams_data.get("power_on_flag", True),
+                ams_exist_bits=ams_data.get("ams_exist_bits"),
                 log_label=self.serial_number,
                 annotate_exists=True,
             )
@@ -5181,7 +5206,13 @@ class BambuMQTTClient:
         # The canonical helper validates masks and ignores shutdown/unknown
         # reports; never seed from cached tray content or a command ACK.
         probe = [{"id": 0, "tray": [{"id": 0}]}]
-        apply_tray_exist_bits(probe, bits, power_on_flag=payload.get("power_on_flag", True), annotate_exists=True)
+        apply_tray_exist_bits(
+            probe,
+            bits,
+            power_on_flag=payload.get("power_on_flag", True),
+            ams_exist_bits=payload.get("ams_exist_bits"),
+            annotate_exists=True,
+        )
         valid_bits = isinstance(probe[0]["tray"][0].get("exists"), bool)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         self._stock_pending_presence = [

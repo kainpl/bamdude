@@ -1065,6 +1065,8 @@ class APIKeyAuthority:
     owner_permissions: frozenset[str]
     owner_is_admin: bool
     energy_cost_allowed: bool
+    mcp_allowed: bool = False
+    mcp_logs_allowed: bool = False
 
 
 def _match_api_key(credential: str, candidates: list[tuple[int, str]]) -> tuple[int, str] | None:
@@ -1135,6 +1137,8 @@ async def _validate_api_key_authority(credential: str) -> APIKeyAuthority:
             owner_permissions=frozenset(owner.get_permissions()) if owner is not None else frozenset(),
             owner_is_admin=owner.is_admin if owner is not None else False,
             energy_cost_allowed=bool(api_key.can_update_energy_cost),
+            mcp_allowed=bool(api_key.can_access_mcp),
+            mcp_logs_allowed=bool(api_key.can_read_mcp_logs),
         )
 
 

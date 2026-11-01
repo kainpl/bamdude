@@ -4477,6 +4477,8 @@ export interface APIKey {
   can_control_printer: boolean;
   can_read_status: boolean;
   can_access_cloud: boolean;
+  can_access_mcp?: boolean;
+  can_read_mcp_logs?: boolean;
   /** Narrowly-scoped opt-in for POST /settings/electricity-price so HA
    *  dynamic-tariff integrations can update energy_cost_per_kwh. Does NOT
    *  grant general SETTINGS_UPDATE. Default false. */
@@ -4506,6 +4508,8 @@ export interface APIKeyCreate {
   can_control_printer?: boolean;
   can_read_status?: boolean;
   can_access_cloud?: boolean;
+  can_access_mcp?: boolean;
+  can_read_mcp_logs?: boolean;
   can_update_energy_cost?: boolean;
   can_manage_library?: boolean;
   can_manage_inventory?: boolean;
@@ -4527,6 +4531,8 @@ export interface APIKeyUpdate {
   can_control_printer?: boolean;
   can_read_status?: boolean;
   can_access_cloud?: boolean;
+  can_access_mcp?: boolean;
+  can_read_mcp_logs?: boolean;
   can_update_energy_cost?: boolean;
   can_manage_library?: boolean;
   can_manage_inventory?: boolean;
@@ -4688,6 +4694,10 @@ export interface LongLivedTokenCreate {
 
 // Settings types
 export interface AppSettings {
+  mcp_enabled?: boolean;
+  mcp_endpoint_url?: string;
+  mcp_allowed_hosts?: string[];
+  mcp_allowed_origins?: string[];
   save_thumbnails: boolean;
   capture_finish_photo: boolean;
   // Switch the chamber light on for the camera when it is off, and back off after
@@ -16248,6 +16258,27 @@ export const bugReportApi = {
     }),
 
   listReports: () => request<BugReportListResponse>('/bug-report/reports'),
+};
+
+export interface McpStatus {
+  desired_enabled: boolean;
+  state: 'disabled' | 'starting' | 'ready' | 'stopping' | 'unavailable';
+  reason: string | null;
+  diagnostic_contract: number;
+  skill_contract: number;
+  registered_modules: string[];
+}
+export type McpPackageId = 'skill' | 'claude-desktop' | 'claude-code' | 'portable-plugin';
+export interface McpPackageCatalog {
+  package_version: string;
+  packages: { id: McpPackageId; format: string; available: boolean; reason: string | null }[];
+}
+export const mcpApi = {
+  status: () => request<McpStatus>('/integrations/mcp/status'),
+  packages: () => request<McpPackageCatalog>('/integrations/mcp/packages'),
+  connection: (keyId: number) => request<{ observed_at: string | null }>(`/integrations/mcp/keys/${keyId}/connection`),
+  download: (id: McpPackageId) => fetchAuthorizedBlob(id === 'skill'
+    ? `${API_BASE}/integrations/mcp/skill.zip` : `${API_BASE}/integrations/mcp/packages/${id}`),
 };
 
 // Macros API
