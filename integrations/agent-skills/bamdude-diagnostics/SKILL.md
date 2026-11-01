@@ -1,6 +1,6 @@
 ---
 name: bamdude-diagnostics
-description: Investigate a BamDude 3D printer farm using its permitted read-only MCP tools. Use for stalled queues, printer state, print history, filament usage, energy and farm diagnostics. Requires a configured BamDude MCP connection.
+description: Check a configured BamDude MCP connection, discover its permitted capabilities and read its usage guide. Requires a BamDude MCP connection; diagnostic modules are available only when the server advertises them.
 ---
 
 # BamDude diagnostics

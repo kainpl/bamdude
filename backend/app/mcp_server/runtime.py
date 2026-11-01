@@ -115,6 +115,7 @@ class McpRuntime:
     async def quiesce_for_restore(self):
         self._restore_hold = True
         self._held = True  # close admission before the first await
+        self.state, self.reason = "stopping", "restore_in_progress"
         self._connected.clear()  # restored key IDs may identify different keys
         try:
             await asyncio.wait_for(self._lock.acquire(), timeout=10)
@@ -122,7 +123,9 @@ class McpRuntime:
             self.state, self.reason = "stopping", "configuration_read_still_running"
             return False
         try:
-            return await self._drain()
+            drained = await self._drain()
+            self.state, self.reason = "unavailable", "restore_hold" if drained else "readers_still_running"
+            return drained
         finally:
             self._lock.release()
 

@@ -7,6 +7,7 @@ import json
 import socket
 import zipfile
 from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock
 
 import httpx
 import httpx2
@@ -261,12 +262,34 @@ async def test_restore_waits_for_owned_auth_after_request_cancellation(async_cli
         await asyncio.sleep(0)  # run the quiesce cancellation, not a time-based lock proof
         assert not restore.done()
         assert runtime._auth_tasks
+        status = await async_client.get("/api/v1/integrations/mcp/status")
+        assert status.json()["state"] == "stopping"
+        assert status.json()["reason"] == "restore_in_progress"
     finally:
         release.set()
     assert await restore
+    status = await async_client.get("/api/v1/integrations/mcp/status")
+    assert status.json()["state"] == "unavailable"
+    assert status.json()["reason"] == "restore_hold"
     assert not runtime._auth_tasks
     with pytest.raises(asyncio.CancelledError):
         await request
     assert not await runtime.configure(McpConfig(enabled=True))
+    await runtime.reload(after_restore=True)
+    assert await runtime.configure(McpConfig(enabled=True))
+
+
+async def test_refused_restore_status_is_unavailable_until_reinitialized(async_client, runtime, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime, "_drain", AsyncMock(return_value=False))
+        assert not await runtime.quiesce_for_restore()
+    status = await async_client.get("/api/v1/integrations/mcp/status")
+    assert status.json()["desired_enabled"] is True
+    assert status.json()["state"] == "unavailable"
+    assert status.json()["reason"] == "readers_still_running"
+    assert not await runtime.reload()
+    assert not await runtime.configure(McpConfig(enabled=True))
+    response = await async_client.post("/mcp", json={}, headers={"Host": "localhost"})
+    assert response.status_code == 503
     await runtime.reload(after_restore=True)
     assert await runtime.configure(McpConfig(enabled=True))

@@ -3,7 +3,12 @@
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from backend.app.core.auth import APIKeyValidationFailure, authorize_api_key, resolve_api_key_authority
+from backend.app.core.auth import (
+    APIKeyValidationFailure,
+    authorize_api_key,
+    is_api_key_token,
+    resolve_api_key_authority,
+)
 from backend.app.core.permissions import Permission
 from backend.app.mcp_server.contracts import DiagnosticAccess
 from backend.app.services.queue_sources import current_epoch
@@ -21,7 +26,7 @@ def credential(scope) -> str:
             values.append(value.decode("latin-1"))
     if not values or any(value != values[0] for value in values):
         raise HTTPException(401)
-    if not values[0].startswith(("bd_", "bb_")):
+    if not is_api_key_token(values[0]):
         raise HTTPException(401)
     return values[0]
 
