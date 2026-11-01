@@ -34,7 +34,7 @@ describe('McpSettingsCard', () => {
     expect(await screen.findByText('Server ready')).toBeInTheDocument();
     expect(screen.getByText('No MCP request observed since this server started')).toBeInTheDocument();
     expect(screen.getByLabelText(/I installed the skill/)).not.toBeChecked();
-    expect(screen.getByText(/Direct MCP and a workspace skill were verified/)).toBeInTheDocument();
+    expect(screen.getByText(/Portable plugin install\/remove and skill discovery were verified/)).toBeInTheDocument();
   });
 
   it('creates the least-privilege key for only selected printers with logs off', async () => {
@@ -135,6 +135,7 @@ describe('McpSettingsCard', () => {
     const user = userEvent.setup();
     render(<McpSettingsCard />);
     await user.selectOptions(screen.getByLabelText('AI client'), 'claude-code');
+    expect(screen.getByText(/connected its bundled connector/)).toBeInTheDocument();
     await user.click(screen.getByText('Manual connection'));
     expect(screen.getByText(/bypasses the local connector/)).toBeInTheDocument();
   });

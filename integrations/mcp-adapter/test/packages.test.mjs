@@ -39,6 +39,12 @@ test('build products are deterministic, self-contained and share the canonical s
     if (name === 'bamdude-claude-code.zip') {
       const manifest = JSON.parse(Buffer.from(files['.claude-plugin/plugin.json']));
       assert.equal(manifest.userConfig.ca_file.default, '');
+      assert.equal(JSON.parse(Buffer.from(files['.claude-plugin/marketplace.json'])).plugins[0].source, './');
+    }
+    if (name === 'bamdude-portable-plugin.zip') {
+      const catalog = JSON.parse(Buffer.from(files['.agents/plugins/marketplace.json']));
+      assert.equal(catalog.plugins[0].source.path, './');
+      assert.equal(catalog.name, 'bamdude-ai-local');
     }
     if (files['server/index.cjs']) {
       const notices = JSON.parse(Buffer.from(files['THIRD_PARTY_NOTICES.json']));

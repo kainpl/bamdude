@@ -65,7 +65,7 @@ export async function buildPackages(output) {
   runtime['source/LICENSE'] = common['LICENSE'];
   runtime['source/integrations/agent-skills/bamdude-diagnostics/SKILL.md'] = skill;
   runtime['source/integrations/agent-skills/bamdude-diagnostics/references/diagnostics.md'] = guide;
-  for (const name of ['claude-desktop', 'claude-code', 'portable-plugin']) runtime[`source/integrations/ai-plugins/templates/${name}.json`] = await readFile(join(here, `templates/${name}.json`));
+  for (const name of ['claude-desktop', 'claude-code', 'portable-plugin', 'claude-marketplace', 'portable-marketplace']) runtime[`source/integrations/ai-plugins/templates/${name}.json`] = await readFile(join(here, `templates/${name}.json`));
   const template = async name => JSON.parse((await readFile(join(here, `templates/${name}.json`), 'utf8')).replaceAll('@VERSION@', version));
   const desktop = await template('claude-desktop');
   const schema = MANIFEST_SCHEMAS['0.3'];
@@ -75,8 +75,8 @@ export async function buildPackages(output) {
   const portable = await template('portable-plugin');
   const entries = {
     'bamdude-claude-desktop.mcpb': { ...common, ...runtime, 'manifest.json': json(desktop) },
-    'bamdude-claude-code.zip': { ...common, ...runtime, '.claude-plugin/plugin.json': json(code) },
-    'bamdude-portable-plugin.zip': { ...common, 'plugin.json': json(portable) },
+    'bamdude-claude-code.zip': { ...common, ...runtime, '.claude-plugin/plugin.json': json(code), '.claude-plugin/marketplace.json': json(await template('claude-marketplace')) },
+    'bamdude-portable-plugin.zip': { ...common, 'plugin.json': json(portable), '.agents/plugins/marketplace.json': json(await template('portable-marketplace')) },
   };
   const digests = {};
   await mkdir(output, { recursive: true });
