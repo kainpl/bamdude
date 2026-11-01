@@ -10382,6 +10382,13 @@ async def on_print_complete(printer_id: int, data: dict) -> None:
 
             scope.close(release_completion)
 
+    # This print started after the printer's earlier finished rows ended, so a row a held swap kept (and its
+    # router row) can never settle now. Retired after the completion, in its own sessions, awaited rather than
+    # spawned so no task outlives the callback (queue-leftovers Q3). Never raises.
+    from backend.app.services.queue_leftovers import retire_for_printer
+
+    await retire_for_printer(printer_id)
+
 
 def _ams_has_filament(ams_data: dict) -> bool:
     """True if this AMS unit has at least one tray slot holding filament.

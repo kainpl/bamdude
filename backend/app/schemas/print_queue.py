@@ -322,6 +322,49 @@ class QueueIssuesResponse(BaseModel):
     next_cursor: int | None = None
 
 
+class QueueLeftoverOut(BaseModel):
+    """A queue row nothing will ever clean up (``services.queue_leftovers``)."""
+
+    kind: Literal["finished_row", "orphan_assignment"]
+    item_id: int | None = None
+    auto_item_id: int | None = None
+    printer_id: int | None = None
+    printer_name: str | None = None
+    archive_id: int | None = None
+    name: str | None = None
+    completed_at: UTCDatetime = None
+    #: The archive's swap hold, when that is what kept the row.
+    hold_reason: str | None = None
+    retirable: bool
+    #: Why a superseded row is still kept; ``None`` when it may be retired.
+    keep_reason: str | None = None
+
+
+class QueueLeftoversResponse(BaseModel):
+    items: list[QueueLeftoverOut]
+
+
+class QueueLeftoversRetire(BaseModel):
+    #: Printer queue rows -- read by the API-key printer-scope gate like every job list on this router.
+    item_ids: list[int] = Field(default_factory=list, max_length=500)
+    #: AutoQueue assignments with no printer row behind them. Not printer jobs: they have no printer, so a key
+    #: with a printer list never retires them (``out_of_scope``).
+    orphan_ids: list[int] = Field(default_factory=list, max_length=500)
+
+
+class QueueLeftoverSkipped(BaseModel):
+    kind: Literal["finished_row", "orphan_assignment"]
+    item_id: int | None = None
+    auto_item_id: int | None = None
+    reason: str
+
+
+class QueueLeftoversRetireResult(BaseModel):
+    retired_item_ids: list[int]
+    retired_orphan_ids: list[int]
+    skipped: list[QueueLeftoverSkipped]
+
+
 class PrintQueueReorderItem(BaseModel):
     id: int
     position: int
