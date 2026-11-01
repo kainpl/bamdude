@@ -46,6 +46,35 @@ Ask the assistant to read BamDude capabilities, then its guide. Check the
 observed MCP request for this key in Settings; REST usage is not that proof.
 The marker resets when the server restarts and does not prove skill installation.
 
+## Update a local CLI installation
+
+After updating BamDude, download its matching client ZIP. Close the client and
+its MCP connection. Keep the previous extracted folder as a backup, then extract
+the new ZIP into a fresh folder at the SAME permanent path registered earlier.
+Do not merge files into the old folder or add an extra nested directory.
+
+For Codex CLI, refresh the installed local plugin with:
+
+```powershell
+codex plugin add bamdude-ai@bamdude-ai-local
+codex plugin list --json
+```
+
+For Claude Code:
+
+```powershell
+claude plugin update bamdude-ai@bamdude-ai-local
+claude plugin list --json
+```
+
+Check that the installed version matches the new package, then start a NEW
+client session. Existing sessions can keep the old skill. Confirm the key/CA
+configuration and ask for capabilities and the guide again. Package replacement
+does not rotate or revoke the key. These commands were tested on Windows with
+Codex CLI 0.166.0 and Claude Code 2.1.314; they are not a Desktop update proof.
+`codex plugin marketplace upgrade` refreshes Git catalogs, not this local ZIP.
+If you move the permanent folder, register its new path using the install steps.
+
 To disconnect: revoke the key in BamDude, remove the plugin/connector in the
 client, then optionally disable MCP. Uninstalling a plugin never revokes a key.
 
