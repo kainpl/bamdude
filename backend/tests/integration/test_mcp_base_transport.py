@@ -7,6 +7,7 @@ import json
 import socket
 import zipfile
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -18,7 +19,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from backend.app.mcp_server.config import McpConfig
 from backend.app.mcp_server.packages import SKILL_ROOT
-from backend.app.mcp_server.runtime import mcp_runtime
+from backend.app.mcp_server.runtime import McpMiddleware, McpRuntime, mcp_runtime
 
 
 @asynccontextmanager
@@ -89,6 +90,93 @@ async def test_sdk_base_over_real_socket(async_client, runtime, mode):
             prompt = await client.get_prompt("bamdude_diagnose")
             assert "base module alone" in prompt.messages[0].content.text
         assert runtime.observed_connection(created["id"])
+
+
+@pytest.mark.parametrize("limit", ["key", "process", "minute"])
+async def test_advertised_limits_match_runtime_admission(async_client, runtime, monkeypatch, limit):
+    from backend.app.mcp_server import runtime as module
+    from backend.app.services.queue_sources import current_epoch
+
+    created = await key(async_client)
+    async with (
+        live_app() as url,
+        httpx2.AsyncClient(headers={"X-API-Key": created["key"]}) as http,
+        Client(streamable_http_client(url + "/mcp", http_client=http), cache=None) as client,
+    ):
+        capabilities = await client.call_tool("bamdude_get_capabilities", {})
+        limits = capabilities.structured_content["data"]["limits"]
+    assert limits == {
+        "page_default": 50,
+        "page_max": 100,
+        "response_bytes": 131072,
+        "concurrent_calls_per_key": 2,
+        "concurrent_calls_per_process": 8,
+        "calls_per_minute_per_key": 60,
+    }
+
+    # Exercise the production admission path without hashing a key sixty times.
+    async def authenticated(scope):
+        key_id = int(dict(scope["headers"]).get(b"x-test-key", b"1"))
+        return SimpleNamespace(key_id=key_id, epoch=current_epoch())
+
+    monkeypatch.setattr(module, "authenticate", authenticated)
+    admitted = asyncio.Queue()
+    release = asyncio.Event()
+
+    async def reader(scope, receive, send):
+        await admitted.put(None)
+        await release.wait()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    local = McpRuntime()
+    local.config = McpConfig(enabled=True)
+    local.state = "ready"
+    local._sdk_app = reader
+    transport = httpx.ASGITransport(app=McpMiddleware(None, runtime=local))
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as http:
+
+        async def call(key_id=1):
+            return await http.post(
+                "/mcp",
+                headers={"X-Test-Key": str(key_id)},
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "bamdude_get_capabilities"},
+                },
+            )
+
+        if limit == "minute":
+            release.set()
+            for _ in range(limits["calls_per_minute_per_key"]):
+                assert (await call()).status_code == 200
+            refusal = await call()
+            assert refusal.status_code == 429 and refusal.json()["code"] == "rate_limited"
+            # Expiring the rolling window makes room; this is not a lifetime quota.
+            expired = module.time.monotonic() - 61
+            local._rate[1] = type(local._rate[1])([expired] * limits["calls_per_minute_per_key"])
+            assert (await call()).status_code == 200
+        else:
+            count = limits[f"concurrent_calls_per_{limit}"]
+            key_ids = (
+                [1] * count if limit == "key" else [1 + i // limits["concurrent_calls_per_key"] for i in range(count)]
+            )
+            tasks = [asyncio.create_task(call(key_id)) for key_id in key_ids]
+            try:
+                async with asyncio.timeout(5):
+                    for _ in tasks:
+                        await admitted.get()
+                assert local._domain_calls == count
+                refusal = await call(1 if limit == "key" else 999)
+                assert refusal.status_code == 503 and refusal.json()["code"] == "busy"
+            finally:
+                release.set()
+                responses = await asyncio.gather(*tasks)
+            assert all(response.status_code == 200 for response in responses)
+            assert local._domain_calls == 0 and local._key_calls == {}
+            assert (await call()).status_code == 200
 
 
 async def test_mcp_is_disabled_without_affecting_rest(async_client):

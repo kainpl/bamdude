@@ -7,6 +7,11 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError
 
 from backend.app.mcp_server.contracts import DiagnosticResult, EmptyInput, GuideInput
+from backend.app.mcp_server.limits import (
+    CALLS_PER_MINUTE_PER_KEY,
+    CONCURRENT_CALLS_PER_KEY,
+    CONCURRENT_CALLS_PER_PROCESS,
+)
 from backend.app.services.queue_sources import current_epoch
 
 GUIDE_PATH = (
@@ -121,8 +126,9 @@ def create_server():
                     "page_default": 50,
                     "page_max": 100,
                     "response_bytes": 131072,
-                    "calls_per_key": 2,
-                    "calls_per_process": 8,
+                    "concurrent_calls_per_key": CONCURRENT_CALLS_PER_KEY,
+                    "concurrent_calls_per_process": CONCURRENT_CALLS_PER_PROCESS,
+                    "calls_per_minute_per_key": CALLS_PER_MINUTE_PER_KEY,
                 },
                 "limitations": ["read_only", "diagnostics_module_not_installed"],
             }

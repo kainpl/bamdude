@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- MCP capabilities name concurrent-call limits explicitly and advertise the separate per-key minute rate. Runtime admission and capabilities use the same limits; the usage guide explains that completed calls release concurrency slots and HTTP 429 requires waiting before a bounded retry.
+
 - AI client ZIPs include a local catalog for installation with the Codex and Claude Code plugin commands, without writing marketplace JSON. Windows CLI install/remove and skill loading were verified. Claude Desktop on Windows also installed and removed the MCPB, ran its connector with built-in Node and an empty CA field, installed the separate skill and called capabilities and the guide through one model request against an isolated test server. The setup panel and documentation give the tested steps and keep Desktop updates, LAN TLS and macOS outside that evidence.
 
 - AI setup accepts an unfilled optional CA field while keeping TLS verification enabled. Native installation and updates continue with a warning if optional client packages cannot be built. Dismissing a newly created MCP key also releases its cached copy, and the Claude Code manual example explains that it bypasses the local connector.

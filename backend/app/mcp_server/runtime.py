@@ -13,6 +13,11 @@ from starlette.responses import JSONResponse, Response
 
 from backend.app.mcp_server.auth import authenticate
 from backend.app.mcp_server.config import McpConfig, is_loopback_host, read_config
+from backend.app.mcp_server.limits import (
+    CALLS_PER_MINUTE_PER_KEY,
+    CONCURRENT_CALLS_PER_KEY,
+    CONCURRENT_CALLS_PER_PROCESS,
+)
 from backend.app.services.queue_sources import current_epoch
 
 logger = logging.getLogger(__name__)
@@ -258,9 +263,12 @@ class McpRuntime:
                 self._rate.move_to_end(access.key_id)
                 while calls and calls[0] <= now - 60:
                     calls.popleft()
-                if len(calls) >= 60:
+                if len(calls) >= CALLS_PER_MINUTE_PER_KEY:
                     raise HTTPException(429, "rate_limited")
-                if self._domain_calls >= 8 or self._key_calls.get(access.key_id, 0) >= 2:
+                if (
+                    self._domain_calls >= CONCURRENT_CALLS_PER_PROCESS
+                    or self._key_calls.get(access.key_id, 0) >= CONCURRENT_CALLS_PER_KEY
+                ):
                     raise HTTPException(503, "busy")
                 calls.append(now)
                 self._domain_calls += 1
