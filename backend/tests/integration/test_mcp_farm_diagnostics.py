@@ -145,6 +145,23 @@ async def test_overview_inspect_and_scope_are_real_read_only_tools(
         )
 
 
+async def test_printer_scope_precedes_pagination(async_client, runtime, printer_factory):  # noqa: F811
+    # Hidden lower IDs must not consume the visible page or create a continuation.
+    hidden = [await printer_factory(name=f"hidden {i}") for i in range(2)]
+    visible = await printer_factory(name="visible")
+    assert all(printer.id < visible.id for printer in hidden)
+    scoped, empty = await key(async_client, scope=[visible.id]), await key(async_client, scope=[])
+    async with live_app() as url, httpx.AsyncClient() as http:
+        page = data(await rpc(http, url, scoped["key"], "bamdude_get_farm_overview", {"limit": 1}))
+        assert [item["printer"]["printer_id"] for item in page["data"]["printers"]] == [visible.id]
+        assert page["next_cursor"] is None
+        assert not page["coverage"]["truncated"]
+        nothing = data(await rpc(http, url, empty["key"], "bamdude_get_farm_overview", {"limit": 1}))
+        assert nothing["data"]["printers"] == []
+        assert nothing["next_cursor"] is None
+        assert not nothing["coverage"]["truncated"]
+
+
 async def test_empty_scope_is_not_unrestricted_and_cursor_never_widens_access(async_client, runtime, printer_factory):  # noqa: F811
     printers = [await printer_factory(name=f"printer {i}") for i in range(3)]
     wide, empty, other = await key(async_client), await key(async_client, scope=[]), await key(async_client)
@@ -329,7 +346,13 @@ async def test_reads_never_probe_devices_and_health_is_allowlisted(
     async_client, runtime, printer_factory, smart_plug_factory, db_session, telemetry, monkeypatch
 ):  # noqa: F811
     from backend.app.api.routes import system
-    from backend.app.services import camera_metrics, camera_runtime, part_render_runtime
+    from backend.app.services import (
+        camera_metrics,
+        camera_runtime,
+        diagnostic_snapshot,
+        part_render_runtime,
+        printer_diagnostic,
+    )
     from backend.app.services.print_state_observer import print_state_observer
     from backend.app.services.smart_plug_manager import smart_plug_manager
 
@@ -345,6 +368,10 @@ async def test_reads_never_probe_devices_and_health_is_allowlisted(
     )
     blocked = Mock(side_effect=AssertionError("active probe"))
     monkeypatch.setattr(system, "scan_logs", blocked)
+    monkeypatch.setattr(system, "get_system_health", blocked)
+    monkeypatch.setattr(diagnostic_snapshot, "collect_diagnostic_snapshot", blocked)
+    monkeypatch.setattr(printer_diagnostic, "run_connection_diagnostic", blocked)
+    monkeypatch.setattr(printer_manager, "ensure_fresh_connection", blocked)
     monkeypatch.setattr(camera_runtime, "capture", blocked)
     monkeypatch.setattr(camera_runtime, "get_camera_runtime", blocked)
     monkeypatch.setattr(smart_plug_manager, "get_service_for_plug", blocked)
@@ -362,6 +389,7 @@ async def test_reads_never_probe_devices_and_health_is_allowlisted(
     created = await key(async_client)
     async with live_app() as url, httpx.AsyncClient() as http:
         before = (await db_session.scalars(select(PrintQueueItem.id))).all()
+        overview = data(await rpc(http, url, created["key"], "bamdude_get_farm_overview"))
         inspected = data(await rpc(http, url, created["key"], "bamdude_inspect_printer", {"printer_id": printer.id}))
         health = data(await rpc(http, url, created["key"], "bamdude_get_system_health"))
         assert inspected["data"]["plugs"]["items"][0]["cached_state"] == "ON"
@@ -370,7 +398,7 @@ async def test_reads_never_probe_devices_and_health_is_allowlisted(
         assert health["data"]["components"]["part_render"]["reason"] == "unknown_reason"
         assert health["data"]["print_state_observer"]["availability"] == "source_unavailable"
         assert not health["coverage"]["complete"]
-        assert "SECRET" not in json.dumps([inspected, health])
+        assert "SECRET" not in json.dumps([overview, inspected, health])
         assert before == (await db_session.scalars(select(PrintQueueItem.id))).all()
     blocked.assert_not_called()
 
