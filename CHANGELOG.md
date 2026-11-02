@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- The standard Cream swatch in AMS slot configuration keeps its exact catalog name instead of falling back to White. Existing installations receive the missing generic color entry without overwriting custom names or shades; the selected RGB and Bambu PETG HF's separate Cream shade are unchanged.
+
 - Virtual printers without a target now let the operator choose the main-nozzle diameter and flow. Bound VPs use the real printer's nozzle data; before its first report they explicitly advertise unknown. Source review of BambuStudio 2.8.2.61 and OrcaSlicer 2.4.2 indicates that Bambu Studio blocks Send for unknown nozzle data, Orca accepts it, and both check diameter rather than flow in the legacy VP format; this client behavior has not been verified with live Send. Restart the slicer after binding changes. Unbind remains available in every mode, and switching to automatic selection now keeps the printer binding. Deleting a printer clears its VP links and id-based caches even if VP synchronization fails. Queue selection uses the routing feed snapshot, including H2C rack hotends, to skip positively mismatched nozzle diameters while leaving unknown hardware to the final dispatch checks.
 
 - The bundled Node.js runtime for part thumbnails is updated to the verified 24.22.2 patch. The existing Node 22 line for 32-bit ARM and the golden render images are unchanged.

@@ -97,6 +97,9 @@ DEFAULT_SPOOL_CATALOG: list[tuple[str, int]] = [
 
 # (manufacturer, color_name, hex_color, material)
 DEFAULT_COLOR_CATALOG: list[tuple[str, str, str, str]] = [
+    # The standard AMS picker's Cream, independent of any vendor's own shade.
+    # An empty material leaves it available to the ordinary exact-hex lookup.
+    ("Generic", "Cream", "#FFFDD0", ""),
     # Bambu Lab PLA Basic (from official hex code PDF)
     ("Bambu Lab", "Jade White", "#FFFFFF", "PLA Basic"),
     ("Bambu Lab", "Black", "#000000", "PLA Basic"),
