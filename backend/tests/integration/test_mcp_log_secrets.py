@@ -81,6 +81,24 @@ async def test_every_sensitive_settings_key_is_collected_with_literal_case_insen
     assert all(not is_sensitive_setting(key) and value not in values for key, value in controls.items())
 
 
+@pytest.mark.parametrize("value", ["1", "12", "true", "false", "1200", "1.25", "-2e10", "null"])
+async def test_trivial_private_setting_does_not_destroy_log_headers(db_session, tmp_path, monkeypatch, value):
+    db_session.add(Settings(key="future_host_config", value=value))
+    await db_session.commit()
+    values = await log_reader.collect_diagnostic_sensitive_strings(db_session)
+    assert value not in values
+    monkeypatch.setattr(logs.settings, "log_dir", tmp_path)
+    (tmp_path / "bamdude.log").write_text(line("job 1200 done"), encoding="utf-8")
+    entries = logs.read_tail(inputs(), values, None)[0]
+    assert len(entries) == 1 and "job 1200 done" in json.dumps(entries)
+
+
+async def test_short_real_credentials_are_still_redacted(db_session):
+    db_session.add(Settings(key="future_password", value="1"))
+    await db_session.commit()
+    assert "1" in await log_reader.collect_diagnostic_sensitive_strings(db_session)
+
+
 async def test_cloud_link_decryption_failure_does_not_read_or_publish_logs(
     async_client, runtime, db_session, monkeypatch
 ):  # noqa: F811

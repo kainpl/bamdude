@@ -32,8 +32,8 @@ capabilities explicitly advertise them.
 
 The diagnostics module supplies a scoped farm overview, one-printer inspection,
 unrestricted local-service health, archive-owned print timelines and opt-in
-sanitized application logs. Only use tools present in `tool_names`; energy,
-period summaries and recovery explanations are not available yet. Overview is paginated and is not
+sanitized application logs, and persisted energy evidence. Only use tools present in
+`tool_names`; period summaries and recovery explanations are not available yet. Overview is paginated and is not
 an atomic farm snapshot. A printing queue claim does not prove it is stale.
 Camera metrics do not prove when a photo was captured or sent to Telegram.
 Plug schedules describe current rules, not a history of yesterday's decisions.
@@ -50,6 +50,21 @@ may remain. Log timestamps have no recorded offset and are converted from server
 local time. A truncated/partial result is not the whole log. After `log_changed`,
 discard the old cursor and restart the narrow query. A busy reader stays occupied
 until its actual file I/O finishes, even if an earlier request timed out.
+
+Energy inspection needs printer, all-archives, smart-plug and statistics read
+permissions. Use one printer and an explicit offset-aware interval of at most
+31 days. Archives are selected by creation time, not completion time. Print
+summaries cover only the returned page; follow cursors without adding repeated
+quality summaries. Measured, approximate, estimated, legacy and unavailable
+figures stay separate. Stored zero is known zero; missing data is not zero.
+Counter deltas describe sampled windows of the currently bound plug after its
+source cutoff, not exact interval consumption or historical printer totals.
+Pre-cutoff/unknown-source history is omitted, including after a printer rebind.
+A decrease is observed evidence, not negative consumption or proof of a reset.
+Growing counter samples beside missing print accounting are a coincidence,
+not proof that those prints consumed that delta; idle usage also contributes.
+Persisted meter incidents are suspicions already recorded, never a new test.
+The tool never polls a plug, reconstructs energy or writes accounting.
 
 When a diagnostic module is available, choose the smallest relevant query.
 Report: observed facts and evidence times; hypotheses separately; missing or

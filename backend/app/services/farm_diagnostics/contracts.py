@@ -108,7 +108,13 @@ class NextStep(EmptyInput):
 
 
 class Finding(EmptyInput):
-    code: Literal["printer_busy", "queue_claim_requires_inspection", "farm_admission_held", "worker_unavailable"]
+    code: Literal[
+        "printer_busy",
+        "queue_claim_requires_inspection",
+        "farm_admission_held",
+        "worker_unavailable",
+        "energy_counter_grows_print_accounting_missing",
+    ]
     severity: Literal["info", "warning", "error"]
     certainty: Literal["observed", "inferred", "insufficient_evidence"]
     evidence_ids: list[str]

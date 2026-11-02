@@ -150,7 +150,7 @@ def create_server():
                     "concurrent_calls_per_process": CONCURRENT_CALLS_PER_PROCESS,
                     "calls_per_minute_per_key": CALLS_PER_MINUTE_PER_KEY,
                 },
-                "limitations": ["read_only", "diagnostics_partial_overview_printer_health_timeline_logs"],
+                "limitations": ["read_only", "diagnostics_partial_overview_printer_health_timeline_logs_energy"],
             }
         else:
             try:

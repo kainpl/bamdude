@@ -83,6 +83,7 @@ async def test_sdk_base_over_real_socket(async_client, runtime, mode):
                 "bamdude_inspect_printer",
                 "bamdude_get_system_health",
                 "bamdude_get_print_timeline",
+                "bamdude_inspect_energy",
             }
             result = await client.call_tool("bamdude_get_capabilities", {})
             data = result.structured_content["data"]

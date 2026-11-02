@@ -1,5 +1,7 @@
 """One settings privacy policy for support exports and diagnostic log redaction."""
 
+import re
+
 from sqlalchemy import func, or_
 
 # Preserve the support bundle's policy, including PII and infrastructure values.
@@ -34,6 +36,36 @@ SENSITIVE_SETTING_FRAGMENTS = frozenset(
 
 def is_sensitive_setting(key: str) -> bool:
     return any(fragment in key.lower() for fragment in SENSITIVE_SETTING_FRAGMENTS)
+
+
+# Credential values are protected even when short. The broader support policy
+# also covers infrastructure/PII, where a trivial value is not a useful match
+# across an entire log ("1" would redact the timestamp itself).
+CREDENTIAL_SETTING_FRAGMENTS = frozenset(
+    {
+        "access_code",
+        "password",
+        "token",
+        "secret",
+        "api_key",
+        "private_key",
+        "credential",
+        "vapid",
+        "auth_key",
+        "webhook",
+    }
+)
+
+
+def redact_setting_in_log(key: str, value: str) -> bool:
+    if any(fragment in key.lower() for fragment in CREDENTIAL_SETTING_FRAGMENTS):
+        return bool(value)
+    plain = value.strip().lower()
+    return (
+        len(plain) >= 4
+        and plain not in {"true", "false", "null", "none", "yes", "no", "on", "off"}
+        and re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?", plain) is None
+    )
 
 
 def sensitive_settings_predicate(column):

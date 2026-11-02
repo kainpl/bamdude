@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.core.logging_filters import URL_CREDENTIALS_PATTERN
-from backend.app.core.sensitive_settings import sensitive_settings_predicate
+from backend.app.core.sensitive_settings import redact_setting_in_log, sensitive_settings_predicate
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
@@ -322,8 +322,11 @@ async def collect_diagnostic_sensitive_strings(db: AsyncSession) -> dict[str, st
             # Do not discard short exact credentials like the general PII pass.
             values[value] = "[REDACTED]"
 
-    for value in (await db.scalars(select(Settings.value).where(sensitive_settings_predicate(Settings.key)))).all():
-        add(value)
+    for key, value in (
+        await db.execute(select(Settings.key, Settings.value).where(sensitive_settings_predicate(Settings.key)))
+    ).all():
+        if isinstance(value, str) and redact_setting_in_log(key, value):
+            add(value)
     for row in (await db.execute(select(*(getattr(User, name) for name in USER_CREDENTIAL_FIELDS)))).all():
         for value in row:
             add(value)

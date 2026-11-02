@@ -3,9 +3,20 @@
 from backend.app.mcp_server.contracts import EmptyInput
 from backend.app.mcp_server.tools import Tool
 from backend.app.services.farm_diagnostics.access import available, require
-from backend.app.services.farm_diagnostics.contracts import InspectInput, LogsInput, PageInput, TimelineInput
+from backend.app.services.farm_diagnostics.contracts import (
+    EnergyInput,
+    InspectInput,
+    LogsInput,
+    PageInput,
+    TimelineInput,
+)
 
 TOOLS = (
+    Tool(
+        "bamdude_inspect_energy",
+        "Read scoped persisted print energy and current-plug counter evidence; never poll hardware.",
+        EnergyInput,
+    ),
     Tool("bamdude_get_farm_overview", "Read a scoped page of cached printer and queue observations.", PageInput),
     Tool(
         "bamdude_inspect_printer",
@@ -36,6 +47,7 @@ def visible(access):
 
 async def read(name, access, args, request_id, *, owner=None):
     from backend.app.core import database
+    from backend.app.services.farm_diagnostics.energy import inspect_energy
     from backend.app.services.farm_diagnostics.health import system_health
     from backend.app.services.farm_diagnostics.logs import read_logs
     from backend.app.services.farm_diagnostics.overview import overview
@@ -48,6 +60,8 @@ async def read(name, access, args, request_id, *, owner=None):
     if name == "bamdude_read_logs":
         return await read_logs(access, args, request_id, owner)
     async with database.async_session() as db:
+        if name == "bamdude_inspect_energy":
+            return await inspect_energy(db, access, args, request_id)
         if name == "bamdude_get_farm_overview":
             return await overview(db, access, args, request_id)
         if name == "bamdude_get_print_timeline":
