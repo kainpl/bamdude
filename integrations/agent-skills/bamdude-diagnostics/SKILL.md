@@ -24,6 +24,8 @@ Choose the relevant route in [the diagnostic reference](references/diagnostics.m
 | --- | --- |
 | Queue waiting or claimed | Inspect the printer; list/explain an addressed issue if permitted. |
 | Power loss or interrupted print | Inspect current work before examining the old archive/claim. |
+| H2S completed archive, queue still printing | Explain the addressed issue and each policy blocker; never bypass them. |
+| Runout on the reported final layer | Read the archive's feed/accounting timeline; runout does not prove a physically empty spool. |
 | Missing print energy | Inspect persisted energy for one printer and a bounded period. |
 | Old photo or Telegram delivery | Inspect camera evidence; use opt-in logs only for the missing event. |
 | Worker or service failure | Read local health if permitted; distinguish one worker from the whole farm. |

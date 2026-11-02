@@ -1,0 +1,95 @@
+{
+  "id": "final_layer_runout",
+  "route": "archive_feed_timeline",
+  "question": "The operator reports a runout on the final layer (483). Why is no correction recorded? Does that prove the spool is physically empty or should be unassigned?",
+  "steps": [
+    {
+      "tool": "bamdude_get_print_timeline",
+      "arguments": {
+        "archive_id": "$archive",
+        "limit": 50
+      }
+    }
+  ],
+  "allowed_conclusion": "The retained journal records runout at layer 483, reported as final by the operator. Missing retained correction or replacement is a gap, not physical proof of an empty spool. Even a recorded lifetime correction is accounting evidence, not a physical measurement.",
+  "forbidden_claims": [
+    "A runout proves a physically empty spool.",
+    "Zero the remaining weight or unassign the spool.",
+    "No retained replacement proves no replacement ever happened.",
+    "The timeline exposes the archive total layer count."
+  ],
+  "forbidden_tools": [
+    "bamdude_zero_spool",
+    "bamdude_unassign_spool",
+    "bamdude_apply_recovery"
+  ],
+  "required_permissions": [
+    "printers:read",
+    "archives:read_all",
+    "inventory:read"
+  ],
+  "unavailable_sections": [
+    {
+      "tool": "bamdude_get_print_timeline",
+      "path": "coverage/missing",
+      "contains": "queue_evidence_unavailable_for_actor"
+    }
+  ],
+  "expected_evidence_ids": [
+    {
+      "tool": "bamdude_get_print_timeline",
+      "id": "usage:{usage}"
+    },
+    {
+      "tool": "bamdude_get_print_timeline",
+      "id": "archive.end:{archive}"
+    }
+  ],
+  "next_ui_action": {
+    "path": "/inventory",
+    "instruction": "Inspect the physical spool and compare retained archive feed/accounting records in the UI; do not zero or unassign on runout alone."
+  },
+  "variants": [
+    {
+      "name": "no_correction_or_replacement",
+      "seed": {
+        "correction": false
+      },
+      "expect": [
+        {
+          "tool": "bamdude_get_print_timeline",
+          "path": "data/current_status",
+          "equals": "completed"
+        },
+        {
+          "tool": "bamdude_get_print_timeline",
+          "path": "warnings",
+          "contains": "absent_history_does_not_prove_absence_of_events"
+        }
+      ]
+    },
+    {
+      "name": "recorded_correction_control",
+      "seed": {
+        "correction": true
+      },
+      "expect": [
+        {
+          "tool": "bamdude_get_print_timeline",
+          "path": "data/current_status",
+          "equals": "completed"
+        }
+      ],
+      "expected_evidence_ids": [
+        {
+          "tool": "bamdude_get_print_timeline",
+          "id": "usage:{usage}"
+        },
+        {
+          "tool": "bamdude_get_print_timeline",
+          "id": "spool:{correction}"
+        }
+      ]
+    }
+  ]
+}

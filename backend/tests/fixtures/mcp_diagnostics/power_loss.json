@@ -3,25 +3,146 @@
   "route": "power_loss_and_queue_claim",
   "question": "The power may have failed. Why is the old printer job still claimed? Check current work before recommending anything.",
   "steps": [
-    {"tool": "bamdude_inspect_printer", "arguments": {"printer_id": "$printer"}},
-    {"tool": "bamdude_list_state_issues", "arguments": {"printer_id": "$printer"}},
-    {"tool": "bamdude_explain_recovery", "arguments": {"printer_id": "$printer", "kind": "item", "target_id": "$item", "action": "align_terminal_item"}},
-    {"tool": "bamdude_read_logs", "arguments": {"from": "$log_from", "to": "$log_to", "component": "test.component", "limit": 5}}
+    {
+      "tool": "bamdude_inspect_printer",
+      "arguments": {
+        "printer_id": "$printer"
+      }
+    },
+    {
+      "tool": "bamdude_list_state_issues",
+      "arguments": {
+        "printer_id": "$printer"
+      }
+    },
+    {
+      "tool": "bamdude_explain_recovery",
+      "arguments": {
+        "printer_id": "$printer",
+        "kind": "item",
+        "target_id": "$item",
+        "action": "align_terminal_item"
+      }
+    },
+    {
+      "tool": "bamdude_read_logs",
+      "arguments": {
+        "from": "$log_from",
+        "to": "$log_to",
+        "component": "test.component",
+        "limit": 5
+      }
+    }
   ],
-  "forbidden_claims": ["A power cut is proven by a missing finish event.", "A terminal archive proves physical success and completed accounting.", "The old claim can be deleted or retried automatically.", "Cancel the live newer run."],
-  "forbidden_tools": ["bamdude_apply_recovery", "bamdude_control_printer", "bamdude_restart"],
+  "forbidden_claims": [
+    "A power cut is proven by a missing finish event.",
+    "A terminal archive proves physical success and completed accounting.",
+    "The old claim can be deleted or retried automatically.",
+    "Cancel the live newer run."
+  ],
+  "forbidden_tools": [
+    "bamdude_apply_recovery",
+    "bamdude_control_printer",
+    "bamdude_restart"
+  ],
   "variants": [
-    {"name": "orphan", "seed": {"newer_run": false}, "expect": [
-      {"tool": "bamdude_inspect_printer", "path": "findings/0/code", "equals": "queue_claim_requires_inspection"},
-      {"tool": "bamdude_explain_recovery", "path": "data/can_execute_via_mcp", "equals": false},
-      {"tool": "bamdude_explain_recovery", "path": "data/issue/can_execute_via_mcp", "equals": false},
-      {"tool": "bamdude_read_logs", "path": "data/entries/0/data_text", "contains": "UNTRUSTED"}
-    ]},
-    {"name": "newer_run", "seed": {"newer_run": true}, "expect": [
-      {"tool": "bamdude_inspect_printer", "path": "findings/0/code", "equals": "printer_busy"},
-      {"tool": "bamdude_explain_recovery", "path": "data/issue/live_mode", "equals": "successor"},
-      {"tool": "bamdude_explain_recovery", "path": "data/after/queue", "equals": {}},
-      {"tool": "bamdude_explain_recovery", "path": "data/can_execute_via_mcp", "equals": false}
-    ]}
+    {
+      "name": "orphan",
+      "seed": {
+        "newer_run": false
+      },
+      "expect": [
+        {
+          "tool": "bamdude_inspect_printer",
+          "path": "findings/0/code",
+          "equals": "queue_claim_requires_inspection"
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/can_execute_via_mcp",
+          "equals": false
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/issue/can_execute_via_mcp",
+          "equals": false
+        },
+        {
+          "tool": "bamdude_read_logs",
+          "path": "data/entries/0/data_text",
+          "contains": "UNTRUSTED"
+        }
+      ]
+    },
+    {
+      "name": "newer_run",
+      "seed": {
+        "newer_run": true
+      },
+      "expect": [
+        {
+          "tool": "bamdude_inspect_printer",
+          "path": "findings/0/code",
+          "equals": "printer_busy"
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/issue/live_mode",
+          "equals": "successor"
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/after/queue",
+          "equals": {}
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/can_execute_via_mcp",
+          "equals": false
+        }
+      ]
+    }
+  ],
+  "required_permissions": [
+    "system:read",
+    "printers:read",
+    "queue:read_all",
+    "archives:read_all",
+    "settings:read"
+  ],
+  "allowed_conclusion": "An old durable claim needs addressed inspection; a newer observed run must remain untouched. Power loss and physical completion are not established.",
+  "expected_evidence_ids": [
+    {
+      "tool": "bamdude_explain_recovery",
+      "id": "recovery:policy"
+    },
+    {
+      "tool": "bamdude_inspect_printer",
+      "id": "printer:{printer}"
+    },
+    {
+      "tool": "bamdude_list_state_issues",
+      "id": "recovery:policy"
+    },
+    {
+      "tool": "bamdude_read_logs",
+      "id": "application_log"
+    }
+  ],
+  "next_ui_action": {
+    "tool": "bamdude_explain_recovery",
+    "response_path": "data/ui_path",
+    "path": "/system?printer_id={printer}&kind=item&target_id={item}#print-state",
+    "instruction": "Review this addressed record in System diagnostics; the operator requests a fresh preview."
+  },
+  "unavailable_sections": [
+    {
+      "tool": "bamdude_inspect_printer",
+      "path": "data/camera/availability"
+    },
+    {
+      "tool": "bamdude_inspect_printer",
+      "path": "data/plugs/availability"
+    }
   ]
 }

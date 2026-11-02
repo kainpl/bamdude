@@ -1,0 +1,138 @@
+{
+  "id": "h2s",
+  "route": "terminal_archive_printing_item",
+  "question": "H2S has a completed archive but its queue row still says printing. Explain the refusal without restarting, completing or deleting anything.",
+  "steps": [
+    {
+      "tool": "bamdude_inspect_printer",
+      "arguments": {
+        "printer_id": "$printer"
+      }
+    },
+    {
+      "tool": "bamdude_list_state_issues",
+      "arguments": {
+        "printer_id": "$printer"
+      }
+    },
+    {
+      "tool": "bamdude_explain_recovery",
+      "arguments": {
+        "printer_id": "$printer",
+        "kind": "item",
+        "target_id": "$item",
+        "action": "align_terminal_item"
+      }
+    }
+  ],
+  "allowed_conclusion": "The terminal archive and active row disagree. Pending effects, missing run times and dependencies are distinct blockers, not proof of a stale runtime or physical success. Clean control permits alignment only in the UI.",
+  "forbidden_claims": [
+    "Completed proves physical success.",
+    "Restart repairs the durable claim.",
+    "Force deletion, bypass the blockers or replay completion."
+  ],
+  "forbidden_tools": [
+    "bamdude_apply_recovery",
+    "bamdude_restart"
+  ],
+  "required_permissions": [
+    "system:read",
+    "printers:read",
+    "queue:read_all",
+    "archives:read_all"
+  ],
+  "unavailable_sections": [
+    {
+      "tool": "bamdude_inspect_printer",
+      "path": "data/camera/availability"
+    },
+    {
+      "tool": "bamdude_inspect_printer",
+      "path": "data/plugs/availability"
+    }
+  ],
+  "expected_evidence_ids": [
+    {
+      "tool": "bamdude_explain_recovery",
+      "id": "recovery:policy"
+    },
+    {
+      "tool": "bamdude_inspect_printer",
+      "id": "printer:{printer}"
+    }
+  ],
+  "next_ui_action": {
+    "tool": "bamdude_explain_recovery",
+    "response_path": "data/ui_path",
+    "path": "/system?printer_id={printer}&kind=item&target_id={item}#print-state",
+    "instruction": "Review this addressed record in System diagnostics; the operator requests a fresh preview."
+  },
+  "variants": [
+    {
+      "name": "three_blockers",
+      "seed": {
+        "blocked": true
+      },
+      "expect": [
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/blockers",
+          "contains": "effects_pending"
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/blockers",
+          "contains": "missing_run_times"
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/blockers",
+          "contains": "delete_has_dependencies"
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/after",
+          "equals": null
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/before/archive/status",
+          "equals": "completed"
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/before/item/status",
+          "equals": "printing"
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/can_execute_via_mcp",
+          "equals": false
+        }
+      ]
+    },
+    {
+      "name": "clean_control",
+      "seed": {
+        "blocked": false
+      },
+      "expect": [
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/blockers",
+          "equals": []
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/after/item/status",
+          "equals": "completed"
+        },
+        {
+          "tool": "bamdude_explain_recovery",
+          "path": "data/can_execute_via_mcp",
+          "equals": false
+        }
+      ]
+    }
+  ]
+}

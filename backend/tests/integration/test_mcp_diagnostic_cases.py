@@ -14,10 +14,17 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, update
 
+from backend.app.models.api_key import APIKey
+from backend.app.models.group import Group
 from backend.app.models.library import LibraryFile
+from backend.app.models.print_completion_receipt import PrintCompletionReceipt
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.print_usage_event import PrintUsageEvent
+from backend.app.models.spool import Spool
+from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.models.user import User
 from backend.app.services import print_state_recovery_preview as tokens, print_state_recovery_store as store
 from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.printer_manager import printer_manager
@@ -45,16 +52,32 @@ START = datetime(2026, 10, 24, 20, tzinfo=timezone.utc)
 
 
 def test_golden_fixture_catalog_is_complete():
-    assert {case["id"] for case in CASES} == {"power_loss", "energy", "camera", "schedule", "worker"}
+    assert {case["id"] for case in CASES} == {
+        "power_loss",
+        "energy",
+        "camera",
+        "schedule",
+        "worker",
+        "h2s",
+        "final_layer_runout",
+    }
     assert len(IDS) == len(set(IDS))
     for case in CASES:
         seeds = {json.dumps(v["seed"], sort_keys=True) for v in case["variants"]}
-        assert len(seeds) == len(case["variants"]) >= 2  # each case has a distinct negative control
+        assert len(seeds) >= 2  # each case has a distinct factual negative control
+        for field in ("allowed_conclusion", "required_permissions", "next_ui_action", "expected_evidence_ids"):
+            assert case[field], (case["id"], field)
+        assert isinstance(case["unavailable_sections"], list)
+        assert case["next_ui_action"]["instruction"]
+        assert case["next_ui_action"]["path"].startswith("/")
+    assert any(variant.get("hidden_tools") for _, variant in VARIANTS)
 
 
 def resolve(value, variables):
     if isinstance(value, dict):
         return {k: resolve(v, variables) for k, v in value.items()}
+    if isinstance(value, list):
+        return [resolve(v, variables) for v in value]
     return variables[value[1:]] if isinstance(value, str) and value.startswith("$") else value
 
 
@@ -81,14 +104,21 @@ async def seed_case(case, variant, db, printer_factory, archive_factory, smart_p
         "log_to": (now + timedelta(seconds=15)).isoformat(),
     }
     inputs = variant["seed"]
-    if case["id"] == "power_loss":
+    if case["id"] in {"power_loss", "h2s"}:
         p, q, a, item, _ = await prepare(db, printer_factory, archive_factory)
         source = LibraryFile(filename=INJECTION, file_path="synthetic/unread.gcode", file_size=1, file_type="gcode")
         db.add(source)
         await db.flush()
         item.library_file_id = source.id
         variables["item"] = item.id
-        if inputs["newer_run"]:
+        variables["archive"] = a.id
+        if case["id"] == "h2s":
+            p.model = "H2S"
+            if inputs["blocked"]:
+                a.started_at = a.completed_at = None
+                a.extra_data = {"swap_macro_events_pending": ["swap_mode_change_table"]}
+                db.add(PrintCompletionReceipt(archive_id=a.id, rearmed_queue_item_id=item.id))
+        elif inputs["newer_run"]:
             from backend.app.services.print_run_binding import bind_print_run
 
             started = now - timedelta(minutes=5)
@@ -115,6 +145,44 @@ async def seed_case(case, variant, db, printer_factory, archive_factory, smart_p
     else:
         p = await printer_factory(name="Synthetic golden printer")
     variables["printer"] = p.id
+    if case["id"] == "final_layer_runout":
+        a = await archive_factory(
+            p.id,
+            status="completed",
+            created_at=START,
+            started_at=START,
+            completed_at=START + timedelta(hours=1),
+            total_layers=483,
+        )
+        spool = Spool(material="PETG", label_weight=1000, weight_used=883)
+        db.add(spool)
+        await db.flush()
+        usage = PrintUsageEvent(
+            printer_id=p.id,
+            archive_id=a.id,
+            layer_num=483,
+            event="runout",
+            kind="pause",
+            global_tray_id=0,
+            spool_id=spool.id,
+            slot_occupied=None,
+            created_at=START + timedelta(hours=1) - timedelta(seconds=5),
+        )
+        db.add(usage)
+        await db.flush()
+        variables.update(archive=a.id, usage=usage.id)
+        if inputs["correction"]:
+            correction = SpoolUsageHistory(
+                printer_id=p.id,
+                archive_id=a.id,
+                spool_id=spool.id,
+                status="runout",
+                weight_used=117,
+                created_at=START + timedelta(hours=1),
+            )
+            db.add(correction)
+            await db.flush()
+            variables["correction"] = correction.id
     if case["id"] == "energy":
         plug = await smart_plug_factory(
             printer_id=p.id,
@@ -187,6 +255,18 @@ async def test_golden_diagnostic_case(
     if case["id"] == "power_loss":
         changed = await async_client.patch(f"/api/v1/api-keys/{created['id']}", json={"can_read_mcp_logs": True})
         assert changed.status_code == 200
+    # Exercise the real owner's permission ceiling, not an administrator role.
+    permissions = variant.get("required_permissions", case["required_permissions"])
+    owner = User(
+        username="golden-reader",
+        role="user",
+        is_active=True,
+        groups=[Group(name="golden-reader", permissions=permissions)],
+    )
+    db_session.add(owner)
+    await db_session.flush()
+    await db_session.execute(update(APIKey).where(APIKey.id == created["id"]).values(user_id=owner.id))
+    await db_session.commit()
     blocked = Mock(side_effect=AssertionError("diagnostic read performed an action"))
     for module, name in [
         (store, "make_preview"),
@@ -206,7 +286,7 @@ async def test_golden_diagnostic_case(
     steps = [
         {"tool": "bamdude_get_capabilities", "arguments": {}},
         {"tool": "bamdude_get_usage_guide", "arguments": {}},
-    ] + case["steps"]
+    ] + variant.get("steps", case["steps"])
     assert len(steps) <= 8
     transcript, answers = [], {}
     event.listen(test_engine.sync_engine, "before_cursor_execute", observed)
@@ -223,12 +303,40 @@ async def test_golden_diagnostic_case(
             for absent in case["forbidden_tools"]:
                 assert absent not in catalog["tool_names"]
                 assert error(await rpc(http, url, created["key"], absent)) == "not_found"
+            for hidden in variant.get("hidden_tools", []):
+                assert hidden["tool"] not in catalog["tool_names"]
+                assert (
+                    error(await rpc(http, url, created["key"], hidden["tool"], resolve(hidden["arguments"], variables)))
+                    == "forbidden"
+                )
         for check in variant["expect"]:
             value = at(answers[check["tool"]], check["path"])
             if "equals" in check:
                 assert value == check["equals"], (check, value)
             else:
                 assert check["contains"] in value, (check, value)
+        for expected in variant.get("expected_evidence_ids", case["expected_evidence_ids"]):
+            ids = {e["id"] for e in answers[expected["tool"]]["evidence"]}
+            assert expected["id"].format_map(variables) in ids, (expected, ids)
+        for check in variant.get("unavailable_sections", case["unavailable_sections"]):
+            value = at(answers[check["tool"]], check["path"])
+            if "contains" in check:
+                assert check["contains"] in value, (check, value)
+            else:
+                assert value == "unavailable_for_actor", (check, value)
+        ui = variant.get("next_ui_action", case["next_ui_action"])
+        if "response_path" in ui:
+            assert at(answers[ui["tool"]], ui["response_path"]) == ui["path"].format_map(variables)
+        if case["id"] == "final_layer_runout":
+            events = answers["bamdude_get_print_timeline"]["data"]["events"]
+            runout = next(e for e in events if e["evidence_id"] == f"usage:{variables['usage']}")
+            assert runout["event"] == "runout" and runout["layer"] == 483
+            assert runout["slot_occupied"] is None
+            assert not any(e.get("event") in {"spool_loaded", "tray_change"} for e in events)
+            corrections = [e for e in events if e.get("record_kind") == "lifetime_correction"]
+            assert len(corrections) == int(variant["seed"]["correction"])
+            if corrections:
+                assert corrections[0]["grams"] == 117
         assert "PRIVATE_UNAPPROVED_REASON" not in json.dumps(transcript)
         assert not writes
         blocked.assert_not_called()

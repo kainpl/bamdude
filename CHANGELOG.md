@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- MCP diagnostic guidance also covers an H2S terminal-archive/printing-row mismatch and final-layer runout. A recorded runout does not prove a physically empty spool or authorize zeroing or unassignment. All seven synthetic cases now declare evidence IDs, permissions, unavailable sections, allowed conclusions and UI next steps; HTTP tests run with limited user rights and check a hidden tool's refusal.
+
 - The BamDude diagnostic skill now guides queue claims, interrupted prints, energy gaps, camera/Telegram evidence and service-health investigations, with a short period-review route. It asks for narrow reads, separates observations from hypotheses and leaves actions in the normal UI. Synthetic HTTP cases cover each route and its negative control, including untrusted instructions in filenames/logs, while client and standalone skill manifests advertise the implemented diagnostic module. Model prose is not an automated CI correctness gate.
 
 - MCP period summaries use scoped SQL aggregates and the normal Statistics outcome rules. Reports separate measured time from estimates, keep missing energy and costs distinct from known zero, and flag overlapping selected intervals without inferring idle time, OEE or operator performance. Full-selection totals repeat across bounded printer pages; response-size pagination keeps large reads within transport limits. Selection remains archive creation time with explicit timezone boundaries and existing trash/source exclusions.

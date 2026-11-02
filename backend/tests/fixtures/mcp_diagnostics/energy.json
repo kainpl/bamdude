@@ -2,20 +2,98 @@
   "id": "energy",
   "route": "energy",
   "question": "The plug total grew but print energy may be missing. Explain what is known, without filling any accounting.",
-  "steps": [{"tool": "bamdude_inspect_energy", "arguments": {"printer_id": "$printer", "from": "2026-10-24T20:00:00Z", "to": "2026-10-25T08:00:00Z"}}],
-  "forbidden_claims": ["The counter delta was consumed entirely by these prints.", "A measured zero means missing energy.", "Poll the plug or write a guessed value."],
-  "forbidden_tools": ["bamdude_set_energy", "bamdude_control_plug"],
+  "steps": [
+    {
+      "tool": "bamdude_inspect_energy",
+      "arguments": {
+        "printer_id": "$printer",
+        "from": "2026-10-24T20:00:00Z",
+        "to": "2026-10-25T08:00:00Z"
+      }
+    }
+  ],
+  "forbidden_claims": [
+    "The counter delta was consumed entirely by these prints.",
+    "A measured zero means missing energy.",
+    "Poll the plug or write a guessed value."
+  ],
+  "forbidden_tools": [
+    "bamdude_set_energy",
+    "bamdude_control_plug"
+  ],
   "variants": [
-    {"name": "missing", "seed": {"energy": null}, "expect": [
-      {"tool": "bamdude_inspect_energy", "path": "data/print_summary/null_count", "equals": 1},
-      {"tool": "bamdude_inspect_energy", "path": "findings/0/code", "equals": "energy_counter_grows_print_accounting_missing"},
-      {"tool": "bamdude_inspect_energy", "path": "findings/0/certainty", "equals": "observed"}
-    ]},
-    {"name": "measured_zero", "seed": {"energy": 0}, "expect": [
-      {"tool": "bamdude_inspect_energy", "path": "data/print_summary/null_count", "equals": 0},
-      {"tool": "bamdude_inspect_energy", "path": "data/print_summary/zero_count", "equals": 1},
-      {"tool": "bamdude_inspect_energy", "path": "data/prints/0/energy_status", "equals": "measured"},
-      {"tool": "bamdude_inspect_energy", "path": "findings", "equals": []}
-    ]}
-  ]
+    {
+      "name": "missing",
+      "seed": {
+        "energy": null
+      },
+      "expect": [
+        {
+          "tool": "bamdude_inspect_energy",
+          "path": "data/print_summary/null_count",
+          "equals": 1
+        },
+        {
+          "tool": "bamdude_inspect_energy",
+          "path": "findings/0/code",
+          "equals": "energy_counter_grows_print_accounting_missing"
+        },
+        {
+          "tool": "bamdude_inspect_energy",
+          "path": "findings/0/certainty",
+          "equals": "observed"
+        }
+      ]
+    },
+    {
+      "name": "measured_zero",
+      "seed": {
+        "energy": 0
+      },
+      "expect": [
+        {
+          "tool": "bamdude_inspect_energy",
+          "path": "data/print_summary/null_count",
+          "equals": 0
+        },
+        {
+          "tool": "bamdude_inspect_energy",
+          "path": "data/print_summary/zero_count",
+          "equals": 1
+        },
+        {
+          "tool": "bamdude_inspect_energy",
+          "path": "data/prints/0/energy_status",
+          "equals": "measured"
+        },
+        {
+          "tool": "bamdude_inspect_energy",
+          "path": "findings",
+          "equals": []
+        }
+      ]
+    }
+  ],
+  "required_permissions": [
+    "printers:read",
+    "archives:read_all",
+    "smart_plugs:read",
+    "stats:read"
+  ],
+  "allowed_conclusion": "Counter growth beside missing print energy is only a coincidence; a stored measured zero is known, not missing.",
+  "expected_evidence_ids": [
+    {
+      "tool": "bamdude_inspect_energy",
+      "id": "energy:prints"
+    },
+    {
+      "tool": "bamdude_inspect_energy",
+      "id": "energy:counters"
+    }
+  ],
+  "next_ui_action": {
+    "path": "/archives",
+    "instruction": "Review persisted print energy and provenance in Archives; do not backfill or poll the plug."
+  },
+  "unavailable_sections": []
 }

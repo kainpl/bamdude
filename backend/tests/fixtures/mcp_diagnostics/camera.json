@@ -2,20 +2,103 @@
   "id": "camera",
   "route": "camera_telegram",
   "question": "Was the latest layer photo fresh and did Telegram receive it? Do not take or resend a photo.",
-  "steps": [{"tool": "bamdude_inspect_printer", "arguments": {"printer_id": "$printer"}}],
-  "forbidden_claims": ["Stream frame age is the photo capture time.", "Collection time is captured_at.", "The camera being ready proves Telegram delivery.", "A recent failure invalidates every older capture."],
-  "forbidden_tools": ["bamdude_capture_photo", "bamdude_send_telegram", "bamdude_toggle_light"],
+  "steps": [
+    {
+      "tool": "bamdude_inspect_printer",
+      "arguments": {
+        "printer_id": "$printer"
+      }
+    }
+  ],
+  "forbidden_claims": [
+    "Stream frame age is the photo capture time.",
+    "Collection time is captured_at.",
+    "The camera being ready proves Telegram delivery.",
+    "A recent failure invalidates every older capture."
+  ],
+  "forbidden_tools": [
+    "bamdude_capture_photo",
+    "bamdude_send_telegram",
+    "bamdude_toggle_light"
+  ],
   "variants": [
-    {"name": "old_frame_failed_attempt", "seed": {"frame_age_ms": 900000, "failures": 1}, "expect": [
-      {"tool": "bamdude_inspect_printer", "path": "data/camera/captured_at", "equals": null},
-      {"tool": "bamdude_inspect_printer", "path": "data/camera/stream_frame_age_ms", "equals": 900000},
-      {"tool": "bamdude_inspect_printer", "path": "data/camera/recent_capture_failed", "equals": true},
-      {"tool": "bamdude_inspect_printer", "path": "data/camera/coverage/missing", "contains": "telegram_delivery_history_not_recorded"}
-    ]},
-    {"name": "unknown_timestamp", "seed": {"frame_age_ms": null, "failures": 0}, "expect": [
-      {"tool": "bamdude_inspect_printer", "path": "data/camera/captured_at", "equals": null},
-      {"tool": "bamdude_inspect_printer", "path": "data/camera/freshness", "equals": "unknown"},
-      {"tool": "bamdude_inspect_printer", "path": "data/camera/stream_frame_age_ms", "equals": null}
-    ]}
+    {
+      "name": "old_frame_failed_attempt",
+      "seed": {
+        "frame_age_ms": 900000,
+        "failures": 1
+      },
+      "expect": [
+        {
+          "tool": "bamdude_inspect_printer",
+          "path": "data/camera/captured_at",
+          "equals": null
+        },
+        {
+          "tool": "bamdude_inspect_printer",
+          "path": "data/camera/stream_frame_age_ms",
+          "equals": 900000
+        },
+        {
+          "tool": "bamdude_inspect_printer",
+          "path": "data/camera/recent_capture_failed",
+          "equals": true
+        },
+        {
+          "tool": "bamdude_inspect_printer",
+          "path": "data/camera/coverage/missing",
+          "contains": "telegram_delivery_history_not_recorded"
+        }
+      ]
+    },
+    {
+      "name": "unknown_timestamp",
+      "seed": {
+        "frame_age_ms": null,
+        "failures": 0
+      },
+      "expect": [
+        {
+          "tool": "bamdude_inspect_printer",
+          "path": "data/camera/captured_at",
+          "equals": null
+        },
+        {
+          "tool": "bamdude_inspect_printer",
+          "path": "data/camera/freshness",
+          "equals": "unknown"
+        },
+        {
+          "tool": "bamdude_inspect_printer",
+          "path": "data/camera/stream_frame_age_ms",
+          "equals": null
+        }
+      ]
+    }
+  ],
+  "required_permissions": [
+    "printers:read",
+    "camera:view"
+  ],
+  "allowed_conclusion": "Stream age and a recent attempt do not establish photo capture time or Telegram delivery.",
+  "expected_evidence_ids": [
+    {
+      "tool": "bamdude_inspect_printer",
+      "id": "printer:{printer}"
+    }
+  ],
+  "next_ui_action": {
+    "path": "/printers",
+    "instruction": "Review the named printer camera and retained delivery evidence; do not capture or resend."
+  },
+  "unavailable_sections": [
+    {
+      "tool": "bamdude_inspect_printer",
+      "path": "data/queue_availability"
+    },
+    {
+      "tool": "bamdude_inspect_printer",
+      "path": "data/plugs/availability"
+    }
   ]
 }

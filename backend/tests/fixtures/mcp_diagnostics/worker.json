@@ -3,22 +3,146 @@
   "route": "system_health",
   "question": "Preview processing failed. Is the whole farm down, or is a local worker unavailable? Use existing observations only.",
   "steps": [
-    {"tool": "bamdude_get_system_health", "arguments": {}},
-    {"tool": "bamdude_inspect_printer", "arguments": {"printer_id": "$printer"}}
+    {
+      "tool": "bamdude_get_system_health",
+      "arguments": {}
+    },
+    {
+      "tool": "bamdude_inspect_printer",
+      "arguments": {
+        "printer_id": "$printer"
+      }
+    }
   ],
-  "forbidden_claims": ["One failed worker proves every printer is offline.", "An arbitrary exception is a trusted reason code.", "Restart the service automatically."],
-  "forbidden_tools": ["bamdude_restart_worker", "bamdude_restart"],
+  "forbidden_claims": [
+    "One failed worker proves every printer is offline.",
+    "An arbitrary exception is a trusted reason code.",
+    "Restart the service automatically."
+  ],
+  "forbidden_tools": [
+    "bamdude_restart_worker",
+    "bamdude_restart"
+  ],
   "variants": [
-    {"name": "unavailable", "seed": {"reason": "worker_unavailable"}, "expect": [
-      {"tool": "bamdude_get_system_health", "path": "data/components/preview/state", "equals": "unavailable"},
-      {"tool": "bamdude_get_system_health", "path": "data/components/preview/reason", "equals": "worker_unavailable"},
-      {"tool": "bamdude_get_system_health", "path": "data/components/analysis/state", "equals": "ready"},
-      {"tool": "bamdude_inspect_printer", "path": "data/printer/connected", "equals": true}
-    ]},
-    {"name": "unknown_reason", "seed": {"reason": "PRIVATE_UNAPPROVED_REASON"}, "expect": [
-      {"tool": "bamdude_get_system_health", "path": "data/components/preview/reason", "equals": "unknown_reason"},
-      {"tool": "bamdude_get_system_health", "path": "data/components/preview/coverage/complete", "equals": false},
-      {"tool": "bamdude_inspect_printer", "path": "data/printer/connected", "equals": true}
-    ]}
+    {
+      "name": "unavailable",
+      "seed": {
+        "reason": "worker_unavailable"
+      },
+      "expect": [
+        {
+          "tool": "bamdude_get_system_health",
+          "path": "data/components/preview/state",
+          "equals": "unavailable"
+        },
+        {
+          "tool": "bamdude_get_system_health",
+          "path": "data/components/preview/reason",
+          "equals": "worker_unavailable"
+        },
+        {
+          "tool": "bamdude_get_system_health",
+          "path": "data/components/analysis/state",
+          "equals": "ready"
+        },
+        {
+          "tool": "bamdude_inspect_printer",
+          "path": "data/printer/connected",
+          "equals": true
+        }
+      ]
+    },
+    {
+      "name": "unknown_reason",
+      "seed": {
+        "reason": "PRIVATE_UNAPPROVED_REASON"
+      },
+      "expect": [
+        {
+          "tool": "bamdude_get_system_health",
+          "path": "data/components/preview/reason",
+          "equals": "unknown_reason"
+        },
+        {
+          "tool": "bamdude_get_system_health",
+          "path": "data/components/preview/coverage/complete",
+          "equals": false
+        },
+        {
+          "tool": "bamdude_inspect_printer",
+          "path": "data/printer/connected",
+          "equals": true
+        }
+      ]
+    },
+    {
+      "name": "health_not_permitted",
+      "seed": {
+        "reason": "worker_unavailable"
+      },
+      "required_permissions": [
+        "printers:read"
+      ],
+      "steps": [
+        {
+          "tool": "bamdude_inspect_printer",
+          "arguments": {
+            "printer_id": "$printer"
+          }
+        }
+      ],
+      "hidden_tools": [
+        {
+          "tool": "bamdude_get_system_health",
+          "arguments": {}
+        }
+      ],
+      "expected_evidence_ids": [
+        {
+          "tool": "bamdude_inspect_printer",
+          "id": "printer:{printer}"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "bamdude_inspect_printer",
+          "path": "data/printer/connected",
+          "equals": true
+        }
+      ]
+    }
+  ],
+  "required_permissions": [
+    "system:read",
+    "printers:read"
+  ],
+  "allowed_conclusion": "One unavailable worker does not mean the printers are offline. With health hidden, its state is unknown to this reader.",
+  "expected_evidence_ids": [
+    {
+      "tool": "bamdude_get_system_health",
+      "id": "worker:preview"
+    },
+    {
+      "tool": "bamdude_inspect_printer",
+      "id": "printer:{printer}"
+    }
+  ],
+  "next_ui_action": {
+    "path": "/system",
+    "instruction": "Review the affected service in System; with health hidden, report the missing permission rather than ask for an admin key."
+  },
+  "unavailable_sections": [
+    {
+      "tool": "bamdude_inspect_printer",
+      "path": "data/queue_availability"
+    },
+    {
+      "tool": "bamdude_inspect_printer",
+      "path": "data/camera/availability"
+    },
+    {
+      "tool": "bamdude_inspect_printer",
+      "path": "data/plugs/availability"
+    }
   ]
 }

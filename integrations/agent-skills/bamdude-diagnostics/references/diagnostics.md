@@ -44,6 +44,8 @@ status is not a history of all transitions. Slicer-derived end times are estimat
 missing retained feed events do not prove that no runout or replacement occurred.
 Spool identity and grams require inventory-read permission. The timeline applies
 the accounting reader's stale-refill filter without changing the forensic journal.
+A recorded runout does not prove a physically empty spool, including on the last
+layer. It does not authorize zeroing remaining weight or removing an assignment.
 
 Logs require an unrestricted printer scope and a separate key opt-in. They are
 bounded and sanitized before literal search; unknown secrets in arbitrary prose
@@ -152,6 +154,34 @@ executed accounting, or the cause of interruption. A gap in retained history
 does not prove a power cut. Name power loss as a hypothesis until there is
 positive retained evidence. Review startup admission or recovery in the UI;
 do not restart, clear claims, cancel the newer run or replay completion.
+
+### H2S terminal archive with a printing queue row
+
+Inspect the printer, list its state issues and explain the exact item. An H2S
+archive marked completed while its row remains printing is a durable mismatch,
+not proof of physical success or merely a stale runtime flag. Explain
+`effects_pending`, `missing_run_times` and `delete_has_dependencies` separately:
+completion effects remain unresolved, required run times are missing, and other
+records depend on the row. Never bypass these reasons with restart, force-delete,
+SQL or replayed completion. A dependency alone can forbid deletion while allowing
+alignment; use the returned policy, not a blanket refusal. Open the addressed
+System diagnostics link and let the operator reread and request a fresh preview.
+Verify the addressed facts after that UI action; MCP cannot execute it.
+
+### Runout on the reported final layer
+
+Read the positively identified archive timeline. State which layer the retained
+runout records; if only the operator identifies it as final, attribute that
+information to the operator, not to an unavailable total-layer field. Separate
+runout, retained replacement/feed events and typed lifetime corrections. A runout
+does not prove a physically empty spool, even at the final layer. No retained
+correction or replacement does not prove none ever occurred: retention and
+inventory permissions limit the evidence. A recorded lifetime correction is
+accounting evidence, not a physical measurement. Do not zero the spool, remove
+its assignment or invent a correction. Ask the operator to inspect the physical
+spool and review its archive/accounting records in the normal UI; verify with a
+fresh narrow timeline after their review. When inventory evidence is hidden,
+explain that limitation without requesting an administrator key.
 
 ### Energy
 
