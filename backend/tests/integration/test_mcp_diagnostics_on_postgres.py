@@ -15,6 +15,7 @@ from backend.app.core.config import settings
 from backend.app.core.database import Base, _strip_tz_from_params, import_all_models
 from backend.tests.integration.test_diagnostic_visibility import *  # noqa: F403
 from backend.tests.integration.test_mcp_farm_diagnostics import *  # noqa: F403
+from backend.tests.integration.test_mcp_log_secrets import *  # noqa: F403
 from backend.tests.integration.test_mcp_logs import (
     test_exact_plug_oidc_and_ha_override_canaries,  # noqa: F401
     test_logs_http_authority_redaction_and_collector_failure,  # noqa: F401

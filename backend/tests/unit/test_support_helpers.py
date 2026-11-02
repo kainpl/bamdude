@@ -695,33 +695,9 @@ class TestSensitiveKeyRedaction:
     """
 
     def _redact(self, key: str, value: str) -> str:
-        # Mirror the route's predicate exactly. Kept in sync by the
-        # asserts below (any drift in the route's set is a test update).
-        sensitive_keys = {
-            "access_code",
-            "password",
-            "token",
-            "secret",
-            "api_key",
-            "installation_id",
-            "cloud_token",
-            "mqtt_password",
-            "email",
-            "username",
-            "vapid",
-            "private_key",
-            "public_key",
-            "webhook",
-            "url",
-            "path",
-            "config",
-            "_ip",
-            "host",
-            "credential",
-            "broker",
-            "auth_key",
-        }
-        if any(sub in key.lower() for sub in sensitive_keys):
+        from backend.app.core.sensitive_settings import is_sensitive_setting
+
+        if is_sensitive_setting(key):
             return "[REDACTED]" if value else ""
         return value
 

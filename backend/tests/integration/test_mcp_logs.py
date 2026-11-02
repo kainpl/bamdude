@@ -65,7 +65,22 @@ async def test_logs_http_authority_redaction_and_collector_failure(
         assert error(await rpc(http, url, created["key"], "bamdude_read_logs", args)) == "forbidden"
 
 
-@pytest.mark.parametrize("setting", sorted(log_reader.DIAGNOSTIC_SECRET_SETTINGS))
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "telegram_bot_token",
+        "smtp_username",
+        "smtp_password",
+        "ha_token",
+        "mqtt_username",
+        "mqtt_password",
+        "tasmota_password",
+        "spoolman_api_key",
+        "spoolman_token",
+        "oidc_client_secret",
+        "ldap_bind_password",
+    ],
+)
 async def test_exact_setting_secret_canary(db_session, setting):
     secret = "CANARY_EXACT_" + setting
     db_session.add(Settings(key=setting, value=secret))

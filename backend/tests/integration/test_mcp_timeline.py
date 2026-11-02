@@ -265,3 +265,45 @@ async def test_timeline_query_count_is_constant_and_ancestry_is_bounded(
     limited = await timeline(db_session, access, TimelineInput(archive_id=archive.id), "cap")
     assert not any(row["source"] == "usage" for row in limited.data["events"])
     assert "usage_ancestry_budget_exceeded" in limited.coverage.missing
+
+
+async def test_timeline_queue_and_recovery_require_read_all(db_session, printer_factory, archive_factory):
+    from backend.app.mcp_server.contracts import DiagnosticAccess
+    from backend.app.services.queue_sources import current_epoch
+
+    printer = await printer_factory()
+    at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=1)
+    archive = await archive_factory(printer.id, created_at=at)
+    queue, item = await queued(db_session, printer)
+    item.archive_id, item.created_at = archive.id, at
+    db_session.add(
+        PrintStateRecoveryAction(
+            id="queue-gate-audit",
+            created_at=at,
+            actor="operator",
+            actor_label="operator",
+            printer_id=printer.id,
+            queue_id=queue.id,
+            item_id=item.id,
+            archive_id=archive.id,
+            action="align_terminal_item",
+            input_hash="hash",
+            result={},
+        )
+    )
+    await db_session.commit()
+    access = DiagnosticAccess(
+        1, 1, frozenset({"printers:read", "archives:read_all"}), False, None, False, current_epoch()
+    )
+    args = TimelineInput(archive_id=archive.id)
+    limited = await timeline(db_session, access, args, "limited")
+    assert all(
+        not event["source"].startswith("queue.") and event["source"] != "recovery" for event in limited.data["events"]
+    )
+    assert "queue_evidence_unavailable_for_actor" in limited.coverage.missing
+    allowed = await timeline(
+        db_session, replace(access, permissions=access.permissions | {"queue:read_all"}), args, "allowed"
+    )
+    assert any(event["source"].startswith("queue.") for event in allowed.data["events"])
+    assert any(event["source"] == "recovery" for event in allowed.data["events"])
+    assert "queue_evidence_unavailable_for_actor" not in allowed.coverage.missing

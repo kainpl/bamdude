@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.core.logging_filters import URL_CREDENTIALS_PATTERN
+from backend.app.core.sensitive_settings import sensitive_settings_predicate
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
@@ -281,22 +282,15 @@ async def collect_sensitive_strings(db: AsyncSession) -> dict[str, str]:
     return sensitive_strings
 
 
-# Only explicitly credential-bearing settings/config fields. Never dump Settings
-# or try to recover hashed API keys. Values stay in the short database phase.
-DIAGNOSTIC_SECRET_SETTINGS = frozenset(
-    {
-        "telegram_bot_token",
-        "smtp_username",
-        "smtp_password",
-        "ha_token",
-        "mqtt_username",
-        "mqtt_password",
-        "tasmota_password",
-        "spoolman_api_key",
-        "spoolman_token",
-        "oidc_client_secret",
-        "ldap_bind_password",
-    }
+# Settings use the shared support-bundle policy. Other credential stores use
+# explicit column/config projections, never ORM dumps or recovered API-key hashes.
+USER_CREDENTIAL_FIELDS = (
+    "cloud_token",
+    "cloud_refresh_token",
+    "orca_cloud_token",
+    "orca_cloud_refresh_token",
+    "orca_cloud_pending_verifier",
+    "orca_cloud_pending_state",
 )
 PROVIDER_SECRET_FIELDS = frozenset(
     {
@@ -316,6 +310,7 @@ PROVIDER_SECRET_FIELDS = frozenset(
 
 async def collect_diagnostic_sensitive_strings(db: AsyncSession) -> dict[str, str]:
     from backend.app.core.encryption import mfa_decrypt
+    from backend.app.models.cloud_link import CloudLink
     from backend.app.models.notification import NotificationProvider
     from backend.app.models.oidc_provider import OIDCProvider
     from backend.app.models.smart_plug import SmartPlug
@@ -327,8 +322,14 @@ async def collect_diagnostic_sensitive_strings(db: AsyncSession) -> dict[str, st
             # Do not discard short exact credentials like the general PII pass.
             values[value] = "[REDACTED]"
 
-    for value in (await db.scalars(select(Settings.value).where(Settings.key.in_(DIAGNOSTIC_SECRET_SETTINGS)))).all():
+    for value in (await db.scalars(select(Settings.value).where(sensitive_settings_predicate(Settings.key)))).all():
         add(value)
+    for row in (await db.execute(select(*(getattr(User, name) for name in USER_CREDENTIAL_FIELDS)))).all():
+        for value in row:
+            add(value)
+    for encrypted in (await db.scalars(select(CloudLink.instance_secret_encrypted))).all():
+        if encrypted:
+            add(mfa_decrypt(encrypted))
     add(os.environ.get("HA_TOKEN"))  # existing settings reader's only credential env override
     for username, password in (await db.execute(select(SmartPlug.username, SmartPlug.password))).all():
         add(username)

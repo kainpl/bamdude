@@ -29,6 +29,7 @@ from backend.app.core.auth import RequestCredentials, RequirePermission, request
 from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import async_session
 from backend.app.core.permissions import Permission
+from backend.app.core.sensitive_settings import is_sensitive_setting
 from backend.app.core.websocket import ws_manager
 from backend.app.models.archive import PrintArchive
 from backend.app.models.notification import NotificationProvider
@@ -1299,32 +1300,8 @@ async def _collect_support_info(*, print_state_scope=None, include_print_state: 
         # was configured vs. simply missing.
         result = await db.execute(select(Settings))
         all_settings = result.scalars().all()
-        sensitive_keys = {
-            "access_code",
-            "password",
-            "token",
-            "secret",
-            "api_key",
-            "installation_id",
-            "cloud_token",
-            "mqtt_password",
-            "email",
-            "username",
-            "vapid",
-            "private_key",
-            "public_key",
-            "webhook",
-            "url",
-            "path",  # Filesystem paths may contain usernames
-            "config",  # URLs may contain IPs, configs may have embedded secrets
-            "_ip",  # IP address fields (e.g. virtual_printer_remote_interface_ip)
-            "host",  # hostnames/FQDNs may leak internal infra layout
-            "credential",  # generic credential-bearing keys (ldap_bind_credential, etc.)
-            "broker",  # mqtt_broker hostname/IP — internal infra (upstream #1312)
-            "auth_key",  # Tailscale / future auth-key settings (upstream #1312)
-        }
         for s in all_settings:
-            if any(sensitive in s.key.lower() for sensitive in sensitive_keys):
+            if is_sensitive_setting(s.key):
                 info["settings"][s.key] = "[REDACTED]" if s.value else ""
             else:
                 info["settings"][s.key] = s.value
