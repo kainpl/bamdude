@@ -27,7 +27,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import Select, and_, delete, exists, func, or_, select
+from sqlalchemy import Select, and_, delete, exists, func, select
 from sqlalchemy.orm import aliased
 
 from backend.app.core import database
@@ -118,10 +118,8 @@ def _orphan_condition():
     """An assigned router row whose printer row is gone -- it carries nothing any more."""
     return and_(
         AutoQueueItem.status == "assigned",
-        or_(
-            AutoQueueItem.assigned_to_item_id.is_(None),
-            ~exists().where(PrintQueueItem.id == AutoQueueItem.assigned_to_item_id),
-        ),
+        # A NULL reference cannot match a printer row either.
+        ~exists().where(PrintQueueItem.id == AutoQueueItem.assigned_to_item_id),
     )
 
 

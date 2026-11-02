@@ -226,6 +226,9 @@ class TestNoNewOutboundUrlEscapesAPolicy:
     EXEMPT = {
         # Our own externally-visible address, not a destination we fetch.
         "external_url",
+        # Published to AI clients; the server never fetches this address.
+        # Its own canonical_endpoint validator enforces the MCP URL shape/TLS.
+        "mcp_endpoint_url",
         # Not http(s) at all — ldap:// / ldaps://, with its own connection path.
         "ldap_server_url",
         # Guarded by assert_safe_spoolman_url at its own call sites, which is the

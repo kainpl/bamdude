@@ -154,7 +154,8 @@ async def test_an_orphan_assignment_is_retired_but_one_on_a_cancelled_row_is_not
     orphan = AutoQueueItem(status="assigned", assigned_to_item_id=None, target_model="P1S")
     dangling = AutoQueueItem(status="assigned", assigned_to_item_id=987_654, target_model="P1S")
     retry = AutoQueueItem(status="assigned", assigned_to_item_id=cancelled.id, target_model="P1S")
-    db_session.add_all([orphan, dangling, retry])
+    pending = AutoQueueItem(status="pending", assigned_to_item_id=None, target_model="P1S")
+    db_session.add_all([orphan, dangling, retry, pending])
     await db_session.commit()
 
     found = await queue_leftovers.find(db_session)
@@ -164,7 +165,9 @@ async def test_an_orphan_assignment_is_retired_but_one_on_a_cancelled_row_is_not
 
     assert sorted(result.retired_autos) == sorted([orphan.id, dangling.id])
     assert [(s.auto_item_id, s.reason) for s in result.skipped] == [(retry.id, "not_orphan")]
-    assert not await gone(db_session, AutoQueueItem, retry.id)
+    pending_id, retry_id = pending.id, retry.id
+    assert not await gone(db_session, AutoQueueItem, pending_id)
+    assert not await gone(db_session, AutoQueueItem, retry_id)
 
 
 async def test_scoped_find_sees_only_the_named_printers(db_session, printer_factory, archive_factory):

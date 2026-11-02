@@ -14,6 +14,7 @@ import pytest
 from backend.app.services import worker_staging
 from backend.app.services.preview_process import PreviewProcess
 from backend.app.services.worker_containment import WorkerContainment
+from backend.app.services.worker_process import descendants_reaped
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process groups only")
@@ -274,7 +275,8 @@ sys.stdin.read()
         cleanup_started.touch()
         assert worker_staging.cleanup_owned(service_root).status == "removed"
         assert child is not None
-        child.wait(timeout=5)
+        # An orphaned POSIX zombie has exited even if PID 1 has not reaped it.
+        assert descendants_reaped([child], timeout=5)
         assert not mutation_event.exists() or mutation_event.read_text() != "success"
         assert not service_root.exists()
     finally:

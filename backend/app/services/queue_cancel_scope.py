@@ -9,6 +9,7 @@ from backend.app.core import database
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.services.queue_ops import claim_lanes
+from backend.app.services.swap_compatibility import job_identity
 
 
 def selection_changed():
@@ -21,7 +22,7 @@ def selection_changed():
 async def _selection(db, ids, auto):
     model = AutoQueueItem if auto else PrintQueueItem
     rows = (await db.scalars(select(model).where(model.id.in_(ids)).execution_options(populate_existing=True))).all()
-    identities = {row.id: row.swap_declaration_identity for row in rows}
+    identities = {row.id: job_identity(row) for row in rows}
     if auto:
         linked = [row.assigned_to_item_id for row in rows if row.assigned_to_item_id is not None]
         lanes = set(

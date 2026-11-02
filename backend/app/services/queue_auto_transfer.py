@@ -183,7 +183,7 @@ async def _facts(db, item_id, actor, *, lock=False):
         or queue.current_item_id == item.id
     ):
         raise refusal("transfer_started")
-    if not item.swap_declaration_identity:
+    if not swap_compatibility.job_identity(item):
         raise refusal("transfer_identity_missing")
     if await db.scalar(select(CalibrationSession.id).where(CalibrationSession.print_queue_item_id == item.id).limit(1)):
         raise refusal("transfer_started")
@@ -222,7 +222,7 @@ async def _facts(db, item_id, actor, *, lock=False):
             or ancestor.status != "assigned"
             or ancestor.assigned_to_item_id != item.id
             or [a.id for a in backrefs] != [ancestor.id]
-            or not ancestor.swap_declaration_identity
+            or not swap_compatibility.job_identity(ancestor)
             or ancestor.queue_source_id != item.queue_source_id
             or (ancestor.project_id, ancestor.project_line_id, ancestor.created_by_id)
             != (item.project_id, item.project_line_id, item.created_by_id)
