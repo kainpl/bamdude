@@ -101,6 +101,40 @@ async def queued(db, printer, *, printing=False, name="allowed job.3mf"):
 
 
 @pytest.mark.parametrize("modern", [False, True])
+@pytest.mark.parametrize("conflict", [False, True])
+async def test_current_job_does_not_claim_identity_when_queue_rows_disagree(
+    async_client, runtime, printer_factory, db_session, telemetry, modern, conflict
+):  # noqa: F811
+    p = await printer_factory()
+    queue, old = await queued(db_session, p, printing=True, name="legacy display row")
+    if conflict:
+        newer = PrintQueueItem(queue_id=queue.id, status="printing", position=2)
+        db_session.add(newer)
+        await db_session.flush()
+        queue.current_item_id = newer.id
+        await db_session.commit()
+    created = await key(async_client, scope=[p.id])
+    async with live_app() as url, httpx.AsyncClient() as http:
+        for tool, args in [
+            ("bamdude_get_farm_overview", {}),
+            ("bamdude_inspect_printer", {"printer_id": p.id}),
+        ]:
+            result = data(await rpc(http, url, created["key"], tool, args, modern=modern))
+            facts = result["data"]["printers"][0] if "printers" in result["data"] else result["data"]
+            warnings = [f for f in result["findings"] if f["code"] == "queue_current_job_ambiguous"]
+            if conflict:
+                assert facts["printer"]["current_job"] is None
+                assert facts["claim"]["current_item_id"] == newer.id
+                assert facts["claim"]["printing_row_count"] == 2
+                assert "current_job_identity_unresolved" in facts["coverage"]["missing"]
+                assert warnings and warnings[0]["certainty"] == "observed"
+                assert warnings[0]["next_steps"][0]["action_kind"] == "open_ui"
+            else:
+                assert facts["printer"]["current_job"]["item_id"] == old.id
+                assert not warnings
+
+
+@pytest.mark.parametrize("modern", [False, True])
 async def test_overview_inspect_and_scope_are_real_read_only_tools(
     async_client, runtime, printer_factory, db_session, telemetry, modern
 ):  # noqa: F811
@@ -417,6 +451,8 @@ async def test_claim_observation_is_bounded_and_does_not_follow_a_foreign_header
     async with live_app() as url, httpx.AsyncClient() as http:
         result = data(await rpc(http, url, created["key"], "bamdude_inspect_printer", {"printer_id": a.id}))
     assert result["data"]["claim"] == {"current_item_id": None, "header_link_valid": False, "printing_row_count": 1}
+    assert result["data"]["printer"]["current_job"] is None
+    assert any(f["code"] == "queue_current_job_ambiguous" for f in result["findings"])
     assert result["findings"][0]["code"] == "queue_claim_requires_inspection"
     assert "SECRET foreign" not in json.dumps(result)
 

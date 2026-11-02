@@ -138,7 +138,10 @@ kind/target. Use a timeline only for a positively identified archive. Explain
 the blockers and link to the normal UI; never supply completion confirmation.
 If `current_job`, the header's `current_item_id` or multiple printing rows
 disagree, report the contradiction. Do not name a legacy display row as the
-current physical job or resolve ownership from its filename. An addressed
+current physical job or resolve ownership from its filename. The diagnostic
+read reports `queue_current_job_ambiguous` and leaves `current_job` null when
+the queue cannot identify a single current row; the header alone is not physical
+run proof. An addressed
 `successor` explanation can permit alignment of an old row while leaving the
 new run's queue unchanged; this does not grant the assistant permission to act.
 Verification means a fresh addressed read after an operator's action, not a

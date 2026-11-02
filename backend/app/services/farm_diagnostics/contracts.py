@@ -111,6 +111,7 @@ class Finding(EmptyInput):
     code: Literal[
         "printer_busy",
         "queue_claim_requires_inspection",
+        "queue_current_job_ambiguous",
         "farm_admission_held",
         "worker_unavailable",
         "energy_counter_grows_print_accounting_missing",

@@ -165,6 +165,22 @@ async def read_printers(db, access: DiagnosticAccess, ids: list[int], started: d
             else None
         )
         diagnostic_printer = DiagnosticPrinter.model_validate(tile.model_dump())
+        displayed_id = getattr(tile.current_job, "item_id", None)
+        ambiguous_job = bool(
+            claim
+            and (
+                claim.printing_row_count > 1
+                or claim.header_link_valid is False
+                or displayed_id is not None
+                and displayed_id != claim.current_item_id
+            )
+        )
+        if ambiguous_job:
+            # The monitor's display row is not proof of the physical run. Keep
+            # its legacy UI projection, but do not publish it as MCP current work.
+            diagnostic_printer.current_job = None
+            coverage.complete = False
+            coverage.missing.append("current_job_identity_unresolved")
         if freshness != "fresh":
             diagnostic_printer.connected = None
         facts.append(
@@ -211,6 +227,24 @@ async def read_printers(db, access: DiagnosticAccess, ids: list[int], started: d
                         NextStep(
                             action_kind="open_ui",
                             explanation="Inspect the printer and print-state diagnostics.",
+                            ui_link=f"/printers?expandPrinter={tile.printer_id}",
+                        )
+                    ],
+                )
+            )
+        if ambiguous_job:
+            findings.append(
+                Finding(
+                    code="queue_current_job_ambiguous",
+                    severity="warning",
+                    certainty="observed",
+                    evidence_ids=[eid, f"queue:{queue.queue_id}"],
+                    explanation="Queue header and printing-row display do not identify one current job; physical job identity is unresolved.",
+                    missing_evidence=["current_job_identity_unresolved"],
+                    next_steps=[
+                        NextStep(
+                            action_kind="open_ui",
+                            explanation="Inspect the printer and addressed print-state diagnostics before choosing any action.",
                             ui_link=f"/printers?expandPrinter={tile.printer_id}",
                         )
                     ],
