@@ -21,6 +21,7 @@ from backend.tests.integration.test_mcp_logs import (
     test_exact_plug_oidc_and_ha_override_canaries,  # noqa: F401
     test_logs_http_authority_redaction_and_collector_failure,  # noqa: F401
 )
+from backend.tests.integration.test_mcp_period_summary import *  # noqa: F403
 from backend.tests.integration.test_mcp_recovery_explain import *  # noqa: F403
 from backend.tests.integration.test_mcp_timeline import *  # noqa: F403
 

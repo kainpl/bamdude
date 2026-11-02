@@ -33,7 +33,7 @@ capabilities explicitly advertise them.
 The diagnostics module supplies a scoped farm overview, one-printer inspection,
 unrestricted local-service health, archive-owned print timelines and opt-in
 sanitized application logs, and persisted energy evidence. Only use tools present in
-`tool_names`; period summaries are not available yet. Overview is paginated and is not
+`tool_names`. Overview is paginated and is not
 an atomic farm snapshot. A printing queue claim does not prove it is stale.
 Camera metrics do not prove when a photo was captured or sent to Telegram.
 Plug schedules describe current rules, not a history of yesterday's decisions.
@@ -81,6 +81,25 @@ the browser rechecks its own permissions and current addressed record. Only a
 manual operator action requests a fresh preview; never auto-confirm or apply.
 A restart does not repair a durable queue claim, and a terminal archive alone
 does not prove the print completed successfully.
+
+Period summaries require printer, all-archive and statistics read rights. Supply
+explicit offset-aware `from` / `to` instants and an IANA `timezone` for a period
+of at most 31 days. Selection is archive creation time in `[from,to)`, not
+completion time. Trash and source-only archives are excluded; archives without
+a visible printer are excluded and named in coverage. Explicit hidden/missing
+printer IDs are refused as a whole. Physical success rate divides completed
+prints by completed plus physical failures; dispatch errors and interruptions
+are separate. Measured durations, slicer/synthetic-end estimates, missing time
+and invalid intervals stay separate. Overlap is checked only among the selected
+archive intervals; their durations are not clipped occupancy or utilization.
+Energy retains measured/approximate/estimated/legacy/unknown provenance, with
+known-value and cost coverage. Missing is not zero; stored zero is known zero.
+Full-selection totals repeat on each page: never add them together. Follow the
+cursor only for remaining printer groups. A response-size budget may return
+fewer groups than `limit`; no groups are skipped. ID ceilings exclude later
+inserts, but edits/deletions can change later reads: pagination is not a snapshot.
+No idle time, OEE, user ranking or operator blame is inferred without state
+history. A missing-energy recommendation asks for inspection, not backfilling.
 
 When a diagnostic module is available, choose the smallest relevant query.
 Report: observed facts and evidence times; hypotheses separately; missing or

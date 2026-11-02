@@ -152,7 +152,7 @@ def create_server():
                 },
                 "limitations": [
                     "read_only",
-                    "diagnostics_partial_overview_printer_health_timeline_logs_energy_recovery",
+                    "diagnostics_reads_only_no_commands_or_complete_state_history",
                 ],
             }
         else:

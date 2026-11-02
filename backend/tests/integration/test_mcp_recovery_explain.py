@@ -92,6 +92,10 @@ async def test_recovery_read_only_key_uses_real_policy_without_preview_or_effect
                 )
             )
         assert listing["data"]["can_execute_via_mcp"] is False
+        assert listing["data"]["issues"] and all(
+            issue["can_execute_via_mcp"] is False for issue in listing["data"]["issues"]
+        )
+        assert result["data"]["issue"]["can_execute_via_mcp"] is False
         assert result["data"]["after"]["item"]["status"] == "completed"
         assert result["data"]["requires_operator_confirmation"] and not result["data"]["can_execute_via_mcp"]
         assert result["data"]["ui_path"] == f"/system?printer_id={p.id}&kind=item&target_id={item.id}#print-state"
@@ -118,6 +122,10 @@ async def test_recovery_plan_matches_same_facts_and_dependencies_only_block_dele
     assert "delete_has_dependencies" in result.data["issue"]["blocked_reasons"]
     refused = await explain(db_session, actor(), addressed(p, item, "delete_stale_item"))
     assert refused.data["after"] is None and "delete_has_dependencies" in refused.data["blockers"]
+    original = store.public_issue
+    monkeypatch.setattr(store, "public_issue", lambda *a, **kw: {**original(*a, **kw), "code": "future_private_code"})
+    unknown = await explain(db_session, actor(), addressed(p, item))
+    assert unknown.data["issue"]["code"] == "unknown" and "future_private_code" not in str(unknown)
 
 
 async def test_recovery_estimate_requires_human_confirmation_without_forming_a_plan(

@@ -9,11 +9,17 @@ from backend.app.services.farm_diagnostics.contracts import (
     IssuesInput,
     LogsInput,
     PageInput,
+    PeriodInput,
     RecoveryInput,
     TimelineInput,
 )
 
 TOOLS = (
+    Tool(
+        "bamdude_get_period_summary",
+        "Read scoped archive period totals and a bounded printer page; estimates are separate, never idle time or OEE.",
+        PeriodInput,
+    ),
     Tool(
         "bamdude_list_state_issues",
         "Read scoped normal print-state issues; candidates do not grant write permission.",
@@ -65,6 +71,7 @@ async def read(name, access, args, request_id, *, owner=None):
     from backend.app.services.farm_diagnostics.overview import overview
     from backend.app.services.farm_diagnostics.printer import inspect_printer
     from backend.app.services.farm_diagnostics.recovery import explain_recovery, list_state_issues
+    from backend.app.services.farm_diagnostics.summary import period_summary
     from backend.app.services.farm_diagnostics.timeline import timeline
 
     require(access, name)
@@ -73,6 +80,8 @@ async def read(name, access, args, request_id, *, owner=None):
     if name == "bamdude_read_logs":
         return await read_logs(access, args, request_id, owner)
     async with database.async_session() as db:
+        if name == "bamdude_get_period_summary":
+            return await period_summary(db, access, args, request_id)
         if name == "bamdude_list_state_issues":
             return await list_state_issues(db, access, args, request_id)
         if name == "bamdude_explain_recovery":
