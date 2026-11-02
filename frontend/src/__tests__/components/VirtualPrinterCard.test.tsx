@@ -78,7 +78,8 @@ describe('VirtualPrinter nozzle configuration', () => {
     await waitFor(() => expect(multiVirtualPrinterApi.update).toHaveBeenCalledWith(1, { nozzle_diameter: '0.6' }));
     await user.selectOptions(screen.getByLabelText('Flow type'), 'e3d_high_flow');
     await waitFor(() => expect(multiVirtualPrinterApi.update).toHaveBeenCalledWith(1, { nozzle_flow: 'e3d_high_flow' }));
-    expect(screen.getByText(/they do not display or check flow/)).toBeInTheDocument();
+    expect(screen.getByText(/Source review of BambuStudio 2\.8\.2\.61 and OrcaSlicer 2\.4\.2/)).toBeInTheDocument();
+    expect(screen.getByText(/without displaying or checking flow; live Send verification is pending/)).toBeInTheDocument();
   });
 
   it('restores the saved value after a failed save', async () => {

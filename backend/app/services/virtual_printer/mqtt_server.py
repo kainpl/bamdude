@@ -845,9 +845,9 @@ class SimpleMQTTServer:
                 nozzle_diameter, nozzle_type = "0.0", "N/A"
             else:
                 nozzle_diameter = self.nozzle_diameter
-                letter = {"standard": "S", "high_flow": "H", "tpu_high_flow": "U", "e3d_high_flow": "B"}[
-                    self.nozzle_flow
-                ]
+                letter = {"standard": "S", "high_flow": "H", "tpu_high_flow": "U", "e3d_high_flow": "B"}.get(
+                    self.nozzle_flow, "S"
+                )
                 nozzle_type = f"H{letter}01"
             status = {
                 "print": {

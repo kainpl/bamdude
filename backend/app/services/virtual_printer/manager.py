@@ -1647,6 +1647,15 @@ class VirtualPrinterInstance:
         if sliced_nozzle is not None and (not math.isfinite(sliced_nozzle) or sliced_nozzle <= 0):
             sliced_nozzle = None
 
+        def known_diameters(printer_id, state):
+            # Match routing/dispatch: rack hotends count; an empty carriage's
+            # stale diameter does not. Legacy state is only a no-evidence fallback.
+            snapshot = printer_manager.get_feed_snapshot(printer_id)
+            diameters = snapshot.nozzle_diameters if snapshot else {}
+            if diameters:
+                return sorted({diameter for values in diameters.values() for diameter in values})
+            return _installed_nozzle_diameters(state)
+
         # If explicit target is set and printer is online, use it directly
         if self.target_printer_id:
             state = printer_manager.get_status(self.target_printer_id)
@@ -1659,7 +1668,7 @@ class VirtualPrinterInstance:
                 row = result.one_or_none()
                 if (
                     row
-                    and not _nozzle_mismatch_message(sliced_nozzle, _installed_nozzle_diameters(state))
+                    and not _nozzle_mismatch_message(sliced_nozzle, known_diameters(self.target_printer_id, state))
                     and model_compatibility(
                         sliced_model,
                         printer_manager.effective_model_for(self.target_printer_id, row[1]),
@@ -1695,7 +1704,7 @@ class VirtualPrinterInstance:
             state = printer_manager.get_status(queue.printer_id)
             if not state or not state.connected:
                 continue
-            if _nozzle_mismatch_message(sliced_nozzle, _installed_nozzle_diameters(state)):
+            if _nozzle_mismatch_message(sliced_nozzle, known_diameters(queue.printer_id, state)):
                 continue
             verdict = model_compatibility(
                 sliced_model,

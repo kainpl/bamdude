@@ -1028,10 +1028,6 @@ async def delete_printer(
     await db.delete(printer)
     await db.commit()
 
-    from backend.app.services.virtual_printer import virtual_printer_manager
-
-    await virtual_printer_manager.sync_from_db()
-
     from backend.app.services.camera_metrics import forget_printer
 
     forget_printer(printer_id)
@@ -1041,6 +1037,12 @@ async def delete_printer(
     # and never get a rebuild of its own.
     ams_advertised_overlay.forget_printer(printer_id)
     forget_printer_rebuild(printer_id)
+    from backend.app.services.virtual_printer import virtual_printer_manager
+
+    try:
+        await virtual_printer_manager.sync_from_db()
+    except Exception:
+        logger.exception("Failed to sync virtual printers after deleting printer %s", printer_id)
     return {"status": "deleted", "archives_deleted": delete_archives}
 
 

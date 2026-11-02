@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.virtual_printer import VirtualPrinter
-from backend.app.services.bambu_mqtt import NozzleInfo, _parse_nozzle_type
+from backend.app.services.bambu_mqtt import BambuMQTTClient, NozzleInfo, _parse_nozzle_type
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.virtual_printer.manager import VirtualPrinterInstance, VirtualPrinterManager
 from backend.app.services.virtual_printer.mqtt_server import SimpleMQTTServer
@@ -47,6 +47,11 @@ async def test_unbound_reports_selected_main_nozzle(diameter, flow, letter):
     assert payload["nozzle_type"] == f"H{letter}01"
     assert _parse_nozzle_type(payload["nozzle_type"]) == ("hardened_steel", flow)
     assert not ({"flag3", "device", "cfg", "fun", "aux", "stat"} & payload.keys())
+
+
+async def test_unknown_stored_flow_reports_standard_without_breaking_status():
+    payload = await report(server(nozzle_diameter="0.6", nozzle_flow="legacy_value"))
+    assert (payload["nozzle_diameter"], payload["nozzle_type"]) == ("0.6", "HS01")
 
 
 @pytest.mark.parametrize("cache", [None, {"command": "push_status", "gcode_state": "IDLE"}])
@@ -192,6 +197,85 @@ async def test_delete_target_cannot_rebind_vp_to_reused_printer_id(
         await manager.sync_from_db()
         old.stop_proxy.assert_awaited_once()
         assert vp_id not in manager._instances
+
+
+async def test_delete_cleans_id_caches_before_a_failing_vp_sync(
+    async_client, db_session, printer_factory, monkeypatch, caplog
+):
+    import backend.app.api.routes.printers as printers_route
+    from backend.app.models.printer import Printer
+    from backend.app.services import ams_advertised_overlay, camera_metrics
+    from backend.app.services.virtual_printer import virtual_printer_manager
+
+    target = await printer_factory()
+    target_id = target.id
+    cleaned = []
+    monkeypatch.setattr(camera_metrics, "forget_printer", lambda pid: cleaned.append(("camera", pid)))
+    monkeypatch.setattr(ams_advertised_overlay, "forget_printer", lambda pid: cleaned.append(("overlay", pid)))
+    monkeypatch.setattr(printers_route, "forget_printer_rebuild", lambda pid: cleaned.append(("rebuild", pid)))
+
+    async def fail_sync():
+        cleaned.append(("sync", target_id))
+        raise RuntimeError("Synthetic VP sync failure")
+
+    sync = AsyncMock(side_effect=fail_sync)
+    monkeypatch.setattr(virtual_printer_manager, "sync_from_db", sync)
+    response = await async_client.delete(f"/api/v1/printers/{target_id}?delete_archives=false")
+    assert response.status_code == 200, response.text
+    assert await db_session.scalar(select(Printer.id).where(Printer.id == target_id)) is None
+    sync.assert_awaited_once()
+    assert cleaned == [(kind, target_id) for kind in ("camera", "overlay", "rebuild", "sync")]
+    assert "Failed to sync virtual printers after deleting printer" in caplog.text
+
+
+@pytest.mark.parametrize("bound", [False, True])
+@pytest.mark.parametrize("required,expected", [("0.6", True), ("0.8", False), ("0.4", True)])
+async def test_queue_selection_uses_h2c_feed_snapshot(
+    db_session, printer_factory, tmp_path, monkeypatch, bound, required, expected
+):
+    printer = await printer_factory(model="H2C")
+    db_session.add(PrinterQueue(printer_id=printer.id))
+    await db_session.commit()
+    mqtt = BambuMQTTClient("127.0.0.1", "SYNTHETICH2C", "00000000", model="H2C")
+    mqtt._client = MagicMock()
+    mqtt.state.connected = True
+    mqtt.state.state = "IDLE"
+    mqtt._process_message(
+        {
+            "print": {
+                "command": "push_status",
+                "device": {
+                    "nozzle": {
+                        "info": [
+                            {"id": 0, "diameter": 0.8, "type": "HS01", "sn": "N/A"},
+                            {"id": 1, "diameter": 0.4, "type": "HS01", "sn": "A1", "tm": 300},
+                            {"id": 16, "diameter": 0.6, "type": "HS01", "sn": "R0", "tm": 300},
+                        ]
+                    }
+                },
+            }
+        }
+    )
+    monkeypatch.setitem(printer_manager._clients, printer.id, mqtt)
+    monkeypatch.setitem(printer_manager._models, printer.id, "H2C")
+    snapshot = printer_manager.get_feed_snapshot(printer.id)
+    assert snapshot.nozzle_diameters == {0: (0.6,), 1: (0.4,)}
+    # The mounted state still carries the absent carriage's stale diameter.
+    assert mqtt.state.nozzles[0].nozzle_diameter == "0.8"
+    inst = VirtualPrinterInstance(
+        vp_id=1,
+        name="Rack",
+        mode="print_queue",
+        model="O1C",
+        access_code="00000000",
+        serial_suffix="000000001",
+        base_dir=tmp_path,
+        target_printer_id=printer.id if bound else None,
+    )
+    selected = await inst._find_best_queue(db_session, "H2C", required)
+    assert (selected is not None) is expected
+    if expected:
+        assert selected.printer_id == printer.id
 
 
 @pytest.mark.parametrize("target_mode", ["unbound", "online", "offline"])

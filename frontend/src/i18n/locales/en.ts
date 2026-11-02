@@ -10425,7 +10425,7 @@ export default {
       high_flow: 'High Flow',
       tpu_high_flow: 'TPU High Flow',
       e3d_high_flow: 'E3D High Flow',
-      hint: 'Advertises the main nozzle to the slicer. In this legacy format, Bambu Studio and Orca check diameter only; they do not display or check flow. This does not change any physical nozzle.',
+      hint: 'Advertises the main nozzle to the slicer. Source review of BambuStudio 2.8.2.61 and OrcaSlicer 2.4.2 indicates diameter-only checks, without displaying or checking flow; live Send verification is pending. This does not change any physical nozzle.',
       fromPrinter: 'Nozzle parameters come from {{name}}.',
       unbind: 'Unbind printer',
       unbindAutoStart: 'Unbinding also turns off auto-dispatch for this fixed-printer queue.',
