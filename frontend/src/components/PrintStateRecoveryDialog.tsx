@@ -95,7 +95,18 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
     } finally { setBusy(false); }
   };
 
-  return <Modal title={t(`printStateRecovery.actions.${action}`)} onClose={onClose} closeDisabled={busy} size="lg">
+  return <Modal title={t(`printStateRecovery.actions.${action}`)} onClose={onClose} closeDisabled={busy} size="lg"
+    alert={error || busy ? <div className="px-4 pb-3 space-y-1 text-sm">
+      {error && <p role="alert" className="text-red-600 dark:text-red-300">{error}</p>}
+      {busy && <p role="status">{t('common.loading')}</p>}
+    </div> : undefined}
+    footer={<>
+      <Button variant="secondary" onClick={onClose} disabled={busy}>{t(result ? 'common.close' : 'common.cancel')}</Button>
+      {!result && (preview
+        ? <Button variant={action === 'delete_stale_item' ? 'danger' : 'primary'} onClick={() => void apply()}
+          disabled={busy || !confirmed}>{t('printStateRecovery.apply')}</Button>
+        : <Button onClick={() => void prepare()} disabled={busy || (estimate && !completed)}>{t('printStateRecovery.preview')}</Button>)}
+    </>}>
     <div className="p-4 space-y-4 text-sm">
       <p className="break-words">{issue.printer_name} · {t('printStateRecovery.target', {
         item: issue.item_id ?? issue.context?.queue_item_id ?? '—', archive: issue.archive_id ?? '—',
@@ -117,7 +128,6 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
           <textarea className="mt-1 block w-full bg-bambu-dark border border-bambu-dark-tertiary rounded p-2"
             maxLength={500} value={note} onChange={e => setNote(e.target.value)} />
         </label>
-        <Button onClick={() => void prepare()} disabled={busy || (estimate && !completed)}>{t('printStateRecovery.preview')}</Button>
       </>}
       {preview && !result && <>
         {runtime && <RuntimeRelease preview={preview} />}
@@ -140,12 +150,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
           : !runtime && Object.keys(preview.after.queue).length > 0 && <p>{t('printStateRecovery.paused')}</p>}
         <label className="flex gap-2 items-start"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />
           <span>{t('printStateRecovery.confirm')}</span></label>
-        <Button variant={action === 'delete_stale_item' ? 'danger' : 'primary'} onClick={() => void apply()}
-          disabled={busy || !confirmed}>{t('printStateRecovery.apply')}</Button>
       </>}
-      {error && <p role="alert" className="text-red-600 dark:text-red-300">{error}</p>}
-      {busy && <p role="status">{t('common.loading')}</p>}
-      <Button variant="secondary" onClick={onClose} disabled={busy}>{t(result ? 'common.close' : 'common.cancel')}</Button>
     </div>
   </Modal>;
 }

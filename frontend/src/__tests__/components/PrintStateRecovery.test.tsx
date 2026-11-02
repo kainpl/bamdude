@@ -147,6 +147,18 @@ describe('Addressed recovery confirmation', () => {
     expect(vi.mocked(api.applyPrintState).mock.calls).toEqual([[7, 'opaque-preview'], [7, 'opaque-preview']]);
     expect(api.previewPrintState).toHaveBeenCalledTimes(1);
   });
+  it('keeps Cancel and each step’s action together in a spaced footer row', async () => {
+    const user = userEvent.setup();
+    render(<PrintStateRecoveryDialog issue={issue} action="align_terminal_item" onClose={vi.fn()} onApplied={vi.fn()} />);
+    for (const name of ['Preview change', 'Apply this change']) {
+      const action = await screen.findByRole('button', { name });
+      const row = screen.getByRole('button', { name: 'Cancel' }).parentElement;
+      // Flush inline buttons in the body's vertical stack touched each other (B7 screenshots).
+      expect(action.parentElement).toBe(row);
+      expect(row).toHaveClass('gap-2');
+      if (name === 'Preview change') await user.click(action);
+    }
+  });
   it('labels estimated archive ends, leaving ordinary archive cards unchanged', () => {
     const archive = { completed_at: '2026-10-01T12:00:00Z' } as Archive;
     const { rerender } = render(<RecoveryEndTime archive={archive} />);
