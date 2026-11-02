@@ -393,7 +393,10 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 
 ### Integrations
 
-The optional [AI assistant connection](https://docs.bamdude.top/addons/ai-assistants/) is in development: an embedded, key-only MCP server with capability discovery and a usage guide, separate diagnostic-key permissions, client packages and a setup panel. The base module does not yet provide farm diagnostics; see the guide for client verification status.
+The optional [AI assistant connection](https://docs.bamdude.top/addons/ai-assistants/) provides read-only MCP diagnostics: farm and printer status, service health, archive timelines, opt-in sanitized logs, persisted energy, recovery explanations and period summaries. It discovers the tools allowed by the key owner's permissions and printer scope, labels unknown or incomplete evidence, and leaves repairs to the operator in the normal UI.
+
+BamDude AI includes a setup panel, client packages and a shared diagnostic skill for Claude Desktop, Claude Code and Codex. MCP is disabled by default; each key must opt in, with a separate log-access permission. Your chosen client may send returned data to its model provider. This is development work after v0.7.2, not a claim that the published v0.7.2 includes MCP; see the [connection guide and support matrix](https://docs.bamdude.top/addons/ai-assistants/clients/) for verified clients and remaining limits.
+
 - **BamDude Cloud link (opt-in)** — pair the farm to the [cloud.bamdude.top](https://cloud.bamdude.top) portal and it reports outward: which of the printers you chose to publish are running, how far along, the events worth knowing, and a single camera frame on request. One-way by design — nothing prints from the portal, the request list is fixed in the version you installed, and the link can be cut from either side
 - **Server-side slicing** — OrcaSlicer + BambuStudio sidecar containers ship in the same Compose project (`--profile orca` / `--profile bambu` / `--profile all`); per-job slicer picker in the Slice modal with live reachability badges, bed-type override (Cool / Engineering / High-Temp / Textured PEI / SuperTack), inline multi-plate selection, owner-filter on preset dropdowns
 - Spoolman filament sync
