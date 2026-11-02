@@ -10,6 +10,11 @@ on:
     # Manual-trigger button in the Actions UI — useful for re-running on a
     # branch that hasn't hit main yet (e.g. to validate feature work against
     # CI before merging).
+    inputs:
+      frontend_tests_only:
+        description: 'Run only Frontend Tests on this ref'
+        type: boolean
+        default: false
 
 # Skip CI for PRs authored by repo owner (they run tests locally)
 # Uses PR author instead of triggering actor so rebasing by owner doesn't skip CI
@@ -23,7 +28,7 @@ env:
 
 # Cancel in-progress runs for the same branch
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}${{ inputs.frontend_tests_only && '-frontend-tests' || '' }}
   cancel-in-progress: true
 
 # Minimum permissions for all jobs
@@ -44,9 +49,12 @@ jobs:
     name: Check Duplicate
     runs-on: ubuntu-latest
     outputs:
-      should_skip: ${{ steps.skip.outputs.should_skip }}
+      # Targeted reruns skip the normal job roots, then enter frontend-tests
+      # directly. Push/PR/full manual runs retain the duplicate check.
+      should_skip: ${{ inputs.frontend_tests_only && 'true' || steps.skip.outputs.should_skip }}
     steps:
       - id: skip
+        if: ${{ !inputs.frontend_tests_only }}
         uses: fkirc/skip-duplicate-actions@v5
         with:
           concurrent_skipping: 'same_content_newer'
@@ -388,8 +396,12 @@ jobs:
   frontend-tests:
     name: Frontend Tests
     runs-on: ubuntu-latest
-    needs: [frontend-lint, frontend-typecheck]
-    if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
+    needs: [check-duplicate, frontend-lint, frontend-typecheck]
+    if: >-
+      !cancelled() &&
+      ((inputs.frontend_tests_only && needs.check-duplicate.result == 'success') ||
+       (needs.frontend-lint.result == 'success' && needs.frontend-typecheck.result == 'success')) &&
+      (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     steps:
       - uses: actions/checkout@v7
       - name: Set up Node.js
@@ -418,7 +430,7 @@ jobs:
     name: Frontend Build
     runs-on: ubuntu-latest
     needs: [frontend-tests]
-    if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
+    if: success() && !inputs.frontend_tests_only && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     steps:
       - uses: actions/checkout@v7
 

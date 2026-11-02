@@ -9,6 +9,7 @@ import { mcpKeyPreset } from '../../lib/mcpKeyPreset';
 import { Button } from '../Button';
 import { Card, CardContent, CardHeader } from '../Card';
 import { CopyButton } from '../CopyButton';
+import { Select } from '../Select';
 import { Toggle } from '../Toggle';
 
 const inputClass = 'w-full min-w-0 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-white focus:border-bambu-green focus:outline-none';
@@ -143,7 +144,7 @@ function McpSettingsContent() {
       </section>
       <section className="space-y-3 border-t border-bambu-dark-tertiary pt-5" aria-labelledby="mcp-client-heading">
         <h3 id="mcp-client-heading" className="font-medium text-white">{t('settings.mcp.clientStep')}</h3>
-        <label className="block text-sm text-bambu-gray">{t('settings.mcp.client')}<select className={`${inputClass} mt-1 max-w-md`} value={host} onChange={event => { setHost(event.target.value as Host); setSkillInstalled(false); }}>{hosts.map(id => <option key={id} value={id}>{t(`settings.mcp.hosts.${id}`)}</option>)}</select></label>
+        <label className="block text-sm text-bambu-gray">{t('settings.mcp.client')}<Select className="mt-1 w-full min-w-0 max-w-md" value={host} onChange={event => { setHost(event.target.value as Host); setSkillInstalled(false); }}>{hosts.map(id => <option key={id} value={id}>{t(`settings.mcp.hosts.${id}`)}</option>)}</Select></label>
         <p className="max-w-3xl text-sm text-amber-400">{t(host === 'chatgpt' ? 'settings.mcp.chatgptUnsupported' : host === 'codex' ? 'settings.mcp.codexVerified' : host === 'claude-code' ? 'settings.mcp.claudeCodeVerified' : 'settings.mcp.claudeDesktopVerified')}</p>
         {host !== 'chatgpt' && <>
           <p className="max-w-3xl text-sm text-bambu-gray">{t(`settings.mcp.instructions.${host}`)}</p>
@@ -170,7 +171,7 @@ function McpSettingsContent() {
       <section className="space-y-3 border-t border-bambu-dark-tertiary pt-5" aria-labelledby="mcp-check-heading">
         <h3 id="mcp-check-heading" className="font-medium text-white">{t('settings.mcp.checkStep')}</h3>
         <p className="max-w-3xl text-sm text-bambu-gray">{t('settings.mcp.firstRequest')}</p>
-        {hasPermission('api_keys:read') && <label className="block max-w-md text-sm text-bambu-gray">{t('settings.mcp.checkKey')}<select className={`${inputClass} mt-1`} value={keyId ?? ''} onChange={event => setKeyId(event.target.value ? Number(event.target.value) : null)}><option value="">{t('settings.mcp.chooseKey')}</option>{keys.data?.filter(key => key.enabled && key.can_access_mcp).map(key => <option value={key.id} key={key.id}>{key.name}</option>)}</select></label>}
+        {hasPermission('api_keys:read') && <label className="block max-w-md text-sm text-bambu-gray">{t('settings.mcp.checkKey')}<Select className="mt-1 w-full min-w-0" value={keyId ?? ''} onChange={event => setKeyId(event.target.value ? Number(event.target.value) : null)}><option value="">{t('settings.mcp.chooseKey')}</option>{keys.data?.filter(key => key.enabled && key.can_access_mcp).map(key => <option value={key.id} key={key.id}>{key.name}</option>)}</Select></label>}
         <div className="flex flex-wrap items-center gap-3"><Button variant="secondary" disabled={!canObserve || keyId === null || observed.isFetching} onClick={() => void observed.refetch()}>{t('settings.mcp.checkConnection')}</Button><p role="status" className={`text-sm ${connectionSeen ? 'text-bambu-green' : 'text-bambu-gray'}`}>{connectionSeen ? t('settings.mcp.observed', { time: new Date(connectionSeen).toLocaleString(i18n.language) }) : observed.isError ? t('settings.mcp.checkFailed') : t('settings.mcp.notObserved')}</p></div>
         {!canObserve && <p className="text-sm text-bambu-gray">{t('settings.mcp.askKeyManager')}</p>}
         <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={skillInstalled} onChange={event => setSkillInstalled(event.target.checked)} />{t('settings.mcp.skillInstalled')}</label>

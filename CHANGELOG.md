@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- AI setup uses the shared dropdown control for client and connection-key selection, matching the rest of Settings.
+
 - The print-state recovery dialog keeps Cancel and its Preview/Apply button together in the dialog footer, spaced apart; they no longer touch each other on any screen width. Errors and the loading notice stay beside them.
 
 - MCP printer inspection and overview no longer label a legacy queue display row as the current job when printing rows or the queue header disagree. They leave current job identity unknown, report the inconsistency and link to inspection without changing the queue or the normal monitor display.
