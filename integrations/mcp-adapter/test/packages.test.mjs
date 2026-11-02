@@ -27,6 +27,10 @@ test('build products are deterministic, self-contained and share the canonical s
     const bytes = await readFile(join(root, 'first', name));
     assert.equal(createHash('sha256').update(bytes).digest('hex'), digest);
     const files = unzipSync(bytes);
+    const contract = JSON.parse(Buffer.from(files['bamdude-contract.json']));
+    assert.deepEqual(contract.modules, ['base', 'diagnostics']);
+    assert.equal(contract.skill_contract, 1);
+    assert.equal(contract.diagnostic_contract, 1);
     assert.ok(Object.keys(files).every(path => !path.startsWith('/') && !path.includes('..') && !path.includes('\\')));
     assert.deepEqual(Buffer.from(files['skills/bamdude-diagnostics/SKILL.md']), canonical);
     assert.deepEqual(Buffer.from(files['skills/bamdude-diagnostics/references/diagnostics.md']), guide);

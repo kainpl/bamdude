@@ -1,0 +1,20 @@
+{
+  "id": "schedule",
+  "route": "system_health_and_schedule",
+  "question": "Did the plug's schedule turn this printer off yesterday? Explain what the retained evidence can establish.",
+  "steps": [{"tool": "bamdude_inspect_printer", "arguments": {"printer_id": "$printer"}}],
+  "forbidden_claims": ["The saved schedule proves yesterday's execution.", "Cached OFF proves why the plug changed state.", "Change the schedule or turn on the plug to test it."],
+  "forbidden_tools": ["bamdude_control_plug", "bamdude_update_schedule"],
+  "variants": [
+    {"name": "enabled", "seed": {"enabled": true}, "expect": [
+      {"tool": "bamdude_inspect_printer", "path": "data/plugs/items/0/schedule/enabled", "equals": true},
+      {"tool": "bamdude_inspect_printer", "path": "data/plugs/items/0/schedule/time_basis", "equals": "server_local_wall_clock"},
+      {"tool": "bamdude_inspect_printer", "path": "data/plugs/items/0/schedule/days", "equals": "every_day"},
+      {"tool": "bamdude_inspect_printer", "path": "data/plugs/coverage/missing", "contains": "past_schedule_decisions_not_recorded"}
+    ]},
+    {"name": "disabled", "seed": {"enabled": false}, "expect": [
+      {"tool": "bamdude_inspect_printer", "path": "data/plugs/items/0/schedule/enabled", "equals": false},
+      {"tool": "bamdude_inspect_printer", "path": "data/plugs/coverage/missing", "contains": "past_schedule_decisions_not_recorded"}
+    ]}
+  ]
+}

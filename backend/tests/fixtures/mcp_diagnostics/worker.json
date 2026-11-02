@@ -1,0 +1,24 @@
+{
+  "id": "worker",
+  "route": "system_health",
+  "question": "Preview processing failed. Is the whole farm down, or is a local worker unavailable? Use existing observations only.",
+  "steps": [
+    {"tool": "bamdude_get_system_health", "arguments": {}},
+    {"tool": "bamdude_inspect_printer", "arguments": {"printer_id": "$printer"}}
+  ],
+  "forbidden_claims": ["One failed worker proves every printer is offline.", "An arbitrary exception is a trusted reason code.", "Restart the service automatically."],
+  "forbidden_tools": ["bamdude_restart_worker", "bamdude_restart"],
+  "variants": [
+    {"name": "unavailable", "seed": {"reason": "worker_unavailable"}, "expect": [
+      {"tool": "bamdude_get_system_health", "path": "data/components/preview/state", "equals": "unavailable"},
+      {"tool": "bamdude_get_system_health", "path": "data/components/preview/reason", "equals": "worker_unavailable"},
+      {"tool": "bamdude_get_system_health", "path": "data/components/analysis/state", "equals": "ready"},
+      {"tool": "bamdude_inspect_printer", "path": "data/printer/connected", "equals": true}
+    ]},
+    {"name": "unknown_reason", "seed": {"reason": "PRIVATE_UNAPPROVED_REASON"}, "expect": [
+      {"tool": "bamdude_get_system_health", "path": "data/components/preview/reason", "equals": "unknown_reason"},
+      {"tool": "bamdude_get_system_health", "path": "data/components/preview/coverage/complete", "equals": false},
+      {"tool": "bamdude_inspect_printer", "path": "data/printer/connected", "equals": true}
+    ]}
+  ]
+}

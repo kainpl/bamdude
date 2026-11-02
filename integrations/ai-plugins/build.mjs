@@ -53,7 +53,7 @@ export async function buildPackages(output) {
   const common = {
     'README.md': await readFile(join(here, 'README.package.md')),
     'LICENSE': await readFile(join(root, 'LICENSE')),
-    'bamdude-contract.json': json({ package_version: version, min_bamdude: version, diagnostic_contract: 1, skill_contract: 1, modules: ['base'] }),
+    'bamdude-contract.json': json({ package_version: version, min_bamdude: version, diagnostic_contract: 1, skill_contract: 1, modules: ['base', 'diagnostics'] }),
     'skills/bamdude-diagnostics/SKILL.md': skill,
     'skills/bamdude-diagnostics/references/diagnostics.md': guide,
   };
