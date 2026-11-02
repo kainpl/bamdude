@@ -15771,6 +15771,8 @@ export interface VirtualPrinterConfig {
   mode: VirtualPrinterMode;
   model: string | null;
   model_name: string | null;
+  nozzle_diameter: VPNozzleDiameter;
+  nozzle_flow: VPNozzleFlow;
   access_code_set: boolean;
   serial: string;
   target_printer_id: number | null;
@@ -15816,6 +15818,9 @@ export interface VirtualPrinterListResponse {
   models: Record<string, string>;
 }
 
+export type VPNozzleDiameter = '0.2' | '0.4' | '0.6' | '0.8';
+export type VPNozzleFlow = 'standard' | 'high_flow' | 'tpu_high_flow' | 'e3d_high_flow';
+
 export const multiVirtualPrinterApi = {
   list: () => request<VirtualPrinterListResponse>('/virtual-printers'),
 
@@ -15835,6 +15840,8 @@ export const multiVirtualPrinterApi = {
     enabled?: boolean;
     mode?: string;
     model?: string;
+    nozzle_diameter?: VPNozzleDiameter;
+    nozzle_flow?: VPNozzleFlow;
     access_code?: string;
     target_printer_id?: number;
     target_folder_id?: number;
@@ -15856,6 +15863,8 @@ export const multiVirtualPrinterApi = {
     enabled?: boolean;
     mode?: string;
     model?: string;
+    nozzle_diameter?: VPNozzleDiameter;
+    nozzle_flow?: VPNozzleFlow;
     access_code?: string;
     target_printer_id?: number;
     /** Explicitly null out target_printer_id (Pydantic can't distinguish "absent" from "null"). */

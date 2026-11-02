@@ -43,6 +43,9 @@ class VirtualPrinter(Base):
     # exactly today's behaviour.
     save_ams_mapping: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     model: Mapped[str | None] = mapped_column(String(50), nullable=True)  # SSDP model code (server mode)
+    # Advertised main nozzle only when unbound. Bound VPs mirror the target.
+    nozzle_diameter: Mapped[str] = mapped_column(String(3), default="0.4", server_default="0.4")
+    nozzle_flow: Mapped[str] = mapped_column(String(20), default="standard", server_default="standard")
     access_code: Mapped[str | None] = mapped_column(String(8), nullable=True)  # 8 chars (server mode)
     target_printer_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("printers.id", ondelete="SET NULL"), nullable=True

@@ -10417,6 +10417,20 @@ export default {
     },
   },
   virtualPrinter: {
+    nozzle: {
+      diameter: 'Nozzle diameter',
+      flow: 'Flow type',
+      main: 'Main (right) nozzle',
+      standard: 'Standard',
+      high_flow: 'High Flow',
+      tpu_high_flow: 'TPU High Flow',
+      e3d_high_flow: 'E3D High Flow',
+      hint: 'Advertises the main nozzle to the slicer. In this legacy format, Bambu Studio and Orca check diameter only; they do not display or check flow. This does not change any physical nozzle.',
+      fromPrinter: 'Nozzle parameters come from {{name}}.',
+      unbind: 'Unbind printer',
+      unbindAutoStart: 'Unbinding also turns off auto-dispatch for this fixed-printer queue.',
+      restartHint: 'Restart the slicer after binding or unbinding a printer. Reconnecting alone can retain its old nozzle information.',
+    },
     title: 'Virtual Printer',
     caCert: {
       title: 'Slicer certificate',

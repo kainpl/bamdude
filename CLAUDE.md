@@ -82,6 +82,8 @@ Each `mNNN_*.py` has `version`, `name`, `async def upgrade(conn)` (DDL), optiona
 
 ## Key Invariants
 
+VP nozzle authority follows the target binding, never bridge connectivity. Bound instances pass through real nozzle data or explicitly report unknown while cold; unbound instances advertise the saved main-nozzle pair without flow capability bits or invented dual/rack topology. Pair changes are hot updates; deleting a printer explicitly detaches VP targets before its id can be reused. Queue selection skips only positively mismatched diameters and does not replace final dispatch checks. Vault: `40-invariants/inv-vp-nozzle-follows-binding.md`.
+
 MCP current-job identity is not the monitor's display choice. Conflicting printing rows, a broken header link or a displayed item that disagrees with the header leave `current_job` unknown and produce a diagnostic warning; no reader chooses a replacement physical run or changes the normal monitor projection. Vault: `40-invariants/inv-mcp-authority-is-request-local.md`.
 
 MCP period totals apply printer scope before SQL aggregation and paging, using normal statistics outcome predicates and created-at selection. Full-selection totals repeat, never become page sums, and remain separate from bounded printer details. Synthetic ends are estimates, unknown energy/cost is not zero, and overlapping selected intervals do not establish utilization, idle time or operator performance. Vault: `40-invariants/inv-mcp-authority-is-request-local.md`.

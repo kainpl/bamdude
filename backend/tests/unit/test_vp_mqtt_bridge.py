@@ -935,9 +935,10 @@ class TestStatusReportCachedAsBase:
         await server._send_status_report(MagicMock())
         assert len(published) == 1
         _serial, payload = published[0]
-        # Synthetic baseline has stub fields like nozzle_type='hardened_steel'
-        # and a `storage` field that the real H2D doesn't push.
-        assert payload["print"]["nozzle_type"] == "hardened_steel"
+        # The upload/storage stub remains, but a cold binding must explicitly
+        # clear any former manual nozzle retained by the slicer (GH106 C2).
+        assert payload["print"]["nozzle_type"] == "N/A"
+        assert payload["print"]["nozzle_diameter"] == "0.0"
         assert "storage" in payload["print"]
 
     @pytest.mark.asyncio

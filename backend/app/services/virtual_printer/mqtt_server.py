@@ -105,6 +105,9 @@ class SimpleMQTTServer:
         model: str = "",
         bind_address: str = "0.0.0.0",  # nosec B104
         vp_name: str = "",
+        nozzle_diameter: str = "0.4",
+        nozzle_flow: str = "standard",
+        has_target: bool = False,
     ):
         self.serial = serial
         self.access_code = access_code
@@ -115,6 +118,10 @@ class SimpleMQTTServer:
         self.on_print_command = on_print_command
         self.bind_address = bind_address
         self.vp_name = vp_name
+        self.nozzle_diameter = nozzle_diameter
+        self.nozzle_flow = nozzle_flow
+        # A cold/offline target must not become an unbound synthetic printer.
+        self.has_target = has_target
         self._log_prefix = f"[{vp_name}] " if vp_name else ""
         self._running = False
         self._server = None
@@ -761,6 +768,15 @@ class SimpleMQTTServer:
                 # the protocol / upload-state fields with values under our
                 # control.
                 print_block = dict(cached)
+                device = cached.get("device")
+                if not (
+                    ("nozzle_diameter" in cached and "nozzle_type" in cached)
+                    or (isinstance(device, dict) and device.get("nozzle"))
+                ):
+                    # Missing keys retain the slicer's previous (possibly manual)
+                    # nozzle. Explicit unknown clears it until the target reports.
+                    print_block["nozzle_diameter"] = "0.0"
+                    print_block["nozzle_type"] = "N/A"
                 print_block["sequence_id"] = str(self._sequence_id)
                 print_block["command"] = "push_status"
                 print_block["msg"] = 0
@@ -823,7 +839,16 @@ class SimpleMQTTServer:
                 await self._publish_to_report(writer, status, serial or self.serial)
                 return
 
-            # No bridge / no cache yet — fall back to the synthetic stub.
+            # Keep the upload stub while a bound target is cold, but explicitly
+            # clear the former nozzle instead of pretending it is user-defined.
+            if self.has_target or self._bridge is not None:
+                nozzle_diameter, nozzle_type = "0.0", "N/A"
+            else:
+                nozzle_diameter = self.nozzle_diameter
+                letter = {"standard": "S", "high_flow": "H", "tpu_high_flow": "U", "e3d_high_flow": "B"}[
+                    self.nozzle_flow
+                ]
+                nozzle_type = f"H{letter}01"
             status = {
                 "print": {
                     "sequence_id": str(self._sequence_id),
@@ -892,8 +917,8 @@ class SimpleMQTTServer:
                         "spaghetti_detector": True,
                     },
                     "lights_report": [{"node": "chamber_light", "mode": "on"}],
-                    "nozzle_diameter": "0.4",
-                    "nozzle_type": "hardened_steel",
+                    "nozzle_diameter": nozzle_diameter,
+                    "nozzle_type": nozzle_type,
                 }
             }
 

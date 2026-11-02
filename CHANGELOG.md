@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Virtual printers without a target now let the operator choose the main-nozzle diameter and flow. Bound VPs use the real printer's nozzle data; before its first report they explicitly advertise unknown, which blocks Send in Bambu Studio but is accepted by Orca. The legacy VP protocol checks diameter only, not flow. Binding changes require a slicer restart. Unbind remains available in every mode, deleting a printer clears its VP links, and queue selection skips positively mismatched nozzle diameters while leaving unknown hardware to the final dispatch checks.
+
 - The bundled Node.js runtime for part thumbnails is updated to the verified 24.22.2 patch. The existing Node 22 line for 32-bit ARM and the golden render images are unchanged.
 
 - Queue remaining time carries rounded minutes into hours, showing `2h` instead of `1h 60m` at an hour boundary. The underlying farm forecast is unchanged.

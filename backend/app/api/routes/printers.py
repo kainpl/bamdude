@@ -981,7 +981,8 @@ async def delete_printer(
     # Nullable FKs are deliberately absent: a smart plug, a notification
     # provider or a usage-history row survives its printer with ``printer_id``
     # nulled, which is what ``ondelete="SET NULL"`` asks for and what the ORM
-    # already does.
+    # already does where it owns a relationship. VP targets have no such
+    # relationship and are explicitly detached below.
     from backend.app.services.sensor_target_lock import lock_sensor_target
 
     if not await lock_sensor_target(db, "printers", printer_id):
@@ -1015,8 +1016,21 @@ async def delete_printer(
 
     # SQLite runs no FK actions: its drying rules and runs go in code.
     await scheduled_drying.forget_printer(db, printer_id, archived=False, commit=False)
+    # SQLite does not run SET NULL and Printer has no VP relationship. Clear
+    # explicitly before the id can be reused by a different physical machine.
+    from sqlalchemy import update
+
+    from backend.app.models.virtual_printer import VirtualPrinter
+
+    await db.execute(
+        update(VirtualPrinter).where(VirtualPrinter.target_printer_id == printer_id).values(target_printer_id=None)
+    )
     await db.delete(printer)
     await db.commit()
+
+    from backend.app.services.virtual_printer import virtual_printer_manager
+
+    await virtual_printer_manager.sync_from_db()
 
     from backend.app.services.camera_metrics import forget_printer
 

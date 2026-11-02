@@ -15,6 +15,8 @@ import { useToast } from '../contexts/ToastContext';
 import { FolderTreeSelect } from './FolderTreeSelect';
 import { Select } from './Select';
 import { modelCompatibility } from '../utils/modelCompatibility';
+import { VirtualPrinterNozzleFields } from './VirtualPrinterNozzleFields';
+import { isDualNozzleModel } from '../utils/printerCapabilities';
 
 type LocalMode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 type DisplayMode = 'print_queue' | 'file_manager' | 'proxy';
@@ -56,6 +58,8 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const [localBindIp, setLocalBindIp] = useState(printer.bind_ip || '');
   const [localRemoteInterfaceIp, setLocalRemoteInterfaceIp] = useState(printer.remote_interface_ip || '');
   const [localModel, setLocalModel] = useState(printer.model || '');
+  const [localNozzleDiameter, setLocalNozzleDiameter] = useState(printer.nozzle_diameter ?? '0.4');
+  const [localNozzleFlow, setLocalNozzleFlow] = useState(printer.nozzle_flow ?? 'standard');
   const [localAutoDispatch, setLocalAutoDispatch] = useState(printer.auto_dispatch ?? true);
   const [localQueueForceColorMatch, setLocalQueueForceColorMatch] = useState(printer.queue_force_color_match ?? false);
   const [localGcodeInjection, setLocalGcodeInjection] = useState(printer.gcode_injection ?? false);
@@ -77,6 +81,8 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
       setLocalBindIp(printer.bind_ip || '');
       setLocalRemoteInterfaceIp(printer.remote_interface_ip || '');
       setLocalModel(printer.model || '');
+      setLocalNozzleDiameter(printer.nozzle_diameter ?? '0.4');
+      setLocalNozzleFlow(printer.nozzle_flow ?? 'standard');
       setLocalAutoDispatch(printer.auto_dispatch ?? true);
       setLocalQueueForceColorMatch(printer.queue_force_color_match ?? false);
       setLocalGcodeInjection(printer.gcode_injection ?? false);
@@ -209,21 +215,20 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const handleModeChange = (mode: LocalMode) => {
     setLocalMode(mode);
     setPendingAction('mode');
-    // When switching to auto_queue, target_printer_id becomes irrelevant —
-    // clear it both locally and on the backend so a stale value can't sneak
-    // back in if the operator later flips the toggle off.
-    if (mode === 'auto_queue' && localTargetPrinterId !== null) {
-      setLocalTargetPrinterId(null);
-      updateMutation.mutate({ mode, clear_target_printer: true });
-    } else {
-      updateMutation.mutate({ mode });
-    }
+    // The target also owns mirroring and command forwarding in auto mode.
+    // Only the explicit Unbind action removes it.
+    updateMutation.mutate({ mode });
   };
 
   const handleClearTargetPrinter = () => {
     setLocalTargetPrinterId(null);
     setPendingAction('targetPrinter');
-    updateMutation.mutate({ clear_target_printer: true });
+    if (localMode === 'print_queue' && localAutoDispatch) {
+      setLocalAutoDispatch(false);
+      updateMutation.mutate({ clear_target_printer: true, auto_dispatch: false });
+    } else {
+      updateMutation.mutate({ clear_target_printer: true });
+    }
   };
 
   const handleModelChange = (model: string) => {
@@ -658,6 +663,32 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                 </Select>
               </div>
             )}
+
+            {localTargetPrinterId !== null ? (
+              <div className="space-y-2">
+                <p className="text-sm text-white">{t('virtualPrinter.nozzle.fromPrinter', { name: targetPrinterName ?? `#${localTargetPrinterId}` })}</p>
+                <Button variant="secondary" onClick={handleClearTargetPrinter} disabled={pendingAction !== null}>
+                  {t('virtualPrinter.nozzle.unbind')}
+                </Button>
+                {localMode === 'print_queue' && localAutoDispatch && (
+                  <p className="text-xs text-bambu-gray">{t('virtualPrinter.nozzle.unbindAutoStart')}</p>
+                )}
+              </div>
+            ) : localMode !== 'proxy' && (
+              <VirtualPrinterNozzleFields diameter={localNozzleDiameter} flow={localNozzleFlow}
+                mainOnly={isDualNozzleModel(models[localModel])} disabled={pendingAction !== null}
+                onDiameterChange={(value) => {
+                  setLocalNozzleDiameter(value);
+                  setPendingAction('nozzle');
+                  updateMutation.mutate({ nozzle_diameter: value });
+                }}
+                onFlowChange={(value) => {
+                  setLocalNozzleFlow(value);
+                  setPendingAction('nozzle');
+                  updateMutation.mutate({ nozzle_flow: value });
+                }} />
+            )}
+            <p className="text-xs text-bambu-gray">{t('virtualPrinter.nozzle.restartHint')}</p>
 
             {/* Proxy mode: hint about using target printer's access code */}
             {localMode === 'proxy' && (

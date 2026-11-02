@@ -6,6 +6,7 @@ bound to its dedicated IP address, regardless of mode.
 
 import asyncio
 import logging
+import math
 import time
 import uuid
 from collections.abc import Callable
@@ -194,6 +195,8 @@ class VirtualPrinterInstance:
         queue_force_color_match: bool = False,
         gcode_injection: bool = False,
         save_ams_mapping: bool = False,
+        nozzle_diameter: str = "0.4",
+        nozzle_flow: str = "standard",
         bind_ip: str = "",
         remote_interface_ip: str = "",
         tailscale_disabled: bool = True,
@@ -217,6 +220,8 @@ class VirtualPrinterInstance:
         self.queue_force_color_match = queue_force_color_match
         self.gcode_injection = gcode_injection
         self.save_ams_mapping = save_ams_mapping
+        self.nozzle_diameter = nozzle_diameter
+        self.nozzle_flow = nozzle_flow
         self.bind_ip = bind_ip
         self.remote_interface_ip = remote_interface_ip
         self.tailscale_disabled = tailscale_disabled
@@ -1008,11 +1013,13 @@ class VirtualPrinterInstance:
             )
 
             sliced_model = None
+            sliced_nozzle = None
             if isinstance(library_file.file_metadata, dict):
                 sliced_model = library_file.file_metadata.get("sliced_for_model")
+                sliced_nozzle = library_file.file_metadata.get("nozzle_diameter")
 
             async with self._session_factory() as db:
-                queue = await self._find_best_queue(db, sliced_model)
+                queue = await self._find_best_queue(db, sliced_model, sliced_nozzle)
                 if not queue:
                     # File already in library; just no auto-queue placement.
                     # Operator can pick it up from the File Manager and queue
@@ -1605,7 +1612,7 @@ class VirtualPrinterInstance:
                     return indices
         return [None]
 
-    async def _find_best_queue(self, db, sliced_model: str | None):
+    async def _find_best_queue(self, db, sliced_model: str | None, sliced_nozzle: float | str | None = None):
         """Find the best printer queue for this job.
 
         If target_printer_id is set, online, and model-compatible → use it.
@@ -1629,8 +1636,16 @@ class VirtualPrinterInstance:
         from backend.app.models.printer import Printer
         from backend.app.models.printer_queue import PrinterQueue
         from backend.app.models.settings import Settings
+        from backend.app.services.print_scheduler import _installed_nozzle_diameters, _nozzle_mismatch_message
         from backend.app.services.printer_manager import printer_manager
         from backend.app.utils.model_compatibility import model_compatibility
+
+        try:
+            sliced_nozzle = float(sliced_nozzle) if sliced_nozzle is not None else None
+        except (TypeError, ValueError):
+            sliced_nozzle = None
+        if sliced_nozzle is not None and (not math.isfinite(sliced_nozzle) or sliced_nozzle <= 0):
+            sliced_nozzle = None
 
         # If explicit target is set and printer is online, use it directly
         if self.target_printer_id:
@@ -1644,6 +1659,7 @@ class VirtualPrinterInstance:
                 row = result.one_or_none()
                 if (
                     row
+                    and not _nozzle_mismatch_message(sliced_nozzle, _installed_nozzle_diameters(state))
                     and model_compatibility(
                         sliced_model,
                         printer_manager.effective_model_for(self.target_printer_id, row[1]),
@@ -1653,7 +1669,7 @@ class VirtualPrinterInstance:
                     queue = row[0]
                     return queue
             logger.info(
-                "[VP %s] Target printer %s unavailable or model-incompatible, searching alternatives",
+                "[VP %s] Target printer %s unavailable or incompatible, searching alternatives",
                 self.name,
                 self.target_printer_id,
             )
@@ -1678,6 +1694,8 @@ class VirtualPrinterInstance:
         for queue, physical_model in matching_queues:
             state = printer_manager.get_status(queue.printer_id)
             if not state or not state.connected:
+                continue
+            if _nozzle_mismatch_message(sliced_nozzle, _installed_nozzle_diameters(state)):
                 continue
             verdict = model_compatibility(
                 sliced_model,
@@ -1815,6 +1833,9 @@ class VirtualPrinterInstance:
             model=self.model or DEFAULT_VIRTUAL_PRINTER_MODEL,
             bind_address=bind_addr,
             vp_name=self.name,
+            nozzle_diameter=self.nozzle_diameter,
+            nozzle_flow=self.nozzle_flow,
+            has_target=self.target_printer_id is not None,
         )
         self._tasks.append(
             asyncio.create_task(
@@ -2235,6 +2256,14 @@ class VirtualPrinterManager:
             if not instance:
                 continue
 
+            # Advertised nozzle changes are hot updates, not reasons to drop
+            # slicer/FTP sessions. Saved values remain inert while bound.
+            instance.nozzle_diameter = vp.nozzle_diameter
+            instance.nozzle_flow = vp.nozzle_flow
+            if instance._mqtt is not None:
+                instance._mqtt.nozzle_diameter = vp.nozzle_diameter
+                instance._mqtt.nozzle_flow = vp.nozzle_flow
+
             # Proxy mode: detect a target-printer IP / serial change picked up by
             # the ``proxy_ips`` resolve above. Without this a DHCP renewal that
             # hands the target a new IP leaves the running proxy forwarding to
@@ -2304,6 +2333,8 @@ class VirtualPrinterManager:
                     queue_force_color_match=vp.queue_force_color_match,
                     gcode_injection=vp.gcode_injection,
                     save_ams_mapping=vp.save_ams_mapping,
+                    nozzle_diameter=vp.nozzle_diameter,
+                    nozzle_flow=vp.nozzle_flow,
                     bind_ip=vp.bind_ip or "",
                     remote_interface_ip=vp.remote_interface_ip or "",
                     tailscale_disabled=vp.tailscale_disabled,
@@ -2328,6 +2359,8 @@ class VirtualPrinterManager:
                     queue_force_color_match=vp.queue_force_color_match,
                     gcode_injection=vp.gcode_injection,
                     save_ams_mapping=vp.save_ams_mapping,
+                    nozzle_diameter=vp.nozzle_diameter,
+                    nozzle_flow=vp.nozzle_flow,
                     bind_ip=vp.bind_ip or "",
                     remote_interface_ip=vp.remote_interface_ip or "",
                     tailscale_disabled=vp.tailscale_disabled,

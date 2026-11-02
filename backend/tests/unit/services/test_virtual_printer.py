@@ -1240,6 +1240,8 @@ class TestVirtualPrinterManager:
             # comparison, and the third that would restart every VP on every
             # sync if left as a truthy MagicMock attribute.
             "save_ams_mapping": False,
+            "nozzle_diameter": "0.4",
+            "nozzle_flow": "standard",
             "tailscale_disabled": True,
             "position": 0,
         }

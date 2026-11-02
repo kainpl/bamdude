@@ -12,6 +12,7 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { VirtualPrinterCard } from '../../components/VirtualPrinterCard';
+import { VirtualPrinterAddDialog } from '../../components/VirtualPrinterAddDialog';
 import type { VirtualPrinterConfig } from '../../api/client';
 
 // Mock the API client
@@ -19,12 +20,15 @@ vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
   getAuthToken: vi.fn(() => 'test-admin-token'),
   multiVirtualPrinterApi: {
+    create: vi.fn().mockResolvedValue({}),
     update: vi.fn().mockResolvedValue({}),
     remove: vi.fn().mockResolvedValue({}),
   },
   api: {
     getSettings: vi.fn().mockResolvedValue({}),
     getPrinters: vi.fn().mockResolvedValue([]),
+    getModelCompatibility: vi.fn().mockResolvedValue({ models: {} }),
+    getLibraryFolders: vi.fn().mockResolvedValue([]),
     getNetworkInterfaces: vi.fn().mockResolvedValue({ interfaces: [] }),
   },
 }));
@@ -44,6 +48,8 @@ const createMockPrinter = (overrides: Partial<VirtualPrinterConfig> = {}): Virtu
   save_ams_mapping: false,
   model: 'BL-P001',
   model_name: 'X1C',
+  nozzle_diameter: '0.4',
+  nozzle_flow: 'standard',
   access_code_set: false,
   serial: '00M00A391800001',
   target_printer_id: null,
@@ -57,6 +63,72 @@ const createMockPrinter = (overrides: Partial<VirtualPrinterConfig> = {}): Virtu
   position: 0,
   status: { running: false, pending_files: 0 },
   ...overrides,
+});
+
+describe('VirtualPrinter nozzle configuration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(multiVirtualPrinterApi.update).mockResolvedValue(createMockPrinter());
+  });
+
+  it('saves a selected diameter and flow separately on an unbound VP', async () => {
+    const user = userEvent.setup();
+    render(<VirtualPrinterCard printer={createMockPrinter()} models={models} />);
+    await user.selectOptions(screen.getByLabelText('Nozzle diameter'), '0.6');
+    await waitFor(() => expect(multiVirtualPrinterApi.update).toHaveBeenCalledWith(1, { nozzle_diameter: '0.6' }));
+    await user.selectOptions(screen.getByLabelText('Flow type'), 'e3d_high_flow');
+    await waitFor(() => expect(multiVirtualPrinterApi.update).toHaveBeenCalledWith(1, { nozzle_flow: 'e3d_high_flow' }));
+    expect(screen.getByText(/they do not display or check flow/)).toBeInTheDocument();
+  });
+
+  it('restores the saved value after a failed save', async () => {
+    vi.mocked(multiVirtualPrinterApi.update).mockRejectedValueOnce(new Error('Synthetic save failure'));
+    const user = userEvent.setup();
+    render(<VirtualPrinterCard printer={createMockPrinter()} models={models} />);
+    await user.selectOptions(screen.getByLabelText('Nozzle diameter'), '0.6');
+    await waitFor(() => expect(screen.getByText('Synthetic save failure')).toBeInTheDocument());
+    expect(screen.getByLabelText('Nozzle diameter')).toHaveValue('0.4');
+  });
+
+  it.each(['file_manager', 'auto_queue', 'proxy'] as const)('offers Unbind for a hidden target in %s', async (mode) => {
+    const user = userEvent.setup();
+    render(<VirtualPrinterCard printer={createMockPrinter({ mode, target_printer_id: 12 })} models={models} />);
+    expect(screen.getByText('Nozzle parameters come from #12.')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Nozzle diameter')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Unbind printer' }));
+    expect(multiVirtualPrinterApi.update).toHaveBeenCalledWith(1, { clear_target_printer: true });
+  });
+
+  it('makes fixed-queue unbinding valid by turning off its auto-dispatch', async () => {
+    const user = userEvent.setup();
+    render(<VirtualPrinterCard printer={createMockPrinter({ mode: 'print_queue', target_printer_id: 12 })} models={models} />);
+    expect(screen.getByText(/Unbinding also turns off auto-dispatch/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Unbind printer' }));
+    expect(multiVirtualPrinterApi.update).toHaveBeenCalledWith(1, { clear_target_printer: true, auto_dispatch: false });
+  });
+
+  it('keeps a target while switching to auto-select', async () => {
+    const user = userEvent.setup();
+    render(<VirtualPrinterCard printer={createMockPrinter({ mode: 'print_queue', target_printer_id: 12 })} models={models} />);
+    const title = screen.getByText('Auto-select printer');
+    await user.click(title.closest('.flex.items-center.justify-between')!.querySelector('button')!);
+    expect(multiVirtualPrinterApi.update).toHaveBeenCalledWith(1, { mode: 'auto_queue' });
+    expect(multiVirtualPrinterApi.update).not.toHaveBeenCalledWith(1, expect.objectContaining({ clear_target_printer: true }));
+  });
+
+  it('labels the main nozzle on a dual model', () => {
+    render(<VirtualPrinterCard printer={createMockPrinter({ model: 'O1D' })} models={{ O1D: 'H2D' }} />);
+    expect(screen.getByText('Main (right) nozzle')).toBeInTheDocument();
+  });
+
+  it('includes the chosen pair when creating a VP', async () => {
+    const user = userEvent.setup();
+    render(<VirtualPrinterAddDialog onClose={vi.fn()} />);
+    await user.selectOptions(screen.getByLabelText('Nozzle diameter'), '0.6');
+    await user.selectOptions(screen.getByLabelText('Flow type'), 'high_flow');
+    await user.click(screen.getByRole('button', { name: /Create/ }));
+    expect(multiVirtualPrinterApi.create).toHaveBeenCalledWith(expect.objectContaining({ nozzle_diameter: '0.6', nozzle_flow: 'high_flow' }));
+  });
 });
 
 describe('VirtualPrinterCard - auto-dispatch toggle', () => {

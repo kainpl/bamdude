@@ -3,10 +3,12 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, ArrowRightLeft } from 'lucide-react';
 import { api, multiVirtualPrinterApi } from '../api/client';
+import type { VPNozzleDiameter, VPNozzleFlow } from '../api/client';
 import { Button } from './Button';
 import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
 import { Select } from './Select';
+import { VirtualPrinterNozzleFields } from './VirtualPrinterNozzleFields';
 
 type Mode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 type DisplayMode = 'print_queue' | 'file_manager' | 'proxy';
@@ -33,6 +35,8 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
   const [name, setName] = useState('');
   const [mode, setMode] = useState<Mode>('file_manager');
   const [targetPrinterId, setTargetPrinterId] = useState<number | null>(null);
+  const [nozzleDiameter, setNozzleDiameter] = useState<VPNozzleDiameter>('0.4');
+  const [nozzleFlow, setNozzleFlow] = useState<VPNozzleFlow>('standard');
 
   const { data: printers } = useQuery({
     queryKey: ['printers'],
@@ -44,6 +48,8 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
       multiVirtualPrinterApi.create({
         name: name.trim() || 'BamDude',
         mode,
+        nozzle_diameter: nozzleDiameter,
+        nozzle_flow: nozzleFlow,
         target_printer_id: mode === 'proxy' ? (targetPrinterId ?? undefined) : undefined,
       }),
     onSuccess: () => {
@@ -151,6 +157,11 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
               ))}
             </Select>
           </div>
+        )}
+
+        {mode !== 'proxy' && (
+          <VirtualPrinterNozzleFields diameter={nozzleDiameter} flow={nozzleFlow}
+            onDiameterChange={setNozzleDiameter} onFlowChange={setNozzleFlow} disabled={createMutation.isPending} />
         )}
 
         <p className="text-xs text-bambu-gray">

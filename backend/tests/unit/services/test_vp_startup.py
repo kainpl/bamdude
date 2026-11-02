@@ -29,6 +29,7 @@ def startup(tmp_path, monkeypatch):
 
     class Listener:
         def __init__(self, name, **kwargs):
+            self.kwargs = kwargs
             self.name = name
             self.bind_address = kwargs.get("bind_address", "192.0.2.10")
             self.ready = asyncio.Event()
@@ -89,6 +90,22 @@ def assert_stopped(startup):
     assert not startup.instance._tasks
     assert startup.instance._mqtt_bridge is None
     assert all(service.closed and not service.ready.is_set() for service in startup.services)
+
+
+@pytest.mark.asyncio
+async def test_nozzle_configuration_is_passed_only_to_mqtt(startup):
+    startup.instance.nozzle_diameter = "0.6"
+    startup.instance.nozzle_flow = "high_flow"
+    assert await startup.instance.start_server() is True
+    try:
+        mqtt = next(service for service in startup.services if service.name == "SimpleMQTTServer")
+        assert mqtt.kwargs["nozzle_diameter"] == "0.6"
+        assert mqtt.kwargs["nozzle_flow"] == "high_flow"
+        assert mqtt.kwargs["has_target"] is True
+        ftp = next(service for service in startup.services if service.name == "VirtualPrinterFTPServer")
+        assert "nozzle_diameter" not in ftp.kwargs
+    finally:
+        await startup.instance.stop_server()
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,7 +10,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.i18n.api_errors import json_error
 from backend.app.models.user import User
-from backend.app.schemas.virtual_printer import VPDiagnosticResult
+from backend.app.schemas.virtual_printer import VPDiagnosticResult, VPNozzleDiameter, VPNozzleFlow
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,8 @@ class VirtualPrinterCreate(BaseModel):
     enabled: bool = False
     mode: str = "file_manager"
     model: str | None = None
+    nozzle_diameter: VPNozzleDiameter = "0.4"
+    nozzle_flow: VPNozzleFlow = "standard"
     access_code: str | None = None
     target_printer_id: int | None = None
     # Per-VP destination folder in the library for incoming files (Audit-2).
@@ -41,6 +43,8 @@ class VirtualPrinterUpdate(BaseModel):
     enabled: bool | None = None
     mode: str | None = None
     model: str | None = None
+    nozzle_diameter: VPNozzleDiameter | None = None
+    nozzle_flow: VPNozzleFlow | None = None
     access_code: str | None = None
     target_printer_id: int | None = None
     # Pydantic can't distinguish "field not provided" from "field=null", so we
@@ -58,6 +62,14 @@ class VirtualPrinterUpdate(BaseModel):
     bind_ip: str | None = None
     remote_interface_ip: str | None = None
     tailscale_disabled: bool | None = None
+
+    @field_validator("nozzle_diameter", "nozzle_flow")
+    @classmethod
+    def nozzle_cannot_be_null(cls, value):
+        # Omission preserves the saved pair; explicit null is not a setting.
+        if value is None:
+            raise ValueError("Nozzle configuration cannot be null")
+        return value
 
 
 def _resolve_printer_model(printer_model: str | None) -> str | None:
@@ -106,6 +118,8 @@ async def _vp_to_dict(vp, db: AsyncSession, status: dict | None = None) -> dict:
         "mode": vp.mode,
         "model": model_code,
         "model_name": VIRTUAL_PRINTER_MODELS.get(model_code, model_code),
+        "nozzle_diameter": vp.nozzle_diameter,
+        "nozzle_flow": vp.nozzle_flow,
         "access_code_set": bool(vp.access_code),
         "serial": serial,
         "target_printer_id": vp.target_printer_id,
@@ -286,6 +300,8 @@ async def create_virtual_printer(
         or _resolve_printer_model(target_printer.model if target_printer and body.mode == "proxy" else None)
         or DEFAULT_VIRTUAL_PRINTER_MODEL,
         access_code=effective_access_code,
+        nozzle_diameter=body.nozzle_diameter,
+        nozzle_flow=body.nozzle_flow,
         target_printer_id=body.target_printer_id,
         target_folder_id=body.target_folder_id,
         auto_dispatch=body.auto_dispatch,
@@ -427,6 +443,10 @@ async def update_virtual_printer(
         if body.access_code and len(body.access_code) != 8:
             return json_error(400, "Access code must be exactly 8 characters")
         vp.access_code = body.access_code
+    if body.nozzle_diameter is not None:
+        vp.nozzle_diameter = body.nozzle_diameter
+    if body.nozzle_flow is not None:
+        vp.nozzle_flow = body.nozzle_flow
     if body.clear_target_printer:
         vp.target_printer_id = None
     elif body.target_printer_id is not None:
