@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Queue remaining time carries rounded minutes into hours, showing `2h` instead of `1h 60m` at an hour boundary. The underlying farm forecast is unchanged.
+
 - AI setup uses the shared dropdown control for client and connection-key selection, matching the rest of Settings.
 
 - The print-state recovery dialog keeps Cancel and its Preview/Apply button together in the dialog footer, spaced apart; they no longer touch each other on any screen width. Errors and the loading notice stay beside them.
