@@ -39,6 +39,8 @@ or stage those bundles. The maintainer's absolute location is recorded in
 Durable findings belong in the vault with the evidence path; reusable product
 regression tests still belong in the repository's test directories. Preserve
 existing evidence and checksums when preparing a follow-up package.
+Write `SHA256SUMS` as UTF-8 without BOM, with LF line endings even on Windows,
+so standard `sha256sum -c` can read it. Do not rewrite sealed manifests.
 
 ## Commands
 
