@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- The bundled Node.js runtime for part thumbnails is updated to the verified 24.22.2 patch. The existing Node 22 line for 32-bit ARM and the golden render images are unchanged.
+
 - Queue remaining time carries rounded minutes into hours, showing `2h` instead of `1h 60m` at an hour boundary. The underlying farm forecast is unchanged.
 
 - AI setup uses the shared dropdown control for client and connection-key selection, matching the rest of Settings.
