@@ -414,6 +414,7 @@ BamDude AI includes a setup panel, client packages and a shared diagnostic skill
 - Four modes: **File Manager** (the default), **Printer Queue**, **Auto-Queue**, and **Proxy**
 - **File Manager mode** — saves received 3MF files into the library rather than archiving them, so the archive stays a record of prints that actually ran
 - **Queue modes** — hand a received file straight to one printer's queue, or to the Auto-Queue to be routed across the farm
+- **Nozzle source follows the printer binding** — an unbound VP advertises its saved main-nozzle diameter and flow; a bound VP uses the real printer's reported nozzles or explicitly reports unknown. Settings stay saved when binding changes, and final dispatch still checks the physical printer. See the [nozzle guide](https://docs.bamdude.top/features/virtual-printer/#nozzle-diameter-and-flow) for slicer compatibility limits.
 - SSDP discovery or manual IP
 - **Per-VP G-code injection toggle** for auto-eject / plate-clear rigs; Bambu Studio "Send all plates" queues one item per plate
 - **Tailscale reach** — when the host runs Tailscale, the VP card shows the tailnet IP and MagicDNS name to paste into the slicer. The CLI ships in the Docker image; mount `/var/run/tailscale/tailscaled.sock` (see `docker-compose.yml`) to enable it. Trust still goes through the one-time `bbl_ca.crt` import — slicers validate MQTT only against the bundled BBL CA store, so a publicly-signed cert can't replace it
