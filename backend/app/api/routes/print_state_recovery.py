@@ -19,7 +19,7 @@ from backend.app.core.auth import (
 from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
 from backend.app.models.print_state_recovery_action import PrintStateRecoveryAction
-from backend.app.schemas.print_state_recovery import RecoveryApplyRequest, RecoveryPreviewRequest
+from backend.app.schemas.print_state_recovery import RecoveryApplyRequest, RecoveryKind, RecoveryPreviewRequest
 from backend.app.services import print_state_recovery_preview as tokens, print_state_recovery_store as store
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -100,13 +100,23 @@ async def issues(
     request: Request,
     printer_id: int | None = Query(None, gt=0, le=2_147_483_647),
     cursor: str | None = Query(None, max_length=160),
+    kind: RecoveryKind | None = Query(None),
+    target_id: int | None = Query(None, ge=0, le=2_147_483_647),
     creds: RequestCredentials = Depends(request_credentials),
 ):
     await read_access(creds)
+    if (kind is None) != (target_id is None) or kind is not None and printer_id is None:
+        raise HTTPException(422, "invalid_recovery_target")
     allowed = {action for action, gates in WRITE.items() if all([await creds.allows(gate) for gate in gates])}
     try:
         async with database.async_session() as db:
-            result = await store.list_issues(db, key_printer_scope(request), printer_id=printer_id, cursor=cursor)
+            result = await store.list_issues(
+                db,
+                key_printer_scope(request),
+                printer_id=printer_id,
+                cursor=cursor,
+                target=(kind, target_id) if kind is not None else None,
+            )
         for issue in result["issues"]:
             issue["actions"] = [action for action in issue["actions"] if action in allowed]
         return result

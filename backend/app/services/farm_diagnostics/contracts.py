@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import AwareDatetime, Field, model_validator
 
 from backend.app.mcp_server.contracts import Coverage, DiagnosticResult, EmptyInput
+from backend.app.schemas.print_state_recovery import RecoveryAction, RecoveryKind
 
 PositiveId = Annotated[int, Field(strict=True, gt=0)]
 
@@ -80,16 +81,15 @@ class IssuesInput(PageInput):
 
 
 class RecoveryInput(InspectInput):
-    kind: Literal["item", "header", "archive", "runtime", "episode", "repair"]
-    target_id: PositiveId
-    action: Literal[
-        "align_terminal_item",
-        "fill_estimated_end_and_align",
-        "release_orphan_header",
-        "delete_stale_item",
-        "close_interrupted_attempt",
-        "clear_terminal_runtime_context",
-    ]
+    kind: RecoveryKind
+    target_id: Annotated[int, Field(strict=True, ge=0)]
+    action: RecoveryAction | None = None
+
+    @model_validator(mode="after")
+    def addressed(self):
+        if self.target_id == 0 and self.kind not in {"runtime", "episode", "repair"}:
+            raise ValueError("invalid_target")
+        return self
 
 
 class Evidence(EmptyInput):

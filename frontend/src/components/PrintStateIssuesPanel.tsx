@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, type PrintStateAction, type PrintStateIssue, type PrintStateAudit } from '../api/client';
@@ -13,6 +13,22 @@ import { formatDateTime } from '../utils/date';
 const rowAnchor = (printerId: number, kind: string, target: number) => `print-state-${printerId}-${kind}-${target}`;
 const LIVE_REASONS = ['live_busy', 'live_unknown', 'printer_printing'];
 const RUNTIME_ACTION = 'clear_terminal_runtime_context';
+type Target = { kind: PrintStateIssue['kind']; target_id: number };
+const KINDS: Target['kind'][] = ['item', 'header', 'archive', 'runtime', 'episode', 'repair'];
+
+function readAddress(search: string) {
+  const params = new URLSearchParams(search);
+  const rawPrinter = params.get('printer_id');
+  const kind = params.get('kind');
+  const id = params.get('target_id');
+  const validId = (value: string | null, zero = false) => value !== null && /^\d+$/.test(value)
+    && Number.isSafeInteger(Number(value)) && Number(value) <= 2_147_483_647 && Number(value) >= (zero ? 0 : 1);
+  const addressed = kind !== null || id !== null;
+  const valid = (!rawPrinter || validId(rawPrinter)) && (!addressed || validId(rawPrinter)
+    && KINDS.includes(kind as Target['kind']) && validId(id, ['runtime', 'episode', 'repair'].includes(kind ?? '')));
+  return { printer: validId(rawPrinter) ? Number(rawPrinter) : undefined, invalid: !valid,
+    target: addressed && valid ? { kind: kind as Target['kind'], target_id: Number(id) } : undefined };
+}
 
 /** How an in-memory repair ended, in words: released / not changed (why), or unknown -- never guessed. */
 function repairResult(t: (key: string) => string, outcome: { outcome?: string | null; reason?: string | null } | null,
@@ -75,22 +91,30 @@ function historyOutcome(row: PrintStateAudit, t: (key: string) => string): strin
   return repairResult(t, row.outcome && typeof row.outcome === 'object' ? row.outcome : null, !!row.process_ended);
 }
 
-export function PrintStateIssuesPanel() {
+export function PrintStateIssuesPanel({ search = window.location.search }: { search?: string }) {
   const { t } = useTranslation();
   const { hasAllPermissions } = useAuth();
   const allowed = hasAllPermissions('system:read', 'printers:read', 'queue:read_all', 'archives:read_all');
   const queryClient = useQueryClient();
-  const initialPrinter = Number(new URLSearchParams(window.location.search).get('printer_id')) || undefined;
-  const [printer, setPrinter] = useState<number | undefined>(initialPrinter);
+  const initial = readAddress(search);
+  const [printer, setPrinter] = useState<number | undefined>(initial.printer);
+  const [target, setTarget] = useState<Target | undefined>(initial.target);
+  const [invalidAddress, setInvalidAddress] = useState(initial.invalid);
   const [cursor, setCursor] = useState<string | undefined>();
   const [selection, setSelection] = useState<{ issue: PrintStateIssue; action: PrintStateAction } | null>(null);
   const [history, setHistory] = useState<{ printer: number; rows: PrintStateAudit[]; next: string | null } | null>(null);
   const [historyError, setHistoryError] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
-  const query = useQuery({ queryKey: ['print-state-issues', printer, cursor],
-    queryFn: () => api.getPrintStateIssues({ printer_id: printer, cursor }), enabled: allowed,
+  const query = useQuery({ queryKey: ['print-state-issues', printer, cursor, target],
+    queryFn: () => api.getPrintStateIssues({ printer_id: printer, cursor, ...target }), enabled: allowed && !invalidAddress,
+    staleTime: 0, refetchOnMount: 'always',
     refetchInterval: 60_000, refetchIntervalInBackground: false,
   });
+  useEffect(() => {
+    if (target && query.isSuccess && !query.isFetching && printer) {
+      document.getElementById(rowAnchor(printer, target.kind, target.target_id))?.scrollIntoView?.({ block: 'start' });
+    }
+  }, [target, printer, query.isSuccess, query.isFetching]);
   if (!allowed) return null;
   const reload = () => {
     void queryClient.invalidateQueries({ queryKey: ['print-state-issues'] });
@@ -118,11 +142,14 @@ export function PrintStateIssuesPanel() {
       <label className="flex flex-wrap items-center gap-2 text-sm">{t('printStateRecovery.printerFilter')}
         <input type="number" min={1} value={printer ?? ''} placeholder={t('printStateRecovery.allPrinters')}
           className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 w-28"
-          onChange={e => { setPrinter(Number(e.target.value) || undefined); setCursor(undefined); setHistory(null); }} />
+          onChange={e => { setPrinter(Number(e.target.value) || undefined); setTarget(undefined); setInvalidAddress(false); setCursor(undefined); setHistory(null); setSelection(null); }} />
       </label>
-      {query.isPending && <p role="status">{t('common.loading')}</p>}
+      {invalidAddress && <p role="alert">{t('printStateRecovery.invalidAddress')}</p>}
+      {!invalidAddress && query.isPending && <p role="status">{t('common.loading')}</p>}
       {query.isError && <p role="alert">{t('printStateRecovery.failed')}</p>}
-      {query.data && <>
+      {query.data && !invalidAddress && (!target || query.isSuccess && !query.isFetching) && <>
+        {target && !query.isFetching && !query.data.issues.some(issue => issue.printer_id === printer && issue.kind === target.kind && issue.target_id === target.target_id)
+          && <p role="alert">{t('printStateRecovery.addressUnavailable')}</p>}
         <p className="text-xs text-bambu-gray">{t('printStateRecovery.checkedAt')}: {formatDateTime(query.data.checked_at)}</p>
         <p className="text-xs text-bambu-gray">{t('printStateRecovery.count', { count: query.data.issues.length })}</p>
         {query.data.stall_tracking && <p className="text-xs text-bambu-gray">

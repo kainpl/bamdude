@@ -27,6 +27,7 @@ function panel() {
   return render(<QueryClientProvider client={queryClient}><PrintStateIssuesPanel /></QueryClientProvider>);
 }
 beforeEach(() => {
+  window.history.replaceState({}, '', '/');
   vi.restoreAllMocks(); access.allowed = true;
   vi.spyOn(api, 'getPrintStateIssues').mockResolvedValue({ issues: [issue], next_cursor: null, truncated: false, checked_at: '2026-10-01T12:00:00Z' });
   vi.spyOn(api, 'previewPrintState').mockResolvedValue(preview);
@@ -35,6 +36,48 @@ beforeEach(() => {
 });
 
 describe('Print-state diagnostics', () => {
+  it('rereads an addressed link without opening a preview or applying anything', async () => {
+    window.history.replaceState({}, '', '/system?printer_id=7&kind=item&target_id=11#print-state');
+    panel();
+    await screen.findByText(/P1S farm/);
+    expect(api.getPrintStateIssues).toHaveBeenCalledWith({ printer_id: 7, cursor: undefined, kind: 'item', target_id: 11 });
+    expect(api.previewPrintState).not.toHaveBeenCalled();
+    expect(api.applyPrintState).not.toHaveBeenCalled();
+  });
+  it('reports an addressed link whose target disappeared without offering its old action', async () => {
+    window.history.replaceState({}, '', '/system?printer_id=7&kind=item&target_id=11');
+    vi.mocked(api.getPrintStateIssues).mockResolvedValue({ issues: [], next_cursor: null, truncated: false, checked_at: '' });
+    panel();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/no longer available/i);
+    expect(screen.queryByRole('button', { name: 'Align item with archive' })).not.toBeInTheDocument();
+    expect(api.previewPrintState).not.toHaveBeenCalled();
+  });
+  it('rejects an invalid addressed link without falling back to a whole-farm read', async () => {
+    window.history.replaceState({}, '', '/system?printer_id=7&kind=item&target_id=-1');
+    panel();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/invalid/i);
+    expect(api.getPrintStateIssues).not.toHaveBeenCalled();
+  });
+  it('accepts an addressed link to an informational zero target', async () => {
+    window.history.replaceState({}, '', '/system?printer_id=7&kind=repair&target_id=0');
+    panel();
+    await screen.findByText(/P1S farm/);
+    expect(api.getPrintStateIssues).toHaveBeenCalledWith({ printer_id: 7, cursor: undefined, kind: 'repair', target_id: 0 });
+    expect(api.previewPrintState).not.toHaveBeenCalled();
+  });
+  it('does not expose cached actions while an addressed link is being checked again', async () => {
+    let finish!: (value: { issues: PrintStateIssue[]; next_cursor: null; truncated: false; checked_at: string }) => void;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    queryClient.setQueryData(['print-state-issues', 7, undefined, { kind: 'item', target_id: 11 }], {
+      issues: [issue], next_cursor: null, truncated: false, checked_at: '',
+    });
+    vi.mocked(api.getPrintStateIssues).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    render(<QueryClientProvider client={queryClient}><PrintStateIssuesPanel search="?printer_id=7&kind=item&target_id=11" /></QueryClientProvider>);
+    expect(screen.queryByRole('button', { name: 'Align item with archive' })).not.toBeInTheDocument();
+    finish({ issues: [], next_cursor: null, truncated: false, checked_at: '' });
+    await screen.findByRole('alert');
+    expect(api.previewPrintState).not.toHaveBeenCalled();
+  });
   it('does not request or expose diagnostics without all read permissions', () => {
     access.allowed = false; panel();
     expect(screen.queryByText('Print state diagnostics')).not.toBeInTheDocument();

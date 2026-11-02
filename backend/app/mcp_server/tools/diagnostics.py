@@ -6,12 +6,24 @@ from backend.app.services.farm_diagnostics.access import available, require
 from backend.app.services.farm_diagnostics.contracts import (
     EnergyInput,
     InspectInput,
+    IssuesInput,
     LogsInput,
     PageInput,
+    RecoveryInput,
     TimelineInput,
 )
 
 TOOLS = (
+    Tool(
+        "bamdude_list_state_issues",
+        "Read scoped normal print-state issues; candidates do not grant write permission.",
+        IssuesInput,
+    ),
+    Tool(
+        "bamdude_explain_recovery",
+        "Explain one addressed recovery action or refusal without creating a preview or executing it.",
+        RecoveryInput,
+    ),
     Tool(
         "bamdude_inspect_energy",
         "Read scoped persisted print energy and current-plug counter evidence; never poll hardware.",
@@ -52,6 +64,7 @@ async def read(name, access, args, request_id, *, owner=None):
     from backend.app.services.farm_diagnostics.logs import read_logs
     from backend.app.services.farm_diagnostics.overview import overview
     from backend.app.services.farm_diagnostics.printer import inspect_printer
+    from backend.app.services.farm_diagnostics.recovery import explain_recovery, list_state_issues
     from backend.app.services.farm_diagnostics.timeline import timeline
 
     require(access, name)
@@ -60,6 +73,10 @@ async def read(name, access, args, request_id, *, owner=None):
     if name == "bamdude_read_logs":
         return await read_logs(access, args, request_id, owner)
     async with database.async_session() as db:
+        if name == "bamdude_list_state_issues":
+            return await list_state_issues(db, access, args, request_id)
+        if name == "bamdude_explain_recovery":
+            return await explain_recovery(db, access, args, request_id)
         if name == "bamdude_inspect_energy":
             return await inspect_energy(db, access, args, request_id)
         if name == "bamdude_get_farm_overview":

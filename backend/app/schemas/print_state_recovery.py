@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
+RecoveryKind = Literal["item", "header", "archive", "runtime", "episode", "repair"]
+
 RecoveryAction = Literal[
     "align_terminal_item",
     "fill_estimated_end_and_align",

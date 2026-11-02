@@ -186,6 +186,8 @@ export default {
     },
   },
   printStateRecovery: {
+    invalidAddress: 'The recovery link is invalid. Choose a printer to check again.',
+    addressUnavailable: 'The requested record is no longer available or visible. Check the current diagnostics before taking action.',
     openForPrinter: 'Inspect the queue claim for printer #{{printer}}',
     recordedReason: 'Recorded waiting reason', slicerEstimate: 'Slicer estimate',
     states: { printing: 'Printing', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', paused: 'Paused', idle: 'Idle', error: 'Error' },

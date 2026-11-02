@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useLocation } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -108,6 +109,7 @@ function Section({
 
 export function SystemInfoPage() {
   const { t, i18n } = useTranslation();
+  const location = useLocation();
 
   // Diagnostics, not configuration: when readings look wrong the first two
   // questions are which dongle is answering and on which network, and both were
@@ -495,7 +497,7 @@ export function SystemInfoPage() {
           <LogViewer />
 
           {/* Historical archives — daily-rotated bamdude-YYYY-MM-DD.log files */}
-          <PrintStateIssuesPanel />
+          <PrintStateIssuesPanel key={location.search} search={location.search} />
           <QueueLeftoversPanel />
           <LogArchivesPanel />
         </div>

@@ -33,7 +33,7 @@ capabilities explicitly advertise them.
 The diagnostics module supplies a scoped farm overview, one-printer inspection,
 unrestricted local-service health, archive-owned print timelines and opt-in
 sanitized application logs, and persisted energy evidence. Only use tools present in
-`tool_names`; period summaries and recovery explanations are not available yet. Overview is paginated and is not
+`tool_names`; period summaries are not available yet. Overview is paginated and is not
 an atomic farm snapshot. A printing queue claim does not prove it is stale.
 Camera metrics do not prove when a photo was captured or sent to Telegram.
 Plug schedules describe current rules, not a history of yesterday's decisions.
@@ -65,6 +65,22 @@ Growing counter samples beside missing print accounting are a coincidence,
 not proof that those prints consumed that delta; idle usage also contributes.
 Persisted meter incidents are suspicions already recorded, never a new test.
 The tool never polls a plug, reconstructs energy or writes accounting.
+
+For a queue/archive mismatch or a held finished context, list normal print-state
+issues, then explain the exact printer/kind/target and, optionally, one named
+action. This requires system, printer, all-queue and all-archive read rights.
+Policy candidates do not grant write permission: `can_execute_via_mcp` is always
+false. Blockers explain refusals. A dependency can forbid deletion while allowing
+alignment. A pending completion effect or ambiguous/newer run must not be bypassed.
+The estimate action requires an operator's completion confirmation; the assistant
+cannot provide it and receives no pretend-approved plan or signed preview.
+Runtime explanations name the queue pause and the normal context fields only;
+an open timelapse or unknown effects remain blockers. Episode/repair rows are
+informational and can have target ID zero. Follow the returned relative UI link:
+the browser rechecks its own permissions and current addressed record. Only a
+manual operator action requests a fresh preview; never auto-confirm or apply.
+A restart does not repair a durable queue claim, and a terminal archive alone
+does not prove the print completed successfully.
 
 When a diagnostic module is available, choose the smallest relevant query.
 Report: observed facts and evidence times; hypotheses separately; missing or

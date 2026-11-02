@@ -552,8 +552,8 @@ def decode_cursor(value):
         raise ValueError("invalid_cursor") from None
 
 
-async def list_issues(db, scope, *, printer_id=None, cursor=None):
-    result, _ = await list_issues_page(db, scope, printer_id=printer_id, cursor=cursor)
+async def list_issues(db, scope, *, printer_id=None, cursor=None, target=None):
+    result, _ = await list_issues_page(db, scope, printer_id=printer_id, cursor=cursor, target=target)
     return result
 
 
@@ -691,7 +691,9 @@ def _link_episodes(issues: list[dict]) -> None:
             issue["related"] = None
 
 
-async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
+async def list_issues_page(
+    db, scope, *, printer_id=None, cursor=None, target=None, page_size=100, ceilings=None, capture=None
+):
     """One page of the farm's print-state rows, and the printers it covered (the observer's cycle needs them)."""
     after = decode_cursor(cursor) if cursor else None
     stmt = select(Printer.id, Printer.name).order_by(Printer.id)
@@ -699,6 +701,8 @@ async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
         stmt = stmt.where(Printer.id.in_(scope))
     if printer_id is not None:
         stmt = stmt.where(Printer.id == printer_id)
+    if ceilings is not None:
+        stmt = stmt.where(Printer.id <= ceilings["printer"])
     if after:
         stmt = stmt.where(Printer.id >= after[0])
     printers = (await db.execute(stmt.limit(21))).all()
@@ -713,7 +717,10 @@ async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
             PrinterQueue.status == "printing",
             PrinterQueue.id.in_(
                 select(PrintQueueItem.queue_id)
-                .where(PrintQueueItem.status == "printing")
+                .where(
+                    PrintQueueItem.status == "printing",
+                    PrintQueueItem.queue_id.in_(select(PrinterQueue.id).where(PrinterQueue.printer_id.in_(pids))),
+                )
                 .group_by(PrintQueueItem.queue_id)
                 .having(func.count() > 1)
             ),
@@ -747,16 +754,27 @@ async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
     )
     candidates = union_all(headers, items, archives, paused_by_repair).subquery()
     query = select(candidates).order_by(candidates.c.pid, candidates.c.kind, candidates.c.target)
+    if target is not None:
+        query = query.where(candidates.c.kind == target[0], candidates.c.target == target[1])
+    if ceilings is not None:
+        query = query.where(
+            or_(
+                and_(candidates.c.kind == "header", candidates.c.target <= ceilings["header"]),
+                and_(candidates.c.kind == "item", candidates.c.target <= ceilings["item"]),
+                and_(candidates.c.kind == "archive", candidates.c.target <= ceilings["archive"]),
+                candidates.c.kind == "repair",
+            )
+        )
     if after:
-        pid, kind, target = after
+        pid, kind, last_target = after
         query = query.where(
             or_(
                 candidates.c.pid > pid,
                 and_(candidates.c.pid == pid, candidates.c.kind > kind),
-                and_(candidates.c.pid == pid, candidates.c.kind == kind, candidates.c.target > target),
+                and_(candidates.c.pid == pid, candidates.c.kind == kind, candidates.c.target > last_target),
             )
         )
-    sql_rows = [tuple(row) for row in (await db.execute(query.limit(101))).all()]
+    sql_rows = [tuple(row) for row in (await db.execute(query.limit(page_size + 1))).all()]
     # In-process contexts are candidates too (spec r3 R2): one row per printer of this page, ordered
     # with the database rows by the same key, so the cursor walks both exactly once.
     from backend.app.services.print_run_binding import current_print_run, has_runtime_context
@@ -770,12 +788,21 @@ async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
             if after is None or row > tuple(after):
                 held.append(row)
     episodes = _episode_rows(pids, after)
+    if target is not None:
+        held = [row for row in held if row[1:] == target]
+        episodes = {key: value for key, value in episodes.items() if key[1:] == target}
+    if ceilings is not None:
+        held = [row for row in held if row[2] <= ceilings["archive"]]
+        episodes = {key: value for key, value in episodes.items() if key[2] <= ceilings["item"]}
     held_pids = {pid for pid in pids if has_runtime_context(printer_manager, pid)}
     # The context row explains its own pause; a separate one only once the context is gone.
     sql_rows = [row for row in sql_rows if row[1] != "repair" or row[0] not in held_pids]
     rows = sorted(set(sql_rows) | set(held) | set(episodes))
-    targets = rows[:100]
-    facts, _, _ = await read_facts(db, pids, [t for t in targets if t[1] not in ("episode", "repair")])
+    targets = rows[:page_size]
+    fact_targets = [t for t in targets if t[1] not in ("episode", "repair")]
+    facts, _, _ = await read_facts(db, sorted({t[0] for t in fact_targets}), fact_targets)
+    if capture is not None:
+        capture.update(facts)
     repairs = await _last_repairs(db, sorted({t[0] for t in targets if t[1] in ("runtime", "repair")}))
     # A stalled job is shown only while it still waits: one addressed read of the jobs this page names.
     episode_items = [episodes[t].item_id for t in targets if t[1] == "episode" and episodes[t].item_id]
@@ -824,8 +851,8 @@ async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
         if issue["kind"] == "runtime":
             issue["last_repair"] = repairs.get(issue["printer_id"])
     next_cursor = (
-        encode_cursor(rows[99])
-        if len(rows) > 100
+        encode_cursor(rows[page_size - 1])
+        if len(rows) > page_size
         else (encode_cursor((printers[20].id, "archive", -1)) if len(printers) > 20 else None)
     )
     from backend.app.services import dispatch_stall_tracker
@@ -838,7 +865,54 @@ async def list_issues_page(db, scope, *, printer_id=None, cursor=None):
         # What the stall records can vouch for: tracked since this process started, minus what was dropped.
         "stall_tracking": dispatch_stall_tracker.coverage_view(),
         # A page cut at its row limit has read nobody past the cut: those printers come with the next page.
-    }, ([pid for pid in pids if pid <= rows[99][0]] if len(rows) > 100 else pids)
+    }, ([pid for pid in pids if pid <= rows[page_size - 1][0]] if len(rows) > page_size else pids)
+
+
+def explain_facts(key, facts, action=None):
+    """Information only from one policy snapshot; no confirmation, pin or token.
+
+    A deletion-only dependency is context, not a veto on an allowed alignment.
+    The operator's completion assertion is never supplied by a diagnostic reader.
+    """
+    issue = public_issue(key, facts)
+    actions = issue["actions"] if issue else []
+    blockers, after = [], None
+    needs_completion = action == "fill_estimated_end_and_align" and action in actions
+    if action is not None:
+        if action not in actions:
+            blockers = list((issue or {}).get("blocked_reasons", [])) or ["action_not_available"]
+        elif needs_completion:
+            blockers = ["requires_operator_confirmation"]
+        else:
+            after = public_plan(plan_action(facts, action))
+    archive = facts.archive if facts.archive and facts.archive.get("printer_id") == facts.printer_id else None
+    extra = (archive or {}).get("extra_data")
+    estimated = isinstance(extra, dict) and "operator_recovery_end" in extra
+    return {
+        "issue": issue,
+        "requested_action": action,
+        "policy_actions": actions,
+        "blockers": blockers,
+        "before": {
+            "queue": {k: v for k, v in (facts.queue or {}).items() if k in {"status", "is_paused"}},
+            "item": {k: v for k, v in (facts.item or {}).items() if k in {"id", "status", "completed_at"}},
+            "archive": {k: v for k, v in (archive or {}).items() if k in {"id", "status", "completed_at"}},
+        },
+        "after": after,
+        "time_provenance": {
+            "completed_at_source": "slicer_estimate"
+            if estimated
+            else "recorded"
+            if (archive or {}).get("completed_at")
+            else "unknown",
+            "requested_estimate_basis": "archive_start_plus_slicer_duration" if needs_completion else None,
+            "completion_verified_by_mcp": False,
+        },
+        "archive_preserved": True,
+        "requires_operator_confirmation": action is not None,
+        "requires_completed_confirmation": needs_completion,
+        "can_execute_via_mcp": False,
+    }
 
 
 #: ``nonce -> (expires, the objects the preview named)``. A runtime revision names objects by ``id()``; holding

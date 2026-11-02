@@ -192,6 +192,8 @@ export default {
     },
   },
   printStateRecovery: {
+    invalidAddress: 'Посилання на відновлення некоректне. Виберіть принтер для повторної перевірки.',
+    addressUnavailable: 'Запитаний запис більше недоступний або невидимий. Перед дією перевірте поточну діагностику.',
     openForPrinter: 'Перевірити блокування черги принтера #{{printer}}',
     recordedReason: 'Записана причина очікування', slicerEstimate: 'Оцінка слайсера',
     states: { printing: 'Друкується', completed: 'Завершено', failed: 'Збій', cancelled: 'Скасовано', paused: 'На паузі', idle: 'Очікування', error: 'Помилка' },

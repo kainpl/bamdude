@@ -13971,10 +13971,12 @@ export const api = {
   // System Info
   getDatabaseHealth: () => request<DbHealth>('/system/database'),
   getSystemInfo: () => request<SystemInfo>('/system/info'),
-  getPrintStateIssues: (params: { printer_id?: number; cursor?: string } = {}) => {
+  getPrintStateIssues: (params: { printer_id?: number; cursor?: string; kind?: PrintStateIssue['kind']; target_id?: number } = {}) => {
     const query = new URLSearchParams();
     if (params.printer_id) query.set('printer_id', String(params.printer_id));
     if (params.cursor) query.set('cursor', params.cursor);
+    if (params.kind) query.set('kind', params.kind);
+    if (params.target_id !== undefined) query.set('target_id', String(params.target_id));
     return request<PrintStateIssuePage>(`/system/print-state-issues?${query}`);
   },
   getQueueLeftovers: () => request<{ items: QueueLeftover[] }>('/queue/leftovers'),

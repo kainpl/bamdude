@@ -576,6 +576,7 @@ async def test_the_lock_is_released_only_after_every_command_io_has_drained(monk
 
     calls: list[str] = []
     drained = asyncio.Event()
+    drain_started = asyncio.Event()
 
     @asynccontextmanager
     async def application(app):
@@ -584,6 +585,7 @@ async def test_the_lock_is_released_only_after_every_command_io_has_drained(monk
 
     async def drain():
         calls.append("drain_started")
+        drain_started.set()
         await drained.wait()
         calls.append("drain_finished")
 
@@ -598,8 +600,7 @@ async def test_the_lock_is_released_only_after_every_command_io_has_drained(monk
             pass
 
     task = asyncio.create_task(run())
-    for _ in range(20):
-        await asyncio.sleep(0)
+    await asyncio.wait_for(drain_started.wait(), timeout=10)
     assert calls == ["locked", "application_stopped", "drain_started"]
     drained.set()
     await task
