@@ -101,18 +101,44 @@ async def queued(db, printer, *, printing=False, name="allowed job.3mf"):
 
 
 @pytest.mark.parametrize("modern", [False, True])
-@pytest.mark.parametrize("conflict", [False, True])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "matched",
+        "multiple_disagreeing_header",
+        "multiple_matching_header",
+        "single_empty_header",
+        "single_other_header",
+    ],
+)
 async def test_current_job_does_not_claim_identity_when_queue_rows_disagree(
-    async_client, runtime, printer_factory, db_session, telemetry, modern, conflict
+    async_client, runtime, printer_factory, db_session, telemetry, modern, scenario
 ):  # noqa: F811
+    from backend.app.services.monitor_snapshot import MonitorAccess, build_snapshot
+
     p = await printer_factory()
     queue, old = await queued(db_session, p, printing=True, name="legacy display row")
-    if conflict:
-        newer = PrintQueueItem(queue_id=queue.id, status="printing", position=2)
-        db_session.add(newer)
+    multiple = scenario.startswith("multiple_")
+    if multiple or scenario == "single_other_header":
+        other = PrintQueueItem(queue_id=queue.id, status="printing" if multiple else "pending", position=2)
+        db_session.add(other)
         await db_session.flush()
-        queue.current_item_id = newer.id
-        await db_session.commit()
+        if scenario != "multiple_matching_header":
+            queue.current_item_id = other.id
+    elif scenario == "single_empty_header":
+        queue.current_item_id = None
+    await db_session.commit()
+    # Establish each branch's actual precondition using the real monitor, not
+    # a fake DTO. Two printing rows can agree with its display choice; one
+    # printing row can disagree with a valid same-queue or absent header.
+    monitor = await build_snapshot(
+        db_session, "queues", MonitorAccess(queue_read=True, read_all=True, printer_ids=frozenset({p.id}))
+    )
+    assert monitor.printers[0].current_job.item_id == old.id
+    if scenario == "multiple_matching_header":
+        assert queue.current_item_id == old.id
+    elif scenario in {"single_empty_header", "single_other_header"}:
+        assert queue.current_item_id != old.id
     created = await key(async_client, scope=[p.id])
     async with live_app() as url, httpx.AsyncClient() as http:
         for tool, args in [
@@ -122,10 +148,12 @@ async def test_current_job_does_not_claim_identity_when_queue_rows_disagree(
             result = data(await rpc(http, url, created["key"], tool, args, modern=modern))
             facts = result["data"]["printers"][0] if "printers" in result["data"] else result["data"]
             warnings = [f for f in result["findings"] if f["code"] == "queue_current_job_ambiguous"]
-            if conflict:
+            if scenario != "matched":
                 assert facts["printer"]["current_job"] is None
-                assert facts["claim"]["current_item_id"] == newer.id
-                assert facts["claim"]["printing_row_count"] == 2
+                assert facts["claim"]["current_item_id"] == queue.current_item_id
+                assert facts["claim"]["printing_row_count"] == (2 if multiple else 1)
+                assert facts["claim"]["header_link_valid"] is (None if scenario == "single_empty_header" else True)
+                assert not facts["coverage"]["complete"]
                 assert "current_job_identity_unresolved" in facts["coverage"]["missing"]
                 assert warnings and warnings[0]["certainty"] == "observed"
                 assert warnings[0]["next_steps"][0]["action_kind"] == "open_ui"
