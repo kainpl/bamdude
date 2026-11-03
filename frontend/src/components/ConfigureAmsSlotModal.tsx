@@ -217,6 +217,12 @@ export function ConfigureAmsSlotModal({
     enabled: isOpen && !!selectedPresetId && hasPermission('inventory:read'),
     staleTime: 30_000,
   });
+  const { data: catalogColors = [], isError: catalogColorsFailed } = useQuery({
+    queryKey: ['color-catalog', 'family', selectedPresetId],
+    queryFn: () => api.getFilamentFamilyCatalogColors(selectedPresetId!),
+    enabled: isOpen && !!selectedPresetId && hasPermission('inventory:read'),
+    staleTime: 30_000,
+  });
 
   // The family catalog IS the source list now (spec A §5.5): official
   // families + the user's custom ones, one identity, no per-source tiers.
@@ -342,10 +348,8 @@ export function ConfigureAmsSlotModal({
   // For backwards compatibility with the label
   const selectedMaterial = selectedPresetInfo?.fullName || '';
 
-  // Colours offered for the picked family = the DISTINCT colours of the
-  // user's own non-archived spools linked to that family. The global colour
-  // catalog listed every colour ever sold — far too many, mostly irrelevant.
-  const catalogColors = useMemo(() => {
+  // Own spools stay distinct from the manufacturer's exact-series palette.
+  const inventoryColors = useMemo(() => {
     return (familyColors ?? []).map(color => ({
       id: color.hex_color.slice(1),
       hex_color: color.hex_color,
@@ -486,6 +490,43 @@ export function ConfigureAmsSlotModal({
       return () => cancelAnimationFrame(raf);
     }
   }, [selectedPresetId, isLoading]);
+
+  const familyColorChoices = (
+    <>
+      {catalogColorsFailed && (
+        <p role="status" className="text-xs text-bambu-gray mb-2">{t('configureAmsSlot.catalogColorsUnavailable')}</p>
+      )}
+      {[
+        { label: t('configureAmsSlot.catalogColors'), colors: catalogColors },
+        { label: t('configureAmsSlot.inventoryColors'), colors: inventoryColors },
+      ].filter(group => group.colors.length > 0).map(group => (
+        <div key={group.label} role="group" aria-label={group.label} className="mb-3">
+          <p className="text-xs text-bambu-gray mb-1.5">{group.label}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {group.colors.map(entry => (
+              <button
+                key={entry.id}
+                onClick={() => {
+                  setColorHex(entry.hex_color.replace('#', '').toUpperCase());
+                  setColorInput(entry.color_name);
+                }}
+                className={`h-7 px-2 rounded-md border-2 transition-all flex items-center gap-1.5 ${
+                  colorHex === entry.hex_color.replace('#', '').toUpperCase()
+                    ? 'border-bambu-green scale-105'
+                    : 'border-white/20 hover:border-white/40'
+                }`}
+                title={entry.color_name}
+              >
+                <span className="w-4 h-4 rounded-full border border-black/20 flex-shrink-0"
+                  style={{ backgroundColor: entry.hex_color }} />
+                <span className="text-xs text-white whitespace-nowrap">{entry.color_name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </>
+  );
 
   if (!isOpen) return null;
   const canSave = selectedPresetId && !configureMutation.isPending;
@@ -684,37 +725,7 @@ export function ConfigureAmsSlotModal({
                 <label className="block text-sm text-bambu-gray mb-2">
                   {t('configureAmsSlot.customColorLabel')}
                 </label>
-                {catalogColors.length > 0 && (
-                  <div className="mb-3">
-                    <p className="text-xs text-bambu-gray mb-1.5">
-                      {t('configureAmsSlot.presetColors', { name: selectedPresetInfo?.fullName })}
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {catalogColors.map((entry) => (
-                        <button
-                          key={entry.id}
-                          onClick={() => {
-                            const hex = entry.hex_color.replace('#', '').toUpperCase();
-                            setColorHex(hex);
-                            setColorInput(entry.color_name);
-                          }}
-                          className={`h-7 px-2 rounded-md border-2 transition-all flex items-center gap-1.5 ${
-                            colorHex === entry.hex_color.replace('#', '').toUpperCase()
-                              ? 'border-bambu-green scale-105'
-                              : 'border-white/20 hover:border-white/40'
-                          }`}
-                          title={entry.color_name}
-                        >
-                          <span
-                            className="w-4 h-4 rounded-full border border-black/20 flex-shrink-0"
-                            style={{ backgroundColor: entry.hex_color }}
-                          />
-                          <span className="text-xs text-white/80 whitespace-nowrap">{entry.color_name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                {familyColorChoices}
                 <div className="flex flex-wrap gap-1.5 mb-2">
                   {QUICK_COLORS_BASIC.map((color) => (
                     <button
@@ -926,37 +937,7 @@ export function ConfigureAmsSlotModal({
                 {t('configureAmsSlot.customColorLabel')}
               </label>
               {/* Catalog colors matching selected preset */}
-              {catalogColors.length > 0 && (
-                <div className="mb-3">
-                  <p className="text-xs text-bambu-gray mb-1.5">
-                    {t('configureAmsSlot.presetColors', { name: selectedPresetInfo?.fullName })}
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {catalogColors.map((entry) => (
-                      <button
-                        key={entry.id}
-                        onClick={() => {
-                          const hex = entry.hex_color.replace('#', '').toUpperCase();
-                          setColorHex(hex);
-                          setColorInput(entry.color_name);
-                        }}
-                        className={`h-7 px-2 rounded-md border-2 transition-all flex items-center gap-1.5 ${
-                          colorHex === entry.hex_color.replace('#', '').toUpperCase()
-                            ? 'border-bambu-green scale-105'
-                            : 'border-white/20 hover:border-white/40'
-                        }`}
-                        title={entry.color_name}
-                      >
-                        <span
-                          className="w-4 h-4 rounded-full border border-black/20 flex-shrink-0"
-                          style={{ backgroundColor: entry.hex_color }}
-                        />
-                        <span className="text-xs text-white/80 whitespace-nowrap">{entry.color_name}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {familyColorChoices}
               {/* Quick color buttons */}
               <div className="flex flex-wrap gap-1.5 mb-2">
                 {QUICK_COLORS_BASIC.map((color) => (
@@ -1059,7 +1040,7 @@ export function ConfigureAmsSlotModal({
       </div>
 
       {/* Footer */}
-      <div className="flex justify-between p-4 border-t border-bambu-dark-tertiary shrink-0">
+      <div className="flex flex-wrap justify-between gap-2 p-4 border-t border-bambu-dark-tertiary shrink-0">
         {/* Reset button on the left */}
         <Button
           variant="secondary"
@@ -1080,7 +1061,7 @@ export function ConfigureAmsSlotModal({
           )}
         </Button>
         {/* Cancel and Configure buttons on the right */}
-        <div className="flex gap-2">
+        <div className="flex gap-2 ml-auto">
           <Button variant="secondary" onClick={onClose}>
             {t('configureAmsSlot.cancel')}
           </Button>

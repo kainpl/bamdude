@@ -1026,6 +1026,41 @@ async def lookup_color(
     return ColorLookupResult(found=False)
 
 
+@router.get("/colors/family", response_model=list[ColorEntryResponse])
+async def family_catalog_colors(
+    filament_family_id: str,
+    db: AsyncSession = Depends(get_db),
+    _=RequirePermission(Permission.INVENTORY_READ),
+):
+    """Exact manufacturer/series palette, independent of spool ownership.
+
+    Never infer a product series from its base polymer or a substring: PETG
+    HF and PETG Translucent are different palettes. Unknown/custom aliases
+    without the canonical vendor prefix keep only their own spool colors.
+    """
+    from backend.app.services.filament_identity import resolve_tray
+
+    family = await resolve_tray(db, filament_family_id)
+    vendor = (family.vendor or "").strip().lower()
+    if not family.family or not vendor or vendor == "generic":
+        return []
+    alias = family.display_name.strip().lower()
+    prefixes = ("bambu lab", "bambu") if vendor == "bambu lab" else (vendor,)
+    material = next((alias[len(prefix) + 1 :].strip() for prefix in prefixes if alias.startswith(prefix + " ")), "")
+    if not material:
+        return []
+    return (
+        await db.scalars(
+            select(ColorCatalogEntry)
+            .where(
+                func.lower(func.trim(ColorCatalogEntry.manufacturer)) == vendor,
+                func.lower(func.trim(ColorCatalogEntry.material)) == material,
+            )
+            .order_by(ColorCatalogEntry.color_name, ColorCatalogEntry.id)
+        )
+    ).all()
+
+
 @router.get("/colors/search", response_model=list[ColorEntryResponse])
 async def search_colors(
     manufacturer: str | None = None,

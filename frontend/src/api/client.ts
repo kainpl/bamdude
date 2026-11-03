@@ -12548,6 +12548,8 @@ export const api = {
   // Filament family catalog (spec A)
   getFilamentFamilies: (q = '', limit = 200) =>
     request<FilamentFamily[]>(`/filament-families?q=${encodeURIComponent(q)}&limit=${limit}`),
+  getFilamentFamilyCatalogColors: (filamentId: string) =>
+    request<ColorCatalogEntry[]>(`/inventory/colors/family?filament_family_id=${encodeURIComponent(filamentId)}`),
   getFilamentFamilyPresets: (filamentId: string, printerName = '') =>
     request<FamilyPresetInfo[]>(
       `/filament-families/${encodeURIComponent(filamentId)}/presets?printer_name=${encodeURIComponent(printerName)}`,

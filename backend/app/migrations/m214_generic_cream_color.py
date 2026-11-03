@@ -1,43 +1,78 @@
-"""Name the standard AMS picker's Cream through the shared catalog (GH104).
+"""Name missing standard AMS picker shades through the shared catalog (GH104).
 
-The picker already sends FFFDD0. Without an exact catalog entry the display
-falls back to the broad White family. This only seeds a missing name: no
-printer, spool, profile or matching data changes. Existing catalog choices
-for that hex, or an edited Generic Cream, remain authoritative.
+No picker RGB, printer, spool or matching data changes. Preserve any existing
+name for a hex, or an edited Generic shade. Values and SQL columns are frozen
+here: importing today's ORM table would insert future Python-default columns
+that may not exist at this step of an upgrade.
 """
 
 version = 214
 name = "generic_cream_color"
 
+_SHADES = (
+    ("Cream", "FFFDD0"),
+    ("Ivory", "FFFFF0"),
+    ("Charcoal", "36454F"),
+    ("Tan", "D2B48C"),
+    ("Chocolate", "D2691E"),
+    ("Olive", "808000"),
+    ("Maroon", "800000"),
+    ("Salmon", "FA8072"),
+    ("Navy", "000080"),
+    ("Teal", "008080"),
+    ("Turquoise", "40E0D0"),
+    ("Lime", "32CD32"),
+    ("Silver", "C0C0C0"),
+    ("Magenta", "FF00FF"),
+    ("Violet", "EE82EE"),
+    ("Indigo", "4B0082"),
+    ("Slate", "708090"),
+    ("Coral", "FF7F50"),
+    ("Green", "00AA00"),
+    ("Cyan", "00FFFF"),
+    ("Brown", "8B4513"),
+)
+
 
 async def upgrade(conn):
-    """No schema change; the catalog row is added by seed."""
+    """No schema change; the missing catalog rows are added by seed."""
 
 
 async def seed(session_factory):
-    from sqlalchemy import and_, func, or_, select
+    from sqlalchemy import Boolean, String, and_, column, func, insert, or_, select, table
 
-    from backend.app.models.color_catalog import ColorCatalogEntry
-
+    colors = table(
+        "color_catalog",
+        column("manufacturer", String),
+        column("color_name", String),
+        column("hex_color", String),
+        column("material", String),
+        column("is_default", Boolean),
+    )
     async with session_factory() as db:
-        existing = await db.scalar(
-            select(ColorCatalogEntry.id)
-            .where(
-                or_(
-                    func.lower(func.substr(func.replace(ColorCatalogEntry.hex_color, "#", ""), 1, 6)) == "fffdd0",
-                    and_(
-                        func.lower(func.trim(ColorCatalogEntry.manufacturer)) == "generic",
-                        func.lower(func.trim(ColorCatalogEntry.color_name)) == "cream",
-                    ),
+        for color_name, hex_color in _SHADES:
+            existing = await db.scalar(
+                select(colors.c.hex_color)
+                .where(
+                    or_(
+                        func.lower(func.substr(func.replace(colors.c.hex_color, "#", ""), 1, 6)) == hex_color.lower(),
+                        and_(
+                            func.lower(func.trim(colors.c.manufacturer)) == "generic",
+                            func.lower(func.trim(colors.c.color_name)) == color_name.lower(),
+                        ),
+                    )
+                )
+                .limit(1)
+            )
+            if existing is not None:
+                continue
+            await db.execute(
+                insert(colors).values(
+                    manufacturer="Generic",
+                    color_name=color_name,
+                    hex_color="#" + hex_color,
+                    material="",
+                    is_default=True,
                 )
             )
-            .limit(1)
-        )
-        if existing is not None:
-            return
-        db.add(
-            ColorCatalogEntry(
-                manufacturer="Generic", color_name="Cream", hex_color="#FFFDD0", material="", is_default=True
-            )
-        )
         await db.commit()

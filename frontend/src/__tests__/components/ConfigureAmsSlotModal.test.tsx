@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { render } from '../utils';
 import { ConfigureAmsSlotModal } from '../../components/ConfigureAmsSlotModal';
 import { api } from '../../api/client';
@@ -13,6 +13,7 @@ vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
   getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
+    getAuthStatus: vi.fn().mockResolvedValue({ requires_setup: false }),
     getCurrentUser: vi.fn().mockResolvedValue({ id: 1, username: 'admin', is_admin: true, permissions: [] }),
     triggerFilamentPresetSync: vi.fn().mockResolvedValue({ queued: true }),
     getFilamentFamilies: vi.fn().mockResolvedValue([
@@ -22,6 +23,7 @@ vi.mock('../../api/client', () => ({
     ]),
     getSpools: vi.fn().mockResolvedValue([]),
     getSpoolFamilyColors: vi.fn().mockResolvedValue([]),
+    getFilamentFamilyCatalogColors: vi.fn().mockResolvedValue([]),
     getCloudSettings: vi.fn(),
     getKProfiles: vi.fn(),
     configureAmsSlot: vi.fn(),
@@ -95,6 +97,8 @@ const defaultProps = {
 describe('ConfigureAmsSlotModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getFilamentFamilyCatalogColors).mockResolvedValue([]);
+    vi.mocked(api.getSpoolFamilyColors).mockResolvedValue([]);
     // Mock scrollIntoView which is not available in jsdom
     Element.prototype.scrollIntoView = vi.fn();
     (api.getCloudSettings as ReturnType<typeof vi.fn>).mockResolvedValue(mockCloudSettings);
@@ -111,6 +115,48 @@ describe('ConfigureAmsSlotModal', () => {
   it('renders nothing visible when closed', () => {
     render(<ConfigureAmsSlotModal {...defaultProps} isOpen={false} />);
     expect(screen.queryByText('Configure AMS Slot')).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])('offers manufacturer colors without spools, separately from own colors (fullScreen=%s)', async (fullScreen) => {
+    vi.mocked(api.getFilamentFamilyCatalogColors).mockResolvedValue([
+      { id: 1, manufacturer: 'Bambu Lab', color_name: 'Cream', hex_color: '#F9DFB9', material: 'PLA Basic', is_default: true },
+    ]);
+    render(<ConfigureAmsSlotModal {...defaultProps} fullScreen={fullScreen}
+      slotInfo={{ ...defaultProps.slotInfo, trayInfoIdx: 'GFA00' }} />);
+    const catalog = await screen.findByRole('group', { name: 'Manufacturer colors' });
+    expect(screen.queryByRole('group', { name: 'Colors from your spools' })).not.toBeInTheDocument();
+    expect(api.configureAmsSlot).not.toHaveBeenCalled();
+    fireEvent.click(within(catalog).getByTitle('Cream'));
+    fireEvent.click(screen.getByRole('button', { name: 'Configure Slot' }));
+    await waitFor(() => expect(api.configureAmsSlot).toHaveBeenCalledWith(1, 0, 0,
+      expect.objectContaining({ tray_info_idx: 'GFA00', tray_color: 'F9DFB9FF' })));
+  });
+
+  it('keeps own spool shades separate and does not reuse a previous family palette', async () => {
+    vi.mocked(api.getFilamentFamilyCatalogColors).mockImplementation(async id => id === 'GFA00' ? [
+      { id: 1, manufacturer: 'Bambu Lab', color_name: 'Cream', hex_color: '#F9DFB9', material: 'PLA Basic', is_default: true },
+    ] : []);
+    vi.mocked(api.getSpoolFamilyColors).mockResolvedValue([{ color_name: 'My shade', hex_color: '#123456' }]);
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={{ ...defaultProps.slotInfo, trayInfoIdx: 'GFA00' }} />);
+    await screen.findByRole('group', { name: 'Manufacturer colors' });
+    const own = await screen.findByRole('group', { name: 'Colors from your spools' });
+    expect(within(own).getByTitle('My shade')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Generic PETG'));
+    await waitFor(() => expect(api.getFilamentFamilyCatalogColors).toHaveBeenCalledWith('GFG99'));
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Manufacturer colors' })).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Configure Slot' }));
+    await waitFor(() => expect(api.configureAmsSlot).toHaveBeenCalledWith(1, 0, 0,
+      expect.objectContaining({ tray_info_idx: 'GFG99', tray_color: 'FFFFFFFF' })));
+  });
+
+  it('keeps typed-name RGB compatibility and allows editing when the catalog request fails', async () => {
+    vi.mocked(api.getFilamentFamilyCatalogColors).mockRejectedValue(new Error('offline'));
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={{ ...defaultProps.slotInfo, trayInfoIdx: 'GFA00' }} />);
+    const input = await screen.findByPlaceholderText('Color name or hex (e.g., brown, FF8800)');
+    fireEvent.change(input, { target: { value: 'jade white' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Configure Slot' }));
+    await waitFor(() => expect(api.configureAmsSlot).toHaveBeenCalledWith(1, 0, 0,
+      expect.objectContaining({ tray_color: 'FFFEF2FF' })));
   });
 
   it('renders modal when open', async () => {

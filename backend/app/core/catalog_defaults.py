@@ -97,9 +97,29 @@ DEFAULT_SPOOL_CATALOG: list[tuple[str, int]] = [
 
 # (manufacturer, color_name, hex_color, material)
 DEFAULT_COLOR_CATALOG: list[tuple[str, str, str, str]] = [
-    # The standard AMS picker's Cream, independent of any vendor's own shade.
-    # An empty material leaves it available to the ordinary exact-hex lookup.
+    # Missing exact shades from the standard AMS picker. Existing vendor
+    # names retain their ordinary priority; these do not claim a material.
     ("Generic", "Cream", "#FFFDD0", ""),
+    ("Generic", "Ivory", "#FFFFF0", ""),
+    ("Generic", "Charcoal", "#36454F", ""),
+    ("Generic", "Tan", "#D2B48C", ""),
+    ("Generic", "Chocolate", "#D2691E", ""),
+    ("Generic", "Olive", "#808000", ""),
+    ("Generic", "Maroon", "#800000", ""),
+    ("Generic", "Salmon", "#FA8072", ""),
+    ("Generic", "Navy", "#000080", ""),
+    ("Generic", "Teal", "#008080", ""),
+    ("Generic", "Turquoise", "#40E0D0", ""),
+    ("Generic", "Lime", "#32CD32", ""),
+    ("Generic", "Silver", "#C0C0C0", ""),
+    ("Generic", "Magenta", "#FF00FF", ""),
+    ("Generic", "Violet", "#EE82EE", ""),
+    ("Generic", "Indigo", "#4B0082", ""),
+    ("Generic", "Slate", "#708090", ""),
+    ("Generic", "Coral", "#FF7F50", ""),
+    ("Generic", "Green", "#00AA00", ""),
+    ("Generic", "Cyan", "#00FFFF", ""),
+    ("Generic", "Brown", "#8B4513", ""),
     # Bambu Lab PLA Basic (from official hex code PDF)
     ("Bambu Lab", "Jade White", "#FFFFFF", "PLA Basic"),
     ("Bambu Lab", "Black", "#000000", "PLA Basic"),
