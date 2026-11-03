@@ -1731,6 +1731,15 @@ class BackgroundDispatchService:
         if self._printer_is_busy_printing(printer_id):
             raise DispatchEnqueueRejected(f"Printer {printer_name} is currently busy printing")
 
+        from backend.app.services.print_run_binding import prepared_print_run_conflicts
+
+        if prepared_print_run_conflicts(printer_manager, printer_id):
+            raise DispatchEnqueueRejected(
+                "A previous print context is blocking this start. Check print states on the System page.",
+                code="dispatch_runtime_conflict",
+                printer_id=printer_id,
+            )
+
     async def _enqueue_claimed_job(
         self,
         *,
@@ -2418,6 +2427,7 @@ class BackgroundDispatchService:
             "reason": reason,
             "revision": exc.revision,
             "claim_started_at": job.claim_started_at,
+            "claim_detail": getattr(exc, "detail", None),
             "source_archive_id": job.original_archive_id,
             "source_library_file_id": job.original_library_file_id,
             # Read by ``defer_claim`` if the refusal ends the attempt (direct, failed, a swap start that ran).
@@ -2435,6 +2445,7 @@ class BackgroundDispatchService:
                     item_id=job.queue_item_id,
                     started_at=job.claim_started_at,
                     reason=exc.reason,
+                    claim_detail=getattr(exc, "detail", None),
                     revision=exc.revision,
                     direct=True,
                     source_archive_id=job.original_archive_id,

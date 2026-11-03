@@ -618,6 +618,11 @@ class PrintScheduler:
                         if status and status.state in ("IDLE", "FINISH", "FAILED"):
                             new_reason = "Plate not cleared"
                             reason_code = "plate_not_cleared"
+                elif not self._is_printer_ready_for_dispatch(printer_id, require_plate_clear=rpc):
+                    new_reason = (
+                        "A previous print context is blocking this start. Check print states on the System page."
+                    )
+                    reason_code = "dispatch_runtime_conflict"
 
                 if set_wait_reason(item, reason_code, new_reason):
                     await db.commit()
@@ -666,6 +671,16 @@ class PrintScheduler:
                 # just before dispatch.
                 if not printer_idle:
                     mark_busy(printer_id, "not_idle")
+                    continue
+
+                if not self._is_printer_ready_for_dispatch(printer_id, require_plate_clear=rpc):
+                    if set_wait_reason(
+                        item,
+                        "dispatch_runtime_conflict",
+                        "A previous print context is blocking this start. Check print states on the System page.",
+                    ):
+                        await db.commit()
+                    mark_busy(printer_id, "dispatch_runtime_conflict")
                     continue
 
                 # Drying blocks the queue, if the user asked it to. A hold is a
@@ -1564,6 +1579,14 @@ class PrintScheduler:
                 printer_manager.is_awaiting_plate_clear(printer_id),
             )
         return idle
+
+    def _is_printer_ready_for_dispatch(self, printer_id: int, require_plate_clear: bool = True) -> bool:
+        """Dispatch readiness, separate from the physical idle test used by drying."""
+        from backend.app.services.print_run_binding import prepared_print_run_conflicts
+
+        return self._is_printer_idle(printer_id, require_plate_clear) and not prepared_print_run_conflicts(
+            printer_manager, printer_id
+        )
 
     async def previous_print_succeeded(
         self, db: AsyncSession, printer_id: int, exclude_item_id: int | None = None
@@ -3002,6 +3025,7 @@ class PrintScheduler:
                     item_id=queue_item_id,
                     started_at=outcome.get("claim_started_at"),
                     reason=outcome["reason"]["code"],
+                    claim_detail=outcome.get("claim_detail"),
                     revision=outcome.get("revision"),
                     source_archive_id=outcome.get("source_archive_id"),
                     source_library_file_id=outcome.get("source_library_file_id"),

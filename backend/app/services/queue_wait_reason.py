@@ -11,6 +11,7 @@ WaitCode = Literal[
     "manual_start",
     "stagger",
     "filament_unavailable",
+    "dispatch_runtime_conflict",
     "dispatch_failed",
     "storage_full",
     # The source copy found the spool busy; the scheduler asks again after its bounded cooldown.

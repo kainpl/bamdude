@@ -1,3 +1,4 @@
+import { QueueWaitReason } from './QueueWaitReason';
 import { MoveToAutoButton } from './MoveToAutoButton';
 import { QueueDuration } from './QueueDuration';
 import { UsageProjection } from './UsageProjection';
@@ -1320,7 +1321,7 @@ function PendingItemRow({
             )}
           </div>
           {item.waiting_reason && (
-            <p className="text-[10px] text-yellow-700 dark:text-yellow-400 truncate">{item.waiting_reason}</p>
+            <p className="text-[10px] text-yellow-700 dark:text-yellow-400 break-words"><QueueWaitReason item={item} /></p>
           )}
         </div>
         {/* Primary actions stay visible on touch screens; reorder, edit and

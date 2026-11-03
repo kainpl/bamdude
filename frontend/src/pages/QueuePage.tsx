@@ -1,3 +1,4 @@
+import { QueueWaitReason } from '../components/QueueWaitReason';
 import { MoveToAutoButton } from '../components/MoveToAutoButton';
 import { QueueDuration } from '../components/QueueDuration';
 import { useEffect, useState, useMemo } from 'react';
@@ -489,10 +490,10 @@ export function QueuePage() {
                       <p className="text-sm text-white truncate" title={item.archive_name || item.library_file_name || `#${item.id}`}>
                         {item.archive_name || item.library_file_name || `#${item.id}`}
                       </p>
-                      <p className="text-xs text-bambu-gray truncate">
+                      <p className="text-xs text-bambu-gray break-words">
                         {queueInfo?.printer_name || `Queue ${item.queue_id}`}
                         {item.waiting_reason && (
-                          <span className="ml-2 text-yellow-700 dark:text-yellow-400">· {item.waiting_reason}</span>
+                          <span className="ml-2 text-yellow-700 dark:text-yellow-400">· <QueueWaitReason item={item} printerId={queueInfo?.printer_id} /></span>
                         )}
                       </p>
                     </div>

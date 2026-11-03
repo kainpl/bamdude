@@ -36,6 +36,17 @@ beforeEach(() => {
 });
 
 describe('Print-state diagnostics', () => {
+  it('explains an unresolved runtime context without promising a repair', async () => {
+    vi.mocked(api.getPrintStateIssues).mockResolvedValue({
+      issues: [{ ...issue, kind: 'runtime', code: 'runtime_context_unresolved', actions: [], blocked_reasons: ['archive_missing'] }],
+      next_cursor: null, truncated: false, checked_at: '',
+    });
+    panel();
+    expect(await screen.findByText(/No safe repair is available/)).toHaveTextContent(/Save a support bundle/);
+    expect(api.previewPrintState).not.toHaveBeenCalled();
+    expect(api.applyPrintState).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Release finished context' })).not.toBeInTheDocument();
+  });
   it('rereads an addressed link without opening a preview or applying anything', async () => {
     window.history.replaceState({}, '', '/system?printer_id=7&kind=item&target_id=11#print-state');
     panel();

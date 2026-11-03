@@ -4,7 +4,7 @@ export type MonitorGroup = 'none' | 'location' | 'tag';
 export type MonitorSize = 'auto' | '1' | '2' | '3' | '4';
 export type WaitCode = 'printer_offline' | 'plate_not_cleared' | 'drying' | 'scheduled' |
   'manual_start' | 'stagger' | 'filament_unavailable' | 'dispatch_failed' | 'storage_full' |
-  'source_capture' | 'order_resources' | 'unknown';
+  'source_capture' | 'order_resources' | 'dispatch_runtime_conflict' | 'unknown';
 export type DispatchPhase = 'preparing' | 'uploading' | 'heating' | 'swapping' | 'starting' | 'acknowledging';
 export type MonitorJob = { visibility: 'restricted' } | { visibility: 'visible'; name: string | null; item_id: number | null };
 export interface MonitorPrinter {

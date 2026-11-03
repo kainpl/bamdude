@@ -52,6 +52,7 @@ function RuntimeDetails({ issue }: { issue: PrintStateIssue }) {
         ? t(free ? 'printStateRecovery.runtime.held' : 'printStateRecovery.runtime.heldBusy', { archive })
         : t('printStateRecovery.runtime.unresolved', { archive })}</p>
     {issue.age_seconds !== undefined && <p className="text-xs text-bambu-gray">{t('printStateRecovery.runtime.age', { seconds: issue.age_seconds })}</p>}
+    {issue.code === 'runtime_context_unresolved' && <p className="text-xs text-amber-700 dark:text-amber-400 break-words">{t('printStateRecovery.runtime.noSafeRepair')}</p>}
     {issue.queue_paused && <p className="text-xs text-bambu-gray">{t('printStateRecovery.runtime.paused')}</p>}
     {repair && <p className="text-xs text-bambu-gray break-words">{t('printStateRecovery.runtime.lastRepair', {
       archive: repair.archive_id ?? '—', when: repair.at ? formatDateTime(repair.at) : '—',

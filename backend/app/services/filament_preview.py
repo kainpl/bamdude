@@ -242,7 +242,7 @@ async def routing_preview(db, data, user):
                 ):
                     from backend.app.services.print_scheduler import scheduler
 
-                    if scheduler._is_printer_idle(printer.id):
+                    if scheduler._is_printer_ready_for_dispatch(printer.id):
                         group["ready"] += 1
         for group in groups.values():
             group["reasons"] = list(group["reasons"].values())

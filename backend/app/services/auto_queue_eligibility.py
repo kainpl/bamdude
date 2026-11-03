@@ -376,7 +376,7 @@ async def find_eligible_printer(
                 uncertain=result.status == "unknown" and result.reason != "printer_offline",
             )
             continue
-        ready = scheduler._is_printer_idle(printer.id, require_plate_clear) and printer.id not in (
+        ready = scheduler._is_printer_ready_for_dispatch(printer.id, require_plate_clear) and printer.id not in (
             interlocked_printers or ()
         )
         candidates.append(

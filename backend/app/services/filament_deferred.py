@@ -124,6 +124,7 @@ async def defer_claim(
     item_id,
     started_at,
     reason,
+    claim_detail=None,
     revision=None,
     direct=False,
     source_archive_id=None,
@@ -174,6 +175,9 @@ async def defer_claim(
     halts_queue = terminal and (not direct or swap_started)
     detail = routing_detail(reason)
     message = detail["message"]
+    runtime_conflict = reason == "dispatch_claim_changed" and claim_detail == "current_run_conflict"
+    if runtime_conflict:
+        message = "A previous print context is blocking this start. Check print states on the System page."
     if swap_started:
         message = f"{message} The swap start macro ran, or may have, so the print is not retried by itself."
 
@@ -182,6 +186,8 @@ async def defer_claim(
         await abort_execution_archive(db, execution_archive_id, detail, failed_code=code if swap_started else None)
         return DeferResult(False)
     wait_code = SOURCE_CAPTURE_WAIT_CODE if disposition == DISPOSITION_RETRY_LATER else "filament_unavailable"
+    if runtime_conflict:
+        wait_code = "dispatch_runtime_conflict"
     # Only a refusal proven to have had no effect clears the claim time: a row sent back to
     # pending, or one refused before its attempt had an execution archive (nothing reached
     # the printer — such a failed job stays refreshable, swap-source-declaration §6). Any

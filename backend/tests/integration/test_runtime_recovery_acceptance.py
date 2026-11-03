@@ -37,6 +37,7 @@ from backend.tests.integration.test_dispatch_without_original import (  # noqa: 
     sessions,
 )
 from backend.tests.integration.test_printer_runtime_stall import (  # noqa: F401 - fixtures
+    context_arrives_during_upload,
     runtime,
     stall_clock,
 )
@@ -102,7 +103,7 @@ async def a_finished_run_held_over_a_pending_job(
     assert await _reconcile(db, printer_id, "FINISH", "cube.gcode.3mf") == [archive.id]
     await db.commit()
     assert current_print_run(printer_manager, printer_id) is run
-    # The operator answers the plate through its own route; from here on every pass dispatches -- and loops.
+    # Plate clear removes that gate; the reconciled run still vetoes a new attempt.
     await clear_plate(printer_id, None, current_user=None, db=db)
     assert not printer_manager.is_awaiting_plate_clear(printer_id)
     the_printer_reports(mqtt, "FINISH")
@@ -159,11 +160,10 @@ async def test_a_released_context_waits_under_the_pause_and_resume_allows_one_at
         await one_tick(a.scheduler, a.spawned)
         stall_clock.advance(40)
     assert (await reread(db_session, PrintQueueItem, a.pending_id)).status == "pending"
-    (episode,) = tracker.snapshot(a.printer_id)
-    assert (episode.item_id, episode.blocker_archive_id) == (a.pending_id, a.archive_id)
+    assert tracker.snapshot(a.printer_id) == ()  # early waiting is not a dispatch attempt
     a.mqtt._client.publish.assert_not_called()
 
-    # Between two attempts of the live loop: nothing is in flight, the repair is offered and applied.
+    # The early wait has no episode, but the runtime context itself still has its repair.
     response, payload = await preview(db_session, a)
     assert response["after"]["runtime"]["macro_selection"] is True
     queue_before = await reread(db_session, PrinterQueue, a.queue_id)
@@ -225,6 +225,8 @@ async def test_a_repair_asked_while_an_attempt_runs_is_refused(
     key = (a.printer_id, "runtime", a.archive_id)
 
     async def ask_for_a_repair(*_args, **_kwargs):
+        if current_print_run(printer_manager, a.printer_id) is None:
+            printer_manager._print_run_bindings[a.printer_id] = a.run
         async with a.factory() as db:
             try:
                 await store.make_preview(db, a.printer_id, "runtime", a.archive_id, RUNTIME_ACTION, "user:1")
@@ -236,6 +238,7 @@ async def test_a_repair_asked_while_an_attempt_runs_is_refused(
             reasons.extend(classify(facts[key])["blocked_reasons"])
         return True
 
+    context_arrives_during_upload(monkeypatch, a.printer_id)
     if stage == "upload":
         monkeypatch.setattr(bd, "upload_file_async", ask_for_a_repair)
     else:

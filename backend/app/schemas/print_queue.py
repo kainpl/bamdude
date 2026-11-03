@@ -202,6 +202,7 @@ class PrintQueueItemResponse(BaseModel):
     # says so, or «Clone» of a closed order's row could only be refused.
     project_status: str | None = None
     waiting_reason: str | None = None
+    waiting_reason_code: str | None = None
     archive_id: int | None
     library_file_id: int | None
     position: int

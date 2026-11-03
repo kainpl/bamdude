@@ -1,4 +1,5 @@
 {
+  "A previous print context is blocking this start. Check print states on the System page.": "Контекст попереднього друку блокує запуск. Перевірте стани друку на сторінці системи.",
   "The BamDude client package was not found": "Пакет клієнта BamDude не знайдено",
   "The BamDude client package is unavailable or incompatible": "Пакет клієнта BamDude недоступний або несумісний",
   "'{}' already belongs to part '{}'": "«{}» уже належить деталі «{}»",

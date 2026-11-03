@@ -6552,6 +6552,7 @@ export interface PrintQueueItem {
   /** Whether that order is open — a clone keeps it only then (WS-13 E13 R11). */
   project_status?: string | null;
   waiting_reason: string | null;
+  waiting_reason_code?: string | null;
   archive_id: number | null;
   library_file_id: number | null;
   position: number;

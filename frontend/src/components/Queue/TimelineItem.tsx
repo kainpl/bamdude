@@ -1,6 +1,8 @@
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Hand, HelpCircle } from 'lucide-react';
 import type { TimelineSlot } from '../../hooks/useQueueTimeline';
+import { QueueRuntimeLink } from '../QueueWaitReason';
+import { queueWaitText } from '../../utils/queueWait';
 
 interface Props {
   slot: TimelineSlot;
@@ -60,7 +62,8 @@ export function TimelineItem({
     formatRange(startMs, endMs),
     `${t('queue.timeline.estimatedDuration')}: ${formatDuration(durationSec)}${estimated ? ` (${t('queue.timeline.noDuration')})` : ''}`,
   ];
-  if (item.waiting_reason) tooltipLines.push(`⏳ ${item.waiting_reason}`);
+  const waitingText = queueWaitText(item, t);
+  if (waitingText) tooltipLines.push(`⏳ ${waitingText}`);
   if (scheduledPin) tooltipLines.push(`📌 ${new Date(startMs).toLocaleString()}`);
   if (batchTotal > 1) tooltipLines.push(`${t('queue.timeline.batchGroupOf', { count: batchTotal })} · ${batchIndex + 1}/${batchTotal}`);
 
@@ -72,11 +75,12 @@ export function TimelineItem({
   // against the slot's right edge so it can't escape the slot bounds.
   const hiddenLeft = Math.max(0, -left);
   const labelOffset = hiddenLeft + 10; // 10px default gutter after the colour stripe
-  const labelWidth = clampedWidth - labelOffset - 4; // 4px right gutter
+  const runtimeLink = item.waiting_reason_code === 'dispatch_runtime_conflict' && clampedWidth >= 60;
+  const labelWidth = clampedWidth - labelOffset - 4 - (runtimeLink ? 20 : 0); // room for the separate action
   const showLabel = labelWidth >= 60;
 
   return (
-    <button
+    <><button
       type="button"
       onClick={onClick}
       onContextMenu={onContextMenu}
@@ -115,6 +119,9 @@ export function TimelineItem({
         <ActiveProgress slot={slot} />
       )}
     </button>
+    {runtimeLink && <span className="absolute top-2 text-xs text-center" style={{ left: left + clampedWidth - 20, width: 20 }}>
+      <QueueRuntimeLink printerId={item.printer_id} compact />
+    </span>}</>
   );
 }
 

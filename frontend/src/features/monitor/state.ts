@@ -23,6 +23,7 @@ export function tileState(p: MonitorPrinter, view: MonitorView): TileState {
     if (p.queue?.is_paused || p.queue?.status === 'paused') return state('queuePaused', 'warning', 3, true);
     if (p.queue?.status === 'error') return state('queueError', 'warning', 3, true);
     const wait = p.queue?.waiting?.code;
+    if (wait === 'dispatch_runtime_conflict') return state('waiting', 'warning', 3, true);
     if (wait === 'filament_unavailable') return state('filament', 'warning', 3, true);
     if (wait === 'manual_start') return state('manual', 'warning', 3, true);
     if (wait === 'dispatch_failed') return state('dispatchFailed', 'warning', 3, true);

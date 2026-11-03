@@ -267,6 +267,7 @@ export default {
       held: 'The printer is free. Archive #{{archive}} has finished, but its context is still active.',
       heldBusy: 'Archive #{{archive}} has finished, but its context is still active.',
       unresolved: 'Archive #{{archive}}: the context held in memory does not match the records.',
+      noSafeRepair: 'No safe repair is available for this context. Save a support bundle for the responsible operator; do not delete and re-add the printer to clear it.',
       age: 'Seen unchanged for {{seconds}} s.',
       lingering: 'It has lasted longer than its usual budget. This is shown for information; nothing here repairs it.',
       lastRepair: 'The queue was paused by a release attempt for archive #{{archive}} at {{when}}: {{result}}',
@@ -447,6 +448,7 @@ export default {
       "SLICING": "Preparing"
     },
     "waits": {
+      "dispatch_runtime_conflict": "A previous print context is blocking this start",
       "order_resources": "Printer excluded by this order’s restrictions",
       "printer_offline": "Printer offline",
       "plate_not_cleared": "Plate not cleared",
@@ -2262,6 +2264,8 @@ export default {
 
   // QueueCard component
   queueCard: {
+    runtimeCheck: 'Check print states',
+    runtimeOperator: 'Ask an operator with access to print-state diagnostics.',
     ungrouped: 'Ungrouped',
     status: {
       idle: 'Idle',

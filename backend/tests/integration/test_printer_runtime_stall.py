@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -326,7 +327,7 @@ async def a_stale_context_on(db, printer_id: int) -> PrintArchive:
 async def test_every_stalled_attempt_is_a_new_job_and_archive_behind_one_blocker(
     db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, runtime
 ):
-    """Baseline: the loop the incident showed -- a new job and execution archive each time, one blocker."""
+    """Late race: a context appears during each upload, after the early readiness check."""
     queue_id, mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
         db_session, test_engine, tmp_path, printer_factory, monkeypatch
     )
@@ -334,6 +335,7 @@ async def test_every_stalled_attempt_is_a_new_job_and_archive_behind_one_blocker
     stale_id = (await a_stale_context_on(db_session, printer_id)).id
 
     for _ in range(3):
+        context_arrives_during_upload(monkeypatch, printer_id)
         await one_tick(scheduler, spawned)
         db_session.expire_all()
         row = await db_session.get(PrintQueueItem, item_id)
@@ -351,6 +353,23 @@ async def test_every_stalled_attempt_is_a_new_job_and_archive_behind_one_blocker
     assert all(a.status == "cancelled" and a.extra_data.get("dispatch_aborted") for a in attempts)
     mqtt._client.publish.assert_not_called()
     assert current_print_run(printer_manager, printer_id).archive_id == stale_id
+
+
+def context_arrives_during_upload(monkeypatch, printer_id):
+    """Expose the existing synthetic context only at the upload barrier.
+
+    A known context is now an early wait. These tests deliberately exercise the
+    distinct late refusal and its existing tracker, without disabling that check.
+    """
+    import backend.app.services.background_dispatch as bd
+
+    held = printer_manager._print_run_bindings.pop(printer_id)
+
+    async def upload(*_args, **_kwargs):
+        printer_manager._print_run_bindings[printer_id] = held
+        return True
+
+    monkeypatch.setattr(bd, "upload_file_async", AsyncMock(side_effect=upload))
 
 
 @pytest.fixture
@@ -375,6 +394,7 @@ async def test_a_stalled_attempt_names_its_printer_item_and_blocker(
     printer_id = (await db_session.get(PrinterQueue, queue_id)).printer_id
     stale_id = (await a_stale_context_on(db_session, printer_id)).id
 
+    context_arrives_during_upload(monkeypatch, printer_id)
     with caplog.at_level(logging.INFO, logger="backend.app.services.background_dispatch"):
         await one_tick(scheduler, spawned)
 
@@ -399,6 +419,7 @@ async def test_the_real_loop_becomes_one_stalled_episode(
 
     with caplog.at_level(logging.WARNING, logger=tracker.__name__):
         for _ in range(4):
+            context_arrives_during_upload(monkeypatch, printer_id)
             await one_tick(scheduler, spawned)
             stall_clock.advance(40)
     (episode,) = tracker.snapshot(printer_id)

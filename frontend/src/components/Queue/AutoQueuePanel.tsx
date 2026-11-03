@@ -1,3 +1,4 @@
+import { QueueWaitReason } from '../QueueWaitReason';
 import { QueueDuration } from '../QueueDuration';
 import { sharedSlicerTime } from '../../utils/slicerTime';
 import { AutoEjectBadge } from '../AutoEjectBadge';
@@ -602,7 +603,7 @@ function AutoQueueRow({
           {targetLocation && <span>· {targetLocation}</span>}
           {item.force_color_match && <span>· {t('autoQueue.exactColor')}</span>}
           {item.waiting_reason && (
-            <span className={item.status === 'failed' ? 'text-red-700 dark:text-red-400' : 'text-yellow-700 dark:text-yellow-400'}>· {item.waiting_reason}</span>
+            <span className={item.status === 'failed' ? 'text-red-700 dark:text-red-400' : 'text-yellow-700 dark:text-yellow-400'}>· <QueueWaitReason item={item} /></span>
           )}
         </div>
       </div>

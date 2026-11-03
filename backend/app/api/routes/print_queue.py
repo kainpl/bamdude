@@ -258,6 +258,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "project_id": item.project_id,
         "project_line_id": item.project_line_id,
         "waiting_reason": item.waiting_reason,
+        "waiting_reason_code": item.waiting_reason_code,
         "archive_id": item.archive_id,
         "library_file_id": item.library_file_id,
         "position": item.position,

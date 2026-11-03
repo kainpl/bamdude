@@ -16,7 +16,7 @@ print, gates the ROUTER on readiness, or touches ``find_eligible_printer`` /
 whether a home printer would take the job now: a printer with an empty queue
 that still waits for a plate clear, or that a Home Assistant interlock holds,
 only looks free, and moving work to it would move it nowhere — so readiness is
-the busy set AND ``PrintScheduler._is_printer_idle`` AND the tick's interlock
+the busy set AND ``PrintScheduler._is_printer_ready_for_dispatch`` AND the tick's interlock
 set, the readiness signals the router's ranking already uses.
 
 ⚠️ **A printer is asked about THIS job, never about its model** (spec
@@ -929,8 +929,8 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
     offline printer is left out whole (spec R7): it neither vetoes, nor dates a
     home, nor receives — not waiting for it to come back.
 
-    ``ready`` = outside the busy set, idle by ``_is_printer_idle`` with the
-    plate-clear gate honoured, and not held by a Home Assistant interlock of
+    ``ready`` = outside the busy set, dispatch-ready with the plate-clear and
+    current-run gates honoured, and not held by a Home Assistant interlock of
     THIS pass's set (C3-1) — the router's own rank: ⚠️ an empty queue on a
     printer still waiting for its plate clear, or behind an alerting sensor, only
     looks free.
@@ -958,7 +958,7 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
         ready = (
             printer_id not in busy
             and printer_id not in interlocked
-            and scheduler._is_printer_idle(printer_id, require_plate_clear=True)
+            and scheduler._is_printer_ready_for_dispatch(printer_id, require_plate_clear=True)
         )
         dispatchable = queue_status not in ("paused", "error")
         printers[printer_id] = PassPrinter(
@@ -2198,7 +2198,7 @@ async def _still_holds(
             or not snapshot.connected
             or printer_id in busy
             or printer_id in recheck.interlocked
-            or not scheduler._is_printer_idle(printer_id, require_plate_clear=True)
+            or not scheduler._is_printer_ready_for_dispatch(printer_id, require_plate_clear=True)
         ):
             return "eligibility_changed"
         if fresh.require_previous_success and not await scheduler.previous_print_succeeded(db, printer_id):

@@ -443,6 +443,28 @@ def bind_print_run(
     return bound
 
 
+def prepared_print_run_conflicts(
+    manager: PrinterManager,
+    printer_id: int,
+    *,
+    archive_id: int | None = None,
+    expected_submission_id: str | None = None,
+) -> bool:
+    """Read the current-run veto without reserving or releasing anything.
+
+    Early callers have no execution archive yet: any current run vetoes that
+    new attempt. The final bind may recognise its own prepared archive. An
+    early refusal can therefore outlive a short finishing race until the next
+    request/tick; it never grants permission to replace an observed run.
+    """
+    current = _peek(manager, "_print_run_bindings").get(printer_id)
+    return current is not None and (
+        archive_id is None
+        or current.archive_id != archive_id
+        or bool(current.observed_subtask_id and not current.matches_device_subtask(expected_submission_id))
+    )
+
+
 def bind_prepared_print_run(
     manager: PrinterManager,
     *,
@@ -461,13 +483,8 @@ def bind_prepared_print_run(
     next.  ``None`` is the caller's signal to defer its own claim.
     """
 
-    current = _current(manager).get(printer_id)
-    if current is not None and current.archive_id != archive_id:
-        return None
-    if (
-        current is not None
-        and current.observed_subtask_id
-        and not current.matches_device_subtask(expected_submission_id)
+    if prepared_print_run_conflicts(
+        manager, printer_id, archive_id=archive_id, expected_submission_id=expected_submission_id
     ):
         return None
     return bind_print_run(

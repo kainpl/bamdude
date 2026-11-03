@@ -1,3 +1,4 @@
+import { QueueWaitReason } from '../QueueWaitReason';
 import { AutoEjectBadge } from '../AutoEjectBadge';
 import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -271,6 +272,7 @@ function PendingRow({ item, lineName }: { item: PrintQueueItem; lineName: string
           lineName && t('orders.queue.line', { name: lineName }),
         ]}
       />
+      {item.waiting_reason && <small className="mt-0.5 block text-xs text-amber-700 dark:text-amber-400"><QueueWaitReason item={item} /></small>}
       </div>
     </li>
   );
@@ -307,7 +309,7 @@ function AwaitingRow({ item, lineName }: { item: AutoQueueItem; lineName: string
           lineName && t('orders.queue.line', { name: lineName }),
         ]}
       />
-      {item.waiting_reason && <small className="mt-0.5 block text-xs text-amber-700 dark:text-amber-400">{item.waiting_reason}</small>}
+      {item.waiting_reason && <small className="mt-0.5 block text-xs text-amber-700 dark:text-amber-400"><QueueWaitReason item={item} /></small>}
       </div>
     </li>
   );
