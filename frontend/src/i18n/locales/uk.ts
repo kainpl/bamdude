@@ -11744,7 +11744,6 @@ export default {
     catalogColors: 'Кольори виробника',
     inventoryColors: 'Кольори ваших котушок',
     catalogColorsUnavailable: 'Не вдалося завантажити кольори виробника. Ви можете вибрати інший колір.',
-    presetColors: 'Кольори {{name}}:',
     showLessColors: 'Менше кольорів',
     showMoreColors: 'Більше кольорів',
     clear: 'Очистити',

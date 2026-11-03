@@ -11551,7 +11551,6 @@ export default {
     catalogColors: 'Manufacturer colors',
     inventoryColors: 'Colors from your spools',
     catalogColorsUnavailable: 'Manufacturer colors could not be loaded. You can still choose another color.',
-    presetColors: '{{name}} colors:',
     showLessColors: 'Show less colors',
     showMoreColors: 'Show more colors',
     clear: 'Clear',

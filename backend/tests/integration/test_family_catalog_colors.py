@@ -20,6 +20,31 @@ async def test_system_family_palette_without_inventory_spools(async_client):
     assert not any(r["hex_color"] == "#FFFDD0" for r in rows)
 
 
+async def test_system_alias_without_vendor_prefix_uses_its_complete_series(async_client, db_session):
+    response = await async_client.post("/api/v1/inventory/colors/reset")
+    assert response.status_code == 200, response.text
+    response = await async_client.get(PATH, params={"filament_family_id": "GFL01"})
+    assert response.status_code == 200, response.text
+    rows = response.json()
+    assert len(rows) == 19
+    assert {(r["manufacturer"], r["material"]) for r in rows} == {("Polymaker", "PolyTerra PLA")}
+
+    # The exception is for authoritative system identities, not custom aliases.
+    db_session.add(
+        UserFilamentFamily(
+            filament_id="Ppolyterra",
+            ecosystem="bambu",
+            alias="PolyTerra PLA",
+            vendor="Polymaker",
+            filament_type="PLA",
+            origin="local",
+        )
+    )
+    await db_session.commit()
+    response = await async_client.get(PATH, params={"filament_family_id": "Ppolyterra"})
+    assert response.status_code == 200 and response.json() == []
+
+
 @pytest.mark.parametrize("family_id, material", [("GFA00", "PLA Basic"), ("GFA01", "PLA Matte")])
 async def test_palette_does_not_mix_variants_or_manufacturers(async_client, db_session, family_id, material):
     for brand, mat, name in [

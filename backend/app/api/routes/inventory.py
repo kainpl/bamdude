@@ -1047,6 +1047,9 @@ async def family_catalog_colors(
     alias = family.display_name.strip().lower()
     prefixes = ("bambu lab", "bambu") if vendor == "bambu lab" else (vendor,)
     material = next((alias[len(prefix) + 1 :].strip() for prefix in prefixes if alias.startswith(prefix + " ")), "")
+    if not material and family.origin == "system":
+        # System aliases can be complete series names, e.g. PolyTerra PLA.
+        material = alias
     if not material:
         return []
     return (
