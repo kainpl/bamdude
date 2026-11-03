@@ -73,14 +73,18 @@ def inventory(root: Path) -> dict[str, int]:
     files = {}
     ignored = 0
     for path in root.iterdir():
+        owned = bool(_OWNED_NAME.fullmatch(path.name))
+        if not owned and not path.is_symlink() and not path.is_junction() and path.is_dir():
+            ignored += 1
+            continue  # Foreign indexing directories are never traversed.
         # Never traverse a directory/link in this flat, store-owned namespace.
         _regular(path)
-        if not _OWNED_NAME.fullmatch(path.name):
+        if not owned:
             ignored += 1
             continue  # Finder/Explorer metadata belongs neither to quota nor GC.
         files[path.name] = path.stat().st_size
     if ignored:
-        logger.info("Ignored %s foreign regular files in Obico evidence storage", ignored)
+        logger.info("Ignored %s foreign entries in Obico evidence storage", ignored)
     return files
 
 

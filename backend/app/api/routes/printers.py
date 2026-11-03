@@ -865,7 +865,13 @@ async def delete_printer(
 
     try:
         async with obico_history.printer_deletion(printer_id):
-            return await _delete_printer(printer_id, delete_archives, _, db)
+            try:
+                return await _delete_printer(printer_id, delete_archives, _, db)
+            except BaseException:
+                # Release SQLite's writer before printer_deletion reacquires
+                # its store guard; the evidence writer may own that guard.
+                await db.rollback()
+                raise
     except HistoryUnavailable as exc:
         raise HTTPException(503, "Obico history is temporarily unavailable") from exc
 

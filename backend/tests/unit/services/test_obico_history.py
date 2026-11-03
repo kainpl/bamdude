@@ -716,10 +716,46 @@ async def test_foreign_regular_files_do_not_disable_or_enter_store_accounting(hi
         await restarted.shutdown()
 
 
+async def test_foreign_directories_are_ignored_without_traversal(history, monkeypatch):
+    kept = await save(history)
+    directories = [history.root / name for name in ("@eaDir", ".AppleDouble")]
+    for directory in directories:
+        directory.mkdir()
+        (directory / (uuid4().hex + ".jpg")).write_bytes(b"foreign child")
+    await history.shutdown()
+    original_iterdir = type(history.root).iterdir
+
+    def flat_inventory(path):
+        assert path == history.root, "Inventory must never traverse a foreign directory"
+        return original_iterdir(path)
+
+    restarted = ObicoHistory(history.root, history._session_factory)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(type(history.root), "iterdir", flat_inventory)
+            await restarted.start(enabled=True)
+            assert (await restarted.page(scope=None))["saved_count"] == 1
+            assert await restarted.details(1, kept, image=True) == jpeg()
+            await save(restarted)
+            await restarted.clear()
+        assert restarted.status()["used_bytes"] == 0
+        assert all([p.read_bytes() for p in directory.iterdir()] == [b"foreign child"] for directory in directories)
+        owned_directory = history.root / (uuid4().hex + ".jpg")
+        owned_directory.mkdir()
+        with pytest.raises(ValueError, match="special files"):
+            module.inventory(history.root)
+    finally:
+        await restarted.shutdown()
+
+
 @pytest.mark.parametrize("kind", ["is_symlink", "is_junction"])
-async def test_foreign_links_are_still_refused(history, monkeypatch, kind):
+@pytest.mark.parametrize("directory", [False, True])
+async def test_foreign_links_are_still_refused(history, monkeypatch, kind, directory):
     foreign = history.root / "desktop.ini"
-    foreign.write_bytes(b"not an owned file")
+    if directory:
+        foreign.mkdir()
+    else:
+        foreign.write_bytes(b"not an owned file")
     real_check = getattr(type(foreign), kind)
     monkeypatch.setattr(type(foreign), kind, lambda path: path == foreign or real_check(path))
     with pytest.raises(ValueError, match="refuses links"):
@@ -830,6 +866,125 @@ async def test_printer_delete_without_pin_unlinks_before_return(history):
     assert (history.root / filename(kept)).exists()
     assert history.status()["used_bytes"] == len(jpeg())
     assert history._count == 1
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_p1_on_printer_delete_cleanup(history, monkeypatch, cancel):
+    victim = await save(history)
+    started, release = threading.Event(), threading.Event()
+    original = module._unlink
+
+    def blocked_unlink(root, name):
+        if name == filename(victim):
+            started.set()
+            assert release.wait(5)
+        original(root, name)
+
+    monkeypatch.setattr(module, "_unlink", blocked_unlink)
+
+    async def deleting_printer():
+        async with history.printer_deletion(1), history.session() as db:
+            await db.execute(delete(ObicoEvent).where(ObicoEvent.printer_id == 1))
+            await db.execute(delete(Printer).where(Printer.id == 1))
+            await db.commit()
+
+    deleting = asyncio.create_task(deleting_printer())
+    attempted, registered = asyncio.Event(), asyncio.Event()
+
+    async def backup():
+        attempted.set()
+        async with history.pin_backup():
+            registered.set()
+
+    pinning = None
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        if cancel:
+            deleting.cancel()
+        pinning = asyncio.create_task(backup())
+        await asyncio.wait_for(attempted.wait(), 5)
+        locked_before_release = history.guard.locked()
+        registered_early = registered.is_set()
+        pins_before_release = history._pins
+    finally:
+        release.set()
+        results = await asyncio.gather(deleting, *([pinning] if pinning else []), return_exceptions=True)
+    assert locked_before_release and not registered_early
+    assert pins_before_release == 0 and registered.is_set()
+    assert not (history.root / filename(victim)).exists()
+    if cancel:
+        assert isinstance(results[0], asyncio.CancelledError) and not isinstance(results[1], BaseException)
+    else:
+        assert not any(isinstance(result, BaseException) for result in results)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_delete_error_rolls_back_sqlite_writer_before_store_guard(history, monkeypatch, cancel):
+    from fastapi import HTTPException
+    from sqlalchemy import update
+
+    from backend.app.api.routes import printers as routes
+
+    kept = await save(history)
+    other = str(uuid4())
+    writer_entered = asyncio.Event()
+    engine = history._session_factory.kw["bind"]
+    owner = None
+    lock_states = []
+
+    def before_insert(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("INSERT INTO OBICO_EVENTS"):
+            writer_entered.set()
+
+    event.listen(engine.sync_engine, "before_cursor_execute", before_insert)
+    monkeypatch.setattr(module, "obico_history", history)
+    try:
+        async with history.session() as route_db:
+            acquire = history.guard.acquire
+
+            async def acquire_without_sqlite_writer():
+                if asyncio.current_task() is owner:
+                    lock_states.append(route_db.in_transaction())
+                    assert not route_db.in_transaction(), "Request must rollback before waiting on store guard"
+                return await acquire()
+
+            monkeypatch.setattr(history.guard, "acquire", acquire_without_sqlite_writer)
+
+            async def failed_delete(printer_id, delete_archives, user, db):
+                await db.execute(update(Printer).where(Printer.id == 1).values(name="uncommitted"))
+                assert history.offer(
+                    printer_id=2,
+                    token=history.token(2),
+                    frame=jpeg(),
+                    verdict="failure",
+                    facts={},
+                    detections=[],
+                    event_id=other,
+                    observed_at=now(),
+                )
+                await asyncio.wait_for(writer_entered.wait(), 5)
+                assert history.guard.locked()  # writer owns it and is waiting for SQLite
+                if cancel:
+                    raise asyncio.CancelledError
+                raise HTTPException(404, "Concurrent delete refused")
+
+            monkeypatch.setattr(routes, "_delete_printer", failed_delete)
+            owner = asyncio.create_task(routes.delete_printer(1, False, None, route_db))
+            try:
+                with pytest.raises(asyncio.CancelledError if cancel else HTTPException) as refused:
+                    await asyncio.wait_for(owner, 5)
+                if not cancel:
+                    assert refused.value.status_code == 404
+            finally:
+                await route_db.rollback()
+                await asyncio.wait_for(history._queue.join(), 5)
+        assert lock_states and not any(lock_states)
+        assert history._ready and history.status()["reason"] is None
+        assert not history.dropped.get("write_failed")
+        assert await history.details(2, other, image=True) == jpeg()
+        assert await history.details(1, kept, image=True) == jpeg()
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", before_insert)
 
 
 async def test_restore_drains_printer_delete_body_without_holding_store_guard(history, monkeypatch):
