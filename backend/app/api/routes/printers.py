@@ -861,10 +861,13 @@ async def delete_printer(
     _=RequirePermission(Permission.PRINTERS_DELETE),
     db: AsyncSession = Depends(get_db),
 ):
-    from backend.app.services.obico_history import obico_history
+    from backend.app.services.obico_history import HistoryUnavailable, obico_history
 
-    async with obico_history.printer_deletion(printer_id):
-        return await _delete_printer(printer_id, delete_archives, _, db)
+    try:
+        async with obico_history.printer_deletion(printer_id):
+            return await _delete_printer(printer_id, delete_archives, _, db)
+    except HistoryUnavailable as exc:
+        raise HTTPException(503, "Obico history is temporarily unavailable") from exc
 
 
 async def _delete_printer(

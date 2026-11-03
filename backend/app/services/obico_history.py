@@ -71,12 +71,16 @@ def inventory(root: Path) -> dict[str, int]:
         raise ValueError("Evidence store refuses a linked root")
     root.mkdir(parents=True, exist_ok=True)
     files = {}
+    ignored = 0
     for path in root.iterdir():
         # Never traverse a directory/link in this flat, store-owned namespace.
         _regular(path)
         if not _OWNED_NAME.fullmatch(path.name):
-            raise ValueError("Unexpected file in evidence store")
+            ignored += 1
+            continue  # Finder/Explorer metadata belongs neither to quota nor GC.
         files[path.name] = path.stat().st_size
+    if ignored:
+        logger.info("Ignored %s foreign regular files in Obico evidence storage", ignored)
     return files
 
 
@@ -156,6 +160,8 @@ class ObicoHistory:
         self._epoch = secrets.token_hex(16)
         self._generations: dict[int, int] = {}
         self._blocked: Counter[int] = Counter()
+        self._deletions_idle = asyncio.Event()
+        self._deletions_idle.set()
         self._enabled = False
         self._held = True
         self._ready = False
@@ -399,18 +405,21 @@ class ObicoHistory:
 
         self._files.update(await _file_work(sizes))
 
-    async def _delete_locked(self, ids: list[str]) -> None:
+    async def _delete_locked(self, ids: list[str]) -> bool:
         if not ids:
-            return
+            return True
         async with self.session() as db:
             result = await db.execute(delete(ObicoEvent).where(ObicoEvent.id.in_(ids)))
             await db.commit()  # logical deletion precedes pin check/file work
             self._count = max(0, self._count - result.rowcount)
+        removed = True
         for event_id in ids:
             for suffix in (".jpg", ".part"):
                 name = UUID(event_id).hex + suffix
                 self._garbage_names.add(name)
-                await self._unlink_locked(name)
+                if not await self._unlink_locked(name):
+                    removed = False
+        return removed
 
     async def _unlink_locked(self, name: str) -> bool:
         # P1: callers keep guard through BOTH pin check AND actual unlink.
@@ -466,8 +475,7 @@ class ObicoHistory:
                     )
                 ).all()
             for victim in victims:
-                await self._delete_locked([victim])
-                if self._error == "cleanup_failed":
+                if not await self._delete_locked([victim]):
                     return False  # do not discard more evidence for unfreeable bytes
                 if (
                     self._count + needed <= self.max_events
@@ -487,9 +495,11 @@ class ObicoHistory:
             if row.state == "writing" or row.state == "deleting":
                 await self._delete_locked([row.id])
             elif row.state == "ready":
-                try:
-                    await _file_work(_read, self.root, filename(row.id), row.size_bytes, row.sha256)
-                except (OSError, ValueError):
+                # Inventory already checked existence and size. Hash lazily on
+                # image read/backup/restore, not for the entire store at boot.
+                # An inventory I/O error aborts reconciliation without deleting
+                # or retiring intact originals; the worker retries it later.
+                if self._files.get(filename(row.id)) != row.size_bytes:
                     async with self.session() as db:
                         stored = await db.get(ObicoEvent, row.id)
                         stored.state = "unavailable"
@@ -514,17 +524,18 @@ class ObicoHistory:
 
     @asynccontextmanager
     async def printer_deletion(self, printer_id: int):
+        if self._held and self._worker is not None:
+            raise HistoryUnavailable("Evidence storage is held for restore")
         self._generations[printer_id] = self._generations.get(printer_id, 0) + 1
         self._blocked[printer_id] += 1
+        self._deletions_idle.clear()
         try:
-            async with self.guard:
-                async with self.session() as db:
-                    before = set(
-                        (await db.scalars(select(ObicoEvent.id).where(ObicoEvent.printer_id == printer_id))).all()
-                    )
-                try:
-                    yield  # printer transaction explicitly removes its event rows
-                finally:
+            async with self.guard, self.session() as db:
+                before = set((await db.scalars(select(ObicoEvent.id).where(ObicoEvent.printer_id == printer_id))).all())
+            try:
+                yield  # archive deletion, task stops and VP sync do not own guard
+            finally:
+                async with self.guard:
                     # Rollback leaves rows readable. Only committed orphans go.
                     async with self.session() as db:
                         self._count = await db.scalar(select(func.count()).select_from(ObicoEvent))
@@ -538,6 +549,8 @@ class ObicoHistory:
             self._blocked[printer_id] -= 1
             if not self._blocked[printer_id]:
                 del self._blocked[printer_id]
+            if not self._blocked:
+                self._deletions_idle.set()
 
     @asynccontextmanager
     async def reading(self):
@@ -575,6 +588,9 @@ class ObicoHistory:
                 await self._worker
             except asyncio.CancelledError:
                 pass
+        # Delete bodies no longer hold guard. Their post-commit cleanup still
+        # owns storage and must finish before restore replaces the database/root.
+        await self._deletions_idle.wait()
         async with self.guard:  # drains owned file readers/deletion/backup release
             while not self._queue.empty():
                 event = self._queue.get_nowait()

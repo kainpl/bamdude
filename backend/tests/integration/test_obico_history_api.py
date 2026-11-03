@@ -1,5 +1,6 @@
 """Real JWT/key gates and the normal HTTP history/media/clear routes."""
 
+import asyncio
 from uuid import uuid4
 
 import pytest
@@ -117,6 +118,46 @@ async def test_clear_and_actual_printer_delete_under_backup_pin(api_history, db_
         assert response.status_code == 200 and response.json() == {"deleted": 2}
         assert (history.root / filename(ids[1])).exists()
     assert not list(history.root.iterdir())
+
+
+async def test_slow_printer_delete_allows_other_recording_status_and_backup(api_history, monkeypatch):
+    from backend.app.services import print_completion_tasks
+
+    client, history, printers, ids = api_history
+    inside, release = asyncio.Event(), asyncio.Event()
+
+    async def stop(printer_id):
+        inside.set()
+        await release.wait()
+
+    monkeypatch.setattr(print_completion_tasks, "stop_print_completion_tasks", stop)
+    deleting = asyncio.create_task(client.delete(f"/api/v1/printers/{printers[0].id}?delete_archives=false"))
+    try:
+        await asyncio.wait_for(inside.wait(), 5)
+        assert printers[0].id in history._blocked
+        response = await asyncio.wait_for(client.get("/api/v1/obico/status"), 5)
+        assert response.status_code == 200
+
+        async def record_and_pin():
+            async with history.pin_backup():
+                for _ in range(12):
+                    await save(history, printer=printers[1].id, verdict="failure")
+
+        await asyncio.wait_for(record_and_pin(), 5)
+        page = await asyncio.wait_for(history.page(scope=None), 5)
+        assert page["total_count"] == 15
+        assert not history.dropped.get("queue_full")
+        assert not deleting.done()  # progress happened while deletion was paused
+    finally:
+        release.set()
+        response = await asyncio.wait_for(deleting, 10)
+    assert response.status_code == 200, response.text
+    assert not (history.root / filename(ids[0])).exists()
+    assert await history.quiesce(timeout=5)
+    rejected = await client.delete(f"/api/v1/printers/{printers[1].id}?delete_archives=false")
+    assert rejected.status_code == 503
+    async with history.session() as db:
+        assert await db.get(ObicoEvent, ids[1]) is not None
 
 
 async def test_enriched_status_filters_recent_and_live_printers(api_history, db_session, monkeypatch):

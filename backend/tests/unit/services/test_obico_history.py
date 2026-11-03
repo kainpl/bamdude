@@ -19,7 +19,7 @@ from backend.app.models.obico_event import ObicoEvent
 from backend.app.models.printer import Printer
 from backend.app.services import obico_history as module
 from backend.app.services.obico_geometry import project_boxes, validate_boxes
-from backend.app.services.obico_history import ObicoHistory, filename, now
+from backend.app.services.obico_history import HistoryUnavailable, ObicoHistory, filename, now
 
 pytestmark = pytest.mark.asyncio
 
@@ -695,6 +695,192 @@ async def test_startup_reconciles_orphans_incomplete_and_missing_references(hist
         assert recovered.status()["used_bytes"] == len(jpeg())
     finally:
         await recovered.shutdown()
+
+
+async def test_foreign_regular_files_do_not_disable_or_enter_store_accounting(history):
+    kept = await save(history)
+    foreign = dict.fromkeys((".DS_Store", "desktop.ini", "Thumbs.db"), b"foreign")
+    for name, data in foreign.items():
+        (history.root / name).write_bytes(data)
+    await history.shutdown()
+    restarted = ObicoHistory(history.root, history._session_factory)
+    await restarted.start(enabled=True)
+    try:
+        assert (await restarted.page(scope=None))["saved_count"] == 1
+        assert await restarted.details(1, kept, image=True) == jpeg()
+        assert restarted.status()["used_bytes"] == len(jpeg())
+        await save(restarted)
+        await restarted.clear()
+        assert {p.name: p.read_bytes() for p in restarted.root.iterdir()} == foreign
+    finally:
+        await restarted.shutdown()
+
+
+@pytest.mark.parametrize("kind", ["is_symlink", "is_junction"])
+async def test_foreign_links_are_still_refused(history, monkeypatch, kind):
+    foreign = history.root / "desktop.ini"
+    foreign.write_bytes(b"not an owned file")
+    real_check = getattr(type(foreign), kind)
+    monkeypatch.setattr(type(foreign), kind, lambda path: path == foreign or real_check(path))
+    with pytest.raises(ValueError, match="refuses links"):
+        module.inventory(history.root)
+
+
+async def test_startup_checks_sizes_without_reading_original_contents(history, monkeypatch):
+    kept = await save(history)
+    await history.shutdown()
+    original_open = type(history.root).open
+
+    def no_frame_read(path, mode="r", *args, **kwargs):
+        if path.parent == history.root and "r" in mode:
+            raise AssertionError("Startup must not read frame contents")
+        return original_open(path, mode, *args, **kwargs)
+
+    restarted = ObicoHistory(history.root, history._session_factory)
+    with monkeypatch.context() as patch:
+        patch.setattr(type(history.root), "open", no_frame_read)
+        await restarted.start()
+        assert (await restarted.page(scope=None))["saved_count"] == 1
+    try:
+        assert await restarted.details(1, kept, image=True) == jpeg()
+        path = history.root / filename(kept)
+        damaged = bytearray(path.read_bytes())
+        damaged[-1] ^= 1  # same size, still requires the on-read digest check
+        path.write_bytes(damaged)
+        assert await restarted.details(1, kept, image=True) is None
+    finally:
+        await restarted.shutdown()
+
+
+@pytest.mark.parametrize("operation", ["read", "inventory"])
+async def test_transient_startup_io_never_deletes_an_intact_original(history, monkeypatch, operation):
+    kept = await save(history)
+    await history.shutdown()
+    restarted = ObicoHistory(history.root, history._session_factory)
+    with monkeypatch.context() as patch:
+        target = "_read" if operation == "read" else "inventory"
+        patch.setattr(module, target, lambda *args: (_ for _ in ()).throw(PermissionError("sharing violation")))
+        await restarted.start()
+        async with restarted.session() as db:
+            assert (await db.get(ObicoEvent, kept)).state == "ready"
+        assert (history.root / filename(kept)).exists()
+    await restarted.shutdown()
+    retried = ObicoHistory(history.root, history._session_factory)
+    await retried.start()
+    try:
+        assert await retried.details(1, kept, image=True) == jpeg()
+    finally:
+        await retried.shutdown()
+
+
+async def test_unrelated_cleanup_failure_does_not_drop_after_successful_eviction(history, monkeypatch):
+    first = await save(history, verdict="safe", timestamp=now() - timedelta(hours=1))
+    second = await save(history, verdict="safe")
+    size = len(jpeg())
+    history.max_bytes = 2 * size + size // 2
+    stuck = uuid4().hex + ".jpg"
+    (history.root / stuck).write_bytes(b"x")
+    history._files[stuck] = 1
+    history._garbage_names.add(stuck)
+    original = module._unlink
+
+    def unlink(root, name):
+        if name == stuck:
+            raise PermissionError("unrelated orphan is locked")
+        return original(root, name)
+
+    monkeypatch.setattr(module, "_unlink", unlink)
+    failure = await save(history, verdict="failure")
+    assert await history.details(1, first) is None
+    assert (await history.details(1, second))["state"] == "ready"
+    assert (await history.details(1, failure))["state"] == "ready"
+    assert not history.dropped.get("quota")
+    assert history.status()["used_bytes"] == 2 * size + 1
+    assert history.status()["reason"] == "cleanup_failed"
+
+
+async def test_failed_victim_unlink_does_not_evict_more_frames(history, monkeypatch):
+    first = await save(history, verdict="safe", timestamp=now() - timedelta(hours=1))
+    second = await save(history, verdict="safe")
+    history.max_bytes = 2 * len(jpeg())
+    original = module._unlink
+
+    def unlink(root, name):
+        if name == filename(first):
+            raise PermissionError("victim is locked")
+        return original(root, name)
+
+    monkeypatch.setattr(module, "_unlink", unlink)
+    failure = await save(history, verdict="failure")
+    assert await history.details(1, failure) is None
+    assert (history.root / filename(first)).exists()
+    assert (await history.details(1, second))["state"] == "ready"
+    assert history.dropped["quota"] == 1
+    assert history.status()["used_bytes"] == 2 * len(jpeg())
+
+
+async def test_printer_delete_without_pin_unlinks_before_return(history):
+    kept = await save(history, printer=2)
+    removed = await save(history)
+    async with history.printer_deletion(1), history.session() as db:
+        await db.execute(delete(ObicoEvent).where(ObicoEvent.printer_id == 1))
+        await db.execute(delete(Printer).where(Printer.id == 1))
+        await db.commit()
+    assert not (history.root / filename(removed)).exists()
+    assert (history.root / filename(kept)).exists()
+    assert history.status()["used_bytes"] == len(jpeg())
+    assert history._count == 1
+
+
+async def test_restore_drains_printer_delete_body_without_holding_store_guard(history, monkeypatch):
+    inside, release = asyncio.Event(), asyncio.Event()
+    waiting = asyncio.Event()
+    original_wait = history._deletions_idle.wait
+
+    async def wait_for_deletions():
+        waiting.set()
+        await original_wait()
+
+    monkeypatch.setattr(history._deletions_idle, "wait", wait_for_deletions)
+
+    async def deleting():
+        async with history.printer_deletion(1):
+            inside.set()
+            await release.wait()
+
+    task = asyncio.create_task(deleting())
+    try:
+        await asyncio.wait_for(inside.wait(), 5)
+        assert not history.guard.locked()
+        assert not await history.quiesce(timeout=0)
+        await asyncio.wait_for(waiting.wait(), 5)
+        assert not history._drain.done()
+        with pytest.raises(HistoryUnavailable):
+            async with history.printer_deletion(2):
+                pytest.fail("A new delete cannot enter during restore drain")
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 5)
+    assert await history.quiesce(timeout=5)
+
+
+async def test_oldest_and_saved_count_only_include_ready_frames(history):
+    unavailable = await save(history, timestamp=now() - timedelta(days=3))
+    writing = await save(history, timestamp=now() - timedelta(days=2))
+    available = await save(history, timestamp=now() - timedelta(days=1))
+    async with history.session() as db:
+        (await db.get(ObicoEvent, unavailable)).state = "unavailable"
+        (await db.get(ObicoEvent, writing)).state = "writing"
+        ready_time = (await db.get(ObicoEvent, available)).observed_at
+        await db.commit()
+    page = await history.page(scope=None)
+    assert page["total_count"] == 3 and page["saved_count"] == 1
+    assert page["oldest_saved_at"] == module.iso(ready_time)
+    async with history.session() as db:
+        (await db.get(ObicoEvent, available)).state = "unavailable"
+        await db.commit()
+    page = await history.page(scope=None)
+    assert page["saved_count"] == 0 and page["oldest_saved_at"] is None
 
 
 async def test_portable_restore_roundtrip(history, tmp_path):

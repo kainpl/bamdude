@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
-import { api, type ObicoEventDetail } from '../../api/client';
+import { api, ApiError, type ObicoEventDetail } from '../../api/client';
 import { ObicoEvidenceViewer, ObicoHistoryPanel } from '../../components/ObicoHistoryPanel';
 
 const access = vi.hoisted(() => ({ permissions: new Set(['printers:read', 'camera:view', 'settings:update']) }));
@@ -34,6 +34,22 @@ function panel(recent = [event]) {
 }
 
 describe('saved Obico evidence', () => {
+  it('returns to the first page once when a cursor expires or the session changes', async () => {
+    vi.mocked(api.getObicoHistory).mockImplementation(async ({ cursor } = {}) => {
+      if (cursor) throw new ApiError('History changed', 409);
+      return { items: [event], next_cursor: 'expired-token', saved_count: 2, total_count: 2, oldest_saved_at: event.timestamp };
+    });
+    panel();
+    fireEvent.click(screen.getByRole('tab', { name: 'Saved frames' }));
+    const next = screen.getByRole('button', { name: 'Next' });
+    await waitFor(() => expect(next).toBeEnabled());
+    fireEvent.click(next);
+    await waitFor(() => expect(api.getObicoHistory).toHaveBeenCalledWith({ cursor: 'expired-token' }));
+    await waitFor(() => expect(api.getObicoHistory).toHaveBeenCalledTimes(3)); // first page, refused cursor, fresh first page
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled());
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('hides boxes explicitly when encoded orientation is unsupported', async () => {
     vi.mocked(CSS.supports).mockReturnValue(false);
     render(<ObicoEvidenceViewer selection={{ printer: 1, id: 'event-1' }} allowed onClose={vi.fn()} />);

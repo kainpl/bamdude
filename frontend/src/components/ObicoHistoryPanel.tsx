@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Loader2 } from 'lucide-react';
-import { api, type ObicoDetectionEvent, type ObicoStatus } from '../api/client';
+import { api, ApiError, type ObicoDetectionEvent, type ObicoStatus } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
@@ -30,6 +30,13 @@ export function ObicoHistoryPanel({ recent, printers, storage, onRefresh }: {
   const saved = useQuery({ queryKey: ['obico-history', cursors.at(-1)],
     queryFn: () => api.getObicoHistory({ cursor: cursors.at(-1) }),
     enabled: tab === 'saved' && canRead, refetchInterval: 10000, retry: false });
+  useEffect(() => {
+    // A cursor can expire or belong to the JWT before its refresh. Recover once
+    // by reading page one; a failure of that fresh read stays visible normally.
+    if (cursors.length > 1 && saved.error instanceof ApiError && saved.error.status === 409) {
+      setCursors([undefined]);
+    }
+  }, [cursors.length, saved.error]);
   const clearSummary = useQuery({ queryKey: ['obico-history-clear-summary'],
     queryFn: () => api.getObicoHistory({ limit: 1 }), enabled: confirm && canClear, retry: false });
   const clear = useMutation({ mutationFn: api.clearObicoHistory, onSuccess: () => {
