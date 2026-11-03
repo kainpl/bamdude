@@ -9,9 +9,11 @@ import pytest
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.services.background_dispatch import BackgroundDispatchService, DispatchEnqueueRejected
 from backend.app.services.print_run_binding import (
+    begin_print_run_finishing,
     bind_prepared_print_run,
     bind_print_run,
     current_print_run,
+    finishing_print_runs,
     prepared_print_run_conflicts,
 )
 from backend.app.services.printer_manager import printer_manager
@@ -322,3 +324,58 @@ async def test_scheduler_preserves_the_automatic_predecessors_plate_decision(
         started.assert_not_awaited()
         assert item.waiting_reason_code == ("dispatch_runtime_conflict" if auto_eject else "plate_not_cleared")
     assert current_print_run(printer_manager, printer_id) is held
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finishing", [True, False], ids=["finishing-lease", "still-current"])
+async def test_scheduler_allows_the_next_job_while_completion_consumers_finish(
+    db_session, test_engine, tmp_path, printer_factory, archive_factory, monkeypatch, sessions, runtime, finishing
+):
+    """A released queue need not wait for the old run's photo/notify/timelapse consumers (R7)."""
+    from backend.app.models.printer import Printer
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services import print_scheduler as ps
+
+    queue_id, mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch, "library"
+    )
+    printer_id = (await db_session.get(PrinterQueue, queue_id)).printer_id
+    predecessor = await archive_factory(printer_id, status="completed")
+    printer = await db_session.get(Printer, printer_id)
+    printer.require_plate_clear = False
+    printer.awaiting_plate_clear = False
+    await db_session.commit()
+    mqtt.state.state = "FINISH"
+    monkeypatch.setattr(printer_manager, "is_awaiting_plate_clear", lambda _pid: False)
+    monkeypatch.setattr(printer_manager, "peek_status", lambda _pid: (mqtt.state, time.monotonic(), False))
+    run = bind_print_run(printer_manager, printer_id=printer_id, archive_id=predecessor.id)
+    if finishing:
+        assert begin_print_run_finishing(printer_manager, printer_id, predecessor.id) is run
+        assert current_print_run(printer_manager, printer_id) is None
+        assert finishing_print_runs(printer_manager, printer_id) == (run,)
+    assert scheduler._is_printer_idle(printer_id)
+
+    started = AsyncMock(return_value=True)
+    monkeypatch.setattr(scheduler, "_start_print", started)
+    recorded = []
+    real_set_wait_reason = ps.set_wait_reason
+
+    def observe_wait(row, code, message):
+        if row.id == item_id:
+            recorded.append(code)
+        return real_set_wait_reason(row, code, message)
+
+    monkeypatch.setattr(ps, "set_wait_reason", observe_wait)
+    await one_tick(scheduler, spawned)
+
+    item = await reread(db_session, PrintQueueItem, item_id)
+    if finishing:
+        started.assert_awaited_once()
+        assert item.waiting_reason_code is None
+        assert "dispatch_runtime_conflict" not in recorded, recorded
+        assert current_print_run(printer_manager, printer_id) is None
+        assert finishing_print_runs(printer_manager, printer_id) == (run,)
+    else:
+        started.assert_not_awaited()
+        assert item.waiting_reason_code == "dispatch_runtime_conflict"
+        assert current_print_run(printer_manager, printer_id) is run
