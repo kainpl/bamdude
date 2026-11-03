@@ -598,6 +598,10 @@ class PrintScheduler:
                     printer_idle = bool(held_printer and await automatic_predecessor(db, held_printer))
                 printer_connected = printer_manager.is_connected(printer_id)
 
+                # Preserve automatic_predecessor's plate-gate decision above:
+                # the independent veto here is only a conflicting current run.
+                from backend.app.services.print_run_binding import prepared_print_run_conflicts
+
                 # Update waiting_reason based on current state
                 new_reason = None
                 reason_code = None
@@ -618,7 +622,7 @@ class PrintScheduler:
                         if status and status.state in ("IDLE", "FINISH", "FAILED"):
                             new_reason = "Plate not cleared"
                             reason_code = "plate_not_cleared"
-                elif not self._is_printer_ready_for_dispatch(printer_id, require_plate_clear=rpc):
+                elif prepared_print_run_conflicts(printer_manager, printer_id):
                     new_reason = (
                         "A previous print context is blocking this start. Check print states on the System page."
                     )
@@ -673,7 +677,7 @@ class PrintScheduler:
                     mark_busy(printer_id, "not_idle")
                     continue
 
-                if not self._is_printer_ready_for_dispatch(printer_id, require_plate_clear=rpc):
+                if prepared_print_run_conflicts(printer_manager, printer_id):
                     if set_wait_reason(
                         item,
                         "dispatch_runtime_conflict",

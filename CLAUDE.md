@@ -326,7 +326,7 @@ MCP diagnostic history correlates archive/job IDs, never filenames, and applies 
 - **Telegram handler** — handler file + register in `telegram_bot.py` + i18n in BOTH `telegram_ui_{en,uk}.json`.
 - **Notification trigger** — `notification_service.py` + BOTH `notification_templates_{en,uk}.json`.
 - **Maintenance type** — `DEFAULT_MAINTENANCE_TYPES` in `routes/maintenance.py` with `type_code` + BOTH `maintenance_types_{en,uk}.json`. Model-specific → `_ROD_TYPE_REQUIREMENTS`.
-- **Public frontend feature** — `npm run build` in verify; `static/` ships same commit.
+- **Public frontend feature** — `npm run build` in verify; `static/` ships same commit. The maintainer explicitly reaffirmed this workflow on 2026-11-03: GitHub builds do not replace the committed bundle.
 - **Any of the above** — update the matching vault note in the same batch (see *Knowledge base*, rule 4). New subsystem → new note per `00-index/_design.md`; new invariant → `40-invariants/`. This is part of "done", not a follow-up.
 
 ## Upstream (Bambuddy)

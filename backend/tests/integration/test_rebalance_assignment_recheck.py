@@ -26,6 +26,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.user import User
 from backend.app.services import queue_rebalance
 from backend.tests.integration.test_auto_queue_scheduler import _drying_status
+from backend.tests.integration.test_printer_runtime_stall import runtime  # noqa: F401
 from backend.tests.integration.test_rebalance_assignment import TOGGLES, _entry, _preheat_settings, _SwapProfile
 from backend.tests.integration.test_rebalance_job_feasibility import (  # noqa: F401 — fixtures by name
     _live,
@@ -93,6 +94,31 @@ def _expect(result, item_id, change, done=None):
         assert (result.converted, result.skipped) == (0, [(item_id, "eligibility_changed")])
     else:
         assert (result.converted, result.skipped) == (1, []), result.skipped
+
+
+@CHANGES
+async def test_a_receiver_bound_during_the_copy_calls_the_move_off(
+    db_session, test_engine, printer_factory, tmp_path, monkeypatch, clean_spool, runtime, change
+):
+    from backend.app.services.print_run_binding import bind_print_run, current_print_run
+    from backend.app.services.printer_manager import printer_manager
+
+    farm = await petg_farm(db_session, printer_factory, tmp_path, targets=1)
+    item_id, receiver_id = farm.item.id, farm.receivers[0].id
+    assert current_print_run(printer_manager, receiver_id) is None
+
+    async def context_arrives(_session):
+        bind_print_run(printer_manager, printer_id=receiver_id, archive_id=900_001)
+
+    done = _after_copy(monkeypatch, test_engine, context_arrives if change else None)
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    _expect(result, item_id, change, done)
+    if change:
+        assert current_print_run(printer_manager, receiver_id).archive_id == 900_001
+        await db_session.refresh(farm.item)
+        assert farm.item.library_file_id == farm.home_file.id
 
 
 @CHANGES

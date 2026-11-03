@@ -1,5 +1,6 @@
 """A known run vetoes preparation; a later run still owns the final bind (GH109 r2)."""
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -252,3 +253,72 @@ async def test_only_the_current_run_detail_changes_the_wait_class(db_session, pr
     assert result
     row = await reread(db_session, PrintQueueItem, item_id)
     assert row.waiting_reason_code == "filament_unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auto_eject", [True, False], ids=["automatic-predecessor", "manual-predecessor"])
+@pytest.mark.parametrize("current_run", [False, True], ids=["no-current", "held-current"])
+async def test_scheduler_preserves_the_automatic_predecessors_plate_decision(
+    db_session,
+    test_engine,
+    tmp_path,
+    printer_factory,
+    archive_factory,
+    monkeypatch,
+    sessions,
+    runtime,
+    auto_eject,
+    current_run,
+):
+    from backend.app.models.printer import Printer
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.order_auto_eject import automatic_predecessor
+
+    queue_id, mqtt, item_id, _service, scheduler, spawned = await a_job_and_its_dispatch(
+        db_session, test_engine, tmp_path, printer_factory, monkeypatch, "library"
+    )
+    printer_id = (await db_session.get(PrinterQueue, queue_id)).printer_id
+    predecessor = await archive_factory(
+        printer_id,
+        status="completed",
+        extra_data={"dispatch_intent": {"auto_eject": auto_eject, "submission_id": "held-finish"}},
+    )
+    printer = await db_session.get(Printer, printer_id)
+    printer.require_plate_clear = True
+    printer.awaiting_plate_clear = True
+    printer.awaiting_plate_clear_archive_id = predecessor.id
+    await db_session.commit()
+    mqtt.state.state = "FINISH"
+    mqtt.state.subtask_id = "held-finish"
+    monkeypatch.setattr(printer_manager, "is_awaiting_plate_clear", lambda pid: pid == printer_id)
+    monkeypatch.setattr(printer_manager, "peek_status", lambda _pid: (mqtt.state, time.monotonic(), False))
+    assert not scheduler._is_printer_idle(printer_id)
+    assert bool(await automatic_predecessor(db_session, printer)) is auto_eject
+    held = bind_print_run(printer_manager, printer_id=printer_id, archive_id=predecessor.id) if current_run else None
+    started = AsyncMock(return_value=True)
+    monkeypatch.setattr(scheduler, "_start_print", started)
+    from backend.app.services import print_scheduler as ps
+
+    recorded_reasons = []
+    real_set_wait_reason = ps.set_wait_reason
+
+    def observe_wait(row, code, message):
+        if row.id == item_id:
+            recorded_reasons.append(code)
+        return real_set_wait_reason(row, code, message)
+
+    monkeypatch.setattr(ps, "set_wait_reason", observe_wait)
+
+    await one_tick(scheduler, spawned)
+
+    item = await reread(db_session, PrintQueueItem, item_id)
+    if auto_eject and not current_run:
+        started.assert_awaited_once()
+        assert item.waiting_reason_code is None, "automatic predecessor was falsely labelled a runtime conflict"
+        assert "dispatch_runtime_conflict" not in recorded_reasons, (
+            "automatic predecessor was falsely labelled in a tick"
+        )
+    else:
+        started.assert_not_awaited()
+        assert item.waiting_reason_code == ("dispatch_runtime_conflict" if auto_eject else "plate_not_cleared")
+    assert current_print_run(printer_manager, printer_id) is held

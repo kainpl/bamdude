@@ -7,8 +7,39 @@ from backend.app.models.user_filament import UserFilamentFamily
 from backend.app.services.printer_manager import printer_manager
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
+from backend.tests.integration.test_printer_runtime_stall import runtime  # noqa: F401
 
 pytestmark = pytest.mark.integration
+
+
+async def test_preview_does_not_count_a_bound_idle_printer_as_ready(
+    committing_client, db_session, tmp_path, printer_factory, monkeypatch, runtime
+):
+    from backend.app.services.print_run_binding import bind_print_run, current_print_run
+
+    source, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    queue.auto_distribute_eligible = True
+    queue.is_paused = False
+    queue.status = "idle"
+    queue.pending_count = 0
+    await db_session.commit()
+    assert current_print_run(printer_manager, printer.id) is None
+    body = {"library_file_id": source.id, "plate_ids": [15]}
+
+    async def group():
+        response = await committing_client.post("/api/v1/auto-queue/routing-preview", json=body)
+        assert response.status_code == 200, response.text
+        groups = response.json()["plates"][0]["groups"]
+        assert len(groups) == 1
+        return groups[0]
+
+    before = await group()
+    assert (before["total"], before["compatible"], before["ready"]) == (1, 1, 1)
+    held = bind_print_run(printer_manager, printer_id=printer.id, archive_id=900_001)
+    after = await group()
+    assert (after["total"], after["compatible"], after["ready"]) == (1, 1, 0)
+    assert current_print_run(printer_manager, printer.id) is held
+    mqtt._client.publish.assert_not_called()
 
 
 async def test_preview_uses_strict_reader_and_never_exposes_paths(
