@@ -861,6 +861,18 @@ async def delete_printer(
     _=RequirePermission(Permission.PRINTERS_DELETE),
     db: AsyncSession = Depends(get_db),
 ):
+    from backend.app.services.obico_history import obico_history
+
+    async with obico_history.printer_deletion(printer_id):
+        return await _delete_printer(printer_id, delete_archives, _, db)
+
+
+async def _delete_printer(
+    printer_id: int,
+    delete_archives: bool = True,
+    _=RequirePermission(Permission.PRINTERS_DELETE),
+    db: AsyncSession = Depends(get_db),
+):
     """Delete a printer.
 
     Args:
@@ -1028,6 +1040,10 @@ async def delete_printer(
     await db.delete(printer)
     await db.commit()
 
+    from backend.app.services.obico_detection import obico_detection_service
+
+    obico_detection_service.forget_printer_history(printer_id)
+
     from backend.app.services.camera_metrics import forget_printer
 
     forget_printer(printer_id)
@@ -1067,6 +1083,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
     from backend.app.models.filament_calibration import FilamentCalibration
     from backend.app.models.firmware import FirmwareBatchItem
     from backend.app.models.hms_mute import HMSMutedEntry
+    from backend.app.models.obico_event import ObicoEvent
     from backend.app.models.print_usage_event import PrintUsageEvent
     from backend.app.models.printer_ha_sensor import PrinterHASensor
     from backend.app.models.printer_setting_audit import PrinterSettingAudit
@@ -1085,6 +1102,7 @@ def _printer_cascade_models() -> tuple[type, ...]:
         FilamentCalibration,
         FirmwareBatchItem,
         HMSMutedEntry,
+        ObicoEvent,
         PrintUsageEvent,
         PrinterSettingAudit,
         PrinterHASensor,

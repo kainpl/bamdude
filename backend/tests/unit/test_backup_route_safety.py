@@ -35,6 +35,33 @@ def upload(tmp_path, *, damaged=False):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("raises", [False, True])
+async def test_obico_drain_refusal_precedes_any_live_database_or_file_swap(tmp_path, monkeypatch, raises):
+    from backend.app.services.backup_files import FileRestore
+
+    live = tmp_path / "held-live"
+    live.mkdir()
+    sentinel = live / "keep.jpg"
+    sentinel.write_bytes(b"unchanged")
+    monkeypatch.setenv("DATA_DIR", str(live))
+    monkeypatch.setattr(route, "_quiesce_part_render", AsyncMock())
+    monkeypatch.setattr(route, "_quiesce_library_previews", AsyncMock())
+    monkeypatch.setattr("backend.app.mcp_server.runtime.mcp_runtime.quiesce_for_restore", AsyncMock(return_value=True))
+    stop = AsyncMock(return_value=False, side_effect=RuntimeError("stop failed") if raises else None)
+    monkeypatch.setattr("backend.app.services.obico_detection.obico_detection_service.quiesce", stop)
+    prepare = Mock()
+    monkeypatch.setattr(FileRestore, "prepare", prepare)
+    db = AsyncMock()
+    with pytest.raises(HTTPException) as caught:
+        await route.restore_backup(file=upload(tmp_path), db=db, _=None)
+    assert caught.value.status_code == 409
+    stop.assert_awaited_once()
+    prepare.assert_not_called()
+    db.close.assert_not_awaited()
+    assert sentinel.read_bytes() == b"unchanged"
+
+
+@pytest.mark.asyncio
 async def test_corrupt_backup_is_rejected_before_service_or_database_changes(tmp_path, monkeypatch):
     stop = AsyncMock()
     monkeypatch.setattr(

@@ -449,6 +449,9 @@ class FileRestore:
 
     def __init__(self, staging: Path, settings, data_dir: Path):
         self.targets = [(staging / n, p, True) for n, p in directories(settings).items() if (staging / n).exists()]
+        # Staged by exact DB references, never by the changing whole-tree copy.
+        if (staging / "obico-detections").exists():
+            self.targets.append((staging / "obico-detections", data_dir / "obico-detections", True))
         for directory in (QUEUE_SOURCES_DIR, LEGACY_QUEUE_SOURCES_DIR):
             if (staging / directory).exists():
                 self.targets.append(

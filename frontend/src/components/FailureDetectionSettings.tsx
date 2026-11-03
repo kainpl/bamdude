@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, ScanEye, Check, X, AlertTriangle, Info } from 'lucide-react';
+import { Loader2, ScanEye, Check, X, AlertTriangle } from 'lucide-react';
 import { api } from '../api/client';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
 import { Toggle } from './Toggle';
 import { useToast } from '../contexts/ToastContext';
 import { Select } from './Select';
+import { ObicoHistoryPanel } from './ObicoHistoryPanel';
+import { useAuth } from '../contexts/AuthContext';
 
 type TestResult = { ok: boolean; message: string } | null;
 
@@ -15,8 +17,10 @@ export function FailureDetectionSettings() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
 
   const [enabled, setEnabled] = useState(false);
+  const [saveDetections, setSaveDetections] = useState(false);
   const [mlUrl, setMlUrl] = useState('');
   const [mlToken, setMlToken] = useState('');
   const [sensitivity, setSensitivity] = useState<'low' | 'medium' | 'high'>('medium');
@@ -45,6 +49,7 @@ export function FailureDetectionSettings() {
   useEffect(() => {
     if (!settings) return;
     setEnabled(settings.obico_enabled ?? false);
+    setSaveDetections(settings.obico_save_detections ?? false);
     setMlUrl(settings.obico_ml_url ?? '');
     setMlToken(settings.obico_ml_token ?? '');
     setSensitivity(settings.obico_sensitivity ?? 'medium');
@@ -65,6 +70,7 @@ export function FailureDetectionSettings() {
     mutationFn: () =>
       api.updateSettings({
         obico_enabled: enabled,
+        obico_save_detections: saveDetections,
         obico_ml_url: mlUrl,
         obico_ml_token: mlToken,
         obico_sensitivity: sensitivity,
@@ -83,6 +89,7 @@ export function FailureDetectionSettings() {
     initialized &&
     !!settings &&
     (settings.obico_enabled !== enabled ||
+      (settings.obico_save_detections ?? false) !== saveDetections ||
       settings.obico_ml_url !== mlUrl ||
       settings.obico_ml_token !== mlToken ||
       settings.obico_sensitivity !== sensitivity ||
@@ -96,7 +103,7 @@ export function FailureDetectionSettings() {
     const id = setTimeout(() => saveMutation.mutate(), 500);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, mlUrl, mlToken, sensitivity, action, pollInterval, enabledPrinters, initialized]);
+  }, [enabled, saveDetections, mlUrl, mlToken, sensitivity, action, pollInterval, enabledPrinters, initialized]);
 
   const handleTest = async () => {
     setTestResult(null);
@@ -152,6 +159,11 @@ export function FailureDetectionSettings() {
             <p className="text-sm text-bambu-gray mt-2">{t('failureDetection.description')}</p>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div><div className="text-sm text-white">{t('failureDetection.evidence.save')}</div>
+                <p className="text-xs text-bambu-gray mt-1">{t('failureDetection.evidence.saveHint')}</p></div>
+              <Toggle label={t('failureDetection.evidence.save')} checked={saveDetections} onChange={setSaveDetections} disabled={!hasPermission('settings:update')} />
+            </div>
             <div>
               <label className="block text-sm text-bambu-gray mb-1">
                 {t('failureDetection.mlUrl')}
@@ -368,45 +380,8 @@ export function FailureDetectionSettings() {
           </CardContent>
         </Card>
 
-        <Card id="card-fd-history">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-white">{t('failureDetection.historyTitle')}</h2>
-              <button onClick={() => refetchStatus()} className="text-xs text-bambu-gray hover:text-white">
-                {t('common.refresh')}
-              </button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {!status || status.history.length === 0 ? (
-              <div className="flex items-center gap-2 text-bambu-gray text-sm">
-                <Info className="w-4 h-4" />
-                <span>{t('failureDetection.noHistory')}</span>
-              </div>
-            ) : (
-              <div className="space-y-1 max-h-96 overflow-y-auto text-xs font-mono">
-                {status.history.map((ev, idx) => {
-                  const printer = printers?.find((p) => p.id === ev.printer_id);
-                  const colorClass =
-                    ev.class === 'failure'
-                      ? 'text-red-700 dark:text-red-400'
-                      : ev.class === 'warning'
-                        ? 'text-amber-700 dark:text-amber-400'
-                        : 'text-bambu-gray';
-                  return (
-                    <div key={idx} className="flex justify-between gap-2 py-1 border-b border-gray-800">
-                      <span className="text-bambu-gray">{new Date(ev.timestamp).toLocaleTimeString()}</span>
-                      <span className="text-white truncate">{printer?.name ?? `#${ev.printer_id}`}</span>
-                      <span className={colorClass}>
-                        {ev.class} {ev.score.toFixed(3)}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        <ObicoHistoryPanel recent={status?.history ?? []} printers={printers ?? []}
+          storage={status?.storage} onRefresh={() => { void refetchStatus(); }} />
       </div>
     </div>
   );

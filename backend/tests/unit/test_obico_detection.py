@@ -675,7 +675,8 @@ class TestCaptureFrameStreamActiveGate:
         ):
             result = await svc._capture_frame(1)
 
-        assert result == b"BUFFERED"
+        assert result.frame == b"BUFFERED"
+        assert result.source == "live-buffer"
         fresh_capture.assert_not_called()
 
     @pytest.mark.asyncio
@@ -737,7 +738,8 @@ class TestCaptureFrameStreamActiveGate:
         ):
             result = await svc._capture_frame(1)
 
-        assert result == b"FRESH"
+        assert result.frame == b"FRESH"
+        assert result.source == "capture-fresh"
         fresh_capture.assert_called_once()
 
     @pytest.mark.asyncio
@@ -766,7 +768,8 @@ class TestCaptureFrameStreamActiveGate:
         ):
             result = await svc._capture_frame(1)
 
-        assert result == b"EXTERNAL"
+        assert result.frame == b"EXTERNAL"
+        assert result.source == "capture-fresh"
         external_capture.assert_called_once()
 
 

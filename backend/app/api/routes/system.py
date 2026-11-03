@@ -169,6 +169,7 @@ def _get_data_dirs() -> list[Path]:
         settings.projects_dir,
         settings.products_dir,
         settings.part_renders_dir,
+        settings.obico_detections_dir,
         settings.log_dir,
         settings.plate_calibration_dir,
         settings.base_dir / "virtual_printer",
@@ -268,6 +269,11 @@ def _get_storage_rules() -> list[tuple[str, str, Callable]]:
             "part_renders",
             "Part Renders",
             lambda path: _is_under(path, settings.part_renders_dir),
+        ),
+        (
+            "obico_detections",
+            "AI Detection Evidence",
+            lambda path: _is_under(path, settings.obico_detections_dir),
         ),
         (
             "logs",

@@ -12139,7 +12139,12 @@ async def _application_lifespan(app: FastAPI):
     # toggle without a restart.
     try:
         from backend.app.services.obico_detection import obico_detection_service
+        from backend.app.services.obico_history import obico_history
 
+        try:
+            await obico_history.start()
+        except Exception:
+            logging.getLogger(__name__).exception("Failed to start Obico evidence recorder; detection will continue")
         await obico_detection_service.start()
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to start Obico detection service: %s", e)
@@ -12287,7 +12292,7 @@ async def _application_lifespan(app: FastAPI):
     try:
         from backend.app.services.obico_detection import obico_detection_service
 
-        obico_detection_service.stop()
+        await obico_detection_service.quiesce(timeout=None)
     except Exception:
         pass
     try:

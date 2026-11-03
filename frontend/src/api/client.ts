@@ -4903,6 +4903,7 @@ export interface AppSettings {
   local_backup_path: string;
   // Obico AI failure detection (#172)
   obico_enabled: boolean;
+  obico_save_detections?: boolean;
   obico_ml_url: string;
   obico_ml_token: string;
   obico_sensitivity: 'low' | 'medium' | 'high';
@@ -4915,6 +4916,8 @@ export type AppSettingsUpdate = Partial<AppSettings>;
 
 // Obico AI failure detection (#172)
 export interface ObicoDetectionEvent {
+  id?: string;
+  state?: string;
   printer_id: number;
   task_name: string;
   timestamp: string;
@@ -4924,7 +4927,39 @@ export interface ObicoDetectionEvent {
   detections: number;
 }
 
+export interface ObicoSavedEvent extends ObicoDetectionEvent {
+  id: string;
+  state: 'writing' | 'ready' | 'unavailable' | 'deleting';
+}
+
+export interface ObicoHistoryPage {
+  items: ObicoSavedEvent[];
+  next_cursor: string | null;
+  saved_count: number;
+  total_count: number;
+  oldest_saved_at: string | null;
+}
+
+export interface ObicoEventDetail extends ObicoSavedEvent {
+  width: number;
+  height: number;
+  profile: string;
+  invalid_boxes: number;
+  raw_boxes: [string, number, number[]][];
+  boxes: { label: string; confidence: number; xyxy: [number, number, number, number] }[];
+  facts: {
+    frame_source?: string;
+    frame_obtained_at?: string;
+    buffer_received_at?: string | null;
+    buffer_age_seconds?: number | null;
+    captured_at: null;
+    association?: string;
+  };
+}
+
 export interface ObicoStatus {
+  storage?: { state: string; reason: string | null; dropped: Record<string, number>;
+    used_bytes: number; max_bytes: number; max_events: number; max_days: number } | null;
   is_running: boolean;
   last_error: string | null;
   /** `class`: safe / warning / failure — a verdict; `error` — the last poll
@@ -14524,6 +14559,16 @@ export const api = {
   // Obico AI failure detection (#172)
   getObicoStatus: () =>
     request<ObicoStatus>('/obico/status'),
+  getObicoHistory: (params: { cursor?: string; limit?: number; printer_id?: number; verdict?: string } = {}) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) if (value !== undefined) query.set(key, String(value));
+    return request<ObicoHistoryPage>(`/obico/history?${query}`);
+  },
+  getObicoEvent: (printerId: number, eventId: string) =>
+    request<ObicoEventDetail>(`/obico/printers/${printerId}/events/${encodeURIComponent(eventId)}`),
+  getObicoEventImage: (printerId: number, eventId: string) =>
+    fetchAuthorizedBlob(`${API_BASE}/obico/printers/${printerId}/events/${encodeURIComponent(eventId)}/image`),
+  clearObicoHistory: () => request<{ deleted: number }>('/obico/history', { method: 'DELETE' }),
   getObicoPrinterStatus: () =>
     request<ObicoPrinterStatus>('/obico/printer-status'),
 

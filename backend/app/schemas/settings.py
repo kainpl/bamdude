@@ -692,6 +692,7 @@ class AppSettings(BaseModel):
 
     # Obico AI failure detection (#172)
     obico_enabled: bool = Field(default=False, description="Enable Obico AI print failure detection")
+    obico_save_detections: bool = Field(default=False, description="Save local Obico evidence frames and history")
     obico_ml_url: str = Field(
         default="",
         description="Self-hosted Obico ML API base URL (e.g., http://192.168.1.10:3333)",
@@ -906,6 +907,7 @@ class AppSettingsUpdate(BaseModel):
     local_backup_retention: int | None = None
     local_backup_path: str | None = None
     obico_enabled: bool | None = None
+    obico_save_detections: bool | None = None
     obico_ml_url: str | None = None
     obico_ml_token: str | None = None
     obico_sensitivity: str | None = None

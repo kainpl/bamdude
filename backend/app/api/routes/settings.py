@@ -285,6 +285,11 @@ async def update_settings(
     # Expire all objects to ensure fresh reads after commit
     db.expire_all()
 
+    if "obico_save_detections" in update_data:
+        from backend.app.services.obico_history import obico_history
+
+        obico_history.set_enabled(bool(update_data["obico_save_detections"]))
+
     if {"mcp_enabled", "mcp_allowed_hosts", "mcp_allowed_origins"} & update_data.keys():
         from backend.app.mcp_server.runtime import mcp_runtime
 
@@ -685,6 +690,8 @@ async def _create_backup_zip(output_path: Path | None) -> tuple[Path, str]:
         write_manifest,
         write_zip,
     )
+    from backend.app.services.obico_history import obico_history
+    from backend.app.services.obico_history_files import stage_history
 
     filename = f"bamdude-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -692,12 +699,13 @@ async def _create_backup_zip(output_path: Path | None) -> tuple[Path, str]:
         # The pin starts before the DB export and remains until every referenced
         # object was copied. GC therefore cannot unlink a row the portable
         # snapshot still names while this backup is being assembled.
-        async with queue_sources.pin_backup():
+        async with queue_sources.pin_backup(), obico_history.pin_backup():
             await dump_to_sqlite(engine, Base.metadata, staging / "bamdude.db")
             data_dir = resolve_data_dir()
             await _stage_files_and_pictures(data_dir, staging)
             await _file_work(stage_zigbee_db, data_dir, staging)
             await _file_work(stage_queue_spool, data_dir, staging, staging / "bamdude.db")
+            await _file_work(stage_history, data_dir, staging, staging / "bamdude.db")
             await _file_work(write_manifest, staging)
         if output_path is not None:
             zip_file = output_path / filename  # SEC-PATH-OK: trusted output directory and server-generated filename.
@@ -839,6 +847,9 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
             if zigbee_db.exists():
                 await _file_work(validate_sqlite_backup, zigbee_db)
             await _file_work(validate_staged_queue_spool, staging, backup_db)
+            from backend.app.services.obico_history_files import validate_history
+
+            await _file_work(validate_history, staging, backup_db)
         except ValueError as exc:
             logger.warning("Restore preflight rejected database: %s", exc)
             raise HTTPException(400, "Invalid backup database: damaged or incompatible. Check server logs.") from exc
@@ -867,6 +878,17 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
 
                 if not await mcp_runtime.quiesce_for_restore():
                     raise HTTPException(409, "MCP readers have not stopped; retry restore after they finish")
+                from backend.app.services.obico_detection import obico_detection_service
+
+                try:
+                    obico_stopped = await obico_detection_service.quiesce()
+                except Exception:
+                    logger.exception("Obico shutdown failed before restore")
+                    obico_stopped = False
+                if not obico_stopped:
+                    raise HTTPException(
+                        409, "Obico readers and writers have not stopped; retry restore after they finish"
+                    )
                 if virtual_printer_manager.is_enabled:
                     await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()

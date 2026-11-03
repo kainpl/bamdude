@@ -19,6 +19,7 @@ from backend.app.models.macro import Macro
 from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, PrinterMaintenance
 from backend.app.models.notification import NotificationLog
 from backend.app.models.notification_template import NotificationTemplate
+from backend.app.models.obico_event import ObicoEvent
 from backend.app.models.orca_base_cache import OrcaBaseProfile
 from backend.app.models.order_working_plan import OrderPlanReceipt, OrderPlanSubmission, OrderWorkingPlan
 from backend.app.models.print_completion_receipt import PrintCompletionReceipt
@@ -43,6 +44,7 @@ from backend.app.models.user import User
 from backend.app.models.user_email_pref import UserEmailPreference
 
 __all__ = [
+    "ObicoEvent",
     "OrderWorkingPlan",
     "OrderPlanSubmission",
     "OrderPlanReceipt",

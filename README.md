@@ -228,6 +228,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 ### Monitoring & Control
 - **Printer calibration** — bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed (model-aware, from UI and Telegram bot)
 - Real-time printer status via WebSocket
+- **Saved AI observations** — opt-in Obico evidence history keeps the exact analysed JPEG and server-returned detection boxes after restart, with camera permissions, safe-first retention and verified backups. Recording is off by default and does not change detection actions. See the [Obico guide](https://docs.bamdude.top/features/obico/).
 - Live camera streaming & snapshots — **fan-out broadcaster** so multiple browser tabs / HA cards / Frigate share a single upstream connection (the printer itself only allows one)
 - **Camera Wall** — every tile opens as a snapshot with its last successful frame time; click one tile to make it the wall's only LIVE view, another to move it, or the same tile to stop it. Error and pause tiles remain visibly marked before a camera is opened. Signed-in tiles can raise the existing M-size printer card; token kiosks stay passive and redacted. Snapshots retain the last image while refreshing, and off-screen tiles pause.
 - **One floating camera** — another printer replaces the current popup, cancelling its old stream. Refresh, minimize, close and page navigation release the actual image request.

@@ -13,7 +13,9 @@ import logging
 import secrets
 import time
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import httpx
 from sqlalchemy import select
@@ -35,6 +37,16 @@ HEALTH_TIMEOUT = 5.0
 DETECTION_TIMEOUT = 30.0
 SNAPSHOT_CAPTURE_TIMEOUT = 20  # seconds — we control this, not Obico
 FRAME_CACHE_TTL = 30.0  # seconds — Obico usually fetches within 1s of receiving the URL
+
+
+@dataclass(frozen=True)
+class CapturedFrame:
+    frame: bytes
+    source: str
+    obtained_at: str
+    buffer_received_at: str | None = None
+    buffer_age_seconds: float | None = None
+
 
 # Module-level one-shot frame cache. Obico's ML API is GET-only (/p/?img=URL) and
 # fetches the URL itself with a hardcoded 5s read timeout. We capture locally first,
@@ -108,6 +120,7 @@ class ObicoDetectionService:
         # Global detection event log (most-recent-first)
         self._history: deque = deque(maxlen=HISTORY_MAX)
         self._last_error: str | None = None
+        self._stop_task: asyncio.Task | None = None
 
     # ---- lifecycle ----
 
@@ -123,11 +136,44 @@ class ObicoDetectionService:
             self._task = None
             logger.info("Stopped Obico detection service")
 
+    async def quiesce(self, timeout: float | None = 10) -> bool:
+        """Own cancelled polling until it really exits; restore never guesses."""
+        from backend.app.services.obico_history import obico_history
+
+        if self._stop_task is None:
+            polling = self._task
+            self.stop()
+
+            async def drain():
+                if polling is not None:
+                    try:
+                        await polling
+                    except asyncio.CancelledError:
+                        pass
+                await obico_history.shutdown()
+
+            self._stop_task = asyncio.create_task(drain(), name="obico-stop-drain")
+        if self._stop_task.done():
+            self._stop_task.result()
+            return True
+        done, _ = await asyncio.wait({self._stop_task}, timeout=timeout)
+        if not done:
+            return False
+        self._stop_task.result()
+        return True
+
     # ---- settings ----
+
+    def forget_printer_history(self, printer_id: int) -> None:
+        """Old recent metadata must not acquire the name of a reused printer ID."""
+        self._history = deque(
+            (event for event in self._history if event["printer_id"] != printer_id), maxlen=HISTORY_MAX
+        )
 
     async def _load_settings(self) -> dict:
         keys = [
             "obico_enabled",
+            "obico_save_detections",
             "obico_ml_url",
             "obico_ml_token",
             "obico_sensitivity",
@@ -168,6 +214,7 @@ class ObicoDetectionService:
 
         return {
             "enabled": rows.get("obico_enabled", "false").lower() == "true",
+            "save_detections": rows.get("obico_save_detections", "false").lower() == "true",
             "ml_url": ml_url,
             "ml_token": (rows.get("obico_ml_token") or "").strip(),
             "sensitivity": rows.get("obico_sensitivity", "medium"),
@@ -184,6 +231,9 @@ class ObicoDetectionService:
         while True:
             try:
                 settings = await self._load_settings()
+                from backend.app.services.obico_history import obico_history
+
+                obico_history.set_enabled(settings["save_detections"])
                 interval = max(5, settings.get("poll_interval", 10))
                 if not settings["enabled"] or not settings["ml_url"]:
                     await asyncio.sleep(interval)
@@ -229,7 +279,7 @@ class ObicoDetectionService:
                 self._camera_worker_paused = False
             await self._check_printer(printer_id, status, settings)
 
-    async def _capture_frame(self, printer_id: int) -> bytes | None:
+    async def _capture_frame(self, printer_id: int) -> CapturedFrame | None:
         """Capture one JPEG frame from the printer camera. Returns None on failure.
 
         Built-in camera path: if a live fan-out stream is already attached
@@ -248,7 +298,7 @@ class ObicoDetectionService:
         + #1348 / ce5f4e5f.
         """
         # Late import to avoid cycles at module load time
-        from backend.app.api.routes.camera import live_frame_for_capture
+        from backend.app.api.routes.camera import live_frame_observation
         from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
         async with async_session() as db:
@@ -262,10 +312,16 @@ class ObicoDetectionService:
         # while a viewer is attached does not degrade, it fails (#2707). Cost:
         # at most one missed detection cycle per viewer-attach (~10 s lag);
         # benefit: zero competing-handle events.
-        defer, buffered = live_frame_for_capture(printer_id)
+        defer, buffered, received, arrived = live_frame_observation(printer_id)
         if defer:
             if buffered:
-                return buffered
+                return CapturedFrame(
+                    buffered,
+                    "live-buffer",
+                    datetime.now(timezone.utc).isoformat(),
+                    datetime.fromtimestamp(received, timezone.utc).isoformat() if received is not None else None,
+                    max(0, time.monotonic() - arrived) if arrived is not None else None,
+                )
             logger.info(
                 "Obico: viewer attached for printer %s but the buffer is empty; skipping this "
                 "poll rather than opening a competing camera handle",
@@ -295,7 +351,14 @@ class ObicoDetectionService:
                     printer_id=printer_id,
                 )
             )
-        return result.frame
+        if not result.frame:
+            return None
+        source = getattr(result, "source", None)
+        return CapturedFrame(
+            result.frame,
+            f"capture-{source}" if source in ("fresh", "coalesced") else "unknown",
+            datetime.now(timezone.utc).isoformat(),
+        )
 
     def _no_verdict(self, printer_id: int, reason: str) -> None:
         """This poll produced no verdict for ``printer_id`` — say so, per printer.
@@ -309,6 +372,13 @@ class ObicoDetectionService:
         logger.warning(reason)
 
     async def _check_printer(self, printer_id: int, status, settings: dict):
+        from backend.app.services.obico_history import obico_history
+        from backend.app.services.print_run_binding import current_print_run, origin_is_proven
+        from backend.app.services.printer_manager import printer_manager
+
+        token = obico_history.token(printer_id)
+        run = current_print_run(printer_manager, printer_id)
+        observed_run = run if origin_is_proven(run) else None
         task_name = getattr(status, "task_name", None) or getattr(status, "subtask_name", "") or ""
         key = f"{task_name}"
         if self._state_keys.get(printer_id) != key:
@@ -320,10 +390,15 @@ class ObicoDetectionService:
         # cached bytes instantly. Obico's ML API is GET-only (/p/?img=URL) with a
         # hardcoded 5s read timeout which would otherwise race our /camera/snapshot
         # keyframe wait.
-        frame = await self._capture_frame(printer_id)
-        if not frame:
+        captured = await self._capture_frame(printer_id)
+        if not captured:
             self._no_verdict(printer_id, f"Failed to capture snapshot for printer {printer_id}")
             return
+
+        # bytes-only test/legacy producers carry no invented provenance.
+        if isinstance(captured, bytes):
+            captured = CapturedFrame(captured, "unknown", datetime.now(timezone.utc).isoformat())
+        frame = captured.frame
 
         external_url = settings.get("external_url") or ""
         if not external_url:
@@ -337,6 +412,7 @@ class ObicoDetectionService:
         nonce = await stash_frame(frame)
         snapshot_url = f"{external_url}/api/v1/obico/cached-frame/{nonce}"
         ml_url = f"{settings['ml_url']}/p/"
+        requested_at = datetime.now(timezone.utc).isoformat()
 
         try:
             async with httpx.AsyncClient(timeout=DETECTION_TIMEOUT) as client:
@@ -369,6 +445,7 @@ class ObicoDetectionService:
             return
 
         detections = payload.get("detections", []) if isinstance(payload, dict) else []
+        responded_at = datetime.now(timezone.utc)
         current_p = score_from_detections(detections)
         state = self._states[printer_id]
         score = state.update(current_p)
@@ -382,21 +459,60 @@ class ObicoDetectionService:
 
         # Log every non-safe sample — safe samples would flood history
         if verdict != "safe" or detections:
-            self._history.appendleft(
-                {
-                    "printer_id": printer_id,
-                    "task_name": task_name,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "current_p": round(current_p, 4),
-                    "score": round(score, 4),
-                    "class": verdict,
-                    "detections": len(detections),
-                }
-            )
+            event_id = str(uuid4())
+            if obico_history.printer_is_current(printer_id, token):
+                self._history.appendleft(
+                    {
+                        "id": event_id,
+                        "printer_id": printer_id,
+                        "task_name": task_name,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "current_p": round(current_p, 4),
+                        "score": round(score, 4),
+                        "class": verdict,
+                        "detections": len(detections),
+                    }
+                )
 
-        if verdict == "failure" and not self._action_fired.get(printer_id):
+        action_requested = verdict == "failure" and not self._action_fired.get(printer_id)
+        if action_requested:
             self._action_fired[printer_id] = True
             await self._dispatch_action(printer_id, settings["action"], task_name, score)
+
+        if (verdict != "safe" or detections) and settings.get("save_detections", False):
+            # Recorder failure must never undo/suppress the inference action.
+            try:
+                same_run = observed_run is not None and current_print_run(printer_manager, printer_id) == observed_run
+                facts = {
+                    "task_name": task_name[:512],
+                    "current_p": current_p,
+                    "score": score,
+                    "sensitivity": settings["sensitivity"],
+                    "configured_action": settings["action"],
+                    "action_requested": action_requested,
+                    "frame_source": captured.source,
+                    "frame_obtained_at": captured.obtained_at,
+                    "buffer_received_at": captured.buffer_received_at,
+                    "buffer_age_seconds": captured.buffer_age_seconds,
+                    "ml_requested_at": requested_at,
+                    "ml_responded_at": responded_at.isoformat(),
+                    "association": "observed_at_request" if same_run else "unknown",
+                    "archive_id": observed_run.archive_id if same_run else None,
+                    "queue_item_id": observed_run.queue_item_id if same_run else None,
+                }
+                obico_history.offer(
+                    printer_id=printer_id,
+                    token=token,
+                    frame=frame,
+                    verdict=verdict,
+                    facts=facts,
+                    detections=detections,
+                    event_id=event_id,
+                    observed_at=responded_at.replace(tzinfo=None),
+                )
+            except Exception:
+                obico_history.dropped["enqueue_failed"] += 1
+                logger.exception("Obico evidence enqueue failed")
 
     async def _dispatch_action(self, printer_id: int, action: str, task_name: str, score: float):
         from backend.app.services.obico_actions import execute_action

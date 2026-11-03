@@ -140,6 +140,22 @@ def live_frame_for_capture(
     return True, get_buffered_frame(printer_id)
 
 
+def live_frame_observation(printer_id: int) -> tuple[bool, bytes | None, float | None, float | None]:
+    """Freeze bytes and their relay arrival, not a camera exposure timestamp.
+
+    No await between these fields: the event-loop relay cannot publish B while
+    this accessor pairs A with its own wall/monotonic arrival. Old bytes-only
+    consumers and their single-reader admission continue using the old helper.
+    """
+    defer, frame = live_frame_for_capture(printer_id)
+    if frame is None or frame is not _last_frames.get(printer_id):
+        return defer, frame, None, None
+    metadata = _live_frame_metadata.get(printer_id)
+    if metadata is None or metadata[1] != live_stream_generation(printer_id):
+        return defer, frame, None, None
+    return defer, frame, _last_frame_times.get(printer_id), metadata[0]
+
+
 def _new_fanout_stream_id(printer_id: int) -> str:
     """A registry key for one fan-out broadcaster (#2707).
 
