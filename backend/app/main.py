@@ -1969,7 +1969,8 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
             # lands in the order the printer reported, never ahead of a queued tray or tail fact.
             async with journal_lock(printer_id), async_session() as db:
                 archive_id = await active_archive_id(db, printer_id)
-                if archive_id is not None:
+                # The id may name the next printer's run by now (spec gh109-o1 r2 R6).
+                if archive_id is not None and printer_manager.session_still_lives(printer_id):
                     tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)
                     await record_event(
                         db,
@@ -1991,6 +1992,8 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
             "reason_code": reason_code,
             "hms_code": hms_code,
         }
+        if not printer_manager.session_still_lives(printer_id):
+            return
         await ws_manager.send_print_paused(printer_id, ws_data)
 
         async with async_session() as db:
@@ -2042,7 +2045,8 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_res
             # claim below holds SQLite's writer and must not wait for it (post-rebuild review).
             async with _get_ams_assignment_lock(printer_id), journal_lock(printer_id), async_session() as db:
                 archive_id = await active_archive_id(db, printer_id)
-                if archive_id is not None:
+                # The id may name the next printer's run by now (spec gh109-o1 r2 R6).
+                if archive_id is not None and printer_manager.session_still_lives(printer_id):
                     from backend.app.services.auto_stock_spool import claim_on_external_resume
 
                     outcome = (
@@ -2094,6 +2098,8 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_res
             "filename": filename,
             "paused_for_seconds": paused_for_seconds,
         }
+        if not printer_manager.session_still_lives(printer_id):
+            return
         await ws_manager.send_print_resumed(printer_id, ws_data)
 
         async with async_session() as db:
@@ -2322,6 +2328,11 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     except Exception:
         pass  # Don't fail status callback if MQTT fails
 
+    # Every await below may span a deletion of this printer record; what follows each one writes registries
+    # or reaches the printer by id, so the session is proved again first (spec gh109-o1 r2 R6).
+    if not printer_manager.session_still_lives(printer_id):
+        return
+
     # Pause / resume edge detection — runs BEFORE the dedup early-return so
     # a state-only change (e.g. RUNNING→PAUSE with same temps + progress)
     # still fires the event when the dedup key would otherwise skip it. Edge
@@ -2343,6 +2354,8 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                     and _last_printer_state_generation.get(printer_id) == state.connection_generation
                 ),
             )
+    if not printer_manager.session_still_lives(printer_id):
+        return
     _last_printer_state[printer_id] = current_state
     _last_printer_state_generation[printer_id] = state.connection_generation
 
@@ -2367,6 +2380,8 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                 await emit(printer_id, relay_info.name, relay_info.serial_number)
         except Exception:
             pass  # A relay failure must never break the status callback.
+    if not printer_manager.session_still_lives(printer_id):
+        return
 
     if prev_connected is True and not state.connected:
         existing = _printer_offline_notify_tasks.get(printer_id)
@@ -2429,6 +2444,8 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                 async def _milestone_snapshot() -> bytes | None:
                     return await _capture_snapshot_for_notification(printer_id, printer, logging.getLogger(__name__))
 
+                if not printer_manager.session_still_lives(printer_id):
+                    return
                 # Notification send needs a session (provider/template lookups).
                 async with async_session() as db:
                     await notification_service.on_print_progress(
@@ -2450,6 +2467,9 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         from backend.app.services.macro_trigger import clear_fired_layer_macros
 
         clear_fired_layer_macros(printer_id)
+
+    if not printer_manager.session_still_lives(printer_id):
+        return
 
     # HMS error codes that should not trigger notifications even though they
     # have known descriptions (e.g. user-initiated actions, not real errors).
@@ -2520,6 +2540,8 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                     printer_id, printer, logging.getLogger(__name__)
                 )
 
+                if not printer_manager.session_still_lives(printer_id):
+                    return
                 # The send loop + MQTT relay run in a fresh session (the read one
                 # was released before the snapshot).
                 async with async_session() as db:

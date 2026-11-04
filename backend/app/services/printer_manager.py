@@ -852,9 +852,21 @@ class PrinterManager:
         if not self.life_holds(printer_id, life):
             coro.close()
             return None
+        with self.session_scope(printer_id, life):
+            return await coro
+
+    @contextmanager
+    def session_scope(self, printer_id: int, life: int | None):
+        """Run the block as work of the session that captured ``life`` (``session_still_lives`` inside it).
+
+        ``None`` is a caller with no captured life: nothing changes for it.
+        """
+        if life is None:
+            yield
+            return
         token = _session_life.set((printer_id, life))
         try:
-            return await coro
+            yield
         finally:
             _session_life.reset(token)
 
@@ -959,6 +971,9 @@ class PrinterManager:
         async with async_session() as db:
             printer = await db.get(Printer, printer_id)
             if printer is None:
+                return None
+            if not self.session_still_lives(printer_id):
+                # Asked by a deleted record's session: the row read is the next printer's (gh109-o1 r2 R6).
                 return None
             if not printer.require_plate_clear:
                 from backend.app.models.archive import PrintArchive

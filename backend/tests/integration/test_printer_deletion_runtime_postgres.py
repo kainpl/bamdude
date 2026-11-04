@@ -22,6 +22,7 @@ from backend.tests.integration.test_printer_deletion_runtime import (  # noqa: F
     test_a_new_life_between_commit_and_cleanup_is_left_alone,
     test_a_new_lifes_registrations_survive_the_old_deletion,
     test_a_stale_closer_never_closes_the_archive_that_reused_the_id,
+    test_after_its_archive_commit_the_closer_touches_nothing_of_the_next_printer,
     test_main_state_of_the_deleted_record_goes_and_another_printers_stays,
     test_the_closer_rechecks_the_record_after_its_write_lock,
 )

@@ -534,8 +534,15 @@ async def _reconcile_complete_archive(
         # Persist the archive and arm the existing gate BEFORE releasing the
         # queue claim, just as the live completion handler does.
         await db.commit()
+        # The commit released the row's lock. Before the gate and the queue -- each a write of its own -- the
+        # record and the row are proved again under a lock held anew: the ids may name another printer's run
+        # by now (spec gh109-o1 r2 R6, Codex recheck R1-2). Never a process mutex under SQLite's writer.
+        if record_lives is not None and not record_lives():
+            return None
         if archive.printer_id is not None and not swap_owed:
             await printer_manager.arm_awaiting_plate_clear(archive.printer_id, archive.id)
+        if not await _still_the_row_this_sweep_closed(db, archive, loaded, status, record_lives):
+            return None
 
         # The row that RAN this archive -- still holding the printer. A job queued from the archive later (a
         # reprint names it as its source) is not this run and is never closed by it.
@@ -1098,6 +1105,34 @@ async def _repair_terminal_queue_items(
         return [(item.id, archive.id, outcome) for item, archive, outcome in pairs]
 
 
+async def _still_the_row_this_sweep_closed(db, archive, loaded, status: str, record_lives) -> bool:
+    """Re-take the archive row's lock and prove it is still the row this sweep closed, of the same record.
+
+    The writer on SQLite, FOR UPDATE on PostgreSQL -- held until the caller's outer commit, so the queue
+    writes that follow belong to the same proved row.
+    """
+    from backend.app.core.database import take_write_lock
+    from backend.app.services.archive_write_scope import locked_print
+
+    await take_write_lock(db, PrintArchive.__table__, archive.id)
+    held = await locked_print(
+        db, archive.id, select(PrintArchive.status).where(PrintArchive.id == archive.id).with_for_update()
+    )
+    if record_lives is not None and not record_lives():
+        return False
+    row = (
+        await db.execute(
+            select(PrintArchive.printer_id, PrintArchive.filename, PrintArchive.created_at).where(
+                PrintArchive.id == archive.id
+            )
+        )
+    ).first()
+    if held != status or row is None or (row[0], row[1], _as_utc(row[2])) != loaded:
+        logger.info("reconcile: archive %s changed hands after its close -- its queue is left alone", archive.id)
+        return False
+    return True
+
+
 def _swap_unsettled(extra: dict) -> bool:
     """Whether this run still has our table swap owed, attempted, held or in any state short of settled.
 
@@ -1200,6 +1235,28 @@ class _OwnRunCapture:
 
 
 async def reconcile_printer_prints(
+    printer_id: int,
+    live_state: str,
+    live_file: str,
+    live_subtask_id: str = "",
+    live_subtask_name: str = "",
+    *,
+    printer_life: int | None = None,
+) -> None:
+    """Entry point — runs on the first full MQTT status after each fresh connect (``_sweep_printer_prints``).
+
+    With a ``printer_life`` the whole sweep runs as that client session, so what it calls -- the plate gate
+    among them -- refuses to act for a printer record deleted meanwhile (spec gh109-o1 r2 R6).
+    """
+    from backend.app.services.printer_manager import printer_manager
+
+    with printer_manager.session_scope(printer_id, printer_life):
+        await _sweep_printer_prints(
+            printer_id, live_state, live_file, live_subtask_id, live_subtask_name, printer_life=printer_life
+        )
+
+
+async def _sweep_printer_prints(
     printer_id: int,
     live_state: str,
     live_file: str,

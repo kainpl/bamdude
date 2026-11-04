@@ -1082,3 +1082,240 @@ def async_sessionmaker_for(test_engine, monkeypatch):
     monkeypatch.setattr("backend.app.main.async_session", factory)
     monkeypatch.setattr("backend.app.core.tasks.spawn_background_task", lambda coro, **_k: coro.close())
     return factory
+
+
+# --------------------------------------------------------------------------- #
+# Codex recheck r1 -- R1-1: the status callback stops at every await, not only at its two ends
+# --------------------------------------------------------------------------- #
+
+
+def _status_barrier(monkeypatch, target_attr, owner):
+    """Make ``owner.target_attr`` an await that holds until released."""
+    entered, proceed = asyncio.Event(), asyncio.Event()
+
+    async def held(*_args, **_kwargs):
+        entered.set()
+        await proceed.wait()
+
+    monkeypatch.setattr(owner, target_attr, held)
+    return entered, proceed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted", [False, True], ids=["control", "deleted-during-the-relay"])
+async def test_a_status_callback_overtaken_at_its_relay_leaves_the_next_life_alone(monkeypatch, deleted):
+    from types import SimpleNamespace
+
+    from backend.app import main
+    from backend.app.services import interrupted_dispatch, macro_trigger, printer_deletion
+
+    pid = 91_234
+    entered, proceed = _status_barrier(monkeypatch, "on_printer_status", main.mqtt_relay)
+    monkeypatch.setattr(interrupted_dispatch, "on_status", lambda *_a: None)
+    monkeypatch.setattr(printer_manager, "get_printer", lambda _p: SimpleNamespace(name="t", serial_number="t"))
+
+    async def no_ws(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(main.ws_manager, "send_printer_status", no_ws)
+    state = main.PrinterState()
+    state.state = "IDLE"
+    state.progress = 0
+    life = printer_manager.printer_life(pid)
+    task = asyncio.create_task(printer_manager._run_for_client(pid, life, main.on_printer_status_change(pid, state)))
+    await asyncio.wait_for(entered.wait(), 3)
+    if deleted:
+        printer_deletion.finish(printer_deletion.begin(pid), committed=True)
+    # The next life's registrations (or, in the control, the state an ordinary IDLE edge moves on from).
+    main._last_printer_state[pid] = "RUNNING"
+    main._first_layer_notified[pid] = True
+    main._last_progress_milestone[pid] = 50
+    macro_trigger._fired_layer_macros[pid] = {666}
+    proceed.set()
+    await asyncio.wait_for(task, 3)
+    try:
+        actual = (
+            main._last_printer_state.get(pid),
+            main._first_layer_notified.get(pid),
+            main._last_progress_milestone.get(pid),
+            macro_trigger._fired_layer_macros.get(pid),
+        )
+        assert actual == (("RUNNING", True, 50, {666}) if deleted else ("IDLE", False, 0, None))
+    finally:
+        macro_trigger._fired_layer_macros.pop(pid, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted", [False, True], ids=["control", "deleted-during-the-relay"])
+async def test_an_old_pause_report_after_the_relay_opens_no_pause_on_the_next_run(monkeypatch, deleted):
+    """The next printer is RUNNING when the deleted one's PAUSE report resumes: no pause edge for the new run."""
+    from types import SimpleNamespace
+
+    from backend.app import main
+    from backend.app.services import interrupted_dispatch, printer_deletion
+
+    pid = 91_235
+    entered, proceed = _status_barrier(monkeypatch, "on_printer_status", main.mqtt_relay)
+    monkeypatch.setattr(interrupted_dispatch, "on_status", lambda *_a: None)
+    monkeypatch.setattr(printer_manager, "get_printer", lambda _p: SimpleNamespace(name="t", serial_number="t"))
+    edges = []
+
+    async def pause_edge(printer_id, _state):
+        edges.append(printer_id)
+
+    async def no_ws(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(main, "_handle_pause_edge", pause_edge)
+    monkeypatch.setattr(main.ws_manager, "send_printer_status", no_ws)
+    state = main.PrinterState()
+    state.state = "PAUSE"
+    life = printer_manager.printer_life(pid)
+    task = asyncio.create_task(printer_manager._run_for_client(pid, life, main.on_printer_status_change(pid, state)))
+    await asyncio.wait_for(entered.wait(), 3)
+    if deleted:
+        printer_deletion.finish(printer_deletion.begin(pid), committed=True)
+    main._last_printer_state[pid] = "RUNNING"
+    proceed.set()
+    await asyncio.wait_for(task, 3)
+
+    assert edges == ([] if deleted else [pid])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edge", ["pause", "resume"])
+async def test_a_pause_or_resume_edge_overtaken_by_a_deletion_records_nothing_on_the_next_run(
+    monkeypatch, printer_factory, reconcile_db, edge
+):
+    """The edge helpers look the active archive up by id after an await: never the next printer's."""
+    from backend.app import main
+    from backend.app.services import print_usage_journal, printer_deletion
+
+    pid = (await printer_factory()).id
+    recorded, sent = [], []
+    looked_up = asyncio.Event()
+
+    async def active_archive_id(_db, _pid):
+        # The await the deletion overtakes: the id now names the next printer, whose archive this would return.
+        printer_deletion.finish(printer_deletion.begin(pid), committed=True)
+        looked_up.set()
+        return 777
+
+    async def record_event(*_args, **kwargs):
+        recorded.append(kwargs.get("archive_id"))
+
+    async def ws(*_args, **_kwargs):
+        sent.append(True)
+
+    monkeypatch.setattr(print_usage_journal, "active_archive_id", active_archive_id)
+    monkeypatch.setattr(print_usage_journal, "record_event", record_event)
+    monkeypatch.setattr(main.ws_manager, "send_print_paused", ws)
+    monkeypatch.setattr(main.ws_manager, "send_print_resumed", ws)
+    state = main.PrinterState()
+    state.state = "PAUSE" if edge == "pause" else "RUNNING"
+    life = printer_manager.printer_life(pid)
+    if edge == "pause":
+        callback = main._handle_pause_edge(pid, state)
+    else:
+        main._pause_started_at[pid] = 1.0
+        callback = main._handle_resume_edge(pid, state, stock_resume_witnessed=False)
+
+    await printer_manager._run_for_client(pid, life, callback)
+
+    assert looked_up.is_set()
+    assert recorded == [] and sent == []
+
+
+# --------------------------------------------------------------------------- #
+# Codex recheck r1 -- R1-2: after its own archive commit the closer proves the record and the row again
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seam", ["after-the-archive-commit", "during-the-plate-gate"])
+async def test_after_its_archive_commit_the_closer_touches_nothing_of_the_next_printer(
+    db_session, printer_factory, archive_factory, monkeypatch, test_engine, seam
+):
+    """Both ids, the printer, its archive, queue and queue row replaced after the closer's own commit -- right after
+    it, or while the plate gate is being armed. Each later write proves the record and the row again."""
+    from sqlalchemy import insert, update
+
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.services import print_reconciliation, printer_deletion
+    from backend.tests.integration.test_reconcile_retires_its_own_run import a_bound_printing_run
+
+    factory = async_sessionmaker_for(test_engine, monkeypatch)
+    a = await a_bound_printing_run(db_session, printer_factory, archive_factory)
+    life = printer_manager.printer_life(a.printer_id)
+    real_commit = AsyncSession.commit
+    real_arm = printer_manager.arm_awaiting_plate_clear
+    replaced = []
+
+    async def commit(self):
+        closing = any(
+            isinstance(obj, PrintArchive) and obj.id == a.archive_id and obj.status == "completed" for obj in self.dirty
+        )
+        await real_commit(self)
+        if seam == "after-the-archive-commit" and closing and not replaced:
+            await replace()
+
+    async def arm(printer_id, archive_id):
+        if seam == "during-the-plate-gate" and not replaced:
+            await replace()
+        return await real_arm(printer_id, archive_id)
+
+    async def replace():
+        replaced.append(True)
+        mark = printer_deletion.begin(a.printer_id)
+        async with factory() as other:
+            await other.execute(delete(PrintQueueItem).where(PrintQueueItem.queue_id == a.printer_id))
+            await other.execute(delete(PrinterQueue).where(PrinterQueue.id == a.printer_id))
+            await other.execute(delete(PrintArchive).where(PrintArchive.id == a.archive_id))
+            await other.execute(delete(Printer).where(Printer.id == a.printer_id))
+            await other.execute(
+                insert(Printer).values(
+                    id=a.printer_id,
+                    name="replacement",
+                    serial_number="NEW",
+                    ip_address="192.0.2.99",
+                    access_code="test",
+                    require_plate_clear=True,
+                )
+            )
+            await other.execute(
+                insert(PrintArchive).values(
+                    id=a.archive_id,
+                    printer_id=a.printer_id,
+                    filename="new-run.3mf",
+                    file_path="",
+                    file_size=0,
+                    status="printing",
+                )
+            )
+            await other.execute(
+                insert(PrinterQueue).values(id=a.printer_id, printer_id=a.printer_id, status="printing")
+            )
+            await other.execute(
+                insert(PrintQueueItem).values(
+                    id=a.item_id, queue_id=a.printer_id, archive_id=a.archive_id, status="printing", position=0
+                )
+            )
+            await other.execute(
+                update(PrinterQueue).where(PrinterQueue.id == a.printer_id).values(current_item_id=a.item_id)
+            )
+            await other.commit()
+        printer_deletion.finish(mark, committed=True)
+
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    monkeypatch.setattr(printer_manager, "arm_awaiting_plate_clear", arm)
+    await print_reconciliation.reconcile_printer_prints(a.printer_id, "FINISH", "cube.gcode.3mf", printer_life=life)
+
+    assert replaced
+    async with factory() as db:
+        printer = await db.get(Printer, a.printer_id)
+        archive = await db.get(PrintArchive, a.archive_id)
+        item = await db.get(PrintQueueItem, a.item_id)
+        queue = await db.get(PrinterQueue, a.printer_id)
+        assert (archive.filename, archive.status) == ("new-run.3mf", "printing")
+        assert (bool(printer.awaiting_plate_clear), item.status, queue.status) == (False, "printing", "printing")
