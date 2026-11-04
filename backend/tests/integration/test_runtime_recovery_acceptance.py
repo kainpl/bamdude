@@ -54,7 +54,13 @@ def the_printer_reports(mqtt, state: str) -> None:
 async def a_finished_run_held_over_a_pending_job(
     db, test_engine, tmp_path, printer_factory, archive_factory, monkeypatch
 ):
-    """A01 on a printer whose queue holds a pending job: the sweep closes A, A stays bound in memory."""
+    """A01 on a printer whose queue holds a pending job: the closer ends A in the database, A stays bound in memory.
+
+    The closer alone (``_reconcile``), not the connect-edge wrapper: since gh109-o3 r2 the wrapper releases the
+    exact run its own close ended, after its outer commit. What stays bound here is a run whose release did not
+    happen -- the operator's audited repair below is the path for that (``test_reconcile_retires_its_own_run.py``
+    holds the wrapper's own release and every case it leaves to this repair).
+    """
     import backend.app.services.print_scheduler as ps
     from backend.app import main
     from backend.app.api.routes.printers import clear_plate

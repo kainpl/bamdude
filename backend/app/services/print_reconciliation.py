@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -45,6 +46,22 @@ from backend.app.utils.filename import derive_remote_filename
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnClose:
+    """A run THIS sweep took from printing to completed/failed itself -- never an uncertain or checkpoint close.
+
+    Process-local and per call: the one thing that lets the wrapper release that run's context after its outer
+    commit (spec gh109-o3 r2 R1/R2). Returned archive ids are no such proof.
+    """
+
+    archive_id: int
+    queue_item_id: int | None
+    item_started_at: datetime | None
+    subtask_id: str | None
+    swap_owed: bool
+
 
 # Recovery must not mistake the normal archive→queue completion window for
 # historical damage. A counter also covers overlapping callbacks; no awaits
@@ -351,6 +368,7 @@ async def _reconcile_complete_archive(
     *,
     status: str,
     uncertain: bool,
+    report: list[_OwnClose] | None = None,
 ) -> int | None:
     """Close one orphan ``printing`` archive and advance its queue.
 
@@ -533,6 +551,16 @@ async def _reconcile_complete_archive(
             status,
             " (outcome uncertain)" if uncertain else "",
         )
+        if report is not None and status in ("completed", "failed") and not uncertain:
+            report.append(
+                _OwnClose(
+                    archive_id=archive.id,
+                    queue_item_id=item.id if item is not None else None,
+                    item_started_at=item.started_at if item is not None else None,
+                    subtask_id=archive.subtask_id,
+                    swap_owed=swap_owed,
+                )
+            )
         return archive.id
     finally:
         if analysis_leased:
@@ -699,6 +727,7 @@ async def _reconcile(
     live_subtask_name: str = "",
     *,
     record_lives=None,
+    own_closes: list[_OwnClose] | None = None,
 ) -> list[int]:
     """Reconcile every orphan ``printing`` archive for one printer.
 
@@ -861,11 +890,15 @@ async def _reconcile(
         if action == "running":
             continue  # still printing — the live RUNNING status self-arms completion
         if action == "failed":
-            closed_id = await _reconcile_complete_archive(db, archive, status="failed", uncertain=False)
+            closed_id = await _reconcile_complete_archive(
+                db, archive, status="failed", uncertain=False, report=own_closes
+            )
         elif action == "uncertain":
             closed_id = await _reconcile_complete_archive(db, archive, status="cancelled", uncertain=True)
         else:  # completed
-            closed_id = await _reconcile_complete_archive(db, archive, status="completed", uncertain=False)
+            closed_id = await _reconcile_complete_archive(
+                db, archive, status="completed", uncertain=False, report=own_closes
+            )
         if closed_id is not None:
             recovered.append(closed_id)
             closed += 1
@@ -1042,6 +1075,85 @@ async def _repair_terminal_queue_items(
         return [(item.id, archive.id, outcome) for item, archive, outcome in pairs]
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnRunCapture:
+    """The run bound here when the sweep began, and the fences it must still hold when the sweep released it.
+
+    The sweep that itself closes that exact run as completed or failed ends its context the way a live
+    completion would (owner decision D2 = C, spec gh109-o3 r2): once, after its outer commit, by comparing with
+    THIS capture -- never by re-reading a newer run -- and with no new pause, intent or audit. Anything less --
+    an uncertain or checkpoint close, a swap still owed, a changed context, another client session, record life
+    or storage epoch -- leaves the context to the operator's audited repair.
+    """
+
+    printer_id: int
+    expected: object | None
+    client_generation: int | None
+    printer_life: int | None
+    storage_epoch: int
+
+    @classmethod
+    def take(cls, printer_id: int, printer_life: int | None) -> _OwnRunCapture:
+        from backend.app.services.print_run_binding import capture_runtime_context
+        from backend.app.services.printer_manager import printer_manager
+        from backend.app.services.queue_sources import current_epoch
+
+        return cls(
+            printer_id=printer_id,
+            expected=capture_runtime_context(printer_manager, printer_id),
+            client_generation=printer_manager.current_client_generation(printer_id),
+            printer_life=printer_life,
+            storage_epoch=current_epoch(),
+        )
+
+    def _closed_this_run(self, own_closes: list[_OwnClose]) -> bool:
+        run = self.expected.current
+        closes = [close for close in own_closes if close.archive_id == run.archive_id]
+        if len(closes) != 1 or closes[0].swap_owed:
+            return False
+        close = closes[0]
+        # A numeric archive id is no proof on its own (ids are reused): the claim or the device id must match too.
+        if run.queue_item_id is not None:
+            if close.queue_item_id != run.queue_item_id:
+                return False
+            return run.claim_started_at is None or _as_utc(close.item_started_at) == _as_utc(run.claim_started_at)
+        return bool(run.observed_subtask_id) and str(close.subtask_id or "") == run.observed_subtask_id
+
+    def release_if_closed(self, own_closes: list[_OwnClose]) -> bool:
+        from backend.app.services.print_run_binding import release_runtime_context, runtime_context_unchanged
+        from backend.app.services.printer_manager import printer_manager
+        from backend.app.services.queue_sources import current_epoch
+
+        if self.expected is None or not self._closed_this_run(own_closes):
+            return False
+        pid = self.printer_id
+        if (
+            printer_manager.current_client_generation(pid) != self.client_generation
+            or not printer_manager.life_holds(pid, self.printer_life)
+            or current_epoch() != self.storage_epoch
+            or not runtime_context_unchanged(printer_manager, self.expected)
+        ):
+            logger.info(
+                "reconcile: printer %d archive %d closed, its context moved meanwhile -- kept for the operator",
+                pid,
+                self.expected.current.archive_id,
+            )
+            return False
+        release_runtime_context(printer_manager, self.expected)
+        logger.info(
+            "reconcile: printer %d archive %d closed by this sweep -- its run context is released",
+            pid,
+            self.expected.current.archive_id,
+        )
+        return True
+
+
 async def reconcile_printer_prints(
     printer_id: int,
     live_state: str,
@@ -1070,6 +1182,9 @@ async def reconcile_printer_prints(
 
     if not record_lives():
         return
+    # What a close of the run still bound here may release, captured before anything awaits (spec gh109-o3 r2 R2).
+    own = _OwnRunCapture.take(printer_id, printer_life)
+    own_closes: list[_OwnClose] = []
     recovered: list[int] = []
     try:
         # A restart replay still waiting is written first, while its archive is still the
@@ -1112,9 +1227,18 @@ async def reconcile_printer_prints(
             return
         async with async_session() as db:
             recovered = await _reconcile(
-                db, printer_id, live_state, live_file, live_subtask_id, live_subtask_name, record_lives=record_lives
+                db,
+                printer_id,
+                live_state,
+                live_file,
+                live_subtask_id,
+                live_subtask_name,
+                record_lives=record_lives,
+                own_closes=own_closes,
             )
             await db.commit()
+        # The outer commit is confirmed and nothing has awaited since: one compare-and-clear, or nothing.
+        own.release_if_closed(own_closes)
     except _RepairSnapshotChanged:
         logger.info("reconcile: terminal queue repair deferred printer=%s reason=live_snapshot_changed", printer_id)
         return
