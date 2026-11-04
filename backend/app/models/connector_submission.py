@@ -60,7 +60,9 @@ class ConnectorSubmissionEntry(Base):
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     intent_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
-    published_receipt: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # SQL NULL for Python ``None``: "published" is ``published_receipt IS NULL`` negated, and a JSON ``null`` would
+    # answer that question wrong.
+    published_receipt: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     attempt_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
