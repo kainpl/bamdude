@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-04
+
+Images: `ghcr.io/kainpl/bamdude:0.7.3` / `kainpl/bamdude:0.7.3` (`:latest` tracks this release).
+
+This release keeps a queue from waiting behind a print context that outlived its print. A printer re-added under a deleted one's id starts clean, a print closed while its printer was offline releases its context at the reconnect, and a context that still blocks a start now stops it before another upload, says why in the queue, and can be released once its cause is proven.
+
+Orders can be restricted to selected printer models and machines, can record a physical recount of their loose printed parts, and move work between printer models by comparing finish times across the whole auto-queue. Obico can keep a local history of the frames it analysed (off by default). A plug whose energy counter stops is caught instead of reporting zero energy. The server no longer pauses for 0.4 s at a time during memory clean-up. MCP setup for AI assistants arrives as a development preview, disabled by default and on every existing key.
+
 - Support bundles and bug reports number printers the same way in every section and file: the printers list, the queue rows, the connection diagnostics (which now carry the number beside the printer id), `push-status/printer-N.json` and the opt-in raw MQTT recordings (`mqtt/printer-N/`). Before, sections could number the printers differently, especially on PostgreSQL or when a printer was added or removed while the bundle was being made. The issue-size trimming of a bug report also no longer shortens the report data it was handed.
 
 - When a print finishes while the printer's connection is down, the reconnect sweep that closes it as completed or failed now also ends that print's in-memory context. Previously the next queue job then waited with "A previous print context is blocking this start" until someone repaired the print state on the System page. The queue keeps its usual result: a completed close frees it, a failed close leaves its error, and an operator's pause stays. Uncertain or cancelled closes, a table swap still owed, and any print context that changed meanwhile are still left for the print-state recovery.
