@@ -2205,7 +2205,7 @@ async def test_the_reconnect_sweep_writes_a_waiting_replay_before_it_closes_the_
     monkeypatch.setattr(journal, "_write_replay_fact", first_write_fails)
     seen_when_closing = []
 
-    async def close(db, printer_id, *args):
+    async def close(db, printer_id, *args, **_kwargs):
         seen_when_closing.append(await frozen(db_session, printer.id, archive.id, EVENT_TAIL_START))
         return []
 
@@ -2418,7 +2418,7 @@ async def test_the_reconnect_sweep_states_a_replay_it_could_not_write_unknown_be
     failing_replay_writes(monkeypatch, 2)
     seen = []
 
-    async def close(db, printer_id, *args):
+    async def close(db, printer_id, *args, **_kwargs):
         seen.append((list(client.state.tray_change_log), bool(journal._pending_replays.get(printer_id))))
         return []
 
@@ -2629,7 +2629,7 @@ async def test_the_closing_sweep_writes_or_states_unknown_a_replay_never_tried(
     failing_replay_writes(monkeypatch, failures)
     seen = []
 
-    async def close(db, printer_id, *args):
+    async def close(db, printer_id, *args, **_kwargs):
         seen.append((list(client.state.tray_change_log), bool(journal._pending_replays.get(printer_id))))
         return []
 

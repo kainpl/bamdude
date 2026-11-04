@@ -11,6 +11,8 @@ Every case runs the real route on the test database; MQTT, devices and files are
 from __future__ import annotations
 
 import asyncio
+import contextvars
+from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import delete, select
@@ -1319,3 +1321,460 @@ async def test_after_its_archive_commit_the_closer_touches_nothing_of_the_next_p
         queue = await db.get(PrinterQueue, a.printer_id)
         assert (archive.filename, archive.status) == ("new-run.3mf", "printing")
         assert (bool(printer.awaiting_plate_clear), item.status, queue.status) == (False, "printing", "printing")
+
+
+# --------------------------------------------------------------------------- #
+# Codex recheck r2 -- R2-1/R2-2: a write after a read holds the record first and proves it under that hold; memory
+# is published only for a record that still lives
+# --------------------------------------------------------------------------- #
+
+
+async def _replace_printer_and_run(factory, pid, aid, *, require_plate_clear=False, started=None):
+    """Delete the printer and its run and re-add both under the same ids, in the deletion's own lock order: the
+    printer's row first (``lock_sensor_target``, as ``_delete_printer_rows`` takes it), then the rows."""
+    from sqlalchemy import insert
+
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.print_usage_event import PrintUsageEvent
+    from backend.app.services import printer_deletion
+    from backend.app.services.sensor_target_lock import lock_sensor_target
+
+    mark = printer_deletion.begin(pid)
+    async with factory() as db:
+        if started is not None:
+            started.set()
+        assert await lock_sensor_target(db, "printers", pid)
+        await db.execute(delete(PrintUsageEvent).where(PrintUsageEvent.archive_id == aid))
+        await db.execute(delete(PrintArchive).where(PrintArchive.id == aid))
+        await db.execute(delete(Printer).where(Printer.id == pid))
+        await db.execute(
+            insert(Printer).values(
+                id=pid,
+                name="replacement",
+                serial_number="NEW",
+                ip_address="192.0.2.99",
+                access_code="test",
+                require_plate_clear=require_plate_clear,
+            )
+        )
+        await db.execute(
+            insert(PrintArchive).values(
+                id=aid, printer_id=pid, filename="new.3mf", file_path="", file_size=0, status="printing"
+            )
+        )
+        await db.commit()
+    printer_deletion.finish(mark, committed=True)
+
+
+def _quiet_edges(monkeypatch):
+    from backend.app import main
+
+    async def nothing(*_args, **_kwargs):
+        return None
+
+    for name in ("send_print_paused", "send_print_resumed"):
+        monkeypatch.setattr(main.ws_manager, name, nothing)
+    for name in ("on_print_pause", "on_print_resume"):
+        monkeypatch.setattr(main.notification_service, name, nothing)
+
+
+def _edge_callback(pid, edge):
+    from backend.app import main
+
+    state = main.PrinterState()
+    state.tray_now = 0
+    state.state = "PAUSE" if edge == "pause" else "RUNNING"
+    if edge == "pause":
+        return main._handle_pause_edge(pid, state)
+    main._pause_started_at[pid] = 1.0
+    return main._handle_resume_edge(pid, state, stock_resume_witnessed=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted", [False, True], ids=["control", "replaced-in-the-auto-eject-read"])
+async def test_a_plate_gate_overtaken_in_its_auto_eject_read_arms_nothing_on_the_next_printer(
+    printer_factory, archive_factory, test_engine, monkeypatch, deleted
+):
+    """The gate reads the archive's auto-eject intent after its record check. A replacement made during that read
+    leaves the loaded row naming the next printer: its gate is written only after the record is held and proved."""
+    from backend.app.models.archive import PrintArchive
+
+    factory = async_sessionmaker_for(test_engine, monkeypatch)
+    monkeypatch.setattr(printer_manager, "_loop", None)
+    printer = await printer_factory(require_plate_clear=False)
+    archive = await archive_factory(
+        printer.id, status="completed", extra_data={"dispatch_intent": {"auto_eject": True}}
+    )
+    pid, aid = printer.id, archive.id
+    life = printer_manager.printer_life(pid)
+    real_get = AsyncSession.get
+    read = []
+
+    async def get(self, model, key, **kwargs):
+        value = await real_get(self, model, key, **kwargs)
+        if model is PrintArchive and key == aid and not read:
+            read.append(True)
+            if deleted:
+                await _replace_printer_and_run(factory, pid, aid)
+        return value
+
+    monkeypatch.setattr(AsyncSession, "get", get)
+    with printer_manager.session_scope(pid, life):
+        token = await printer_manager.arm_awaiting_plate_clear(pid, aid)
+
+    assert read
+    async with factory() as db:
+        row = await real_get(db, Printer, pid)
+        assert (row.name == "replacement", bool(row.awaiting_plate_clear)) == (deleted, not deleted)
+    assert (token is None) is deleted
+    assert printer_manager.is_awaiting_plate_clear(pid) is (not deleted)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted", [False, True], ids=["control", "replaced-after-the-gate-commit"])
+async def test_a_plate_gate_overtaken_after_its_commit_publishes_nothing_for_the_next_printer(
+    printer_factory, archive_factory, test_engine, monkeypatch, deleted
+):
+    """The gate's commit and the session's close both await before the gate reaches memory: a replacement there must
+    not find the deleted record's gate armed for it in process memory while its own row says no gate."""
+    factory = async_sessionmaker_for(test_engine, monkeypatch)
+    monkeypatch.setattr(printer_manager, "_loop", None)
+    printer = await printer_factory(require_plate_clear=True)
+    archive = await archive_factory(printer.id, status="completed")
+    pid, aid = printer.id, archive.id
+    life = printer_manager.printer_life(pid)
+    real_commit = AsyncSession.commit
+    committed = []
+
+    async def commit(self):
+        await real_commit(self)
+        if not committed:
+            committed.append(True)
+            if deleted:
+                await _replace_printer_and_run(factory, pid, aid, require_plate_clear=True)
+
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    with printer_manager.session_scope(pid, life):
+        token = await printer_manager.arm_awaiting_plate_clear(pid, aid)
+
+    assert committed
+    async with factory() as db:
+        row = await db.get(Printer, pid)
+        assert (row.name == "replacement", bool(row.awaiting_plate_clear)) == (deleted, not deleted)
+    assert (token is None) is deleted
+    assert printer_manager.is_awaiting_plate_clear(pid) is (not deleted)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edge", ["pause", "resume"])
+@pytest.mark.parametrize("deleted", [False, True], ids=["control", "replaced-in-the-tray-read"])
+async def test_a_pause_or_resume_journal_overtaken_in_its_tray_read_records_nothing_on_the_next_run(
+    printer_factory, archive_factory, test_engine, monkeypatch, edge, deleted
+):
+    """After the record check the edge reads the loaded tray's spool bindings. A replacement during that read gives
+    the archive id to the next printer's run: the journal row is written only after the record is held and proved."""
+    from backend.app import main
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.print_usage_event import PrintUsageEvent
+
+    factory = async_sessionmaker_for(test_engine, monkeypatch)
+    printer = await printer_factory()
+    archive = await archive_factory(printer.id, status="printing")
+    pid, aid = printer.id, archive.id
+    life = printer_manager.printer_life(pid)
+    real_tray = main._current_tray_frozen
+    read = []
+
+    async def tray(*args):
+        value = await real_tray(*args)
+        read.append(True)
+        if deleted:
+            await _replace_printer_and_run(factory, pid, aid)
+        return value
+
+    monkeypatch.setattr(main, "_current_tray_frozen", tray)
+    _quiet_edges(monkeypatch)
+    await printer_manager._run_for_client(pid, life, _edge_callback(pid, edge))
+
+    assert read
+    async with factory() as db:
+        row = await db.get(PrintArchive, aid)
+        events = list((await db.scalars(select(PrintUsageEvent.event).where(PrintUsageEvent.archive_id == aid))).all())
+    assert row.filename == ("new.3mf" if deleted else archive.filename)
+    assert len(events) == (0 if deleted else 1), events
+
+
+@asynccontextmanager
+async def _separate_connections(test_engine, tmp_path):
+    """An engine whose sessions hold connections of their own, so one can wait on another's lock. The in-memory test
+    engine shares one connection between them; PostgreSQL's test engine already pools."""
+    if test_engine.dialect.name != "sqlite":
+        yield test_engine
+        return
+    from sqlalchemy import event as sql_event
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from backend.app.core.database import Base, configure_sqlite_connection
+
+    engine = create_async_engine("sqlite+aiosqlite:///" + str(tmp_path / "record-hold.sqlite"))
+    sql_event.listen(engine.sync_engine, "connect", configure_sqlite_connection)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+async def _seed_printer_and_run(factory, *, status, require_plate_clear=False):
+    from backend.app.models.archive import PrintArchive
+
+    async with factory() as db:
+        printer = Printer(
+            name="held",
+            serial_number="HELD",
+            ip_address="192.0.2.10",
+            access_code="test",
+            require_plate_clear=require_plate_clear,
+        )
+        db.add(printer)
+        await db.flush()
+        archive = PrintArchive(printer_id=printer.id, filename="old.3mf", file_path="", file_size=0, status=status)
+        db.add(archive)
+        await db.commit()
+        return printer.id, archive.id
+
+
+async def _blocked_or_done(engine, task, started):
+    """Until the deletion waits on a lock or has finished. PostgreSQL names the waiter; SQLite's busy wait shows
+    nothing, so a deletion that has not finished well after reaching its lock is taken as waiting."""
+    await asyncio.wait_for(started.wait(), 10)
+    if engine.dialect.name == "postgresql":
+        from sqlalchemy import text
+
+        for _ in range(1000):
+            if task.done():
+                return
+            async with AsyncSession(engine) as observer:
+                waiting = await observer.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                    )
+                )
+            if waiting:
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("the deletion neither waited nor finished")
+    for _ in range(40):
+        if task.done():
+            return
+        await asyncio.sleep(0.01)
+
+
+def _deletion_at_the_first_commit(engine, factory, pid, aid, seen, **replace):
+    """Patch ``AsyncSession.commit``: the operation's first commit starts a deletion of the record -- begun after the
+    operation proved it -- lets it run until it waits or ends, notes which, then commits and lets it finish."""
+    real_commit = AsyncSession.commit
+
+    async def commit(self):
+        if seen:
+            return await real_commit(self)
+        # Marked before anything awaits: the deletion's own commit comes through here too.
+        seen["deletion_finished_first"] = None
+        started = asyncio.Event()
+        task = asyncio.create_task(
+            _replace_printer_and_run(factory, pid, aid, started=started, **replace), context=contextvars.Context()
+        )
+        await _blocked_or_done(engine, task, started)
+        seen["deletion_finished_first"] = task.done()
+        await real_commit(self)
+        await task
+
+    return commit
+
+
+@pytest.mark.asyncio
+async def test_a_deletion_begun_after_the_gates_proof_waits_for_its_commit(test_engine, tmp_path, monkeypatch):
+    """The hold is what makes the proof last: a deletion that begins after it waits for the gate's commit, so the
+    write lands on the record it was proved for -- and the gate never reaches memory for the record that follows."""
+    async with _separate_connections(test_engine, tmp_path) as engine:
+        factory = async_sessionmaker_for(engine, monkeypatch)
+        monkeypatch.setattr(printer_manager, "_loop", None)
+        pid, aid = await _seed_printer_and_run(factory, status="completed", require_plate_clear=True)
+        life = printer_manager.printer_life(pid)
+        seen = {}
+        monkeypatch.setattr(
+            AsyncSession,
+            "commit",
+            _deletion_at_the_first_commit(engine, factory, pid, aid, seen, require_plate_clear=True),
+        )
+        with printer_manager.session_scope(pid, life):
+            token = await printer_manager.arm_awaiting_plate_clear(pid, aid)
+
+        assert seen == {"deletion_finished_first": False}
+        async with factory() as db:
+            row = await db.get(Printer, pid)
+            assert (row.name, bool(row.awaiting_plate_clear)) == ("replacement", False)
+        assert token is None and not printer_manager.is_awaiting_plate_clear(pid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edge", ["pause", "resume"])
+async def test_a_deletion_begun_after_the_journals_proof_waits_for_its_commit(test_engine, tmp_path, monkeypatch, edge):
+    """The journal row is written under the record's hold: a deletion begun after the proof waits for it, and the row
+    goes with the deleted run -- never onto the run that takes its id."""
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.print_usage_event import PrintUsageEvent
+
+    async with _separate_connections(test_engine, tmp_path) as engine:
+        factory = async_sessionmaker_for(engine, monkeypatch)
+        pid, aid = await _seed_printer_and_run(factory, status="printing")
+        life = printer_manager.printer_life(pid)
+        seen = {}
+        monkeypatch.setattr(AsyncSession, "commit", _deletion_at_the_first_commit(engine, factory, pid, aid, seen))
+        _quiet_edges(monkeypatch)
+        await printer_manager._run_for_client(pid, life, _edge_callback(pid, edge))
+
+        assert seen == {"deletion_finished_first": False}
+        async with factory() as db:
+            row = await db.get(PrintArchive, aid)
+            events = list((await db.scalars(select(PrintUsageEvent.id).where(PrintUsageEvent.archive_id == aid))).all())
+        assert (row.filename, events) == ("new.3mf", [])
+
+
+@pytest.mark.asyncio
+async def test_a_deletion_begun_after_a_queued_gate_writes_proof_waits_for_its_commit(
+    test_engine, tmp_path, monkeypatch
+):
+    """The gate's queued Boolean write (``set_awaiting_plate_clear``'s follow-up) proves the life it captured under
+    the same hold: a deletion begun after that proof waits, so the write never lands on the row that follows."""
+    async with _separate_connections(test_engine, tmp_path) as engine:
+        factory = async_sessionmaker_for(engine, monkeypatch)
+        pid, aid = await _seed_printer_and_run(factory, status="completed")
+        life = printer_manager.printer_life(pid)
+        seen = {}
+        monkeypatch.setattr(AsyncSession, "commit", _deletion_at_the_first_commit(engine, factory, pid, aid, seen))
+        await printer_manager._persist_awaiting_plate_clear(pid, True, publish=False, life=life)
+
+        assert seen == {"deletion_finished_first": False}
+        async with factory() as db:
+            row = await db.get(Printer, pid)
+            assert (row.name, bool(row.awaiting_plate_clear)) == ("replacement", False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["gate", "queued-gate-write", "pause"])
+async def test_a_deletion_that_takes_the_lock_first_is_seen_under_it(
+    printer_factory, archive_factory, test_engine, monkeypatch, operation
+):
+    """The record is proved AFTER its lock is taken, never before: a deletion that holds the lock the write waits
+    for -- and commits a replacement while it waits -- is seen by the proof made once the lock is ours."""
+    from backend.app.core import database
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.print_usage_event import PrintUsageEvent
+
+    factory = async_sessionmaker_for(test_engine, monkeypatch)
+    monkeypatch.setattr(printer_manager, "_loop", None)
+    printer = await printer_factory(require_plate_clear=True)
+    archive = await archive_factory(printer.id, status="completed" if operation != "pause" else "printing")
+    pid, aid = printer.id, archive.id
+    life = printer_manager.printer_life(pid)
+    real_lock = database.take_write_lock
+    waited = []
+
+    async def take_write_lock(db, table, row_id):
+        if table.name == "printers" and row_id == pid and not waited:
+            waited.append(True)
+            await _replace_printer_and_run(factory, pid, aid, require_plate_clear=True)
+        return await real_lock(db, table, row_id)
+
+    monkeypatch.setattr(database, "take_write_lock", take_write_lock)
+    if operation == "gate":
+        with printer_manager.session_scope(pid, life):
+            await printer_manager.arm_awaiting_plate_clear(pid, aid)
+    elif operation == "queued-gate-write":
+        await printer_manager._persist_awaiting_plate_clear(pid, True, publish=False, life=life)
+    else:
+        _quiet_edges(monkeypatch)
+        await printer_manager._run_for_client(pid, life, _edge_callback(pid, "pause"))
+
+    assert waited
+    async with factory() as db:
+        row = await db.get(Printer, pid)
+        events = list((await db.scalars(select(PrintUsageEvent.id).where(PrintUsageEvent.archive_id == aid))).all())
+        run = await db.get(PrintArchive, aid)
+    assert (row.name, bool(row.awaiting_plate_clear), run.filename, events) == ("replacement", False, "new.3mf", [])
+    assert not printer_manager.is_awaiting_plate_clear(pid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted", [False, True], ids=["control", "replaced-in-the-claim"])
+async def test_a_resume_claim_overtaken_by_a_deletion_publishes_nothing_for_the_next_printer(
+    printer_factory, archive_factory, test_engine, monkeypatch, deleted
+):
+    """The external stock claim commits under its own hold; what the edge does with its answer afterwards -- forget
+    the advertised slot, tell the browsers, write the journal -- names the printer again, after the claim's awaits."""
+    from backend.app import main
+    from backend.app.models.print_usage_event import PrintUsageEvent
+    from backend.app.services import ams_advertised_overlay, auto_stock_spool
+
+    factory = async_sessionmaker_for(test_engine, monkeypatch)
+    printer = await printer_factory()
+    archive = await archive_factory(printer.id, status="printing")
+    pid, aid = printer.id, archive.id
+    life = printer_manager.printer_life(pid)
+    published = []
+
+    async def claim(_db, **_kwargs):
+        if deleted:
+            await _replace_printer_and_run(factory, pid, aid)
+        return {"reason": "assigned", "spool_id": 5, "ams_id": 255, "tray_id": 0}
+
+    async def broadcast(message):
+        published.append(("broadcast", message["type"]))
+
+    monkeypatch.setattr(auto_stock_spool, "claim_on_external_resume", claim)
+    monkeypatch.setattr(ams_advertised_overlay, "forget", lambda *args: published.append(("forget", args)))
+    monkeypatch.setattr(main.ws_manager, "broadcast", broadcast)
+    _quiet_edges(monkeypatch)
+    state = main.PrinterState()
+    state.tray_now = 0
+    state.state = "RUNNING"
+    main._pause_started_at[pid] = 1.0
+    await printer_manager._run_for_client(pid, life, main._handle_resume_edge(pid, state, stock_resume_witnessed=True))
+
+    async with factory() as db:
+        events = list((await db.scalars(select(PrintUsageEvent.event).where(PrintUsageEvent.archive_id == aid))).all())
+    expected = [] if deleted else [("forget", (pid, 255, 0)), ("broadcast", "spool_auto_assigned")]
+    assert (published, len(events)) == (expected, 0 if deleted else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted", [False, True], ids=["control", "replaced-after-its-commit"])
+async def test_a_queued_gate_write_overtaken_after_its_commit_tells_the_relay_nothing(
+    printer_factory, archive_factory, test_engine, monkeypatch, deleted
+):
+    """The relay names the printer by the name and serial held for its id: after the queued write's commit awaited,
+    a replacement's would be published with the deleted record's gate."""
+    factory = async_sessionmaker_for(test_engine, monkeypatch)
+    pid = (await printer_factory(awaiting_plate_clear=False)).id
+    aid = (await archive_factory(pid, status="completed")).id
+    life = printer_manager.printer_life(pid)
+    real_commit = AsyncSession.commit
+    told = []
+
+    async def commit(self):
+        await real_commit(self)
+        if deleted and not told:
+            told.append("replaced")
+            await _replace_printer_and_run(factory, pid, aid)
+
+    async def emit(printer_id, awaiting):
+        told.append((printer_id, awaiting))
+
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    monkeypatch.setattr(printer_manager, "_emit_plate_clear_state", emit)
+    await printer_manager._persist_awaiting_plate_clear(pid, True, publish=True, life=life)
+
+    assert told == (["replaced"] if deleted else [(pid, True)])

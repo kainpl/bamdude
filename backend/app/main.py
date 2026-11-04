@@ -1972,16 +1972,19 @@ async def _handle_pause_edge(printer_id: int, state: PrinterState):
                 # The id may name the next printer's run by now (spec gh109-o1 r2 R6).
                 if archive_id is not None and printer_manager.session_still_lives(printer_id):
                     tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)
-                    await record_event(
-                        db,
-                        printer_id=printer_id,
-                        archive_id=archive_id,
-                        layer_num=state.layer_num or 0,
-                        event=EVENT_PAUSE,
-                        global_tray_id=tray,
-                        spool_id=spool_id,
-                        spoolman_spool_id=spoolman_spool_id,
-                    )
+                    # The tray read awaited: the row is written under the record's hold, proved again under it
+                    # (Codex recheck R2-2). The journal lock is already held; no process lock comes after this.
+                    if await printer_manager.hold_record(db, printer_id):
+                        await record_event(
+                            db,
+                            printer_id=printer_id,
+                            archive_id=archive_id,
+                            layer_num=state.layer_num or 0,
+                            event=EVENT_PAUSE,
+                            global_tray_id=tray,
+                            spool_id=spool_id,
+                            spoolman_spool_id=spoolman_spool_id,
+                        )
         except Exception as e:
             logging.getLogger(__name__).debug("Pause journal entry failed for printer %d: %s", printer_id, e)
 
@@ -2059,6 +2062,10 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_res
                         if stock_resume_witnessed
                         else {"reason": "unwitnessed_resume"}
                     )
+                    # The claim proves the record under its own hold; what follows it -- memory, the socket, the
+                    # journal -- names the printer again after its awaits (Codex recheck R2-2).
+                    if not printer_manager.session_still_lives(printer_id):
+                        return
                     if outcome["reason"] == "assigned":
                         from backend.app.services import ams_advertised_overlay as overlay
 
@@ -2078,16 +2085,18 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_res
                         outcome["reason"],
                     )
                     tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)
-                    await record_event(
-                        db,
-                        printer_id=printer_id,
-                        archive_id=archive_id,
-                        layer_num=state.layer_num or 0,
-                        event=EVENT_RESUME,
-                        global_tray_id=tray,
-                        spool_id=spool_id,
-                        spoolman_spool_id=spoolman_spool_id,
-                    )
+                    # As the pause edge: written under the record's hold, proved again under it.
+                    if await printer_manager.hold_record(db, printer_id):
+                        await record_event(
+                            db,
+                            printer_id=printer_id,
+                            archive_id=archive_id,
+                            layer_num=state.layer_num or 0,
+                            event=EVENT_RESUME,
+                            global_tray_id=tray,
+                            spool_id=spool_id,
+                            spoolman_spool_id=spoolman_spool_id,
+                        )
         except Exception as e:
             logging.getLogger(__name__).warning(
                 "Resume stock/journal processing failed for printer %d: %s", printer_id, e

@@ -879,6 +879,25 @@ class PrinterManager:
         held = _session_life.get()
         return held is None or held[0] != printer_id or self.life_holds(printer_id, held[1])
 
+    async def hold_record(self, db, printer_id: int, *, life: int | None = None) -> bool:
+        """Lock this printer's row against its deletion, then prove the record still lives.
+
+        SQLite's writer, or the row's ``FOR UPDATE`` on PostgreSQL -- chosen by this session's own connection, as
+        the stock claim takes it -- conflicts with the lock the deletion takes before it can commit
+        (``lock_sensor_target``), and a deletion changes the record life before its first statement. So a proof
+        made under this lock holds until this transaction ends: a deletion begun later waits for it. A check before
+        a read proves nothing about the write after it -- read, hold, prove, then write (spec gh109-o1 r2 R6).
+        ``life``: what a queued write captured; without it, the running session's. Taken after the reads, with no
+        process lock after it, so SQLite's writer is held only for the write.
+        """
+        from backend.app.core.database import take_write_lock
+
+        await take_write_lock(db, Printer.__table__, printer_id)
+        held = (await db.execute(select(Printer.id).where(Printer.id == printer_id).with_for_update())).scalar()
+        if held is None:
+            return False
+        return self.life_holds(printer_id, life) if life is not None else self.session_still_lives(printer_id)
+
     def update_printer_name(self, printer_id: int, name: str) -> None:
         """Refresh the display name held for callbacks without reconnecting."""
         info = self._printer_info.get(printer_id)
@@ -981,11 +1000,19 @@ class PrinterManager:
 
                 if not archive_mode(await db.get(PrintArchive, archive_id)):
                     return None
+            # The reads above awaited: the row may be the next printer's by now (Codex recheck R2-1).
+            if not await self.hold_record(db, printer_id):
+                return None
             printer.awaiting_plate_clear = True
             printer.awaiting_plate_clear_archive_id = archive_id
             printer.awaiting_plate_clear_token = token
             await db.commit()
 
+        # The commit and the session's close awaited too. Memory gets the gate only for a record that still lives,
+        # with no await between this proof and the set: a deletion begun after it takes the gate out with the rest
+        # of the id's runtime.
+        if not self.session_still_lives(printer_id):
+            return None
         # Keep the established in-process/publication path. Its follow-up
         # Boolean write is harmless (the committed row is already True) and
         # preserves callers that observe this manager method in tests/plugins.
@@ -1060,12 +1087,16 @@ class PrinterManager:
                 if printer is not None and not self.life_holds(printer_id, life):
                     return  # the row is the next record's, created with the deleted one's id
                 if printer and printer.awaiting_plate_clear != awaiting:
+                    # Proved again under the record's hold: the read awaited (spec gh109-o1 r2 R5/R6).
+                    if not await self.hold_record(db, printer_id, life=life):
+                        return
                     printer.awaiting_plate_clear = awaiting
                     if not awaiting:
                         printer.awaiting_plate_clear_archive_id = None
                         printer.awaiting_plate_clear_token = None
                     await db.commit()
-            if publish and printer is not None:
+            # The relay names the printer by its current name and serial: never the next record's.
+            if publish and printer is not None and self.life_holds(printer_id, life):
                 await self._emit_plate_clear_state(printer_id, awaiting)
         except Exception as e:  # pragma: no cover — persistence is best-effort
             logger.warning("Failed to persist awaiting_plate_clear for printer %s: %s", printer_id, e)
