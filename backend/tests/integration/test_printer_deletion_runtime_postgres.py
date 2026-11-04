@@ -17,9 +17,13 @@ from backend.tests.integration.test_printer_deletion_runtime import (  # noqa: F
     _seed_two_printers,
     test_a_commit_whose_outcome_is_not_confirmed_retires_nothing,
     test_a_delete_that_fails_part_way_retires_no_runtime,
+    test_a_failed_deletion_gives_the_printer_back_its_registrations,
     test_a_missing_printer_changes_nothing,
     test_a_new_life_between_commit_and_cleanup_is_left_alone,
+    test_a_new_lifes_registrations_survive_the_old_deletion,
+    test_a_stale_closer_never_closes_the_archive_that_reused_the_id,
     test_main_state_of_the_deleted_record_goes_and_another_printers_stays,
+    test_the_closer_rechecks_the_record_after_its_write_lock,
 )
 from backend.tests.integration.test_printer_status_batch_postgres import test_engine  # noqa: F401
 

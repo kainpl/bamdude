@@ -1,5 +1,6 @@
 import asyncio
 import concurrent.futures
+import contextvars
 import logging
 import re
 import secrets
@@ -32,6 +33,14 @@ from backend.app.utils.printer_configs import airduct_fan_label, get_device_supp
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import limits_for
 from backend.app.utils.timelapse import capability_for as timelapse_capability_for
+
+#: ``(printer_id, record life)`` of the client session whose callback this task runs (``_run_for_client``).
+#: A callback that awaited across a deletion of its record must not reach the printer created with the
+#: same id: ``session_still_lives`` asks it, and the client/status readers refuse such a session (spec
+#: gh109-o1 r2 R6). Inherited by tasks the callback starts.
+_session_life: contextvars.ContextVar[tuple[int, int] | None] = contextvars.ContextVar(
+    "bamdude_session_life", default=None
+)
 
 logger = logging.getLogger(__name__)
 
@@ -843,23 +852,20 @@ class PrinterManager:
         if not self.life_holds(printer_id, life):
             coro.close()
             return None
-        return await coro
+        token = _session_life.set((printer_id, life))
+        try:
+            return await coro
+        finally:
+            _session_life.reset(token)
 
-    def forget_deleted_printer(self, printer_id: int) -> None:
-        """Drop what this manager still keeps of a deleted printer record (spec gh109-o1 r2 R5).
+    def session_still_lives(self, printer_id: int) -> bool:
+        """Whether the client session this task runs a callback of still belongs to this printer record.
 
-        Called once the deletion committed, with no await before it. The
-        client was disconnected when the deletion began; a client registered
-        since belongs to the record created with the reused id, and so do its
-        caches -- they are left alone.
+        True outside any session callback. Asked after an await, before the callback addresses the printer
+        again: the id may name the next printer by then.
         """
-        self._awaiting_plate_clear.discard(printer_id)
-        self._last_trays.pop(printer_id, None)
-        self._current_print_user.pop(printer_id, None)
-        if printer_id not in self._clients:
-            self._connected_at.pop(printer_id, None)
-            self._models.pop(printer_id, None)
-            self._printer_info.pop(printer_id, None)
+        held = _session_life.get()
+        return held is None or held[0] != printer_id or self.life_holds(printer_id, held[1])
 
     def update_printer_name(self, printer_id: int, name: str) -> None:
         """Refresh the display name held for callbacks without reconnecting."""
@@ -1488,7 +1494,8 @@ class PrinterManager:
         """Disconnect from a printer."""
         if printer_id in self._clients:
             trays = self._tray_keys(self._clients[printer_id].state.raw_data)
-            if trays:
+            # A record being deleted leaves no tray history for the printer its id names next.
+            if trays and self._printer_lives.get(printer_id, 0) % 2 == 0:
                 self._last_trays[printer_id] = trays
             self._clients[printer_id].disconnect(timeout=timeout)
             del self._clients[printer_id]
@@ -1503,6 +1510,8 @@ class PrinterManager:
 
     def get_status(self, printer_id: int) -> PrinterState | None:
         """Get the current status of a printer (checks for stale connections)."""
+        if not self.session_still_lives(printer_id):
+            return None
         if printer_id in self._clients:
             client = self._clients[printer_id]
             # Check staleness and update connected state if needed
@@ -1577,7 +1586,9 @@ class PrinterManager:
         return False
 
     def get_client(self, printer_id: int) -> BambuMQTTClient | None:
-        """Get the MQTT client for a printer."""
+        """Get the MQTT client for a printer -- never to a callback of a deleted record's session."""
+        if not self.session_still_lives(printer_id):
+            return None
         return self._clients.get(printer_id)
 
     async def ensure_fresh_connection(self, printer_id: int) -> bool:

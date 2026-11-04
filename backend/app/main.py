@@ -554,58 +554,6 @@ async def stop_bed_cooldown_tasks(printer_id: int | None = None) -> None:
             task.cancel()
 
 
-def forget_deleted_printer_runtime(printer_id: int) -> None:
-    """Drop this module's state of a deleted printer record (spec gh109-o1 r2 R5).
-
-    Called by ``services/printer_deletion.finish`` once the deletion committed,
-    with no await before it, so the printer created with the reused id starts
-    without the old aliases, macro/swap selection, pause reasons, frames and
-    state memory. Keys are the id or a tuple that starts with it. In-flight
-    markers (``_inprint_bank_in_flight``, ``_stage22_finish_in_flight``) and the
-    cooldown tasks stay with the work that owns them.
-    """
-    by_key = (
-        _active_prints,
-        _expected_prints,
-        _expected_print_creators,
-        _expected_print_registered_at,
-        _print_ams_mappings,
-        _active_swap_config,
-        _active_macro_selection,
-        _last_progress_milestone,
-        _first_layer_notified,
-        _notified_hms_errors,
-        _hms_last_seen,
-        _timelapse_baselines,
-        _user_stopped_printers,
-        _inprint_frame_bank,
-        _inprint_frame_bank_ts,
-        _stage22_finish_frames,
-        _last_status_broadcast,
-        _last_printer_state,
-        _last_printer_state_generation,
-        _pause_started_at,
-        _expected_pause_reasons,
-        _printer_last_connected,
-        _unknown_tag_last_broadcast,
-        _stock_insertion_seen,
-        _ams_assignment_locks,
-    )
-    for registry in by_key:
-        for key in [key for key in registry if key == printer_id or (isinstance(key, tuple) and key[0] == printer_id)]:
-            registry.pop(key, None)
-    for members in (_untrusted_timelapse_baselines, _nozzle_count_updated, _ams_index_only_logged):
-        members.difference_update(
-            [key for key in members if key == printer_id or (isinstance(key, tuple) and key[0] == printer_id)]
-        )
-    prefix = f"{printer_id}:"
-    for key in [key for key in _ams_alarm_cooldown if key.startswith(prefix)]:
-        _ams_alarm_cooldown.pop(key, None)
-    task = _printer_offline_notify_tasks.pop(printer_id, None)
-    if task is not None and not task.done():
-        task.cancel()
-
-
 # Track an explicit queue-UI stop by its execution archive when the manager has
 # one.  A bare printer-id flag used to let terminal A reclassify a later B as
 # ``cancelled`` after a rapid restart on the same printer.
@@ -2253,7 +2201,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
             result = await db.execute(select(Printer).where(Printer.id == printer_id))
             printer = result.scalar_one_or_none()
-            if printer and printer.nozzle_count != 2:
+            if printer and printer.nozzle_count != 2 and printer_manager.session_still_lives(printer_id):
                 printer.nozzle_count = 2
                 await db.commit()
                 logging.getLogger(__name__).info(
@@ -2353,6 +2301,12 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         # fills up — moments nothing else in this key notices.
         f"{state.sdcard_state}:{state.has_timelapse_kit}:{sorted(state.timelapse_storage.items())}"
     )
+
+    # A session of a deleted printer record stops here: what follows -- relay, pause edges, notifications,
+    # the card -- addresses the printer by id, and the awaits above may have spanned the deletion (spec
+    # gh109-o1 r2 R6).
+    if not printer_manager.session_still_lives(printer_id):
+        return
 
     # MQTT relay - publish status (before dedup check - always publish to MQTT)
     try:
@@ -2647,6 +2601,8 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                 _notified_hms_errors.pop(printer_id, None)
                 _hms_last_seen.pop(printer_id, None)
 
+    if not printer_manager.session_still_lives(printer_id):
+        return
     await ws_manager.send_printer_status(
         printer_id,
         printer_state_to_dict(
@@ -11620,6 +11576,10 @@ async def _application_lifespan(app: FastAPI):
         from backend.app.services.layer_timelapse import on_layer_change as tl_layer_change
 
         await tl_layer_change(printer_id, layer_num)
+        # After each await: a deletion of this printer record meanwhile ends the old session's work here
+        # -- the id may already name the next printer and its run (spec gh109-o1 r2 R6).
+        if not printer_manager.session_still_lives(printer_id):
+            return
 
         # #1867 follow-on: bank a recent in-print frame so the FINISH-state
         # finish-photo path (firmware that never emits stg_cur=22, e.g. A1 Mini)
@@ -11629,12 +11589,16 @@ async def _application_lifespan(app: FastAPI):
         # before the first-layer block below, which returns early when the
         # printer isn't RUNNING.
         await _maybe_bank_inprint_frame(printer_id, layer_num)
+        if not printer_manager.session_still_lives(printer_id):
+            return
 
         # Layer-triggered macros. Sits before the first-layer block below,
         # which returns early when the printer isn't RUNNING.
         from backend.app.services.macro_trigger import fire_layer_macros
 
         await fire_layer_macros(printer_id, layer_num, previous_layer, async_session, printer_manager)
+        if not printer_manager.session_still_lives(printer_id):
+            return
 
         # First-layer-complete notification (layer_num >= 2 means layer 1 is done).
         # Gated on the printer actually PRINTING: some models (e.g. P1S) tick layer_num
@@ -11664,6 +11628,8 @@ async def _application_lifespan(app: FastAPI):
                     image_data = await _capture_snapshot_for_notification(
                         printer_id, printer, logging.getLogger(__name__)
                     )
+                    if not printer_manager.session_still_lives(printer_id):
+                        return
                     await notification_service.on_first_layer_complete(
                         printer_id, printer_name, filename, total_layers, db, image_data=image_data
                     )

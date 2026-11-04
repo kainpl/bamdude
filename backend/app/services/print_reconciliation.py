@@ -369,6 +369,7 @@ async def _reconcile_complete_archive(
     status: str,
     uncertain: bool,
     report: list[_OwnClose] | None = None,
+    record_lives=None,
 ) -> int | None:
     """Close one orphan ``printing`` archive and advance its queue.
 
@@ -410,10 +411,28 @@ async def _reconcile_complete_archive(
 
     # SQLite's writer (PostgreSQL's row lock) BEFORE the authoritative read: a second sweep waits here and then sees
     # what the first one committed.
+    # What this sweep loaded, before waiting for the writer: the row it decided on.
+    loaded = (archive.printer_id, archive.filename, _as_utc(archive.created_at))
     await take_write_lock(db, PrintArchive.__table__, archive.id)
     still = await locked_print(
         db, archive.id, select(PrintArchive.status).where(PrintArchive.id == archive.id).with_for_update()
     )
+    # Both checks after the lock is HELD -- SQLite waits at the writer above, PostgreSQL at this row's FOR UPDATE --
+    # and before anything is written (spec gh109-o1 r2 R6, Codex acceptance O1-F3).
+    if record_lives is not None and not record_lives():
+        # The printer record was deleted while this waited: the id may name the next one's archive now.
+        return None
+    row = (
+        await db.execute(
+            select(PrintArchive.printer_id, PrintArchive.filename, PrintArchive.created_at).where(
+                PrintArchive.id == archive.id
+            )
+        )
+    ).first()
+    if row is None or (row[0], row[1], _as_utc(row[2])) != loaded:
+        # Another row under the same id (ids are reused): never the archive this sweep decided about.
+        logger.info("reconcile: archive %s is no longer the row this sweep loaded -- left alone", archive.id)
+        return None
     if still != "printing":
         logger.info(
             "reconcile: archive %s is %s already -- another sweep closed it; nothing to close", archive.id, still
@@ -558,7 +577,9 @@ async def _reconcile_complete_archive(
                     queue_item_id=item.id if item is not None else None,
                     item_started_at=item.started_at if item is not None else None,
                     subtask_id=archive.subtask_id,
-                    swap_owed=swap_owed,
+                    # The release's own question, whatever the outcome: ``swap_owed`` above is the queue
+                    # transition's, completed only (spec gh109-o3 r2 R4).
+                    swap_owed=_swap_unsettled(extra),
                 )
             )
         return archive.id
@@ -891,13 +912,15 @@ async def _reconcile(
             continue  # still printing — the live RUNNING status self-arms completion
         if action == "failed":
             closed_id = await _reconcile_complete_archive(
-                db, archive, status="failed", uncertain=False, report=own_closes
+                db, archive, status="failed", uncertain=False, report=own_closes, record_lives=record_lives
             )
         elif action == "uncertain":
-            closed_id = await _reconcile_complete_archive(db, archive, status="cancelled", uncertain=True)
+            closed_id = await _reconcile_complete_archive(
+                db, archive, status="cancelled", uncertain=True, record_lives=record_lives
+            )
         else:  # completed
             closed_id = await _reconcile_complete_archive(
-                db, archive, status="completed", uncertain=False, report=own_closes
+                db, archive, status="completed", uncertain=False, report=own_closes, record_lives=record_lives
             )
         if closed_id is not None:
             recovered.append(closed_id)
@@ -1075,6 +1098,22 @@ async def _repair_terminal_queue_items(
         return [(item.id, archive.id, outcome) for item, archive, outcome in pairs]
 
 
+def _swap_unsettled(extra: dict) -> bool:
+    """Whether this run still has our table swap owed, attempted, held or in any state short of settled.
+
+    The release of a run's context asks this for completed AND failed closes alike (spec gh109-o3 r2 R4).
+    """
+    from backend.app.services import swap_terminal
+
+    if swap_terminal.CHANGE_TABLE_EVENT in (extra.get("swap_macro_events_pending") or []):
+        return True
+    if extra.get(swap_terminal.HOLD_KEY):
+        return True
+    effects = extra.get(swap_terminal.EFFECTS_KEY)
+    claim = effects.get(swap_terminal.CHANGE_TABLE_EFFECT) if isinstance(effects, dict) else None
+    return claim is not None and (not isinstance(claim, dict) or claim.get("stage") not in swap_terminal.ANSWERED)
+
+
 def _as_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -1119,11 +1158,17 @@ class _OwnRunCapture:
             return False
         close = closes[0]
         # A numeric archive id is no proof on its own (ids are reused): the claim or the device id must match too.
-        if run.queue_item_id is not None:
-            if close.queue_item_id != run.queue_item_id:
-                return False
-            return run.claim_started_at is None or _as_utc(close.item_started_at) == _as_utc(run.claim_started_at)
-        return bool(run.observed_subtask_id) and str(close.subtask_id or "") == run.observed_subtask_id
+        # A missing proof is no match: the claim (row AND its start) or the device id, never the numbers alone.
+        claim_proven = (
+            run.queue_item_id is not None
+            and run.claim_started_at is not None
+            and close.queue_item_id == run.queue_item_id
+            and _as_utc(close.item_started_at) == _as_utc(run.claim_started_at)
+        )
+        device_proven = bool(run.observed_subtask_id) and str(close.subtask_id or "") == run.observed_subtask_id
+        if run.queue_item_id is not None and close.queue_item_id != run.queue_item_id:
+            return False
+        return claim_proven or device_proven
 
     def release_if_closed(self, own_closes: list[_OwnClose]) -> bool:
         from backend.app.services.print_run_binding import release_runtime_context, runtime_context_unchanged

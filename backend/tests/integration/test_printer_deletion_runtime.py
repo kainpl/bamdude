@@ -13,10 +13,11 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.printer import Printer
+from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services import print_run_binding as prb
 from backend.app.services.printer_manager import printer_manager
 from backend.tests.integration.test_dispatch_without_original import clean_spool_state, sessions  # noqa: F401
@@ -780,3 +781,304 @@ async def test_a_dispatch_of_a_deleted_printer_never_binds_or_publishes(
         assert prb.current_print_run(printer_manager, printer_id) is None
     else:
         mqtt._client.publish.assert_called_once()
+
+
+# --------------------------------------------------------------------------- #
+# Codex acceptance r1 -- F1: a new life's registrations survive the old deletion; a failed one restores them
+# --------------------------------------------------------------------------- #
+
+
+def _registrations_of(pid, marker):
+    """Every id-keyed registry a life fills, with values only this life holds."""
+    from backend.app import main
+    from backend.app.services import layer_timelapse, preheat, usage_tracker
+
+    session = type("Session", (), {"cleanup": lambda self: None, "marker": marker})()
+    main._active_swap_config[pid] = {"life": marker}
+    main._active_macro_selection[pid] = [marker]
+    main._active_prints[(pid, f"{marker}.3mf")] = marker
+    main._last_printer_state[pid] = f"state-{marker}"
+    printer_manager._awaiting_plate_clear.add(pid)
+    printer_manager._current_print_user[pid] = {"username": marker}
+    layer_timelapse._active_sessions[pid] = session
+    preheat._pinned[pid] = {marker}
+    usage_tracker._active_sessions[pid] = session
+    return session
+
+
+def _registrations_hold(pid, marker, session):
+    from backend.app import main
+    from backend.app.services import layer_timelapse, preheat, usage_tracker
+
+    lost = []
+    if main._active_swap_config.get(pid) != {"life": marker}:
+        lost.append("swap config")
+    if main._active_macro_selection.get(pid) != [marker]:
+        lost.append("macro selection")
+    if main._active_prints.get((pid, f"{marker}.3mf")) != marker:
+        lost.append("print alias")
+    if main._last_printer_state.get(pid) != f"state-{marker}":
+        lost.append("last state")
+    if not printer_manager.is_awaiting_plate_clear(pid):
+        lost.append("plate gate")
+    if printer_manager._current_print_user.get(pid, {}).get("username") != marker:
+        lost.append("author")
+    if layer_timelapse._active_sessions.get(pid) is not session:
+        lost.append("timelapse session")
+    if preheat._pinned.get(pid) != {marker}:
+        lost.append("preheat pin")
+    if usage_tracker._active_sessions.get(pid) is not session:
+        lost.append("usage session")
+    return lost
+
+
+@pytest.mark.asyncio
+async def test_a_new_lifes_registrations_survive_the_old_deletion(
+    async_client, printer_factory, archive_factory, monkeypatch
+):
+    """The A03 seam for every id-keyed registry, not only the binding (Codex acceptance O1-F1)."""
+    from backend.app import main
+    from backend.app.services import layer_timelapse, preheat, usage_tracker
+
+    _kept, _kept_run, doomed, _current, _finishing, _ = await _seed_two_printers(printer_factory, archive_factory)
+    pid = doomed.id
+    _registrations_of(pid, "old")
+    real_commit = AsyncSession.commit
+    seen = {}
+
+    async def commit(self):
+        deleting_the_printer = any(isinstance(obj, Printer) for obj in self.deleted)
+        await real_commit(self)
+        if deleting_the_printer:
+            monkeypatch.setitem(printer_manager._clients, pid, object())
+            seen["run"] = prb.bind_print_run(printer_manager, printer_id=pid, archive_id=880_001, origin="dispatch")
+            seen["session"] = _registrations_of(pid, "new")
+
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    try:
+        response = await _delete(async_client, pid, delete_archives=False)
+        assert response.status_code == 200, response.text
+
+        assert prb.current_print_run(printer_manager, pid) is seen["run"]
+        assert _registrations_hold(pid, "new", seen["session"]) == []
+        assert main._active_prints.get((pid, "old.3mf")) is None  # the old life's own went with it
+    finally:
+        for registry in (layer_timelapse._active_sessions, preheat._pinned, usage_tracker._active_sessions):
+            registry.pop(pid, None)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_deletion_gives_the_printer_back_its_registrations(
+    async_client, printer_factory, archive_factory, monkeypatch
+):
+    """Taken out when the deletion begins, so nothing of a newer life is ever touched -- and put back when it fails."""
+    from backend.app.services import layer_timelapse, preheat, usage_tracker
+
+    _kept, _kept_run, doomed, current, _finishing, _ = await _seed_two_printers(printer_factory, archive_factory)
+    pid = doomed.id
+    session = _registrations_of(pid, "old")
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("refused part-way")
+
+    monkeypatch.setattr("backend.app.api.routes.printers.scheduled_drying.forget_printer", boom)
+    try:
+        with pytest.raises(RuntimeError, match="refused part-way"):
+            await _delete(async_client, pid, delete_archives=False)
+
+        assert prb.current_print_run(printer_manager, pid) is current
+        assert _registrations_hold(pid, "old", session) == []
+    finally:
+        for registry in (layer_timelapse._active_sessions, preheat._pinned, usage_tracker._active_sessions):
+            registry.pop(pid, None)
+
+
+# --------------------------------------------------------------------------- #
+# Codex acceptance r1 -- F2: a callback that awaited across the deletion stops before the next run's macros
+# --------------------------------------------------------------------------- #
+
+
+def _production_layer_callback():
+    """The nested ``on_layer_change`` of ``main``'s lifespan, compiled on its own -- no lifespan, no devices."""
+    import ast
+    import inspect
+    from pathlib import Path
+
+    from backend.app import main
+
+    source_path = Path(inspect.getfile(main))
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    nodes = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "on_layer_change"]
+    assert len(nodes) == 1
+    namespace = dict(main.__dict__)
+
+    async def no_bank(*_args):
+        return None
+
+    namespace["_maybe_bank_inprint_frame"] = no_bank
+    exec(compile(ast.Module(body=[nodes[0]], type_ignores=[]), str(source_path), "exec"), namespace)
+    return namespace["on_layer_change"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted", [False, True], ids=["control", "deleted-during-the-timelapse-await"])
+async def test_a_layer_callback_overtaken_by_a_deletion_reaches_no_macro(monkeypatch, deleted):
+    from backend.app.services import layer_timelapse, macro_trigger, printer_deletion
+
+    callback = _production_layer_callback()
+    entered, proceed = asyncio.Event(), asyncio.Event()
+    seen = []
+
+    async def timelapse(*_args):
+        entered.set()
+        await proceed.wait()
+
+    async def fire(pid, *_args):
+        seen.append(prb.current_print_run(printer_manager, pid))
+
+    monkeypatch.setattr(layer_timelapse, "on_layer_change", timelapse)
+    monkeypatch.setattr(macro_trigger, "fire_layer_macros", fire)
+    pid = 54_321
+    old = prb.bind_print_run(printer_manager, printer_id=pid, archive_id=111, origin="external")
+    life = printer_manager.printer_life(pid)
+    task = asyncio.create_task(printer_manager._run_for_client(pid, life, callback(pid, 20, 19)))
+    await asyncio.wait_for(entered.wait(), 2)
+    if deleted:
+        printer_deletion.finish(printer_deletion.begin(pid), committed=True)
+        prb.bind_print_run(printer_manager, printer_id=pid, archive_id=222, origin="external")
+    proceed.set()
+    await asyncio.wait_for(task, 2)
+
+    assert seen == ([] if deleted else [old])
+
+
+@pytest.mark.asyncio
+async def test_a_session_callback_of_a_deleted_record_gets_no_client_or_status(monkeypatch):
+    """The readers every effect goes through refuse the stale session; outside a callback they answer as before."""
+    pid = 54_322
+    client = type("C", (), {"state": object(), "check_staleness": lambda self: None})()
+    monkeypatch.setitem(printer_manager._clients, pid, client)
+    seen = {}
+    life = printer_manager.printer_life(pid)
+
+    async def callback():
+        seen["before"] = (printer_manager.get_client(pid), printer_manager.get_status(pid))
+        printer_manager.end_printer_deletion(pid, printer_manager.begin_printer_deletion(pid))
+        seen["after"] = (printer_manager.get_client(pid), printer_manager.get_status(pid))
+        seen["other"] = printer_manager.session_still_lives(pid + 1)
+
+    await printer_manager._run_for_client(pid, life, callback())
+
+    assert seen["before"] == (client, client.state)
+    assert seen["after"] == (None, None)
+    assert seen["other"] is True
+    assert printer_manager.get_client(pid) is client  # outside any session callback
+
+
+# --------------------------------------------------------------------------- #
+# Codex acceptance r1 -- F3: the closer proves the record and the archive again under the writer
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted", [False, True], ids=["control", "deleted-while-locking"])
+async def test_the_closer_rechecks_the_record_after_its_write_lock(
+    db_session, printer_factory, archive_factory, monkeypatch, deleted, test_engine
+):
+    from backend.app.core import database
+    from backend.app.models.archive import PrintArchive
+    from backend.app.services import print_reconciliation
+    from backend.tests.integration.test_reconcile_retires_its_own_run import a_bound_printing_run
+
+    factory = async_sessionmaker_for(test_engine, monkeypatch)
+    a = await a_bound_printing_run(db_session, printer_factory, archive_factory)
+    life = printer_manager.printer_life(a.printer_id)
+    real = database.take_write_lock
+    triggered = []
+
+    async def lock(db, table, row_id=None):
+        if table.name == "print_archives" and not triggered:
+            triggered.append(True)
+            if deleted:
+                printer_manager.end_printer_deletion(a.printer_id, printer_manager.begin_printer_deletion(a.printer_id))
+        return await real(db, table, row_id)
+
+    monkeypatch.setattr(database, "take_write_lock", lock)
+    await print_reconciliation.reconcile_printer_prints(a.printer_id, "FINISH", "cube.gcode.3mf", printer_life=life)
+
+    assert triggered
+    async with factory() as db:
+        assert (await db.get(PrintArchive, a.archive_id)).status == ("printing" if deleted else "completed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("life_moves", [True, False], ids=["record-deleted", "only-the-row-replaced"])
+async def test_a_stale_closer_never_closes_the_archive_that_reused_the_id(
+    db_session, printer_factory, archive_factory, monkeypatch, test_engine, life_moves
+):
+    """Real SQL on another session at the closer's lock seam: both ids reused for a new machine and a new run.
+    The life check and the row identity each stop it on their own."""
+    from sqlalchemy import insert
+
+    from backend.app.core import database
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.services import print_reconciliation
+    from backend.tests.integration.test_reconcile_retires_its_own_run import a_bound_printing_run
+
+    factory = async_sessionmaker_for(test_engine, monkeypatch)
+    a = await a_bound_printing_run(db_session, printer_factory, archive_factory)
+    life = printer_manager.printer_life(a.printer_id)
+    real = database.take_write_lock
+    replaced = []
+
+    async def lock(db, table, row_id=None):
+        if table.name == "print_archives" and not replaced:
+            replaced.append(True)
+            mark = printer_manager.begin_printer_deletion(a.printer_id) if life_moves else None
+            async with factory() as other:
+                await other.execute(delete(PrintQueueItem).where(PrintQueueItem.queue_id == a.printer_id))
+                await other.execute(delete(PrinterQueue).where(PrinterQueue.id == a.printer_id))
+                await other.execute(delete(PrintArchive).where(PrintArchive.id == a.archive_id))
+                await other.execute(delete(Printer).where(Printer.id == a.printer_id))
+                await other.execute(
+                    insert(Printer).values(
+                        id=a.printer_id,
+                        name="replacement-machine",
+                        ip_address="192.0.2.99",
+                        serial_number="REPLACEMENT",
+                        access_code="test",
+                    )
+                )
+                await other.execute(
+                    insert(PrintArchive).values(
+                        id=a.archive_id,
+                        printer_id=a.printer_id,
+                        filename="new-run.3mf",
+                        file_path="",
+                        file_size=0,
+                        status="printing",
+                    )
+                )
+                await other.commit()
+            if mark is not None:
+                printer_manager.end_printer_deletion(a.printer_id, mark)
+        return await real(db, table, row_id)
+
+    monkeypatch.setattr(database, "take_write_lock", lock)
+    await print_reconciliation.reconcile_printer_prints(a.printer_id, "FINISH", "cube.gcode.3mf", printer_life=life)
+
+    async with factory() as db:
+        archive = await db.get(PrintArchive, a.archive_id)
+        assert archive.filename == "new-run.3mf"
+        assert archive.status == "printing"
+
+
+def async_sessionmaker_for(test_engine, monkeypatch):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr("backend.app.core.database.async_session", factory)
+    monkeypatch.setattr("backend.app.main.async_session", factory)
+    monkeypatch.setattr("backend.app.core.tasks.spawn_background_task", lambda coro, **_k: coro.close())
+    return factory

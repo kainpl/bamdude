@@ -8,8 +8,10 @@ from backend.tests.integration.test_embedded_postgres_live import live_settings 
 from backend.tests.integration.test_printer_status_batch_postgres import test_engine  # noqa: F401
 from backend.tests.integration.test_reconcile_retires_its_own_run import (  # noqa: F401
     sweep_db,
+    test_a_claim_without_its_start_proves_nothing,
     test_a_close_that_proves_less_keeps_the_context,
     test_a_context_that_moved_during_the_sweep_is_kept,
+    test_a_swap_still_unsettled_keeps_the_context_for_either_outcome,
     test_an_outer_commit_that_did_not_complete_keeps_the_context,
     test_the_same_archive_id_under_another_claim_is_not_released,
     test_the_sweeps_own_close_releases_the_run_and_adds_no_pause,

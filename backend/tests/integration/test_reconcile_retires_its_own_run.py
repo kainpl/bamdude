@@ -487,3 +487,57 @@ async def test_the_release_replays_no_completion_and_waits_for_no_energy_reading
     completion.assert_not_awaited()
     reading.set()
     await asyncio.gather(*spawned, return_exceptions=True)
+
+
+# --------------------------------------------------------------------------- #
+# Codex acceptance r1 -- O3-F1 / F2: swap debt for both outcomes; a missing claim start proves nothing
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("state", ["FINISH", "FAILED"])
+@pytest.mark.parametrize(
+    "debt",
+    [
+        {"swap_macro_events_pending": ["swap_mode_change_table"]},
+        {"swap_hold": "swap_hold_attempt_unknown"},
+        {"bamdude_terminal_effects": {"swap_change_table": {"stage": "attempted", "owner": "x", "at": "t"}}},
+    ],
+    ids=["owed-event", "held", "attempted-claim"],
+)
+async def test_a_swap_still_unsettled_keeps_the_context_for_either_outcome(
+    db_session, printer_factory, archive_factory, sweep_db, state, debt
+):
+    a = await a_bound_printing_run(db_session, printer_factory, archive_factory, extra=debt)
+
+    await sweep(a, state)
+
+    assert (await reread(db_session, PrintArchive, a.archive_id)).status != "printing"
+    assert prb.current_print_run(printer_manager, a.printer_id) is a.run
+
+
+async def test_a_settled_swap_claim_does_not_stop_the_release(db_session, printer_factory, archive_factory, sweep_db):
+    """Control: a change_table that was answered is no debt."""
+    debt = {"bamdude_terminal_effects": {"swap_change_table": {"stage": "finished", "owner": "x", "at": "t"}}}
+    a = await a_bound_printing_run(db_session, printer_factory, archive_factory, extra=debt)
+
+    await sweep(a, "FAILED")
+
+    assert prb.current_print_run(printer_manager, a.printer_id) is None
+
+
+async def test_a_claim_without_its_start_proves_nothing(db_session, printer_factory, archive_factory, sweep_db):
+    """The same numeric archive and queue ids, no claim start and no device id: never enough to release."""
+    a = await a_bound_printing_run(db_session, printer_factory, archive_factory, bind=False)
+    run = prb.bind_prepared_print_run(
+        printer_manager,
+        printer_id=a.printer_id,
+        archive_id=a.archive_id,
+        queue_item_id=a.item_id,
+        claim_started_at=None,
+        expected_submission_id="different-run",
+    )
+    assert run.claim_started_at is None and run.observed_subtask_id is None
+
+    await sweep(a)
+
+    assert prb.current_print_run(printer_manager, a.printer_id) is run
