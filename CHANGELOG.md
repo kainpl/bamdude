@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Release downloads carry one `bamdude-<version>-SHA256SUMS` for the Windows installer and the AI client packages, written only after each package matches the hashes of its own build. The package build's internal catalog (`packages.json`) and its partial checksum file are no longer attached to the release.
+
 ## [0.7.3] - 2026-11-04
 
 Images: `ghcr.io/kainpl/bamdude:0.7.3` / `kainpl/bamdude:0.7.3` (`:latest` tracks this release).

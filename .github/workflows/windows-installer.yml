@@ -291,6 +291,25 @@ jobs:
           cp "$versioned" installer/bamdude-windows-x64-setup.exe
           echo "alias: bamdude-windows-x64-setup.exe -> $(basename "$versioned")"
 
+      # One checksum list for everything this job attaches: both installer names
+      # and the AI client packages. The packages are first checked against the
+      # hashes their own build wrote, so the list never vouches for a file that
+      # changed after it was built. That build's SHA256SUMS and packages.json (the
+      # catalog the server reads from its own build) stay in the artifact; neither
+      # is a download (owner, 2026-11-04).
+      - name: Write release checksums
+        shell: bash
+        run: |
+          (cd ai-packages && sha256sum --check --strict SHA256SUMS)
+          out="checksums/bamdude-${GITHUB_REF_NAME#v}-SHA256SUMS"
+          mkdir -p checksums
+          {
+            (cd installer && sha256sum -- *.exe)
+            (cd ai-packages && sha256sum -- bamdude-claude-code.zip bamdude-claude-desktop.mcpb bamdude-portable-plugin.zip)
+          } > "$out.partial"
+          mv "$out.partial" "$out"
+          cat "$out"
+
       # Beta tags are vX.Y.ZbN, stable is vX.Y.Z — and a hotfix line adds a
       # fourth component either way (v0.5.1.3, v0.5.1.3b1), so the shape to
       # match is "any dotted number, then bN", not three components exactly.
@@ -314,7 +333,10 @@ jobs:
         with:
           files: |
             installer/*.exe
-            ai-packages/*
+            ai-packages/bamdude-claude-code.zip
+            ai-packages/bamdude-claude-desktop.mcpb
+            ai-packages/bamdude-portable-plugin.zip
+            checksums/*
           fail_on_unmatched_files: true
           # Only meaningful when this step creates the release; editing an
           # existing one keeps whatever flag it already has.

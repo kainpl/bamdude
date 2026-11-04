@@ -221,3 +221,110 @@ def test_a_bang_in_the_install_directory_is_refused_on_the_real_installer():
         assert check in s6b, check
     reset = re.search(r"^function Reset-Machine \{.*?^\}", ACCEPT, re.M | re.S).group(0)
     assert "$BangDir" in reset  # whatever a failed run left there goes with the reset
+
+
+# --------------------------------------------------------------------------- #
+# Release assets: only downloads, one checksum list (owner, 2026-11-04)
+# --------------------------------------------------------------------------- #
+
+
+def _attached() -> list[str]:
+    attach = _step("release", lambda s: "softprops/action-gh-release" in str(s.get("uses", "")))
+    return [line.strip() for line in attach["with"]["files"].splitlines() if line.strip()]
+
+
+def test_the_release_attaches_the_client_packages_by_name_and_no_build_files():
+    """The AI build directory also holds the server's own catalog (packages.json) and that build's partial
+    SHA256SUMS. Neither is a download: the release names exactly the packages the server offers."""
+    from backend.app.mcp_server.packages import PACKAGE_FILES
+
+    files = _attached()
+    assert "ai-packages/*" not in files
+    assert sorted(f.removeprefix("ai-packages/") for f in files if f.startswith("ai-packages/")) == sorted(
+        PACKAGE_FILES.values()
+    )
+    assert "checksums/*" in files
+
+
+def _checksum_step() -> str:
+    return _step("release", lambda s: s.get("name") == "Write release checksums")["run"]
+
+
+def _posix_bash() -> str | None:
+    """A bash that runs on this tree's paths. On Windows that is Git's: System32's bash.exe is the WSL launcher,
+    which runs nothing of this checkout."""
+    import os
+
+    found = shutil.which("bash")
+    if not found or os.name != "nt" or "system32" not in found.lower():
+        return found
+    git = shutil.which("git")
+    for parent in Path(git).resolve().parents if git else ():
+        candidate = parent / "bin" / "bash.exe"
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def test_the_release_checksums_name_every_package_the_server_offers():
+    from backend.app.mcp_server.packages import PACKAGE_FILES
+
+    run = _checksum_step()
+    for name in PACKAGE_FILES.values():
+        assert name in run, name
+    names = [s.get("name") for s in JOBS["release"]["steps"]]
+    # After the alias exists, before anything is attached.
+    assert (
+        names.index("Create unversioned alias")
+        < names.index("Write release checksums")
+        < names.index("Attach installer to release")
+    )
+
+
+@pytest.mark.skipif(_posix_bash() is None, reason="needs a POSIX bash with sha256sum")
+@pytest.mark.parametrize("tampered", [False, True], ids=["as-built", "package-changed-after-its-build"])
+def test_the_release_checksums_cover_this_jobs_downloads_and_only_vouch_for_built_packages(tmp_path, tampered):
+    import os
+
+    from backend.app.mcp_server.packages import PACKAGE_FILES
+
+    installer, packages = tmp_path / "installer", tmp_path / "ai-packages"
+    installer.mkdir()
+    packages.mkdir()
+    for name in ("bamdude-9.9.9-windows-x64-setup.exe", "bamdude-windows-x64-setup.exe"):
+        (installer / name).write_bytes(b"installer")
+    (installer / "payload.json").write_text("{}")
+    sums = []
+    for name in sorted(PACKAGE_FILES.values()):
+        (packages / name).write_bytes(name.encode())
+        sums.append(f"{hashlib.sha256(name.encode()).hexdigest()}  {name}\n")
+    (packages / "SHA256SUMS").write_bytes("".join(sums).encode())
+    (packages / "packages.json").write_text("{}")
+    if tampered:
+        (packages / sorted(PACKAGE_FILES.values())[0]).write_bytes(b"changed after the build")
+
+    proc = subprocess.run(
+        [_posix_bash(), "-e", "-c", _checksum_step()],
+        cwd=tmp_path,
+        env={**os.environ, "GITHUB_REF_NAME": "v9.9.9"},
+        capture_output=True,
+        text=True,
+    )
+    out = tmp_path / "checksums" / "bamdude-9.9.9-SHA256SUMS"
+    if tampered:
+        # Refused by the check against the build's own hashes -- not by anything else failing.
+        assert proc.returncode != 0 and not out.exists(), proc.stdout + proc.stderr
+        assert "FAILED" in proc.stdout + proc.stderr, proc.stdout + proc.stderr
+        return
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    raw = out.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf") and b"\r" not in raw
+    listed = {}
+    for line in raw.decode().splitlines():
+        digest, name = re.fullmatch(r"([0-9a-f]{64}) [ *](.+)", line).groups()
+        listed[name] = digest
+    expected = {"bamdude-9.9.9-windows-x64-setup.exe", "bamdude-windows-x64-setup.exe", *PACKAGE_FILES.values()}
+    assert set(listed) == expected
+    for name, digest in listed.items():
+        folder = installer if name.endswith(".exe") else packages
+        assert hashlib.sha256((folder / name).read_bytes()).hexdigest() == digest, name
