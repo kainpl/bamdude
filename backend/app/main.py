@@ -554,6 +554,58 @@ async def stop_bed_cooldown_tasks(printer_id: int | None = None) -> None:
             task.cancel()
 
 
+def forget_deleted_printer_runtime(printer_id: int) -> None:
+    """Drop this module's state of a deleted printer record (spec gh109-o1 r2 R5).
+
+    Called by ``services/printer_deletion.finish`` once the deletion committed,
+    with no await before it, so the printer created with the reused id starts
+    without the old aliases, macro/swap selection, pause reasons, frames and
+    state memory. Keys are the id or a tuple that starts with it. In-flight
+    markers (``_inprint_bank_in_flight``, ``_stage22_finish_in_flight``) and the
+    cooldown tasks stay with the work that owns them.
+    """
+    by_key = (
+        _active_prints,
+        _expected_prints,
+        _expected_print_creators,
+        _expected_print_registered_at,
+        _print_ams_mappings,
+        _active_swap_config,
+        _active_macro_selection,
+        _last_progress_milestone,
+        _first_layer_notified,
+        _notified_hms_errors,
+        _hms_last_seen,
+        _timelapse_baselines,
+        _user_stopped_printers,
+        _inprint_frame_bank,
+        _inprint_frame_bank_ts,
+        _stage22_finish_frames,
+        _last_status_broadcast,
+        _last_printer_state,
+        _last_printer_state_generation,
+        _pause_started_at,
+        _expected_pause_reasons,
+        _printer_last_connected,
+        _unknown_tag_last_broadcast,
+        _stock_insertion_seen,
+        _ams_assignment_locks,
+    )
+    for registry in by_key:
+        for key in [key for key in registry if key == printer_id or (isinstance(key, tuple) and key[0] == printer_id)]:
+            registry.pop(key, None)
+    for members in (_untrusted_timelapse_baselines, _nozzle_count_updated, _ams_index_only_logged):
+        members.difference_update(
+            [key for key in members if key == printer_id or (isinstance(key, tuple) and key[0] == printer_id)]
+        )
+    prefix = f"{printer_id}:"
+    for key in [key for key in _ams_alarm_cooldown if key.startswith(prefix)]:
+        _ams_alarm_cooldown.pop(key, None)
+    task = _printer_offline_notify_tasks.pop(printer_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
 # Track an explicit queue-UI stop by its execution archive when the manager has
 # one.  A bare printer-id flag used to let terminal A reclassify a later B as
 # ``cancelled`` after a rapid restart on the same printer.
@@ -4553,6 +4605,10 @@ async def on_print_start(printer_id: int, data: dict):
     if not printer_manager.accepts_client_callback_generation(printer_id, data.get("_bamdude_client_generation")):
         logging.getLogger(__name__).warning("Ignoring print_start from stale MQTT client on printer %s", printer_id)
         return
+    if not printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life")):
+        # A session of a deleted printer record; the id may name the next one (spec gh109-o1 r2 R6).
+        logging.getLogger(__name__).warning("Ignoring print_start of a deleted printer record %s", printer_id)
+        return
     if is_internal_printer_job(data.get("filename", ""), data.get("subtask_name", "")):
         logging.getLogger(__name__).info(
             "[CALLBACK] Skipping archive - internal printer job detected: filename=%s, subtask=%s",
@@ -5426,6 +5482,10 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             swap_compatibility.write_archive_fact(archive, True)
         else:
             swap_compatibility.write_archive_fact(archive, None, pending_external=True)
+        if not owns_start():
+            # Revoked while the row was being built -- by a deletion of this
+            # printer record among others: no archive for a start nobody owns.
+            return
         db.add(archive)
         await db.commit()
         await db.refresh(archive)
@@ -6696,6 +6756,10 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
             # The run's origin is not proven -- it may be our own print under a renamed file -- so a marked name
             # is no authority, and the record is not pending: no later attach may finish it (D4, spec r4 §7).
             swap_compatibility.write_archive_fact(archive, None)
+            if not printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life")):
+                # Deleted during the awaits above: the row found by this id is the next record's.
+                logger.info("[ADOPT] Printer %s was deleted while adopting -- nothing adopted", printer_id)
+                return None
             db.add(archive)
             await db.commit()
             await db.refresh(archive)
@@ -6975,6 +7039,9 @@ async def on_print_running_observed(printer_id: int, data: dict):
     pre-upload.
     """
     logger = logging.getLogger(__name__)
+    if not printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life")):
+        logger.warning("Ignoring a running print observed by a deleted printer record %s", printer_id)
+        return
 
     # Attribution recovery first, and deliberately BEFORE the baseline
     # early-return below: the two are independent, and a printer that already
@@ -7733,6 +7800,9 @@ async def _on_print_complete_impl(
             event_client_generation,
             accepted_client_generation,
         )
+        return
+    if not printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life")):
+        logger.warning("Ignoring terminal event of a deleted printer record %s", printer_id)
         return
     if bound_run is not None and not bound_run.matches_device_subtask(data.get("subtask_id")):
         logger.warning(

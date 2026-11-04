@@ -965,6 +965,14 @@ class PrintDispatchJob:
     secondary_errors: list[str] = field(default_factory=list)
     #: The process stopped this attempt (shutdown): nothing here is a failure to report.
     interrupted: bool = False
+    #: The printer record's life when the job was made (``printer_manager.printer_life``), proved before every
+    #: connect, the bind and the start: a deleted printer's job never acts for the printer created with its id
+    #: (spec gh109-o1 r2 R1). Never re-read from the manager later -- that would be the next record's.
+    printer_life: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.printer_life is None:
+            self.printer_life = printer_manager.printer_life(self.printer_id)
 
 
 async def report_failure_if_unwatched(job: PrintDispatchJob) -> None:
@@ -2571,7 +2579,7 @@ class BackgroundDispatchService:
                 raise PrinterUnavailable("Printer is not connected")
 
             # re-Connect MQTT if stalled
-            if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+            if not await printer_manager.ensure_fresh_connection_for_printer(printer, life=job.printer_life):
                 raise PrinterUnavailable("Can`t re-connect printer MQTT")
 
             file_path = job.source.path if job.source is not None else settings.base_dir / source_archive.file_path
@@ -2941,6 +2949,11 @@ class BackgroundDispatchService:
                     on_heating=lambda: self._set_active_message(job, "Preheating...", phase="heating"),
                 )
 
+                if not printer_manager.printer_life_is_current(job.printer_id, job.printer_life):
+                    # The printer was deleted while this job uploaded or preheated; its id may already name
+                    # the next printer, whose client must not take this attempt (spec gh109-o1 r2 R1).
+                    job.foreign_claim = True
+                    raise RoutingDeferred("dispatch_claim_changed", detail="claim_missing")
                 prepared_run = bind_prepared_print_run(
                     printer_manager,
                     printer_id=job.printer_id,
@@ -3003,7 +3016,7 @@ class BackgroundDispatchService:
                     ams_mapping=job.options.get("ams_mapping"),
                     is_calibration=bool(job.options.get("is_calibration")),
                 )
-                await self._ensure_live_connection_before_start(printer, printer_name)
+                await self._ensure_live_connection_before_start(printer, printer_name, life=job.printer_life)
                 # #1721: pass the user's explicit timelapse choice straight through.
                 # The #1397 force-on at dispatch was removed because it flipped the
                 # printer's timelapse_record_flag and un-gated the per-layer M622 J1
@@ -3049,6 +3062,7 @@ class BackgroundDispatchService:
                     remote_filename,
                     plate_id,
                     routing_guard=job.routing_guard,
+                    printer_life=job.printer_life,
                     ams_mapping=job.options.get("ams_mapping"),
                     timelapse=effective_timelapse,
                     bed_levelling=job.options.get("bed_levelling", True),
@@ -3528,7 +3542,7 @@ class BackgroundDispatchService:
                 raise PrinterUnavailable("Printer is not connected")
 
             # re-Connect MQTT if stalled
-            if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+            if not await printer_manager.ensure_fresh_connection_for_printer(printer, life=job.printer_life):
                 raise PrinterUnavailable("Can`t re-connect printer MQTT")
 
             # Unified 3MF post-processing — same single-pass pipeline as the
@@ -3902,6 +3916,11 @@ class BackgroundDispatchService:
                     on_heating=lambda: self._set_active_message(job, "Preheating...", phase="heating"),
                 )
 
+                if not printer_manager.printer_life_is_current(job.printer_id, job.printer_life):
+                    # The printer was deleted while this job uploaded or preheated; its id may already name
+                    # the next printer, whose client must not take this attempt (spec gh109-o1 r2 R1).
+                    job.foreign_claim = True
+                    raise RoutingDeferred("dispatch_claim_changed", detail="claim_missing")
                 prepared_run = bind_prepared_print_run(
                     printer_manager,
                     printer_id=job.printer_id,
@@ -3962,7 +3981,7 @@ class BackgroundDispatchService:
                     ams_mapping=job.options.get("ams_mapping"),
                     is_calibration=bool(job.options.get("is_calibration")),
                 )
-                await self._ensure_live_connection_before_start(printer, printer_name)
+                await self._ensure_live_connection_before_start(printer, printer_name, life=job.printer_life)
                 # #1721: pass the user's explicit timelapse choice straight through.
                 # The #1397 force-on at dispatch was removed because it flipped the
                 # printer's timelapse_record_flag and un-gated the per-layer M622 J1
@@ -4008,6 +4027,7 @@ class BackgroundDispatchService:
                     remote_filename,
                     plate_id,
                     routing_guard=job.routing_guard,
+                    printer_life=job.printer_life,
                     ams_mapping=job.options.get("ams_mapping"),
                     timelapse=effective_timelapse,
                     bed_levelling=job.options.get("bed_levelling", True),
@@ -4439,7 +4459,7 @@ class BackgroundDispatchService:
         )
 
     @staticmethod
-    async def _ensure_live_connection_before_start(printer, printer_name: str) -> None:
+    async def _ensure_live_connection_before_start(printer, printer_name: str, *, life: int | None = None) -> None:
         """Guarantee a live MQTT connection immediately before the start command.
 
         The upload + 3MF-patch + archive-write steps that precede
@@ -4466,7 +4486,7 @@ class BackgroundDispatchService:
             "Dispatch: %s MQTT not live just before start_print — forcing reconnect",
             printer_name,
         )
-        if not await printer_manager.connect_printer(printer):
+        if not await printer_manager.connect_printer(printer, life=life):
             logger.warning("Dispatch: %s reconnect before start_print failed", printer_name)
 
     async def _resolve_rack(

@@ -2324,11 +2324,18 @@ class PrintScheduler:
         result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
         return list(result.scalars().all())
 
-    async def _power_on_and_wait(self, plug: SmartPlug, printer_id: int, db: AsyncSession) -> bool:
+    async def _power_on_and_wait(
+        self, plug: SmartPlug, printer_id: int, db: AsyncSession, *, life: int | None = None
+    ) -> bool:
         """Turn on smart plug and wait for printer to connect.
 
-        Returns True if printer connected successfully within timeout.
+        Returns True if printer connected successfully within timeout. The
+        printer record's life is captured before the first await and every
+        connect proves it: a printer deleted during the minutes this waits is
+        never reconnected as the one created with its id (spec gh109-o1 r2 R1).
         """
+        if life is None:
+            life = printer_manager.printer_life(printer_id)
         # Get the appropriate service for the plug type (Tasmota or Home Assistant)
         service = await smart_plug_manager.get_service_for_plug(plug, db)
 
@@ -2360,10 +2367,13 @@ class PrintScheduler:
         # Try to connect to the printer periodically
         elapsed = 30  # Already waited 30s
         while elapsed < self._power_on_wait_time:
+            if not printer_manager.printer_life_is_current(printer_id, life):
+                logger.info("Printer %s was deleted while powering on -- not connecting it", printer_id)
+                return False
             # Try to connect
             logger.info("Attempting to connect to printer %s...", printer_id)
             try:
-                connected = await printer_manager.connect_printer(printer)
+                connected = await printer_manager.connect_printer(printer, life=life)
                 if connected:
                     logger.info("Printer %s connected after %ss", printer_id, elapsed)
                     # Give it a moment to stabilize and get status

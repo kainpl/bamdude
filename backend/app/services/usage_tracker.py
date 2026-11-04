@@ -531,6 +531,16 @@ async def clear_persisted_session(db: AsyncSession, printer_id: int) -> None:
         await db.commit()
 
 
+def forget_deleted_printer(printer_id: int) -> None:
+    """A deleted printer record's in-memory print context (its persisted row went with the printer's rows).
+
+    The next printer created with the reused id must not have its AMS changes
+    booked into the deleted one's session (spec gh109-o1 r2 R5).
+    """
+    _active_sessions.pop(printer_id, None)
+    _tray_change_locks.pop(printer_id, None)
+
+
 async def discard_session(db: AsyncSession, printer_id: int) -> None:
     """Forget a printer's print-start context, in memory and on disk.
 

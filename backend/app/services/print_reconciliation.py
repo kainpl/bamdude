@@ -697,12 +697,16 @@ async def _reconcile(
     live_file: str,
     live_subtask_id: str = "",
     live_subtask_name: str = "",
+    *,
+    record_lives=None,
 ) -> list[int]:
     """Reconcile every orphan ``printing`` archive for one printer.
 
     Returns the ids of the archives it closed, for the caller's post-commit
     energy recovery. Takes an explicit session so tests can drive it directly;
-    :func:`reconcile_printer_prints` is the production wrapper.
+    :func:`reconcile_printer_prints` is the production wrapper. ``record_lives``
+    is asked before each archive is closed: a deletion of the printer record
+    meanwhile ends the sweep (spec gh109-o1 r2 R6).
     """
     # Pre-push_status guard (upstream #1679 parity). On the bare-connect edge
     # the printer's live state is on construction defaults ("" / "unknown") —
@@ -785,6 +789,8 @@ async def _reconcile(
     closed = 0
     recovered: list[int] = []
     for archive in orphans:
+        if record_lives is not None and not record_lives():
+            break
         if archive.dispatch_phase in dispatch_phase.UNACCEPTED and _accepted_terminal_checkpoint(archive) is None:
             # I-R1: our dispatch never saw this attempt running. What the printer shows —
             # often the PREVIOUS print of the same plate, FINISH under the same name —
@@ -1042,12 +1048,28 @@ async def reconcile_printer_prints(
     live_file: str,
     live_subtask_id: str = "",
     live_subtask_name: str = "",
+    *,
+    printer_life: int | None = None,
 ) -> None:
     """Entry point — runs on the first full MQTT status after each fresh
-    connect. Opens its own session and commits."""
+    connect. Opens its own session and commits.
+
+    ``printer_life`` is the record life of the session that reported the
+    status: once that record is deleted, the next printer created with its id
+    is never swept with the old one's live state (spec gh109-o1 r2 R6). Proved
+    at the start and again before every stage that writes."""
     from backend.app.core.database import async_session
     from backend.app.services.print_usage_journal import journal_lock, settle_pending_replay
+    from backend.app.services.printer_manager import printer_manager
 
+    def record_lives() -> bool:
+        if printer_manager.life_holds(printer_id, printer_life):
+            return True
+        logger.info("reconcile: printer %d was deleted since this status -- sweep abandoned", printer_id)
+        return False
+
+    if not record_lives():
+        return
     recovered: list[int] = []
     try:
         # A restart replay still waiting is written first, while its archive is still the
@@ -1070,8 +1092,13 @@ async def reconcile_printer_prints(
                     )
                 ).all()
             )
+        if not record_lives():
+            return
         async with async_session() as db:
             repaired = await _repair_terminal_queue_items(db, printer_id, live_state, candidates=candidates)
+            if not record_lives():
+                await db.rollback()
+                return
             await db.commit()
         for item_id, archive_id, outcome in repaired:
             logger.info(
@@ -1081,14 +1108,21 @@ async def reconcile_printer_prints(
                 archive_id,
                 outcome,
             )
+        if not record_lives():
+            return
         async with async_session() as db:
-            recovered = await _reconcile(db, printer_id, live_state, live_file, live_subtask_id, live_subtask_name)
+            recovered = await _reconcile(
+                db, printer_id, live_state, live_file, live_subtask_id, live_subtask_name, record_lives=record_lives
+            )
             await db.commit()
     except _RepairSnapshotChanged:
         logger.info("reconcile: terminal queue repair deferred printer=%s reason=live_snapshot_changed", printer_id)
         return
     except Exception:  # noqa: BLE001 — a background sweep must never crash the connect path
         logger.exception("reconcile: connect-edge sweep failed for printer %d", printer_id)
+
+    if not record_lives():
+        return
 
     # Energy for a print that ended while we were down. Spawned rather than
     # awaited, and only after the commit: the reading is a live round-trip to

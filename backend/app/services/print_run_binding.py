@@ -254,6 +254,38 @@ def revoke_print_effects(manager: PrinterManager, printer_id: int | None = None)
         _start_admissions(manager).pop(key, None)
 
 
+def retire_printer_runtime(
+    manager: PrinterManager, printer_id: int, *, effect_boundary: int, resolution_boundary: int
+) -> None:
+    """Drop a deleted printer record's runs, starts and buffered terminals -- only theirs.
+
+    Called once the deletion committed, with no await before it. The deletion's
+    own ``revoke_print_effects`` set ``effect_boundary``; everything of the
+    record it deleted is older, and a printer created since with the reused id
+    gets newer activity, so it is never touched here. Nothing is reset: every
+    sequence stays monotonic and no revoked token becomes current again (spec
+    gh109-o1 r2 R2/R5).
+    """
+    current = _current(manager).get(printer_id)
+    if current is not None and current.effect_generation < effect_boundary:
+        _current(manager).pop(printer_id, None)
+    for key, run in list(_finishing(manager).items()):
+        if key[0] == printer_id and run.effect_generation < effect_boundary:
+            _finishing(manager).pop(key, None)
+    admission = _start_admissions(manager).get(printer_id)
+    if admission is not None and admission.generation < effect_boundary:
+        _start_admissions(manager).pop(printer_id, None)
+    resolution = _start_resolutions(manager).get(printer_id)
+    if resolution is not None and resolution.sequence <= resolution_boundary:
+        _start_resolutions(manager).pop(printer_id, None)
+    pending = _pending_terminals(manager).get(printer_id)
+    if pending:
+        for sequence in [sequence for sequence in pending if sequence <= resolution_boundary]:
+            pending.pop(sequence, None)
+        if not pending:
+            _pending_terminals(manager).pop(printer_id, None)
+
+
 def _normalise_subtask_id(value: object) -> str | None:
     text = str(value or "").strip()
     return text or None if text != "0" else None

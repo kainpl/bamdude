@@ -224,7 +224,13 @@ class TestPrinterManager:
             scheduled = manager._schedule_async.call_args.args[0]
             await scheduled
 
-        assert delivered == [(mock_printer.id, {"status": "completed", "_bamdude_client_generation": 1})]
+        # The record life rides along so the receiver can prove it after its own awaits (spec gh109-o1 r2 R6).
+        assert delivered == [
+            (
+                mock_printer.id,
+                {"status": "completed", "_bamdude_printer_life": 0, "_bamdude_client_generation": 1},
+            )
+        ]
 
     @pytest.mark.asyncio
     async def test_connect_printer_returns_false_on_failure(self, manager, mock_printer):

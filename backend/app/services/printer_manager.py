@@ -716,6 +716,12 @@ class PrinterManager:
         # currently registered for this printer. A disconnected paho client
         # can still deliver a queued callback after its replacement exists.
         self._client_generations: dict[int, int] = {}
+        # The life of a printer RECORD, apart from its client sessions: odd while
+        # its deletion runs, advanced again when that ends, never reset. Work
+        # that holds a Printer captures it and proves it before connect, bind
+        # and publish, because SQLite gives a deleted printer's id to the next
+        # one created (spec gh109-o1 r2 R1).
+        self._printer_lives: dict[int, int] = {}
         self._uses_print_file_analysis_service = True
         self._models: dict[int, str | None] = {}  # Cache printer models for feature detection
         self._connected_at: dict[int, float] = {}  # Unix timestamp of last connection
@@ -776,6 +782,84 @@ class PrinterManager:
         """
         current = self.current_client_generation(printer_id)
         return not (isinstance(generation, int) and current is not None and generation != current)
+
+    def printer_life(self, printer_id: int) -> int:
+        """The record life work captures before its first await (``printer_life_is_current``)."""
+        return self._printer_lives.get(printer_id, 0)
+
+    def printer_life_is_current(self, printer_id: int, life: object) -> bool:
+        """Whether work that captured ``life`` still belongs to this printer record.
+
+        ``None`` is a caller from before the capture existed and keeps its old
+        path. A life captured while a deletion ran is never current: the record
+        it belongs to is the one being deleted.
+        """
+        if life is None:
+            return True
+        current = self._printer_lives.get(printer_id, 0)
+        return life == current and current % 2 == 0
+
+    def begin_printer_deletion(self, printer_id: int) -> int:
+        """Retire this record's life and its client session before the delete's first await.
+
+        The client generation is ADVANCED, never removed: with no entry,
+        ``accepts_client_callback_generation`` accepts every generation.
+        """
+        current = self._printer_lives.get(printer_id, 0)
+        life = current + 1 if current % 2 == 0 else current + 2
+        self._printer_lives[printer_id] = life
+        self._client_generations[printer_id] = self._client_generations.get(printer_id, 0) + 1
+        return life
+
+    def end_printer_deletion(self, printer_id: int, life: int) -> None:
+        """Close the deletion that took ``life`` -- committed or not, work captured before it stays retired."""
+        if self._printer_lives.get(printer_id) == life:
+            self._printer_lives[printer_id] = life + 1
+
+    def life_holds(self, printer_id: int, life: object) -> bool:
+        """Whether no deletion of this record began after ``life`` was read.
+
+        The end of a deletion already running when it was read is not a new
+        one: a printer created with the reused id right after that commit
+        connects, and its session's callbacks run. ``None`` keeps a legacy
+        caller's path.
+        """
+        if not isinstance(life, int):
+            return True
+        current = self._printer_lives.get(printer_id, 0)
+        return current == life or (life % 2 == 1 and current == life + 1)
+
+    def _schedule_for_client(self, printer_id: int, life: int, coro) -> None:
+        """Schedule a callback of one client session: it runs only while that session's record lives.
+
+        Checked when the callback starts on the loop, not when the MQTT thread
+        queued it -- a deletion in between drops it. An ordinary reconnect
+        changes no record life, so the previous session's late callbacks keep
+        running as they always did (spec gh109-o1 r2 R7).
+        """
+        self._schedule_async(self._run_for_client(printer_id, life, coro))
+
+    async def _run_for_client(self, printer_id: int, life: int, coro):
+        if not self.life_holds(printer_id, life):
+            coro.close()
+            return None
+        return await coro
+
+    def forget_deleted_printer(self, printer_id: int) -> None:
+        """Drop what this manager still keeps of a deleted printer record (spec gh109-o1 r2 R5).
+
+        Called once the deletion committed, with no await before it. The
+        client was disconnected when the deletion began; a client registered
+        since belongs to the record created with the reused id, and so do its
+        caches -- they are left alone.
+        """
+        self._awaiting_plate_clear.discard(printer_id)
+        self._last_trays.pop(printer_id, None)
+        self._current_print_user.pop(printer_id, None)
+        if printer_id not in self._clients:
+            self._connected_at.pop(printer_id, None)
+            self._models.pop(printer_id, None)
+            self._printer_info.pop(printer_id, None)
 
     def update_printer_name(self, printer_id: int, name: str) -> None:
         """Refresh the display name held for callbacks without reconnecting."""
@@ -849,7 +933,10 @@ class PrinterManager:
         # tests that instantiate ``PrinterManager()`` without attaching a
         # loop).
         if self._loop and self._loop.is_running():
-            self._schedule_async(self._persist_awaiting_plate_clear(printer_id, awaiting, publish=changed))
+            # The record this flag was set for: a queued write never lands on
+            # the printer created with its reused id (spec gh109-o1 r2 R5).
+            life = self._printer_lives.get(printer_id, 0)
+            self._schedule_async(self._persist_awaiting_plate_clear(printer_id, awaiting, publish=changed, life=life))
             self._schedule_async(self._broadcast_status_change(printer_id))
 
     async def arm_awaiting_plate_clear(self, printer_id: int, archive_id: int) -> str | None:
@@ -938,7 +1025,9 @@ class PrinterManager:
                 e,
             )
 
-    async def _persist_awaiting_plate_clear(self, printer_id: int, awaiting: bool, publish: bool = False) -> None:
+    async def _persist_awaiting_plate_clear(
+        self, printer_id: int, awaiting: bool, publish: bool = False, life: int | None = None
+    ) -> None:
         """Best-effort DB write for the awaiting-plate-clear flag. Swallows errors
         (connection issues shouldn't break the in-memory scheduler gate)."""
         try:
@@ -947,6 +1036,8 @@ class PrinterManager:
             async with async_session() as db:
                 result = await db.execute(select(Printer).where(Printer.id == printer_id))
                 printer = result.scalar_one_or_none()
+                if printer is not None and not self.life_holds(printer_id, life):
+                    return  # the row is the next record's, created with the deleted one's id
                 if printer and printer.awaiting_plate_clear != awaiting:
                     printer.awaiting_plate_clear = awaiting
                     if not awaiting:
@@ -1127,8 +1218,19 @@ class PrinterManager:
 
             future.add_done_callback(handle_exception)
 
-    async def connect_printer(self, printer: Printer) -> bool:
-        """Connect to a printer."""
+    async def connect_printer(self, printer: Printer, *, life: int | None = None) -> bool:
+        """Connect to a printer.
+
+        ``life`` is the record life a caller holding its ``Printer`` captured
+        when its own work began (dispatch, the scheduler's power-on wait): a
+        Printer of a deleted record never reconnects, and never replaces the
+        client of the printer created with the reused id. Every connect also
+        abandons its client when a deletion begins during its own await.
+        """
+        if not self.printer_life_is_current(printer.id, life):
+            logger.warning("Not connecting printer %s: the caller's Printer belongs to a deleted record", printer.id)
+            return False
+        session_life = self._printer_lives.get(printer.id, 0)
         # Capture the outgoing client (if any) before tearing it down — its
         # print-lifecycle flags are carried onto the replacement so a print
         # that finished during a stale window is still recognised as
@@ -1141,92 +1243,117 @@ class PrinterManager:
         client_generation = self._client_generations.get(printer_id, 0) + 1
         self._client_generations[printer_id] = client_generation
 
+        def _with_life(data: dict) -> dict:
+            # The record life this session was registered under, so a receiver
+            # can prove it again after its own awaits (spec gh109-o1 r2 R6).
+            return {**data, "_bamdude_printer_life": session_life}
+
         def on_state_change(state: PrinterState):
             if self._on_status_change:
-                self._schedule_async(self._on_status_change(printer_id, state))
+                self._schedule_for_client(printer_id, session_life, self._on_status_change(printer_id, state))
 
         def on_print_start(data: dict):
             if self._on_print_start:
-                self._schedule_async(self._on_print_start(printer_id, data))
+                self._schedule_for_client(printer_id, session_life, self._on_print_start(printer_id, _with_life(data)))
 
         def on_print_complete(data: dict):
             if self._on_print_complete:
                 # Copy before scheduling: the MQTT client mutates its live
                 # state immediately after terminal detection. The generation
                 # belongs to this callback source, not to mutable print state.
-                self._schedule_async(
+                self._schedule_for_client(
+                    printer_id,
+                    session_life,
                     self._on_print_complete(
                         printer_id,
-                        {**data, "_bamdude_client_generation": client_generation},
-                    )
+                        {**_with_life(data), "_bamdude_client_generation": client_generation},
+                    ),
                 )
 
         def on_print_running_observed(data: dict):
             if self._on_print_running_observed:
-                self._schedule_async(self._on_print_running_observed(printer_id, data))
+                self._schedule_for_client(
+                    printer_id, session_life, self._on_print_running_observed(printer_id, _with_life(data))
+                )
 
         def on_finish_photo_moment(data: dict):
             if self._on_finish_photo_moment:
-                self._schedule_async(self._on_finish_photo_moment(printer_id, data))
+                self._schedule_for_client(
+                    printer_id, session_life, self._on_finish_photo_moment(printer_id, _with_life(data))
+                )
 
         def on_ams_change(ams_data: list):
             if self._on_ams_change:
-                self._schedule_async(self._on_ams_change(printer_id, ams_data))
+                self._schedule_for_client(printer_id, session_life, self._on_ams_change(printer_id, ams_data))
 
         def on_spool_inserted(event: dict):
             if self._on_spool_inserted:
-                self._schedule_async(self._on_spool_inserted(printer_id, event))
+                self._schedule_for_client(printer_id, session_life, self._on_spool_inserted(printer_id, event))
 
         def on_layer_change(layer_num: int, previous_layer: int):
             if self._on_layer_change:
-                self._schedule_async(self._on_layer_change(printer_id, layer_num, previous_layer))
+                self._schedule_for_client(
+                    printer_id, session_life, self._on_layer_change(printer_id, layer_num, previous_layer)
+                )
 
         def on_drying_complete(ams_id: int):
             if self._on_drying_complete:
-                self._schedule_async(self._on_drying_complete(printer_id, ams_id))
+                self._schedule_for_client(printer_id, session_life, self._on_drying_complete(printer_id, ams_id))
 
         def on_assignment_verified(ams_id: int, tray_id: int, verified: bool, detail: dict):
             if self._on_assignment_verified:
-                self._schedule_async(self._on_assignment_verified(printer_id, ams_id, tray_id, verified, detail))
+                self._schedule_for_client(
+                    printer_id,
+                    session_life,
+                    self._on_assignment_verified(printer_id, ams_id, tray_id, verified, detail),
+                )
 
         def on_tray_change(tray_global: int, layer_num: int):
             if self._on_tray_change:
-                self._schedule_async(self._on_tray_change(printer_id, tray_global, layer_num))
+                self._schedule_for_client(
+                    printer_id, session_life, self._on_tray_change(printer_id, tray_global, layer_num)
+                )
 
         def on_usage_event(event: str, kind: str | None, tray_global: int | None, layer_num: int):
             if self._on_usage_event:
-                self._schedule_async(self._on_usage_event(printer_id, event, kind, tray_global, layer_num))
+                self._schedule_for_client(
+                    printer_id, session_life, self._on_usage_event(printer_id, event, kind, tray_global, layer_num)
+                )
 
         def on_feed_event(event: str, origin: int, layer_num: int, after_gap: bool):
             if self._on_feed_event:
                 # Read on the MQTT thread inside the observation: the print it was made in.
                 subtask_id = getattr(getattr(client, "state", None), "subtask_id", None)
                 generation = client.journal_generation()
-                self._schedule_async(
-                    self._on_feed_event(printer_id, event, origin, layer_num, after_gap, subtask_id, generation)
+                self._schedule_for_client(
+                    printer_id,
+                    session_life,
+                    self._on_feed_event(printer_id, event, origin, layer_num, after_gap, subtask_id, generation),
                 )
 
         def on_macro_complete(macro_name: str, status: str):
-            self._schedule_async(self._broadcast_macro_complete(printer_id, macro_name, status))
+            self._schedule_for_client(
+                printer_id, session_life, self._broadcast_macro_complete(printer_id, macro_name, status)
+            )
 
         def on_kprofiles_changed():
             # Hash-diff in the MQTT client already filtered out duplicate
             # broadcasts, so this fires exactly when the printer's profile
             # list actually changed (connect / set / edit / delete / save).
-            self._schedule_async(_sync_kprofiles_for_printer(printer_id))
+            self._schedule_for_client(printer_id, session_life, _sync_kprofiles_for_printer(printer_id))
 
         def on_kprofile_tables_due(diameters: list[str]):
-            self._schedule_async(_prime_kprofile_tables(printer_id, diameters))
+            self._schedule_for_client(printer_id, session_life, _prime_kprofile_tables(printer_id, diameters))
 
         def on_skipped_objects_changed(skipped: list):
-            self._schedule_async(_record_skipped_as_defective(printer_id, skipped))
+            self._schedule_for_client(printer_id, session_life, _record_skipped_as_defective(printer_id, skipped))
 
         def on_lights_report(on: bool):
             # A switch of the chamber light, from anywhere. The camera-light
             # lease decides whether it was ours (services/camera_light).
             from backend.app.services import camera_light
 
-            self._schedule_async(camera_light.note_light_report(printer_id, on))
+            self._schedule_for_client(printer_id, session_life, camera_light.note_light_report(printer_id, on))
 
         def on_first_status(live_state: str, live_file: str, live_subtask_id: str = "", live_subtask_name: str = ""):
             # First full status after each fresh connect — run the reconcile
@@ -1235,8 +1362,17 @@ class PrinterManager:
             # archive closed and queue advanced.
             from backend.app.services.print_reconciliation import reconcile_printer_prints
 
-            self._schedule_async(
-                reconcile_printer_prints(printer_id, live_state, live_file, live_subtask_id, live_subtask_name)
+            self._schedule_for_client(
+                printer_id,
+                session_life,
+                reconcile_printer_prints(
+                    printer_id,
+                    live_state,
+                    live_file,
+                    live_subtask_id,
+                    live_subtask_name,
+                    printer_life=session_life,
+                ),
             )
 
         client = BambuMQTTClient(
@@ -1281,8 +1417,17 @@ class PrinterManager:
                 client.set_muted_hms_codes(await load_muted_codes(_db, printer_id))
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not load hidden HMS entries for printer %s: %s", printer_id, e)
-        client.on_hms_mute_expired = lambda gone, pid=printer_id: self._schedule_async(
-            self._forget_hms_mutes(pid, gone)
+        if not self.life_holds(printer_id, session_life):
+            # Deleted while this connect awaited: nothing is registered for a
+            # record that is gone (spec gh109-o1 r2 R1).
+            logger.warning("Not registering a client for printer %s: it was deleted during the connect", printer_id)
+            return False
+        # The life the session's callbacks are proved against: the end of a
+        # deletion that was already running when this connect began is not a
+        # new deletion, so the record created with the reused id gets its own.
+        session_life = self._printer_lives.get(printer_id, 0)
+        client.on_hms_mute_expired = lambda gone, pid=printer_id: self._schedule_for_client(
+            pid, session_life, self._forget_hms_mutes(pid, gone)
         )
 
         client.connect()
@@ -1452,13 +1597,17 @@ class PrinterManager:
 
         return await self.ensure_fresh_connection_for_printer(printer)
 
-    async def ensure_fresh_connection_for_printer(self, printer: Printer) -> bool:
+    async def ensure_fresh_connection_for_printer(self, printer: Printer, *, life: int | None = None) -> bool:
         """Reconnect if MQTT connection exceeded the printer's mqtt_connection_timeout.
 
         Use this when you already have the Printer ORM object to avoid an extra DB query.
         Returns True if connection is fresh (or was refreshed), False if reconnect failed.
+        ``life`` is what the caller captured when its work began: a deleted
+        record's work is told its connection is gone (``connect_printer``).
         """
         printer_id = printer.id
+        if not self.printer_life_is_current(printer_id, life):
+            return False
         connected_at = self._connected_at.get(printer_id)
         if not connected_at:
             return printer_id in self._clients
@@ -1477,7 +1626,7 @@ class PrinterManager:
             elapsed,
             timeout,
         )
-        ok = await self.connect_printer(printer)
+        ok = await self.connect_printer(printer, life=life)
         if not ok:
             # Background dispatch and most callers raise a generic "Can`t
             # re-connect printer MQTT" without printer context — surface
@@ -1538,8 +1687,13 @@ class PrinterManager:
         timelapse_storage: str | None = None,
         submission_id: str | None = None,
         routing_guard=None,
+        printer_life: int | None = None,
     ) -> bool:
         """Start a print on a connected printer.
+
+        ``printer_life`` is the record life the caller captured when its work
+        began: work of a deleted record never publishes to the printer created
+        with the reused id (spec gh109-o1 r2 R1).
 
         ``storage`` says which medium the file was uploaded to and therefore
         which URL scheme the command carries; ``file_md5`` is the digest of the
@@ -1561,6 +1715,9 @@ class PrinterManager:
             caller.lineno,
             caller.name,
         )
+        if not self.printer_life_is_current(printer_id, printer_life):
+            logger.warning("Start refused on printer %s: the work belongs to a deleted printer record", printer_id)
+            return False
         if printer_id in self._clients:
             return self._clients[printer_id].start_print(
                 filename,

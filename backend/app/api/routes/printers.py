@@ -889,6 +889,53 @@ async def _delete_printer(
         delete_archives: If True (default), delete all print archives for this printer.
                         If False, keep archives but remove their printer association.
     """
+    from backend.app.services import printer_deletion
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    # Before the first await: the record's life, its client session and its
+    # effects are retired here, so nothing of it connects, binds or publishes
+    # for the printer the reused id will name next (spec gh109-o1 r2).
+    deletion = printer_deletion.begin(printer_id)
+    try:
+        await _delete_printer_rows(printer_id, printer, delete_archives, db)
+    except BaseException:
+        # No confirmed commit: the record's runtime is NOT removed (a raised
+        # commit proves nothing, and a SELECT by id cannot, the id may already
+        # be reused); the deletion still ends.
+        printer_deletion.finish(deletion, committed=False)
+        raise
+    # No await between the commit returning and this: a printer created with
+    # the reused id meanwhile keeps its newer runtime (``finish``).
+    printer_deletion.finish(deletion, committed=True)
+
+    from backend.app.services.obico_detection import obico_detection_service
+
+    obico_detection_service.forget_printer_history(printer_id)
+
+    from backend.app.services.camera_metrics import forget_printer
+
+    forget_printer(printer_id)
+    # Both halves of the advertised-profile memory: the entries themselves and
+    # the "this process already rebuilt it" mark. An id is reused by the next
+    # printer created, which would otherwise inherit a stranger's masked slots
+    # and never get a rebuild of its own.
+    ams_advertised_overlay.forget_printer(printer_id)
+    forget_printer_rebuild(printer_id)
+    from backend.app.services.virtual_printer import virtual_printer_manager
+
+    try:
+        await virtual_printer_manager.sync_from_db()
+    except Exception:
+        logger.exception("Failed to sync virtual printers after deleting printer %s", printer_id)
+    return {"status": "deleted", "archives_deleted": delete_archives}
+
+
+async def _delete_printer_rows(printer_id: int, printer: Printer, delete_archives: bool, db: AsyncSession) -> None:
+    """Stop the printer's owners and delete its rows, up to and including the commit."""
     from sqlalchemy import delete as sql_delete
 
     from backend.app.models.maintenance import MaintenanceHistory, PrinterMaintenance
@@ -897,15 +944,8 @@ async def _delete_printer(
     from backend.app.services.archive import ArchiveService
     from backend.app.services.macro_trigger import stop_event_macro_tasks
     from backend.app.services.print_completion_tasks import stop_print_completion_tasks
-    from backend.app.services.print_run_binding import revoke_print_effects
     from backend.app.services.queue_counters import detach_print_queue_refs
 
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    printer = result.scalar_one_or_none()
-    if not printer:
-        raise HTTPException(404, "Printer not found")
-
-    revoke_print_effects(printer_manager, printer_id)
     await stop_print_completion_tasks(printer_id)
     await stop_event_macro_tasks(printer_id)
     from backend.app.services.smart_plug_manager import smart_plug_manager
@@ -1048,27 +1088,6 @@ async def _delete_printer(
     )
     await db.delete(printer)
     await db.commit()
-
-    from backend.app.services.obico_detection import obico_detection_service
-
-    obico_detection_service.forget_printer_history(printer_id)
-
-    from backend.app.services.camera_metrics import forget_printer
-
-    forget_printer(printer_id)
-    # Both halves of the advertised-profile memory: the entries themselves and
-    # the "this process already rebuilt it" mark. An id is reused by the next
-    # printer created, which would otherwise inherit a stranger's masked slots
-    # and never get a rebuild of its own.
-    ams_advertised_overlay.forget_printer(printer_id)
-    forget_printer_rebuild(printer_id)
-    from backend.app.services.virtual_printer import virtual_printer_manager
-
-    try:
-        await virtual_printer_manager.sync_from_db()
-    except Exception:
-        logger.exception("Failed to sync virtual printers after deleting printer %s", printer_id)
-    return {"status": "deleted", "archives_deleted": delete_archives}
 
 
 def _printer_cascade_models() -> tuple[type, ...]:

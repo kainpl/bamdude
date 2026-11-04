@@ -27,6 +27,7 @@ PRINTER_KEYED_REGISTRIES = (
     ("backend.app.services.printer_manager", "printer_manager._print_file_analysis_contexts"),
     ("backend.app.services.printer_manager", "printer_manager._print_file_analysis_finishing_contexts"),
     ("backend.app.services.printer_manager", "printer_manager._macro_waiters"),
+    ("backend.app.services.printer_manager", "printer_manager._printer_lives"),
     ("backend.app.main", "_active_macro_selection"),
     ("backend.app.main", "_active_prints"),
     ("backend.app.main", "_active_swap_config"),
