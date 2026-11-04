@@ -21,6 +21,7 @@ tested without a database, a printer or a relay.
 
 from __future__ import annotations
 
+import copy
 import json
 
 # GitHub's hard cap on an issue body.
@@ -87,6 +88,10 @@ def project_for_issue(info: dict, budget_chars: int = ISSUE_PACK_BUDGET) -> tupl
     Never mutates ``info``: the caller still owns the full payload, and the ZIP
     is built from it.
     """
+    # ⚠️ An independent copy first: the measured pass below pops items off the lists it kept, and a list kept
+    # whole is the caller's own object -- the support snapshot shrank under the ZIP and the next projection
+    # (spec gh109-o2 r2 R7).
+    info = copy.deepcopy(info)
     notes: list[str] = []
     out: dict = {}
     spent = 2  # the enclosing braces of the JSON object

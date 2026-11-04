@@ -74,6 +74,17 @@ async def _run_connection_for(printer) -> dict:
         return {**base, "error": str(e)}
 
 
+async def _indexed_connection_for(printer, index_of) -> dict:
+    """The probe's entry, with the artifact's anonymous index of the same machine beside it.
+
+    ``printer_id`` stays the id it always was (the opt-in raw MQTT file is named after it); ``index`` is new and
+    additive (spec gh109-o2 r2 R3). A probe that broke keeps its index too.
+    """
+    entry = await _run_connection_for(printer)
+    index = index_of.get(printer.id)
+    return entry if index is None else {**entry, "index": index}
+
+
 async def _run_vp_for(vp) -> dict:
     from backend.app.services.virtual_printer import virtual_printer_manager
     from backend.app.services.virtual_printer.diagnostic import run_vp_diagnostic
@@ -111,7 +122,12 @@ async def _run_log_health() -> Any:
 
 
 async def collect_diagnostic_snapshot(
-    db: AsyncSession, *, print_state_scope=None, include_print_state: bool = True
+    db: AsyncSession,
+    *,
+    print_state_scope=None,
+    include_print_state: bool = True,
+    printers=None,
+    index_of=None,
 ) -> dict[str, Any]:
     """Return the three-section diagnostic snapshot.
 
@@ -129,17 +145,22 @@ async def collect_diagnostic_snapshot(
     from backend.app.models.printer import Printer
     from backend.app.models.virtual_printer import VirtualPrinter
 
-    printers_result = await db.execute(
-        select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False))
-    )
-    printers = list(printers_result.scalars().all())
+    if printers is None:
+        printers_result = await db.execute(
+            select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False))
+        )
+        printers = list(printers_result.scalars().all())
+    else:
+        # The caller's roster (the support artifact's): its active printers, under its index -- gaps are normal.
+        printers = [p for p in printers if p.is_active and not p.archived]
+    index_of = index_of or {}
 
     vps_result = await db.execute(select(VirtualPrinter).where(VirtualPrinter.enabled.is_(True)))
     vps = list(vps_result.scalars().all())
 
     # Concurrent: total wall-clock ≈ max(per-cap), not sum.
     results = await asyncio.gather(
-        asyncio.gather(*(_run_connection_for(p) for p in printers)) if printers else _noop_list(),
+        asyncio.gather(*(_indexed_connection_for(p, index_of) for p in printers)) if printers else _noop_list(),
         asyncio.gather(*(_run_vp_for(vp) for vp in vps)) if vps else _noop_list(),
         _run_log_health(),
         return_exceptions=True,

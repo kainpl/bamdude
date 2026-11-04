@@ -13,8 +13,10 @@ import re
 import tempfile
 import time
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import BinaryIO
 
 import psutil
@@ -949,8 +951,11 @@ async def _collect_inventory_info(db: AsyncSession) -> dict:
     }
 
 
-async def _collect_queue_info(db: AsyncSession) -> dict:
-    """Print-queue health: pending count + oldest pending age (upstream #1312)."""
+async def _collect_queue_info(db: AsyncSession, roster: "_SupportRoster | None" = None) -> dict:
+    """Print-queue health: pending count + oldest pending age (upstream #1312).
+
+    ``roster`` is the artifact's own: its queue rows and its index, so a queue row names the machine the printers
+    section names by the same index (spec gh109-o2 r2 R2). Without one (a caller of its own) it is read here."""
     from backend.app.models.print_queue import PrintQueueItem
 
     info: dict = {}
@@ -983,32 +988,16 @@ async def _collect_queue_info(db: AsyncSession) -> dict:
     #
     # ⚠️ Keyed on the same anonymous 1-based index as ``info["printers"]``, so
     # the two can be read side by side without either carrying a name.
-    from backend.app.models.printer import Printer
-    from backend.app.models.printer_queue import PrinterQueue
-
-    printer_ids = [row[0] for row in (await db.execute(select(Printer.id).order_by(Printer.id))).all()]
-    index_of = {pid: i + 1 for i, pid in enumerate(printer_ids)}
-
-    queues = (await db.execute(select(PrinterQueue))).scalars().all()
-    pending_by_queue = dict(
-        (
-            await db.execute(
-                select(PrintQueueItem.queue_id, func.count(PrintQueueItem.id))
-                .where(PrintQueueItem.status == "pending")
-                .group_by(PrintQueueItem.queue_id)
-            )
-        ).all()
-    )
-
+    if roster is None:
+        roster = await _capture_support_roster(db)
     info["per_printer"] = [
         {
-            "index": index_of.get(q.printer_id),
-            "queue_status": q.status,
-            "paused": bool(q.is_paused),
-            "pending": pending_by_queue.get(q.id, 0),
+            "index": roster.index_of[printer_id],
+            "queue_status": status,
+            "paused": paused,
+            "pending": pending,
         }
-        for q in queues
-        if q.printer_id in index_of
+        for printer_id, status, paused, pending in roster.queues
     ]
 
     # Auto-queue was invisible here, so the bundle inherited the same undercount
@@ -1085,17 +1074,101 @@ async def _print_state_access(request: Request | None, creds) -> tuple[bool, fro
     return True, key_printer_scope(request) if request is not None else None
 
 
+@dataclass(frozen=True)
+class _SupportRoster:
+    """The printers of ONE support artifact, read once (spec gh109-o2 r2 R1/R2).
+
+    Every section that names a printer asks this, never its own list: the
+    index is the printer's place among these rows ordered by id, from 1, and
+    the same machine carries it in every section and file. ``states`` are the
+    status objects of one ``get_all_statuses`` read taken with the roster --
+    a printer re-added under the same id afterwards has another client and
+    another object, so nothing looked up by id later can lend its telemetry
+    to the old index. Request-local; never serialised, never cached.
+
+    Not an atomic snapshot: probes read the network at their own moment, and
+    on PostgreSQL (READ COMMITTED) the membership may move between the roster
+    and the queue SELECT even inside one short session -- a residual the
+    artifact does not claim to close.
+    """
+
+    printers: tuple
+    index_of: MappingProxyType
+    states: MappingProxyType
+    #: ``(printer_id, status, is_paused, pending)`` of each printer's queue row, read right after the roster.
+    queues: tuple
+
+
+async def _capture_support_roster(db: AsyncSession | None = None) -> _SupportRoster:
+    """Read the roster and its queue rows in one short session, before any network probe.
+
+    ``db`` is a caller's session to read in; without one a short session of its own is opened and closed."""
+    if db is None:
+        async with async_session() as own:
+            return await _capture_support_roster(own)
+
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+
+    printers = tuple((await db.execute(select(Printer).order_by(Printer.id))).scalars().all())
+    states = printer_manager.get_all_statuses()
+    rows = (await db.execute(select(PrinterQueue))).scalars().all()
+    pending = dict(
+        (
+            await db.execute(
+                select(PrintQueueItem.queue_id, func.count(PrintQueueItem.id))
+                .where(PrintQueueItem.status == "pending")
+                .group_by(PrintQueueItem.queue_id)
+            )
+        ).all()
+    )
+    index_of = {printer.id: position for position, printer in enumerate(printers, start=1)}
+    return _SupportRoster(
+        printers=printers,
+        index_of=MappingProxyType(index_of),
+        states=MappingProxyType({pid: states[pid] for pid in index_of if pid in states}),
+        queues=tuple(
+            (row.printer_id, row.status, bool(row.is_paused), pending.get(row.id, 0))
+            for row in rows
+            if row.printer_id in index_of
+        ),
+    )
+
+
+#: What the indices of an artifact mean, written into it: reports from before this carried none, and their
+#: positions were never proven to name one machine (spec gh109-o2 r2 R3).
+_PRINTER_INDEX_MEANING = {
+    "version": 1,
+    "meaning": "1-based place of the printer among this artifact's printers ordered by id; "
+    "the same machine in every section and file of this artifact only",
+}
+
+
 async def _collect_support_info(*, print_state_scope=None, include_print_state: bool = False) -> dict:
     """Collect all support information. The print-state section is included only for a caller with its read
     rights (``include_print_state``), narrowed to its printers (``print_state_scope``)."""
+    info, _roster = await _build_support_info(
+        print_state_scope=print_state_scope, include_print_state=include_print_state
+    )
+    return info
+
+
+async def _build_support_info(*, print_state_scope=None, include_print_state: bool = False):
+    """The support info and the roster it was built from (the ZIP names its files after the same roster)."""
     from backend.app.services.farm_startup_guard import farm_startup_guard
 
+    roster = await _capture_support_roster()
+    # Reachability before any session opens: a network round trip has no business inside a read transaction.
+    reachable_results = await asyncio.gather(
+        *(_check_port(p.ip_address, 8883) for p in roster.printers), return_exceptions=True
+    )
     in_docker = is_running_in_docker()
 
     from backend.app.core.install_id import get_install_id
 
     info = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "printer_index": dict(_PRINTER_INDEX_MEANING),
         "app": {
             "version": APP_VERSION,
             "debug_mode": settings.debug,
@@ -1164,10 +1237,10 @@ async def _collect_support_info(*, print_state_scope=None, include_print_state: 
         result = await db.execute(select(func.count(SmartPlug.id)))
         info["database"]["smart_plugs_total"] = result.scalar() or 0
 
-        # Printer info (anonymized - no names, IPs, or serials)
-        result = await db.execute(select(Printer))
-        printers = result.scalars().all()
-        statuses = printer_manager.get_all_statuses()
+        # Printer info (anonymized - no names, IPs, or serials), from the artifact's one roster: its index and
+        # the state captured with it (spec gh109-o2 r2 R1).
+        printers = roster.printers
+        statuses = roster.states
 
         # Obico per-printer enablement (upstream Bambuddy #1312). The
         # ``obico_enabled_printers`` setting is a JSON id list; an empty /
@@ -1195,10 +1268,6 @@ async def _collect_support_info(*, print_state_scope=None, include_print_state: 
         except Exception:
             obico_printer_ids = None
 
-        # Check reachability in parallel
-        reachability_tasks = [_check_port(p.ip_address, 8883) for p in printers]
-        reachable_results = await asyncio.gather(*reachability_tasks, return_exceptions=True)
-
         for i, printer in enumerate(printers):
             state = statuses.get(printer.id)
             reachable = reachable_results[i] if not isinstance(reachable_results[i], Exception) else False
@@ -1223,7 +1292,7 @@ async def _collect_support_info(*, print_state_scope=None, include_print_state: 
 
             info["printers"].append(
                 {
-                    "index": i + 1,
+                    "index": roster.index_of[printer.id],
                     "model": printer.model or "Unknown",
                     "nozzle_count": printer.nozzle_count,
                     "is_active": printer.is_active,
@@ -1368,7 +1437,7 @@ async def _collect_support_info(*, print_state_scope=None, include_print_state: 
         logger.debug("Failed to collect inventory info", exc_info=True)
     try:
         async with async_session() as q_db:
-            info["queue"] = await _collect_queue_info(q_db)
+            info["queue"] = await _collect_queue_info(q_db, roster)
     except Exception:
         logger.debug("Failed to collect queue info", exc_info=True)
     try:
@@ -1505,12 +1574,16 @@ async def _collect_support_info(*, print_state_scope=None, include_print_state: 
 
         async with async_session() as db:
             info["diagnostics"] = await collect_diagnostic_snapshot(
-                db, print_state_scope=print_state_scope, include_print_state=include_print_state
+                db,
+                print_state_scope=print_state_scope,
+                include_print_state=include_print_state,
+                printers=roster.printers,
+                index_of=roster.index_of,
             )
     except Exception:
         logger.warning("Failed to collect diagnostic snapshot", exc_info=True)
 
-    return info
+    return info, roster
 
 
 def _sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None = None) -> str:
@@ -1695,7 +1768,7 @@ async def generate_support_bundle(
 
     # Collect support info
     allowed, scope = await _print_state_access(request, creds)
-    support_info = await _collect_support_info(print_state_scope=scope, include_print_state=allowed)
+    support_info, roster = await _build_support_info(print_state_scope=scope, include_print_state=allowed)
 
     # Create ZIP in memory
     zip_buffer = io.BytesIO()
@@ -1727,7 +1800,12 @@ async def generate_support_bundle(
         for printer_id in requested_mqtt_ids:
             recording = mqtt_recorder.file_for(printer_id)
             if recording and recording.exists():
-                zf.write(recording, f"mqtt/{recording.name}")
+                # Under the artifact's index when the printer is in its roster, so it sits beside that
+                # machine's other sections; its own raw name stays. One outside the roster keeps its plain
+                # place -- an explicit request is never lost, and never given an index it has not got.
+                index = roster.index_of.get(printer_id)
+                arcname = f"mqtt/printer-{index}/{recording.name}" if index else f"mqtt/{recording.name}"
+                zf.write(recording, arcname)
 
         # Per-printer cached push_status dump. Bambu firmware ships per-model
         # config in a different shape for every family, and the shape of
@@ -1735,14 +1813,15 @@ async def generate_support_bundle(
         # Including the redacted snapshot turns every support bundle into a
         # ground-truth sample for that exact model+firmware. Index matches the
         # 1-based ordering in support-info.json["printers"].
-        statuses = printer_manager.get_all_statuses()
-        async with async_session() as db:
-            db_printers = (await db.execute(select(Printer))).scalars().all()
-        for i, printer in enumerate(db_printers):
-            state = statuses.get(printer.id)
+        # The roster and the states captured with it -- never a new read: a printer deleted or re-added since
+        # would shift every later file, or lend its new telemetry to the old index (spec gh109-o2 r2 R4).
+        for printer in roster.printers:
+            index = roster.index_of[printer.id]
+            state = roster.states.get(printer.id)
             if state is None or not getattr(state, "raw_data", None):
                 continue
             snapshot = {
+                "index": index,
                 "model": printer.model or "Unknown",
                 "firmware_version": getattr(state, "firmware_version", None),
                 "captured_at": datetime.now(timezone.utc).isoformat(),
@@ -1752,7 +1831,7 @@ async def generate_support_bundle(
             # sanitizer so any user-named string (printer name, serial baked into
             # a tray uuid) the structural pass missed still gets caught.
             snapshot_json = _sanitize_log_content(json.dumps(snapshot, indent=2, default=str), sensitive_strings)
-            zf.writestr(f"push-status/printer-{i + 1}.json", snapshot_json)
+            zf.writestr(f"push-status/printer-{index}.json", snapshot_json)
 
         # Add log file
         log_content = _get_log_content(sensitive_strings=sensitive_strings)
