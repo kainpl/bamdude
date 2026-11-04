@@ -1,5 +1,6 @@
 ## [Unreleased]
 
+- A queued job keeps its print file when saving the job raises after the save may already have reached the database, for example when the PostgreSQL connection drops during the commit. Previously the file the job had just been given was deleted in that case, so a job that had in fact been saved later failed with a missing source. A file nobody's job names is still cleaned up later, as before.
 - Release downloads carry one `bamdude-<version>-SHA256SUMS` for the Windows installer and the AI client packages, written only after each package matches the hashes of its own build. The package build's internal catalog (`packages.json`) and its partial checksum file are no longer attached to the release.
 
 ## [0.7.3] - 2026-11-04

@@ -1076,8 +1076,12 @@ async def publish(
                 else:
                     row = await _reuse_or_repair(existing, receipt, publication)
 
+                commit_attempted = False
                 try:
                     await attach(session, row)
+                    # Set with no await before the call: from here on the commit may reach the database
+                    # whatever this coroutine is told afterwards.
+                    commit_attempted = True
                     await session.commit()
                     # Settled the instant the commit returns: after this point a
                     # failure must not hand the receipt back as publishable, or a
@@ -1086,12 +1090,15 @@ async def publish(
                     receipt.state = "published"
                 except BaseException:
                     await session.rollback()
-                    if created:
+                    if created and not commit_attempted:
                         # Nothing could reference it yet, and the row is gone.
                         await _file_work(
                             _drop,
                             Path(settings.base_dir) / relative,  # SEC-PATH-OK: object_relative_path()-validated
                         )
+                    # A commit that raised may still have committed (a dropped connection, a cancellation inside
+                    # it); the rollback after it proves nothing. Its object stays: a committed row protects it, and
+                    # with no row the GC releases it after its grace (OrcaBamDude B1, addendum C1).
                     raise
     except BaseException:
         if publication.staging_consumed or receipt.state == "published":
