@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, func
@@ -21,6 +22,11 @@ class Printer(Base):
     __tablename__ = "printers"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Immutable, opaque, new on every creation (OrcaBamDude spec r2 §8.1, m216). The numeric id is reused on
+    # SQLite after a delete and the serial number is treated as sensitive, so a connector names THIS record by it.
+    connector_identity: Mapped[str] = mapped_column(
+        String(36), nullable=False, unique=True, index=True, default=lambda: str(uuid.uuid4())
+    )
     name: Mapped[str] = mapped_column(String(100))
     serial_number: Mapped[str] = mapped_column(String(50), unique=True)
     ip_address: Mapped[str] = mapped_column(String(253))

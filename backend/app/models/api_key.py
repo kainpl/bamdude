@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, func
@@ -12,6 +13,11 @@ class APIKey(Base):
     __tablename__ = "api_keys"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Immutable, opaque, new on every creation (OrcaBamDude spec r2 §8.1, m216). The numeric id is reused on
+    # SQLite after a delete; a connector's receipts are namespaced by this, never by the id. Not a credential.
+    connector_identity: Mapped[str] = mapped_column(
+        String(36), nullable=False, unique=True, index=True, default=lambda: str(uuid.uuid4())
+    )
     name: Mapped[str] = mapped_column(String(100))  # User-friendly name
     # passlib pbkdf2-sha256 hash ("$pbkdf2-sha256$29000$…", ~87 chars) — not the
     # 64-char SHA-256 hex the column was first sized for. PostgreSQL enforces the

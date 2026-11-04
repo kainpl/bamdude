@@ -358,6 +358,7 @@ def import_all_models() -> None:
         camera,
         cloud_link,
         color_catalog,
+        connector_submission,
         customer,
         external_link,
         filament_calibration,
