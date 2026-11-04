@@ -385,6 +385,7 @@ def import_all_models() -> None:
         maintenance,
         notification,
         notification_template,
+        obico_event,
         oidc_provider,
         orca_base_cache,
         order_working_plan,

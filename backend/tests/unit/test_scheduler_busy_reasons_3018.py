@@ -38,6 +38,7 @@ class TestEverySiteSaysWhy:
         assert 'busy_reasons[claimed_printer_id] = "claimed"' in source
         assert reasons == {
             "dispatch_hold",
+            "dispatch_runtime_conflict",
             "power_on_failed",
             "offline",
             "not_idle",

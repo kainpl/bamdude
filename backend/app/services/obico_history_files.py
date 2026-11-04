@@ -39,7 +39,7 @@ def _verify(path: Path, size: int, sha: str) -> None:
 
 
 def stage_history(data_dir: Path, staging: Path, backup_db: Path) -> None:
-    source_root = data_dir / ROOT_NAME
+    source_root = data_dir / ROOT_NAME  # SEC-PATH-OK: ROOT_NAME is this module's constant.
     target_root = staging / ROOT_NAME
     target_root.mkdir(parents=True, exist_ok=True)
     references = _references(backup_db)

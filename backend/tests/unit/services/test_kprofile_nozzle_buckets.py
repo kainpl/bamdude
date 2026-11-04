@@ -302,6 +302,11 @@ class TestPrimeKProfileTables:
         callback = mock_client_cls.call_args.kwargs["on_kprofile_tables_due"]
         callback(["0.4"])
 
+        # A session callback runs inside the record-life wrapper (spec gh109-o1 r2 R7); the work it carries is
+        # the prime, for this printer.
         scheduled = manager._schedule_async.call_args.args[0]
-        assert scheduled.cr_code.co_name == "_prime_kprofile_tables"
+        assert scheduled.cr_code.co_name == "_run_for_client"
+        carried = scheduled.cr_frame.f_locals
+        assert (carried["printer_id"], carried["coro"].cr_code.co_name) == (7, "_prime_kprofile_tables")
+        carried["coro"].close()
         scheduled.close()
