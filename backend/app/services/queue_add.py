@@ -537,7 +537,7 @@ async def _publish_items(
         async with queue_scope_lock(session, data.queue_id):
             if publication_receipt is not None:
                 # Under the queue's scope lock, before any row: a refusal here rolls the whole publication back.
-                await publication_receipt.claim(session)
+                await publication_receipt.claim(session, source)
             project_line_id = data.project_line_id
             if project_line_id is None and effective_project_id is not None:
                 # The caller named the order and not the line — file the line

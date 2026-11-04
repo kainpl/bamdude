@@ -208,7 +208,7 @@ async def _publish_items(
         if publication_receipt is not None:
             # Before any row: a refusal here rolls the whole publication back. No printer lane -- the distributor
             # has not chosen one.
-            await publication_receipt.claim(session)
+            await publication_receipt.claim(session, source)
         ticket = None
         if consumption is not None:
             from backend.app.services import order_plan_submission

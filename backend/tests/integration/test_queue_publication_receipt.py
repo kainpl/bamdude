@@ -51,8 +51,9 @@ class Receipt:
         self.claimed = 0
         self.recorded: tuple[list[int], list[int]] | None = None
 
-    async def claim(self, session):
+    async def claim(self, session, source):
         self.claimed += 1
+        self.claimed_sha = source.sha256
         if self.refuse is not None:
             raise self.refuse
 
@@ -102,6 +103,7 @@ async def test_the_printer_writer_records_the_exact_job_ids_in_its_own_transacti
 
     ids = sorted(item.id for item in items)
     assert receipt.claimed == 1 and receipt.recorded == (ids, [])
+    assert len(receipt.claimed_sha) == 64
     assert await _marker(spool_sessions) == ",".join(map(str, ids))
 
 
