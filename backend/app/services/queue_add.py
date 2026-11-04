@@ -49,6 +49,7 @@ from backend.app.services.library_helpers import sliced_by_content
 from backend.app.services.order_filing import resolve_line_id, resolve_link
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_ops import place_pending_block, queue_scope_lock
+from backend.app.services.queue_publication import PublicationReceipt
 from backend.app.services.queue_source_capture import (
     StagedSource,
     capture_staged,
@@ -89,12 +90,17 @@ async def add_items_to_printer_queue(
     db: AsyncSession,
     data: PrintQueueItemCreate,
     current_user: User | None,
+    *,
+    publication_receipt: PublicationReceipt | None = None,
 ) -> tuple[list[PrintQueueItem], PrinterQueue]:
     """Validate, build and persist ``data.quantity`` queue items.
 
     Returns the created items (in position order) and the queue they landed in,
     so the caller can build its own response without re-querying for the
     printer's name.
+
+    ``publication_receipt`` (``services/queue_publication.py``) is claimed under the queue's scope lock before any row and
+    recorded with the rows' ids in the publication's own transaction; without it nothing changes.
     """
     if data.enqueue_position == "next" and (data.manual_start or data.scheduled_time is not None):
         raise HTTPException(
@@ -106,6 +112,8 @@ async def add_items_to_printer_queue(
     if sources != 1:
         raise HTTPException(400, "Provide exactly one of archive_id, library_file_id, or source_queue_item_id")
     if data.source_queue_item_id:
+        if publication_receipt is not None:
+            raise ValueError("A publication receipt is not supported for a copy of an existing queue job")
         return await _add_items_from_queue_source(db, data, current_user)
 
     # Validate queue exists
@@ -231,6 +239,7 @@ async def add_items_to_printer_queue(
             current_user,
             archive,
             library_file,
+            publication_receipt=publication_receipt,
         )
     except BaseException:
         await discard_staged(staged)
@@ -476,6 +485,8 @@ async def _publish_items(
     current_user: User | None,
     archive,
     library_file,
+    *,
+    publication_receipt: PublicationReceipt | None = None,
 ) -> list[int]:
     """Publish the captured bytes and write the rows in ONE transaction (§5 step 6).
 
@@ -524,6 +535,9 @@ async def _publish_items(
 
     async def attach(session: AsyncSession, source: QueueSource) -> None:
         async with queue_scope_lock(session, data.queue_id):
+            if publication_receipt is not None:
+                # Under the queue's scope lock, before any row: a refusal here rolls the whole publication back.
+                await publication_receipt.claim(session)
             project_line_id = data.project_line_id
             if project_line_id is None and effective_project_id is not None:
                 # The caller named the order and not the line — file the line
@@ -605,6 +619,9 @@ async def _publish_items(
             from backend.app.services.queue_counters import update_queue_counters
 
             await update_queue_counters(session, data.queue_id)
+            if publication_receipt is not None:
+                # The exact ids, in the transaction that commits them: a receipt and its jobs, or neither.
+                await publication_receipt.record(session, queue_item_ids=list(created_ids), auto_item_ids=[])
 
     await publish_staged(staged, attach)
     return created_ids

@@ -44,6 +44,7 @@ from backend.app.services.filament_intake import routing_detail
 from backend.app.services.filament_policy import feed_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.order_filing import line_filer, resolve_link
+from backend.app.services.queue_publication import PublicationReceipt
 from backend.app.services.queue_source_capture import (
     StagedSource,
     capture_staged,
@@ -67,12 +68,18 @@ async def add_items_to_auto_queue(
     requirements_cache: PrintRequirementsCache | None = None,
     order_print_options: dict | None = None,
     consumption: PlanConsumption | LegacyPlanPublication | None = None,
+    publication_receipt: PublicationReceipt | None = None,
 ) -> list[AutoQueueItem]:
     """Validate, build and persist the auto-queue rows ``data`` asks for.
 
     Returns the created items in position order. Commits — see the module
     docstring.
+
+    ``publication_receipt`` (``services/queue_publication.py``) is claimed in the publication's transaction before
+    any row and recorded with the rows' ids; it never travels with an order plan's ``consumption``.
     """
+    if consumption is not None and publication_receipt is not None:
+        raise ValueError("An order plan's consumption and a publication receipt are never one publication")
     if order_print_options:
         order_print_options = OrderPrintOptions(overrides=order_print_options).model_dump()["overrides"]
     if not data.archive_id and not data.library_file_id:
@@ -149,6 +156,7 @@ async def add_items_to_auto_queue(
             library_file,
             order_print_options,
             **({"consumption": consumption} if consumption is not None else {}),
+            publication_receipt=publication_receipt,
         )
     except BaseException:
         await discard_staged(staged)
@@ -176,6 +184,8 @@ async def _publish_items(
     library_file: LibraryFile | None,
     order_print_options: dict | None = None,
     consumption: PlanConsumption | LegacyPlanPublication | None = None,
+    *,
+    publication_receipt: PublicationReceipt | None = None,
 ) -> list[int]:
     """Publish the captured bytes and write every row in ONE transaction (§5 step 6).
 
@@ -195,6 +205,10 @@ async def _publish_items(
     created_ids: list[int] = []
 
     async def attach(session: AsyncSession, source: QueueSource) -> None:
+        if publication_receipt is not None:
+            # Before any row: a refusal here rolls the whole publication back. No printer lane -- the distributor
+            # has not chosen one.
+            await publication_receipt.claim(session)
         ticket = None
         if consumption is not None:
             from backend.app.services import order_plan_submission
@@ -216,6 +230,9 @@ async def _publish_items(
         created_ids.extend(item.id for item in items)
         if ticket is not None:
             await order_plan_submission.consume(session, ticket, created_ids, "auto")
+        if publication_receipt is not None:
+            # The exact ids, in the transaction that commits them: a receipt and its jobs, or neither.
+            await publication_receipt.record(session, queue_item_ids=[], auto_item_ids=list(created_ids))
 
     await publish_staged(staged, attach)
     return created_ids
