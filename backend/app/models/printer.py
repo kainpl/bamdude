@@ -56,6 +56,17 @@ class Printer(Base):
         return [tag.id for tag in self.tags]
 
     @property
+    def model_code(self) -> str | None:
+        """The Bambu Studio ``model_id`` of this printer's mirrored config (``BL-P001``, ``C12``, ``N1``…), or
+        None when the model has no mirrored config. A slicer connector names its device by it, and OrcaSlicer
+        compares it with the printer preset's model, so it is never guessed from the nearest name."""
+        from backend.app.utils.printer_configs import load_printer_config
+
+        config = load_printer_config(self.model) if self.model else None
+        code = config.get("model_id") if config else None
+        return code if isinstance(code, str) and code else None
+
+    @property
     def plate_detection_roi(self) -> dict[str, float] | None:
         """The camera ROI as one object, or None when no component was ever set.
 

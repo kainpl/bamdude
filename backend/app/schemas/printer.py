@@ -176,6 +176,9 @@ class PrinterResponse(PrinterBase):
     # Immutable for the row's life, new for every row (m216): what a slicer connector remembers a printer by, since
     # the numeric id is reused on SQLite. Not the serial, never sensitive.
     connector_identity: str | None = None
+    # The Bambu Studio model id of the mirrored printer config (``Printer.model_code``); None when unknown. A slicer
+    # connector names its device by it, so it is never guessed.
+    model_code: str | None = None
     is_active: bool
     # The place, resolved. ``location_id`` comes from PrinterBase and is what a
     # form posts back; this is what anything displaying it reads, so neither has

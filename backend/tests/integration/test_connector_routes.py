@@ -341,3 +341,17 @@ async def test_the_administrator_sets_the_switch_and_the_cap_through_settings(fa
     assert caps["limits"]["max_upload_bytes"] == 2 * 1024 * 1024
     refused = await _post(farm, _body(farm))
     assert refused.status_code == 503 and refused.json()["detail"]["error"] == "connector_disabled"
+
+
+async def test_the_printer_list_names_each_printer_by_its_model_code(farm):
+    """The connector's device list reads ``model_code`` off ``GET /printers/``; it is the mirrored config's id."""
+    printer = farm["printer"]
+    printer.model = "P1S"
+    await farm["db"].commit()
+
+    response = await farm["client"].get("/api/v1/printers/", headers={"X-API-Key": farm["raw"]})
+
+    assert response.status_code == 200, response.text
+    row = next(p for p in response.json() if p["id"] == printer.id)
+    assert row["model_code"] == "C12"
+    assert row["connector_identity"] == printer.connector_identity
