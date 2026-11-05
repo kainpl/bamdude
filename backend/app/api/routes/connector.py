@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -115,12 +115,14 @@ async def _require_enabled(db: AsyncSession) -> None:
         raise HTTPException(503, {"error": "connector_disabled", "message": DISABLED})
 
 
-def _answer(result: protocol.SubmissionResult, status: int) -> JSONResponse:
+def _answer(result: protocol.SubmissionResult, status: int, *, observations: dict | None = None) -> JSONResponse:
     lang = current_language()
     body = result.model_dump(mode="json")
     for entry in body["entries"]:
         if entry.get("error"):
             entry["error"]["message"] = translate_sentence(entry["error"]["message"], lang)
+    if observations is not None:
+        body["observations"] = observations
     return JSONResponse(status_code=status, content=body)
 
 
@@ -242,12 +244,37 @@ async def get_submission(
     operation_id: str,
     server_id: str | None = None,
     storage_epoch: str | None = None,
+    observations: bool = False,
+    cursor: str | None = Query(None, max_length=512),
     _: None = RequirePermission(Permission.QUEUE_CREATE),
     actor: ConnectorActor = Depends(connector_actor),
 ):
-    """This key's own operation, addressed by its id. A foreign one and a missing one are the same 404."""
+    """This key's own operation, addressed by its id. A foreign one and a missing one are the same 404.
+
+    ``observations=1`` adds what became of each published job, followed by immutable identities only (host spec
+    r2.2 §11 S3), one page at a time; ``cursor`` is the previous page's ``next_cursor``.
+    """
     submission_id = await _own(actor, operation_id, server_id, storage_epoch)
-    return _answer(await submissions.result_of(submission_id), 200)
+    observed = None
+    if observations:
+        from backend.app.core import database
+
+        if server_id is None or storage_epoch is None:
+            async with database.async_session() as db:
+                current = await submissions.read_server_identity(db)
+            server_id, storage_epoch = server_id or current[0], storage_epoch or current[1]
+        try:
+            observed = await submissions.observations(
+                actor,
+                submission_id,
+                operation_id=operation_id,
+                server_id=server_id,
+                epoch=storage_epoch,
+                cursor=cursor,
+            )
+        except ConnectorRefusal as refusal:
+            raise _refused(refusal) from refusal
+    return _answer(await submissions.result_of(submission_id), 200, observations=observed)
 
 
 @router.post("/submissions/{operation_id}/resume")

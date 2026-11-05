@@ -22,6 +22,8 @@ OrcaBamDude spec r2 §7-8 with addendum C1-C3. The rules this module keeps:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -30,7 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -833,3 +835,246 @@ async def compact(*, older_than_days: int = FULL_RETENTION_DAYS, sessions=None) 
             await db.commit()
             compacted += 1
     return compacted
+
+
+# --------------------------------------------------------------------------- #
+# Observations: what became of each published job (host spec r2.2 §11 S3)
+# --------------------------------------------------------------------------- #
+
+OBSERVATION_PAGE = 100
+OBSERVATION_EXECUTIONS = 3
+OBSERVATION_MAX_BYTES = 256 * 1024
+INVALID_CURSOR = "The observation cursor does not belong to this operation."
+
+# A queue row's status -> the job's state. An AutoQueue job placed on a printer reads "assigned" until it prints.
+_ROW_STATE = {
+    "pending": "queued",
+    "printing": "printing",
+    "completed": "completed",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "skipped": "cancelled",
+}
+_ASSIGNED_STATE = {**_ROW_STATE, "pending": "assigned"}
+_AUTO_STATE = {"pending": "queued", "assigned": "assigned", "cancelled": "cancelled", "failed": "failed"}
+_EXECUTION_STATE = {
+    "printing": "printing",
+    "completed": "completed",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "stopped": "cancelled",
+    "aborted": "cancelled",
+}
+_RUNNING = ("RUNNING", "PAUSE")
+
+
+def _encode_cursor(operation_id: str, server_id: str, epoch: str, offset: int) -> str:
+    raw = json.dumps({"o": operation_id, "s": server_id, "e": epoch, "n": offset}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode()).rstrip(b"=").decode()
+
+
+def _decode_cursor(cursor: str, operation_id: str, server_id: str, epoch: str) -> int:
+    """The offset a cursor of THIS operation and namespace carries; anything else is refused."""
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        data = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except (ValueError, TypeError, binascii.Error, UnicodeError):
+        data = None
+    offset = data.get("n") if isinstance(data, dict) else None
+    if (
+        not isinstance(data, dict)
+        or data.get("o") != operation_id
+        or data.get("s") != server_id
+        or data.get("e") != epoch
+        or not isinstance(offset, int)
+        or isinstance(offset, bool)
+        or offset <= 0
+    ):
+        raise ConnectorRefusal(400, "invalid_cursor", INVALID_CURSOR)
+    return offset
+
+
+def _receipt_jobs(receipt: dict) -> list[dict]:
+    """The jobs a receipt names. A receipt from before the lineage carries ids only: its jobs have no identity."""
+    if "jobs" in receipt:
+        return [dict(job) for job in receipt["jobs"]]
+    return [{"kind": "queue", "id": i, "identity": None} for i in receipt.get("queue_item_ids") or []] + [
+        {"kind": "auto", "id": i, "identity": None} for i in receipt.get("auto_item_ids") or []
+    ]
+
+
+def _newest(rows: list) -> list:
+    """Newest first: creation time, then identity -- a deterministic order that never reads a numeric id."""
+    return sorted(rows, key=lambda row: (row.created_at or datetime.min, row.recovery_identity or ""), reverse=True)
+
+
+def _unavailable(observed: dict, reason: str) -> dict:
+    return {**observed, "state": "unavailable", "reason": reason, "printer": None, "executions": [],
+            "executions_complete": True}  # fmt: skip
+
+
+async def _first_layer(db: AsyncSession, archive, state: str) -> bool | None:
+    """True only when the live printer runs THIS execution (its newest open archive) at layer one or later."""
+    if state == "completed":
+        return True
+    if state != "printing" or archive.printer_id is None:
+        return None
+    from backend.app.models.archive import PrintArchive
+    from backend.app.services.printer_manager import printer_manager
+
+    newest_open = await db.scalar(
+        select(PrintArchive.id)
+        .where(PrintArchive.printer_id == archive.printer_id, PrintArchive.status == "printing")
+        .order_by(PrintArchive.created_at.desc(), PrintArchive.id.desc())
+        .limit(1)
+    )
+    live = printer_manager.get_status(archive.printer_id)
+    if newest_open != archive.id or live is None or getattr(live, "state", None) not in _RUNNING:
+        return None
+    return (getattr(live, "layer_num", 0) or 0) >= 1
+
+
+async def observations(
+    actor: ConnectorActor,
+    submission_id: int,
+    *,
+    operation_id: str,
+    server_id: str,
+    epoch: str,
+    cursor: str | None = None,
+) -> dict:
+    """One page of what became of an operation's published jobs, found by identities only.
+
+    The caller has already proven the operation is this key's own in this namespace. The key is read again for its
+    current printer list: a printer outside it is shown as ``out_of_scope`` with no detail. Nothing is written.
+    """
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.print_queue import PrintQueueItem
+
+    offset = _decode_cursor(cursor, operation_id, server_id, epoch) if cursor else 0
+    async with database.async_session() as db:
+        key = await fresh_key(db, actor, (Permission.QUEUE_CREATE.value,))
+        scope = set(key.printer_ids) if key.printer_ids is not None else None
+        submission = await db.get(ConnectorSubmission, submission_id)
+        rows = {
+            row.entry_id: row
+            for row in (
+                await db.execute(
+                    select(ConnectorSubmissionEntry).where(ConnectorSubmissionEntry.submission_id == submission_id)
+                )
+            ).scalars()
+        }
+        listed: list[tuple[str, dict]] = []
+        for manifest_entry in submission.manifest["entries"]:
+            entry = rows.get(manifest_entry["entry_id"])
+            if entry is not None and entry.published_receipt is not None:
+                listed += [(entry.entry_id, job) for job in _receipt_jobs(entry.published_receipt)]
+        page = listed[offset : offset + OBSERVATION_PAGE]
+        following = offset + OBSERVATION_PAGE
+        next_cursor = _encode_cursor(operation_id, server_id, epoch, following) if following < len(listed) else None
+
+        queue_ids = {job["identity"] for _, job in page if job["kind"] == "queue" and job.get("identity")}
+        auto_ids = {job["identity"] for _, job in page if job["kind"] == "auto" and job.get("identity")}
+        live_rows: dict = {}
+        if queue_ids:
+            query = select(PrintQueueItem).where(PrintQueueItem.recovery_identity.in_(queue_ids))
+            live_rows = {row.recovery_identity: row for row in (await db.execute(query)).scalars()}
+        live_auto: dict = {}
+        assignments: dict[str, list] = {}
+        if auto_ids:
+            query = select(AutoQueueItem).where(AutoQueueItem.recovery_identity.in_(auto_ids))
+            live_auto = {row.recovery_identity: row for row in (await db.execute(query)).scalars()}
+            query = select(PrintQueueItem).where(PrintQueueItem.source_auto_identity.in_(auto_ids))
+            for row in (await db.execute(query)).scalars():
+                assignments.setdefault(row.source_auto_identity, []).append(row)
+        executions: dict[tuple[str, str], list] = {}
+        if queue_ids or auto_ids:
+            conditions = []
+            if queue_ids:
+                conditions.append(PrintArchive.queue_item_identity.in_(queue_ids))
+            if auto_ids:
+                conditions.append(PrintArchive.source_auto_identity.in_(auto_ids))
+            for archive in (await db.execute(select(PrintArchive).where(or_(*conditions)))).scalars():
+                if archive.queue_item_identity in queue_ids:
+                    executions.setdefault(("queue", archive.queue_item_identity), []).append(archive)
+                if archive.source_auto_identity in auto_ids:
+                    executions.setdefault(("auto", archive.source_auto_identity), []).append(archive)
+
+        printer_ids: set[int] = {row.queue_id for row in live_rows.values()}
+        for placed in assignments.values():
+            printer_ids.update(row.queue_id for row in placed)
+        for runs in executions.values():
+            printer_ids.update(a.printer_id for a in runs if a.printer_id is not None)
+        printer_identity: dict = {}
+        if printer_ids:
+            query = select(Printer.id, Printer.connector_identity).where(Printer.id.in_(printer_ids))
+            printer_identity = dict((await db.execute(query)).all())
+
+        def printer_of(printer_id):
+            return None if printer_id is None else {"id": printer_id, "identity": printer_identity.get(printer_id)}
+
+        jobs = []
+        for entry_id, job in page:
+            identity = job.get("identity")
+            observed: dict = {"entry_id": entry_id, "job": {"kind": job["kind"], "identity": identity}}
+            if job["kind"] == "auto":
+                observed["assignment"] = None
+            if not identity:
+                jobs.append(_unavailable(observed, "legacy_receipt"))
+                continue
+            runs = _newest(executions.get((job["kind"], identity), []))
+            state, printer_id, assignment = None, None, None
+            if job["kind"] == "queue":
+                row = live_rows.get(identity)
+                if row is not None:
+                    state, printer_id = _ROW_STATE.get(row.status, "queued"), row.queue_id
+                elif runs:
+                    state, printer_id = _EXECUTION_STATE.get(runs[0].status, "printing"), runs[0].printer_id
+            else:
+                placed = _newest(assignments.get(identity, []))
+                auto = live_auto.get(identity)
+                if placed:
+                    assignment = placed[0]
+                    state, printer_id = _ASSIGNED_STATE.get(assignment.status, "assigned"), assignment.queue_id
+                elif runs:
+                    state, printer_id = _EXECUTION_STATE.get(runs[0].status, "printing"), runs[0].printer_id
+                elif auto is not None:
+                    state = _AUTO_STATE.get(auto.status, "queued")
+            if state is None:
+                jobs.append(_unavailable(observed, "chain_broken"))
+                continue
+            if printer_id is not None and scope is not None and printer_id not in scope:
+                jobs.append(_unavailable(observed, "out_of_scope"))
+                continue
+            shown = []
+            for archive in runs[:OBSERVATION_EXECUTIONS]:
+                run_state = _EXECUTION_STATE.get(archive.status, "printing")
+                shown.append(
+                    {
+                        "identity": archive.recovery_identity,
+                        "state": run_state,
+                        "started_at": archive.started_at.isoformat() if archive.started_at else None,
+                        "completed_at": archive.completed_at.isoformat() if archive.completed_at else None,
+                        "first_layer": await _first_layer(db, archive, run_state),
+                    }
+                )
+            if assignment is not None:
+                observed["assignment"] = {
+                    "identity": assignment.recovery_identity,
+                    "printer": printer_of(assignment.queue_id),
+                }
+            jobs.append(
+                {
+                    **observed,
+                    "state": state,
+                    "printer": printer_of(printer_id),
+                    "executions": shown,
+                    "executions_complete": len(runs) <= OBSERVATION_EXECUTIONS,
+                }
+            )
+
+        # A restore between the gate and this answer must not hand back the facts of another database.
+        if await read_server_identity(db) != (server_id, epoch):
+            raise ConnectorRefusal(409, "context_changed", CONTEXT_CHANGED)
+    return {"jobs": jobs, "next_cursor": next_cursor}

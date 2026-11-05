@@ -920,6 +920,7 @@
   "The library file has changed since it was uploaded.": "Файл бібліотеки змінився після вивантаження.",
   "The library file is not available.": "Файл бібліотеки недоступний.",
   "The name is too long": "Назва задовга",
+  "The observation cursor does not belong to this operation.": "Курсор спостережень не належить цій операції.",
   "The operation was not found.": "Операцію не знайдено.",
   "The order changed while this was being saved — try again": "Замовлення змінилося, поки зміну зберігали — спробуйте ще раз",
   "The order is closed. Nothing was moved.": "Замовлення закрито. Нічого не перенесено.",

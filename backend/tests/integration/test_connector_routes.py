@@ -355,3 +355,24 @@ async def test_the_printer_list_names_each_printer_by_its_model_code(farm):
     row = next(p for p in response.json() if p["id"] == printer.id)
     assert row["model_code"] == "C12"
     assert row["connector_identity"] == printer.connector_identity
+
+
+async def test_observations_ride_on_the_operation_read(farm):
+    body = _body(farm, _entry(farm, quantity=1))
+    posted = await _post(farm, body)
+    assert posted.status_code in (200, 201, 202), posted.text
+    query = {"server_id": body["server_id"], "storage_epoch": body["storage_epoch"]}
+    url = f"{BASE}/submissions/{body['operation_id']}"
+    headers = {"X-API-Key": farm["raw"]}
+
+    plain = await farm["client"].get(url, params=query, headers=headers)
+    observed = await farm["client"].get(url, params={**query, "observations": "true"}, headers=headers)
+    bad = await farm["client"].get(url, params={**query, "observations": "true", "cursor": "e30"}, headers=headers)
+
+    assert plain.status_code == 200 and "observations" not in plain.json()
+    assert observed.status_code == 200, observed.text
+    [job] = observed.json()["observations"]["jobs"]
+    assert job["job"]["kind"] == "queue" and job["state"] == "queued" and job["job"]["identity"]
+    assert observed.json()["observations"]["next_cursor"] is None
+    assert bad.status_code == 400 and bad.json()["detail"]["error"] == "invalid_cursor"
+    assert farm["raw"] not in observed.text
