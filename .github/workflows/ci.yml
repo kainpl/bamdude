@@ -177,6 +177,9 @@ jobs:
         # the extra ones run while the others block. Baseline to compare against:
         # 1061s at `-n auto` on 2026-09-17.
         run: python -m pytest backend/tests/ -v --tb=short --timeout=60 --timeout-method=thread -n 4
+      - name: Test the Orca plugin core
+        # Standard library only; nothing of the backend or of OrcaSlicer is imported.
+        run: python -m pytest integrations/orca-plugin/tests -v --tb=short --timeout=60
 
   # The normal backend suite runs on Linux.  This deliberately small matrix
   # exercises the 3MF service/child boundary on every native installer
