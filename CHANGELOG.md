@@ -7,6 +7,8 @@ the API requires both acknowledgements too. Bundled local connectors have a
 separate default-off HTTP opt-in. HTTPS certificate verification, key scopes,
 host/origin checks and redirect refusal are unchanged. HTTP exposes keys and
 diagnostic data in plain text and is unsuitable for public networks.
+The SDK receives the same explicit host/origin allowlists, so an accepted LAN
+address is no longer rejected by its additional loopback-only default check.
 
 - Server-side slicing defaults to OrcaSlicer 2.5.0 and Bambu Studio 02.09.01.70. Rebuild the optional slicer API containers to apply the update; existing installations also need to update their version pins in `slicer-api/.env`.
 
