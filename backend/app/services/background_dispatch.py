@@ -34,7 +34,7 @@ from backend.app.models.printer import Printer
 # ⚠️ Module scope on purpose: the ``finally`` below calls into this, and a
 # dispatch that dies before reaching the local import would raise NameError
 # from inside the cleanup — masking the real exception.
-from backend.app.services import dispatch_phase, dispatch_stall_tracker, preheat as preheat_service
+from backend.app.services import dispatch_phase, dispatch_stall_tracker, job_lineage, preheat as preheat_service
 from backend.app.services.archive import ArchiveService
 from backend.app.services.bambu_ftp import (
     UploadReport,
@@ -2722,6 +2722,7 @@ class BackgroundDispatchService:
                         archive.queue_id = q_item.queue_id
                         archive.batch_id = q_item.batch_id
                         archive.from_auto_queue = q_item.source_auto_item_id is not None
+                        job_lineage.stamp_execution(archive, q_item)
 
                 # Print Now (no queue item): attribute the new archive to the
                 # printer's default queue so GET /printer-queues/ counters
@@ -3693,6 +3694,7 @@ class BackgroundDispatchService:
                         archive.queue_id = q_item.queue_id
                         archive.batch_id = q_item.batch_id
                         archive.from_auto_queue = q_item.source_auto_item_id is not None
+                        job_lineage.stamp_execution(archive, q_item)
 
                 # For non-queue dispatches (Print Now qty=1), attribute the
                 # archive to the printer's default queue so GET /printer-queues/

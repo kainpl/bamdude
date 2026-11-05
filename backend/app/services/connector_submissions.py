@@ -329,6 +329,40 @@ async def register(actor: ConnectorActor, body: SubmissionCreate, *, sessions=No
 # --------------------------------------------------------------------------- #
 
 
+async def _job_identities(session: AsyncSession, queue_item_ids: list[int], auto_item_ids: list[int]) -> list[dict]:
+    """(kind, id, identity) of every job a publication created, read in its own session (host spec r2.2 §11 S2).
+
+    The numeric id is an address inside this transaction only; the identity is what a later reader follows. A row
+    without one (never expected here) is recorded with a null identity and reads as unavailable, never by its id.
+    """
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.print_queue import PrintQueueItem
+
+    queue_rows = {}
+    if queue_item_ids:
+        queue_rows = dict(
+            (
+                await session.execute(
+                    select(PrintQueueItem.id, PrintQueueItem.recovery_identity).where(
+                        PrintQueueItem.id.in_(queue_item_ids)
+                    )
+                )
+            ).all()
+        )
+    auto_rows = {}
+    if auto_item_ids:
+        auto_rows = dict(
+            (
+                await session.execute(
+                    select(AutoQueueItem.id, AutoQueueItem.recovery_identity).where(AutoQueueItem.id.in_(auto_item_ids))
+                )
+            ).all()
+        )
+    return [{"kind": "queue", "id": i, "identity": queue_rows.get(i)} for i in queue_item_ids] + [
+        {"kind": "auto", "id": i, "identity": auto_rows.get(i)} for i in auto_item_ids
+    ]
+
+
 class ConnectorReceipt:
     """The :class:`~backend.app.services.queue_publication.PublicationReceipt` of one entry."""
 
@@ -371,6 +405,7 @@ class ConnectorReceipt:
     async def record(self, session: AsyncSession, *, queue_item_ids: list[int], auto_item_ids: list[int]) -> None:
         entry = await session.get(ConnectorSubmissionEntry, self.entry_pk)
         target = self.entry["target"]
+        jobs = await _job_identities(session, queue_item_ids, auto_item_ids)
         entry.published_receipt = {
             "source_sha256": self.manifest["source_sha256"],
             "library_file_id": self.manifest["library_file_id"],
@@ -379,6 +414,7 @@ class ConnectorReceipt:
             "target": {k: target[k] for k in sorted(target)},
             "queue_item_ids": list(queue_item_ids),
             "auto_item_ids": list(auto_item_ids),
+            "jobs": jobs,
             "published_at": _now().isoformat(),
         }
         entry.state = "published"

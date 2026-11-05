@@ -44,6 +44,11 @@ class AutoQueueItem(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Immutable for the row's life, new for every row (m217): the AutoQueue job's name in a job's lineage, since the
+    # numeric id is reused on SQLite. A transfer back into the AutoQueue re-arms the same row and keeps it.
+    recovery_identity: Mapped[str | None] = mapped_column(
+        String(36), default=lambda: str(uuid.uuid4()), unique=True, index=True
+    )
     # Immutable order choices copied at creation. Promotion/rebalance picks the
     # sliced model's entry; NULL retains the existing operator-profile path.
     order_print_options: Mapped[dict | None] = mapped_column(JSON, nullable=True)

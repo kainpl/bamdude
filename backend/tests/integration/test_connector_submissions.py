@@ -124,6 +124,12 @@ async def test_an_entry_publishes_its_quantity_and_the_receipt_names_the_jobs(fa
     assert sorted(i.id for i in items) == sorted(entry.queue_item_ids)
     assert all(i.manual_start and not i.execute_swap_macros for i in items)
     assert receipt["source_sha256"] == farm["sha"] and receipt["target"]["printer_id"] == farm["printer"].id
+    # The receipt names each job by its immutable identity too: a later reader follows that, never the id.
+    by_id = {i.id: i.recovery_identity for i in items}
+    assert receipt["jobs"] == [
+        {"kind": "queue", "id": job_id, "identity": by_id[job_id]} for job_id in entry.queue_item_ids
+    ]
+    assert all(job["identity"] for job in receipt["jobs"])
 
 
 async def test_running_a_published_operation_again_creates_no_job(farm, sessions):
@@ -234,6 +240,13 @@ async def test_an_auto_entry_publishes_into_the_auto_queue(farm, sessions):
 
     assert result.state == "complete" and len(result.entries[0].auto_item_ids) == 3
     assert await _count(sessions, AutoQueueItem) == 3 and await _count(sessions, PrintQueueItem) == 0
+    async with sessions() as db:
+        rows = {r.id: r.recovery_identity for r in (await db.execute(select(AutoQueueItem))).scalars().all()}
+        receipt = await db.scalar(select(ConnectorSubmissionEntry.published_receipt))
+    assert receipt["jobs"] == [
+        {"kind": "auto", "id": job_id, "identity": rows[job_id]} for job_id in result.entries[0].auto_item_ids
+    ]
+    assert len({job["identity"] for job in receipt["jobs"]}) == 3
 
 
 async def test_a_restricted_key_cannot_use_the_auto_queue(farm, sessions):
