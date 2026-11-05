@@ -69,9 +69,9 @@ from backend.app.services.filament_intake import (
 from backend.app.services.filament_policy import decode
 from backend.app.services.filament_policy_write import routing_update
 from backend.app.services.filament_requirements import PrintRequirementsCache
-from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_add import add_items_to_printer_queue, add_next_block_to_printer_queue
+from backend.app.services.queue_add_effects import announce_printer_queue_add
 from backend.app.services.queue_ops import queue_scope_lock
 from backend.app.services.queue_source_capture import refusal, reusing_sources, swap_request
 from backend.app.services.queue_source_descriptor import source_storage_state
@@ -689,39 +689,8 @@ async def add_to_queue(
     target_desc = queue.printer.name if queue.printer else f"queue {data.queue_id}"
     logger.info("Added %s to queue for %s", source_name, target_desc)
 
-    # MQTT relay - publish queue job added
-    try:
-        from backend.app.services.mqtt_relay import mqtt_relay
-
-        await mqtt_relay.on_queue_job_added(
-            job_id=item.id,
-            filename=item.archive.filename if item.archive else "",
-            printer_id=item.printer_id,
-            printer_name=queue.printer.name if queue.printer else None,
-        )
-    except Exception:
-        pass  # Don't fail queue add if MQTT fails
-
-    # Send notification for job added
-    try:
-        job_name = (
-            item.archive.filename
-            if item.archive
-            else item.library_file.filename
-            if item.library_file
-            else f"Job #{item.id}"
-        )
-        job_name = job_name.replace(".gcode.3mf", "").replace(".3mf", "")
-        target = queue.printer.name if queue.printer else f"Queue #{data.queue_id}"
-        await notification_service.on_queue_job_added(
-            job_name=job_name,
-            target=target,
-            db=db,
-            printer_id=item.printer_id,
-            printer_name=target,
-        )
-    except Exception:
-        pass  # Don't fail queue add if notification fails
+    # The MQTT relay event and the "job added" notification -- shared with the slicer connector's fresh publications.
+    await announce_printer_queue_add(db, item, queue)
 
     response = _enrich_response(item)
     response.created_item_ids = created_item_ids
