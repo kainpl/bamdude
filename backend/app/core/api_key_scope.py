@@ -72,6 +72,19 @@ _FARM_WIDE_ROUTES = frozenset(
     }
 )
 _FARM_WIDE_WHEN_AUTO = frozenset({"/api/v1/projects/{project_id}/plan/enqueue"})
+# The slicer connector (OrcaBamDude spec r2 §7.2, addendum C2). A new operation names its targets in
+# ``entries[].target``: any AutoQueue entry is farm-wide. An existing one is addressed by its id alone; its targets
+# come from the stored manifest of THIS key's own namespace -- a foreign or missing operation names nothing here and
+# the route answers 404, so no 403 tells one from the other.
+_CONNECTOR_PREFIX = "/api/v1/connector/"
+_CONNECTOR_SUBMIT = "/api/v1/connector/submissions"
+_CONNECTOR_OPERATION_ROUTES = frozenset(
+    {
+        "/api/v1/connector/submissions/{operation_id}",
+        "/api/v1/connector/submissions/{operation_id}/resume",
+        "/api/v1/connector/submissions/{operation_id}/cancel",
+    }
+)
 
 
 class _Unreadable(Exception):
@@ -303,6 +316,8 @@ async def enforce_printer_scope(db: AsyncSession, request: Request, api_key: Any
         body = await _json_body(request)
         target = body.get("target") if isinstance(body, dict) else None
         farm_wide = isinstance(target, dict) and target.get("kind") == "auto"
+    if template.startswith(_CONNECTOR_PREFIX):
+        await _enforce_connector_scope(db, request, api_key, template, allowed)
     if farm_wide:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -319,3 +334,40 @@ async def enforce_printer_scope(db: AsyncSession, request: Request, api_key: Any
     for printer_id in sorted(named):
         if printer_id not in allowed:
             raise printer_refusal(printer_id)
+
+
+async def _enforce_connector_scope(
+    db: AsyncSession, request: Request, api_key: Any, template: str, allowed: frozenset[int]
+) -> None:
+    """The connector's own refusals, as codes the plugin reads (``{"error", "message"}``), before any handler."""
+    from backend.app.services import connector_submissions as submissions
+
+    printers: set[int] = set()
+    auto = False
+    if template == _CONNECTOR_SUBMIT:
+        body = await _json_body(request)
+        entries = body.get("entries") if isinstance(body, dict) else None
+        for entry in entries if isinstance(entries, list) else []:
+            target = entry.get("target") if isinstance(entry, dict) else None
+            if isinstance(target, dict) and target.get("kind") == "auto":
+                auto = True
+    elif template in _CONNECTOR_OPERATION_ROUTES:
+        operation_id = request.path_params.get("operation_id")
+        own = await submissions.find_own(db, getattr(api_key, "connector_identity", None), str(operation_id))
+        if own is not None:
+            printers, auto = submissions.manifest_targets(own.manifest)
+    if auto:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "auto_requires_unrestricted_key", "message": submissions.AUTO_RESTRICTED},
+        )
+    try:
+        printers |= await printers_named_by(db, request, template)
+    except _Unreadable:
+        printers = {-1}
+    for printer_id in sorted(printers):
+        if printer_id not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": "printer_scope", "message": submissions.PRINTER_SCOPE},
+            )

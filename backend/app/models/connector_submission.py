@@ -64,6 +64,8 @@ class ConnectorSubmissionEntry(Base):
     # answer that question wrong.
     published_receipt: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The English sentence of the refusal, never a raw exception text; translated when it is answered.
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     attempt_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

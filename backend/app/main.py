@@ -12505,11 +12505,15 @@ async def lifespan(app: FastAPI):
     try:
         async with _application_lifespan(app):
             from backend.app.mcp_server.runtime import mcp_runtime
+            from backend.app.services.connector_runtime import connector_runtime
 
             await mcp_runtime.reload()
+            # A restore's fence is finished (a new storage epoch) before the slicer connector admits anything.
+            await connector_runtime.startup()
             try:
                 yield
             finally:
+                await connector_runtime.shutdown()
                 await mcp_runtime.shutdown()
                 farm_startup_guard.close_admission()
     except BaseException:
@@ -13227,6 +13231,9 @@ app.include_router(api_keys.router, prefix=app_settings.api_prefix)
 from backend.app.api.routes import mcp_integration
 
 app.include_router(mcp_integration.router, prefix=app_settings.api_prefix)
+from backend.app.api.routes import connector as connector_routes
+
+app.include_router(connector_routes.router, prefix=app_settings.api_prefix)
 app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
 app.include_router(printer_sensor_history.router, prefix=app_settings.api_prefix)

@@ -82,6 +82,7 @@ def _receipt_tables() -> tuple[Table, Table]:
         Column("state", String(20), nullable=False),
         Column("published_receipt", JSON, nullable=True),
         Column("error_code", String(64), nullable=True),
+        Column("error_message", String(500), nullable=True),
         Column("attempt_generation", Integer, nullable=False),
         Column("created_at", DateTime, nullable=False),
         Column("updated_at", DateTime, nullable=False),

@@ -173,6 +173,9 @@ class PrinterUpdate(BaseModel):
 
 class PrinterResponse(PrinterBase):
     id: int
+    # Immutable for the row's life, new for every row (m216): what a slicer connector remembers a printer by, since
+    # the numeric id is reused on SQLite. Not the serial, never sensitive.
+    connector_identity: str | None = None
     is_active: bool
     # The place, resolved. ``location_id`` comes from PrinterBase and is what a
     # form posts back; this is what anything displaying it reads, so neither has
