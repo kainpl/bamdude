@@ -66,6 +66,9 @@ CONTEXT_CHANGED = "This server is not the one the operation was made for."
 OPERATION_CONFLICT = "This operation was already submitted with different content."
 CANCELLED = "The entry was cancelled before it was published."
 PUBLICATION_FAILED = "The print could not be queued; it can be resumed."
+COMPACTED = "This operation's full record has been compacted; submit a new operation to print again."
+FULL_RETENTION_DAYS = 30
+_TERMINAL = ("published", "rejected", "cancelled")
 WRITER_REFUSED = "The print could not be queued."
 NOT_SLICED = "Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed."
 
@@ -551,7 +554,7 @@ async def run(submission_id: int, actor: ConnectorActor, *, states=RESUMABLE, se
     factory = sessions or database.async_session
     async with factory() as db:
         submission = await db.get(ConnectorSubmission, submission_id)
-        if submission is None or submission.api_key_identity != actor.key_identity:
+        if submission is None or submission.api_key_identity != actor.key_identity or is_compacted(submission):
             return
         manifest = submission.manifest
         rows = (
@@ -587,6 +590,15 @@ async def run(submission_id: int, actor: ConnectorActor, *, states=RESUMABLE, se
                     submission_id,
                     type(refusal.__cause__).__name__,
                 )
+
+
+async def ensure_resumable(submission_id: int, *, sessions=None) -> None:
+    """A compacted operation is never published again: 410, and a new operation is the way to print."""
+    factory = sessions or database.async_session
+    async with factory() as db:
+        submission = await db.get(ConnectorSubmission, submission_id)
+        if submission is not None:
+            ensure_not_compacted(submission)
 
 
 async def make_resumable(submission_id: int, *, sessions=None) -> int:
@@ -717,3 +729,71 @@ async def cancel(actor: ConnectorActor, operation_id: str, *, sessions=None) -> 
         )
         await db.commit()
         return True
+
+
+# --------------------------------------------------------------------------- #
+# Compaction
+# --------------------------------------------------------------------------- #
+
+
+def is_compacted(submission: ConnectorSubmission) -> bool:
+    return submission.compacted_at is not None
+
+
+def ensure_not_compacted(submission: ConnectorSubmission) -> None:
+    if is_compacted(submission):
+        raise ConnectorRefusal(410, "receipt_compacted", COMPACTED)
+
+
+async def compact(*, older_than_days: int = FULL_RETENTION_DAYS, sessions=None) -> int:
+    """Finished operations older than the retention keep a tombstone: the namespace, the manifest hash, each entry's
+    id and target, and every receipt. A compacted operation still answers its recorded result and its replay; it is
+    never published again (spec r2 §8.1). An operation with work left keeps its full manifest."""
+    from datetime import timedelta
+
+    factory = sessions or database.async_session
+    cutoff = _now() - timedelta(days=older_than_days)
+    compacted = 0
+    async with factory() as db:
+        candidates = (
+            await db.execute(
+                select(ConnectorSubmission.id).where(
+                    ConnectorSubmission.compacted_at.is_(None), ConnectorSubmission.created_at < cutoff
+                )
+            )
+        ).scalars()
+        ids = list(candidates)
+    for submission_id in ids:
+        async with factory() as db:
+            submission = (
+                await db.execute(
+                    select(ConnectorSubmission).where(ConnectorSubmission.id == submission_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if submission is None or is_compacted(submission):
+                continue
+            entries = (
+                (
+                    await db.execute(
+                        select(ConnectorSubmissionEntry)
+                        .where(ConnectorSubmissionEntry.submission_id == submission_id)
+                        .with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if any(entry.published_receipt is None and entry.state not in _TERMINAL for entry in entries):
+                await db.rollback()
+                continue
+            submission.manifest = {
+                "compacted": True,
+                "entries": [
+                    {"entry_id": entry["entry_id"], "target": entry.get("target") or {}}
+                    for entry in submission.manifest.get("entries") or []
+                ],
+            }
+            submission.compacted_at = _now()
+            await db.commit()
+            compacted += 1
+    return compacted

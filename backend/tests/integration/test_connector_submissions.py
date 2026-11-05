@@ -333,3 +333,57 @@ async def test_an_archived_printer_receives_nothing(farm, sessions):
 
     assert result.entries[0].error.error == "printer_not_found"
     assert await _count(sessions, PrintQueueItem) == 0
+
+
+async def _backdate(sessions, days):
+    from datetime import datetime, timedelta, timezone
+
+    from backend.app.models.connector_submission import ConnectorSubmission
+
+    async with sessions() as db:
+        await db.execute(
+            update(ConnectorSubmission).values(
+                created_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+            )
+        )
+        await db.commit()
+
+
+async def test_a_finished_operation_compacts_to_a_tombstone_that_still_answers(farm, sessions):
+    from backend.app.models.connector_submission import ConnectorSubmission
+
+    body = _body(farm)
+    before = await _submit(farm, body)
+    await _backdate(sessions, cs.FULL_RETENTION_DAYS + 1)
+
+    assert await cs.compact() == 1
+    assert await cs.compact() == 0
+
+    after = await cs.result(farm["actor"], body.operation_id)
+    assert after.entries == before.entries and after.state == "complete"
+    async with sessions() as db:
+        manifest = (await db.execute(select(ConnectorSubmission.manifest))).scalar_one()
+    assert manifest["compacted"] and "options" not in manifest["entries"][0]
+    assert manifest["entries"][0]["target"]["printer_id"] == farm["printer"].id
+    replay = await cs.register(farm["actor"], body)
+    assert not replay.created
+    with pytest.raises(cs.ConnectorRefusal) as refused:
+        await cs.ensure_resumable(replay.submission_id)
+    assert refused.value.status == 410 and refused.value.code == "receipt_compacted"
+    await cs.run(replay.submission_id, farm["actor"])
+    assert await _count(sessions, PrintQueueItem) == 2
+
+
+async def test_an_operation_with_work_left_keeps_its_full_record(farm, sessions):
+    body = _body(farm)
+    await cs.register(farm["actor"], body)
+    await _backdate(sessions, cs.FULL_RETENTION_DAYS + 1)
+
+    assert await cs.compact() == 0
+    await cs.ensure_resumable((await cs.register(farm["actor"], body)).submission_id)
+
+
+async def test_a_recent_operation_is_not_compacted(farm, sessions):
+    await _submit(farm, _body(farm))
+
+    assert await cs.compact() == 0

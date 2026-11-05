@@ -990,6 +990,7 @@
   "This operation was already submitted with different content.": "Цю операцію вже надіслано з іншим вмістом.",
   "This operation was already used for another declaration.": "Цю операцію вже використано для іншої декларації.",
   "This operation was already used for another refresh.": "Цю операцію вже використано для іншого оновлення.",
+  "This operation's full record has been compacted; submit a new operation to print again.": "Повний запис цієї операції стиснуто; щоб надрукувати знову, надішліть нову операцію.",
   "This order is being changed right now — try again": "Це замовлення саме зараз змінюють — спробуйте ще раз",
   "This order is closed — nothing new is filed under it": "Замовлення закрите — до нього нічого нового не прив’язується",
   "This order's goods went to free stock; duplicate it instead": "Товар цього замовлення вже повернуто у вільний залишок — створіть копію замовлення",

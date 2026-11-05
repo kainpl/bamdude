@@ -247,6 +247,7 @@ async def resume_submission(
     submission_id = await _own(actor, operation_id, server_id, storage_epoch)
     try:
         connector_runtime.ensure_admitting()
+        await submissions.ensure_resumable(submission_id)
         task = connector_runtime.running(submission_id)
         if task is None:
             await submissions.make_resumable(submission_id)

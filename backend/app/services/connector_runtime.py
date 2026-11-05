@@ -31,6 +31,7 @@ MAX_COORDINATORS_PER_KEY = 2
 MAX_COORDINATORS = 8
 MAX_UPLOADS = 2
 DRAIN_SECONDS = 30
+COMPACTION_INTERVAL_SECONDS = 6 * 3600
 FENCE_NAME = ".connector-restore-pending"
 
 RESTORING = "The slicer connector is unavailable while storage is being restored."
@@ -47,6 +48,7 @@ class ConnectorRuntime:
         self._uploads: set[asyncio.Task] = set()
         self._restore_hold = False
         self._fenced = False
+        self._compactor: asyncio.Task | None = None
         # Uvicorn serves no request before the lifespan's start, which checks the fence; shutdown closes admission.
         self._started = True
 
@@ -115,9 +117,27 @@ class ConnectorRuntime:
         _, remaining = await asyncio.wait(pending, timeout=timeout)
         return not remaining
 
+    async def _stop_compactor(self) -> None:
+        task, self._compactor = self._compactor, None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.wait({task}, timeout=DRAIN_SECONDS)
+
+    async def _compaction_loop(self) -> None:
+        while True:
+            if self.admitting:
+                try:
+                    count = await submissions.compact()
+                    if count:
+                        logger.info("Slicer connector: %d finished operation(s) compacted", count)
+                except Exception:  # noqa: BLE001 -- the next pass tries again
+                    logger.warning("Slicer connector: compaction failed", exc_info=True)
+            await asyncio.sleep(COMPACTION_INTERVAL_SECONDS)
+
     async def quiesce_for_restore(self) -> bool:
         """Close admission before the first await, then drain every owned task. False: something is still running."""
         self._restore_hold = True
+        await self._stop_compactor()
         drained = await self._drain(DRAIN_SECONDS)
         if not drained:
             logger.warning("Slicer connector work is still running; restore refused")
@@ -155,15 +175,18 @@ class ConnectorRuntime:
         """Open admission -- unless a restore's fence is still there and its rotation cannot be finished."""
         self._started = True
         self._restore_hold = False
-        if not fence_path().exists():
+        if fence_path().exists():
+            self._fenced = True
+            if await self.finish_restore():
+                self._fenced = False
+        else:
             self._fenced = False
-            return
-        self._fenced = True
-        if await self.finish_restore():
-            self._fenced = False
+        if self._compactor is None or self._compactor.done():
+            self._compactor = spawn_background_task(self._compaction_loop(), name="connector-compaction")
 
     async def shutdown(self) -> None:
         self._started = False
+        await self._stop_compactor()
         if not await self._drain(DRAIN_SECONDS):
             for _, task in list(self._coordinators.values()):
                 task.cancel()

@@ -127,6 +127,7 @@ async def test_a_fence_left_by_a_crash_rotates_the_epoch_before_admission(runtim
     assert new_epoch != old_epoch
     assert restarted.admitting
     assert not runtime_module.fence_path().exists()
+    await restarted.shutdown()
 
 
 async def test_a_fence_whose_rotation_fails_keeps_admission_closed(runtime, sessions, monkeypatch):
@@ -144,6 +145,7 @@ async def test_a_fence_whose_rotation_fails_keeps_admission_closed(runtime, sess
     with pytest.raises(ConnectorRefusal) as refused:
         restarted.ensure_admitting()
     assert refused.value.code == "storage_restoring"
+    await restarted.shutdown()
 
 
 async def test_a_restore_that_replaced_nothing_keeps_the_epoch(runtime, sessions):
@@ -158,6 +160,7 @@ async def test_a_restore_that_replaced_nothing_keeps_the_epoch(runtime, sessions
     async with sessions() as db:
         assert (await submissions.server_identity(db))[1] == epoch
     assert restarted.admitting
+    await restarted.shutdown()
 
 
 async def test_a_restore_refuses_while_connector_work_runs(tmp_path, monkeypatch):
