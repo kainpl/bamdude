@@ -47,6 +47,7 @@ class AppSettings(BaseModel):
     """Application settings schema."""
 
     mcp_enabled: bool = False
+    mcp_allow_http: bool = False
     mcp_endpoint_url: str = ""
     mcp_allowed_hosts: list[str] = Field(default_factory=list)
     mcp_allowed_origins: list[str] = Field(default_factory=list)
@@ -734,6 +735,10 @@ class AppSettingsUpdate(BaseModel):
     """Schema for updating settings (all fields optional)."""
 
     mcp_enabled: bool | None = None
+    mcp_allow_http: bool | None = None
+    # Request-only acknowledgements; never persisted or returned with settings.
+    mcp_http_risk_acknowledged: bool = False
+    mcp_http_trusted_network_acknowledged: bool = False
     mcp_endpoint_url: str | None = None
     mcp_allowed_hosts: list[str] | None = Field(default=None, max_length=32)
     mcp_allowed_origins: list[str] | None = Field(default=None, max_length=32)
@@ -743,7 +748,16 @@ class AppSettingsUpdate(BaseModel):
     def validate_mcp_endpoint(cls, value):
         if value is None:
             raise ValueError("MCP endpoint cannot be null")
-        return canonical_endpoint(value)
+        # Validate syntax here; the route checks the effective persisted policy,
+        # including partial updates, before writing any settings.
+        return canonical_endpoint(value, allow_http=True)
+
+    @field_validator("mcp_allow_http")
+    @classmethod
+    def validate_mcp_allow_http(cls, value):
+        if value is None:
+            raise ValueError("MCP HTTP permission cannot be null")
+        return value
 
     @field_validator("mcp_allowed_hosts", "mcp_allowed_origins")
     @classmethod

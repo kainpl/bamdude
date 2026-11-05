@@ -105,7 +105,8 @@ describe('McpSettingsCard', () => {
   it('enforces distinct settings-write, key-create and marker permissions in the UI', async () => {
     denied = new Set(['settings:update', 'api_keys:create', 'api_keys:update']);
     render(<McpSettingsCard />);
-    expect(await screen.findByRole('switch')).toBeDisabled();
+    expect(await screen.findByRole('switch', { name: 'Enable MCP' })).toBeDisabled();
+    expect(screen.getByRole('switch', { name: 'Allow unencrypted HTTP addresses for MCP' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Save MCP settings' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Create diagnostic key' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Check connection' })).toBeDisabled();
@@ -138,5 +139,58 @@ describe('McpSettingsCard', () => {
     expect(screen.getByText(/connected its bundled connector/)).toBeInTheDocument();
     await user.click(screen.getByText('Manual connection'));
     expect(screen.getByText(/bypasses the local connector/)).toBeInTheDocument();
+  });
+
+  it('requires two dialogs and the network acknowledgement before HTTP can be saved', async () => {
+    let payload: Record<string, unknown> | undefined;
+    server.use(http.put('/api/v1/settings/', async ({ request }) => { payload = await request.json() as Record<string, unknown>; return HttpResponse.json(payload); }));
+    const user = userEvent.setup();
+    render(<McpSettingsCard />);
+    await screen.findByDisplayValue(endpoint);
+    const toggle = screen.getByRole('switch', { name: 'Allow unencrypted HTTP addresses for MCP' });
+    await user.click(toggle);
+    expect(toggle).not.toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(toggle).not.toBeChecked();
+    expect(payload).toBeUndefined();
+    await user.click(toggle);
+    await user.click(screen.getByRole('button', { name: 'I understand — continue' }));
+    expect(screen.getByRole('button', { name: 'Allow HTTP at my own risk' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    await user.click(screen.getByRole('button', { name: 'I understand — continue' }));
+    await user.click(screen.getByLabelText(/I control this private network/));
+    await user.click(screen.getByRole('button', { name: 'Allow HTTP at my own risk' }));
+    expect(toggle).toBeChecked();
+    expect(payload).toBeUndefined();
+    const input = screen.getByDisplayValue(endpoint);
+    await user.clear(input);
+    await user.type(input, 'http://farm.lan:8000/mcp');
+    await user.click(screen.getByRole('button', { name: 'Save MCP settings' }));
+    await waitFor(() => expect(payload?.mcp_allow_http).toBe(true));
+    expect(payload?.mcp_endpoint_url).toBe('http://farm.lan:8000/mcp');
+    expect(payload?.mcp_allowed_hosts).toContain('farm.lan:8000');
+    expect(payload?.mcp_http_risk_acknowledged).toBe(true);
+    expect(payload?.mcp_http_trusted_network_acknowledged).toBe(true);
+    await user.click(toggle);
+    expect(screen.getByLabelText('Address used by the assistant')).toHaveValue('');
+    await user.click(screen.getByRole('button', { name: 'Save MCP settings' }));
+    await waitFor(() => expect(payload?.mcp_allow_http).toBe(false));
+    expect(payload?.mcp_http_risk_acknowledged).toBeUndefined();
+    expect(payload?.mcp_endpoint_url).toBe('');
+  });
+
+  it('does not save a non-loopback HTTP address without opting in', async () => {
+    const save = vi.fn(() => HttpResponse.json({}));
+    server.use(http.put('/api/v1/settings/', save));
+    const user = userEvent.setup();
+    render(<McpSettingsCard />);
+    const input = await screen.findByDisplayValue(endpoint);
+    await user.clear(input);
+    await user.type(input, 'http://farm.lan:8000/mcp');
+    await user.click(screen.getByRole('button', { name: 'Save MCP settings' }));
+    await screen.findByText('Could not complete this step. Check the address, permissions and server status.');
+    expect(save).not.toHaveBeenCalled();
   });
 });

@@ -98,6 +98,19 @@ test('an empty optional CA or its exact host placeholder uses system trust, not 
   }
 });
 
+test('non-loopback HTTP requires literal opt-in without weakening TLS or endpoint validation', () => {
+  const env = { BAMDUDE_MCP_URL: 'http://farm.lan:8000/mcp', BAMDUDE_MCP_KEY: secret };
+  for (const flag of [undefined, '', 'false', '1', 'TRUE', '${user_config.allow_http}']) {
+    assert.throws(() => configuration({ ...env, BAMDUDE_MCP_ALLOW_HTTP: flag }), /invalid_endpoint/);
+  }
+  const optedIn = { ...env, BAMDUDE_MCP_ALLOW_HTTP: 'true' };
+  assert.equal(configuration(optedIn).endpoint.href, env.BAMDUDE_MCP_URL);
+  assert.throws(() => configuration({ ...optedIn, NODE_TLS_REJECT_UNAUTHORIZED: '0' }), /tls_bypass_forbidden/);
+  for (const url of ['http://user:pass@farm.lan/mcp', 'http://farm.lan/mcp?key=x', 'http://farm.lan/mcp#x', 'http://farm.lan/other', 'file:///mcp']) {
+    assert.throws(() => configuration({ ...optedIn, BAMDUDE_MCP_URL: url }), /invalid_endpoint/);
+  }
+});
+
 test('real stdio host discovers tools, calls guide and reads resource/prompt; two keys stay separate', async t => {
   const farm = await fixture(t);
   const first = await client(t, farm);
@@ -163,6 +176,9 @@ test('self-signed TLS refuses by default, accepts explicit CA, and refuses a cha
   const untrusted = connection(configuration({ BAMDUDE_MCP_URL: farm.url, BAMDUDE_MCP_KEY: secret, BAMDUDE_MCP_CA_FILE: '${user_config.ca_file}' }));
   t.after(() => untrusted.close());
   await assert.rejects(untrusted.fetch(farm.url, { method: 'POST', body: '{}' }), /network_or_tls_error/);
+  const httpOptIn = connection(configuration({ BAMDUDE_MCP_URL: farm.url, BAMDUDE_MCP_KEY: secret, BAMDUDE_MCP_ALLOW_HTTP: 'true' }));
+  t.after(() => httpOptIn.close());
+  await assert.rejects(httpOptIn.fetch(farm.url, { method: 'POST', body: '{}' }), /network_or_tls_error/);
   const trusted = connection(configuration({ BAMDUDE_MCP_URL: farm.url, BAMDUDE_MCP_KEY: secret, BAMDUDE_MCP_CA_FILE: caFile }));
   t.after(() => trusted.close());
   assert.equal((await trusted.fetch(farm.url, { method: 'POST', body: '{}' })).status, 202);

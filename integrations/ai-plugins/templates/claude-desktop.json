@@ -11,12 +11,13 @@
     "type": "node", "entry_point": "server/index.cjs",
     "mcp_config": {
       "command": "node", "args": ["${__dirname}/server/index.cjs"],
-      "env": { "BAMDUDE_MCP_URL": "${user_config.endpoint}", "BAMDUDE_MCP_KEY": "${user_config.api_key}", "BAMDUDE_MCP_CA_FILE": "${user_config.ca_file}" }
+      "env": { "BAMDUDE_MCP_URL": "${user_config.endpoint}", "BAMDUDE_MCP_KEY": "${user_config.api_key}", "BAMDUDE_MCP_CA_FILE": "${user_config.ca_file}", "BAMDUDE_MCP_ALLOW_HTTP": "${user_config.allow_http}" }
     }
   },
   "compatibility": { "platforms": ["win32", "darwin"], "runtimes": { "node": ">=22.19.0" } },
   "user_config": {
-    "endpoint": { "type": "string", "title": "BamDude MCP address", "description": "Exact https://your-farm/mcp address. HTTP is allowed only on loopback.", "required": true },
+    "endpoint": { "type": "string", "title": "BamDude MCP address", "description": "Exact https://your-farm/mcp address. Non-loopback HTTP needs the explicit trusted-network opt-in.", "required": true },
+    "allow_http": { "type": "boolean", "title": "Allow unencrypted HTTP (trusted LAN only)", "description": "OFF by default. Only after accepting both HTTP warnings in BamDude settings: API keys and data will be sent in plain text. Never enable for a public network or Internet-facing address. HTTPS certificates are still verified.", "required": false, "default": false },
     "api_key": { "type": "string", "title": "BamDude MCP key", "description": "A separate MCP-enabled API key. Never enter it in chat.", "sensitive": true, "required": true },
     "ca_file": { "type": "file", "title": "Trusted CA file (optional)", "description": "PEM CA file for a self-signed LAN server. Its certificate must match the hostname or IP.", "required": false, "default": "" }
   }

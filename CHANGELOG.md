@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+MCP setup can optionally accept unencrypted HTTP addresses for a trusted home
+LAN. HTTPS remains the default outside loopback. Enabling the option requires
+two warnings, an explicit network-risk acknowledgement and a settings save;
+the API requires both acknowledgements too. Bundled local connectors have a
+separate default-off HTTP opt-in. HTTPS certificate verification, key scopes,
+host/origin checks and redirect refusal are unchanged. HTTP exposes keys and
+diagnostic data in plain text and is unsuitable for public networks.
+The SDK receives the same explicit host/origin allowlists, so an accepted LAN
+address is no longer rejected by its additional loopback-only default check.
+
 - Release downloads carry one `bamdude-<version>-SHA256SUMS` for the Windows installer and the AI client packages, written only after each package matches the hashes of its own build. The package build's internal catalog (`packages.json`) and its partial checksum file are no longer attached to the release.
 
 ## [0.7.3] - 2026-11-04

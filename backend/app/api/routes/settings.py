@@ -84,6 +84,7 @@ async def get_settings(
             if setting.key in [
                 "save_thumbnails",
                 "mcp_enabled",
+                "mcp_allow_http",
                 "capture_finish_photo",
                 "camera_light_auto",
                 "camera_light_auto_obico",
@@ -209,6 +210,23 @@ async def update_settings(
 ):
     """Update application settings."""
     update_data = settings_update.model_dump(exclude_unset=True)
+    risk_ack = update_data.pop("mcp_http_risk_acknowledged", False)
+    network_ack = update_data.pop("mcp_http_trusted_network_acknowledged", False)
+    if {"mcp_allow_http", "mcp_endpoint_url"} & update_data.keys():
+        from backend.app.mcp_server.config import canonical_endpoint
+
+        was_allowed = await get_setting(db, "mcp_allow_http") == "true"
+        allow_http = update_data.get("mcp_allow_http", was_allowed)
+        if allow_http and not was_allowed and not (risk_ack and network_ack):
+            raise HTTPException(422, "Enabling MCP HTTP requires both explicit risk acknowledgements")
+        endpoint = update_data.get("mcp_endpoint_url")
+        if endpoint is None:
+            endpoint = await get_setting(db, "mcp_endpoint_url") or ""
+        try:
+            canonical_endpoint(endpoint, allow_http=allow_http)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from None
+
     if any(key.startswith("forecast_operator_") for key in update_data):
         current = (await get_settings(db, None)).model_dump()
         operator = {**current, **update_data}
