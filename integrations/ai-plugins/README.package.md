@@ -39,7 +39,22 @@ url = "https://YOUR-FARM/mcp"
 bearer_token_env_var = "BAMDUDE_MCP_KEY"
 ```
 
-Use HTTPS outside loopback. For a self-signed certificate, explicitly select its
+HTTPS is recommended outside loopback. A trusted private LAN may explicitly
+opt into HTTP: in BamDude Settings enable **Allow unencrypted HTTP addresses
+for MCP**, accept both warnings and save the exact `http://YOUR-FARM/mcp`
+address. In the Claude connector also enable **Allow unencrypted HTTP**
+(`BAMDUDE_MCP_ALLOW_HTTP=true` for a manual adapter configuration); install an
+updated package if that option is missing. Unset, false and unfilled placeholders
+do not opt in. Direct clients such as Codex use the saved HTTP URL instead of
+the adapter flag. API keys and data travel in plain text: never use this on a
+public network or an Internet-facing address. This setting permits setup
+addresses, not firewall rules or proxy changes. To return to HTTPS, save an
+HTTPS URL with HTTP permission off and disable the connector's HTTP option.
+Turning the UI switch off clears an HTTP URL so it can be saved immediately.
+Existing host/origin allowlists and key permissions still apply. Cloud access
+to a private farm is not enabled by this exception.
+
+For a self-signed certificate, explicitly select its
 PEM CA file in the local connector. When using an IP, the certificate must list
 that IP. Never disable TLS verification. Redirects and OAuth discovery are
 refused. If the farm was offline when the connector started, restart the client
