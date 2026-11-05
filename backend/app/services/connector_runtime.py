@@ -5,6 +5,10 @@
   process. They carry scalar identities only and open their own sessions.
 - **Upload slots** -- two per process. A slot is held from admission until the work that uses the bytes has really
   ended; a cancelled request does not release it early (the work runs in its own task).
+- **Requests** -- every route that reads or writes an operation runs its storage work as a task of its own
+  (:meth:`ConnectorRuntime.own_request`): from the proof of ownership to the last write and the answer's last read.
+  A restore drains it, and a cancelled request leaves it to finish, so storage is never replaced between a proof and
+  what relies on it.
 - **Restore.** :meth:`ConnectorRuntime.quiesce_for_restore` closes admission before its first await and drains
   everything owned; it never reopens in this process (a restore needs a restart). Before storage is replaced the
   restore writes a fence file outside the replaced storage; the new database gets a new storage epoch, and the fence
@@ -18,8 +22,8 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import TypeVar
 
 from backend.app.core.config import settings
 from backend.app.core.tasks import spawn_background_task
@@ -36,6 +40,7 @@ COMPACTION_INTERVAL_SECONDS = 6 * 3600
 FENCE_NAME = ".connector-restore-pending"
 
 RESTORING = "The slicer connector is unavailable while storage is being restored."
+T = TypeVar("T")
 BUSY = "The slicer connector is busy; retry shortly."
 
 
@@ -47,10 +52,8 @@ class ConnectorRuntime:
     def __init__(self):
         self._coordinators: dict[int, tuple[str, asyncio.Task]] = {}
         self._uploads: set[asyncio.Task] = set()
-        # Reads of an operation in progress (GET): a restore waits for them before storage is replaced.
-        self._readers = 0
-        self._readers_idle = asyncio.Event()
-        self._readers_idle.set()
+        # Every request's storage work in progress: a restore waits for it before storage is replaced.
+        self._requests: set[asyncio.Task] = set()
         self._restore_hold = False
         self._fenced = False
         self._compactor: asyncio.Task | None = None
@@ -67,20 +70,27 @@ class ConnectorRuntime:
         if not self.admitting:
             raise ConnectorRefusal(503, "storage_restoring", RESTORING, retryable=True)
 
-    @asynccontextmanager
-    async def reading(self):
-        """Own one read of an operation: refused while a restore holds or is fenced, and counted so that
-        ``quiesce_for_restore`` waits for it before storage is replaced (H0 review R1)."""
-        if self._restore_hold or self._fenced:
+    async def own_request(self, work: Callable[[], Awaitable[T]], *, new_work: bool) -> T:
+        """Run one request's storage work as a task the restore lifecycle owns (H0 reviews r1 and r2).
+
+        Refused before it starts while a restore holds or is fenced -- and, for new work (submit, resume), whenever
+        admission is closed. The work runs as a task of its own that ``quiesce_for_restore`` drains, so storage is
+        never replaced between a proof of ownership and the write or answer that relies on it. A cancelled request
+        (an HTTP disconnect) leaves the task to finish: the lease ends with the work, never with the request.
+        """
+        if new_work:
+            self.ensure_admitting()
+        elif self._restore_hold or self._fenced:
             raise ConnectorRefusal(503, "storage_restoring", RESTORING, retryable=True)
-        self._readers += 1
-        self._readers_idle.clear()
-        try:
-            yield
-        finally:
-            self._readers -= 1
-            if self._readers == 0:
-                self._readers_idle.set()
+        task = asyncio.create_task(work(), name="connector-request")
+        self._requests.add(task)
+        task.add_done_callback(self._release_request)
+        return await asyncio.shield(task)
+
+    def _release_request(self, task: asyncio.Task) -> None:
+        self._requests.discard(task)
+        if not task.cancelled():
+            task.exception()  # a refusal is the request's answer; one nobody awaits any more is no error to log
 
     def running(self, submission_id: int) -> asyncio.Task | None:
         entry = self._coordinators.get(submission_id)
@@ -130,19 +140,13 @@ class ConnectorRuntime:
     # ----------------------------------------------------------------- lifecycle
 
     async def _drain(self, timeout: float) -> bool:
-        pending = {task for _, task in self._coordinators.values()} | set(self._uploads)
+        """Wait for every owned task under one deadline. Admission is closed by then, so nothing new joins."""
+        pending = {task for _, task in self._coordinators.values()} | self._uploads | self._requests
         pending = {task for task in pending if not task.done()}
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        if pending:
-            _, remaining = await asyncio.wait(pending, timeout=timeout)
-            if remaining:
-                return False
-        try:
-            await asyncio.wait_for(self._readers_idle.wait(), timeout=max(0.0, deadline - loop.time()))
-        except TimeoutError:
-            return False
-        return True
+        if not pending:
+            return True
+        _, remaining = await asyncio.wait(pending, timeout=timeout)
+        return not remaining
 
     async def _stop_compactor(self) -> None:
         task, self._compactor = self._compactor, None
@@ -215,16 +219,14 @@ class ConnectorRuntime:
         self._started = False
         await self._stop_compactor()
         if not await self._drain(DRAIN_SECONDS):
-            for _, task in list(self._coordinators.values()):
+            for task in [task for _, task in self._coordinators.values()] + list(self._requests):
                 task.cancel()
             logger.warning("Slicer connector work was still running at shutdown")
 
     def _reset_for_tests(self) -> None:
         self._coordinators.clear()
         self._uploads.clear()
-        self._readers = 0
-        self._readers_idle = asyncio.Event()
-        self._readers_idle.set()
+        self._requests.clear()
         self._restore_hold = self._fenced = False
         self._started = True
 

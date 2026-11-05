@@ -196,26 +196,73 @@ async def test_a_restore_refuses_while_connector_work_runs(tmp_path, monkeypatch
     db.close.assert_not_awaited()
 
 
-async def test_a_restore_waits_for_a_read_in_progress_and_refuses_new_ones(runtime):
-    """A GET of an operation is owned: storage is not replaced under it, and none starts during the hold."""
+async def _noop():
+    return None
+
+
+async def test_a_restore_waits_for_a_request_in_progress_and_refuses_new_ones(runtime):
+    """A request's storage work is owned: storage is not replaced under it, and none starts during the hold."""
     entered = asyncio.Event()
     leave = asyncio.Event()
 
-    async def reader():
-        async with runtime.reading():
-            entered.set()
-            await leave.wait()
+    async def work():
+        entered.set()
+        await leave.wait()
+        return "answer"
 
-    task = asyncio.create_task(reader())
+    request = asyncio.create_task(runtime.own_request(work, new_work=False))
     await entered.wait()
     runtime._restore_hold = True
 
-    assert await runtime._drain(0.05) is False  # the read is still under way
-    with pytest.raises(ConnectorRefusal) as refused:
-        async with runtime.reading():
-            pass
-    assert (refused.value.status, refused.value.code) == (503, "storage_restoring")
+    assert await runtime._drain(0.05) is False  # the request's work is still under way
+    for new_work in (False, True):
+        with pytest.raises(ConnectorRefusal) as refused:
+            await runtime.own_request(_noop, new_work=new_work)
+        assert (refused.value.status, refused.value.code) == (503, "storage_restoring")
 
     leave.set()
-    await task
+    assert await request == "answer"
     assert await runtime._drain(0.05) is True
+
+
+async def test_a_cancelled_request_leaves_its_work_owned_to_its_end(runtime):
+    """An HTTP disconnect cancels the handler, never the work: the lease ends with the work."""
+    entered = asyncio.Event()
+    leave = asyncio.Event()
+    finished = []
+
+    async def work():
+        entered.set()
+        await leave.wait()
+        finished.append(True)
+
+    request = asyncio.create_task(runtime.own_request(work, new_work=False))
+    await entered.wait()
+    request.cancel()
+    await asyncio.gather(request, return_exceptions=True)
+
+    assert request.cancelled()
+    assert await runtime._drain(0.05) is False
+    leave.set()
+    assert await runtime._drain(1) is True
+    assert finished == [True]
+
+
+async def test_a_refusal_reaches_its_request_and_nothing_else(runtime):
+    async def work():
+        raise ConnectorRefusal(409, "context_changed", "changed")
+
+    with pytest.raises(ConnectorRefusal) as refused:
+        await runtime.own_request(work, new_work=False)
+
+    assert refused.value.code == "context_changed"
+    assert not runtime._requests
+
+
+async def test_shutdown_admits_reads_and_cancels_but_no_new_work(runtime):
+    runtime._started = False
+
+    assert await runtime.own_request(_noop, new_work=False) is None
+    with pytest.raises(ConnectorRefusal) as refused:
+        await runtime.own_request(_noop, new_work=True)
+    assert refused.value.status == 503

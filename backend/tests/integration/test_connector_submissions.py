@@ -286,7 +286,7 @@ async def test_cancel_fences_unpublished_entries_only(farm, sessions):
         )
         await db.commit()
     await cs.run(registered.submission_id, farm["actor"])
-    assert await cs.cancel(farm["actor"], body.operation_id)
+    await cs.cancel(registered.proof)
     await cs.run(registered.submission_id, farm["actor"])
 
     result = await cs.result(farm["actor"], body.operation_id)
@@ -306,7 +306,10 @@ async def test_a_foreign_key_sees_no_operation_and_cannot_cancel_it(farm):
     stranger = cs.ConnectorActor(key_id=farm["key"].id, key_identity=str(uuid.uuid4()), owner_id=None)
 
     assert await cs.result(stranger, body.operation_id) is None
-    assert not await cs.cancel(stranger, body.operation_id)
+    # A cancel is addressed by a proof of ownership, and a foreign key gets none: the same 404 as a missing one.
+    with pytest.raises(cs.ConnectorRefusal) as refused:
+        await cs.prove_own(stranger, body.operation_id, None, None)
+    assert (refused.value.status, refused.value.code) == (404, "operation_not_found")
 
 
 async def test_a_writer_that_raised_after_its_commit_leaves_the_entry_published(farm, sessions, monkeypatch):
@@ -381,7 +384,7 @@ async def test_a_finished_operation_compacts_to_a_tombstone_that_still_answers(f
     replay = await cs.register(farm["actor"], body)
     assert not replay.created
     with pytest.raises(cs.ConnectorRefusal) as refused:
-        await cs.ensure_resumable(replay.submission_id)
+        await cs.ensure_resumable(replay.proof)
     assert refused.value.status == 410 and refused.value.code == "receipt_compacted"
     await cs.run(replay.submission_id, farm["actor"])
     assert await _count(sessions, PrintQueueItem) == 2
@@ -393,7 +396,7 @@ async def test_an_operation_with_work_left_keeps_its_full_record(farm, sessions)
     await _backdate(sessions, cs.FULL_RETENTION_DAYS + 1)
 
     assert await cs.compact() == 0
-    await cs.ensure_resumable((await cs.register(farm["actor"], body)).submission_id)
+    await cs.ensure_resumable((await cs.register(farm["actor"], body)).proof)
 
 
 async def test_a_recent_operation_is_not_compacted(farm, sessions):

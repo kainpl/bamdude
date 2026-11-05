@@ -53,12 +53,12 @@ async def test_a_cancel_waits_for_a_publication_already_holding_the_rows(farm, s
 
     publication = asyncio.create_task(cs.run(registered.submission_id, farm["actor"]))
     await asyncio.wait_for(inside.wait(), 30)
-    cancel = asyncio.create_task(cs.cancel(farm["actor"], body.operation_id))
+    cancel = asyncio.create_task(cs.cancel(registered.proof))
     await asyncio.sleep(1.0)
     assert not cancel.done(), "the cancel must wait for the publication's rows"
 
     release.set()
-    assert await asyncio.wait_for(cancel, 30)
+    await asyncio.wait_for(cancel, 30)
     await asyncio.wait_for(publication, 30)
 
     result = await cs.result(farm["actor"], body.operation_id)
@@ -82,7 +82,7 @@ async def test_a_cancel_that_committed_first_stops_the_publication(farm, session
 
     publication = asyncio.create_task(cs.run(registered.submission_id, farm["actor"]))
     await asyncio.wait_for(claimed.wait(), 30)
-    assert await cs.cancel(farm["actor"], body.operation_id)
+    await cs.cancel(registered.proof)
     cancelled.set()
     await asyncio.wait_for(publication, 30)
 

@@ -8,6 +8,7 @@ A numeric id is never followed, because SQLite hands a deleted row's id to the n
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timedelta
@@ -95,7 +96,7 @@ async def test_a_running_execution_proves_its_first_layer_from_the_live_printer(
         await db.execute(update(PrintQueueItem).where(PrintQueueItem.id == row.id).values(status="printing"))
         await db.commit()
     archive = await _execute(sessions, row, farm["printer"].id, dispatch_phase="accepted")
-    live = SimpleNamespace(state="RUNNING", layer_num=0)
+    live = SimpleNamespace(connected=True, state="RUNNING", layer_num=0)
     monkeypatch.setattr(printer_manager, "get_status", lambda printer_id: live)
     _bind(monkeypatch, archive.id, farm["printer"].id)
 
@@ -348,7 +349,7 @@ async def test_first_layer_needs_a_proven_binding_to_this_very_execution(farm, s
     operation_id, submission_id = await _publish(farm, _single(farm))
     [row] = await _rows(sessions, PrintQueueItem)
     archive = await _execute(sessions, row, farm["printer"].id, dispatch_phase="accepted")
-    live = SimpleNamespace(state="RUNNING", layer_num=0)
+    live = SimpleNamespace(connected=True, state="RUNNING", layer_num=0)
     monkeypatch.setattr(printer_manager, "get_status", lambda printer_id: live)
 
     _bind(monkeypatch, archive.id, farm["printer"].id)
@@ -387,7 +388,9 @@ async def test_a_prepared_execution_borrows_no_layer_and_has_not_started(farm, s
     archive = await _execute(
         sessions, row, farm["printer"].id, created_at=now + timedelta(seconds=1), dispatch_phase="prepared"
     )
-    monkeypatch.setattr(printer_manager, "get_status", lambda _: SimpleNamespace(state="RUNNING", layer_num=42))
+    monkeypatch.setattr(
+        printer_manager, "get_status", lambda _: SimpleNamespace(connected=True, state="RUNNING", layer_num=42)
+    )
     _bind(monkeypatch, other.id, farm["printer"].id)
 
     [execution] = (await _observe(farm, operation_id, submission_id))["jobs"][0]["executions"]
@@ -515,18 +518,275 @@ async def test_a_read_during_a_restore_hold_is_refused(farm, sessions):
     assert refused.value.status_code == 503 and refused.value.detail["error"] == "storage_restoring"
 
 
-async def test_every_reader_by_id_checks_the_proof(farm, sessions):
-    """result_of, ensure_resumable and make_resumable each refuse a row that is no longer the proven operation."""
+async def test_every_reader_and_writer_by_id_checks_the_proof(farm, sessions):
+    """Every service door addressed by an operation refuses a row that is no longer the proven operation."""
     operation_id, submission_id = await _publish(farm, _single(farm))
     proof = await cs.prove_own(farm["actor"], operation_id, None, None)
     await _replace_under(sessions, submission_id)
 
     for read in (
-        lambda: cs.result_of(submission_id, proof=proof),
-        lambda: cs.ensure_resumable(submission_id, proof=proof),
-        lambda: cs.make_resumable(submission_id, proof=proof),
+        lambda: cs.result_of(proof),
+        lambda: cs.ensure_resumable(proof),
+        lambda: cs.make_resumable(proof),
+        lambda: cs.cancel(proof),
         lambda: cs.observations(farm["actor"], proof),
     ):
         with pytest.raises(cs.ConnectorRefusal) as refused:
             await read()
         assert (refused.value.status, refused.value.code) == (409, "context_changed")
+
+
+# --------------------------------------------------------------------------- #
+# H0 review r2: every request owns its storage work through a restore, and a write checks its proof under its lock;
+# a first layer only from a printer connected now
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def runtime():
+    from backend.app.services.connector_runtime import connector_runtime
+
+    connector_runtime._reset_for_tests()
+    yield connector_runtime
+    connector_runtime._reset_for_tests()
+
+
+def _request(body):
+    async def read_body():
+        return body.model_dump_json().encode()
+
+    return SimpleNamespace(body=read_body)
+
+
+async def _entry_states(sessions, submission_id):
+    async with sessions() as db:
+        return (
+            (
+                await db.execute(
+                    select(ConnectorSubmissionEntry.state).where(
+                        ConnectorSubmissionEntry.submission_id == submission_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def _set_entries(sessions, submission_id, state):
+    async with sessions() as db:
+        await db.execute(
+            update(ConnectorSubmissionEntry)
+            .where(ConnectorSubmissionEntry.submission_id == submission_id)
+            .values(state=state)
+        )
+        await db.commit()
+
+
+def _hold_inside(monkeypatch, module, name):
+    """Pause the named coroutine function at its start until released; report when the pause is reached."""
+    entered, leave = asyncio.Event(), asyncio.Event()
+    original = getattr(module, name)
+
+    async def paused(*args, **kwargs):
+        entered.set()
+        await leave.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(module, name, paused)
+    return entered, leave
+
+
+async def test_a_replayed_post_never_answers_with_another_operation(farm, sessions, monkeypatch, runtime):
+    """The reviewer's case: the replay's numeric address turns into another key's operation after registration."""
+    from fastapi import HTTPException
+
+    from backend.app.api.routes import connector as route
+
+    body = _body(farm, _single(farm))
+    registered = await cs.register(farm["actor"], body)
+    await cs.run(registered.submission_id, farm["actor"])
+    original = cs.register
+
+    async def then_replace(*args, **kwargs):
+        value = await original(*args, **kwargs)
+        await _replace_under(sessions, value.submission_id)
+        return value
+
+    monkeypatch.setattr(cs, "register", then_replace)
+
+    async with sessions() as db:
+        with pytest.raises(HTTPException) as refused:
+            await route.create_submission(_request(body), _body=None, _=None, actor=farm["actor"], db=db)
+
+    assert refused.value.status_code == 409 and refused.value.detail["error"] == "context_changed"
+
+
+async def test_a_restore_waits_for_a_post_until_its_answer_is_read(farm, sessions, monkeypatch, runtime):
+    """The coordinator has ended, the request still reads its answer: a restore must not drain past it."""
+    from backend.app.api.routes import connector as route
+
+    body = _body(farm, _single(farm))
+    entered, leave = asyncio.Event(), asyncio.Event()
+    original = runtime.wait
+
+    async def wait_then_pause(*args, **kwargs):
+        finished = await original(*args, **kwargs)
+        entered.set()
+        await leave.wait()
+        return finished
+
+    monkeypatch.setattr(runtime, "wait", wait_then_pause)
+
+    async with sessions() as db:
+        request = asyncio.create_task(
+            route.create_submission(_request(body), _body=None, _=None, actor=farm["actor"], db=db)
+        )
+        await entered.wait()
+        runtime._restore_hold = True
+        drained_under_the_request = await runtime._drain(0.05)
+        leave.set()
+        answer = await request
+
+    assert drained_under_the_request is False
+    assert json.loads(answer.body)["operation_id"] == body.operation_id
+    assert await runtime._drain(0.05) is True
+
+
+async def test_a_restore_waits_for_a_resume_until_its_write_is_done(farm, sessions, monkeypatch, runtime):
+    from fastapi import HTTPException
+
+    from backend.app.api.routes import connector as route
+
+    body = _body(farm, _single(farm))
+    registered = await cs.register(farm["actor"], body)
+    await _set_entries(sessions, registered.submission_id, "preparing")
+    entered, leave = _hold_inside(monkeypatch, cs, "make_resumable")
+
+    async with sessions() as db:
+        request = asyncio.create_task(
+            route.resume_submission(
+                body.operation_id, server_id=None, storage_epoch=None, _=None, actor=farm["actor"], db=db
+            )
+        )
+        await entered.wait()
+        runtime._restore_hold = True
+        drained_under_the_request = await runtime._drain(0.05)
+        leave.set()
+        with pytest.raises(HTTPException) as refused:
+            await request  # its own write landed; starting new work is what the hold refuses
+
+    assert drained_under_the_request is False
+    assert refused.value.status_code == 503
+    assert await runtime._drain(0.05) is True
+
+
+async def test_a_restore_waits_for_a_cancel_until_its_write_is_done(farm, sessions, monkeypatch, runtime):
+    from backend.app.api.routes import connector as route
+
+    body = _body(farm, _single(farm))
+    registered = await cs.register(farm["actor"], body)
+    entered, leave = _hold_inside(monkeypatch, cs, "cancel")
+
+    request = asyncio.create_task(
+        route.cancel_submission(body.operation_id, server_id=None, storage_epoch=None, _=None, actor=farm["actor"])
+    )
+    await entered.wait()
+    runtime._restore_hold = True
+    drained_under_the_request = await runtime._drain(0.05)
+    leave.set()
+    answer = await request
+
+    assert drained_under_the_request is False
+    assert json.loads(answer.body)["state"] == "cancelled"
+    assert await _entry_states(sessions, registered.submission_id) == ["cancelled"]
+    assert await runtime._drain(0.05) is True
+
+
+async def test_a_request_that_gave_up_keeps_its_lease_until_its_write_ends(farm, sessions, monkeypatch, runtime):
+    """An HTTP disconnect cancels the handler, never the storage work it started; the restore waits for the work."""
+    from backend.app.api.routes import connector as route
+
+    body = _body(farm, _single(farm))
+    registered = await cs.register(farm["actor"], body)
+    entered, leave = _hold_inside(monkeypatch, cs, "cancel")
+
+    request = asyncio.create_task(
+        route.cancel_submission(body.operation_id, server_id=None, storage_epoch=None, _=None, actor=farm["actor"])
+    )
+    await entered.wait()
+    request.cancel()
+    await asyncio.gather(request, return_exceptions=True)
+    runtime._restore_hold = True
+    drained_while_the_work_runs = await runtime._drain(0.05)
+    leave.set()
+    drained_after = await runtime._drain(5)
+
+    assert drained_while_the_work_runs is False
+    assert drained_after is True
+    assert await _entry_states(sessions, registered.submission_id) == ["cancelled"]
+
+
+async def test_a_cancel_writes_only_the_operation_it_proved(farm, sessions):
+    body = _body(farm, _single(farm))
+    registered = await cs.register(farm["actor"], body)
+    await _replace_under(sessions, registered.submission_id)
+
+    with pytest.raises(cs.ConnectorRefusal) as refused:
+        await cs.cancel(registered.proof)
+
+    assert (refused.value.status, refused.value.code) == (409, "context_changed")
+    assert await _entry_states(sessions, registered.submission_id) == ["pending"]
+
+
+async def test_a_resume_writes_only_the_operation_it_proved(farm, sessions):
+    body = _body(farm, _single(farm))
+    registered = await cs.register(farm["actor"], body)
+    await _set_entries(sessions, registered.submission_id, "preparing")
+    await _replace_under(sessions, registered.submission_id)
+
+    with pytest.raises(cs.ConnectorRefusal) as refused:
+        await cs.make_resumable(registered.proof)
+
+    assert (refused.value.status, refused.value.code) == (409, "context_changed")
+    assert await _entry_states(sessions, registered.submission_id) == ["preparing"]
+
+
+def _real_status(monkeypatch, printer_id, live, *, goes_stale=False):
+    """The real ``get_status`` over a test client: it marks a silent printer stale and returns its cached state."""
+    from backend.app.services.printer_manager import PrinterManager
+
+    def check_staleness():
+        if goes_stale:
+            live.connected = False
+        return not live.connected
+
+    client = SimpleNamespace(state=live, check_staleness=check_staleness)
+    monkeypatch.setattr(printer_manager, "_clients", {printer_id: client})
+    monkeypatch.setattr(printer_manager, "get_status", PrinterManager.get_status.__get__(printer_manager))
+
+
+@pytest.mark.parametrize("mode", ["connected", "disconnected", "becomes_stale_on_read"])
+async def test_first_layer_needs_a_printer_connected_now(farm, sessions, monkeypatch, mode):
+    operation_id, submission_id = await _publish(farm, _single(farm))
+    [row] = await _rows(sessions, PrintQueueItem)
+    archive = await _execute(sessions, row, farm["printer"].id, dispatch_phase="accepted")
+    live = SimpleNamespace(connected=mode != "disconnected", state="RUNNING", layer_num=42)
+    _real_status(monkeypatch, farm["printer"].id, live, goes_stale=mode == "becomes_stale_on_read")
+    _bind(monkeypatch, archive.id, farm["printer"].id)
+
+    [execution] = (await _observe(farm, operation_id, submission_id))["jobs"][0]["executions"]
+
+    assert execution["first_layer"] is (True if mode == "connected" else None)
+
+
+async def test_a_state_without_a_connected_flag_is_no_observation(farm, sessions, monkeypatch):
+    operation_id, submission_id = await _publish(farm, _single(farm))
+    [row] = await _rows(sessions, PrintQueueItem)
+    archive = await _execute(sessions, row, farm["printer"].id, dispatch_phase="accepted")
+    monkeypatch.setattr(printer_manager, "get_status", lambda _: SimpleNamespace(state="RUNNING", layer_num=42))
+    _bind(monkeypatch, archive.id, farm["printer"].id)
+
+    [execution] = (await _observe(farm, operation_id, submission_id))["jobs"][0]["executions"]
+
+    assert execution["first_layer"] is None

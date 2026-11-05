@@ -240,8 +240,12 @@ async def _check_source(db: AsyncSession, manifest: dict) -> None:
 
 @dataclass(frozen=True)
 class Registered:
+    """A recorded operation and the proof of it, fixed in the session that found or created it: its answer is read
+    through that proof, never by the numeric id alone (H0 review r2)."""
+
     submission_id: int
     created: bool
+    proof: OwnProof
 
 
 async def _find(db, actor: ConnectorActor, server_id: str, epoch: str, operation_id: str):
@@ -288,6 +292,11 @@ async def prove_own(actor: ConnectorActor, operation_id: str, server_id: str | N
     return OwnProof(row.id, operation_id, actor.key_identity, expected[0], expected[1])
 
 
+def _proof_of(row: ConnectorSubmission) -> OwnProof:
+    """The proof of a row just found by its full identity (``_find``) -- in the session that found it."""
+    return OwnProof(row.id, row.operation_id, row.api_key_identity, row.server_id, row.storage_epoch)
+
+
 async def _verified(db: AsyncSession, proof: OwnProof) -> ConnectorSubmission:
     """The proven operation's row, read now -- still this operation of this key in the proven namespace, and the
     server still in it. Anything else is 409: a restore or replacement happened in between."""
@@ -308,6 +317,18 @@ async def confirm(proof: OwnProof) -> None:
         await _verified(db, proof)
 
 
+async def _lock_proven(db: AsyncSession, proof: OwnProof) -> ConnectorSubmission:
+    """Before a write addressed by the numeric id: lock the operation's row -- SQLite's writer, PostgreSQL's row --
+    and verify the proof under that lock, in the transaction the write commits in. Nothing replaces the row between
+    the check and the write; a row that is no longer the proven operation is 409 and nothing is written (H0 review
+    r2). The parent first, as the publication's claim and every other writer of an operation take it."""
+    await database.take_write_lock(db, ConnectorSubmission.__table__, proof.submission_id)
+    await db.execute(
+        select(ConnectorSubmission.id).where(ConnectorSubmission.id == proof.submission_id).with_for_update()
+    )
+    return await _verified(db, proof)
+
+
 async def find_own(db: AsyncSession, key_identity: str | None, operation_id: str) -> ConnectorSubmission | None:
     """The operation of THIS key identity in this server's current namespace -- a foreign one is no answer."""
     if not key_identity:
@@ -322,7 +343,7 @@ async def find_own(db: AsyncSession, key_identity: str | None, operation_id: str
 def _same_or_conflict(existing: ConnectorSubmission, manifest_hash: str) -> Registered:
     if existing.manifest_hash != manifest_hash:
         raise ConnectorRefusal(409, "operation_conflict", OPERATION_CONFLICT)
-    return Registered(existing.id, False)
+    return Registered(existing.id, False, _proof_of(existing))
 
 
 async def register(actor: ConnectorActor, body: SubmissionCreate, *, sessions=None) -> Registered:
@@ -374,7 +395,7 @@ async def register(actor: ConnectorActor, body: SubmissionCreate, *, sessions=No
             if existing is None:
                 raise
             return _same_or_conflict(existing, manifest_hash)
-        return Registered(submission.id, True)
+        return Registered(submission.id, True, _proof_of(submission))
 
 
 # --------------------------------------------------------------------------- #
@@ -683,29 +704,23 @@ async def run(submission_id: int, actor: ConnectorActor, *, states=RESUMABLE, se
                 )
 
 
-async def ensure_resumable(submission_id: int, *, sessions=None, proof: OwnProof | None = None) -> None:
+async def ensure_resumable(proof: OwnProof, *, sessions=None) -> None:
     """A compacted operation is never published again: 410, and a new operation is the way to print."""
     factory = sessions or database.async_session
     async with factory() as db:
-        if proof is not None:
-            ensure_not_compacted(await _verified(db, proof))
-            return
-        submission = await db.get(ConnectorSubmission, submission_id)
-        if submission is not None:
-            ensure_not_compacted(submission)
+        ensure_not_compacted(await _verified(db, proof))
 
 
-async def make_resumable(submission_id: int, *, sessions=None, proof: OwnProof | None = None) -> int:
+async def make_resumable(proof: OwnProof, *, sessions=None) -> int:
     """Entries a crashed or abandoned coordinator left ``preparing`` become startable again -- only by an explicit
     resume, and only while no receipt exists (spec r2 §8.2). The caller guarantees no coordinator is running."""
     factory = sessions or database.async_session
     async with factory() as db:
-        if proof is not None:
-            await _verified(db, proof)
+        await _lock_proven(db, proof)
         result = await db.execute(
             update(ConnectorSubmissionEntry)
             .where(
-                ConnectorSubmissionEntry.submission_id == submission_id,
+                ConnectorSubmissionEntry.submission_id == proof.submission_id,
                 ConnectorSubmissionEntry.published_receipt.is_(None),
                 ConnectorSubmissionEntry.state == "preparing",
             )
@@ -755,17 +770,12 @@ def operation_state(entries: list[EntryResult]) -> str:
     return "rejected"
 
 
-async def result_of(
-    submission_id: int, *, replayed: bool = False, sessions=None, proof: OwnProof | None = None
-) -> SubmissionResult:
+async def result_of(proof: OwnProof, *, replayed: bool = False, sessions=None) -> SubmissionResult:
+    """The proven operation's answer. The proof is the address: a row that is no longer it is 409."""
     factory = sessions or database.async_session
     async with factory() as db:
-        if proof is not None:
-            if proof.submission_id != submission_id:
-                raise ConnectorRefusal(409, "context_changed", CONTEXT_CHANGED)
-            submission = await _verified(db, proof)
-        else:
-            submission = await db.get(ConnectorSubmission, submission_id, populate_existing=True)
+        submission = await _verified(db, proof)
+        submission_id = proof.submission_id
         rows = {
             row.entry_id: row
             for row in (
@@ -789,7 +799,7 @@ async def result(actor: ConnectorActor, operation_id: str, *, sessions=None, rep
         submission = await find_own(db, actor.key_identity, operation_id)
     if submission is None:
         return None
-    return await result_of(submission.id, replayed=replayed, sessions=factory)
+    return await result_of(_proof_of(submission), replayed=replayed, sessions=factory)
 
 
 async def submission_id_for(actor: ConnectorActor, operation_id: str, *, sessions=None) -> int | None:
@@ -799,17 +809,12 @@ async def submission_id_for(actor: ConnectorActor, operation_id: str, *, session
         return None if submission is None else submission.id
 
 
-async def cancel(actor: ConnectorActor, operation_id: str, *, sessions=None) -> bool:
-    """Fence the unpublished entries of this key's own operation. Published ones stay as they are."""
+async def cancel(proof: OwnProof, *, sessions=None) -> None:
+    """Fence the unpublished entries of the proven operation. Published ones stay as they are."""
     factory = sessions or database.async_session
     async with factory() as db:
-        submission = await find_own(db, actor.key_identity, operation_id)
-        if submission is None:
-            return False
         # The parent, then the entries in their order -- the order the publication's claim takes them in.
-        await db.execute(
-            select(ConnectorSubmission.id).where(ConnectorSubmission.id == submission.id).with_for_update()
-        )
+        submission = await _lock_proven(db, proof)
         await db.execute(
             select(ConnectorSubmissionEntry.id)
             .where(ConnectorSubmissionEntry.submission_id == submission.id)
@@ -831,7 +836,6 @@ async def cancel(actor: ConnectorActor, operation_id: str, *, sessions=None) -> 
             .values(state="cancelled", error_code="operation_cancelled", error_message=CANCELLED, updated_at=_now())
         )
         await db.commit()
-        return True
 
 
 # --------------------------------------------------------------------------- #
@@ -983,8 +987,10 @@ def _first_layer(archive, state: str) -> bool | None:
 
     Only a binding of the live run with a proven origin (our dispatch, a live external start, an exact subtask id)
     to this very execution archive, on the client connection that made it, lets the printer's layer count speak for
-    it. A newer row, a "printing" status, a name or a "completed" label prove nothing about a layer. Read without
-    an await, so the binding and the live state are one moment.
+    it. A newer row, a "printing" status, a name or a "completed" label prove nothing about a layer, and neither
+    does the state a disconnected or stale printer left in its cache: ``get_status`` marks staleness on this very
+    read, and only ``connected`` is True counts -- a generation still on record is no proof of a live link (H0 review
+    r2). Read without an await, so the binding and the live state are one moment.
     """
     if state != "printing" or archive.printer_id is None:
         return None
@@ -999,7 +1005,7 @@ def _first_layer(archive, state: str) -> bool | None:
     ):
         return None
     live = printer_manager.get_status(archive.printer_id)
-    if live is None or getattr(live, "state", None) not in _RUNNING:
+    if live is None or getattr(live, "connected", False) is not True or getattr(live, "state", None) not in _RUNNING:
         return None
     return (getattr(live, "layer_num", 0) or 0) >= 1
 

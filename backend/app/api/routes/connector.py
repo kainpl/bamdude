@@ -69,6 +69,14 @@ def _refused(refusal: ConnectorRefusal) -> HTTPException:
     return HTTPException(refusal.status, refusal.detail(), headers=headers)
 
 
+async def _owned(work, *, new_work: bool):
+    """A request's storage work, from its proof to its answer's last read, owned by the restore lifecycle."""
+    try:
+        return await connector_runtime.own_request(work, new_work=new_work)
+    except ConnectorRefusal as refusal:
+        raise _refused(refusal) from refusal
+
+
 async def bounded_json_body(request: Request) -> None:
     """Read the body once, never more than the cap, and leave it cached for the gate and the handler."""
     length = request.headers.get("content-length", "")
@@ -207,23 +215,28 @@ async def create_submission(
         body = protocol.SubmissionCreate.model_validate_json(await request.body())
     except ValidationError as exc:
         raise HTTPException(422, {"error": "invalid_request", "message": INVALID_BODY}) from exc
-    try:
+
+    async def publish():
         registered = await submissions.register(actor, body)
-        task = connector_runtime.running(registered.submission_id)
+        # The answer is read through the proof fixed when the operation was found or recorded, never by its id.
+        proof, replayed = registered.proof, not registered.created
+        status = 200 if replayed else 201
+        task = connector_runtime.running(proof.submission_id)
         if task is None:
-            current = await submissions.result_of(registered.submission_id, replayed=not registered.created)
+            current = await submissions.result_of(proof, replayed=replayed)
             # A replay starts only what was never attempted (a coordinator that died before it began): a stale
             # "preparing" or a transient failure waits for an explicit resume, and a finished operation is read.
             if not any(entry.state == "pending" for entry in current.entries):
-                return _answer(current, 201 if registered.created else 200)
-            task = connector_runtime.start(registered.submission_id, actor, states=submissions.NEW_ONLY)
-    except ConnectorRefusal as refusal:
-        raise _refused(refusal) from refusal
-    finished = await connector_runtime.wait(task, SUBMIT_WAIT_SECONDS)
-    result = await submissions.result_of(registered.submission_id, replayed=not registered.created)
-    if not finished:
-        return _answer(result, 202)
-    return _answer(result, 201 if registered.created else 200)
+                await submissions.confirm(proof)
+                return current, status
+            task = connector_runtime.start(proof.submission_id, actor, states=submissions.NEW_ONLY)
+        finished = await connector_runtime.wait(task, SUBMIT_WAIT_SECONDS)
+        result = await submissions.result_of(proof, replayed=replayed)
+        await submissions.confirm(proof)
+        return result, status if finished else 202
+
+    result, status = await _owned(publish, new_work=True)
+    return _answer(result, status)
 
 
 async def _own(
@@ -251,16 +264,16 @@ async def get_submission(
     ``observations=1`` adds what became of each published job, followed by immutable identities only (host spec
     r2.2 §11 S3), one page at a time; ``cursor`` is the previous page's ``next_cursor``.
     """
-    try:
-        # A read the restore lifecycle owns: refused while a restore holds, and waited for before storage is replaced.
-        async with connector_runtime.reading():
-            proof = await _own(actor, operation_id, server_id, storage_epoch)
-            observed = await submissions.observations(actor, proof, cursor=cursor) if observations else None
-            result = await submissions.result_of(proof.submission_id, proof=proof)
-            # After every read: the proof still holds, so no half of this answer came from another database.
-            await submissions.confirm(proof)
-    except ConnectorRefusal as refusal:
-        raise _refused(refusal) from refusal
+
+    async def read():
+        proof = await _own(actor, operation_id, server_id, storage_epoch)
+        observed = await submissions.observations(actor, proof, cursor=cursor) if observations else None
+        result = await submissions.result_of(proof)
+        # After every read: the proof still holds, so no half of this answer came from another database.
+        await submissions.confirm(proof)
+        return result, observed
+
+    result, observed = await _owned(read, new_work=False)
     return _answer(result, 200, observations=observed)
 
 
@@ -275,25 +288,22 @@ async def resume_submission(
 ):
     """Run the unpublished, not permanently refused entries again. A published entry is read, never re-run."""
     await _require_enabled(db)
-    proof = await _own(actor, operation_id, server_id, storage_epoch)
-    submission_id = proof.submission_id
-    try:
+
+    async def resume():
+        proof = await _own(actor, operation_id, server_id, storage_epoch)
         connector_runtime.ensure_admitting()
-        await submissions.ensure_resumable(submission_id, proof=proof)
-        task = connector_runtime.running(submission_id)
+        await submissions.ensure_resumable(proof)
+        task = connector_runtime.running(proof.submission_id)
         if task is None:
-            await submissions.make_resumable(submission_id, proof=proof)
-            connector_runtime.ensure_admitting()
-            task = connector_runtime.start(submission_id, actor, states=submissions.RESUMABLE)
-    except ConnectorRefusal as refusal:
-        raise _refused(refusal) from refusal
-    finished = await connector_runtime.wait(task, SUBMIT_WAIT_SECONDS)
-    try:
-        result = await submissions.result_of(submission_id, replayed=True, proof=proof)
+            await submissions.make_resumable(proof)
+            task = connector_runtime.start(proof.submission_id, actor, states=submissions.RESUMABLE)
+        finished = await connector_runtime.wait(task, SUBMIT_WAIT_SECONDS)
+        result = await submissions.result_of(proof, replayed=True)
         await submissions.confirm(proof)
-    except ConnectorRefusal as refusal:
-        raise _refused(refusal) from refusal
-    return _answer(result, 200 if finished else 202)
+        return result, 200 if finished else 202
+
+    result, status = await _owned(resume, new_work=True)
+    return _answer(result, status)
 
 
 @router.post("/submissions/{operation_id}/cancel")
@@ -305,14 +315,15 @@ async def cancel_submission(
     actor: ConnectorActor = Depends(connector_actor),
 ):
     """Fence the entries not yet published. Published jobs stay; nothing on a printer is stopped."""
-    proof = await _own(actor, operation_id, server_id, storage_epoch)
-    try:
-        await submissions.cancel(actor, operation_id)
-        result = await submissions.result_of(proof.submission_id, proof=proof)
+
+    async def fence():
+        proof = await _own(actor, operation_id, server_id, storage_epoch)
+        await submissions.cancel(proof)
+        result = await submissions.result_of(proof)
         await submissions.confirm(proof)
-    except ConnectorRefusal as refusal:
-        raise _refused(refusal) from refusal
-    return _answer(result, 200)
+        return result
+
+    return _answer(await _owned(fence, new_work=False), 200)
 
 
 async def _max_upload_bytes(db: AsyncSession) -> int:
