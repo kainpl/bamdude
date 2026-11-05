@@ -9,6 +9,7 @@ import { mcpKeyPreset } from '../../lib/mcpKeyPreset';
 import { Button } from '../Button';
 import { Card, CardContent, CardHeader } from '../Card';
 import { CopyButton } from '../CopyButton';
+import { ConfirmModal } from '../ConfirmModal';
 import { Select } from '../Select';
 import { Toggle } from '../Toggle';
 
@@ -42,6 +43,10 @@ function McpSettingsContent() {
   const [dirty, setDirty] = useState(false);
   const [endpoint, setEndpoint] = useState('');
   const [enabled, setEnabled] = useState(false);
+  const [allowHttp, setAllowHttp] = useState(false);
+  const [httpConfirmed, setHttpConfirmed] = useState(false);
+  const [httpStep, setHttpStep] = useState<1 | 2 | null>(null);
+  const [networkAcknowledged, setNetworkAcknowledged] = useState(false);
   const [hostList, setHostList] = useState('');
   const [originList, setOriginList] = useState('');
   const [host, setHost] = useState<Host>('codex');
@@ -65,6 +70,7 @@ function McpSettingsContent() {
     if (!settings.data || dirty) return;
     setEndpoint(settings.data.mcp_endpoint_url ?? '');
     setEnabled(settings.data.mcp_enabled ?? false);
+    setAllowHttp(settings.data.mcp_allow_http ?? false);
     setHostList((settings.data.mcp_allowed_hosts ?? []).join('\n'));
     setOriginList((settings.data.mcp_allowed_origins ?? []).join('\n'));
   }, [settings.data, dirty]);
@@ -76,18 +82,20 @@ function McpSettingsContent() {
       if (endpoint.trim()) {
         const url = new URL(endpoint.trim());
         if (url.pathname !== '/mcp' || url.username || url.password || url.search || url.hash
-          || (url.protocol !== 'https:' && !(url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(url.hostname))))) {
+          || (url.protocol !== 'https:' && !(url.protocol === 'http:' && (allowHttp || url.hostname === 'localhost' || url.hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(url.hostname))))) {
           throw new Error('invalid_endpoint');
         }
         canonical = url.href;
         allowed.push(url.host);
       }
-      return api.updateSettings({ mcp_enabled: enabled, mcp_endpoint_url: canonical,
+      return api.updateSettings({ mcp_enabled: enabled, mcp_endpoint_url: canonical, mcp_allow_http: allowHttp,
+        ...(allowHttp && httpConfirmed ? { mcp_http_risk_acknowledged: true, mcp_http_trusted_network_acknowledged: true } : {}),
         mcp_allowed_hosts: [...new Set(allowed)], mcp_allowed_origins: originList.split(/\s+/).filter(Boolean) });
     },
     onSuccess: data => {
       queryClient.setQueryData(['settings'], data);
       setDirty(false);
+      setHttpConfirmed(false);
       void queryClient.invalidateQueries({ queryKey: ['mcp', 'status'] });
       showToast(t('settings.mcp.saved'));
     },
@@ -136,6 +144,18 @@ function McpSettingsContent() {
         <label className="block text-sm text-bambu-gray">{t('settings.mcp.address')}<input type="url" className={`${inputClass} mt-1`} placeholder="https://farm.example/mcp" value={endpoint} disabled={!canEdit} onChange={event => { setEndpoint(event.target.value); setDirty(true); }} /></label>
         <p className="max-w-3xl text-sm text-bambu-gray">{t('settings.mcp.networkHint')}</p>
         <p className="max-w-3xl text-sm text-bambu-gray">{t('settings.mcp.certificateHint')}</p>
+        <div className="space-y-2 rounded-lg border border-amber-500/40 p-3">
+          <div className="flex items-center gap-3"><Toggle label={t('settings.mcp.allowHttp')} checked={allowHttp} disabled={!canEdit || settings.isPending || save.isPending} onChange={value => {
+            if (value) { setNetworkAcknowledged(false); setHttpStep(1); }
+            else {
+              setAllowHttp(false); setHttpConfirmed(false); setDirty(true);
+              // Clear an incompatible saved address so permission can be revoked immediately.
+              if (endpoint.startsWith('http:')) setEndpoint('');
+            }
+          }} /><span className="text-sm text-amber-400">{t('settings.mcp.allowHttp')}</span></div>
+          <p className="max-w-3xl text-sm text-bambu-gray">{t('settings.mcp.httpHint')}</p>
+          {allowHttp && <p role="status" className="text-sm font-semibold text-amber-400">{t('settings.mcp.httpActive')}</p>}
+        </div>
         <details><summary className="cursor-pointer text-sm text-bambu-gray">{t('settings.mcp.advanced')}</summary><div className="mt-3 grid gap-3 md:grid-cols-2">
           <label className="text-sm text-bambu-gray">{t('settings.mcp.allowedHosts')}<textarea className={`${inputClass} mt-1`} rows={3} value={hostList} disabled={!canEdit} onChange={event => { setHostList(event.target.value); setDirty(true); }} /></label>
           <label className="text-sm text-bambu-gray">{t('settings.mcp.allowedOrigins')}<textarea className={`${inputClass} mt-1`} rows={3} value={originList} disabled={!canEdit} onChange={event => { setOriginList(event.target.value); setDirty(true); }} /></label>
@@ -185,6 +205,10 @@ function McpSettingsContent() {
       </div></details>}
       <p className="max-w-3xl text-sm text-bambu-gray">{t('settings.mcp.disconnect')}</p>
       <a className="inline-block text-sm text-bambu-green hover:underline" href={docs} target="_blank" rel="noopener noreferrer">{t('settings.mcp.guide')}</a>
+      {httpStep === 1 && <ConfirmModal variant="warning" title={t('settings.mcp.httpWarningTitle')} message={t('settings.mcp.httpWarning')} confirmText={t('settings.mcp.httpContinue')} onCancel={() => setHttpStep(null)} onConfirm={() => setHttpStep(2)} />}
+      {httpStep === 2 && <ConfirmModal variant="danger" title={t('settings.mcp.httpConfirmTitle')} message={t('settings.mcp.httpConfirm')} confirmText={t('settings.mcp.httpEnable')} confirmDisabled={!networkAcknowledged} onCancel={() => setHttpStep(null)} onConfirm={() => {
+        setAllowHttp(true); setHttpConfirmed(true); setDirty(true); setHttpStep(null);
+      }}><label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={networkAcknowledged} onChange={event => setNetworkAcknowledged(event.target.checked)} />{t('settings.mcp.httpNetworkAcknowledgement')}</label></ConfirmModal>}
     </CardContent>
   </Card>;
 }

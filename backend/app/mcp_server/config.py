@@ -30,7 +30,7 @@ def is_loopback_host(value: str) -> bool:
         return False
 
 
-def canonical_endpoint(value: str) -> str:
+def canonical_endpoint(value: str, *, allow_http: bool = False) -> str:
     """An operator-supplied display/config address, never request-derived."""
     if not value:
         return ""
@@ -46,7 +46,7 @@ def canonical_endpoint(value: str) -> str:
     ):
         raise ValueError("Invalid MCP endpoint")
     host = exact_host(parsed.netloc)
-    if parsed.scheme == "http" and not is_loopback_host(host):
+    if parsed.scheme == "http" and not is_loopback_host(host) and not allow_http:
         raise ValueError("MCP requires HTTPS outside loopback")
     return f"{parsed.scheme}://{host}/mcp"
 

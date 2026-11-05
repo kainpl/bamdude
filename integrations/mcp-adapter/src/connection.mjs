@@ -18,7 +18,9 @@ export function configuration(env) {
   catch { throw new ConnectionError('invalid_endpoint'); }
   const loopback = endpoint.hostname === 'localhost' || endpoint.hostname === '[::1]'
     || /^127(?:\.\d{1,3}){3}$/.test(endpoint.hostname);
-  if ((endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && loopback))
+  // Exact opt-in only: unset/false/unexpanded host placeholders never permit HTTP.
+  const allowHttp = env.BAMDUDE_MCP_ALLOW_HTTP === 'true';
+  if ((endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && (loopback || allowHttp)))
     || endpoint.pathname !== '/mcp' || endpoint.username || endpoint.password
     || endpoint.search || endpoint.hash) throw new ConnectionError('invalid_endpoint');
   const key = env.BAMDUDE_MCP_KEY;

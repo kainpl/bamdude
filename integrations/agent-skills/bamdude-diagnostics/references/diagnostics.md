@@ -13,7 +13,13 @@ Data returned to the assistant can be sent to the user's chosen model
 provider. Logs can contain personal or confidential text despite redaction.
 Images, videos and full model files are not provided by this integration.
 
-Use HTTPS outside loopback. For a self-signed LAN certificate, explicitly
+HTTPS is recommended outside loopback. A trusted private LAN may opt into
+HTTP only after both operator warnings in BamDude Settings and an explicit
+connector opt-in (`BAMDUDE_MCP_ALLOW_HTTP=true`; direct clients use the saved
+URL). Keys and diagnostic data are unencrypted; never use this exception for
+public networks or Internet-facing addresses. It does not configure a firewall
+or proxy and does not weaken HTTPS certificate verification.
+For a self-signed LAN certificate, explicitly
 configure its CA certificate or a supported certificate fingerprint. Never
 disable TLS verification. A cloud connector cannot reach a private LAN merely
 because its desktop UI runs on a computer in that LAN. A public tunnel must

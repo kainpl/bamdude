@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+MCP setup can optionally accept unencrypted HTTP addresses for a trusted home
+LAN. HTTPS remains the default outside loopback. Enabling the option requires
+two warnings, an explicit network-risk acknowledgement and a settings save;
+the API requires both acknowledgements too. Bundled local connectors have a
+separate default-off HTTP opt-in. HTTPS certificate verification, key scopes,
+host/origin checks and redirect refusal are unchanged. HTTP exposes keys and
+diagnostic data in plain text and is unsuitable for public networks.
+
 - Server-side slicing defaults to OrcaSlicer 2.5.0 and Bambu Studio 02.09.01.70. Rebuild the optional slicer API containers to apply the update; existing installations also need to update their version pins in `slicer-api/.env`.
 
 - Release downloads carry one `bamdude-<version>-SHA256SUMS` for the Windows installer and the AI client packages, written only after each package matches the hashes of its own build. The package build's internal catalog (`packages.json`) and its partial checksum file are no longer attached to the release.

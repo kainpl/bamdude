@@ -12,7 +12,8 @@ The host supplies configuration through its connection settings/environment:
 
 | Setting | Meaning |
 | --- | --- |
-| `BAMDUDE_MCP_URL` | Exact `https://your-farm/mcp`; HTTP is allowed only on loopback |
+| `BAMDUDE_MCP_URL` | Exact `https://your-farm/mcp`; loopback HTTP remains allowed |
+| `BAMDUDE_MCP_ALLOW_HTTP` | Only the literal `true` permits non-loopback HTTP. Off by default; trusted private LAN only, after both warnings in BamDude Settings. Keys and data are unencrypted. Does not disable HTTPS certificate verification. |
 | `BAMDUDE_MCP_KEY` | Separate MCP-enabled key, supplied through the client's secret field |
 | `BAMDUDE_MCP_CA_FILE` | Optional explicit PEM CA file for a self-signed LAN server |
 
