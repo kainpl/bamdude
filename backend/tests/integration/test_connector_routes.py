@@ -323,3 +323,21 @@ async def test_a_restore_hold_refuses_admission_before_anything_is_recorded(farm
 
     assert response.status_code == 503 and response.json()["detail"]["error"] == "storage_restoring"
     assert await _submissions(farm["db"]) == 0
+
+
+async def test_the_administrator_sets_the_switch_and_the_cap_through_settings(farm):
+    client = farm["client"]
+    too_big = await client.put("/api/v1/settings/", json={"connector_max_upload_bytes": 600 * 1024 * 1024})
+    saved = await client.put(
+        "/api/v1/settings/", json={"connector_enabled": False, "connector_max_upload_bytes": 2 * 1024 * 1024}
+    )
+
+    assert too_big.status_code == 422
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["connector_enabled"] is False
+    assert saved.json()["connector_max_upload_bytes"] == 2 * 1024 * 1024
+    caps = (await client.get(f"{BASE}/capabilities", headers={"X-API-Key": farm["raw"]})).json()
+    assert caps["enabled"] is False and not caps["features"]["submissions"]
+    assert caps["limits"]["max_upload_bytes"] == 2 * 1024 * 1024
+    refused = await _post(farm, _body(farm))
+    assert refused.status_code == 503 and refused.json()["detail"]["error"] == "connector_disabled"

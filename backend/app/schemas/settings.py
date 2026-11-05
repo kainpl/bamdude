@@ -449,6 +449,16 @@ class AppSettings(BaseModel):
     # Default printer for operations
     default_printer_id: int | None = Field(default=None, description="Default printer ID for uploads, reprints, etc.")
 
+    # Slicer connector (OrcaBamDude): the kill switch stops new submissions, uploads and API-key camera streams;
+    # reading and cancelling what exists stays available. The upload cap never exceeds the measured ceiling.
+    connector_enabled: bool = Field(default=True, description="Accept new work from the slicer connector")
+    connector_max_upload_bytes: int = Field(
+        default=100 * 1024 * 1024,
+        ge=1024 * 1024,
+        le=512 * 1024 * 1024,
+        description="Largest file the slicer connector may upload, in bytes",
+    )
+
     # Virtual Printer
     virtual_printer_enabled: bool = Field(default=False, description="Enable virtual printer for slicer uploads")
     virtual_printer_access_code: str = Field(default="", description="Access code for virtual printer authentication")
@@ -845,6 +855,8 @@ class AppSettingsUpdate(BaseModel):
     date_format: str | None = None
     time_format: str | None = None
     default_printer_id: int | None = None
+    connector_enabled: bool | None = None
+    connector_max_upload_bytes: int | None = Field(default=None, ge=1024 * 1024, le=512 * 1024 * 1024)
     virtual_printer_enabled: bool | None = None
     virtual_printer_access_code: str | None = None
     virtual_printer_mode: str | None = None

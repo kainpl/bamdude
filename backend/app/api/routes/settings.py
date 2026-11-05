@@ -98,6 +98,7 @@ async def get_settings(
                 "include_beta_updates",
                 "telemetry_enabled",
                 "virtual_printer_enabled",
+                "connector_enabled",
                 "ftp_retry_enabled",
                 "mqtt_enabled",
                 "mqtt_use_tls",
@@ -174,6 +175,7 @@ async def get_settings(
                 "forecast_plate_clear_minutes",
                 "firmware_batch_concurrency",
                 "session_max_hours",
+                "connector_max_upload_bytes",
             ]:
                 settings_dict[setting.key] = int(setting.value)
             elif setting.key == "default_printer_id":
