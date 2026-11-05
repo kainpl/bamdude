@@ -8,7 +8,10 @@ the connector's targets too), then names the key by its immutable ``connector_id
 
 from __future__ import annotations
 
+import errno
 import logging
+import uuid
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -46,11 +49,19 @@ POLL_MIN_SECONDS = 3
 STATUS_BATCH_SIZE = 100
 FULL_RETENTION_DAYS = 30
 DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_UPLOAD_BYTES_CEILING = 512 * 1024 * 1024
+UPLOAD_BYTES_KEY = "connector_max_upload_bytes"
+UPLOAD_PERMISSIONS = (Permission.LIBRARY_UPLOAD.value, Permission.LIBRARY_READ_ALL.value)
 
 BODY_TOO_LARGE = "The request body is too large."
 INVALID_BODY = "The request body is not a valid connector request."
 DISABLED = "The slicer connector is switched off on this server."
 OPERATION_NOT_FOUND = "The operation was not found."
+UPLOAD_TOO_LARGE = "The file is larger than this server accepts from the slicer connector."
+NOT_A_3MF = "Only a sliced .3mf or .gcode.3mf file can be sent."
+NOT_VISIBLE = "The uploaded content is not accessible to this API key."
+STORAGE_FULL = "The server has no space left for this file."
+UPLOAD_FAILED = "The file could not be stored."
 
 
 def _refused(refusal: ConnectorRefusal) -> HTTPException:
@@ -158,7 +169,7 @@ async def capabilities(
             "supported_topologies": ["single_external", "ams"],
         },
         "limits": {
-            "max_upload_bytes": DEFAULT_MAX_UPLOAD_BYTES,
+            "max_upload_bytes": await _max_upload_bytes(db),
             "max_concurrent_uploads": MAX_UPLOADS,
             "max_entries": protocol.MAX_ENTRIES,
             "max_copies_per_entry": protocol.MAX_COPIES_PER_ENTRY,
@@ -270,3 +281,123 @@ async def cancel_submission(
     submission_id = await _own(actor, operation_id, server_id, storage_epoch)
     await submissions.cancel(actor, operation_id)
     return _answer(await submissions.result_of(submission_id), 200)
+
+
+async def _max_upload_bytes(db: AsyncSession) -> int:
+    """The administrator's cap, never above the ceiling the memory acceptance measured (spec r2 §6)."""
+    value = await db.scalar(select(Settings.value).where(Settings.key == UPLOAD_BYTES_KEY))
+    try:
+        cap = int(value) if value else DEFAULT_MAX_UPLOAD_BYTES
+    except ValueError:
+        cap = DEFAULT_MAX_UPLOAD_BYTES
+    return max(1, min(cap, MAX_UPLOAD_BYTES_CEILING))
+
+
+def _staging_dir() -> Path:
+    from backend.app.core.config import settings
+
+    path = Path(settings.base_dir) / "connector-uploads"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+async def _receive(request: Request, target: Path, cap: int) -> None:
+    """Every chunk counted, whatever Content-Length said; written to our own file, never accumulated in memory."""
+    import asyncio
+
+    size = 0
+    handle = await asyncio.to_thread(open, target, "wb")
+    try:
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > cap:
+                raise HTTPException(413, {"error": "upload_too_large", "message": UPLOAD_TOO_LARGE})
+            await asyncio.to_thread(handle.write, chunk)
+    finally:
+        await asyncio.to_thread(handle.close)
+
+
+async def _ingest(request: Request, actor: ConnectorActor, filename: str, cap: int):
+    """The owned upload work: receive, then the library's own ingest, then visibility -- in a fresh session."""
+    import asyncio
+
+    from backend.app.api.routes.library import store_library_upload
+    from backend.app.core import database
+    from backend.app.models.library import LibraryFile
+    from backend.app.schemas.library import FileUploadResponse
+
+    staging = _staging_dir() / f"{uuid.uuid4().hex}.part"
+    try:
+        try:
+            await _receive(request, staging, cap)
+            content = await asyncio.to_thread(staging.read_bytes)
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                raise HTTPException(507, {"error": "storage_full", "message": STORAGE_FULL}) from exc
+            raise HTTPException(500, {"error": "upload_failed", "message": UPLOAD_FAILED}) from exc
+        async with database.async_session() as db:
+            try:
+                result = await store_library_upload(db, filename=filename, content=content, target_folder=None)
+            except HTTPException as exc:
+                text = exc.detail if isinstance(exc.detail, str) else UPLOAD_FAILED
+                if exc.status_code in (400, 415, 422):
+                    raise HTTPException(422, {"error": "invalid_file", "message": text}) from exc
+                raise HTTPException(exc.status_code, {"error": "upload_failed", "message": text}) from exc
+            except OSError as exc:
+                if exc.errno == errno.ENOSPC:
+                    raise HTTPException(507, {"error": "storage_full", "message": STORAGE_FULL}) from exc
+                raise
+            file_id, outcome, superseded = result.file.id, result.outcome, result.superseded_name
+        del content
+        # Visibility before anything about the row is answered (B2/B7): fresh rights, the row as it is now.
+        async with database.async_session() as db:
+            try:
+                await submissions.fresh_key(db, actor, UPLOAD_PERMISSIONS)
+            except ConnectorRefusal as refusal:
+                raise _refused(refusal) from refusal
+            row = (await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(409, {"error": "exists_not_visible", "message": NOT_VISIBLE})
+            return FileUploadResponse(
+                id=row.id,
+                filename=row.filename,
+                file_type=row.file_type,
+                file_tags=row.file_tags or [],
+                file_size=row.file_size,
+                thumbnail_path=row.thumbnail_path,
+                duplicate_of=row.id if outcome != "created" else None,
+                outcome=outcome,
+                superseded_name=superseded,
+                metadata=row.file_metadata,
+            ).model_dump(mode="json") | {"file_hash": row.file_hash}
+    finally:
+        await asyncio.to_thread(staging.unlink, True)
+
+
+@router.post("/files")
+async def upload_file(
+    request: Request,
+    filename: str,
+    _: None = RequirePermission(Permission.LIBRARY_UPLOAD, Permission.LIBRARY_READ_ALL),
+    actor: ConnectorActor = Depends(connector_actor),
+    db: AsyncSession = Depends(get_db),
+):
+    """A sliced 3MF into the library as raw bytes. The upload queues nothing; a refused print keeps the file."""
+    from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
+
+    await _require_enabled(db)
+    try:
+        validate_print_filename(filename)
+    except InvalidFilenameError as exc:
+        raise HTTPException(422, {"error": "invalid_file", "message": str(exc)}) from exc
+    if not filename.lower().endswith(".3mf"):
+        raise HTTPException(422, {"error": "invalid_file", "message": NOT_A_3MF})
+    cap = await _max_upload_bytes(db)
+    length = request.headers.get("content-length", "")
+    if length.isdigit() and int(length) > cap:
+        raise HTTPException(413, {"error": "upload_too_large", "message": UPLOAD_TOO_LARGE})
+    await db.commit()  # nothing of this request's session is held across the transfer
+    try:
+        return await connector_runtime.run_upload(lambda: _ingest(request, actor, filename, cap))
+    except ConnectorRefusal as refusal:
+        raise _refused(refusal) from refusal
