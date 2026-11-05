@@ -104,6 +104,11 @@ async def _enabled(db: AsyncSession) -> bool:
     return (value or "true").strip().lower() != "false"
 
 
+async def refuse_when_disabled(db: AsyncSession) -> None:
+    """The kill switch, for the camera route's API-key streams too."""
+    await _require_enabled(db)
+
+
 async def _require_enabled(db: AsyncSession) -> None:
     """New work only; reading and cancelling what exists stays available (spec r2 §13 kill switch)."""
     if not await _enabled(db):
@@ -146,7 +151,8 @@ async def capabilities(
     enabled = await _enabled(db)
     unrestricted = key_printer_scope(request) is None
     may_submit = await _may(actor, submissions.SUBMIT_PERMISSIONS)
-    may_upload = await _may(actor, (Permission.LIBRARY_UPLOAD.value, Permission.LIBRARY_READ_ALL.value))
+    may_upload = await _may(actor, UPLOAD_PERMISSIONS)
+    may_watch = enabled and await _may(actor, (Permission.CAMERA_VIEW.value,))
     return {
         "protocol_version": protocol.PROTOCOL_VERSION,
         "product": "bamdude",
@@ -162,8 +168,8 @@ async def capabilities(
             "library_upload": enabled and may_upload,
             "submissions": enabled and may_submit,
             "auto_target": enabled and may_submit and unrestricted,
-            "camera_snapshot": False,
-            "camera_stream": False,
+            "camera_snapshot": may_watch,
+            "camera_stream": may_watch,
             "native_single_plate": True,
             "supported_options": ["bed_levelling", "flow_cali", "nozzle_offset_cali", "timelapse", "layer_inspect"],
             "supported_topologies": ["single_external", "ams"],

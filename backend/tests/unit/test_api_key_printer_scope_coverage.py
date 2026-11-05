@@ -98,6 +98,11 @@ def test_the_walk_sees_the_routes_we_know():
         ("GET", "/api/v1/printers/{printer_id}/status"),
         ("POST", "/api/v1/printers/{printer_id}/print/stop"),
         ("GET", "/api/v1/queue/"),
+        # The camera's header door (addendum C4): an API key reaches it, so its printer must be read.
+        ("GET", "/api/v1/printers/{printer_id}/camera/stream"),
+        ("GET", "/api/v1/printers/{printer_id}/camera/snapshot"),
+        ("POST", "/api/v1/connector/submissions"),
+        ("POST", "/api/v1/connector/files"),
     } <= seen
 
 
