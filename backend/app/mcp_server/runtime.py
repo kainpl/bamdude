@@ -93,10 +93,20 @@ class McpRuntime:
     async def _own_manager(self, ready):
         # AnyIO's manager scope is entered and exited by this SAME task.
         try:
+            from mcp.server.transport_security import TransportSecuritySettings
+
             from backend.app.mcp_server.registry import create_server
 
             server = create_server()
-            sdk_app = server.streamable_http_app(stateless_http=True, json_response=True)
+            sdk_app = server.streamable_http_app(
+                stateless_http=True,
+                json_response=True,
+                transport_security=TransportSecuritySettings(
+                    enable_dns_rebinding_protection=True,
+                    allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*", *self.config.allowed_hosts],
+                    allowed_origins=self.config.allowed_origins,
+                ),
+            )
             async with server.session_manager.run():
                 self._sdk_app = sdk_app
                 self.state = "ready"

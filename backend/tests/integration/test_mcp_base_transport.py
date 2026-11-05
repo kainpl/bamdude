@@ -372,6 +372,40 @@ async def test_forwarded_host_does_not_override_host_allowlist(async_client, run
     assert response.json()["code"] == "host_denied"
 
 
+async def test_sdk_accepts_exact_operator_host_and_origin_and_rechecks_after_reload(async_client, runtime):
+    host = "farm.lan:8000"
+    origin = "http://operator.lan:8000"
+    assert await runtime.configure(McpConfig(enabled=True, allowed_hosts=[host], allowed_origins=[origin]))
+    created = await key(async_client)
+    async with live_app() as url, httpx.AsyncClient() as http:
+        headers = {
+            "X-API-Key": created["key"],
+            "Host": host,
+            "Origin": origin,
+            "Accept": "application/json, text/event-stream",
+        }
+        message = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        response = await http.post(url + "/mcp", headers=headers, json=message)
+        assert response.status_code == 200, response.text
+        assert "result" in response.json()
+        for override in ({"Host": "other.lan:8000"}, {"Host": "farm.lan:8001"}, {"Origin": "http://other.lan:8000"}):
+            denied = await http.post(url + "/mcp", headers={**headers, **override}, json=message)
+            assert denied.status_code == 403, denied.text
+        assert await runtime.configure(McpConfig(enabled=True, allowed_hosts=["new.lan:8000"]))
+        denied = await http.post(url + "/mcp", headers=headers, json=message)
+        assert denied.status_code == 403
+        response = await http.post(
+            url + "/mcp",
+            headers={
+                "X-API-Key": created["key"],
+                "Host": "new.lan:8000",
+                "Accept": "application/json, text/event-stream",
+            },
+            json=message,
+        )
+        assert response.status_code == 200, response.text
+
+
 async def test_revoke_applies_to_the_next_http_request(async_client, runtime):
     created = await key(async_client)
     async with live_app() as url, httpx.AsyncClient() as http:
