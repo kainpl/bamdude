@@ -194,3 +194,28 @@ async def test_a_restore_refuses_while_connector_work_runs(tmp_path, monkeypatch
     obico.assert_not_awaited()
     prepare.assert_not_called()
     db.close.assert_not_awaited()
+
+
+async def test_a_restore_waits_for_a_read_in_progress_and_refuses_new_ones(runtime):
+    """A GET of an operation is owned: storage is not replaced under it, and none starts during the hold."""
+    entered = asyncio.Event()
+    leave = asyncio.Event()
+
+    async def reader():
+        async with runtime.reading():
+            entered.set()
+            await leave.wait()
+
+    task = asyncio.create_task(reader())
+    await entered.wait()
+    runtime._restore_hold = True
+
+    assert await runtime._drain(0.05) is False  # the read is still under way
+    with pytest.raises(ConnectorRefusal) as refused:
+        async with runtime.reading():
+            pass
+    assert (refused.value.status, refused.value.code) == (503, "storage_restoring")
+
+    leave.set()
+    await task
+    assert await runtime._drain(0.05) is True

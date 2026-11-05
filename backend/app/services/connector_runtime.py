@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from backend.app.core.config import settings
@@ -46,6 +47,10 @@ class ConnectorRuntime:
     def __init__(self):
         self._coordinators: dict[int, tuple[str, asyncio.Task]] = {}
         self._uploads: set[asyncio.Task] = set()
+        # Reads of an operation in progress (GET): a restore waits for them before storage is replaced.
+        self._readers = 0
+        self._readers_idle = asyncio.Event()
+        self._readers_idle.set()
         self._restore_hold = False
         self._fenced = False
         self._compactor: asyncio.Task | None = None
@@ -61,6 +66,21 @@ class ConnectorRuntime:
     def ensure_admitting(self) -> None:
         if not self.admitting:
             raise ConnectorRefusal(503, "storage_restoring", RESTORING, retryable=True)
+
+    @asynccontextmanager
+    async def reading(self):
+        """Own one read of an operation: refused while a restore holds or is fenced, and counted so that
+        ``quiesce_for_restore`` waits for it before storage is replaced (H0 review R1)."""
+        if self._restore_hold or self._fenced:
+            raise ConnectorRefusal(503, "storage_restoring", RESTORING, retryable=True)
+        self._readers += 1
+        self._readers_idle.clear()
+        try:
+            yield
+        finally:
+            self._readers -= 1
+            if self._readers == 0:
+                self._readers_idle.set()
 
     def running(self, submission_id: int) -> asyncio.Task | None:
         entry = self._coordinators.get(submission_id)
@@ -112,10 +132,17 @@ class ConnectorRuntime:
     async def _drain(self, timeout: float) -> bool:
         pending = {task for _, task in self._coordinators.values()} | set(self._uploads)
         pending = {task for task in pending if not task.done()}
-        if not pending:
-            return True
-        _, remaining = await asyncio.wait(pending, timeout=timeout)
-        return not remaining
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        if pending:
+            _, remaining = await asyncio.wait(pending, timeout=timeout)
+            if remaining:
+                return False
+        try:
+            await asyncio.wait_for(self._readers_idle.wait(), timeout=max(0.0, deadline - loop.time()))
+        except TimeoutError:
+            return False
+        return True
 
     async def _stop_compactor(self) -> None:
         task, self._compactor = self._compactor, None
@@ -195,6 +222,9 @@ class ConnectorRuntime:
     def _reset_for_tests(self) -> None:
         self._coordinators.clear()
         self._uploads.clear()
+        self._readers = 0
+        self._readers_idle = asyncio.Event()
+        self._readers_idle.set()
         self._restore_hold = self._fenced = False
         self._started = True
 

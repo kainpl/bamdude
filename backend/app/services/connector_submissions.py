@@ -257,6 +257,57 @@ async def _find(db, actor: ConnectorActor, server_id: str, epoch: str, operation
     ).scalar_one_or_none()
 
 
+OPERATION_NOT_FOUND = "The operation was not found."
+
+
+@dataclass(frozen=True)
+class OwnProof:
+    """That an operation is this key's own, in the namespace fixed when it was proven. Every later read by the
+    numeric id checks the row against it: the id is an address, never the authority (H0 review R1)."""
+
+    submission_id: int
+    operation_id: str
+    key_identity: str
+    server_id: str
+    epoch: str
+
+
+async def prove_own(actor: ConnectorActor, operation_id: str, server_id: str | None, epoch: str | None) -> OwnProof:
+    """Find THIS key's operation and fix the namespace in the same session: an omitted server/epoch is the current
+    one, read once here and never again later; one that differs from the current is 409."""
+    async with database.async_session() as db:
+        current = await read_server_identity(db)
+        if (server_id and server_id != current[0]) or (epoch and epoch != current[1]):
+            raise ConnectorRefusal(409, "context_changed", CONTEXT_CHANGED)
+        expected = (server_id or current[0], epoch or current[1])
+        row = None
+        if actor.key_identity and expected[0] and expected[1]:
+            row = await _find(db, actor, expected[0], expected[1], operation_id)
+    if row is None:
+        raise ConnectorRefusal(404, "operation_not_found", OPERATION_NOT_FOUND)
+    return OwnProof(row.id, operation_id, actor.key_identity, expected[0], expected[1])
+
+
+async def _verified(db: AsyncSession, proof: OwnProof) -> ConnectorSubmission:
+    """The proven operation's row, read now -- still this operation of this key in the proven namespace, and the
+    server still in it. Anything else is 409: a restore or replacement happened in between."""
+    row = await db.get(ConnectorSubmission, proof.submission_id, populate_existing=True)
+    if (
+        row is None
+        or (row.operation_id, row.api_key_identity, row.server_id, row.storage_epoch)
+        != (proof.operation_id, proof.key_identity, proof.server_id, proof.epoch)
+        or await read_server_identity(db) != (proof.server_id, proof.epoch)
+    ):
+        raise ConnectorRefusal(409, "context_changed", CONTEXT_CHANGED)
+    return row
+
+
+async def confirm(proof: OwnProof) -> None:
+    """After every read of an answer: the proof still holds, so nothing in it came from another database."""
+    async with database.async_session() as db:
+        await _verified(db, proof)
+
+
 async def find_own(db: AsyncSession, key_identity: str | None, operation_id: str) -> ConnectorSubmission | None:
     """The operation of THIS key identity in this server's current namespace -- a foreign one is no answer."""
     if not key_identity:
@@ -594,6 +645,8 @@ async def run(submission_id: int, actor: ConnectorActor, *, states=RESUMABLE, se
         submission = await db.get(ConnectorSubmission, submission_id)
         if submission is None or submission.api_key_identity != actor.key_identity or is_compacted(submission):
             return
+        if (submission.server_id, submission.storage_epoch) != await read_server_identity(db):
+            return  # another namespace: a restore came between the request and this coordinator
         manifest = submission.manifest
         rows = (
             await db.execute(
@@ -630,20 +683,25 @@ async def run(submission_id: int, actor: ConnectorActor, *, states=RESUMABLE, se
                 )
 
 
-async def ensure_resumable(submission_id: int, *, sessions=None) -> None:
+async def ensure_resumable(submission_id: int, *, sessions=None, proof: OwnProof | None = None) -> None:
     """A compacted operation is never published again: 410, and a new operation is the way to print."""
     factory = sessions or database.async_session
     async with factory() as db:
+        if proof is not None:
+            ensure_not_compacted(await _verified(db, proof))
+            return
         submission = await db.get(ConnectorSubmission, submission_id)
         if submission is not None:
             ensure_not_compacted(submission)
 
 
-async def make_resumable(submission_id: int, *, sessions=None) -> int:
+async def make_resumable(submission_id: int, *, sessions=None, proof: OwnProof | None = None) -> int:
     """Entries a crashed or abandoned coordinator left ``preparing`` become startable again -- only by an explicit
     resume, and only while no receipt exists (spec r2 §8.2). The caller guarantees no coordinator is running."""
     factory = sessions or database.async_session
     async with factory() as db:
+        if proof is not None:
+            await _verified(db, proof)
         result = await db.execute(
             update(ConnectorSubmissionEntry)
             .where(
@@ -697,10 +755,17 @@ def operation_state(entries: list[EntryResult]) -> str:
     return "rejected"
 
 
-async def result_of(submission_id: int, *, replayed: bool = False, sessions=None) -> SubmissionResult:
+async def result_of(
+    submission_id: int, *, replayed: bool = False, sessions=None, proof: OwnProof | None = None
+) -> SubmissionResult:
     factory = sessions or database.async_session
     async with factory() as db:
-        submission = await db.get(ConnectorSubmission, submission_id, populate_existing=True)
+        if proof is not None:
+            if proof.submission_id != submission_id:
+                raise ConnectorRefusal(409, "context_changed", CONTEXT_CHANGED)
+            submission = await _verified(db, proof)
+        else:
+            submission = await db.get(ConnectorSubmission, submission_id, populate_existing=True)
         rows = {
             row.entry_id: row
             for row in (
@@ -913,36 +978,43 @@ def _unavailable(observed: dict, reason: str) -> dict:
             "executions_complete": True}  # fmt: skip
 
 
-async def _first_layer(db: AsyncSession, archive, state: str) -> bool | None:
-    """True only when the live printer runs THIS execution (its newest open archive) at layer one or later."""
-    if state == "completed":
-        return True
+def _first_layer(archive, state: str) -> bool | None:
+    """Whether THIS execution has printed its first layer, observed now -- else None (H0 review R2).
+
+    Only a binding of the live run with a proven origin (our dispatch, a live external start, an exact subtask id)
+    to this very execution archive, on the client connection that made it, lets the printer's layer count speak for
+    it. A newer row, a "printing" status, a name or a "completed" label prove nothing about a layer. Read without
+    an await, so the binding and the live state are one moment.
+    """
     if state != "printing" or archive.printer_id is None:
         return None
-    from backend.app.models.archive import PrintArchive
+    from backend.app.services import print_run_binding
     from backend.app.services.printer_manager import printer_manager
 
-    newest_open = await db.scalar(
-        select(PrintArchive.id)
-        .where(PrintArchive.printer_id == archive.printer_id, PrintArchive.status == "printing")
-        .order_by(PrintArchive.created_at.desc(), PrintArchive.id.desc())
-        .limit(1)
-    )
+    run = print_run_binding.current_print_run(printer_manager, archive.printer_id)
+    if not print_run_binding.origin_is_proven(run) or run.archive_id != archive.id:
+        return None
+    if run.client_generation is not None and printer_manager.current_client_generation(archive.printer_id) != (
+        run.client_generation
+    ):
+        return None
     live = printer_manager.get_status(archive.printer_id)
-    if newest_open != archive.id or live is None or getattr(live, "state", None) not in _RUNNING:
+    if live is None or getattr(live, "state", None) not in _RUNNING:
         return None
     return (getattr(live, "layer_num", 0) or 0) >= 1
 
 
-async def observations(
-    actor: ConnectorActor,
-    submission_id: int,
-    *,
-    operation_id: str,
-    server_id: str,
-    epoch: str,
-    cursor: str | None = None,
-) -> dict:
+def _execution_state(archive) -> str:
+    """An execution our dispatch has not seen the printer accept is ``dispatching``, never ``printing``."""
+    from backend.app.services.dispatch_phase import UNACCEPTED
+
+    state = _EXECUTION_STATE.get(archive.status, "printing")
+    if state == "printing" and archive.dispatch_phase in UNACCEPTED:
+        return "dispatching"
+    return state
+
+
+async def observations(actor: ConnectorActor, proof: OwnProof, *, cursor: str | None = None) -> dict:
     """One page of what became of an operation's published jobs, found by identities only.
 
     The caller has already proven the operation is this key's own in this namespace. The key is read again for its
@@ -952,11 +1024,17 @@ async def observations(
     from backend.app.models.auto_queue import AutoQueueItem
     from backend.app.models.print_queue import PrintQueueItem
 
+    operation_id, server_id, epoch, submission_id = (
+        proof.operation_id,
+        proof.server_id,
+        proof.epoch,
+        proof.submission_id,
+    )
     offset = _decode_cursor(cursor, operation_id, server_id, epoch) if cursor else 0
     async with database.async_session() as db:
+        submission = await _verified(db, proof)
         key = await fresh_key(db, actor, (Permission.QUEUE_CREATE.value,))
         scope = set(key.printer_ids) if key.printer_ids is not None else None
-        submission = await db.get(ConnectorSubmission, submission_id)
         rows = {
             row.entry_id: row
             for row in (
@@ -1049,14 +1127,14 @@ async def observations(
                 continue
             shown = []
             for archive in runs[:OBSERVATION_EXECUTIONS]:
-                run_state = _EXECUTION_STATE.get(archive.status, "printing")
+                run_state = _execution_state(archive)
                 shown.append(
                     {
                         "identity": archive.recovery_identity,
                         "state": run_state,
                         "started_at": archive.started_at.isoformat() if archive.started_at else None,
                         "completed_at": archive.completed_at.isoformat() if archive.completed_at else None,
-                        "first_layer": await _first_layer(db, archive, run_state),
+                        "first_layer": _first_layer(archive, run_state),
                     }
                 )
             if assignment is not None:
@@ -1074,7 +1152,6 @@ async def observations(
                 }
             )
 
-        # A restore between the gate and this answer must not hand back the facts of another database.
-        if await read_server_identity(db) != (server_id, epoch):
-            raise ConnectorRefusal(409, "context_changed", CONTEXT_CHANGED)
+        # A restore between the proof and this answer must not hand back the facts of another database.
+        await _verified(db, proof)
     return {"jobs": jobs, "next_cursor": next_cursor}

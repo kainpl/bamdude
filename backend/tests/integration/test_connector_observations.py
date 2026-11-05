@@ -18,7 +18,7 @@ from sqlalchemy import delete, select, update
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
-from backend.app.models.connector_submission import ConnectorSubmissionEntry
+from backend.app.models.connector_submission import ConnectorSubmission, ConnectorSubmissionEntry
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.services import connector_submissions as cs, job_lineage
 from backend.app.services.printer_manager import printer_manager
@@ -41,14 +41,9 @@ async def _publish(farm, *entries):
 
 
 async def _observe(farm, operation_id, submission_id, cursor=None):
-    return await cs.observations(
-        farm["actor"],
-        submission_id,
-        operation_id=operation_id,
-        server_id=farm["server_id"],
-        epoch=farm["epoch"],
-        cursor=cursor,
-    )
+    proof = await cs.prove_own(farm["actor"], operation_id, farm["server_id"], farm["epoch"])
+    assert proof.submission_id == submission_id
+    return await cs.observations(farm["actor"], proof, cursor=cursor)
 
 
 async def _rows(sessions, model):
@@ -99,9 +94,10 @@ async def test_a_running_execution_proves_its_first_layer_from_the_live_printer(
     async with sessions() as db:
         await db.execute(update(PrintQueueItem).where(PrintQueueItem.id == row.id).values(status="printing"))
         await db.commit()
-    archive = await _execute(sessions, row, farm["printer"].id)
+    archive = await _execute(sessions, row, farm["printer"].id, dispatch_phase="accepted")
     live = SimpleNamespace(state="RUNNING", layer_num=0)
     monkeypatch.setattr(printer_manager, "get_status", lambda printer_id: live)
+    _bind(monkeypatch, archive.id, farm["printer"].id)
 
     before = (await _observe(farm, operation_id, submission_id))["jobs"][0]
     live.layer_num = 2
@@ -132,7 +128,7 @@ async def test_a_finished_job_is_read_from_its_execution_after_the_row_is_gone(f
         "state": "completed",
         "started_at": None,
         "completed_at": None,
-        "first_layer": True,
+        "first_layer": None,  # no observation of a layer was ever made; a status label proves none
     }
     assert job["printer"]["id"] == farm["printer"].id
 
@@ -330,3 +326,207 @@ async def test_a_restore_between_the_gate_and_the_answer_is_refused(farm, sessio
         await _observe(farm, operation_id, submission_id)
 
     assert (refused.value.status, refused.value.code) == (409, "context_changed")
+
+
+# --------------------------------------------------------------------------- #
+# H0 review r1 (R1, R2): run identity for first_layer, and no foreign operation through a restore window
+# --------------------------------------------------------------------------- #
+
+
+def _bind(monkeypatch, archive_id, printer_id, *, origin="dispatch", generation=7, live_generation=7):
+    """Install the run binding the dispatcher would have made, and the client generation now connected."""
+    from backend.app.services import print_run_binding
+
+    run = print_run_binding.PrintRunBinding(
+        printer_id=printer_id, archive_id=archive_id, origin=origin, client_generation=generation
+    )
+    monkeypatch.setattr(print_run_binding, "current_print_run", lambda manager, pid: run if pid == printer_id else None)
+    monkeypatch.setattr(printer_manager, "current_client_generation", lambda pid: live_generation)
+
+
+async def test_first_layer_needs_a_proven_binding_to_this_very_execution(farm, sessions, monkeypatch):
+    operation_id, submission_id = await _publish(farm, _single(farm))
+    [row] = await _rows(sessions, PrintQueueItem)
+    archive = await _execute(sessions, row, farm["printer"].id, dispatch_phase="accepted")
+    live = SimpleNamespace(state="RUNNING", layer_num=0)
+    monkeypatch.setattr(printer_manager, "get_status", lambda printer_id: live)
+
+    _bind(monkeypatch, archive.id, farm["printer"].id)
+    at_zero = (await _observe(farm, operation_id, submission_id))["jobs"][0]["executions"][0]["first_layer"]
+    live.layer_num = 3
+    past_one = (await _observe(farm, operation_id, submission_id))["jobs"][0]["executions"][0]["first_layer"]
+    _bind(monkeypatch, archive.id, farm["printer"].id, origin="observed")
+    unproven = (await _observe(farm, operation_id, submission_id))["jobs"][0]["executions"][0]["first_layer"]
+    _bind(monkeypatch, archive.id + 1000, farm["printer"].id)
+    other_run = (await _observe(farm, operation_id, submission_id))["jobs"][0]["executions"][0]["first_layer"]
+    _bind(monkeypatch, archive.id, farm["printer"].id, live_generation=8)
+    reconnected = (await _observe(farm, operation_id, submission_id))["jobs"][0]["executions"][0]["first_layer"]
+
+    assert (at_zero, past_one) == (False, True)
+    assert unproven is None and other_run is None and reconnected is None
+
+
+async def test_a_prepared_execution_borrows_no_layer_and_has_not_started(farm, sessions, monkeypatch):
+    """The reviewer's case: an older print runs at layer 42 while our newer archive is only prepared."""
+    operation_id, submission_id = await _publish(farm, _single(farm))
+    [row] = await _rows(sessions, PrintQueueItem)
+    now = datetime(2026, 11, 5, 14)
+    async with sessions() as db:
+        other = PrintArchive(
+            printer_id=farm["printer"].id,
+            filename="physical-other.3mf",
+            file_path="archive/physical-other.3mf",
+            file_size=1,
+            status="printing",
+            created_at=now,
+            dispatch_phase="accepted",
+        )
+        db.add(other)
+        await db.commit()
+        await db.refresh(other)
+    archive = await _execute(
+        sessions, row, farm["printer"].id, created_at=now + timedelta(seconds=1), dispatch_phase="prepared"
+    )
+    monkeypatch.setattr(printer_manager, "get_status", lambda _: SimpleNamespace(state="RUNNING", layer_num=42))
+    _bind(monkeypatch, other.id, farm["printer"].id)
+
+    [execution] = (await _observe(farm, operation_id, submission_id))["jobs"][0]["executions"]
+
+    assert execution["identity"] == archive.recovery_identity
+    assert execution["state"] == "dispatching" and execution["first_layer"] is None
+
+
+async def test_a_completed_label_is_no_first_layer_observation(farm, sessions, monkeypatch):
+    operation_id, submission_id = await _publish(farm, _single(farm))
+    [row] = await _rows(sessions, PrintQueueItem)
+    await _execute(sessions, row, farm["printer"].id, status="completed", dispatch_phase="prepared")
+    monkeypatch.setattr(printer_manager, "get_status", lambda _: None)
+
+    [execution] = (await _observe(farm, operation_id, submission_id))["jobs"][0]["executions"]
+
+    assert execution["state"] == "completed" and execution["first_layer"] is None
+
+
+async def _replace_under(sessions, submission_id):
+    """What a replaced database looks like at an await: the key kept, the namespace rotated, and the numeric
+    submission address now a different key's different operation."""
+    foreign = str(uuid.uuid4())
+    async with sessions() as db:
+        epoch = await cs.rotate_storage_epoch(db)
+        await db.execute(
+            update(ConnectorSubmission)
+            .where(ConnectorSubmission.id == submission_id)
+            .values(operation_id=foreign, api_key_identity=str(uuid.uuid4()), storage_epoch=epoch)
+        )
+        await db.commit()
+    return foreign
+
+
+@pytest.mark.parametrize("namespace_in_query", [False, True])
+@pytest.mark.parametrize("window", ["after_proof", "after_observations", "after_result"])
+async def test_a_restore_window_never_answers_with_another_operation(
+    farm, sessions, monkeypatch, window, namespace_in_query
+):
+    from fastapi import HTTPException
+
+    from backend.app.api.routes import connector as route
+
+    operation_id, submission_id = await _publish(farm, _single(farm))
+    hooks = {
+        "after_proof": (route, "_own"),
+        "after_observations": (cs, "observations"),
+        "after_result": (cs, "result_of"),
+    }
+    module, name = hooks[window]
+    original = getattr(module, name)
+
+    async def then_replace(*args, **kwargs):
+        value = await original(*args, **kwargs)
+        await _replace_under(sessions, submission_id)
+        return value
+
+    monkeypatch.setattr(module, name, then_replace)
+    query = {"server_id": farm["server_id"], "storage_epoch": farm["epoch"]} if namespace_in_query else {}
+
+    with pytest.raises(HTTPException) as refused:
+        await route.get_submission(
+            operation_id,
+            server_id=query.get("server_id"),
+            storage_epoch=query.get("storage_epoch"),
+            observations=True,
+            cursor=None,
+            _=None,
+            actor=farm["actor"],
+        )
+
+    assert refused.value.status_code == 409
+    assert refused.value.detail["error"] == "context_changed"
+
+
+async def test_a_submission_gone_after_the_proof_is_refused_not_a_crash(farm, sessions, monkeypatch):
+    from fastapi import HTTPException
+
+    from backend.app.api.routes import connector as route
+
+    operation_id, submission_id = await _publish(farm, _single(farm))
+    original = route._own
+
+    async def then_delete(*args, **kwargs):
+        value = await original(*args, **kwargs)
+        async with sessions() as db:
+            await db.execute(delete(ConnectorSubmissionEntry))
+            await db.execute(delete(ConnectorSubmission).where(ConnectorSubmission.id == submission_id))
+            await db.commit()
+        return value
+
+    monkeypatch.setattr(route, "_own", then_delete)
+
+    with pytest.raises(HTTPException) as refused:
+        await route.get_submission(
+            operation_id,
+            server_id=None,
+            storage_epoch=None,
+            observations=True,
+            cursor=None,
+            _=None,
+            actor=farm["actor"],
+        )
+
+    assert refused.value.status_code in (404, 409)
+
+
+async def test_a_read_during_a_restore_hold_is_refused(farm, sessions):
+    from fastapi import HTTPException
+
+    from backend.app.api.routes import connector as route
+    from backend.app.services.connector_runtime import connector_runtime
+
+    operation_id, _submission_id = await _publish(farm, _single(farm))
+    assert await connector_runtime.quiesce_for_restore()
+    try:
+        with pytest.raises(HTTPException) as refused:
+            await route.get_submission(
+                operation_id, server_id=None, storage_epoch=None, observations=True, cursor=None, _=None,
+                actor=farm["actor"],
+            )  # fmt: skip
+    finally:
+        connector_runtime._reset_for_tests()
+
+    assert refused.value.status_code == 503 and refused.value.detail["error"] == "storage_restoring"
+
+
+async def test_every_reader_by_id_checks_the_proof(farm, sessions):
+    """result_of, ensure_resumable and make_resumable each refuse a row that is no longer the proven operation."""
+    operation_id, submission_id = await _publish(farm, _single(farm))
+    proof = await cs.prove_own(farm["actor"], operation_id, None, None)
+    await _replace_under(sessions, submission_id)
+
+    for read in (
+        lambda: cs.result_of(submission_id, proof=proof),
+        lambda: cs.ensure_resumable(submission_id, proof=proof),
+        lambda: cs.make_resumable(submission_id, proof=proof),
+        lambda: cs.observations(farm["actor"], proof),
+    ):
+        with pytest.raises(cs.ConnectorRefusal) as refused:
+            await read()
+        assert (refused.value.status, refused.value.code) == (409, "context_changed")

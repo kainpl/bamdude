@@ -56,7 +56,7 @@ UPLOAD_PERMISSIONS = (Permission.LIBRARY_UPLOAD.value, Permission.LIBRARY_READ_A
 BODY_TOO_LARGE = "The request body is too large."
 INVALID_BODY = "The request body is not a valid connector request."
 DISABLED = "The slicer connector is switched off on this server."
-OPERATION_NOT_FOUND = "The operation was not found."
+OPERATION_NOT_FOUND = submissions.OPERATION_NOT_FOUND
 UPLOAD_TOO_LARGE = "The file is larger than this server accepts from the slicer connector."
 NOT_A_3MF = "Only a sliced .3mf or .gcode.3mf file can be sent."
 NOT_VISIBLE = "The uploaded content is not accessible to this API key."
@@ -226,17 +226,14 @@ async def create_submission(
     return _answer(result, 201 if registered.created else 200)
 
 
-async def _own(actor: ConnectorActor, operation_id: str, server_id: str | None, storage_epoch: str | None) -> int:
-    from backend.app.core import database
-
-    async with database.async_session() as db:
-        current = await submissions.read_server_identity(db)
-        if (server_id and server_id != current[0]) or (storage_epoch and storage_epoch != current[1]):
-            raise HTTPException(409, {"error": "context_changed", "message": submissions.CONTEXT_CHANGED})
-        own = await submissions.find_own(db, actor.key_identity, operation_id)
-    if own is None:
-        raise HTTPException(404, {"error": "operation_not_found", "message": OPERATION_NOT_FOUND})
-    return own.id
+async def _own(
+    actor: ConnectorActor, operation_id: str, server_id: str | None, storage_epoch: str | None
+) -> submissions.OwnProof:
+    """This key's operation, with the namespace fixed in the same read; every later read checks the row against it."""
+    try:
+        return await submissions.prove_own(actor, operation_id, server_id, storage_epoch)
+    except ConnectorRefusal as refusal:
+        raise _refused(refusal) from refusal
 
 
 @router.get("/submissions/{operation_id}")
@@ -254,27 +251,17 @@ async def get_submission(
     ``observations=1`` adds what became of each published job, followed by immutable identities only (host spec
     r2.2 §11 S3), one page at a time; ``cursor`` is the previous page's ``next_cursor``.
     """
-    submission_id = await _own(actor, operation_id, server_id, storage_epoch)
-    observed = None
-    if observations:
-        from backend.app.core import database
-
-        if server_id is None or storage_epoch is None:
-            async with database.async_session() as db:
-                current = await submissions.read_server_identity(db)
-            server_id, storage_epoch = server_id or current[0], storage_epoch or current[1]
-        try:
-            observed = await submissions.observations(
-                actor,
-                submission_id,
-                operation_id=operation_id,
-                server_id=server_id,
-                epoch=storage_epoch,
-                cursor=cursor,
-            )
-        except ConnectorRefusal as refusal:
-            raise _refused(refusal) from refusal
-    return _answer(await submissions.result_of(submission_id), 200, observations=observed)
+    try:
+        # A read the restore lifecycle owns: refused while a restore holds, and waited for before storage is replaced.
+        async with connector_runtime.reading():
+            proof = await _own(actor, operation_id, server_id, storage_epoch)
+            observed = await submissions.observations(actor, proof, cursor=cursor) if observations else None
+            result = await submissions.result_of(proof.submission_id, proof=proof)
+            # After every read: the proof still holds, so no half of this answer came from another database.
+            await submissions.confirm(proof)
+    except ConnectorRefusal as refusal:
+        raise _refused(refusal) from refusal
+    return _answer(result, 200, observations=observed)
 
 
 @router.post("/submissions/{operation_id}/resume")
@@ -288,18 +275,25 @@ async def resume_submission(
 ):
     """Run the unpublished, not permanently refused entries again. A published entry is read, never re-run."""
     await _require_enabled(db)
-    submission_id = await _own(actor, operation_id, server_id, storage_epoch)
+    proof = await _own(actor, operation_id, server_id, storage_epoch)
+    submission_id = proof.submission_id
     try:
         connector_runtime.ensure_admitting()
-        await submissions.ensure_resumable(submission_id)
+        await submissions.ensure_resumable(submission_id, proof=proof)
         task = connector_runtime.running(submission_id)
         if task is None:
-            await submissions.make_resumable(submission_id)
+            await submissions.make_resumable(submission_id, proof=proof)
+            connector_runtime.ensure_admitting()
             task = connector_runtime.start(submission_id, actor, states=submissions.RESUMABLE)
     except ConnectorRefusal as refusal:
         raise _refused(refusal) from refusal
     finished = await connector_runtime.wait(task, SUBMIT_WAIT_SECONDS)
-    return _answer(await submissions.result_of(submission_id, replayed=True), 200 if finished else 202)
+    try:
+        result = await submissions.result_of(submission_id, replayed=True, proof=proof)
+        await submissions.confirm(proof)
+    except ConnectorRefusal as refusal:
+        raise _refused(refusal) from refusal
+    return _answer(result, 200 if finished else 202)
 
 
 @router.post("/submissions/{operation_id}/cancel")
@@ -311,9 +305,14 @@ async def cancel_submission(
     actor: ConnectorActor = Depends(connector_actor),
 ):
     """Fence the entries not yet published. Published jobs stay; nothing on a printer is stopped."""
-    submission_id = await _own(actor, operation_id, server_id, storage_epoch)
-    await submissions.cancel(actor, operation_id)
-    return _answer(await submissions.result_of(submission_id), 200)
+    proof = await _own(actor, operation_id, server_id, storage_epoch)
+    try:
+        await submissions.cancel(actor, operation_id)
+        result = await submissions.result_of(proof.submission_id, proof=proof)
+        await submissions.confirm(proof)
+    except ConnectorRefusal as refusal:
+        raise _refused(refusal) from refusal
+    return _answer(result, 200)
 
 
 async def _max_upload_bytes(db: AsyncSession) -> int:
