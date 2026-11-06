@@ -471,6 +471,9 @@ class ModelCompatibilityResponse(BaseModel):
 class PrinterStatus(BaseModel):
     id: int
     name: str
+    # Which printer this status describes, by the identity a slicer connector holds it by: SQLite gives a deleted
+    # printer's id to the next one, and a status read by id must not be taken for the printer that had it before.
+    connector_identity: str | None = None
     connected: bool
     effective_model: str | None = None
     state: str | None = None

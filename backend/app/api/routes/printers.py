@@ -1258,6 +1258,7 @@ async def _build_printer_status(
         return PrinterStatus(
             id=printer_id,
             name=printer.name,
+            connector_identity=printer.connector_identity,
             connected=False,
             effective_model=effective_model_for_state(printer.model or printer_manager.get_model(printer_id), None),
             # What the model is known to have, even with nobody home. The helper
@@ -1575,6 +1576,7 @@ async def _build_printer_status(
     return PrinterStatus(
         id=printer_id,
         name=printer.name,
+        connector_identity=printer.connector_identity,
         connected=state.connected,
         # From the state this answer already read — one read, the same one every
         # other field of the status comes from.
