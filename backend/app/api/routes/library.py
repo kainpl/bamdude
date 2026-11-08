@@ -600,6 +600,12 @@ SWAP_SOURCE_CONFLICT = (
 )
 
 
+def _write_upload(path: Path, content: bytes) -> None:
+    """Write an upload's bytes; a worker thread's job (``store_library_upload``), never the event loop's."""
+    with open(path, "wb") as f:
+        f.write(content)
+
+
 def _stored_file_path(abs_path: Path, is_external: bool) -> str:
     """Produce the value to persist in ``LibraryFile.file_path``.
 
@@ -3610,8 +3616,9 @@ async def store_library_upload(
     # Validation sniffs magic bytes, so it runs on the bytes in hand; the file
     # reaches disk only after the checks pass (#1401).
     validate_print_file_upload(filename, content)
-    with open(file_path, "wb") as f:
-        f.write(content)
+    # Off the event loop: written here, a large file held every request, socket push and MQTT callback for seconds
+    # (a 505 MiB upload froze the server for ~2 s, OrcaBamDude P7 risk audit 2026-11-08).
+    await asyncio.to_thread(_write_upload, file_path, content)
 
     from backend.app.services.library_file_runtime import get_library_file_runtime
 
