@@ -434,3 +434,99 @@ async def test_only_a_fresh_publication_announces_and_a_failed_announcement_chan
     assert first.entries[0].state == second.entries[0].state == "published"
     assert first.entries[0].queue_item_ids == second.entries[0].queue_item_ids
     assert await _count(sessions, PrintQueueItem) == len(first.entries[0].queue_item_ids)
+
+
+async def test_a_key_that_lost_its_read_scope_publishes_nothing_for_a_printer_or_the_auto_queue(farm, sessions):
+    # Plan r2 AC46 (B2): publication re-reads the key on its own session; library:read_all is the key's
+    # can_read_status, so a key that lost it is refused for every entry, printer and AutoQueue alike.
+    auto = {
+        "entry_id": str(uuid.uuid4()),
+        "plate_id": 15,
+        "target": {"kind": "auto", "target_model": "P1P"},
+        "action": "queue_asap",
+    }
+    body = _body(farm, _printer_entry(farm), auto)
+    registered = await cs.register(farm["actor"], body)
+    async with sessions() as db:
+        await db.execute(update(APIKey).where(APIKey.id == farm["key"].id).values(can_read_status=False))
+        await db.commit()
+
+    await cs.run(registered.submission_id, farm["actor"])
+
+    result = await cs.result(farm["actor"], body.operation_id)
+    assert [e.state for e in result.entries] == ["rejected", "rejected"]
+    assert {e.error.error for e in result.entries} == {"permission_denied"}
+    assert await _count(sessions, PrintQueueItem) == 0 and await _count(sessions, AutoQueueItem) == 0
+
+
+async def test_publication_never_asks_the_key_resolver_that_writes_last_used(farm, sessions, monkeypatch):
+    # Plan r2 AC46 (B2): the resolver writes last_used through a session of its own and would wait on our own
+    # SQLite writer inside a publication; the publication must decide on its own session only.
+    async def trap(*args, **kwargs):
+        raise AssertionError("the key resolver was called inside a publication")
+
+    monkeypatch.setattr(auth, "resolve_api_key_authority", trap)
+    body = _body(farm)
+    registered = await cs.register(farm["actor"], body)
+    await cs.run(registered.submission_id, farm["actor"])
+
+    result = await cs.result(farm["actor"], body.operation_id)
+    assert result.entries[0].state == "published"
+
+
+async def test_a_print_for_a_busy_paused_queue_is_appended_and_the_queue_stays_as_it_was(farm, sessions):
+    # Plan r2 AC04: "print when the queue allows" to a printer that is printing and whose queue is paused files the
+    # jobs at the end; the queue's pause and status, the running job and the waiting one are left as they were.
+    from backend.app.models.printer_queue import PrinterQueue
+
+    first = await _submit(farm, _body(farm, _printer_entry(farm, action="queue_asap")))
+    running_id, waiting_id = sorted(first.entries[0].queue_item_ids)
+    async with sessions() as db:
+        await db.execute(update(PrintQueueItem).where(PrintQueueItem.id == running_id).values(status="printing"))
+        await db.execute(
+            update(PrinterQueue)
+            .where(PrinterQueue.id == farm["queue"].id)
+            .values(is_paused=True, status="printing", current_item_id=running_id)
+        )
+        await db.commit()
+        before = {r.id: (r.status, r.position) for r in (await db.execute(select(PrintQueueItem))).scalars()}
+
+    second = await _submit(farm, _body(farm, _printer_entry(farm, action="queue_asap")))
+
+    new_ids = set(second.entries[0].queue_item_ids)
+    async with sessions() as db:
+        queue = await db.get(PrinterQueue, farm["queue"].id)
+        rows = {r.id: (r.status, r.position) for r in (await db.execute(select(PrintQueueItem))).scalars()}
+    assert (queue.is_paused, queue.status, queue.current_item_id) == (True, "printing", running_id)
+    assert {i: rows[i] for i in before} == before
+    assert len(new_ids) == 2 and all(rows[i][0] == "pending" for i in new_ids)
+    assert min(rows[i][1] for i in new_ids) > rows[waiting_id][1]
+
+
+async def test_a_published_job_keeps_its_bytes_and_its_receipt_after_the_library_file_is_purged(farm, sessions):
+    # Plan r2 AC21: the connector's jobs own a captured copy; purging the library file afterwards unhooks them and
+    # nothing else -- the jobs wait with their bytes, and the operation still answers with the same jobs.
+    from backend.app.core.config import settings
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.queue_source import QueueSource
+    from backend.app.services.library_trash import library_trash_service
+
+    body = _body(farm, _printer_entry(farm, action="queue_asap"))
+    published = await _submit(farm, body)
+    ids = sorted(published.entries[0].queue_item_ids)
+    async with sessions() as db:
+        file = await db.get(LibraryFile, farm["source"].id)
+        if await library_trash_service.trash_or_purge(db, file):
+            await library_trash_service.hard_delete_now(db, file)
+        await db.commit()
+
+    async with sessions() as db:
+        assert await db.get(LibraryFile, farm["source"].id) is None
+        jobs = [await db.get(PrintQueueItem, i) for i in ids]
+        assert all(j is not None and j.status == "pending" and j.library_file_id is None for j in jobs)
+        sources = {j.queue_source_id for j in jobs}
+        assert len(sources) == 1 and None not in sources
+        blob = await db.get(QueueSource, sources.pop())
+        assert blob.state == "ready" and (Path(settings.base_dir) / blob.relative_path).is_file()
+    again = await cs.result(farm["actor"], body.operation_id)
+    assert again.state == "complete" and sorted(again.entries[0].queue_item_ids) == ids
