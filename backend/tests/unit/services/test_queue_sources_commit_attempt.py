@@ -37,8 +37,14 @@ from backend.tests.unit.services.test_queue_sources_gc import (  # noqa: F401
 pytestmark = pytest.mark.unit
 
 
-async def _capture(path: Path, payload: bytes = b"<model/>"):
-    make_3mf(path, payload=payload)
+async def _capture(path: Path, payload: bytes = b"<model/>", *, same_bytes_as: Path | None = None):
+    """Capture a 3MF. ``same_bytes_as`` copies that file instead of building another: a zip stamps its members with
+    the current time to two seconds, so two builds a slow publication apart are other bytes (seen on PostgreSQL under
+    load, 2026-11-08)."""
+    if same_bytes_as is None:
+        make_3mf(path, payload=payload)
+    else:
+        path.write_bytes(same_bytes_as.read_bytes())
     return await queue_sources.capture(
         queue_sources.CaptureRequest(path=path, format=FORMAT_3MF, display_filename=path.name)
     )
@@ -117,7 +123,7 @@ async def test_a_commit_that_went_through_then_raised_keeps_a_reused_object(tmp_
     first = await _capture(tmp_path / "share" / "lamp.3mf")
     await queue_sources.publish(first, _attach_a_job(queue_id), session_factory=sessions)
     target = _the_object(first)
-    second = await _capture(tmp_path / "share" / "again.3mf")
+    second = await _capture(tmp_path / "share" / "again.3mf", same_bytes_as=tmp_path / "share" / "lamp.3mf")
     assert second.sha256 == first.sha256
     _commit_once(monkeypatch, reach_the_database=True, error=RuntimeError("commit outcome unknown"))
 
