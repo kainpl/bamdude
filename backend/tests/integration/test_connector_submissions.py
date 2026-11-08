@@ -403,3 +403,34 @@ async def test_a_recent_operation_is_not_compacted(farm, sessions):
     await _submit(farm, _body(farm))
 
     assert await cs.compact() == 0
+
+
+@pytest.mark.parametrize("helper", ["works", "raises"])
+async def test_only_a_fresh_publication_announces_and_a_failed_announcement_changes_nothing(
+    farm, sessions, monkeypatch, helper
+):
+    # Plan r2 AC54 (A3): the printer-queue announcement goes once, after the fresh commit; a replay and a read send
+    # nothing; a helper that fails leaves the receipt and the jobs as they were.
+    from backend.app.services import queue_add_effects
+
+    calls = []
+
+    async def announce(db, item, queue):
+        calls.append((item.id, queue.id))
+        if helper == "raises":
+            raise RuntimeError("notification channel down")
+
+    monkeypatch.setattr(queue_add_effects, "announce_printer_queue_add", announce)
+    body = _body(farm)
+    registered = await cs.register(farm["actor"], body)
+    await cs.run(registered.submission_id, farm["actor"])
+    first = await cs.result(farm["actor"], body.operation_id)
+
+    again = await cs.register(farm["actor"], body)
+    await cs.run(again.submission_id, farm["actor"])
+    second = await cs.result(farm["actor"], body.operation_id)
+
+    assert len(calls) == 1
+    assert first.entries[0].state == second.entries[0].state == "published"
+    assert first.entries[0].queue_item_ids == second.entries[0].queue_item_ids
+    assert await _count(sessions, PrintQueueItem) == len(first.entries[0].queue_item_ids)

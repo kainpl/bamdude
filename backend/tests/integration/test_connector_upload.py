@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import uuid
+from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select, update
@@ -212,3 +213,67 @@ async def test_the_uploaded_file_is_what_a_submission_then_prints(
     assert response.status_code == 201, response.text
     assert response.json()["state"] == "complete"
     assert await db_session.scalar(select(func.count()).select_from(PrintQueueItem)) == 1
+
+
+async def test_bytes_whose_file_left_the_disk_restore_the_same_row(async_client, db_session, key, model):
+    # AC07: the managed row keeps its id and gets its bytes back; nothing is queued, deleted or duplicated.
+    from backend.app.api.routes.library import to_absolute_path
+
+    first = (await _upload(async_client, key, model)).json()
+    row = await db_session.get(LibraryFile, first["id"])
+    stored = Path(to_absolute_path(row.file_path))
+    stored.unlink()
+
+    again = await _upload(async_client, key, model, name="again.gcode.3mf")
+
+    assert again.status_code == 200, again.text
+    assert again.json()["outcome"] == "restored" and again.json()["id"] == first["id"]
+    db_session.expire_all()
+    row = await db_session.get(LibraryFile, first["id"])
+    assert Path(to_absolute_path(row.file_path)).is_file()
+    assert await db_session.scalar(select(func.count()).select_from(LibraryFile)) == 1
+    assert await db_session.scalar(select(func.count()).select_from(PrintQueueItem)) == 0
+    assert _staged() == []
+
+
+async def test_the_same_bytes_sent_again_as_a_new_operation_are_new_jobs(
+    async_client, db_session, key, model, tmp_path, printer_factory, monkeypatch
+):
+    # AC08: a deliberate new send of the same file is a new operation with jobs of its own; the bytes are reused.
+    _source, printer, _queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    uploaded = (await _upload(async_client, key, model)).json()
+    again = (await _upload(async_client, key, model, name="again.gcode.3mf")).json()
+    assert again["outcome"] == "deduped" and again["id"] == uploaded["id"]
+    caps = (await async_client.get(f"{BASE}/capabilities", headers={"X-API-Key": key})).json()
+
+    def body():
+        return {
+            "protocol_version": 1,
+            "operation_id": str(uuid.uuid4()),
+            "server_id": caps["connector_server_id"],
+            "storage_epoch": caps["storage_epoch"],
+            "library_file_id": uploaded["id"],
+            "source_sha256": uploaded["file_hash"],
+            "entries": [
+                {
+                    "entry_id": str(uuid.uuid4()),
+                    "plate_id": 15,
+                    "target": {
+                        "kind": "printer",
+                        "printer_id": printer.id,
+                        "printer_identity": printer.connector_identity,
+                    },
+                    "action": "queue_asap",
+                }
+            ],
+        }
+
+    first = await async_client.post(f"{BASE}/submissions", json=body(), headers={"X-API-Key": key})
+    second = await async_client.post(f"{BASE}/submissions", json=body(), headers={"X-API-Key": key})
+
+    assert first.status_code == second.status_code == 201, (first.text, second.text)
+    jobs = [set(r.json()["entries"][0]["queue_item_ids"]) for r in (first, second)]
+    assert all(len(ids) == 1 for ids in jobs) and not jobs[0] & jobs[1]
+    assert await db_session.scalar(select(func.count()).select_from(PrintQueueItem)) == 2
+    same_bytes = select(func.count()).select_from(LibraryFile).where(LibraryFile.file_hash == uploaded["file_hash"])
+    assert await db_session.scalar(same_bytes) == 1  # setup_source keeps a library file of its own beside it
