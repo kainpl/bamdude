@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Server-side slicing defaults to OrcaSlicer 2.5.0 and Bambu Studio 02.09.01.70. Rebuild the optional slicer API containers to apply the update; existing installations also need to update their version pins in `slicer-api/.env`.
+
 - Release downloads carry one `bamdude-<version>-SHA256SUMS` for the Windows installer and the AI client packages, written only after each package matches the hashes of its own build. The package build's internal catalog (`packages.json`) and its partial checksum file are no longer attached to the release.
 
 ## [0.7.3] - 2026-11-04
