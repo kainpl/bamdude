@@ -45,7 +45,7 @@ BUSY = "The slicer connector is busy; retry shortly."
 
 
 def fence_path() -> Path:
-    return Path(settings.base_dir) / FENCE_NAME
+    return Path(settings.base_dir) / FENCE_NAME  # SEC-PATH-OK: FENCE_NAME is this module's constant, never input
 
 
 class ConnectorRuntime:
