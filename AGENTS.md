@@ -6,7 +6,7 @@ first whatever assistant you are. It covers the architecture, the commands that
 actually verify a change, the invariants that must not be broken, and the
 checklist for adding an endpoint, a column, a permission or a translation.
 
-The five things that most often go wrong for an agent here:
+The six things that most often go wrong for an agent here:
 
 1. **Every user-facing string exists in `en` and `uk`** — frontend locales and
    backend `data/*_en.json` / `*_uk.json` alike. One language is a failing test.
@@ -23,6 +23,12 @@ The five things that most often go wrong for an agent here:
    working directory matters)
    (or the targeted file), `npm run lint && npm run typecheck && npm run test:run`
    — and the CHANGELOG entry goes in the same change.
+6. **Queue recovery uses the existing addressed policy and writers.** Reuse
+   `print_state_recovery` and `print_execution`; resetting a queue header is
+   not proof that its claims or physical effects ended. Preserve the shared
+   stale-claim guards for Retry, Clone and plate-clear Repeat. MQTT changes
+   must cover PREPARE/SLICING and reconnects as well as direct IDLE → RUNNING;
+   follow the layer-order and observed-run invariants in `CLAUDE.md`.
 
 `CONTRIBUTING.md` has the setup, the CI checks and the house rules, including
 a section on working with an AI assistant.

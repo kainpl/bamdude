@@ -60,15 +60,13 @@ support is a bug report, a translation PR or a star. If you would rather chip in
 
 ---
 
-## Release 0.7.1 and current development
+## Release 0.7.3 and current development
 
-**0.7.1** keeps whether a file carries its own plate-swap sequence as a fact of the print file — older archives are unknown until you declare them — and lets you review and repair unresolved print-state conflicts from System. Smart-plug schedules repeat every day, energy accounting and Telegram cards are steadier, and printers can opt into automatic assignment of full inventory spools on loading. It also adds server-rendered pictures of printed parts, STEP thumbnails, whole-plate order quantities, forecasts that account for operator hours, loose stock components in order plans and a saved extra percentage on printed BOM parts. **Swap farms:** review the declaration of older archives before reprinting with BamDude's swap macros — see the [0.7.1 changelog](CHANGELOG.md).
+**0.7.3** improves recovery when a completed print still holds a printer's queue, adds the status monitor and camera wall, and expands order planning and Obico evidence history. See the [changelog](CHANGELOG.md) for upgrade details. The optional MCP assistant integration remains a development preview.
 
-**0.7.0** adds configurable products (SKU, version, category and variants), five order views with stages and responsible operators, finished-goods stock and numbered dispatch notes. Orders, Products, Customers and Stock have separate permissions; review custom groups after upgrading. From a library file or its plate gallery, **Add to order…** opens a one-off product with that file already selected.
+**Current development after 0.7.3 (`feature/v0.7.3-fixes`):** restarting during an already running print's pause rejoins that run; reconnects after its end do not invent another print or release the plate check. Info can preview and cancel a complete group of stale queue claims and separately record a plate swap the operator has already performed manually. Repair preserves archives and accounting, sends no printer commands, and leaves the queue paused for inspection. Cancelled stale claims cannot be retried, cloned or rearmed through plate-clear Repeat. See [duplicate-claim recovery](https://docs.bamdude.top/features/system-info/#duplicate-queue-claims) for the operator steps and limits. These changes are not included in stable 0.7.3.
 
-It also adds [Home Assistant and shared Zigbee sensor bindings](https://docs.bamdude.top/features/sensors/), optional sensor holds on queued starts, [scheduled AMS drying](https://docs.bamdude.top/features/ams/), [Bambu Studio model compatibility](https://docs.bamdude.top/features/filament-routing/), H2C rack-nozzle selection, optional runout-spool archiving and printing labels from a partially used sheet. System reports the preview, camera, 3MF-analysis and library-file workers separately.
-
-**After 0.7.1, in the current development branch:** shared editable order plans and machine-hour comparisons, improved plate selection, LAN HTTP submission, bulk retry of failed queue jobs, quieter AutoQueue obstacle notifications, filament-segment accounting, camera-light fixes, and responsive library controls with corrected folder trash handling. An unclean shutdown pauses new farm starts until an operator confirms recovery; reconnects do not revoke that confirmation or block the macros of an existing print. Info shows print-state inconsistencies and offers confirmed repair actions, including inspection of a completed queue item still held by a printing queue header.
+**Swap farms upgrading from older versions:** review the declaration of older archives before reprinting with BamDude's swap macros — see the [0.7.1 changelog](CHANGELOG.md).
 
 Docker `latest` follows the latest **stable release tag**; `dev` follows the beta channel. Check the release changelog for what your image includes.
 
