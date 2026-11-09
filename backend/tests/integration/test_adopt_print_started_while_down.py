@@ -148,7 +148,7 @@ async def _drive_hook(
         pre_seed(printer_id)
 
     pm = MagicMock()
-    pm.get_status.return_value = None
+    pm.get_status.return_value = MagicMock(state="RUNNING")
     pm.get_client.return_value = None
     pm.is_awaiting_plate_clear.return_value = False
 
@@ -176,6 +176,7 @@ async def _drive_hook(
 
     patches = [
         patch("backend.app.main.printer_manager", pm),
+        patch("backend.app.main._restore_usage_tracking_session", AsyncMock()),
         patch("backend.app.main.ws_manager", ws),
         patch("backend.app.main.mqtt_relay", MagicMock(on_archive_created=AsyncMock())),
         patch("backend.app.main.smart_plug_manager", MagicMock(on_print_start=spies["plug_on_print_start"])),

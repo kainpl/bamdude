@@ -67,6 +67,8 @@ async def test_running_observed_captures_baseline_on_restart_recovery():
         # it is covered in test_adopt_print_started_while_down.py; here it would
         # only drive a whole write path through this test's mock session.
         patch("backend.app.main._adopt_running_print", new=AsyncMock(return_value=None)),
+        patch("backend.app.main.printer_manager.get_status", return_value=MagicMock(state="RUNNING")),
+        patch("backend.app.main._restore_usage_tracking_session", AsyncMock()),
     ):
         mock_session_maker.return_value = mock_session
 

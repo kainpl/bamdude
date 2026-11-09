@@ -150,7 +150,7 @@ class TestAPrintAlreadyRunningClaimsItsRow:
         archive_id = archive.id
 
         pm = MagicMock()
-        pm.get_status.return_value = None
+        pm.get_status.return_value = MagicMock(state="RUNNING")
         pm.is_awaiting_plate_clear.return_value = True
         with (
             patch("backend.app.main.printer_manager", pm),
@@ -184,7 +184,7 @@ class TestAPrintAlreadyRunningClaimsItsRow:
 
         printer_id = await _printer_with_queue(db_session, printer_factory)
         pm = MagicMock()
-        pm.get_status.return_value = None
+        pm.get_status.return_value = MagicMock(state="RUNNING")
         pm.get_client.return_value = None
         pm.is_awaiting_plate_clear.return_value = False
         ws = MagicMock()

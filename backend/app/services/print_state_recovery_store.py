@@ -827,7 +827,8 @@ async def list_issues_page(
         PrintArchive.status == "printing",
         PrintArchive.deleted_at.is_(None),
     )
-    # Start with indexed queue references, not the printer's archive history.
+    # Start with queue references, not the printer's archive history. SQLite
+    # may scan queue rows; no archive-history JSON predicate is evaluated here.
     # Keep this separate from the printing branch so the JSON predicate is
     # evaluated only on addressed terminal archives.
     owed_archives = select(PrintArchive.printer_id, literal("archive"), PrintArchive.id).where(

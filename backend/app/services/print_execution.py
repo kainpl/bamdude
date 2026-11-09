@@ -10,6 +10,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services import queue_sources
+from backend.app.services.print_claims import ClaimResult
 from backend.app.services.print_observation import PrintObservation, run_id
 
 NONCURRENT = "noncurrent_execution"
@@ -28,20 +29,25 @@ class StaleClaimRepeat(queue_sources.QueueSourceError):
 async def require_repeatable(db, row, *, whole_batch=False):
     if row.error_code in STALE_CLAIM_CODES:
         raise StaleClaimRepeat(row.archive_id)
-    if (
-        whole_batch
-        and row.batch_id
-        and await db.scalar(
-            select(PrintQueueItem.id)
+    if whole_batch and row.batch_id:
+        stale = await db.scalar(
+            select(PrintQueueItem)
             .where(PrintQueueItem.batch_id == row.batch_id, PrintQueueItem.error_code.in_(STALE_CLAIM_CODES))
+            .order_by(PrintQueueItem.id)
             .limit(1)
         )
-    ):
-        raise StaleClaimRepeat()
+        if stale is not None:
+            raise StaleClaimRepeat(stale.archive_id)
 
 
 class ExecutionChanged(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class StartPublication(ClaimResult):
+    # Durability and permission to bind the current runtime are separate facts.
+    current: bool = True
 
 
 def durable_id(archive):
@@ -127,11 +133,11 @@ async def decide_start(
     if not matched and catch_up:
         from backend.app.services.print_reconciliation import _name_matches_subtask
 
-        name = data.get("subtask_name") or data.get("filename") or ""
+        name = data.get("subtask_name") or ""
         matched = [
             a
             for a in archives
-            if not (live_id and ids[a.id] and live_id != ids[a.id]) and _name_matches_subtask(a, name)
+            if not (live_id and ids[a.id] and live_id != ids[a.id]) and (not name or _name_matches_subtask(a, name))
         ]
     if len(matched) > 1:
         raise ExecutionChanged("ambiguous execution")
@@ -268,6 +274,24 @@ async def close_noncurrent(db, archive):
         await update_queue_counters(db, queue.id)
 
 
+async def _check_candidates(db, live, decision):
+    """An unaccepted attempt may be closed by its own dispatcher, never accepted silently."""
+    attempts = {row[0] for row in decision.attempts}
+    expected = set(decision.old)
+    if decision.current_id is not None and decision.current_status == "printing":
+        expected.add((decision.current_id, decision.current_identity, decision.current_run_id))
+    if {(a.id, a.recovery_identity, durable_id(a)) for a in live if a.id not in attempts} != expected:
+        raise ExecutionChanged("candidate set changed")
+    for aid, identity, rid in decision.attempts:
+        attempt = await db.get(PrintArchive, aid, populate_existing=True, with_for_update=True)
+        if attempt is not None and (
+            attempt.recovery_identity != identity
+            or durable_id(attempt) != rid
+            or attempt.dispatch_phase not in {"prepared", "sending", "sent"}
+        ):
+            raise ExecutionChanged("dispatch attempt was accepted or replaced")
+
+
 async def recheck_start(db, printer_id, decision, *, still_current):
     """Refuse a changed proof before admission can run start effects."""
     from backend.app.services.queue_ops import claim_lanes
@@ -293,14 +317,7 @@ async def recheck_start(db, printer_id, decision, *, still_current):
                 )
             ).all()
         )
-        expected = set(decision.old) | set(decision.attempts)
-        if decision.current_id is not None and decision.current_status == "printing":
-            expected.add((decision.current_id, decision.current_identity, decision.current_run_id))
-        if {(a.id, a.recovery_identity, durable_id(a)) for a in live} != expected:
-            raise ExecutionChanged("candidate set changed")
-        attempts = {row[0] for row in decision.attempts}
-        if any(a.id in attempts and a.dispatch_phase not in {"prepared", "sending", "sent"} for a in live):
-            raise ExecutionChanged("dispatch attempt was accepted")
+        await _check_candidates(db, live, decision)
         if decision.current_id is not None:
             current = await db.get(PrintArchive, decision.current_id, populate_existing=True, with_for_update=True)
             if (
@@ -355,14 +372,7 @@ async def publish_start(db, archive, decision, *, options=None, still_current=No
                 )
             ).all()
         )
-        expected = set(decision.old) | set(decision.attempts)
-        if decision.current_id is not None and decision.current_status == "printing":
-            expected.add((decision.current_id, decision.current_identity, decision.current_run_id))
-        if {(a.id, a.recovery_identity, durable_id(a)) for a in all_live} != expected:
-            raise ExecutionChanged("candidate set changed")
-        attempts = {row[0] for row in decision.attempts}
-        if any(a.id in attempts and a.dispatch_phase not in {"prepared", "sending", "sent"} for a in all_live):
-            raise ExecutionChanged("dispatch attempt was accepted")
+        await _check_candidates(db, all_live, decision)
         if decision.current_id is not None:
             current = await db.get(PrintArchive, decision.current_id, populate_existing=True, with_for_update=True)
             if (
@@ -417,16 +427,11 @@ async def publish_start(db, archive, decision, *, options=None, still_current=No
                 current = await verify.get(PrintArchive, published_id)
                 row = await verify.get(PrintQueueItem, claim.item_id)
                 committed = (
-                    decision.epoch == queue_sources.current_epoch()
-                    and (still_current is None or still_current())
-                    and current is not None
+                    current is not None
                     and current.recovery_identity == published_identity
-                    and current.status == "printing"
-                    and current.deleted_at is None
                     and row is not None
                     and row.recovery_identity == claim.item_identity
                     and row.archive_id == published_id
-                    and row.status == "printing"
                 )
                 for old_id, old_identity, _ in decision.old:
                     old = await verify.get(PrintArchive, old_id)
@@ -436,4 +441,10 @@ async def publish_start(db, archive, decision, *, options=None, still_current=No
                         committed = valid_noncurrent(old) and marker.get("decision_identity") == decision_id
                 if not committed:
                     raise ExecutionChanged("publication not confirmed")
-        return claim
+        return StartPublication(
+            claim.state,
+            claim.item_id,
+            claim.item_identity,
+            claim.archive_identity,
+            current=decision.epoch == queue_sources.current_epoch() and (still_current is None or still_current()),
+        )

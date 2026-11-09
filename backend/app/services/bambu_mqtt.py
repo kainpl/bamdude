@@ -5764,9 +5764,13 @@ class BambuMQTTClient:
         if self._pending_start_state is None and self._previous_gcode_state in ("IDLE", "FINISH", "FAILED"):
             self._pending_start_state = self._previous_gcode_state
         if self.state.state in ("IDLE", "FINISH", "FAILED"):
-            if self._previous_gcode_state != self.state.state:
+            if self._previous_gcode_state in ("PREPARE", "SLICING"):
                 self._pending_start_id = None
             self._pending_start_state = self.state.state
+            # Recovery joins exist only while the physical print is in flight.
+            # A replacement client must not replay a fenced join after FINISH.
+            self._inflight_recovery_pending = False
+            self._inflight_recovery_scheduled = False
         packet_run_id = run_id(data.get("subtask_id"))
         if self._pending_start_state and packet_run_id and packet_run_id != previous_run_id:
             self._pending_start_id = packet_run_id
@@ -5825,7 +5829,10 @@ class BambuMQTTClient:
                 self._timelapse_during_print = True
             self._completion_triggered = False
         running_first_observed = bool(
-            self._inflight_recovery_pending and not self._inflight_recovery_scheduled and current_file
+            self.state.state in ("RUNNING", "PAUSE")
+            and self._inflight_recovery_pending
+            and not self._inflight_recovery_scheduled
+            and current_file
         )
         boundary_layer_edge = None
         if new_print_boundary:
@@ -8036,6 +8043,15 @@ class BambuMQTTClient:
         """The print this client's journal currently belongs to (see ``seed_usage_journal``)."""
         with self._journal_lock:
             return self._journal_generation
+
+    def request_inflight_recovery(self, generation: int) -> bool:
+        """A durable publication outlived its callback; let a current frame recover it."""
+        with self._journal_lock:
+            if generation != self._journal_generation or self.state.state in ("IDLE", "FINISH", "FAILED"):
+                return False
+            self._inflight_recovery_pending = True
+            self._inflight_recovery_scheduled = False
+            return True
 
     def journal_held(self) -> bool:
         """A joined print is running and its journal waits for the restart seed."""

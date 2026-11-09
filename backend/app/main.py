@@ -4391,7 +4391,7 @@ async def on_print_start(printer_id: int, data: dict):
                 adopted = await adoption_db.get(PrintArchive, decision.current_id)
                 if adopted is None:
                     raise ExecutionChanged("adopted execution disappeared")
-                await publish_start(
+                publication = await publish_start(
                     adoption_db,
                     adopted,
                     decision,
@@ -4406,6 +4406,9 @@ async def on_print_start(printer_id: int, data: dict):
                         and observation_is_current(printer_manager, printer_id, data.get("_print_observation"))
                     ),
                 )
+                if not publication.current:
+                    _request_published_run_recovery(printer_id, data, decision.epoch)
+                    return
         except ExecutionChanged as exc:
             await _record_unproven_start(printer_id, data, str(exc))
             return
@@ -5130,13 +5133,16 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             return
         from backend.app.services.print_execution import publish_start
 
-        await publish_start(
+        publication = await publish_start(
             db,
             archive,
             decision,
             options=_printer_reported_options(data, None, live_plate_id),
             still_current=owns_start,
         )
+        if not publication.current:
+            _request_published_run_recovery(printer_id, data, decision.epoch)
+            return
         await db.refresh(archive)
         logger.info("Created archive %s for %s at print start (3MF to follow)", archive.id, print_name)
         _bind_print_file_analysis_context(printer_id, archive, expected_generation=start_generation, origin="external")
@@ -6288,7 +6294,7 @@ async def _live_archive_for_running_print(printer_id: int, data: dict) -> _LiveA
     return _LiveArchiveResolution(None, None, "no_live_archive")
 
 
-async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | None:
+async def _adopt_running_print(printer_id: int, data: dict, logger, *, still_current=None) -> int | None:
     """The print running on this printer started while BamDude was down: give it
     the row on_print_start would have (spec 2026-09-12). Provisional (3MF to
     follow through the retry service), queue row claimed, energy banked and
@@ -6415,13 +6421,17 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
             decision = await decide_start(db, printer_id, data, catch_up=True)
             if decision.current_id is not None:
                 return None
-            await publish_start(
+            publication = await publish_start(
                 db,
                 archive,
                 decision,
                 options=_printer_reported_options(data, None, live_plate_id),
-                still_current=lambda: printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life")),
+                still_current=still_current
+                or (lambda: printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life"))),
             )
+            if not publication.current:
+                _request_published_run_recovery(printer_id, data, decision.epoch)
+                return None
             await db.refresh(archive)
             archive_id = archive.id
             _bind_print_file_analysis_context(printer_id, archive)
@@ -6660,6 +6670,26 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger, 
         logger.exception("[ADOPT] 3MF download for adopted archive %s failed", archive_id)
 
 
+def _request_published_run_recovery(printer_id: int, data: dict, epoch: int) -> None:
+    """Hand a committed run to a replacement connection, never bind from the stale callback."""
+    from backend.app.services.print_observation import observation_is_current
+    from backend.app.services.queue_sources import current_epoch
+
+    client = printer_manager.get_client(printer_id)
+    if (
+        client is None
+        or epoch != current_epoch()
+        or not printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life"))
+        or not observation_is_current(printer_manager, printer_id, data.get("_print_observation"))
+    ):
+        return
+    generation = data.get("_journal_generation")
+    if generation is None and data.get("_print_observation") is not None:
+        generation = client.journal_generation()
+    if isinstance(generation, int):
+        client.request_inflight_recovery(generation)
+
+
 async def on_print_running_observed(printer_id: int, data: dict):
     """Restart-recovery: capture a fresh timelapse baseline for a print that
     started before BamDude came up.
@@ -6686,9 +6716,12 @@ async def on_print_running_observed(printer_id: int, data: dict):
 
     def recovery_current():
         client = printer_manager.get_client(printer_id)
+        state = printer_manager.get_status(printer_id)
         generation = data.get("_journal_generation")
         return (
             printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life"))
+            and state is not None
+            and state.state in ("RUNNING", "PAUSE")
             and printer_manager.accepts_client_callback_generation(printer_id, data.get("_bamdude_client_generation"))
             and (generation is None or (client is not None and client.journal_generation() == generation))
         )
@@ -6724,6 +6757,7 @@ async def on_print_running_observed(printer_id: int, data: dict):
     # there is none, one is CREATED (spec 2026-09-12): the print started while
     # BamDude was down and had no row anywhere. ``_adopt_running_print`` claims
     # the queue row itself, so there is nothing left to claim here.
+    claimed = False
     try:
         live = await _live_archive_for_running_print(printer_id, data)
         if not recovery_current():
@@ -6737,7 +6771,7 @@ async def on_print_running_observed(printer_id: int, data: dict):
         elif live.archive_id is None:
             # Nothing below reads the new id: the adoption claims the queue row
             # itself, and the plate-gate release keys off the printer.
-            await _adopt_running_print(printer_id, data, logger)
+            claimed = await _adopt_running_print(printer_id, data, logger, still_current=recovery_current) is not None
         else:
             from backend.app.services.print_execution import decide_start, publish_start
 
@@ -6755,7 +6789,10 @@ async def on_print_running_observed(printer_id: int, data: dict):
                 if decision.current_id != archive.id:
                     return
                 if decision.old:
-                    await publish_start(db, archive, decision, still_current=recovery_current)
+                    publication = await publish_start(db, archive, decision, still_current=recovery_current)
+                    if not publication.current:
+                        _request_published_run_recovery(printer_id, data, decision.epoch)
+                        return
             claim_result = await mark_queue_printing_for_printer(
                 printer_id,
                 archive_id=live.archive_id,
@@ -6770,7 +6807,8 @@ async def on_print_running_observed(printer_id: int, data: dict):
                 if archive is None or archive.recovery_identity != claim_result.archive_identity:
                     return
                 _bind_print_file_analysis_context(printer_id, archive)
-        if printer_manager.is_awaiting_plate_clear(printer_id):
+            claimed = True
+        if claimed and recovery_current() and printer_manager.is_awaiting_plate_clear(printer_id):
             from backend.app.services.plate_hold import answer_by_clearing
 
             async with async_session() as db:
@@ -7352,20 +7390,24 @@ async def _hold_for_owed_swap(
     only while this run still owns the printer. ``set_queue_idle`` releases only a ``printing`` queue, so a later
     release of this completion cannot reopen it. Returns the sentence when the queue was held.
     """
+    from backend.app.models.archive import PrintArchive
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer_queue import PrinterQueue
     from backend.app.services import swap_terminal
-    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+    from backend.app.services.archive_write_scope import archive_write_scope, locked_print
     from backend.app.services.queue_counters import set_queue_paused
 
     try:
         async with async_session() as db, archive_write_scope(db, archive_id):
-            archive = await load_active_archive_for_write(db, archive_id)
-            if archive is None or archive.recovery_identity != expected_identity:
+            archive = await locked_print(
+                db, archive_id, select(PrintArchive).where(PrintArchive.id == archive_id).with_for_update()
+            )
+            if expected_identity is None or (archive is not None and archive.recovery_identity != expected_identity):
                 return None
-            extra = dict(archive.extra_data or {})
-            extra[swap_terminal.HOLD_KEY] = swap_terminal.hold_record(reason, cycle)
-            archive.extra_data = extra
+            if archive is not None and archive.deleted_at is None:
+                extra = dict(archive.extra_data or {})
+                extra[swap_terminal.HOLD_KEY] = swap_terminal.hold_record(reason, cycle)
+                archive.extra_data = extra
             await db.commit()
     except Exception:
         logging.getLogger(__name__).warning("Could not record the swap hold of archive %s", archive_id, exc_info=True)
@@ -7373,8 +7415,10 @@ async def _hold_for_owed_swap(
         return None
     text = swap_terminal.hold_text(reason, cycle)
     async with async_session() as db, archive_write_scope(db, archive_id):
-        archive = await load_active_archive_for_write(db, archive_id)
-        if archive is None or archive.recovery_identity != expected_identity:
+        archive = await locked_print(
+            db, archive_id, select(PrintArchive).where(PrintArchive.id == archive_id).with_for_update()
+        )
+        if expected_identity is None or (archive is not None and archive.recovery_identity != expected_identity):
             return None
         queue_id = await db.scalar(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))
         if queue_id is None or (may_hold is not None and not may_hold()):

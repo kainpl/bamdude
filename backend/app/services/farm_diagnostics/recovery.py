@@ -50,6 +50,7 @@ REASONS = frozenset(
         "invalid_run_times",
         "missing_run_times",
         "delete_has_dependencies",
+        "recovery_has_dependencies",
         "estimated_time",
         "owner_alive",
         "owner_unknown",

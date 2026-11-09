@@ -69,7 +69,7 @@ async def test_sole_name_recovery_claims_the_archive_the_resolver_found(
 
     pm = MagicMock()
     pm._print_run_bindings = {}
-    pm.get_status.return_value = None
+    pm.get_status.return_value = MagicMock(state="RUNNING")
     pm.get_client.return_value = None
     pm.is_awaiting_plate_clear.return_value = False
     data = {
@@ -83,6 +83,7 @@ async def test_sole_name_recovery_claims_the_archive_the_resolver_found(
     claim = AsyncMock(return_value=None)
     with (
         patch("backend.app.main.printer_manager", pm),
+        patch("backend.app.main._restore_usage_tracking_session", AsyncMock()),
         patch("backend.app.main.mark_queue_printing_for_printer", claim),
         patch("backend.app.main._capture_timelapse_baseline_at_start", AsyncMock()),
         patch("backend.app.main.spawn_background_task", MagicMock()),
