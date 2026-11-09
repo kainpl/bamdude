@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import query_timing
@@ -63,6 +63,16 @@ async def set_setting(db: AsyncSession, key: str, value: str) -> None:
     from backend.app.core.db_dialect import upsert_setting
 
     await upsert_setting(db, Settings, key, value)
+
+
+async def _lock_mcp_http_policy(db: AsyncSession) -> None:
+    """Serialize policy writers until commit or rollback, even before the first setting row exists."""
+    if db.get_bind().dialect.name == "postgresql":
+        # Dedicated settings lock; the two-int namespace is separate from bigint locks.
+        await db.execute(text("SELECT pg_advisory_xact_lock(215, 1)"))
+    else:
+        # SQLite needs the writer reservation before the first policy read.
+        await db.execute(text("BEGIN IMMEDIATE"))
 
 
 @router.get("", response_model=AppSettings)
@@ -215,6 +225,7 @@ async def update_settings(
     if {"mcp_allow_http", "mcp_endpoint_url"} & update_data.keys():
         from backend.app.mcp_server.config import canonical_endpoint
 
+        await _lock_mcp_http_policy(db)
         was_allowed = await get_setting(db, "mcp_allow_http") == "true"
         allow_http = update_data.get("mcp_allow_http", was_allowed)
         if allow_http and not was_allowed and not (risk_ack and network_ack):
@@ -433,6 +444,7 @@ async def reset_settings(
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Reset all settings to defaults."""
+    await _lock_mcp_http_policy(db)
     # Delete all settings
     result = await db.execute(select(Settings))
     for setting in result.scalars().all():
