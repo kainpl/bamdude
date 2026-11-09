@@ -20,6 +20,7 @@ from backend.tests.integration.test_duplicate_repeat_consumers import (  # noqa:
 )
 from backend.tests.integration.test_duplicate_start_callbacks import (  # noqa: F401
     test_an_attempt_accepted_after_the_proof_must_be_reclassified,
+    test_failed_publication_commit_leaves_an_explained_hold,
     test_foreign_claim_refuses_before_start_admission_and_effects,
     test_foreign_start_during_upload_preserves_our_unsent_job,
     test_foreign_start_upload_conflict_through_mqtt_callback_and_dispatch_deferral,

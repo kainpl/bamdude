@@ -435,5 +435,5 @@ async def publish_start(db, archive, decision, *, options=None, still_current=No
                         marker = (old.extra_data or {}).get(NONCURRENT, {})
                         committed = valid_noncurrent(old) and marker.get("decision_identity") == decision_id
                 if not committed:
-                    raise
+                    raise ExecutionChanged("publication not confirmed")
         return claim

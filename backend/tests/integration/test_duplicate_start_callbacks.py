@@ -515,3 +515,46 @@ async def test_lost_publication_ack_binds_b_and_accepts_its_terminal(
     )
     async with factory() as db:
         assert len((await db.scalars(select(PrintArchive).where(PrintArchive.subtask_id == "200"))).all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_publication_commit_leaves_an_explained_hold(
+    db_session, test_engine, printer_factory, archive_factory, monkeypatch
+):
+    from backend.app.services import print_execution
+    from backend.app.services.printer_manager import printer_manager
+
+    p, q, a, _ = await _old_run(db_session, printer_factory, archive_factory)
+    main, c, factory, _, _, download, macros = _start_harness(monkeypatch, db_session, test_engine, p, a)
+    monkeypatch.setattr(macros, "fire_event_macros", AsyncMock())
+    monkeypatch.setattr(download, "try_download_3mf", AsyncMock(return_value=None))
+    publish = print_execution.publish_start
+    failed = []
+
+    async def publication(db, archive, decision, **kwargs):
+        commit = db.commit
+
+        async def fail_before_commit():
+            if archive.id is not None and not failed:
+                failed.append(True)
+                raise OSError("commit refused before durability")
+            await commit()
+
+        monkeypatch.setattr(db, "commit", fail_before_commit)
+        return await publish(db, archive, decision, **kwargs)
+
+    monkeypatch.setattr(print_execution, "publish_start", publication)
+    tasks = []
+    c.on_print_start = lambda data: tasks.append(
+        asyncio.create_task(
+            main.on_print_start(p.id, {**data, "_bamdude_printer_life": 0, "_bamdude_client_generation": 1})
+        )
+    )
+    c._process_message({"print": {"gcode_state": "RUNNING", "gcode_file": "b.3mf", "subtask_id": "200"}})
+    await asyncio.gather(*tasks)
+    assert failed == [True]
+    assert printer_manager._unproven_starts[p.id]["reason"] == "publication not confirmed"
+    async with factory() as db:
+        queue = await db.get(PrinterQueue, q.id)
+        assert queue.is_paused
+        assert not (await db.scalars(select(PrintArchive).where(PrintArchive.subtask_id == "200"))).all()
