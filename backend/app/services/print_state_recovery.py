@@ -636,6 +636,8 @@ def _addressed(f: RecoveryFacts):
 
 
 def classify(f: RecoveryFacts) -> dict | None:
+    if f.live.get("observation_unproven") and (not f.archive or f.archive.get("status") == "printing"):
+        return {"code": "run_identity_unproven", "actions": [], "blocked_reasons": ["run_identity_unproven"]}
     if f.target_kind == "archive":
         addressed = _addressed(f)
         if addressed and addressed["code"] == "swap_settlement_required":
@@ -643,8 +645,6 @@ def classify(f: RecoveryFacts) -> dict | None:
         # Action filtering must not hide an archive that vetoes the group.
         single = _classify_single(f)
         return {**single, "actions": []} if single else None
-    if f.live.get("observation_unproven") and (not f.archive or f.archive.get("status") == "printing"):
-        return {"code": "run_identity_unproven", "actions": [], "blocked_reasons": ["run_identity_unproven"]}
     single = _classify_single(f)
     if f.runtime is not None:
         return single

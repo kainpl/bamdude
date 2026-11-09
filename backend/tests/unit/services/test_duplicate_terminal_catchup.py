@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from backend.app.services.bambu_mqtt import BambuMQTTClient
 
 
@@ -95,3 +97,63 @@ def test_reissued_catch_up_is_not_sent_while_idle_after_the_print_ended():
     assert not b._inflight_recovery_pending and not b._inflight_recovery_scheduled
     # The held accounting journal is released by main under the DB journal lock,
     # not discarded synchronously by this MQTT frame.
+
+
+def _recovery_handoff(monkeypatch):
+    from backend.app import main
+    from backend.app.services import queue_sources
+    from backend.app.services.printer_manager import printer_manager
+
+    prior = _wire(_make())
+    push(prior, gcode_state="PAUSE", gcode_file="job.3mf", subtask_id="100")
+    generation = prior.journal_generation()
+    prior.abandon_journal_hold(generation)
+    prior.seed_runout_fired({})
+    assert not prior._inflight_recovery_pending
+    replacement = _wire(_make("NEW"))
+    replacement.carry_print_lifecycle_from(prior)
+    monkeypatch.setattr(printer_manager, "_clients", {1: replacement})
+    monkeypatch.setattr(printer_manager, "_printer_lives", {1: 0})
+    monkeypatch.setattr(queue_sources, "current_epoch", lambda: 1)
+    return main, replacement, {"_journal_generation": generation, "_bamdude_printer_life": 0}
+
+
+@pytest.mark.parametrize("changed", ["epoch", "life", "journal"])
+def test_committed_handoff_refuses_a_different_context(monkeypatch, changed):
+    from backend.app.services import queue_sources
+    from backend.app.services.printer_manager import printer_manager
+
+    main, replacement, data = _recovery_handoff(monkeypatch)
+    if changed == "epoch":
+        monkeypatch.setattr(queue_sources, "current_epoch", lambda: 2)
+    elif changed == "life":
+        monkeypatch.setattr(printer_manager, "_printer_lives", {1: 2})
+    else:
+        data["_journal_generation"] -= 1
+    main._request_published_run_recovery(1, data, 1)
+    assert not replacement._inflight_recovery_pending
+    push(replacement, gcode_state="RUNNING", gcode_file="job.3mf", subtask_id="100")
+    replacement.on_print_running_observed.assert_not_called()
+
+
+@pytest.mark.parametrize("terminal", ["IDLE", "FINISH", "FAILED"])
+@pytest.mark.parametrize("request_before_terminal", [False, True])
+def test_committed_handoff_never_replays_on_terminal(monkeypatch, terminal, request_before_terminal):
+    main, replacement, data = _recovery_handoff(monkeypatch)
+    if request_before_terminal:
+        main._request_published_run_recovery(1, data, 1)
+        assert replacement._inflight_recovery_pending
+    push(replacement, gcode_state=terminal, gcode_file="job.3mf", subtask_id="100")
+    if not request_before_terminal:
+        main._request_published_run_recovery(1, data, 1)
+    assert not replacement._inflight_recovery_pending and not replacement._inflight_recovery_scheduled
+    replacement.on_print_running_observed.assert_not_called()
+
+
+def test_committed_handoff_waits_for_inflight_status(monkeypatch):
+    main, replacement, data = _recovery_handoff(monkeypatch)
+    main._request_published_run_recovery(1, data, 1)
+    assert replacement._inflight_recovery_pending
+    replacement.on_print_running_observed.assert_not_called()
+    push(replacement, gcode_state="RUNNING", gcode_file="job.3mf", subtask_id="100")
+    replacement.on_print_running_observed.assert_called_once()

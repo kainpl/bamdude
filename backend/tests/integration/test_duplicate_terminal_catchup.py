@@ -107,7 +107,15 @@ async def test_reissued_catch_up_after_the_print_ended_adopts_nothing(
     # Terminal processing owns release/replay under the accounting lock. The
     # MQTT guard must cancel adoption without throwing this held evidence away.
     assert new.journal_held()
-    await main._release_unseeded_journal(p.id)
+
+    async def terminal_impl(_pid, _data, _completion):
+        assert not new.journal_held()  # the real wrapper releases it before terminal consumers
+
+    complete = AsyncMock(side_effect=terminal_impl)
+    monkeypatch.setattr(main, "_on_print_complete_impl", complete)
+    monkeypatch.setattr("backend.app.services.queue_leftovers.retire_for_printer", AsyncMock())
+    await main.on_print_complete(p.id, {"status": "completed", "subtask_id": "100"})
+    complete.assert_awaited_once()
     assert not new.journal_held()
     for payload in reissued:
         await main.on_print_running_observed(

@@ -20,3 +20,7 @@ from backend.tests.integration.test_duplicate_terminal_catchup import (  # noqa:
     test_reissued_catch_up_after_the_print_ended_adopts_nothing,
 )
 from backend.tests.integration.test_queue_auto_transfer import test_engine  # noqa: F401
+from backend.tests.integration.test_unproven_archive_visibility import (  # noqa: F401
+    test_unresolved_file_change_is_visible_on_info,
+    test_unresolved_file_change_with_a_claimed_archive_is_visible,
+)
