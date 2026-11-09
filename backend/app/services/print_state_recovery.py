@@ -6,7 +6,7 @@ No driver, accounting, queue cleanup or completion callbacks belong here.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 OUTCOMES = {
@@ -25,6 +25,8 @@ ACTIONS = (
     "delete_stale_item",
     "close_interrupted_attempt",
     RUNTIME_ACTION,
+    "cancel_terminal_claims",
+    "settle_swap_by_operator",
 )
 #: Every in-process owner that can still use a run, read by ``print_state_recovery_store.runtime_snapshot``.
 #: A missing or ``None`` answer is unknown, never "no owner".
@@ -68,6 +70,11 @@ class RecoveryFacts:
     #: The printer's in-process context as plain data (``print_state_recovery_store.runtime_snapshot``);
     #: set only for the ``runtime`` kind, whose ``item`` is always None.
     runtime: dict | None = None
+    members: tuple[dict, ...] = ()
+    members_complete: bool = True
+    foreign_active_users: int = 0
+    repair_runtime: dict | None = None
+    target_kind: str | None = None
 
 
 def utc(value):
@@ -113,7 +120,7 @@ def effects_pending(archive: dict | None, *, intents: bool = True) -> bool:
 _SETTLED_EFFECT_STAGES = frozenset({"finished", "skipped", "failed", "scheduled"})
 
 
-def runtime_effect_debt(extra) -> list[str]:
+def runtime_effect_debt(extra, archive_identity=None) -> list[str]:
     """What a finished run's archive still owes, read strictly (spec r3 R7.5, R7a).
 
     Unlike :func:`effects_pending` it understands the swap claim: ``finished`` is settled, any other stage is
@@ -124,6 +131,9 @@ def runtime_effect_debt(extra) -> list[str]:
         return []
     if not isinstance(extra, dict):
         return ["effects_unreadable"]
+    from backend.app.services import swap_terminal
+
+    settled = swap_terminal.operator_settlement(extra, archive_identity)
     debt = set()
     # Only an absent key or a list proves anything; a present null is a carrier this reader cannot read.
     if "swap_macro_events_pending" in extra:
@@ -145,10 +155,12 @@ def runtime_effect_debt(extra) -> list[str]:
                     elif stage not in _SETTLED_EFFECT_STAGES:
                         debt.add("effects_pending")  # in flight, uncertain, or a stage this reader does not know
                     continue
-                if stage == "finished":
+                if stage == "finished" or (stage == swap_terminal.SETTLED_BY_OPERATOR and settled):
                     continue
                 debt.add("swap_debt" if stage in ("owed", "attempted", "failed") else "effects_unreadable")
-    if any(key in extra for key in ("swap_hold", "auto_eject_pending", "cleanup_pending", "completion_effects")):
+    if swap_terminal.unsettled_hold(extra, archive_identity) or any(
+        key in extra for key in ("auto_eject_pending", "cleanup_pending", "completion_effects")
+    ):
         debt.add("effects_pending")
     return sorted(debt)
 
@@ -246,7 +258,7 @@ def _classify_runtime(f: RecoveryFacts) -> dict | None:
             reasons.add("outcome_unknown")
         if not a.get("recovery_identity"):
             reasons.add("identity_missing")
-        reasons.update(runtime_effect_debt(extra))
+        reasons.update(runtime_effect_debt(extra, a.get("recovery_identity")))
 
     if not fresh_idle:
         printing = telemetry.get("fresh") is True and state in ("RUNNING", "PAUSE")
@@ -397,7 +409,7 @@ def _interrupted_dispatch(f: RecoveryFacts) -> dict | None:
     }
 
 
-def classify(f: RecoveryFacts) -> dict | None:
+def _classify_single(f: RecoveryFacts) -> dict | None:
     if f.runtime is not None:
         return _classify_runtime(f)
     q, i, a = f.queue, f.item, f.archive
@@ -525,12 +537,167 @@ def classify(f: RecoveryFacts) -> dict | None:
     return {"code": code, "actions": actions, "blocked_reasons": sorted(set(reasons))}
 
 
-def plan_action(f: RecoveryFacts, action: str, *, confirmed_completed=False) -> dict:
+def _addressed(f: RecoveryFacts):
+    from backend.app.services import swap_terminal
+
+    a, q = f.archive, f.queue
+    settlement = f.target_kind == "archive" and a and swap_terminal.claim_stage(a.get("extra_data")) == "owed"
+    if not a or (not settlement and not f.members):
+        return None
+    if not settlement and a.get("status") not in OUTCOMES:
+        return None
+    reasons = set()
+    members = f.members
+    if not f.members_complete or len(members) > 100:
+        reasons.add("group_overflow")
+    if (
+        not q
+        or q.get("printer_id") != f.printer_id
+        or a.get("printer_id") != f.printer_id
+        or a.get("queue_id") != q.get("id")
+    ):
+        reasons.add("archive_foreign")
+    if (
+        not a.get("recovery_identity")
+        or not q
+        or not q.get("recovery_identity")
+        or any(not r.get("recovery_identity") for r in members)
+    ):
+        reasons.add("identity_missing")
+    if a.get("deleted_at") is not None:
+        reasons.add("archive_missing")
+    extra = a.get("extra_data")
+    if (
+        not isinstance(extra, dict)
+        or extra.get("recovered_outcome_uncertain")
+        or extra.get("terminal_effects_uncertain")
+    ):
+        reasons.add("outcome_unknown")
+    if any(r.get("archive_id") != a["id"] or r.get("queue_id") != q.get("id") for r in members):
+        reasons.add("ambiguous_owner")
+    if (
+        (q and q.get("current_item_id") not in ({None} | {r["id"] for r in members}))
+        or f.printing_archive_ids
+        or f.foreign_active_users
+    ):
+        reasons.add("ambiguous_owner")
+    if f.references:
+        reasons.add("delete_has_dependencies")
+    live, runtime = f.live, f.repair_runtime or {}
+    if not live.get("stable_inactive") or live.get("idle") is not True:
+        reasons.add("live_unknown")
+    if live.get("busy"):
+        reasons.add("live_busy")
+    owners = runtime.get("owners", {})
+    if any(owners.get(name) is not False for name in RUNTIME_OWNERS):
+        reasons.add(
+            "context_owner_active" if any(owners.get(n) is True for n in RUNTIME_OWNERS) else "context_owner_unknown"
+        )
+    for key in ("resolution", "pending_terminal", "layer_timelapse"):
+        if runtime.get(key) is not False:
+            reasons.add("context_owner_unknown")
+    if runtime.get("finishing") != 0:
+        reasons.add("finishing_in_progress")
+    current = runtime.get("current")
+    if current and (
+        current.get("archive_id") != a["id"]
+        or current.get("archive_identity") != a.get("recovery_identity")
+        or current.get("queue_item_id") not in ({None} | {m["id"] for m in members})
+    ):
+        reasons.add("ambiguous_owner")
+    for key in ("macro_selection", "swap_config"):
+        if key in runtime:
+            reasons.update(_registration_reasons(runtime[key]))
+    admission = runtime.get("admission")
+    if admission is not None and (
+        not isinstance(admission, dict)
+        or admission.get("phase") != "processed"
+        or admission.get("archive_id") != a["id"]
+    ):
+        reasons.add("admission_unproven")
+    if settlement:
+        pending = extra.get("swap_macro_events_pending") if isinstance(extra, dict) else None
+        effect = (
+            (extra.get("bamdude_terminal_effects") or {}).get("swap_change_table") if isinstance(extra, dict) else None
+        )
+        if (
+            a.get("status") != "completed"
+            or not isinstance(effect, dict)
+            or effect.get("version", 1) != 1
+            or not isinstance(pending, list)
+            or pending.count("swap_mode_change_table") != 1
+        ):
+            reasons.add("effects_unreadable")
+        action, code = "settle_swap_by_operator", "swap_settlement_required"
+    else:
+        reasons.update(runtime_effect_debt(extra, a.get("recovery_identity")))
+        action, code = "cancel_terminal_claims", "terminal_archive_conflicting_claims"
+    return {"code": code, "actions": [] if reasons else [action], "blocked_reasons": sorted(reasons)}
+
+
+def classify(f: RecoveryFacts) -> dict | None:
+    if f.live.get("observation_unproven") and (not f.archive or f.archive.get("status") == "printing"):
+        return {"code": "run_identity_unproven", "actions": [], "blocked_reasons": ["run_identity_unproven"]}
+    single = _classify_single(f)
+    if f.runtime is not None:
+        return single
+    if (
+        f.target_kind == "item"
+        and f.item
+        and single
+        and single["actions"]
+        and sum(m.get("archive_id") == f.item.get("archive_id") for m in f.members) <= 1
+    ):
+        return single
+    if f.target_kind == "header" and len(f.members) == 1:
+        singleton = _classify_single(replace(f, item=f.members[0], target_kind="item"))
+        if singleton and singleton["actions"]:
+            return None  # The ordinary addressed alignment remains the sole action.
+    addressed = _addressed(f)
+    if addressed and f.target_kind == "item":
+        return {**addressed, "actions": [], "related": {"kind": "header", "target_id": f.queue["id"]}}
+    if addressed and f.target_kind == "archive" and "cancel_terminal_claims" in addressed["actions"]:
+        return single
+    if addressed and (
+        f.target_kind in {"header", "archive"} or len(f.members) > 1 or not single or not single["actions"]
+    ):
+        return addressed
+    return single
+
+
+def plan_action(
+    f: RecoveryFacts, action: str, *, confirmed_completed=False, confirmed_idle=False, confirmed_manual_swap=False
+) -> dict:
     issue = classify(f)
     if issue is None or action not in issue["actions"]:
         raise ValueError("recovery_not_allowed")
     q, i, a = f.queue, f.item, f.archive
     plan = {"item": {}, "archive": {}, "queue": {}, "delete_item": False}
+    if action in {"cancel_terminal_claims", "settle_swap_by_operator"}:
+        if f.target_kind != ("header" if action == "cancel_terminal_claims" else "archive"):
+            raise ValueError("recovery_not_allowed")
+        if confirmed_idle is not True or (action == "settle_swap_by_operator" and confirmed_manual_swap is not True):
+            raise ValueError("recovery_not_allowed")
+        plan["queue"] = {"is_paused": True}
+        if action == "cancel_terminal_claims":
+            plan["members"] = [
+                {
+                    "id": m["id"],
+                    "recovery_identity": m["recovery_identity"],
+                    "status": "cancelled",
+                    "completed_at": "apply",
+                    "error_code": "operator_cancelled_stale_claim",
+                }
+                for m in f.members
+            ]
+            plan["queue"].update(current_item_id=None, status="paused")
+        else:
+            plan["settlement"] = {
+                "stage": "settled_by_operator",
+                "archive_id": a["id"],
+                "archive_identity": a["recovery_identity"],
+            }
+        return plan
     if action == RUNTIME_ACTION:
         # Rows are not touched: the queue is paused (the flag alone, never its status) and the run's context
         # goes from memory. The operator resumes the queue once the printer is checked (spec r3 R7, R8).

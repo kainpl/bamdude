@@ -1325,7 +1325,40 @@ async def on_print_start(
         logger.debug("[UsageTracker] No valid remain%% for printer %d, 3MF fallback available", printer_id)
 
 
-async def on_print_complete(
+class _UsageArchiveChanged(RuntimeError):
+    pass
+
+
+async def _lock_usage_archive(db, archive_id, identity):
+    from backend.app.core.database import take_write_lock
+    from backend.app.models.archive import PrintArchive
+    from backend.app.services.print_execution import NONCURRENT
+
+    with db.no_autoflush:
+        await take_write_lock(db, PrintArchive.__table__, archive_id)
+        archive = (
+            await db.execute(
+                select(PrintArchive.recovery_identity, PrintArchive.extra_data)
+                .where(PrintArchive.id == archive_id)
+                .with_for_update()
+            )
+        ).first()
+    if archive is None or archive.recovery_identity != identity or NONCURRENT in (archive.extra_data or {}):
+        raise _UsageArchiveChanged()
+    return archive
+
+
+async def on_print_complete(*args, **kwargs) -> list[dict]:
+    try:
+        return await _on_print_complete(*args, **kwargs)
+    except _UsageArchiveChanged:
+        # No spool/history mutation is allowed to escape onto a reused id.
+        db = kwargs.get("db") or args[3]
+        await db.rollback()
+        return []
+
+
+async def _on_print_complete(
     printer_id: int,
     data: dict,
     printer_manager,
@@ -1336,6 +1369,8 @@ async def on_print_complete(
     file_analysis=None,
     analysis_attempted: bool = False,
     archive_snapshot=None,
+    expected_identity: str | None = None,
+    expected_epoch: int | None = None,
 ) -> list[dict]:
     """Compute consumption deltas and update spool weight_used/last_used.
 
@@ -1349,6 +1384,21 @@ async def on_print_complete(
 
     from backend.app.api.routes.settings import get_setting
     from backend.app.models.spool_usage_history import SpoolUsageHistory
+    from backend.app.services import queue_sources
+
+    if expected_epoch is not None and queue_sources.current_epoch() != expected_epoch:
+        return []
+
+    if archive_id:
+        from backend.app.models.archive import PrintArchive
+        from backend.app.services.print_execution import NONCURRENT
+
+        snapshot = archive_snapshot or await db.get(PrintArchive, archive_id, populate_existing=True)
+        if snapshot is None or NONCURRENT in (snapshot.extra_data or {}):
+            return []
+        if expected_identity is not None and snapshot.recovery_identity != expected_identity:
+            return []
+        expected_identity = snapshot.recovery_identity
 
     session = _active_sessions.pop(printer_id, None)
     if session is None:
@@ -1471,8 +1521,14 @@ async def on_print_complete(
             analysis_attempted=analysis_attempted,
             archive_snapshot=archive_snapshot,
             uncharged=uncharged,
+            expected_identity=expected_identity,
         )
         results.extend(threemf_results)
+
+    if expected_epoch is not None and queue_sources.current_epoch() != expected_epoch:
+        raise _UsageArchiveChanged()
+    if archive_id:
+        await _lock_usage_archive(db, archive_id, expected_identity)
 
     # Belt-and-braces against the multicolour runout double-count: every tray
     # the journal names is off-limits to the remain%-delta fallback, whether
@@ -1648,6 +1704,7 @@ async def on_print_complete(
         archive_result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
         archive = archive_result.scalar_one_or_none()
         if archive:
+            await _lock_usage_archive(db, archive_id, expected_identity)
             total_cost = sum(r.get("cost", 0) or 0 for r in results)
             tracked_grams = sum(r.get("weight_used", 0) or 0 for r in results)
             # Effective weight = estimate for completed prints, actual tracked
@@ -1672,8 +1729,12 @@ async def on_print_complete(
     # inflate the archive's cost/weight above, but it is broadcast so the UI
     # sees the spool close out.
     try:
+        if archive_id:
+            await _lock_usage_archive(db, archive_id, expected_identity)
         correction_results = await apply_runout_zero_corrections(db, printer_id, journal_events, default_filament_cost)
         results.extend(correction_results)
+    except _UsageArchiveChanged:
+        raise
     except Exception:
         logger.exception("[UsageTracker] Runout zero corrections failed for printer %d", printer_id)
 
@@ -1738,6 +1799,7 @@ async def _track_from_3mf(
     archive_snapshot=None,
     uncharged: list[tuple[int, float]] | None = None,
     completion: CompletionSnapshot | None = None,
+    expected_identity: str | None = None,
 ) -> list[dict]:
     """Track usage from 3MF per-filament slicer data (primary path).
 
@@ -1772,6 +1834,10 @@ async def _track_from_3mf(
         logger.info("[UsageTracker] 3MF: archive %s has no file_path, skipping", archive_id)
         return []
 
+    if expected_identity is not None and archive.recovery_identity != expected_identity:
+        raise _UsageArchiveChanged()
+    expected_identity = archive.recovery_identity
+
     archive_plate_index = archive.plate_index
     file_path = app_settings.base_dir / archive.file_path
 
@@ -1794,7 +1860,9 @@ async def _track_from_3mf(
             archive_id,
             file_path,
             archive_plate_index,
+            expected_identity=expected_identity,
         )
+    await _lock_usage_archive(db, archive_id, expected_identity)
     if analysis is None:
         logger.info("[UsageTracker] 3MF analysis unavailable for archive %s", archive_id)
         return []

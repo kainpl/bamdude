@@ -448,8 +448,17 @@ async def clone_item(
     if src is None:
         return None
 
+    from backend.app.services.print_execution import require_repeatable
+    from backend.app.services.queue_sources import SourceUnreadable
+
+    await require_repeatable(db, src, whole_batch=True)
+    pin = (src.recovery_identity, src.queue_id, src.queue_source_id, src.batch_id)
     new_batch_id = src.batch_id if keep_batch else None
-    async with reusing_sources(db, [src.queue_source_id]), queue_scope_lock(db, src.queue_id):
+    async with reusing_sources(db, [src.queue_source_id], queue_ids=[src.queue_id]):
+        src = await db.get(PrintQueueItem, item_id, populate_existing=True, with_for_update=True)
+        if src is None or (src.recovery_identity, src.queue_id, src.queue_source_id, src.batch_id) != pin:
+            raise SourceUnreadable("clone source changed")
+        await require_repeatable(db, src, whole_batch=True)
         # New copy appended to end of its queue.
         max_pos = (
             await db.execute(
@@ -487,6 +496,11 @@ async def clone_batch(
     real bound on a hold, not the batch size). One reload per clone under that lock
     buys nothing.
     """
+    all_siblings = list((await db.scalars(select(PrintQueueItem).where(PrintQueueItem.batch_id == batch_id))).all())
+    from backend.app.services.print_execution import require_repeatable
+
+    for member in all_siblings:
+        await require_repeatable(db, member, whole_batch=True)
     siblings = await get_batch_pending_items(db, batch_id)
     if not siblings:
         return []
@@ -494,7 +508,10 @@ async def clone_batch(
     new_batch_id = str(uuid.uuid4())
     queue_id = siblings[0].queue_id
     clones: list[PrintQueueItem] = []
-    async with reusing_sources(db, [src.queue_source_id for src in siblings]), queue_scope_lock(db, queue_id):
+    async with reusing_sources(db, [src.queue_source_id for src in siblings], queue_ids=[queue_id]):
+        siblings = await get_batch_pending_items(db, batch_id)
+        for member in siblings:
+            await require_repeatable(db, member, whole_batch=True)
         max_pos = (
             await db.execute(
                 select(func.max(PrintQueueItem.position))

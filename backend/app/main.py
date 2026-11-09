@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import delete, or_, select, text
 
 from backend.app.api.routes import (
     ams_history,
@@ -114,7 +114,6 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.services import swap_compatibility
 from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.archive import ArchiveService, resolve_display_stem
-from backend.app.services.archive_parts import refresh_archive_parts
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch, delete_internal_by_name
 from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
@@ -414,6 +413,23 @@ logging.info("BamDude starting - debug=%s, log_level=%s", app_settings.debug, lo
 
 # Track active prints: {(printer_id, filename): archive_id}
 _active_prints: dict[tuple[int, str], int] = {}
+_active_print_identities: dict[tuple[int, str], str] = {}
+
+
+def _remember_active_print(key, archive):
+    _active_prints[key] = archive.id
+    _active_print_identities[key] = archive.recovery_identity
+
+
+def _forget_active_print(archive_id, identity):
+    for key in [
+        key
+        for key, value in _active_prints.items()
+        if value == archive_id and _active_print_identities.get(key) == identity
+    ]:
+        _active_prints.pop(key, None)
+        _active_print_identities.pop(key, None)
+
 
 # #1721: stage-22 pre-captured finish photo bytes per printer. on_finish_photo_moment
 # fires when stg_cur enters 22 ("Filament unloading") at end-of-print — toolhead
@@ -468,6 +484,7 @@ _expected_prints: dict[tuple[int, str], int] = {}
 # Track AMS mapping for prints: {archive_id: [global_tray_id_per_slot]}
 # Used by usage tracker to map 3MF slots to physical AMS trays
 _print_ams_mappings: dict[int, list[int]] = {}
+_print_ams_mapping_identities: dict[int, str] = {}
 
 # Swap-macro configuration for active prints: {printer_id: {"swap_macro_events": [...]}}
 # Populated at dispatch time; consumed + cleaned up in on_print_complete.
@@ -789,7 +806,14 @@ async def _get_plug_energy(plug, db, *, force_read: bool = False) -> dict | None
 
 
 async def _record_print_energy(
-    archive_id: int, printer_id: int, *, approximate: bool = False, may_read=None, ended_at: datetime | None = None
+    archive_id: int,
+    printer_id: int,
+    *,
+    approximate: bool = False,
+    may_read=None,
+    ended_at: datetime | None = None,
+    expected_identity: str | None = None,
+    expected_epoch: int | None = None,
 ) -> None:
     """Calculate and save energy usage in background.
 
@@ -816,6 +840,11 @@ async def _record_print_energy(
     meaningless too. A healthy counter stays the measurement; a figure this
     writer finalised is never overwritten by a second callback.
     """
+    from backend.app.services import queue_sources
+
+    epoch = queue_sources.current_epoch() if expected_epoch is None else expected_epoch
+    if queue_sources.current_epoch() != epoch:
+        return
     logger = logging.getLogger(__name__)
     try:
         logger.info("[ENERGY-BG] Starting energy calculation for archive %s", archive_id)
@@ -823,9 +852,10 @@ async def _record_print_energy(
             from backend.app.models.archive import PrintArchive
 
             archive = await db.get(PrintArchive, archive_id)
-            if archive is None:
+            if archive is None or (expected_identity is not None and archive.recovery_identity != expected_identity):
                 logger.warning("[ENERGY-BG] Archive %s no longer exists", archive_id)
                 return
+            expected_identity = archive.recovery_identity
             starting_kwh = archive.energy_start_kwh
             if starting_kwh is None:
                 logger.info("[ENERGY-BG] No start kWh recorded for archive %s", archive_id)
@@ -914,6 +944,8 @@ async def _record_print_energy(
                     cost_per_kwh=None,
                     approximate=approximate,
                     record={"version": 1, "kind": "unavailable", "unavailable_reason": reason, "final": True},
+                    expected_identity=expected_identity,
+                    expected_epoch=epoch,
                 )
                 logger.info("[ENERGY-BG] Archive %s: energy unknown (%s)", archive_id, reason)
 
@@ -1027,6 +1059,8 @@ async def _record_print_energy(
                 record=record,
                 plug_id=plug.id,
                 expected_source=token_before,
+                expected_identity=expected_identity,
+                expected_epoch=epoch,
             )
     except Exception as e:
         logger.warning("[ENERGY-BG] Failed: %s", e)
@@ -1072,6 +1106,8 @@ async def _write_print_energy(
     record,
     plug_id: int | None = None,
     expected_source: str | None = None,
+    expected_identity: str | None = None,
+    expected_epoch: int | None = None,
 ) -> None:
     """Write one print's energy figure and where it came from (W9).
 
@@ -1100,7 +1136,14 @@ async def _write_print_energy(
             logger.info("[ENERGY-BG] Archive %s: storage replaced by a restore; nothing written", archive_id)
             return
         fresh = await load_active_archive_for_write(db, archive_id)
-        if fresh is None:
+        from backend.app.services import queue_sources
+
+        if (
+            fresh is None
+            or (expected_identity is not None and fresh.recovery_identity != expected_identity)
+            or (expected_epoch is not None and queue_sources.current_epoch() != expected_epoch)
+            or "noncurrent_execution" in (fresh.extra_data or {})
+        ):
             await db.rollback()
             logger.warning("[ENERGY-BG] Archive %s no longer exists", archive_id)
             return
@@ -1194,6 +1237,10 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
     reads this value back from the DB and computes the delta against the current
     plug counter.
     """
+    from backend.app.services import queue_sources
+
+    archive_id, expected_identity = archive.id, archive.recovery_identity
+    epoch = queue_sources.current_epoch()
     _logger = logging.getLogger(__name__)
     try:
         plugs = await _energy_plugs_for_printer(printer_id, db)
@@ -1228,7 +1275,9 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
         # This function commits the caller's session anyway; doing it before the lock means no
         # holder of SQLite's writer ever waits on it (the flush holds it and then wants the writer).
         await db.commit()
-        async with source_guard():
+        from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+
+        async with source_guard(), archive_write_scope(db, archive_id):
             if measurement_buffer.retired:
                 _logger.info("[ENERGY] Storage replaced by a restore; no start recorded for archive %s", archive.id)
                 return False
@@ -1238,6 +1287,16 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
                 # clock went back): the counter is not this source's. No baseline, never a borrowed one.
                 _logger.info("[ENERGY] Plug %s: start reading outside its source (archive %s)", plug.id, archive.id)
                 return False
+            fresh = await load_active_archive_for_write(db, archive_id)
+            if (
+                fresh is None
+                or fresh.recovery_identity != expected_identity
+                or queue_sources.current_epoch() != epoch
+                or "noncurrent_execution" in (fresh.extra_data or {})
+            ):
+                await db.rollback()
+                return False
+            archive = fresh
             current_source = source[0]
             archive.energy_start_kwh = float(energy["total"])
             # The end reads THIS meter (``_record_print_energy``), of THIS measurement
@@ -1262,7 +1321,7 @@ async def _record_energy_start(archive, printer_id: int, db, *, context: str = "
         )
         return True
     except Exception as e:
-        _logger.warning("[ENERGY] Failed to record starting energy for archive %s: %s", archive.id, e)
+        _logger.warning("[ENERGY] Failed to record starting energy for archive %s: %s", archive_id, e)
         return False
 
 
@@ -1272,6 +1331,7 @@ def register_expected_print(
     archive_id: int,
     ams_mapping: list[int] | None = None,
     created_by_id: int | None = None,
+    archive_identity: str | None = None,
 ):
     """Register an expected print from reprint/scheduled so we don't create duplicate archives."""
     # Store with multiple filename variations to catch different naming patterns
@@ -1284,6 +1344,10 @@ def register_expected_print(
     # Store AMS mapping for usage tracking at print completion
     if ams_mapping is not None:
         _print_ams_mappings[archive_id] = ams_mapping
+        if archive_identity is not None:
+            _print_ams_mapping_identities[archive_id] = archive_identity
+        else:
+            _print_ams_mapping_identities.pop(archive_id, None)
     # Store created_by_id so the user start email can be sent even when the archive
     # itself has no created_by_id (e.g. library-file-based queue prints)
     if created_by_id is not None:
@@ -1345,6 +1409,7 @@ def withdraw_expected_print(printer_id: int, filename: str, expected_archive_id:
     for archive_id in archive_ids:
         if archive_id not in _expected_prints.values():
             _print_ams_mappings.pop(archive_id, None)
+            _print_ams_mapping_identities.pop(archive_id, None)
 
     if archive_ids:
         logging.getLogger(__name__).info(
@@ -1510,120 +1575,46 @@ async def maybe_register_external_stagger(printer_id: int) -> None:
 
 
 async def mark_queue_printing_for_printer(
-    printer_id: int, item_id: int | None = None, *, archive_id: int | None = None, options: dict | None = None
-) -> None:
-    """Ensure the printer's queue reflects the real busy state.
+    printer_id: int,
+    item_id: int | None = None,
+    *,
+    archive_id: int | None = None,
+    options: dict | None = None,
+    expected_identity: str | None = None,
+):
+    """Typed observed claim; every authoritative read is inside its writer lane."""
+    from backend.app.services import queue_sources
+    from backend.app.services.print_claims import observe_claim
+    from backend.app.services.queue_ops import claim_lanes
 
-    Call this once we know an active print exists on *printer_id* —
-    regardless of source (queue-driven, BamDude direct, external).
-    The scheduler itself doesn't rely on queue.status (uses MQTT state),
-    but the UI does, and a stale idle status while a print runs is
-    confusing.
-
-    ``item_id`` is the scheduler's queue item when it has one. When it is None
-    the print either claimed its own row at dispatch (Print now — see
-    ``claim_printer_for_direct_print``) or has none at all, which is what an
-    external print looks like: started from the printer's screen or sent
-    straight from a slicer, so BamDude registered no expected key for it.
-
-    ⚠️ **A missing row is created, but never by guessing from recency.** A
-    physical start may arrive while an old claim is still unresolved.  In that
-    case a different archive is a different run: keep the old evidence, make
-    the new run addressable and pause further automated starts for inspection.
-
-    ``options`` is what the PRINTER told us about a print BamDude did not send,
-    and it is only ever used for a row being created here. Repeating such a row
-    dispatches it again, so anything dropped now is silently wrong on the
-    repeat — reported from a farm whose repeat of a BambuStudio print went out
-    with no AMS mapping at all.
-
-    ⚠️ Only what the printer actually reports belongs in it. The calibration
-    flags, the macros, the preheat override and the gcode injection are
-    parameters of a ``project_file`` command we never sent and the printer does
-    not report back; they keep their defaults rather than a guess.
-    """
-    from backend.app.models.print_queue import PrintQueueItem
-    from backend.app.services.printer_queues import ensure_printer_queue
-    from backend.app.services.queue_batch import claim_printer_for_direct_print
-    from backend.app.services.queue_counters import set_queue_printing
-
-    async with async_session() as db:
-        # ⚠️ Created when missing, never skipped. Returning here for a printer
-        # without a queue row left its print with no claim, its completion with
-        # nothing to close, and its plate gate armed over nothing — "Repeat" on
-        # the card, 409 from the route (2026-09-04).
-        queue = await ensure_printer_queue(db, printer_id)
-
-        if item_id is None:
-            printing = list(
-                (
-                    await db.execute(
-                        select(PrintQueueItem).where(
-                            PrintQueueItem.queue_id == queue.id,
-                            PrintQueueItem.status == "printing",
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            matching = [row for row in printing if archive_id is not None and row.archive_id == archive_id]
-            if len(matching) == 1:
-                item_id = matching[0].id
-            elif len(matching) > 1:
-                queue.is_paused = True
-                logging.getLogger(__name__).warning(
-                    "Printer %s reported archive %s with %d matching queue claims; pausing queue for review",
-                    printer_id,
-                    archive_id,
-                    len(matching),
-                )
-            else:
-                # A direct claim is intentionally created before the execution
-                # archive. Bind only that known owner; never borrow an external
-                # row merely because it happens to be the newest one.
-                # A sole live row is the same observed run on a repeated
-                # callback.  Once there is more than one, there is no safe
-                # inference from a filename, timestamp or list order.
-                sole_owner = printing[0] if len(printing) == 1 else None
-                if sole_owner is not None and sole_owner.origin == "direct" and archive_id is not None:
-                    sole_owner.archive_id = archive_id
-                    item_id = sole_owner.id
-                elif sole_owner is not None and archive_id is None and sole_owner.archive_id is None:
-                    item_id = sole_owner.id
-
-            if item_id is None:
-                # This is observation, not permission to dispatch.  A new B is
-                # still recorded when stale A exists, so completion can address
-                # B; the queue is paused to prevent any automatic follow-up.
-                had_unrelated_claim = bool(printing)
-                created = await claim_printer_for_direct_print(
-                    db, printer_id=printer_id, origin="external", archive_id=archive_id, options=options
-                )
-                if created is not None:
-                    item_id = created.id
-                if had_unrelated_claim:
-                    queue.is_paused = True
-                    logging.getLogger(__name__).warning(
-                        "Printer %s started an external run beside unresolved claim(s); queue paused for review",
-                        printer_id,
-                    )
-
-        if queue.status == "printing" and queue.current_item_id == item_id:
-            return  # already in correct state
-        await set_queue_printing(db, queue.id, item_id)
+    async with (
+        queue_sources.storage_mutation(),
+        async_session() as db,
+        claim_lanes(db, [printer_id], archive_id=archive_id),
+    ):
+        result = await observe_claim(
+            db, printer_id, item_id, archive_id=archive_id, options=options, expected_identity=expected_identity
+        )
         await db.commit()
+        return result
 
 
-def _get_start_ams_mapping(data: dict, archive_id: int | None) -> list[int] | None:
+def _get_start_ams_mapping(data: dict, archive_id: int | None, archive_identity: str | None = None) -> list[int] | None:
     """Resolve AMS mapping for print start without consuming stored queue/reprint state."""
     stored_ams_mapping = data.get("ams_mapping")
-    if not stored_ams_mapping and archive_id:
+    if (
+        not stored_ams_mapping
+        and archive_id
+        and archive_identity is not None
+        and _print_ams_mapping_identities.get(archive_id) == archive_identity
+    ):
         stored_ams_mapping = _print_ams_mappings.get(archive_id)
     return stored_ams_mapping
 
 
-def _printer_reported_options(data: dict, archive_id: int | None, plate_id: int | None) -> dict:
+def _printer_reported_options(
+    data: dict, archive_id: int | None, plate_id: int | None, archive_identity: str | None = None
+) -> dict:
     """The print options a print BamDude did not send can still be known from.
 
     A print started from BambuStudio or the printer's screen gets a queue row
@@ -1666,7 +1657,7 @@ def _printer_reported_options(data: dict, archive_id: int | None, plate_id: int 
     default invented here would be indistinguishable from one the operator
     chose.
     """
-    return {"ams_mapping": _get_start_ams_mapping(data, archive_id), "plate_id": plate_id}
+    return {"ams_mapping": _get_start_ams_mapping(data, archive_id, archive_identity), "plate_id": plate_id}
 
 
 def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None = None) -> dict[str, str]:
@@ -4113,6 +4104,7 @@ def _bind_print_file_analysis_context(
         printer_id=printer_id,
         archive_id=archive.id,
         observed_subtask_id=getattr(archive, "subtask_id", None),
+        archive_identity=getattr(archive, "recovery_identity", None),
         # Lightweight manager doubles used by integrations before client setup
         # do not have a generation registry.  ``None`` is the same unknown
         # evidence a real not-yet-connected printer supplies.
@@ -4150,6 +4142,7 @@ def _bind_print_file_analysis_context(
         archive.id,
         source,
         getattr(archive, "plate_index", None),
+        expected_identity=getattr(archive, "recovery_identity", None),
     )
 
 
@@ -4175,6 +4168,15 @@ async def _replay_expired_pending_terminal(printer_id: int, sequence: int) -> No
 
 def _notify_print_file_analysis_source_ready(printer_id: int, archive) -> None:
     """Tell the bound live print that an attached archive file is available."""
+    from backend.app.services.print_run_binding import current_print_run
+
+    run = current_print_run(printer_manager, printer_id)
+    if (
+        run is not None
+        and run.archive_id == archive.id
+        and (run.archive_identity is not None and run.archive_identity != getattr(archive, "recovery_identity", None))
+    ):
+        return
     relative_path = getattr(archive, "file_path", None)
     if not relative_path:
         return
@@ -4186,309 +4188,8 @@ def _notify_print_file_analysis_source_ready(printer_id: int, archive) -> None:
         archive.id,
         app_settings.base_dir / relative_path,
         getattr(archive, "plate_index", None),
+        expected_identity=getattr(archive, "recovery_identity", None),
     )
-
-
-def _archive_matches_check_name(row, check_name: str) -> bool:
-    """Whether a ``PrintArchive`` row should be considered "the same print" as
-    the on_print_start event identified by ``check_name``.
-
-    Mirrors the matching rule used by the name-match adoption block — print_name
-    OR filename in {check_name, check_name+".3mf", check_name+".gcode.3mf"} —
-    and also tolerates rows whose ``filename`` is a full path like
-    ``/data/Metadata/Plate_1.gcode.3mf`` (compares the basename too).
-
-    Strict equality on ``filename`` is **not** enough: legacy rows can have
-    been stored as ``Plate_1.3mf`` (from the fallback path's
-    ``f"{print_name}.3mf"``) while a fresh on_print_start reports
-    ``Plate_1.gcode.3mf`` — without this leniency cleanup would close the live
-    row as "different file", and the name-match block would then create a
-    duplicate fresh archive.
-    """
-    if not check_name:
-        return False
-    candidates = {
-        check_name,
-        f"{check_name}.3mf",
-        f"{check_name}.gcode.3mf",
-    }
-    if row.print_name and row.print_name == check_name:
-        return True
-    if row.filename:
-        if row.filename in candidates:
-            return True
-        if row.filename.split("/")[-1] in candidates:
-            return True
-    return False
-
-
-async def _close_stale_printing_rows(
-    printer_id: int,
-    check_name: str,
-    db,
-    logger: logging.Logger,
-) -> None:
-    """Close stale ``status='printing'`` archive rows on this printer.
-
-    Runs at the top of ``on_print_start`` (after the ``_active_prints`` /
-    ``_expected_prints`` early returns) so the downstream name-match adoption
-    block + FTP/hash flow only sees rows that could plausibly be the live
-    print.
-
-    Closure rule: any row with non-NULL ``started_at`` + ``print_time_seconds``
-    is closed when its name doesn't match ``check_name`` (printer has moved on
-    to a different file) or when there's a *newer* same-name sibling (older
-    same-name rows are leftovers from a prior aborted dispatch — they can't
-    be the live print since a printer runs one job at a time). The name match
-    follows ``_archive_matches_check_name`` — same lenient rule the downstream
-    name-match adoption block uses. Status:
-
-      * ``predicted_end < now`` → ``'completed'`` with
-        ``completed_at = started_at + print_time_seconds`` (slicer's predicted
-        natural end; treat the row as if the print finished cleanly when its
-        timer ran out — accuracy is approximate, slicer estimates can drift,
-        but the row was clearly orphaned and the alternative is leaving it
-        forever in ``'printing'``).
-      * ``predicted_end > now`` → ``'cancelled'`` (printer is now on a
-        different print — the old one never reached its predicted end).
-
-    Each closed row gets ``extra_data['recovered_by_cleanup']=True`` for audit.
-
-    The newest same-name row is **left alone** so the downstream name-match
-    adoption block can decide based on its own time gate:
-
-      * That block now also checks ``predicted_end > now``. If true → adopt
-        the row directly (mid-print recovery shortcut, skips FTP + hash on
-        a potentially big 3MF).
-      * If ``predicted_end < now`` → defer to the FTP/hash path which will
-        either confirm (slicer underestimated, hash matches) or fall through
-        to a fresh fallback archive (different bytes despite same filename).
-
-    Trade-off: a long BamDude downtime followed by the operator reprinting
-    the same file from the printer's screen could see the new live print
-    glued onto the old (still ``'printing'``) row downstream — the new
-    on_print_start adopts the old archive instead of creating a fresh one.
-    Documented as acceptable: the same risk exists in pre-cleanup-pass code
-    via the unconditional name-match adoption block this feeds.
-    """
-    from backend.app.models.archive import PrintArchive
-
-    now = datetime.now(timezone.utc)
-
-    rows = (
-        (
-            await db.execute(
-                select(PrintArchive)
-                .where(PrintArchive.printer_id == printer_id)
-                .where(PrintArchive.status == "printing")
-                .where(PrintArchive.completed_at.is_(None))
-                # ``started_at`` is NULL for a row adopted mid-flight whose 3MF never
-                # landed (2026-09-12); SQLite sorts NULLs first, PostgreSQL last, so a
-                # bare ``started_at`` ordering would pick a different "newest" sibling
-                # per backend. Age such a row from its creation, as the closer does.
-                .order_by(func.coalesce(PrintArchive.started_at, PrintArchive.created_at).asc())
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-    if not rows:
-        return
-
-    same_name = [r for r in rows if _archive_matches_check_name(r, check_name)]
-    other_name = [r for r in rows if not _archive_matches_check_name(r, check_name)]
-
-    logger.info(
-        "[cleanup] printer=%s check_name=%r → %d 'printing' rows: %d same-name, %d other-name",
-        printer_id,
-        check_name,
-        len(rows),
-        len(same_name),
-        len(other_name),
-    )
-    for r in rows:
-        match_kind = "same" if _archive_matches_check_name(r, check_name) else "other"
-        logger.info(
-            "[cleanup]   row #%s filename=%r print_name=%r started_at=%s print_time=%ss → %s-name",
-            r.id,
-            r.filename,
-            r.print_name,
-            r.started_at.isoformat() if r.started_at else None,
-            r.print_time_seconds,
-            match_kind,
-        )
-
-    rows_to_close: list = list(other_name)
-    if len(same_name) > 1:
-        rows_to_close.extend(same_name[:-1])  # keep newest, close older siblings
-        logger.info(
-            "[cleanup] keeping newest same-name row #%s, closing %d older sibling(s)",
-            same_name[-1].id,
-            len(same_name) - 1,
-        )
-    elif len(same_name) == 1:
-        logger.info(
-            "[cleanup] keeping single same-name row #%s for downstream name-match adoption",
-            same_name[0].id,
-        )
-
-    # A job that has been sent but not started is not an orphan. The dispatcher
-    # registers its archive in ``_expected_prints`` before the print command goes
-    # out, and the adoption block right after this cleanup claims it — yet its
-    # name can still fail the check-name rule above. A file called only
-    # ``.gcode.3mf`` did (farm, 2026-09-06): uploaded as ``/.3mf``, echoed as
-    # ``.3mf``, sorted here as "other-name" and closed as cancelled two
-    # milliseconds before adoption reopened it, leaving a false
-    # ``recovered_by_cleanup`` flag and a log line that said a live print was
-    # stale. Filtered at the close, not at the sort, so an older same-name
-    # sibling of the dispatched job is still closed as before.
-    expected_ids = {aid for (pid, _name), aid in _expected_prints.items() if pid == printer_id}
-    for row in rows_to_close:
-        if row.id in expected_ids:
-            logger.info("[cleanup] row #%s is the just-dispatched print (expected) — not stale", row.id)
-    rows_to_close = [r for r in rows_to_close if r.id not in expected_ids]
-    # Nor is a dispatch attempt our dispatch never saw running (post-rebuild I-R1): its
-    # slicer timer running out would book a print that never ran as completed. The
-    # interrupted-dispatch recovery and the Info action end it, on proof.
-    from backend.app.services import dispatch_phase as _dispatch_phase
-
-    for row in rows_to_close:
-        if row.dispatch_phase in _dispatch_phase.UNACCEPTED:
-            logger.info(
-                "[cleanup] row #%s is a dispatch attempt in phase %s — left to its recovery",
-                row.id,
-                row.dispatch_phase,
-            )
-    rows_to_close = [r for r in rows_to_close if r.dispatch_phase not in _dispatch_phase.UNACCEPTED]
-
-    closed_count = 0
-    for row in rows_to_close:
-        # ⚠️ An adopted print (spec 2026-09-12) is the first ``printing`` row that
-        # can carry NO ``started_at``: the start is reconstructed from the 3MF,
-        # and a malformed record leaves it unknown for good. Age such a row by
-        # ``created_at`` — the moment BamDude joined the print, so at most the
-        # true age — instead of leaving it in ``printing`` for ever.
-        started = row.started_at or row.created_at
-        if started is None or row.print_time_seconds is None:
-            continue
-        started = started if started.tzinfo else started.replace(tzinfo=timezone.utc)
-        predicted_end = started + timedelta(seconds=row.print_time_seconds)
-        if predicted_end < now:
-            row.status = "completed"
-            row.completed_at = predicted_end
-        else:
-            row.status = "cancelled"
-        extra = dict(row.extra_data or {})
-        extra["recovered_by_cleanup"] = True
-        row.extra_data = extra
-        logger.info(
-            "[cleanup] Closed stale archive #%s (filename=%r) as %s (predicted_end=%s)",
-            row.id,
-            row.filename,
-            row.status,
-            predicted_end.isoformat(),
-        )
-        closed_count += 1
-
-    if closed_count > 0:
-        await db.commit()
-        logger.info(
-            "[cleanup] Closed %d stale 'printing' archive row(s) on printer %s",
-            closed_count,
-            printer_id,
-        )
-
-
-async def _discard_provisional_archive(db, archive, logger, *, adopted_archive_id: int | None = None) -> None:
-    """Drop the print-start row after a later branch adopted an existing archive.
-
-    ``on_print_start`` creates its row before downloading the 3MF, but two
-    branches that run *after* the download can still conclude the print
-    already has an archive — the plate-corrected re-download and the
-    content-hash adoption. Exactly one row must exist per physical print, so
-    the one we speculatively created goes away.
-
-    Safe to delete outright: it is seconds old, it has ``file_path=""`` so
-    nothing was written to disk under it, and no history has accrued to it
-    yet. Its ``_active_prints`` keys are cleared by value rather than by
-    rebuilding the key list — the adopted row re-registers its own, and a key
-    whose spelling differs by one variant would otherwise be left pointing at
-    a deleted id, which the duplicate guard at the top of the handler reads as
-    "this print is already tracked" and returns on.
-    """
-    stale_id = archive.id
-    for key in [k for k, v in _active_prints.items() if v == stale_id]:
-        _active_prints.pop(key, None)
-    # ⚠️ The queue row claimed at start points at THIS archive, and
-    # ``mark_queue_printing_for_printer`` fills only an empty ``archive_id`` when
-    # it adopts the row for the adopted archive — so without this the row kept
-    # a dangling id, its completion held it, and Repeat refused it as "no file
-    # to send again" (2026-09-04). The row follows the archive that survives.
-    if adopted_archive_id is not None:
-        from sqlalchemy import update as _sql_update
-
-        from backend.app.models.print_queue import PrintQueueItem as _PQI
-
-        moved = await db.execute(
-            _sql_update(_PQI).where(_PQI.archive_id == stale_id).values(archive_id=adopted_archive_id)
-        )
-        if moved.rowcount:
-            logger.info(
-                "Re-pointed %d queue row(s) from discarded archive %s to adopted archive %s",
-                moved.rowcount,
-                stale_id,
-                adopted_archive_id,
-            )
-    await db.delete(archive)
-    await db.commit()
-    logger.info("Discarded print-start archive %s — an existing archive was adopted instead", stale_id)
-    # The card was already broadcast as created; make the list refetch.
-    await ws_manager.send_archive_updated({"id": stale_id, "deleted": True})
-
-
-async def _find_live_hash_twin(db, printer_id: int, exclude_id: int, content_hash: str, plate_index: int | None):
-    """This printer's live archive that already holds these bytes — the print
-    BamDude dispatched (or adopted) under a name the lookup could not see. One
-    predicate for on_print_start's restart-recovery download and for
-    _adopt_running_print (spec 2026-09-12 §3.4): ``status='printing'`` on this
-    printer, not us, a 3MF on record, ``content_hash`` or
-    ``source_content_hash`` equal, and for a multi-plate file the same plate.
-
-    Only rows STILL in flight here answer. Terminal-status rows
-    (completed/failed/cancelled) are NEVER touched: when a user reprints the
-    same file from the printer screen, the prior history must stay intact and
-    the new run must get its own archive row. The earlier "flip terminal back
-    to printing" behaviour ate users' history when one file was reprinted
-    across several printers from the screen.
-
-    ``exclude_id`` is the caller's own row. It has no file yet, so
-    ``file_path != ""`` already excludes it — stated explicitly because "adopt
-    yourself, then delete yourself" is the one outcome here that would be
-    silently catastrophic.
-
-    Multi-plate disambiguation: the hash is identical across plates of the same
-    container (the whole 3MF sits on disk and on the card), so the live plate
-    index is the only thing that distinguishes a plate-5 row from a stuck
-    plate-1 sibling on the same printer. Legacy archives (pre-m038) carry
-    ``plate_index = NULL``; they stay plate-agnostic so this never excludes a
-    legitimate candidate from an older install.
-    """
-    from backend.app.models.archive import PrintArchive as _PA
-
-    stmt = (
-        select(_PA)
-        .where(_PA.printer_id == printer_id)
-        .where(_PA.status == "printing")
-        .where(_PA.completed_at.is_(None))
-        .where(_PA.file_path != "")
-        .where(_PA.id != exclude_id)
-        .where(or_(_PA.content_hash == content_hash, _PA.source_content_hash == content_hash))
-        .order_by(_PA.created_at.desc())
-    )
-    if plate_index is not None:
-        stmt = stmt.where(or_(_PA.plate_index == plate_index, _PA.plate_index.is_(None)))
-    return (await db.execute(stmt.limit(1))).scalar_one_or_none()
 
 
 def _name_after_plate_reject(subtask_name: str, corrected_subtask: str | None, filename: str | None) -> str:
@@ -4580,6 +4281,41 @@ async def _check_plate_at_print_start(printer, db, *, may_run=None):
             logger.warning("[PLATE CHECK] Failed to send notification: %s", exc)
 
 
+async def _record_unproven_start(printer_id, data, reason):
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services import queue_sources
+    from backend.app.services.print_observation import observation_is_current
+    from backend.app.services.queue_ops import claim_lanes
+
+    epoch = queue_sources.current_epoch()
+
+    def current():
+        return (
+            queue_sources.current_epoch() == epoch
+            and printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life"))
+            and printer_manager.accepts_client_callback_generation(printer_id, data.get("_bamdude_client_generation"))
+            and observation_is_current(printer_manager, printer_id, data.get("_print_observation"))
+        )
+
+    if not current():
+        return
+    if not hasattr(printer_manager, "_unproven_starts"):
+        printer_manager._unproven_starts = {}
+    printer_manager._unproven_starts[printer_id] = {
+        "reason": reason,
+        "epoch": queue_sources.current_epoch(),
+        "life": data.get("_bamdude_printer_life", getattr(printer_manager, "_printer_lives", {}).get(printer_id, 0)),
+    }
+    async with queue_sources.storage_mutation(), async_session() as db, claim_lanes(db, [printer_id]):
+        if not current():
+            return
+        queue = await db.get(PrinterQueue, printer_id, populate_existing=True)
+        if queue is not None:
+            queue.is_paused = True
+            await db.commit()
+    logging.getLogger(__name__).warning("Unresolved print observation on printer %s: %s", printer_id, reason)
+
+
 async def on_print_start(printer_id: int, data: dict):
     """Admit a live start once, independently of its prepared dispatch."""
     from backend.app.services.print_run_binding import (
@@ -4603,6 +4339,57 @@ async def on_print_start(printer_id: int, data: dict):
             data.get("subtask_name", ""),
         )
         return
+    from backend.app.services.print_execution import ExecutionChanged, decide_start
+    from backend.app.services.print_observation import observation_is_current
+
+    if not observation_is_current(printer_manager, printer_id, data.get("_print_observation")):
+        return
+    try:
+        async with async_session() as proof_db:
+            prepared = current_print_run(printer_manager, printer_id)
+            prepared_id = (
+                prepared.archive_id
+                if prepared
+                and prepared.origin == "dispatch"
+                and prepared.matches_device_subtask(data.get("subtask_id"))
+                else None
+            )
+            decision = await decide_start(
+                proof_db,
+                printer_id,
+                data,
+                prepared_archive_id=prepared_id,
+                prepared_archive_identity=prepared.archive_identity if prepared_id else None,
+            )
+    except ExecutionChanged as exc:
+        await _record_unproven_start(printer_id, data, str(exc))
+        return
+    if decision.current_id is not None and decision.old:
+        from backend.app.models.archive import PrintArchive
+        from backend.app.services.print_execution import publish_start
+
+        try:
+            async with async_session() as adoption_db:
+                adopted = await adoption_db.get(PrintArchive, decision.current_id)
+                if adopted is None:
+                    raise ExecutionChanged("adopted execution disappeared")
+                await publish_start(
+                    adoption_db,
+                    adopted,
+                    decision,
+                    still_current=lambda: (
+                        printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life"))
+                        and printer_manager.accepts_client_callback_generation(
+                            printer_id, data.get("_bamdude_client_generation")
+                        )
+                        and observation_is_current(printer_manager, printer_id, data.get("_print_observation"))
+                    ),
+                )
+        except ExecutionChanged as exc:
+            await _record_unproven_start(printer_id, data, str(exc))
+            return
+    data = {**data, "_execution_decision": decision}
+    getattr(printer_manager, "_unproven_starts", {}).pop(printer_id, None)
     admission = claim_print_start(printer_manager, printer_id, data)
     bound = current_print_run(printer_manager, printer_id)
     if admission is None:
@@ -4611,7 +4398,11 @@ async def on_print_start(printer_id: int, data: dict):
                 from backend.app.models.archive import PrintArchive
 
                 archive = await db.get(PrintArchive, bound.archive_id)
-                if archive is not None and current_print_run(printer_manager, printer_id) == bound:
+                if (
+                    archive is not None
+                    and current_print_run(printer_manager, printer_id) == bound
+                    and (bound.archive_identity is None or archive.recovery_identity == bound.archive_identity)
+                ):
                     _load_objects_from_archive(archive, printer_id, logging.getLogger(__name__), is_retrigger=True)
         logging.getLogger(__name__).info("[CALLBACK] Duplicate print_start for printer %s", printer_id)
         return
@@ -4642,15 +4433,25 @@ async def on_print_start(printer_id: int, data: dict):
                 )
                 if len(candidates) == 1 and start_admission_is_current(printer_manager, printer_id, admission):
                     archive = candidates[0]
+                    if not await mark_queue_printing_for_printer(
+                        printer_id, archive_id=archive.id, expected_identity=archive.recovery_identity
+                    ):
+                        return
                     _bind_print_file_analysis_context(
                         printer_id, archive, expected_generation=admission.generation, origin="exact_subtask"
                     )
                     _load_objects_from_archive(archive, printer_id, logging.getLogger(__name__), is_retrigger=True)
-                    admission.phase = "recovered"
+                    admission.phase = "processed"
                     return
         # A binding restored from a durable run is recovery, not a new live
         # start. Prepared dispatch bindings must take the first-start path.
-        if bound is not None and bound.origin != "dispatch" and bound.observed_subtask_id:
+        if (
+            bound is not None
+            and bound.origin != "dispatch"
+            and bound.observed_subtask_id
+            and decision.current_id == bound.archive_id
+            and (bound.archive_identity is None or decision.current_identity == bound.archive_identity)
+        ):
             if bound.matches_device_subtask(data.get("subtask_id")):
                 async with async_session() as db:
                     from backend.app.models.archive import PrintArchive
@@ -4658,7 +4459,7 @@ async def on_print_start(printer_id: int, data: dict):
                     archive = await db.get(PrintArchive, bound.archive_id)
                     if archive is not None and start_admission_is_current(printer_manager, printer_id, admission):
                         _load_objects_from_archive(archive, printer_id, logging.getLogger(__name__), is_retrigger=True)
-                admission.phase = "recovered"
+                admission.phase = "processed"
                 return
         if start_admission_is_current(printer_manager, printer_id, admission):
             effects_started = True
@@ -4688,8 +4489,15 @@ async def _on_print_start_impl(printer_id: int, data: dict):
     start_generation = data.get("_bamdude_start_generation")
 
     def owns_start():
-        return start_generation is None or print_effect_is_current(
-            printer_manager, PrintEffectToken(printer_id, None, start_generation)
+        from backend.app.services.print_observation import observation_is_current
+
+        return (
+            printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life"))
+            and observation_is_current(printer_manager, printer_id, data.get("_print_observation"))
+            and (
+                start_generation is None
+                or print_effect_is_current(printer_manager, PrintEffectToken(printer_id, None, start_generation))
+            )
         )
 
     logger.info("[CALLBACK] on_print_start called for printer %s, data keys: %s", printer_id, list(data.keys()))
@@ -4738,7 +4546,9 @@ async def _on_print_start_impl(printer_id: int, data: dict):
     if not owns_start():
         return
     try:
-        await ws_manager.send_print_start(printer_id, data)
+        await ws_manager.send_print_start(
+            printer_id, {k: v for k, v in data.items() if k not in {"_print_observation", "_execution_decision"}}
+        )
     except Exception as e:
         logger.warning("Print-start WebSocket notification failed: %s", e)
 
@@ -4934,116 +4744,12 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             expected_keys.append((printer_id, base))
             expected_keys.append((printer_id, f"{base}.3mf"))
 
-        # Re-trigger guard: MQTT reconnect / state flap / keep-alive can cause
-        # on_print_start to fire multiple times for the same physical print.
-        # Each repeat event, if it reached the fallback archive-create path,
-        # would add a new archive row (same file on disk, dedup'd dir — but
-        # still a new DB record). Reports in the wild: laptop sleeping →
-        # printer reconnects → several archive duplicates spaced minutes
-        # apart. If _active_prints already tracks ANY variation of this print
-        # on this printer, treat the event as a duplicate and return — no new
-        # archive, no re-notification.
-        #
-        # **Side effect we DO need to repeat**: re-load printable_objects +
-        # skip_objects_supported into the freshly-created MQTT client state.
-        # Any reconnect swaps the BambuMQTTClient for a new one with empty
-        # state, so without this re-load the skip-objects button goes dark
-        # mid-print. That used to happen on a timer — ``ensure_fresh_connection``
-        # recycled a live link older than ``mqtt_connection_timeout``, which
-        # defaulted to minutes — and m120 turned that off, but a link that
-        # genuinely drops still reconnects and still lands here. Server-restart
-        # papers over the symptom (it wipes _active_prints, so the next
-        # on_print_start takes the full path and loads objects), but the
-        # underlying state was being silently lost.
-        # The manager-owned binding is the authoritative in-process address.
-        # Filename aliases exist only for restart/legacy recovery: a stale A
-        # alias must not hide an observed B that carries a contradictory
-        # firmware subtask ID.
-        from backend.app.services.print_run_binding import current_print_run
+        # Execution identity was proved before start admission. Filename aliases
+        # neither adopt a run nor close an older one; publish_start owns that
+        # decision and its first transaction, before any download.
+        from backend.app.services.print_execution import decide_start
 
-        bound_run = current_print_run(printer_manager, printer_id)
-        if (
-            not data.get("_bamdude_start_admitted")
-            and bound_run is not None
-            and bound_run.matches_device_subtask(subtask_id)
-        ):
-            from backend.app.models.archive import PrintArchive
-
-            bound_archive = await db.get(PrintArchive, bound_run.archive_id)
-            if bound_archive is not None and bound_archive.status == "printing":
-                logger.info(
-                    "[CALLBACK] Duplicate print_start for printer %s via run binding archive %s — "
-                    "re-loading objects into fresh client state",
-                    printer_id,
-                    bound_archive.id,
-                )
-                _bind_print_file_analysis_context(printer_id, bound_archive, expected_generation=start_generation)
-                _load_objects_from_archive(bound_archive, printer_id, logger, is_retrigger=True)
-                return
-
-        if not data.get("_bamdude_start_admitted") and (
-            bound_run is None or bound_run.matches_device_subtask(subtask_id)
-        ):
-            for key in expected_keys:
-                active_archive_id = _active_prints.get(key)
-                if not active_archive_id:
-                    continue
-                logger.info(
-                    "[CALLBACK] Duplicate print_start for printer %s (active archive %s via key %s) — skipping (re-loading objects into fresh client state)",
-                    printer_id,
-                    active_archive_id,
-                    key,
-                )
-                try:
-                    from backend.app.models.archive import PrintArchive
-
-                    _arc = (
-                        await db.execute(select(PrintArchive).where(PrintArchive.id == active_archive_id))
-                    ).scalar_one_or_none()
-                    if _arc is not None:
-                        _bind_print_file_analysis_context(printer_id, _arc, expected_generation=start_generation)
-                        _load_objects_from_archive(_arc, printer_id, logger, is_retrigger=True)
-                except Exception as e:
-                    logger.debug("[CALLBACK] re-load printable_objects failed: %s", e)
-                return
-        elif subtask_id and bound_run is not None and not bound_run.matches_device_subtask(subtask_id):
-            logger.info(
-                "[CALLBACK] print_start for printer %s has subtask %s conflicting with current archive %s; "
-                "ignoring filename aliases and resolving the observed run",
-                printer_id,
-                subtask_id,
-                bound_run.archive_id,
-            )
-
-        if not owns_start():
-            return
-        # Cleanup pass: close stale 'printing' rows that can't be the live print.
-        # Runs before _expected_prints lookup so leftover rows from a previous
-        # session don't pollute the downstream name-match adoption block. The
-        # newest row that matches the same check_name as this event is preserved
-        # — the name-match block + FTP path decide what to do with it. The same
-        # lenient name-matching rule (print_name OR filename in {check_name,
-        # check_name+".3mf", check_name+".gcode.3mf"} with basename tolerance)
-        # is shared between cleanup and the adoption block, so legacy rows
-        # stored as "Plate_1.3mf" don't get cleaned up when the new event
-        # reports "Plate_1.gcode.3mf".
-        cleanup_check_name = subtask_name or (
-            filename.split("/")[-1].replace(".gcode", "").replace(".3mf", "") if filename else ""
-        )
-        logger.info(
-            "[cleanup] inputs: subtask_name=%r filename=%r → check_name=%r",
-            subtask_name,
-            filename,
-            cleanup_check_name,
-        )
-        if cleanup_check_name:
-            try:
-                await _close_stale_printing_rows(printer_id, cleanup_check_name, db, logger)
-            except Exception as e:
-                logger.warning("[cleanup] Stale-printing cleanup failed: %s", e)
-
-        if not owns_start():
-            return
+        decision = data.get("_execution_decision") or await decide_start(db, printer_id, data)
         expected_archive_id = None
         for key in expected_keys:
             expected_archive_id = _expected_prints.pop(key, None)
@@ -5057,6 +4763,9 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                     _expected_print_registered_at.pop(other_key, None)
                 break
 
+        if expected_archive_id != decision.current_id:
+            expected_archive_id = None
+
         if expected_archive_id:
             # This is a reprint/scheduled print - use existing archive, don't create new one
             logger.info("Using expected archive %s for print (skipping duplicate)", expected_archive_id)
@@ -5065,7 +4774,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             result = await db.execute(select(PrintArchive).where(PrintArchive.id == expected_archive_id))
             archive = result.scalar_one_or_none()
 
-            if archive:
+            if archive and archive.recovery_identity == decision.current_identity and owns_start():
                 # Update archive status to printing
                 archive.status = "printing"
                 archive.started_at = datetime.now(timezone.utc)
@@ -5119,9 +4828,9 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 )
 
                 # Track as active print
-                _active_prints[(printer_id, archive.filename)] = archive.id
+                _remember_active_print((printer_id, archive.filename), archive)
                 if subtask_name:
-                    _active_prints[(printer_id, f"{subtask_name}.3mf")] = archive.id
+                    _remember_active_print((printer_id, f"{subtask_name}.3mf"), archive)
 
                 # Start timelapse session if external camera is enabled
                 # (upstream Bambuddy #1353 / commit f2e3de0a). The two
@@ -5151,7 +4860,11 @@ async def _on_print_start_impl(printer_id: int, data: dict):
 
                 # Ensure queue reflects the busy state (queue-driven flow
                 # already sets this from the scheduler, but repeat-safe).
-                await mark_queue_printing_for_printer(printer_id, archive_id=archive.id)
+                claim_result = await mark_queue_printing_for_printer(
+                    printer_id, archive_id=archive.id, expected_identity=archive.recovery_identity
+                )
+                if not claim_result:
+                    return
 
                 # Set up energy tracking (#941: persist start on archive row)
                 await _record_energy_start(archive, printer_id, db, context="expected-print")
@@ -5191,7 +4904,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                         archive.file_path,
                         db,
                         printer_manager,
-                        ams_mapping=_get_start_ams_mapping(data, archive.id),
+                        ams_mapping=_get_start_ams_mapping(data, archive.id, archive.recovery_identity),
                         plate_id=archive.plate_index,
                     )
                 except Exception as e:
@@ -5254,103 +4967,15 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 PrintArchive.plate_index.is_(None),
             )
 
-        # Pre-check: if the printer told us a subtask_id, look for an archive
-        # with the same id on this printer first. The printer-assigned id is
-        # unique per submission (see start_print submission_id), so a match is
-        # a stronger signal than name alone. Only consult status="printing" to
-        # avoid reviving old cancelled rows — BamDude has no stale-cancel
-        # heuristic, so a terminal status here is deliberate (#972 port).
-        existing_archive: PrintArchive | None = None
-        if subtask_id:
-            subtask_match = await db.execute(
-                select(PrintArchive)
-                .where(PrintArchive.printer_id == printer_id)
-                .where(PrintArchive.subtask_id == subtask_id)
-                .where(PrintArchive.status == "printing")
-                .order_by(PrintArchive.created_at.desc())
-                .limit(1)
-            )
-            existing_archive = subtask_match.scalar_one_or_none()
-            if not owns_start():
-                return
-            if existing_archive:
-                logger.info(
-                    "Resuming archive %s on subtask_id match (%s)",
-                    existing_archive.id,
-                    subtask_id,
-                )
+        from backend.app.services.print_execution import ExecutionChanged, decide_start
 
-        if existing_archive is None:
-            name_query = (
-                select(PrintArchive)
-                .where(PrintArchive.printer_id == printer_id)
-                .where(PrintArchive.status == "printing")
-                .where(
-                    or_(
-                        PrintArchive.print_name == check_name,
-                        PrintArchive.filename.in_(
-                            [
-                                f"{check_name}.3mf",
-                                f"{check_name}.gcode.3mf",
-                            ]
-                        ),
-                    )
-                )
-            )
-            _pf = _plate_filter()
-            if _pf is not None:
-                name_query = name_query.where(_pf)
-            existing = await db.execute(name_query.order_by(PrintArchive.created_at.desc()))
-            candidates = existing.scalars().all()
-            # Time gate: only adopt rows where the slicer's predicted print end
-            # is still in the future ("the print could plausibly still be
-            # running"). Rows with NULL started_at / print_time_seconds keep
-            # the legacy unconditional-adoption behaviour so this fix doesn't
-            # regress legacy archives without timing data. Rows with
-            # predicted_end < now are deliberately *not* adopted here — if
-            # they're the live print under a slicer-underestimate scenario,
-            # the FTP/hash path that follows will catch them; otherwise this
-            # is a stuck row that the cleanup pass should have already closed.
-            now_ts = datetime.now(timezone.utc)
-            existing_archive = None
-            for cand in candidates:
-                if cand.started_at is None or cand.print_time_seconds is None:
-                    logger.info(
-                        "[name-match] adopt #%s (NULL started_at or print_time — legacy fallback path)",
-                        cand.id,
-                    )
-                    existing_archive = cand
-                    break
-                started_ts = cand.started_at if cand.started_at.tzinfo else cand.started_at.replace(tzinfo=timezone.utc)
-                predicted_end = started_ts + timedelta(seconds=cand.print_time_seconds)
-                # Diagnostic: surface the exact comparison so a "this should
-                # have been adopted but wasn't" report can be triaged from
-                # logs without running a debugger.
-                decision = "adopt" if predicted_end > now_ts else "defer-to-ftp"
-                logger.info(
-                    "[name-match] cand #%s started_at=%s (tz=%s) print_time=%ss predicted_end=%s now=%s → %s",
-                    cand.id,
-                    cand.started_at.isoformat() if cand.started_at else None,
-                    cand.started_at.tzinfo if cand.started_at else None,
-                    cand.print_time_seconds,
-                    predicted_end.isoformat(),
-                    now_ts.isoformat(),
-                    decision,
-                )
-                if predicted_end > now_ts:
-                    existing_archive = cand
-                    break
-            # Backfill subtask_id onto an archive that matched by name only —
-            # next restart can then use the faster subtask_id pre-check path.
-            # Compare for inequality (not "is empty") so a reprint that adopts a
-            # leftover "printing" row also picks up its fresh dispatch id: leaving
-            # the FIRST run's id lets print_reconciliation._subtask_stale flag the
-            # live print as changed on the next MQTT reconnect and false-close it
-            # (#1807). Equal id ⇒ no write/commit, so this stays a no-op on stable
-            # pushes.
-            if existing_archive and subtask_id and existing_archive.subtask_id != subtask_id:
-                existing_archive.subtask_id = subtask_id
-                await db.commit()
+        existing_archive = (
+            await db.get(PrintArchive, decision.current_id, populate_existing=True) if decision.current_id else None
+        )
+        if existing_archive is not None and (
+            existing_archive.recovery_identity != decision.current_identity or existing_archive.status != "printing"
+        ):
+            raise ExecutionChanged("accepted execution changed")
         if existing_archive:
             # The printer just fired on_print_start for ``check_name``, and we
             # have a matching "printing" archive on file — by definition it IS
@@ -5372,7 +4997,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 existing_archive.id,
                 check_name,
             )
-            _active_prints[(printer_id, existing_archive.filename)] = existing_archive.id
+            _remember_active_print((printer_id, existing_archive.filename), existing_archive)
             # The printer runs it: an attempt of ours left unaccepted is accepted now.
             from backend.app.services import dispatch_phase as _dispatch_phase
 
@@ -5381,11 +5006,16 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             # Ensure queue reflects the busy state. The options are consulted
             # only if no row exists yet — a re-trigger normally adopts the row
             # the first pass created, which knows more than we do here.
-            await mark_queue_printing_for_printer(
+            claim_result = await mark_queue_printing_for_printer(
                 printer_id,
                 archive_id=existing_archive.id,
-                options=_printer_reported_options(data, existing_archive.id, live_plate_id),
+                expected_identity=existing_archive.recovery_identity,
+                options=_printer_reported_options(
+                    data, existing_archive.id, live_plate_id, existing_archive.recovery_identity
+                ),
             )
+            if not claim_result:
+                return
             # Also set up energy tracking if not already tracked (#941: persisted column)
             if existing_archive.energy_start_kwh is None:
                 await _record_energy_start(existing_archive, printer_id, db, context="existing-printing")
@@ -5459,7 +5089,9 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             queue_id=await _default_queue_id_for_printer(db, printer_id),
             extra_data={
                 "original_subtask": subtask_name,
-                "_print_data": data,
+                "_print_data": {
+                    k: v for k, v in data.items() if k not in {"_print_observation", "_execution_decision"}
+                },
             },
         )
         # A NEW observed external start -- no dispatch of ours took it over above. Only the full file name the
@@ -5473,8 +5105,15 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             # Revoked while the row was being built -- by a deletion of this
             # printer record among others: no archive for a start nobody owns.
             return
-        db.add(archive)
-        await db.commit()
+        from backend.app.services.print_execution import publish_start
+
+        await publish_start(
+            db,
+            archive,
+            decision,
+            options=_printer_reported_options(data, None, live_plate_id),
+            still_current=owns_start,
+        )
         await db.refresh(archive)
         logger.info("Created archive %s for %s at print start (3MF to follow)", archive.id, print_name)
         _bind_print_file_analysis_context(printer_id, archive, expected_generation=start_generation, origin="external")
@@ -5485,27 +5124,32 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         # slicer's own — the same order the dispatch path uses.
         from backend.app.services.archive_colors import apply_loaded_spool_colors
 
-        await apply_loaded_spool_colors(db, archive, printer_id, _get_start_ams_mapping(data, archive.id))
+        await apply_loaded_spool_colors(
+            db, archive, printer_id, _get_start_ams_mapping(data, archive.id, archive.recovery_identity)
+        )
         await db.commit()
 
         # Track as the active print. This is also the re-trigger guard at the
         # top of the handler, so an MQTT reconnect during the download now
         # finds the print already tracked instead of starting a second one.
-        _active_prints[(printer_id, archive.filename)] = archive.id
+        _remember_active_print((printer_id, archive.filename), archive)
         if filename:
-            _active_prints[(printer_id, filename)] = archive.id
+            _remember_active_print((printer_id, filename), archive)
         if subtask_name:
-            _active_prints[(printer_id, f"{subtask_name}.3mf")] = archive.id
-            _active_prints[(printer_id, subtask_name)] = archive.id
+            _remember_active_print((printer_id, f"{subtask_name}.3mf"), archive)
+            _remember_active_print((printer_id, subtask_name), archive)
 
         # Ensure the queue reflects the busy state (external / direct print).
         # This is where an external print's row is born, so it is also the one
         # chance to record what the printer told us about it.
-        await mark_queue_printing_for_printer(
+        claim_result = await mark_queue_printing_for_printer(
             printer_id,
             archive_id=archive.id,
-            options=_printer_reported_options(data, archive.id, live_plate_id),
+            expected_identity=archive.recovery_identity,
+            options=_printer_reported_options(data, archive.id, live_plate_id, archive.recovery_identity),
         )
+        if not claim_result:
+            return
         await maybe_register_external_stagger(printer_id)
 
         # #941: the plug's lifetime counter, read at the real start of the
@@ -5580,9 +5224,17 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         # reconnects itself. Without the claim that trigger opens a second FTP
         # session for a file already on its way and attaches on top of ours,
         # cutting a second archive directory and orphaning the first.
+        archive_identity = archive.recovery_identity
         async with archive_download_retry.claim(archive.id):
             try:
                 download_result = await try_download_3mf(printer, subtask_name, filename, temp_dir)
+                if download_result:
+                    temp_path, downloaded_filename = download_result
+                if not owns_start():
+                    return
+                pinned = await db.get(PrintArchive, archive.id, populate_existing=True)
+                if pinned is None or pinned.recovery_identity != archive_identity:
+                    return
                 if download_result:
                     temp_path, downloaded_filename = download_result
 
@@ -5726,66 +5378,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                                 archive.print_name = corrected_name
                                 await db.commit()
 
-                # Post-download content-hash adoption: secondary safety net for the
-                # mid-print recovery case (BamDude restarted while a print was active
-                # → MQTT replay fires on_print_start, but pre-download name lookup
-                # missed because of a name normalisation quirk). The predicate — and
-                # every reason behind it — lives in ``_find_live_hash_twin``, which
-                # the adoption path shares.
-                if temp_path:
-                    from backend.app.services.archive import ArchiveService as _ArchiveSvc
-
-                    temp_hash = _ArchiveSvc.compute_file_hash(temp_path)
-                    hash_match = await _find_live_hash_twin(
-                        db,
-                        printer_id,
-                        exclude_id=archive.id,
-                        content_hash=temp_hash,
-                        plate_index=live_plate_id,
-                    )
-                    if hash_match is not None:
-                        logger.info(
-                            "Adopting in-flight archive %s by content_hash match",
-                            hash_match.id,
-                        )
-                        # Backfill subtask_id so the next restart skips the content_hash path.
-                        # Inequality (not "is empty") so a reprint adopting this in-flight row
-                        # also picks up its fresh dispatch id — keeping the FIRST run's id lets
-                        # the reconciler false-close the live print on MQTT reconnect (#1807).
-                        # Equal id ⇒ no write/commit (no-op on stable pushes).
-                        if subtask_id and hash_match.subtask_id != subtask_id:
-                            hash_match.subtask_id = subtask_id
-                            await db.commit()
-                        # This print already had an archive; ours was a guess
-                        # made before the file could prove it. Exactly one row
-                        # per physical print — drop the guess.
-                        await _discard_provisional_archive(db, archive, logger, adopted_archive_id=hash_match.id)
-                        # Re-seed the adopted archive's part rows (m158). It
-                        # already has a 3MF, but a fresh seed here is cheap
-                        # insurance against a row whose parts were never
-                        # written (e.g. created before this ledger existed).
-                        await refresh_archive_parts(hash_match.id)
-                        _active_prints[(printer_id, hash_match.filename)] = hash_match.id
-                        if subtask_name:
-                            _active_prints[(printer_id, f"{subtask_name}.3mf")] = hash_match.id
-                            _active_prints[(printer_id, subtask_name)] = hash_match.id
-                        await mark_queue_printing_for_printer(
-                            printer_id,
-                            archive_id=hash_match.id,
-                            options=_printer_reported_options(data, hash_match.id, live_plate_id),
-                        )
-                        if hash_match.energy_start_kwh is None:
-                            await _record_energy_start(hash_match, printer_id, db, context="hash-adoption")
-                        if not notification_sent and owns_start():
-                            archive_data = {
-                                "print_time_seconds": hash_match.print_time_seconds,
-                                "created_by_id": hash_match.created_by_id,
-                            }
-                            await _send_print_start_notification(printer_id, data, archive_data, logger)
-                        _bind_print_file_analysis_context(printer_id, hash_match, expected_generation=start_generation)
-                        _load_objects_from_archive(hash_match, printer_id, logger)
-                        return  # temp file removed by the finally below
-
+                # File identity cannot change the execution decision made at start.
                 if not downloaded_filename or not temp_path:
                     # The row already exists and is fully wired up — what is
                     # missing is only the file. Record that the attempt was
@@ -5794,14 +5387,18 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                     logger.warning("Could not find 3MF file for print: %s", filename or subtask_name)
                     archive_id = archive.id
                     await ArchiveService(db).mark_3mf_unavailable(
-                        archive_id, reason=last_download_failure_reason(printer.id)
+                        archive_id, reason=last_download_failure_reason(printer.id), expected_identity=archive_identity
                     )
                     archive = await db.get(PrintArchive, archive_id)
                 else:
                     service = ArchiveService(db)
                     archive_id = archive.id
                     attached = await service.attach_3mf_to_archive(
-                        archive_id, temp_path, downloaded_filename, received_name=downloaded_filename
+                        archive_id,
+                        temp_path,
+                        downloaded_filename,
+                        received_name=downloaded_filename,
+                        expected_identity=archive.recovery_identity,
                     )
                     if attached:
                         logger.info(
@@ -5816,7 +5413,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                         # spool outranks those — the same order the dispatch
                         # path applies them in.
                         await apply_loaded_spool_colors(
-                            db, archive, printer_id, _get_start_ams_mapping(data, archive.id)
+                            db, archive, printer_id, _get_start_ams_mapping(data, archive.id, archive.recovery_identity)
                         )
                         await db.commit()
                         _notify_print_file_analysis_source_ready(printer_id, archive)
@@ -5884,7 +5481,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                         # Keep the scalar ID, then reload before *any* archive
                         # access (including logging) to avoid MissingGreenlet.
                         logger.warning("Failed to attach 3MF %s to archive %s", downloaded_filename, archive_id)
-                        await service.mark_3mf_unavailable(archive_id)
+                        await service.mark_3mf_unavailable(archive_id, expected_identity=archive_identity)
                         archive = await db.get(PrintArchive, archive_id)
             finally:
                 if temp_path and temp_path.exists():
@@ -5902,7 +5499,7 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 archive.file_path,
                 db,
                 printer_manager,
-                ams_mapping=_get_start_ams_mapping(data, archive.id),
+                ams_mapping=_get_start_ams_mapping(data, archive.id, archive.recovery_identity),
                 plate_id=archive.plate_index,
             )
         except Exception as e:
@@ -5948,7 +5545,12 @@ def _pop_timelapse_baseline(printer_id: int) -> tuple[set[str] | None, bool]:
 
 
 async def _scan_for_timelapse_with_retries(
-    archive_id: int, baseline_names: set[str] | None = None, *, baseline_trusted: bool = True
+    archive_id: int,
+    baseline_names: set[str] | None = None,
+    *,
+    baseline_trusted: bool = True,
+    expected_identity: str | None = None,
+    expected_epoch: int | None = None,
 ):
     """
     Scan for timelapse with retries using a snapshot-diff approach.
@@ -5968,6 +5570,11 @@ async def _scan_for_timelapse_with_retries(
     not answer; several new recordings are then left for Scan for timelapse
     instead of the first being taken (audit D6 part 4).
     """
+    from backend.app.services import queue_sources
+
+    expected_epoch = queue_sources.current_epoch() if expected_epoch is None else expected_epoch
+    if queue_sources.current_epoch() != expected_epoch:
+        return
     logger = logging.getLogger(__name__)
 
     # --- Phase 1: Take baseline snapshot of existing timelapse files ---
@@ -5978,9 +5585,14 @@ async def _scan_for_timelapse_with_retries(
             service = ArchiveService(db)
             archive = await service.get_archive(archive_id)
 
-            if not archive:
+            if (
+                queue_sources.current_epoch() != expected_epoch
+                or not archive
+                or (expected_identity is not None and archive.recovery_identity != expected_identity)
+            ):
                 logger.warning("[TIMELAPSE] Archive %s not found, aborting", archive_id)
                 return
+            expected_identity = archive.recovery_identity
             if archive.timelapse_path:
                 logger.info("[TIMELAPSE] Archive %s already has timelapse attached", archive_id)
                 return
@@ -6051,7 +5663,11 @@ async def _scan_for_timelapse_with_retries(
             async with async_session() as db:
                 archive = await ArchiveService(db).get_archive(archive_id)
 
-                if not archive:
+                if (
+                    queue_sources.current_epoch() != expected_epoch
+                    or not archive
+                    or (expected_identity is not None and archive.recovery_identity != expected_identity)
+                ):
                     logger.warning("[TIMELAPSE] Archive %s not found, stopping retries", archive_id)
                     return
                 if archive.timelapse_path:
@@ -6098,7 +5714,13 @@ async def _scan_for_timelapse_with_retries(
                 if timelapse_data:
                     # Write phase: attach in a fresh short-lived session.
                     async with async_session() as db:
-                        success = await ArchiveService(db).attach_timelapse(archive_id, timelapse_data, file_name)
+                        success = await ArchiveService(db).attach_timelapse(
+                            archive_id,
+                            timelapse_data,
+                            file_name,
+                            expected_identity=expected_identity,
+                            expected_epoch=expected_epoch,
+                        )
                     if success:
                         logger.info("[TIMELAPSE] Successfully attached timelapse to archive %s", archive_id)
                         # Opt-in tidy-up, and only now: "we have a copy" is the
@@ -6125,7 +5747,12 @@ async def _scan_for_timelapse_with_retries(
             # Read phase: short session, released before the FTP work (#2572).
             async with async_session() as db:
                 archive = await ArchiveService(db).get_archive(archive_id)
-                if not archive or archive.timelapse_path:
+                if (
+                    queue_sources.current_epoch() != expected_epoch
+                    or not archive
+                    or archive.recovery_identity != expected_identity
+                    or archive.timelapse_path
+                ):
                     return
 
                 result = await db.execute(select(Printer).where(Printer.id == archive.printer_id))
@@ -6145,7 +5772,13 @@ async def _scan_for_timelapse_with_retries(
                     if timelapse_data:
                         # Write phase: attach in a fresh short-lived session.
                         async with async_session() as db:
-                            success = await ArchiveService(db).attach_timelapse(archive_id, timelapse_data, fname)
+                            success = await ArchiveService(db).attach_timelapse(
+                                archive_id,
+                                timelapse_data,
+                                fname,
+                                expected_identity=expected_identity,
+                                expected_epoch=expected_epoch,
+                            )
                         if success:
                             logger.info("[TIMELAPSE] Name-match fallback attached timelapse to archive %s", archive_id)
                             await remove_recording_after_attach(printer, remote_path)
@@ -6169,6 +5802,7 @@ async def _capture_finish_photo_from_timelapse(
     archive_id: int,
     archive_dir: Path,
     rotation: int = 0,
+    expected_identity: str | None = None,
 ) -> str | None:
     """Wait for the per-print timelapse to land on the archive and extract its
     last frame as the finish photo (#1397).
@@ -6199,6 +5833,9 @@ async def _capture_finish_photo_from_timelapse(
         async with async_session() as db:
             result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
             archive = result.scalar_one_or_none()
+            if archive is None or (expected_identity is not None and archive.recovery_identity != expected_identity):
+                return None
+            expected_identity = archive.recovery_identity
             timelapse_relpath = archive.timelapse_path if archive else None
 
         if timelapse_relpath:
@@ -6215,6 +5852,10 @@ async def _capture_finish_photo_from_timelapse(
                     # VIDEO is left alone deliberately: it is the printer's own
                     # file, and rotating it would mean re-encoding it (#2708).
                     await apply_camera_rotation_to_file(output_path, rotation, logger)
+                    async with async_session() as db:
+                        current = await db.get(PrintArchive, archive_id)
+                        if current is None or current.recovery_identity != expected_identity:
+                            return None
                     logger.info(
                         "[PHOTO-BG] Extracted finish photo from timelapse %s for archive %s",
                         video_path.name,
@@ -6541,6 +6182,7 @@ class _LiveArchiveResolution:
     archive_id: int | None
     plate_index: int | None
     reason: str
+    archive_identity: str | None = None
 
 
 async def _live_archive_for_running_print(printer_id: int, data: dict) -> _LiveArchiveResolution:
@@ -6566,25 +6208,11 @@ async def _live_archive_for_running_print(printer_id: int, data: dict) -> _LiveA
                 bound_archive is not None
                 and bound_archive.printer_id == printer_id
                 and bound_archive.status == "printing"
+                and (bound.archive_identity is None or bound_archive.recovery_identity == bound.archive_identity)
             ):
-                return _LiveArchiveResolution(bound_archive.id, bound_archive.plate_index, "runtime_binding")
-
-        if subtask_id:
-            exact = (
-                (
-                    await db.execute(
-                        select(_PA)
-                        .where(_PA.printer_id == printer_id, _PA.status == "printing", _PA.subtask_id == subtask_id)
-                        .order_by(_PA.id.desc())
-                    )
+                return _LiveArchiveResolution(
+                    bound_archive.id, bound_archive.plate_index, "runtime_binding", bound_archive.recovery_identity
                 )
-                .scalars()
-                .all()
-            )
-            if len(exact) == 1:
-                return _LiveArchiveResolution(exact[0].id, exact[0].plate_index, "subtask_id")
-            if len(exact) > 1:
-                return _LiveArchiveResolution(None, None, "ambiguous_subtask_id")
 
         candidates = (
             (
@@ -6595,9 +6223,29 @@ async def _live_archive_for_running_print(printer_id: int, data: dict) -> _LiveA
             .scalars()
             .all()
         )
-    matching = [archive for archive in candidates if not subtask or _name_matches_subtask(archive, subtask)]
+    from backend.app.services.print_execution import ExecutionChanged, durable_id
+
+    known = {}
+    for archive in candidates:
+        try:
+            known[archive.id] = durable_id(archive)
+        except ExecutionChanged:
+            return _LiveArchiveResolution(None, None, "ambiguous_run_identity")
+    exact = [a for a in candidates if subtask_id and known[a.id] == subtask_id]
+    if len(exact) == 1:
+        return _LiveArchiveResolution(exact[0].id, exact[0].plate_index, "subtask_id", exact[0].recovery_identity)
+    if len(exact) > 1:
+        return _LiveArchiveResolution(None, None, "ambiguous_subtask_id")
+    matching = [
+        a
+        for a in candidates
+        if not (subtask_id and known[a.id] and subtask_id != known[a.id])
+        and (not subtask or _name_matches_subtask(a, subtask))
+    ]
     if len(matching) == 1:
-        return _LiveArchiveResolution(matching[0].id, matching[0].plate_index, "unambiguous_name")
+        return _LiveArchiveResolution(
+            matching[0].id, matching[0].plate_index, "unambiguous_name", matching[0].recovery_identity
+        )
     if len(matching) > 1:
         return _LiveArchiveResolution(None, None, "ambiguous_name")
     return _LiveArchiveResolution(None, None, "no_live_archive")
@@ -6664,32 +6312,8 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
         if not print_name:
             print_name = "Unknown Print"
 
-        # ⚠️ ``_live_archive_for_running_print`` inspects only the 5 newest
-        # ``printing`` rows on the printer, so its miss is not proof that no row
-        # exists — and a miss HERE cuts a second archive for a print BamDude is
-        # already tracking, where before it cost only a skipped queue claim.
-        # ``_active_prints`` is the same guard ``on_print_start`` keeps at the top
-        # of its own handler, and it is what survives a lookup window too small.
-        tracked_keys = [(printer_id, filename)] if filename else []
-        if subtask_name:
-            tracked_keys += [(printer_id, subtask_name), (printer_id, f"{subtask_name}.3mf")]
-        # ⚠️ The fourth form is the row's OWN ``filename`` — what the adoption
-        # registers when the printer reported none (``f"{print_name}.3mf"``). A
-        # printer that names the job only in ``subtask_name``, suffix included
-        # (``X.gcode.3mf``), gets a row called ``X.3mf``, and none of the three
-        # forms above is that string: the guard would miss the row it wrote
-        # itself and adopt the same print twice.
-        tracked_keys.append((printer_id, f"{print_name}.3mf"))
-        for key in tracked_keys:
-            tracked = _active_prints.get(key)
-            if tracked:
-                logger.info(
-                    "[ADOPT] Printer %s is already tracking archive %s via %r — not adopting again",
-                    printer_id,
-                    tracked,
-                    key,
-                )
-                return None
+        # Filename aliases are display/navigation aids, never an execution proof.
+        # decide_start rechecks all live candidates before the first INSERT.
 
         # From the live state, exactly as the fallback row gets it — the attach
         # parser reads this column back to decide which plate to describe.
@@ -6726,7 +6350,9 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
                 queue_id=await _default_queue_id_for_printer(db, printer_id),
                 extra_data={
                     "original_subtask": subtask_name,
-                    "_print_data": data,
+                    "_print_data": {
+                        k: v for k, v in data.items() if k not in {"_print_observation", "_execution_decision"}
+                    },
                     "recovered_start": {
                         "observed_at": datetime.now(timezone.utc).isoformat(),
                         "remaining_seconds": data.get("remaining_time") or None,
@@ -6747,8 +6373,18 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
                 # Deleted during the awaits above: the row found by this id is the next record's.
                 logger.info("[ADOPT] Printer %s was deleted while adopting -- nothing adopted", printer_id)
                 return None
-            db.add(archive)
-            await db.commit()
+            from backend.app.services.print_execution import decide_start, publish_start
+
+            decision = await decide_start(db, printer_id, data, catch_up=True)
+            if decision.current_id is not None:
+                return None
+            await publish_start(
+                db,
+                archive,
+                decision,
+                options=_printer_reported_options(data, None, live_plate_id),
+                still_current=lambda: printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life")),
+            )
             await db.refresh(archive)
             archive_id = archive.id
             _bind_print_file_analysis_context(printer_id, archive)
@@ -6759,23 +6395,28 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
                 print_name,
             )
 
-            await apply_loaded_spool_colors(db, archive, printer_id, _get_start_ams_mapping(data, archive_id))
+            await apply_loaded_spool_colors(
+                db, archive, printer_id, _get_start_ams_mapping(data, archive_id, archive.recovery_identity)
+            )
             await db.commit()
 
             # ``on_print_complete`` finds the row through these, and they are
             # also what stops a reconnect mid-download from adopting twice.
-            _active_prints[(printer_id, archive.filename)] = archive_id
+            _remember_active_print((printer_id, archive.filename), archive)
             if filename:
-                _active_prints[(printer_id, filename)] = archive_id
+                _remember_active_print((printer_id, filename), archive)
             if subtask_name:
-                _active_prints[(printer_id, f"{subtask_name}.3mf")] = archive_id
-                _active_prints[(printer_id, subtask_name)] = archive_id
+                _remember_active_print((printer_id, f"{subtask_name}.3mf"), archive)
+                _remember_active_print((printer_id, subtask_name), archive)
 
-            await mark_queue_printing_for_printer(
+            claim_result = await mark_queue_printing_for_printer(
                 printer_id,
                 archive_id=archive_id,
-                options=_printer_reported_options(data, archive_id, live_plate_id),
+                expected_identity=archive.recovery_identity,
+                options=_printer_reported_options(data, archive_id, live_plate_id, archive.recovery_identity),
             )
+            if not claim_result:
+                return
             await maybe_register_external_stagger(printer_id)
             await _record_energy_start(archive, printer_id, db, context="recovered-start")
 
@@ -6824,7 +6465,7 @@ async def _adopt_running_print(printer_id: int, data: dict, logger) -> int | Non
         # Never inline: a P1S serves a 22 MB file at 43 KB/s while printing, and
         # this is the connect path.
         spawn_background_task(
-            _download_for_adopted_print(printer_id, archive_id, logger),
+            _download_for_adopted_print(printer_id, archive_id, logger, expected_identity=archive.recovery_identity),
             name="adopt-running-print-download",
         )
         return archive_id
@@ -6864,13 +6505,8 @@ async def _store_spoolman_for_adopted_print(printer_id: int, archive, db, ams_ma
         logger.warning("[SPOOLMAN] Failed to store tracking data for adopted archive %s: %s", archive.id, e)
 
 
-async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) -> None:
-    """Fetch the adopted print's 3MF and attach it — or discover, by content
-    hash, that this print already had a row (spec 2026-09-12 §3.4). The hash
-    is checked BEFORE the attach: ``_discard_provisional_archive`` may only
-    delete a row with nothing on disk. Holds the retry service's per-archive
-    claim so a reconnect mid-download does not fetch the same file twice.
-    """
+async def _download_for_adopted_print(printer_id: int, archive_id: int, logger, *, expected_identity=None) -> None:
+    """Attach recovered bytes to this incarnation; execution is decided before download."""
     from backend.app.models.archive import PrintArchive
     from backend.app.models.printer import Printer
     from backend.app.services.archive_download import last_download_failure_reason, try_download_3mf
@@ -6880,11 +6516,16 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
         async with archive_download_retry.claim(archive_id):
             async with async_session() as db:
                 archive = await db.get(PrintArchive, archive_id)
-                if archive is None or archive.file_path:
+                if (
+                    archive is None
+                    or archive.file_path
+                    or (expected_identity is not None and archive.recovery_identity != expected_identity)
+                ):
                     return
                 printer = await db.get(Printer, printer_id)
                 if printer is None:
                     return
+                expected_identity = archive.recovery_identity
                 meta = archive.extra_data if isinstance(archive.extra_data, dict) else {}
                 print_data = meta.get("_print_data") or {}
                 subtask_name = print_data.get("subtask_name") or meta.get("original_subtask")
@@ -6892,7 +6533,7 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                 # Read here, not in the attach branch below: every outcome of the
                 # download needs it for the tracking row, and it comes from the
                 # row's own record of the print, never from what is loaded now.
-                ams_mapping = _get_start_ams_mapping(print_data, archive_id)
+                ams_mapping = _get_start_ams_mapping(print_data, archive_id, expected_identity)
 
             result = await try_download_3mf(printer, subtask_name, filename, app_settings.archive_dir / "temp")
             if result is None:
@@ -6901,7 +6542,7 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
                 logger.warning("[ADOPT] No 3MF on printer %s for adopted archive %s yet", printer_id, archive_id)
                 async with async_session() as db:
                     archive = await db.get(PrintArchive, archive_id)
-                    if archive is not None:
+                    if archive is not None and archive.recovery_identity == expected_identity:
                         if not archive.file_path:
                             extra = {**(archive.extra_data or {}), "no_3mf_available": True}
                             reason = last_download_failure_reason(printer.id)
@@ -6918,50 +6559,24 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger) 
 
             temp_path, downloaded_filename = result
             try:
-                temp_hash = ArchiveService.compute_file_hash(temp_path)
                 async with async_session() as db:
                     archive = await db.get(PrintArchive, archive_id)
-                    if archive is None or archive.file_path:
-                        return
-                    twin = await _find_live_hash_twin(
-                        db,
-                        printer_id,
-                        exclude_id=archive_id,
-                        content_hash=temp_hash,
-                        plate_index=archive.plate_index,
-                    )
-                    if twin is not None:
-                        logger.info(
-                            "[ADOPT] Printer %s already had archive %s for these bytes — dropping provisional %s",
-                            printer_id,
-                            twin.id,
-                            archive_id,
-                        )
-                        # ⚠️ BEFORE the discard: the provisional row's plug
-                        # reading dies with it, and the twin — created before
-                        # BamDude could take one — would be left with no
-                        # baseline at all, so the print's energy would be lost
-                        # rather than merely approximate. Never re-read a twin
-                        # that has one: that moves the baseline forward and
-                        # silently drops everything drawn before now.
-                        if twin.energy_start_kwh is None:
-                            await _record_energy_start(twin, printer_id, db, context="hash-adoption")
-                        # Commits on its own; it also clears our _active_prints
-                        # keys by value and re-points the queue row.
-                        await _discard_provisional_archive(db, archive, logger, adopted_archive_id=twin.id)
-                        await refresh_archive_parts(twin.id)
-                        _active_prints[(printer_id, twin.filename)] = twin.id
-                        if subtask_name:
-                            _active_prints[(printer_id, f"{subtask_name}.3mf")] = twin.id
-                            _active_prints[(printer_id, subtask_name)] = twin.id
-                        _bind_print_file_analysis_context(printer_id, twin)
+                    if (
+                        archive is None
+                        or archive.file_path
+                        or (expected_identity is not None and archive.recovery_identity != expected_identity)
+                    ):
                         return
                     service = ArchiveService(db)
                     ok = await service.attach_3mf_to_archive(
-                        archive_id, temp_path, downloaded_filename, received_name=downloaded_filename
+                        archive_id,
+                        temp_path,
+                        downloaded_filename,
+                        received_name=downloaded_filename,
+                        expected_identity=expected_identity,
                     )
                     if not ok:
-                        await service.mark_3mf_unavailable(archive_id)
+                        await service.mark_3mf_unavailable(archive_id, expected_identity=expected_identity)
                     refreshed = await db.get(PrintArchive, archive_id)
                     if ok:
                         logger.info("[ADOPT] Attached %s to adopted archive %s", downloaded_filename, archive_id)
@@ -7025,6 +6640,8 @@ async def on_print_running_observed(printer_id: int, data: dict):
     COMPLETE, so a baseline captured any time during the print is still
     pre-upload.
     """
+    if not printer_manager.accepts_client_callback_generation(printer_id, data.get("_bamdude_client_generation")):
+        return
     logger = logging.getLogger(__name__)
     if not printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life")):
         logger.warning("Ignoring a running print observed by a deleted printer record %s", printer_id)
@@ -7067,20 +6684,48 @@ async def on_print_running_observed(printer_id: int, data: dict):
             # itself, and the plate-gate release keys off the printer.
             await _adopt_running_print(printer_id, data, logger)
         else:
-            # The same authoritative archive binding serves a reconnect and a
-            # start observed in this process.  Bind before later queue work so
-            # a terminal delta cannot re-discover a repeated filename.
+            from backend.app.services.print_execution import decide_start, publish_start
+
+            def recovery_current():
+                client = printer_manager.get_client(printer_id)
+                generation = data.get("_journal_generation")
+                return (
+                    printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life"))
+                    and printer_manager.accepts_client_callback_generation(
+                        printer_id, data.get("_bamdude_client_generation")
+                    )
+                    and (generation is None or (client is not None and client.journal_generation() == generation))
+                )
+
             async with async_session() as db:
                 from backend.app.models.archive import PrintArchive
 
                 archive = await db.get(PrintArchive, live.archive_id)
-                if archive is not None and archive.status == "printing":
-                    _bind_print_file_analysis_context(printer_id, archive)
-            await mark_queue_printing_for_printer(
+                if (
+                    archive is None
+                    or archive.status != "printing"
+                    or (live.archive_identity is not None and archive.recovery_identity != live.archive_identity)
+                ):
+                    return
+                decision = await decide_start(db, printer_id, data, catch_up=True)
+                if decision.current_id != archive.id:
+                    return
+                if decision.old:
+                    await publish_start(db, archive, decision, still_current=recovery_current)
+            claim_result = await mark_queue_printing_for_printer(
                 printer_id,
                 archive_id=live.archive_id,
-                options=_printer_reported_options(data, live.archive_id, live.plate_index),
+                expected_identity=live.archive_identity,
+                options=_printer_reported_options(data, live.archive_id, live.plate_index, live.archive_identity),
             )
+            if not claim_result or not recovery_current():
+                return
+            # A typed unresolved claim never acquires an in-memory run binding.
+            async with async_session() as db:
+                archive = await db.get(PrintArchive, live.archive_id)
+                if archive is None or archive.recovery_identity != claim_result.archive_identity:
+                    return
+                _bind_print_file_analysis_context(printer_id, archive)
         if printer_manager.is_awaiting_plate_clear(printer_id):
             from backend.app.services.plate_hold import answer_by_clearing
 
@@ -7512,7 +7157,13 @@ async def _accept_bound_terminal_run(printer_id: int, binding, data: dict | None
         # acquires SQLite's writer before the read and PG's advisory+row locks.
         archive = await load_active_archive_for_write(db, binding.archive_id)
         queue_item, unresolved = await _bound_printing_item(db, printer_id, binding)
-        if archive is None or queue_item is None or archive.status != "printing":
+        if (
+            archive is None
+            or queue_item is None
+            or archive.status != "printing"
+            or (binding.archive_identity is not None and binding.archive_identity != archive.recovery_identity)
+            or "noncurrent_execution" in (archive.extra_data or {})
+        ):
             logging.getLogger(__name__).warning(
                 "Bound terminal archive %s on printer %s is unresolved (archive=%s ambiguous=%s); preserving current run",
                 binding.archive_id,
@@ -7591,7 +7242,22 @@ async def _completion_conflicts_with_active_queue(printer_id: int, data: dict) -
     async with async_session() as db:
         rows = await _printing_rows_for_printer(db, printer_id)
         if not rows:
-            return False
+            from backend.app.models.archive import PrintArchive
+            from backend.app.services.print_observation import run_id
+
+            observed_id = run_id(data.get("subtask_id"))
+            return bool(
+                observed_id
+                and await db.scalar(
+                    select(PrintArchive.id)
+                    .where(
+                        PrintArchive.printer_id == printer_id,
+                        PrintArchive.subtask_id == observed_id,
+                        PrintArchive.extra_data["noncurrent_execution"].as_string().is_not(None),
+                    )
+                    .limit(1)
+                )
+            )
         matching = [row for row in rows if await _completion_belongs_to_item(db, row, data)]
         if len(matching) == 1:
             from backend.app.models.archive import PrintArchive
@@ -7741,6 +7407,10 @@ async def _on_print_complete_impl(
     """Complete one print; the public wrapper owns final analysis release."""
     import time
 
+    from backend.app.services import queue_sources
+
+    completion_epoch = queue_sources.current_epoch()
+
     logger = logging.getLogger(__name__)
     start_time = time.time()
 
@@ -7846,12 +7516,33 @@ async def _on_print_complete_impl(
     if bound_run is None and await _completion_conflicts_with_active_queue(printer_id, data):
         return
 
+    legacy_archive_id = None
+    terminal_archive_identity = bound_run.archive_identity if bound_run is not None else None
     if bound_run is None:
+        # Resolve once, before effects. Numeric filename aliases cannot select a
+        # reused archive or revive an execution already marked noncurrent.
+        resolved = await _live_archive_for_running_print(printer_id, data)
+        if resolved.reason.startswith("ambiguous"):
+            return
+        if resolved.archive_id is not None:
+            from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+
+            async with async_session() as proof_db, archive_write_scope(proof_db, resolved.archive_id):
+                proved = await load_active_archive_for_write(proof_db, resolved.archive_id)
+                if (
+                    proved is None
+                    or proved.printer_id != printer_id
+                    or proved.status != "printing"
+                    or "noncurrent_execution" in (proved.extra_data or {})
+                ):
+                    return
+                legacy_archive_id, terminal_archive_identity = proved.id, proved.recovery_identity
         if not accept_unbound_completion(printer_manager, effect_token):
             return
 
     accepted_queue_item_id: int | None = None
-    archive_id = bound_run.archive_id if bound_run is not None else None
+    archive_id = bound_run.archive_id if bound_run is not None else legacy_archive_id
+    analysis_completion["archive_identity"] = terminal_archive_identity
 
     if bound_run is None:
         retire_print_start(printer_manager, printer_id, None)
@@ -7866,9 +7557,11 @@ async def _on_print_complete_impl(
     def _owns_printer_effect() -> bool:
         """Re-check terminal ownership immediately before a printer-wide action."""
 
-        return print_effect_is_current(printer_manager, effect_token)
+        return queue_sources.current_epoch() == completion_epoch and print_effect_is_current(
+            printer_manager, effect_token
+        )
 
-    if archive_id is not None:
+    if archive_id is not None and bound_run is not None:
         # Resolve/freeze the exact durable queue row before WS, user cleanup,
         # relay or macros. A missing row never authorizes another row's finish.
         data = _normalise_user_stopped_terminal(printer_id, archive_id, data)
@@ -7974,101 +7667,8 @@ async def _on_print_complete_impl(
             await _record_terminal_effect_stage(archive_id, "finish_macros", "failed")
             logger.warning("print_finished macros failed to schedule: %s", e)
 
-    # Build list of possible keys to try (matching how they were registered in on_print_start)
-    possible_keys = []
-
-    # Try subtask_name variations first (most reliable for matching)
-    if subtask_name:
-        possible_keys.append((printer_id, f"{subtask_name}.3mf"))
-        possible_keys.append((printer_id, f"{subtask_name}.gcode.3mf"))
-        possible_keys.append((printer_id, subtask_name))
-
-    # Try filename variations
-    if filename:
-        # Extract just the filename if it's a path
-        fname = filename.split("/")[-1] if "/" in filename else filename
-
-        if fname.endswith(".3mf"):
-            possible_keys.append((printer_id, fname))
-        elif fname.endswith(".gcode"):
-            base_name = fname.rsplit(".", 1)[0]
-            possible_keys.append((printer_id, f"{base_name}.gcode.3mf"))
-            possible_keys.append((printer_id, f"{base_name}.3mf"))
-            possible_keys.append((printer_id, fname))
-        else:
-            possible_keys.append((printer_id, f"{fname}.gcode.3mf"))
-            possible_keys.append((printer_id, f"{fname}.3mf"))
-            possible_keys.append((printer_id, fname))
-
-        # Also try full path versions
-        if filename.endswith(".3mf"):
-            possible_keys.append((printer_id, filename))
-        elif filename.endswith(".gcode"):
-            base_name = filename.rsplit(".", 1)[0]
-            possible_keys.append((printer_id, f"{base_name}.3mf"))
-            possible_keys.append((printer_id, filename))
-        else:
-            possible_keys.append((printer_id, f"{filename}.3mf"))
-            possible_keys.append((printer_id, filename))
-
-    # Find the archive for this print
-    logger.info("Looking for archive in _active_prints, keys to try: %s...", possible_keys[:5])
-    logger.info("Current _active_prints: %s", list(_active_prints.keys()))
-    if archive_id is None:
-        for key in possible_keys:
-            archive_id = _active_prints.pop(key, None)
-            if archive_id:
-                logger.info("Found archive %s with key %s", archive_id, key)
-                # Also clean up any other keys pointing to this archive
-                keys_to_remove = [k for k, v in _active_prints.items() if v == archive_id]
-                for k in keys_to_remove:
-                    _active_prints.pop(k, None)
-                break
-    else:
-        # The direct binding has already chosen the run.  Aliases are merely
-        # stale recovery aids now; clearing aliases of this exact archive cannot
-        # affect a repeated filename bound to another execution archive.
-        for key in [key for key, value in _active_prints.items() if value == archive_id]:
-            _active_prints.pop(key, None)
-
-    if not archive_id:
-        # Try to find by filename or subtask_name if not tracked (for prints started before app)
-        async with async_session() as db:
-            from backend.app.models.archive import PrintArchive
-
-            # Try matching by subtask_name (stored as print_name) first
-            if subtask_name:
-                result = await db.execute(
-                    select(PrintArchive)
-                    .where(PrintArchive.printer_id == printer_id)
-                    .where(PrintArchive.status == "printing")
-                    .where(
-                        or_(
-                            PrintArchive.print_name.ilike(f"%{subtask_name}%"),
-                            PrintArchive.filename.ilike(f"%{subtask_name}%"),
-                        )
-                    )
-                    .order_by(PrintArchive.created_at.desc())
-                    .limit(1)
-                )
-                archive = result.scalar_one_or_none()
-                if archive:
-                    archive_id = archive.id
-                    logger.info("Found archive %s by subtask_name match: %s", archive_id, subtask_name)
-
-            # Also try by filename
-            if not archive_id and filename:
-                result = await db.execute(
-                    select(PrintArchive)
-                    .where(PrintArchive.printer_id == printer_id)
-                    .where(PrintArchive.filename == filename)
-                    .where(PrintArchive.status == "printing")
-                    .order_by(PrintArchive.created_at.desc())
-                    .limit(1)
-                )
-                archive = result.scalar_one_or_none()
-                if archive:
-                    archive_id = archive.id
+    if archive_id is not None and _owns_printer_effect():
+        _forget_active_print(archive_id, terminal_archive_identity)
 
     # Move the run before any of the lengthy completion side effects below.
     # Otherwise a rapid next start could replace its current context while this
@@ -9567,14 +9167,6 @@ async def _on_print_complete_impl(
             # print-session user AND the archive has no attribution yet,
             # credit the current user. Never overwrite existing attribution.
             _print_user_id = _print_user_info.get("user_id") if _print_user_info else None
-            if _print_user_id is not None:
-                from backend.app.models.archive import PrintArchive as _ArchiveForAttr
-
-                _attr_archive = await db.get(_ArchiveForAttr, archive_id)
-                if _attr_archive is not None and _attr_archive.created_by_id is None:
-                    _attr_archive.created_by_id = _print_user_id
-                    await db.commit()
-
             # Auto-detect failure reason via curated short-code map (see
             # _HMS_FAILURE_REASONS). Module-based heuristics mislabel H2D
             # user-cancels (module 0x0C cancel echo) as "Layer shift".
@@ -9587,7 +9179,8 @@ async def _on_print_complete_impl(
             elif status == "failed" and hms_errors:
                 logger.info("[ARCHIVE] HMS errors present but none matched a known failure-reason short code")
 
-            await service.update_archive_status(
+            await db.commit()  # Release attribution reads before the archive writer.
+            updated = await service.update_archive_status(
                 archive_id,
                 status=status,
                 # ``cancelled`` joins the terminal-status list (#1198) so
@@ -9606,7 +9199,12 @@ async def _on_print_complete_impl(
                     datetime.now(timezone.utc) if status in ("completed", "failed", "aborted", "cancelled") else None
                 ),
                 failure_reason=failure_reason,
+                expected_identity=terminal_archive_identity,
+                expected_epoch=completion_epoch,
+                created_by_id=_print_user_id,
             )
+            if not updated:
+                return
             logger.info(
                 "[ARCHIVE] Archive %s status updated to %s, failure_reason=%s", archive_id, status, failure_reason
             )
@@ -9649,7 +9247,9 @@ async def _on_print_complete_impl(
     stored_ams_mapping = data.get("ams_mapping")
     # Fallback to _print_ams_mappings for queue/reprint (set before print starts)
     if not stored_ams_mapping and archive_id:
-        stored_ams_mapping = _print_ams_mappings.pop(archive_id, None)
+        if _print_ams_mapping_identities.get(archive_id) == terminal_archive_identity:
+            stored_ams_mapping = _print_ams_mappings.pop(archive_id, None)
+            _print_ams_mapping_identities.pop(archive_id, None)
     try:
         async with async_session() as db:
             from backend.app.api.routes.settings import get_setting
@@ -9666,6 +9266,8 @@ async def _on_print_complete_impl(
                     db,
                     archive_id=archive_id,
                     ams_mapping=stored_ams_mapping,
+                    expected_identity=terminal_archive_identity,
+                    expected_epoch=completion_epoch,
                 )
                 if usage_results:
                     await ws_manager.broadcast(
@@ -9729,7 +9331,14 @@ async def _on_print_complete_impl(
         if not _owns_printer_effect():
             logger.info("[ENERGY-BG] skipping stale completion for archive %s", archive_id)
             return
-        await _record_print_energy(archive_id, printer_id, may_read=_owns_printer_effect, ended_at=energy_ended_at)
+        await _record_print_energy(
+            archive_id,
+            printer_id,
+            may_read=_owns_printer_effect,
+            ended_at=energy_ended_at,
+            expected_identity=terminal_archive_identity,
+            expected_epoch=completion_epoch,
+        )
 
     async def _background_finish_photo() -> str | None:
         """Capture finish photo in background. Returns photo filename if captured."""
@@ -9765,7 +9374,7 @@ async def _on_print_complete_impl(
                     await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
                 ).scalar_one_or_none()
 
-            if not printer or not archive:
+            if not printer or not archive or archive.recovery_identity != terminal_archive_identity:
                 await _record_terminal_effect_stage(archive_id, "finish_photo", "skipped")
                 return None
 
@@ -9800,6 +9409,7 @@ async def _on_print_complete_impl(
                 photo_filename = await _capture_finish_photo_from_timelapse(
                     archive_id=archive_id,
                     archive_dir=archive_dir,
+                    expected_identity=terminal_archive_identity,
                     rotation=getattr(printer, "camera_rotation", 0) or 0,
                 )
 
@@ -9944,12 +9554,20 @@ async def _on_print_complete_impl(
             if photo_filename:
                 async with async_session() as db:
                     from backend.app.models.archive import PrintArchive
+                    from backend.app.services.archive_write_scope import (
+                        archive_write_scope,
+                        load_active_archive_for_write,
+                    )
 
-                    arch = await db.get(PrintArchive, archive_id)
-                    if arch is not None:
-                        photos = arch.photos or []
-                        photos.append(photo_filename)
-                        arch.photos = photos
+                    async with archive_write_scope(db, archive_id):
+                        arch = await load_active_archive_for_write(db, archive_id)
+                        if (
+                            arch is None
+                            or arch.recovery_identity != terminal_archive_identity
+                            or not _owns_printer_effect()
+                        ):
+                            return None
+                        arch.photos = [*(arch.photos or []), photo_filename]
                         await db.commit()
                 logger.info("[PHOTO-BG] Saved: %s", photo_filename)
                 await _record_terminal_effect_stage(archive_id, "finish_photo", "finished")
@@ -10215,7 +9833,13 @@ async def _on_print_complete_impl(
                     async with async_session() as db:
                         service = ArchiveService(db)
                         timelapse_data = await asyncio.to_thread(timelapse_path.read_bytes)
-                        await service.attach_timelapse(archive_id, timelapse_data, "layer_timelapse.mp4")
+                        await service.attach_timelapse(
+                            archive_id,
+                            timelapse_data,
+                            "layer_timelapse.mp4",
+                            expected_identity=terminal_archive_identity,
+                            expected_epoch=completion_epoch,
+                        )
                         # Clean up the temp file
                         await asyncio.to_thread(timelapse_path.unlink, missing_ok=True)
                         logger.info("[LAYER-TL] Layer timelapse attached successfully")
@@ -10247,7 +9871,13 @@ async def _on_print_complete_impl(
         # The printer needs time to encode the video after print completion
         baseline, baseline_trusted = _pop_timelapse_baseline(printer_id)
         spawn_background_task(
-            _scan_for_timelapse_with_retries(archive_id, baseline, baseline_trusted=baseline_trusted),
+            _scan_for_timelapse_with_retries(
+                archive_id,
+                baseline,
+                baseline_trusted=baseline_trusted,
+                expected_identity=terminal_archive_identity,
+                expected_epoch=completion_epoch,
+            ),
             name=f"timelapse-scan-{archive_id}",
         )
         log_timing("Timelapse scan scheduled")
@@ -10426,16 +10056,24 @@ async def on_print_complete(printer_id: int, data: dict) -> None:
                 from backend.app.services.print_file_analysis import discard_print_file_analysis
                 from backend.app.services.print_run_binding import discard_print_run
 
-                discard_print_file_analysis(printer_manager, printer_id, archive_id)
+                discard_print_file_analysis(
+                    printer_manager,
+                    printer_id,
+                    archive_id,
+                    expected_identity=analysis_completion.get("archive_identity"),
+                )
                 discard_print_run(
-                    printer_manager, printer_id, archive_id, sequence=analysis_completion.get("run_sequence")
+                    printer_manager,
+                    printer_id,
+                    archive_id,
+                    sequence=analysis_completion.get("run_sequence"),
+                    expected_identity=analysis_completion.get("archive_identity"),
                 )
                 # Aliases are recovery aids, never a second lifecycle owner.
                 # A failure after bound acceptance used to leave A's names in
                 # RAM until a later callback happened to remove them; exact
                 # archive cleanup cannot touch a same-named B.
-                for key in [key for key, value in _active_prints.items() if value == archive_id]:
-                    _active_prints.pop(key, None)
+                _forget_active_print(archive_id, analysis_completion.get("archive_identity"))
 
             scope.close(release_completion)
 
@@ -11118,6 +10756,7 @@ def _evict_stale_expected_prints() -> None:
     for archive_id in evicted_archive_ids:
         if archive_id not in live_archive_ids:
             _print_ams_mappings.pop(archive_id, None)
+            _print_ams_mapping_identities.pop(archive_id, None)
 
     logging.getLogger(__name__).info(
         "Evicted %d stale expected-print entries (TTL=%ds)", len(stale_keys), _EXPECTED_PRINT_TTL_SECONDS

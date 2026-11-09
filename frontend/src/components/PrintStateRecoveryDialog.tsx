@@ -43,6 +43,8 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
   const { t } = useTranslation();
   const [preview, setPreview] = useState<PrintStatePreview | null>(null);
   const [completed, setCompleted] = useState(false);
+  const [idle, setIdle] = useState(false);
+  const [manualSwap, setManualSwap] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -51,6 +53,8 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
   const estimate = action === 'fill_estimated_end_and_align';
   const close = action === 'close_interrupted_attempt';
   const runtime = action === 'clear_terminal_runtime_context';
+  const group = action === 'cancel_terminal_claims';
+  const settlement = action === 'settle_swap_by_operator';
   const shown = (key: string, value: unknown): string => {
     if (value === null || value === undefined) return '—';
     if ((key === 'error_code' || key === 'failure_reason') && typeof value === 'string') return failureText(t, value, null);
@@ -66,8 +70,8 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
     setBusy(true); setError(null); setPreview(null); setConfirmed(false);
     try {
       const answer = await api.previewPrintState(issue.printer_id, {
-        kind: issue.kind as 'item' | 'header' | 'runtime', target_id: issue.target_id, action,
-        confirmed_completed: completed, note,
+        kind: issue.kind as 'item' | 'header' | 'runtime' | 'archive', target_id: issue.target_id, action,
+        confirmed_completed: completed, confirmed_idle: idle, confirmed_manual_swap: manualSwap, note,
       });
       setPreview(answer);
     } catch (e) {
@@ -105,7 +109,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       {!result && (preview
         ? <Button variant={action === 'delete_stale_item' ? 'danger' : 'primary'} onClick={() => void apply()}
           disabled={busy || !confirmed}>{t('printStateRecovery.apply')}</Button>
-        : <Button onClick={() => void prepare()} disabled={busy || (estimate && !completed)}>{t('printStateRecovery.preview')}</Button>)}
+        : <Button onClick={() => void prepare()} disabled={busy || (estimate && !completed) || ((group || settlement) && !idle) || (settlement && !manualSwap)}>{t('printStateRecovery.preview')}</Button>)}
     </>}>
     <div className="p-4 space-y-4 text-sm">
       <p className="break-words">{issue.printer_name} · {t('printStateRecovery.target', {
@@ -120,6 +124,8 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       </div>}
       {result && <RuntimeOutcome result={result} />}
       {!preview && !result && <>
+        {(group || settlement) && <label className="flex gap-2 items-start"><input type="checkbox" checked={idle} onChange={e => setIdle(e.target.checked)} /><span>{t('printStateRecovery.idleAssertion')}</span></label>}
+        {settlement && <label className="flex gap-2 items-start"><input type="checkbox" checked={manualSwap} onChange={e => setManualSwap(e.target.checked)} /><span>{t('printStateRecovery.manualSwapAssertion')}</span></label>}
         {estimate && <label className="flex gap-2 items-start">
           <input type="checkbox" checked={completed} onChange={e => setCompleted(e.target.checked)} />
           <span>{t('printStateRecovery.completedConfirmation')}</span>
@@ -131,6 +137,8 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       </>}
       {preview && !result && <>
         {runtime && <RuntimeRelease preview={preview} />}
+        {group && <div className="overflow-x-auto"><p>{t('printStateRecovery.groupExplanation')}</p><table className="w-full text-left"><thead><tr><th>{t('printStateRecovery.fields.item')}</th><th>{t('printStateRecovery.before')}</th><th>{t('printStateRecovery.after')}</th></tr></thead><tbody>{preview.members?.map(m => <tr key={m.id}><td>#{m.id}</td><td>{t(`printStateRecovery.states.${m.status}`)}</td><td>{t('printStateRecovery.states.cancelled')}</td></tr>)}</tbody></table></div>}
+        {settlement && <><p>{t('printStateRecovery.settlementChange')}</p><p>{t('printStateRecovery.swapModeFact')}: {t(preview.swap_mode_enabled ? 'common.yes' : 'common.no')}</p><p>{t('printStateRecovery.settlementNext')}</p></>}
         {preview.estimate && <p className="text-amber-700 dark:text-amber-300">{t('printStateRecovery.estimatedLabel')}: {' '}
           {formatDateTime(preview.estimate.started_at)} + {preview.estimate.duration_seconds}s → {formatDateTime(preview.estimate.completed_at)}
         </p>}

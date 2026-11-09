@@ -97,6 +97,7 @@ class _Context:
     source: tuple[str, int | None, int, int, int, int] | None
     state: AnalysisState
     lifecycle: LifecycleState
+    archive_identity: str | None = None
     task: asyncio.Task[PrintFileAnalysis] | None = None
     analysis: PrintFileAnalysis | None = None
     error: str | None = None
@@ -363,12 +364,21 @@ def _release_context(
     _retire(context)
 
 
+def _run_archive_identity(manager, archive_id, lifecycle="active"):
+    name = "_print_run_finishing_bindings" if lifecycle == "finishing" else "_print_run_bindings"
+    runs = getattr(manager, name, None)
+    if not isinstance(runs, dict):
+        return None
+    return next((run.archive_identity for run in runs.values() if run.archive_id == archive_id), None)
+
+
 def _new_context(
     printer_manager: PrinterManager,
     archive_id: int,
     source: tuple[str, int | None, int, int, int, int] | None,
     *,
     lifecycle: LifecycleState = "active",
+    expected_identity: str | None = None,
 ) -> _Context:
     """Create a new current-print generation owned by ``PrinterManager``."""
     generation = getattr(printer_manager, "_print_file_analysis_generation", 0) + 1
@@ -379,6 +389,7 @@ def _new_context(
         source=source,
         state="empty" if source is not None else "waiting_source",
         lifecycle=lifecycle,
+        archive_identity=expected_identity or _run_archive_identity(printer_manager, archive_id, lifecycle),
     )
 
 
@@ -408,6 +419,8 @@ def bind_print_file_analysis(
     archive_id: int,
     path: Path | None = None,
     plate_id: int | None = None,
+    *,
+    expected_identity: str | None = None,
 ) -> None:
     """Bind the manager's current-print context to an authoritative archive.
 
@@ -420,12 +433,16 @@ def bind_print_file_analysis(
     source = _source(path, plate_id) if path is not None else None
     contexts = _contexts(printer_manager)
     current = contexts.get(printer_id)
-    if current is not None and current.archive_id == archive_id:
+    if (
+        current is not None
+        and current.archive_id == archive_id
+        and current.archive_identity == (expected_identity or _run_archive_identity(printer_manager, archive_id))
+    ):
         if source is None or current.source == source:
             return
     if current is not None:
         _release_context(printer_manager, printer_id, current, reason="replaced_by_new_archive")
-    contexts[printer_id] = _new_context(printer_manager, archive_id, source)
+    contexts[printer_id] = _new_context(printer_manager, archive_id, source, expected_identity=expected_identity)
 
 
 def notify_print_file_analysis_source_ready(
@@ -434,6 +451,8 @@ def notify_print_file_analysis_source_ready(
     archive_id: int,
     path: Path,
     plate_id: int | None,
+    *,
+    expected_identity: str | None = None,
 ) -> bool:
     """Attach a committed archive file to the already-bound current print.
 
@@ -446,11 +465,16 @@ def notify_print_file_analysis_source_ready(
         return False
     contexts = _contexts(printer_manager)
     current = contexts.get(printer_id)
-    if current is None or current.archive_id != archive_id:
+    if (
+        current is None
+        or current.archive_id != archive_id
+        or (expected_identity is not None and current.archive_identity != expected_identity)
+        or current.archive_identity != _run_archive_identity(printer_manager, archive_id)
+    ):
         return False
     if current.source != source:
         _release_context(printer_manager, printer_id, current, reason="source_replaced")
-        contexts[printer_id] = _new_context(printer_manager, archive_id, source)
+        contexts[printer_id] = _new_context(printer_manager, archive_id, source, expected_identity=expected_identity)
     elif current.state == "unavailable":
         # A committed attach/retry is authoritative evidence that this source
         # may have changed even when its filesystem descriptor did not.  It
@@ -498,6 +522,8 @@ def begin_historical_print_file_analysis_finishing(
     archive_id: int,
     path: Path,
     plate_id: int | None,
+    *,
+    expected_identity: str | None = None,
 ) -> bool:
     """Lease an isolated completion context for a recovered old archive.
 
@@ -514,19 +540,27 @@ def begin_historical_print_file_analysis_finishing(
     finishing = _finishing_contexts(printer_manager)
     existing = finishing.get(key)
     if existing is not None:
-        if existing.source == source:
+        if existing.source == source and (expected_identity is None or existing.archive_identity == expected_identity):
             return True
         _release_context(printer_manager, printer_id, existing, reason="historical_source_replaced")
-        finishing[key] = _new_context(printer_manager, archive_id, source, lifecycle="finishing")
+        finishing[key] = _new_context(
+            printer_manager, archive_id, source, lifecycle="finishing", expected_identity=expected_identity
+        )
         return True
 
     active = _contexts(printer_manager).get(printer_id)
-    if active is not None and active.archive_id == archive_id:
+    if (
+        active is not None
+        and active.archive_id == archive_id
+        and (expected_identity is None or active.archive_identity == expected_identity)
+    ):
         return begin_print_file_analysis_finishing(printer_manager, printer_id, archive_id)
 
     # An active context for another archive is the normal rapid-next-print
     # case.  It deliberately remains untouched.
-    finishing[key] = _new_context(printer_manager, archive_id, source, lifecycle="finishing")
+    finishing[key] = _new_context(
+        printer_manager, archive_id, source, lifecycle="finishing", expected_identity=expected_identity
+    )
     return True
 
 
@@ -566,12 +600,17 @@ async def get_print_file_analysis(
     plate_id: int | None,
     *,
     timeout: float | None = None,
+    expected_identity: str | None = None,
 ) -> PrintFileAnalysis | None:
     """Return the one analysis for this printer/archive/source revision.
 
     A cancelled or timed-out caller never cancels the shared worker.  A source
     change replaces the context before the old task can publish into it.
     """
+    if expected_identity is not None:
+        for context in [*_contexts(printer_manager).values(), *_finishing_contexts(printer_manager).values()]:
+            if context.archive_id == archive_id and context.archive_identity != expected_identity:
+                return None
     diagnostics = _diagnostics(printer_manager)
     diagnostics.requests += 1
     contexts = _contexts(printer_manager)
@@ -588,7 +627,7 @@ async def get_print_file_analysis(
     elif active is None and source is not None:
         # Recovery safety net for a printing archive whose start bridge was
         # missed.  Never use it to replace an already-known newer print.
-        context = _new_context(printer_manager, archive_id, source)
+        context = _new_context(printer_manager, archive_id, source, expected_identity=expected_identity)
         contexts[printer_id] = context
         registry = contexts
         registry_key = printer_id
@@ -609,7 +648,9 @@ async def get_print_file_analysis(
     if context.source != source:
         lifecycle = context.lifecycle
         _release_context(printer_manager, printer_id, context, reason="source_descriptor_changed")
-        context = _new_context(printer_manager, archive_id, source, lifecycle=lifecycle)
+        context = _new_context(
+            printer_manager, archive_id, source, lifecycle=lifecycle, expected_identity=context.archive_identity
+        )
         registry[registry_key] = context
 
     if context.analysis is not None:
@@ -702,7 +743,13 @@ async def get_print_file_analysis(
         if current_source is not None:
             lifecycle = context.lifecycle
             _release_context(printer_manager, printer_id, context, reason="source_changed_while_parsing")
-            registry[registry_key] = _new_context(printer_manager, archive_id, current_source, lifecycle=lifecycle)
+            registry[registry_key] = _new_context(
+                printer_manager,
+                archive_id,
+                current_source,
+                lifecycle=lifecycle,
+                expected_identity=context.archive_identity,
+            )
         return None
     retained_after_publish = _retained_analysis_bytes(printer_manager) + analysis.retained_bytes
     if retained_after_publish > _MAX_RETAINED_ANALYSIS_BYTES:
@@ -744,14 +791,23 @@ async def get_print_file_analysis(
     return analysis
 
 
-def discard_print_file_analysis(printer_manager: PrinterManager, printer_id: int, archive_id: int) -> None:
+def discard_print_file_analysis(
+    printer_manager: PrinterManager, printer_id: int, archive_id: int, *, expected_identity: str | None = None
+) -> None:
     """Release only the context belonging to this completed archive."""
     key = (printer_id, archive_id)
     finishing = _finishing_contexts(printer_manager)
+    context = finishing.get(key)
+    if context is not None and expected_identity is not None and context.archive_identity != expected_identity:
+        return
     context = finishing.pop(key, None)
     if context is None:
         context = _contexts(printer_manager).get(printer_id)
-        if context is not None and context.archive_id == archive_id:
+        if (
+            context is not None
+            and context.archive_id == archive_id
+            and (expected_identity is None or context.archive_identity == expected_identity)
+        ):
             _contexts(printer_manager).pop(printer_id, None)
         else:
             context = None

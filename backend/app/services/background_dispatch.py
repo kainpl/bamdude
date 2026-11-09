@@ -2958,6 +2958,7 @@ class BackgroundDispatchService:
                     printer_manager,
                     printer_id=job.printer_id,
                     archive_id=archive.id,
+                    archive_identity=archive.recovery_identity,
                     queue_item_id=job.queue_item_id,
                     claim_started_at=job.claim_started_at,
                     expected_submission_id=submission_id,
@@ -2976,6 +2977,7 @@ class BackgroundDispatchService:
                     remote_filename,
                     archive.id,
                     ams_mapping=job.options.get("ams_mapping"),
+                    archive_identity=archive.recovery_identity,
                 )
                 # Withdrawn in the ``finally`` unless the print command actually
                 # goes out — everything between here and ``start_print`` can still
@@ -3925,6 +3927,7 @@ class BackgroundDispatchService:
                     printer_manager,
                     printer_id=job.printer_id,
                     archive_id=archive.id,
+                    archive_identity=archive.recovery_identity,
                     queue_item_id=job.queue_item_id,
                     claim_started_at=job.claim_started_at,
                     expected_submission_id=submission_id,
@@ -3941,6 +3944,7 @@ class BackgroundDispatchService:
                     remote_filename,
                     archive.id,
                     ams_mapping=job.options.get("ams_mapping"),
+                    archive_identity=archive.recovery_identity,
                 )
                 # Withdrawn in the ``finally`` unless the print command actually
                 # goes out — everything between here and ``start_print`` can still

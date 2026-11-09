@@ -72,7 +72,7 @@ import { queueResumePayload } from '../utils/queueStatus';
 import { invalidateQueueViews } from '../utils/queryInvalidation';
 import { usePlateDefects } from '../hooks/usePlateDefects';
 import { keepsOrderOnCopy } from '../utils/workshopRights';
-import { failureText } from '../utils/failureText';
+import { failureText, isStaleClaim } from '../utils/failureText';
 import { PlateDefectsRow } from './PlateDefectsRow';
 import { QueueSourceIndicator } from './QueueSourceIndicator';
 import { usePrinterQueueRows, useQueueSummarySnapshot } from '../hooks/FarmQueueScope';
@@ -1390,7 +1390,7 @@ function PendingItemRow({
                     {t('queueCard.cancelItem')}
                   </button>
                   <button
-                    disabled={!canCreate}
+                    disabled={!canCreate || isStaleClaim(item.error_code)}
                     onClick={() => {
                       setMenuOpen(false);
                       handleClone();
@@ -1439,7 +1439,7 @@ function PendingItemRow({
                         </button>
                       )}
                       <button
-                        disabled={!canCreate}
+                        disabled={!canCreate || isStaleClaim(item.error_code)}
                         onClick={() => {
                           setMenuOpen(false);
                           if (onCloneBatch) onCloneBatch();
@@ -1676,8 +1676,8 @@ function IssuesSection({
       } while (cursor !== undefined);
       if (controller.signal.aborted) return;
       if (action === 'retry') {
-        const failed = rows.filter(item => item.status === 'failed');
-        const cancelled = rows.filter(item => item.status === 'cancelled');
+        const failed = rows.filter(item => item.status === 'failed' && !isStaleClaim(item.error_code));
+        const cancelled = rows.filter(item => item.status === 'cancelled' && !isStaleClaim(item.error_code));
         const ids = [...new Set([...failed, ...cancelled].map(item => item.id))];
         if (!ids.length) showToast(t('queueCard.issues.retryAllNone'), 'info');
         else setConfirmRetryAll({ ids, failed: new Set(failed.map(item => item.id)).size, cancelled: [...new Set(cancelled.map(item => item.id))] });
@@ -1778,7 +1778,7 @@ function IssuesSection({
                 <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => retryMutation.mutate(item.id)}
-                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate}
+                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code)}
                     className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
                     title={t('queueCard.actions.retry')}
                   >
@@ -1809,14 +1809,14 @@ function IssuesSection({
                 />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-white truncate">{name}</p>
-                  {item.error_message && (
-                    <p className="text-[10px] text-bambu-gray truncate">{item.error_message}</p>
+                  {(item.error_message || item.error_code) && (
+                    <p className="text-[10px] text-bambu-gray truncate">{failureText(t, item.error_code, item.error_message)}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => retryMutation.mutate(item.id)}
-                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate}
+                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code)}
                     className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
                     title={t('queueCard.actions.restart')}
                   >

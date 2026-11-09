@@ -1,26 +1,8 @@
-"""Regression for #1807: false "Print Stopped" state corruption on reprint
-after an MQTT reconnect.
+"""A filename cannot rewrite a prior run's durable identity (#1807 follow-up).
 
-BamDude mints a fresh ``subtask_id`` per dispatch. When ``on_print_start``
-adopts a leftover ``status='printing'`` archive by name/hash match, the old
-guard rewrote ``archive.subtask_id`` only when it was empty
-(``... is None``) — so a reprint that adopted the FIRST run's row kept the
-FIRST run's id. On the next MQTT reconnect the reconciler's
-``_subtask_stale`` then compared the stale stored id against the printer's
-live id, saw a mismatch, classified the live print as a ghost-replay
-("uncertain"), and false-closed a RUNNING archive (spurious queue-idle +
-premature awaiting-plate-clear).
-
-Unlike upstream this never fired a literal "Print Stopped" push — our
-reconciler closes without notifying — but the state corruption is the same
-root cause. The fix rewrites ``archive.subtask_id`` whenever the live id
-differs from the stored one (``!= subtask_id``), so an adopted archive
-always tracks the CURRENT run's id. Equal id in ⇒ no rewrite (no-op on
-stable pushes).
-
-These tests drive the real ``on_print_start`` name-match adoption branch
-against the in-memory DB, then verify the downstream reconciler leaves the
-refreshed archive running.
+Positive IDs and prepared dispatch evidence resolve before start admission.
+A DB-only difference without a client boundary is unresolved, preserving the
+old archive until the connect-edge sweep can classify its real outcome.
 """
 
 from __future__ import annotations
@@ -140,7 +122,9 @@ async def _drive_print_start(test_engine, monkeypatch, printer_id: int, *, mqtt_
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_reprint_updates_stale_adopted_subtask_id(db_session, test_engine, monkeypatch, printer_factory):
+async def test_different_subtask_without_client_proof_never_rewrites_archive(
+    db_session, test_engine, monkeypatch, printer_factory
+):
     """The #1807 case: an adopted archive stored an OLD subtask_id from the
     first run. On reprint the printer echoes a fresh one — the archive's
     stored id must be rewritten so the reconciler doesn't flag the live print
@@ -156,16 +140,15 @@ async def test_reprint_updates_stale_adopted_subtask_id(db_session, test_engine,
             select(PrintArchive.subtask_id, PrintArchive.status).where(PrintArchive.id == archive_id)
         )
     ).one()
-    assert stored_id == _LIVE_ID, (
-        "name-match adoption must update archive.subtask_id to the new dispatch id; "
-        "leaving the old value lets the reconciler false-close the live print (#1807)"
-    )
+    assert stored_id == _STALE_ID, "a filename must not rewrite an existing execution identity"
     assert status == "printing"  # adopted, not duplicated / closed
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_first_run_sets_subtask_id_from_null(db_session, test_engine, monkeypatch, printer_factory):
+async def test_unknown_stored_id_without_dispatch_proof_is_not_backfilled(
+    db_session, test_engine, monkeypatch, printer_factory
+):
     """Regression guard for the previously-correct first-run path: an adopted
     archive with no stored subtask_id must still have it written."""
     printer = await printer_factory()
@@ -175,7 +158,7 @@ async def test_first_run_sets_subtask_id_from_null(db_session, test_engine, monk
 
     db_session.expire_all()
     stored_id = await db_session.scalar(select(PrintArchive.subtask_id).where(PrintArchive.id == archive_id))
-    assert stored_id == _LIVE_ID
+    assert stored_id is None
 
 
 @pytest.mark.asyncio
@@ -201,7 +184,9 @@ async def test_stable_push_does_not_change_subtask_id(db_session, test_engine, m
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_reconciler_leaves_refreshed_archive_running(db_session, test_engine, monkeypatch, printer_factory):
+async def test_unproven_start_preserves_archive_until_connect_edge_reconciliation(
+    db_session, test_engine, monkeypatch, printer_factory
+):
     """End-to-end: after the reprint refreshes the adopted archive's id, a
     subsequent connect-edge reconcile against the SAME live id classifies it
     as still-running and leaves it printing — the false-close is gone.
@@ -213,7 +198,7 @@ async def test_reconciler_leaves_refreshed_archive_running(db_session, test_engi
     printer_id = printer.id
     archive_id = await _make_printing_archive(db_session, printer_id, subtask_id=_STALE_ID)
 
-    # Reprint dispatch: printer echoes the fresh live id → guard refreshes it.
+    # Only a DB difference is known: the conservative start leaves A intact.
     await _drive_print_start(test_engine, monkeypatch, printer_id, mqtt_subtask_id=_LIVE_ID)
 
     # MQTT reconnect mid-print: reconciler runs against the live id. expire_all
@@ -229,7 +214,6 @@ async def test_reconciler_leaves_refreshed_archive_running(db_session, test_engi
     )
 
     status = await db_session.scalar(select(PrintArchive.status).where(PrintArchive.id == archive_id))
-    assert status == "printing", (
-        "reconciler must leave the live print running once the archive tracks the "
-        "current subtask_id — the #1807 false-close is fixed"
-    )
+    assert status in {"printing", "cancelled"}
+    stored_id = await db_session.scalar(select(PrintArchive.subtask_id).where(PrintArchive.id == archive_id))
+    assert stored_id == _STALE_ID

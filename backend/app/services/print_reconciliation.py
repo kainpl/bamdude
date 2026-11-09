@@ -412,7 +412,7 @@ async def _reconcile_complete_archive(
     # SQLite's writer (PostgreSQL's row lock) BEFORE the authoritative read: a second sweep waits here and then sees
     # what the first one committed.
     # What this sweep loaded, before waiting for the writer: the row it decided on.
-    loaded = (archive.printer_id, archive.filename, _as_utc(archive.created_at))
+    loaded = (archive.printer_id, archive.filename, _as_utc(archive.created_at), archive.recovery_identity)
     await take_write_lock(db, PrintArchive.__table__, archive.id)
     still = await locked_print(
         db, archive.id, select(PrintArchive.status).where(PrintArchive.id == archive.id).with_for_update()
@@ -424,12 +424,12 @@ async def _reconcile_complete_archive(
         return None
     row = (
         await db.execute(
-            select(PrintArchive.printer_id, PrintArchive.filename, PrintArchive.created_at).where(
-                PrintArchive.id == archive.id
-            )
+            select(
+                PrintArchive.printer_id, PrintArchive.filename, PrintArchive.created_at, PrintArchive.recovery_identity
+            ).where(PrintArchive.id == archive.id)
         )
     ).first()
-    if row is None or (row[0], row[1], _as_utc(row[2])) != loaded:
+    if row is None or (row[0], row[1], _as_utc(row[2]), row[3]) != loaded:
         # Another row under the same id (ids are reused): never the archive this sweep decided about.
         logger.info("reconcile: archive %s is no longer the row this sweep loaded -- left alone", archive.id)
         return None
@@ -439,17 +439,33 @@ async def _reconcile_complete_archive(
         )
         return None
 
+    from backend.app.services.print_execution import NONCURRENT
+
+    carrier = await db.scalar(select(PrintArchive.extra_data).where(PrintArchive.id == archive.id))
+    if isinstance(carrier, dict) and NONCURRENT in carrier:
+        # Never book a different run's FINISH, even for an unreadable carrier.
+        return None
     analysis = None
     analysis_leased = False
     path = _archive_file_path(archive.file_path or "")
     if archive.printer_id is not None and path is not None:
         analysis_leased = begin_historical_print_file_analysis_finishing(
-            printer_manager, archive.printer_id, archive.id, path, archive.plate_index
+            printer_manager,
+            archive.printer_id,
+            archive.id,
+            path,
+            archive.plate_index,
+            expected_identity=archive.recovery_identity,
         )
     try:
         if analysis_leased:
             analysis = await get_print_file_analysis(
-                printer_manager, archive.printer_id, archive.id, path, archive.plate_index
+                printer_manager,
+                archive.printer_id,
+                archive.id,
+                path,
+                archive.plate_index,
+                expected_identity=archive.recovery_identity,
             )
 
         now = datetime.now(timezone.utc)
@@ -502,6 +518,7 @@ async def _reconcile_complete_archive(
                         # caller-session commit here.
                         analysis_attempted=True,
                         archive_snapshot=archive,
+                        expected_identity=archive.recovery_identity,
                     )
                     if persisted_name and archive.print_name and persisted_name == archive.print_name:
                         await usage_tracker.clear_persisted_session(db, archive.printer_id)
@@ -531,6 +548,29 @@ async def _reconcile_complete_archive(
         if status == "completed":
             await _bump_library_file_usage(db, archive.library_file_id)
 
+        owner_rows = list(
+            (
+                await db.scalars(
+                    select(PrintQueueItem).where(
+                        PrintQueueItem.archive_id == archive.id, PrintQueueItem.status == "printing"
+                    )
+                )
+            ).all()
+        )
+        if len(owner_rows) > 1:
+            from backend.app.models.printer_queue import PrinterQueue
+
+            queue = await db.get(PrinterQueue, archive.printer_id)
+            if queue is not None:
+                queue.is_paused = True
+            await db.commit()
+            logger.warning(
+                "reconcile: duplicate execution claims archive=%s count=%s; owner effects deferred",
+                archive.id,
+                len(owner_rows),
+            )
+            return archive.id
+
         # Persist the archive and arm the existing gate BEFORE releasing the
         # queue claim, just as the live completion handler does.
         await db.commit()
@@ -541,18 +581,28 @@ async def _reconcile_complete_archive(
             return None
         if archive.printer_id is not None and not swap_owed:
             await printer_manager.arm_awaiting_plate_clear(archive.printer_id, archive.id)
-        if not await _still_the_row_this_sweep_closed(db, archive, loaded, status, record_lives):
+        if not await _still_the_row_this_sweep_closed(db, archive, loaded[:3], status, record_lives):
             return None
 
         # The row that RAN this archive -- still holding the printer. A job queued from the archive later (a
         # reprint names it as its source) is not this run and is never closed by it.
-        item = (
-            await db.execute(
-                select(PrintQueueItem).where(
-                    PrintQueueItem.archive_id == archive.id, PrintQueueItem.status == "printing"
+        owners = list(
+            (
+                await db.scalars(
+                    select(PrintQueueItem)
+                    .where(PrintQueueItem.archive_id == archive.id, PrintQueueItem.status == "printing")
+                    .with_for_update()
                 )
-            )
-        ).scalar_one_or_none()
+            ).all()
+        )
+        if len(owners) > 1:
+            from backend.app.models.printer_queue import PrinterQueue
+
+            queue = await db.get(PrinterQueue, archive.printer_id)
+            if queue is not None:
+                queue.is_paused = True
+            return archive.id
+        item = owners[0] if owners else None
         if item is not None:
             item.status = status
             item.completed_at = now
@@ -586,7 +636,7 @@ async def _reconcile_complete_archive(
                     subtask_id=archive.subtask_id,
                     # The release's own question, whatever the outcome: ``swap_owed`` above is the queue
                     # transition's, completed only (spec gh109-o3 r2 R4).
-                    swap_owed=_swap_unsettled(extra),
+                    swap_owed=_swap_unsettled(extra, archive.recovery_identity),
                 )
             )
         return archive.id
@@ -713,7 +763,7 @@ def _recovered_completed_at(
     ``GET /archives/stats`` total. Across a farm of stale rows that is hundreds
     of fictitious hours (upstream #2592).
 
-    Rules, mirroring ``main.py::_close_stale_printing_rows``:
+    Rules, mirroring the structural noncurrent close:
 
     * slicer estimate known → the printer's own predicted natural end,
       ``started_at + print_time_seconds``, clamped to ``now`` so a
@@ -756,6 +806,7 @@ async def _reconcile(
     *,
     record_lives=None,
     own_closes: list[_OwnClose] | None = None,
+    identity_report: dict[int, str] | None = None,
 ) -> list[int]:
     """Reconcile every orphan ``printing`` archive for one printer.
 
@@ -826,8 +877,39 @@ async def _reconcile(
             )
         ).scalars()
     )
+    if identity_report is not None:
+        identity_report.update({a.id: a.recovery_identity for a in orphans})
     if not orphans:
         return []
+
+    # Replay only the structural noncurrent decision, before filename/terminal
+    # inference. No usage, gate, completion receipt, energy or swap belongs here.
+    from backend.app.services import queue_sources
+    from backend.app.services.print_execution import NONCURRENT, close_noncurrent, valid_noncurrent
+    from backend.app.services.queue_ops import claim_lanes
+
+    marked = [a for a in orphans if isinstance(a.extra_data, dict) and NONCURRENT in a.extra_data]
+    if marked:
+        pins = {a.id: a.recovery_identity for a in marked}
+        await db.commit()  # Clean writer: process archive/lane locks come first.
+        async with queue_sources.storage_mutation(), claim_lanes(db, [printer_id], archive_ids=pins):
+            for aid, identity in pins.items():
+                archive = await db.get(PrintArchive, aid, populate_existing=True, with_for_update=True)
+                if record_lives is not None and not record_lives():
+                    await db.rollback()
+                    return []
+                if archive is None or archive.recovery_identity != identity or archive.printer_id != printer_id:
+                    continue
+                if valid_noncurrent(archive):
+                    await close_noncurrent(db, archive)
+                else:
+                    from backend.app.models.printer_queue import PrinterQueue
+
+                    queue = await db.get(PrinterQueue, printer_id)
+                    if queue is not None:
+                        queue.is_paused = True
+            await db.commit()
+        orphans = [a for a in orphans if a.id not in pins]
 
     exact_subtask_matches = [archive for archive in orphans if _name_matches_subtask_exact(archive, live_subtask_name)]
     legacy_subtask_matches = (
@@ -1133,13 +1215,17 @@ async def _still_the_row_this_sweep_closed(db, archive, loaded, status: str, rec
     return True
 
 
-def _swap_unsettled(extra: dict) -> bool:
+def _swap_unsettled(extra: dict, archive_identity: str | None = None) -> bool:
     """Whether this run still has our table swap owed, attempted, held or in any state short of settled.
 
     The release of a run's context asks this for completed AND failed closes alike (spec gh109-o3 r2 R4).
     """
     from backend.app.services import swap_terminal
 
+    if swap_terminal.operator_settlement(extra, archive_identity) and not swap_terminal.unsettled_hold(
+        extra, archive_identity
+    ):
+        return bool(extra.get("swap_macro_events_pending"))
     if swap_terminal.CHANGE_TABLE_EVENT in (extra.get("swap_macro_events_pending") or []):
         return True
     if extra.get(swap_terminal.HOLD_KEY):
@@ -1328,6 +1414,7 @@ async def _sweep_printer_prints(
         if not record_lives():
             return
         async with async_session() as db:
+            energy_identities = {}
             recovered = await _reconcile(
                 db,
                 printer_id,
@@ -1337,6 +1424,7 @@ async def _sweep_printer_prints(
                 live_subtask_name,
                 record_lives=record_lives,
                 own_closes=own_closes,
+                identity_report=energy_identities,
             )
             await db.commit()
         # The outer commit is confirmed and nothing has awaited since: one compare-and-clear, or nothing.
@@ -1367,7 +1455,9 @@ async def _sweep_printer_prints(
         from backend.app.main import _record_print_energy
 
         spawn_background_task(
-            _record_print_energy(archive_id, printer_id, approximate=True),
+            _record_print_energy(
+                archive_id, printer_id, approximate=True, expected_identity=energy_identities[archive_id]
+            ),
             name=f"reconcile-energy-{archive_id}",
         )
 

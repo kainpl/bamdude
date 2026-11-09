@@ -269,7 +269,7 @@ async def test_an_auto_queue_row_in_any_status_keeps_its_blob(tmp_path, sessions
 async def test_a_printing_row_closed_on_age_still_owns_its_blob(tmp_path, sessions, clockface):
     """Spec §9's added row (2026-09-13): a stale closure is not a completion.
 
-    ``main.py::_close_stale_printing_rows`` ends a row that has been ``printing``
+    the structural noncurrent close ends a row that has been ``printing``
     past its predicted end with no completion event and no plate answer. The
     operator has still not said what happened on that plate, so the blob stays:
     the reference is released by deletion, Clear plate or Repeat, never by the

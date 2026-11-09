@@ -791,33 +791,44 @@ async def test_repeating_keeps_the_reference(db_session, tmp_path, printer_facto
 async def test_a_printing_row_closed_on_age_keeps_its_reference(
     db_session, tmp_path, printer_factory, sessions, clockface
 ):
-    """Spec §9's row added 2026-09-13, driven through the real closer.
-
-    ``_close_stale_printing_rows`` ends an archive that has been ``printing`` past
-    its predicted end with no completion event. That is the tidying of a stuck
-    row, not a print ending: nobody has answered for that plate, so the queue row
-    and its bytes stay exactly where they are.
-    """
-    import logging
-
-    from backend.app.main import _close_stale_printing_rows
+    """A noncurrent structural close keeps its captured bytes and claim address."""
+    from backend.app.services.print_execution import decide_start, publish_start
+    from backend.app.services.print_observation import PrintObservation
 
     printer = await printer_factory(name="C8")
     queue = await a_queue(db_session, printer.id)
     blob = await a_ready_blob(sessions, tmp_path / "share" / "lamp.gcode.3mf")
     archive = await an_archive_with_its_own_bytes(db_session, printer.id, name="stale.gcode.3mf")
-    archive.status = "printing"
+    archive.status, archive.subtask_id = "printing", "100"
     archive.started_at = datetime.now(timezone.utc) - timedelta(hours=9)
     archive.print_time_seconds = 60
     archive.completed_at = None
     job = await a_job(db_session, queue_id=queue.id, blob=blob, archive_id=archive.id, status="printing")
     await db_session.commit()
 
-    await _close_stale_printing_rows(printer.id, "something-else.3mf", db_session, logging.getLogger("test"))
+    decision = await decide_start(
+        db_session,
+        printer.id,
+        {
+            "subtask_id": "200",
+            "_print_observation": PrintObservation("different_client_run_id", "100", "200", "RUNNING", 1),
+        },
+    )
+    new = PrintArchive(
+        printer_id=printer.id,
+        queue_id=queue.id,
+        filename="other.3mf",
+        file_path="",
+        file_size=0,
+        status="printing",
+        subtask_id="200",
+        extra_data={},
+    )
+    await publish_start(db_session, new, decision)
 
     db_session.expunge_all()
     closed = await db_session.get(PrintArchive, archive.id)
-    assert closed.status == "completed", "the closer did not run — the rest of this test proves nothing"
+    assert closed.status == "cancelled" and closed.extra_data["recovered_outcome_uncertain"]
     job = await reread(db_session, job)
     assert job is not None and job.queue_source_id == blob.id
     await assert_still_owned(sessions, blob, clockface)

@@ -2418,6 +2418,11 @@ class BambuMQTTClient:
         self.muted_hms_codes: set[str] = set()
         self.on_hms_mute_expired: Callable[[set[str]], None] | None = None
         self._previous_gcode_state: str | None = None
+        self._last_known_run_id: str | None = None
+        self._run_id_unresolved = False
+        self._run_boundary_generation = 0
+        self._start_observation = None
+        self._inflight_recovery_pending = False
         # Last time "device is busy" was cleared off this printer (see
         # _clear_device_busy). Per client, so a reconnect starts fresh.
         self._device_busy_cleared_at: float = 0.0
@@ -2656,6 +2661,10 @@ class BambuMQTTClient:
         accounting — survive a mid-print reconnect.
         """
         self._previous_gcode_state = prior._previous_gcode_state
+        self._last_known_run_id = prior._last_known_run_id
+        self._run_id_unresolved = prior._run_id_unresolved
+        self._run_boundary_generation = prior._run_boundary_generation
+        self._inflight_recovery_pending = prior._inflight_recovery_pending
         self._previous_gcode_file = prior._previous_gcode_file
         self._was_running = prior._was_running
         self._completion_triggered = prior._completion_triggered
@@ -5664,6 +5673,9 @@ class BambuMQTTClient:
             if stage_val == 1 and self.state.extrusion_cali_status == "running" and "auto_cali" in str(gcode_file):
                 self.state.extrusion_cali_status = "completed"
 
+        from backend.app.services.print_observation import PrintObservation, run_id
+
+        previous_run_id = getattr(self, "_last_known_run_id", None)
         # Update state fields
         if "gcode_state" in data:
             self.state.state = data["gcode_state"]
@@ -5721,10 +5733,52 @@ class BambuMQTTClient:
             self.state.state == "RUNNING"
             and current_file
             and current_file != self._previous_gcode_file
-            and self._previous_gcode_file is not None
+            and bool(self._previous_gcode_file)
         )
 
-        new_print_boundary = is_new_print or is_file_change
+        observed_start = bool(
+            self.state.state == "RUNNING"
+            and current_file
+            and self._previous_gcode_state in ("IDLE", "FINISH", "FAILED")
+        )
+        current_run_id = run_id(self.state.subtask_id)
+        changed_run_id = bool(
+            self.state.state == "RUNNING" and previous_run_id and current_run_id and previous_run_id != current_run_id
+        )
+        new_print_boundary = observed_start or changed_run_id
+        verdict = "same_run"
+        if new_print_boundary:
+            verdict = "observed_new_start" if observed_start else "different_client_run_id"
+            self._run_boundary_generation += 1
+            self._last_known_run_id = current_run_id
+            self._run_id_unresolved = False
+            self._inflight_recovery_pending = False
+        elif is_file_change:
+            verdict = "file_change_unproven"
+            self._run_id_unresolved = True
+        elif not self._run_id_unresolved and current_run_id:
+            self._last_known_run_id = current_run_id
+        observation = PrintObservation(
+            verdict, previous_run_id, current_run_id, self._previous_gcode_state, self._run_boundary_generation
+        )
+        # First PAUSE is as much an in-flight run as RUNNING. Fence detectors
+        # before this packet's HMS, including when its filename arrives later.
+        if (
+            self.state.state in ("RUNNING", "PAUSE")
+            and not self._was_running
+            and not new_print_boundary
+            and (current_file or self.on_print_running_observed)
+        ):
+            self._inflight_recovery_pending = True
+            if self.on_print_running_observed:
+                self._runout_seeded = False
+                with self._journal_lock:
+                    self._journal_held = True
+            self._was_running = True
+            if self.state.timelapse:
+                self._timelapse_during_print = True
+            self._completion_triggered = False
+        running_first_observed = bool(self._inflight_recovery_pending and current_file)
         boundary_layer_edge = None
         if new_print_boundary:
             # Clear the previous print BEFORE applying this frame's counters.
@@ -7241,8 +7295,7 @@ class BambuMQTTClient:
             )
 
         # Track RUNNING state for more robust completion detection
-        running_first_observed = False
-        if self.state.state == "RUNNING" and current_file:
+        if self.state.state in ("RUNNING", "PAUSE") and current_file:
             if not self._was_running:
                 logger.debug("[%s] Now tracking RUNNING state for %s", self.serial_number, current_file)
                 # Check if timelapse was enabled in the same message (xcam parsed before this)
@@ -7260,7 +7313,7 @@ class BambuMQTTClient:
             self._was_running = True
             self._completion_triggered = False
 
-        if is_new_print or is_file_change:
+        if new_print_boundary:
             # Clear any old HMS errors when a new print starts
             self.state.hms_errors = []
             # Reset completion tracking for new print
@@ -7309,7 +7362,9 @@ class BambuMQTTClient:
             else:
                 self._timelapse_during_print = False
 
-        if (is_new_print or is_file_change) and self.on_print_start:
+        if new_print_boundary or is_file_change:
+            self._start_observation = observation
+        if (new_print_boundary or is_file_change) and self.on_print_start:
             logger.info(
                 f"[{self.serial_number}] PRINT START detected - file: {current_file}, "
                 f"subtask: {self.state.subtask_name}, is_new: {is_new_print}, is_file_change: {is_file_change}"
@@ -7325,9 +7380,11 @@ class BambuMQTTClient:
                     "raw_data": data,
                     "ams_mapping": self._captured_ams_mapping,
                     "plate_param": self._captured_print_param,
+                    "_print_observation": observation,
                 }
             )
         elif running_first_observed and self.on_print_running_observed:
+            self._inflight_recovery_pending = False
             # ⚠️ We joined a print already in flight, so this client's runout
             # dedup is empty while the printer's HMS status is not — every
             # still-active runout code would fire again, at the CURRENT layer.
@@ -7396,7 +7453,8 @@ class BambuMQTTClient:
         # For IDLE, only trigger if we just came from RUNNING (explicit abort/cancel)
         if (
             self.state.state == "IDLE"
-            and self._previous_gcode_state == "RUNNING"
+            and self._previous_gcode_state in ("RUNNING", "PAUSE")
+            and self._was_running
             and not self._completion_triggered
             and self.on_print_complete
         ):
@@ -7500,6 +7558,8 @@ class BambuMQTTClient:
             self._captured_ams_mapping = None
             self._captured_print_param = None
 
+        if self.state.state in ("IDLE", "FINISH", "FAILED"):
+            self._run_id_unresolved = False
         self._previous_gcode_state = self.state.state
         if current_file:
             self._previous_gcode_file = current_file

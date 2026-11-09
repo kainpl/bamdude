@@ -33,7 +33,7 @@ async def test_attach_timelapse_rejects_traversal_and_absolute(
 
     # Legitimate filename → written INSIDE the archive dir (guards over-strictness).
     assert await svc.attach_timelapse(archive.id, b"data", "timelapse.mp4") is True
-    assert (tmp_path / "archives" / "p" / "timelapse.mp4").read_bytes() == b"data"
+    assert (tmp_path / archive.timelapse_path).read_bytes() == b"data"
 
 
 def _data_dir(monkeypatch, tmp_path):
@@ -70,7 +70,9 @@ async def test_a_print_without_a_3mf_keeps_its_timelapse_inside_the_data_dir(
     await db_session.refresh(archive)
     assert (data_dir / archive.timelapse_path).read_bytes() == b"video"
     # The same folder the archive's photos use (utils/archive_paths).
-    assert (data_dir / archive.timelapse_path).parent == data_dir / "archive" / "no_source" / str(archive.id)
+    assert (data_dir / archive.timelapse_path).parent == data_dir / "archive" / "no_source" / str(
+        archive.id
+    ) / "timelapse" / archive.recovery_identity
 
 
 @pytest.mark.asyncio

@@ -34,7 +34,7 @@ async def _fake_session(archive):
     few poll cycles.
     """
     result = SimpleNamespace(scalar_one_or_none=lambda: archive)
-    session = SimpleNamespace(execute=AsyncMock(return_value=result))
+    session = SimpleNamespace(execute=AsyncMock(return_value=result), get=AsyncMock(return_value=archive))
     yield session
 
 
@@ -42,7 +42,7 @@ async def _fake_session(archive):
 def fake_archive():
     """Mutable archive stand-in. Tests flip `.timelapse_path` to simulate
     the timelapse-attach task writing to the DB."""
-    return SimpleNamespace(id=42, timelapse_path=None)
+    return SimpleNamespace(id=42, timelapse_path=None, recovery_identity="archive-42")
 
 
 @pytest.fixture(autouse=True)

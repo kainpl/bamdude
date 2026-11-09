@@ -146,8 +146,15 @@ def live_snapshot(printer_id: int) -> dict:
                 and run.client_generation == state.connection_generation
             ):
                 mode = "successor"
+    unresolved = getattr(printer_manager, "_unproven_starts", {}).get(printer_id)
+    unproven = bool(
+        unresolved
+        and unresolved.get("epoch") == queue_sources.current_epoch()
+        and printer_manager.life_holds(printer_id, unresolved.get("life"))
+    )
     return {
         "mode": mode,
+        "observation_unproven": unproven,
         "identity": identity,
         "busy": busy,
         "effects": effects,
@@ -252,6 +259,7 @@ def runtime_snapshot(printer_id: int) -> dict:
         else {
             "ref": id(run),
             "archive_id": run.archive_id,
+            "archive_identity": run.archive_identity,
             "sequence": run.sequence,
             "origin": run.origin,
             "queue_item_id": run.queue_item_id,
@@ -282,6 +290,18 @@ def runtime_snapshot(printer_id: int) -> dict:
     }
 
 
+def repair_runtime_snapshot(printer_id, archive_id):
+    from backend.app.services import swap_terminal
+    from backend.app.services.archive_download_retry import archive_download_retry
+
+    snapshot = runtime_snapshot(printer_id)
+    snapshot.pop("temperatures", None)
+    if archive_id is not None:
+        snapshot["owners"]["swap_sending"] = _ask(lambda: swap_terminal.sending(archive_id))
+        snapshot["owners"]["archive_download"] = _ask(lambda: archive_download_retry.in_progress(archive_id))
+    return snapshot
+
+
 def _runtime_age(key, f, issue) -> float:
     """Seconds this exact observation has been seen unchanged (spec r3 R3: two equal sightings 10 s apart)."""
     r = f.runtime
@@ -300,7 +320,11 @@ def _runtime_age(key, f, issue) -> float:
 
 
 def unknown_inbound_refs() -> bool:
-    allowed = {("auto_queue_items", "assigned_to_item_id"), ("calibration_session", "print_queue_item_id")}
+    allowed = {
+        ("auto_queue_items", "assigned_to_item_id"),
+        ("calibration_session", "print_queue_item_id"),
+        ("print_state_recovery_actions", "item_id"),
+    }
     for table in Base.metadata.tables.values():
         for column in table.columns:
             if any(fk.target_fullname == "print_queue.id" for fk in column.foreign_keys):
@@ -326,8 +350,18 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
     )
     qs = {q.printer_id: q for q in queues}
     qids = [q.id for q in queues]
+    ranked = (
+        select(
+            PrintQueueItem.id,
+            PrintQueueItem.queue_id,
+            func.row_number().over(partition_by=PrintQueueItem.queue_id, order_by=PrintQueueItem.id).label("n"),
+        )
+        .where(PrintQueueItem.queue_id.in_(qids), PrintQueueItem.status == "printing")
+        .subquery()
+    )
+    group_ids = set((await db.scalars(select(ranked.c.id).where(ranked.c.n <= 101))).all())
     target_ids = [key for _, kind, key in targets if kind == "item"]
-    needed = set(target_ids) | {q.current_item_id for q in queues if q.current_item_id}
+    needed = group_ids | set(target_ids) | {q.current_item_id for q in queues if q.current_item_id}
     item_stmt = select(PrintQueueItem).where(PrintQueueItem.id.in_(needed)).execution_options(populate_existing=True)
     if locked:
         item_stmt = item_stmt.order_by(PrintQueueItem.id).with_for_update()
@@ -382,6 +416,15 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
     ):
         for value in (await db.scalars(select(col).where(col.in_(needed)))).all():
             refs[value].add(reason)
+    active_users = dict(
+        (
+            await db.execute(
+                select(PrintQueueItem.archive_id, func.count())
+                .where(PrintQueueItem.archive_id.in_(aid), PrintQueueItem.status == "printing")
+                .group_by(PrintQueueItem.archive_id)
+            )
+        ).all()
+    )
     unknown_ref = unknown_inbound_refs()
     # Read once for the page: a boot is proof only while this process holds the owner lock (I-R2).
     current_boot = dispatch_phase.current_boot_id()
@@ -415,6 +458,16 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
             continue
         if kind == "archive" and (archive is None or archive.printer_id != pid):
             continue
+        members = tuple(
+            project(r, _ITEM_FIELDS)
+            for r in sorted(items.values(), key=lambda r: r.id)
+            if q is not None and r.queue_id == q.id and r.status == "printing"
+        )
+        if kind == "header" and members and len({r["archive_id"] for r in members}) == 1:
+            archive = archives.get(members[0]["archive_id"])
+        repair_runtime = (
+            repair_runtime_snapshot(pid, archive.id if archive else None) if members or kind == "archive" else None
+        )
         live = live_snapshot(pid)
         if live["mode"] == "successor":
             successor = archives.get(live["archive_id"])
@@ -445,9 +498,24 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
                 references.add("project")
             if unknown_ref:
                 references.add("unknown_fk")
-        elif current is not None and (current.queue_id != q.id or current.status == "printing"):
+        elif (
+            kind not in {"header", "archive"}
+            and current is not None
+            and (current.queue_id != q.id or current.status == "printing")
+        ):
             references.add("ambiguous_owner")
-        if kind == "archive" and live["mode"] == "inactive":
+        if kind in {"header", "archive"} or (
+            len(members) > 1 and archive and all(m["archive_id"] == archive.id for m in members)
+        ):
+            for member in members:
+                references.update(refs.get(member["id"], ()))
+                if member.get("source_auto_item_id"):
+                    references.add("auto_parent")
+                if member.get("project_id") or member.get("project_line_id"):
+                    references.add("project")
+            if unknown_ref:
+                references.add("unknown_fk")
+        if (kind == "archive" or members) and live.get("idle") is True:
             stamp = (
                 pid,
                 archive.recovery_identity if archive else key,
@@ -463,12 +531,21 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
             live,
             active,
             tuple(range(acounts.get(pid, 0))),
-            users.get(item.archive_id, 0) if item else 0,
+            users.get(archive.id, 0) if archive else 0,
             tuple(sorted(references)),
             now,
             owner_ended=owner_ended(current_boot, archive),
             unobserved=attempt_unobserved(archive.id) if archive is not None else False,
             runtime=runtime,
+            members=members,
+            members_complete=counts.get(q.id, 0) == len(members) if q else not members,
+            foreign_active_users=max(
+                0, active_users.get(archive.id, 0) - sum(m["archive_id"] == archive.id for m in members)
+            )
+            if archive
+            else 0,
+            repair_runtime=repair_runtime,
+            target_kind=kind,
         )
     return result, qs, (items, archives)
 
@@ -522,6 +599,13 @@ def public_issue(key, f):
         "target_id": key[2],
         "item_id": f.item["id"] if f.item else None,
         "archive_id": visible_archive["id"] if visible_archive else None,
+        "members": [{"id": m["id"], "status": m["status"]} for m in f.members[:3]],
+        "member_count": len(f.members) if f.members_complete else None,
+        "claims": [
+            {k: m.get(k) for k in ("id", "status", "started_at", "completed_at", "origin")} for m in f.members[:3]
+        ],
+        "claims_total": len(f.members) if f.members_complete else None,
+        "claims_complete": f.members_complete,
         "observed_at": f.live.get("observed_at"),
         "live_mode": f.live["mode"],
         "started_at": (visible_archive or {}).get("started_at"),
@@ -722,7 +806,7 @@ async def list_issues_page(
                     PrintQueueItem.queue_id.in_(select(PrinterQueue.id).where(PrinterQueue.printer_id.in_(pids))),
                 )
                 .group_by(PrintQueueItem.queue_id)
-                .having(func.count() > 1)
+                .having(func.count() >= 1)
             ),
         ),
     )
@@ -738,7 +822,15 @@ async def list_issues_page(
         )
     )
     archives = select(PrintArchive.printer_id, literal("archive"), PrintArchive.id).where(
-        PrintArchive.printer_id.in_(pids), PrintArchive.status == "printing", PrintArchive.deleted_at.is_(None)
+        PrintArchive.printer_id.in_(pids),
+        or_(
+            PrintArchive.status == "printing",
+            and_(
+                PrintArchive.status == "completed",
+                PrintArchive.extra_data["bamdude_terminal_effects"]["swap_change_table"]["stage"].as_string() == "owed",
+            ),
+        ),
+        PrintArchive.deleted_at.is_(None),
     )
     # A queue an in-memory repair paused stays explained while it is paused, whether or not the run is still held
     # (RS-R3): its last release attempt is read from the audit. A queue never touched by one has no such row.
@@ -881,7 +973,11 @@ def explain_facts(key, facts, action=None):
     if action is not None:
         if action not in actions:
             blockers = list((issue or {}).get("blocked_reasons", [])) or ["action_not_available"]
-        elif needs_completion:
+            if action not in {"cancel_terminal_claims", "settle_swap_by_operator"} and facts.target_kind == "item":
+                from backend.app.services.print_state_recovery import _classify_single
+
+                blockers = sorted(set(blockers) | set((_classify_single(facts) or {}).get("blocked_reasons", [])))
+        elif needs_completion or action in {"cancel_terminal_claims", "settle_swap_by_operator"}:
             blockers = ["requires_operator_confirmation"]
         else:
             after = public_plan(plan_action(facts, action))
@@ -911,6 +1007,8 @@ def explain_facts(key, facts, action=None):
         "archive_preserved": True,
         "requires_operator_confirmation": action is not None,
         "requires_completed_confirmation": needs_completion,
+        "requires_idle_confirmation": action in {"cancel_terminal_claims", "settle_swap_by_operator"},
+        "requires_manual_swap_confirmation": action == "settle_swap_by_operator",
         "can_execute_via_mcp": False,
     }
 
@@ -959,13 +1057,31 @@ def _unpin(nonce: str) -> None:
     _preview_pins.pop(nonce, None)
 
 
-async def make_preview(db, printer_id, kind, target_id, action, actor, *, confirmed_completed=False, note=""):
+async def make_preview(
+    db,
+    printer_id,
+    kind,
+    target_id,
+    action,
+    actor,
+    *,
+    confirmed_completed=False,
+    confirmed_idle=False,
+    confirmed_manual_swap=False,
+    note="",
+):
     key = (printer_id, kind, target_id)
     facts, _, _ = await read_facts(db, [printer_id], [key])
     f = facts.get(key)
     if f is None:
         raise LookupError
-    plan = plan_action(f, action, confirmed_completed=confirmed_completed)
+    plan = plan_action(
+        f,
+        action,
+        confirmed_completed=confirmed_completed,
+        confirmed_idle=confirmed_idle,
+        confirmed_manual_swap=confirmed_manual_swap,
+    )
     nonce = str(uuid4())
     body = {
         "version": 1,
@@ -976,6 +1092,8 @@ async def make_preview(db, printer_id, kind, target_id, action, actor, *, confir
         "target_id": target_id,
         "action": action,
         "confirmed_completed": confirmed_completed,
+        "confirmed_idle": confirmed_idle,
+        "confirmed_manual_swap": confirmed_manual_swap,
         "note": note,
         "revision": revision(f),
         "epoch": queue_sources.current_epoch(),
@@ -993,14 +1111,22 @@ async def make_preview(db, printer_id, kind, target_id, action, actor, *, confir
                 "waiting_reason": True if (f.item or {}).get("waiting_reason") else None,
             },
             "archive": {k: v for k, v in (f.archive or {}).items() if k in {"id", "status", "completed_at"}},
+            "claims": [
+                {k: m.get(k) for k in ("id", "status", "archive_id", "started_at", "completed_at", "origin")}
+                for m in f.members
+            ],
         },
-        "after": public_plan(plan),
+        "after": {**public_plan(plan), "claims": public_plan(plan).get("members", [])},
         "estimate": {
             "started_at": f.archive["started_at"],
             "duration_seconds": f.archive["print_time_seconds"],
             "completed_at": plan["archive"]["completed_at"],
         }
         if plan["archive"] and not plan["archive"].get("close")
+        else None,
+        "members": [{"id": m["id"], "status": m["status"], "archive_id": m["archive_id"]} for m in f.members],
+        "swap_mode_enabled": bool((await db.get(Printer, printer_id)).swap_mode_enabled)
+        if action == "settle_swap_by_operator"
         else None,
         "archive_preserved": True,
         "expires_in": previews.TTL,
@@ -1070,7 +1196,13 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
             f = facts.get(key)
             if f is None or revision(f) != payload["revision"] or queue_sources.current_epoch() != payload["epoch"]:
                 raise ValueError("recovery_changed")
-            plan = plan_action(f, payload["action"], confirmed_completed=payload["confirmed_completed"])
+            plan = plan_action(
+                f,
+                payload["action"],
+                confirmed_completed=payload["confirmed_completed"],
+                confirmed_idle=payload.get("confirmed_idle", False),
+                confirmed_manual_swap=payload.get("confirmed_manual_swap", False),
+            )
             if previews.digest(plan) != payload["plan_hash"]:
                 raise ValueError("recovery_changed")
             if recheck:
@@ -1080,6 +1212,21 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
             # Explicit allowlists, no setattr loop over client fields.
             item = items.get(f.item["id"]) if f.item else None
             archive = archives.get(archive_id)
+            ended_at = datetime.now(timezone.utc)
+            if "members" in plan:
+                for member in plan["members"]:
+                    row = items[member["id"]]
+                    row.status, row.completed_at, row.waiting_reason = "cancelled", ended_at, None
+                    row.error_code, row.error_message = "operator_cancelled_stale_claim", None
+                from backend.app.services.queue_counters import update_queue_counters
+
+                await db.flush()
+                await update_queue_counters(db, queue_id)
+            if "settlement" in plan:
+                from backend.app.services.swap_terminal import settle_by_operator
+
+                settle_by_operator(archive, action_identity=nonce, actor=actor, at=ended_at)
+                queues[key[0]].is_paused = True
             if plan["archive"].get("close"):
                 # An interrupted attempt ends failed, with no completion, usage, swap or command
                 # (I-R4); the job waits for the operator's Retry, the queue for its Resume.
@@ -1109,7 +1256,7 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                 item.error_code = row_class(item.status, archive.failure_reason if archive is not None else None)
             if plan["delete_item"]:
                 await db.delete(item)
-            if plan["queue"] and not plan["archive"].get("close"):
+            if plan["queue"] and not plan["archive"].get("close") and "settlement" not in plan:
                 q = queues[key[0]]
                 q.current_item_id = None
                 q.status = plan["queue"]["status"]
@@ -1135,6 +1282,19 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                         },
                         "after": public_plan(plan),
                         "note": payload["note"],
+                        "members": [
+                            {
+                                "id": m["id"],
+                                "identity": m["recovery_identity"],
+                                "archive_id": m["archive_id"],
+                                "before_status": m["status"],
+                                "after_status": "cancelled" if "members" in plan else m["status"],
+                            }
+                            for m in f.members
+                        ],
+                        "applied_at": ended_at,
+                        "confirmed_idle": payload.get("confirmed_idle", False),
+                        "confirmed_manual_swap": payload.get("confirmed_manual_swap", False),
                         "reason_codes": classify(f)["blocked_reasons"],
                         "archive_preserved": True,
                         "estimate": {
@@ -1170,6 +1330,10 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                     or queue_sources.current_epoch() != payload["epoch"]
                 ):
                     raise ValueError("recovery_changed")
+                if f.repair_runtime is not None:
+                    latest_runtime = repair_runtime_snapshot(key[0], archive_id)
+                    if previews.digest(latest_runtime) != previews.digest(f.repair_runtime):
+                        raise ValueError("recovery_changed")
                 await db.commit()
             except IntegrityError:
                 await db.rollback()

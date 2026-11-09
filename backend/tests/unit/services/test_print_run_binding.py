@@ -235,7 +235,7 @@ def test_archive_binding_replays_only_its_matching_pending_terminal(monkeypatch)
         coro.close()
 
     monkeypatch.setattr(main, "spawn_background_task", capture_background)
-    monkeypatch.setattr(print_file_analysis, "bind_print_file_analysis", lambda *args: None)
+    monkeypatch.setattr(print_file_analysis, "bind_print_file_analysis", lambda *args, **kwargs: None)
     try:
         main._bind_print_file_analysis_context(printer_id, archive)
     finally:

@@ -50,6 +50,7 @@ class PrintRunBinding:
     origin: str = "observed"
     sequence: int = 0
     effect_generation: int = 0
+    archive_identity: str | None = None
 
     def matches_device_subtask(self, value: object) -> bool:
         """Reject only a positive, contradictory device identity.
@@ -100,6 +101,7 @@ class PrintStartAdmission:
     archive_id: int | None
     generation: int
     phase: str = "processing"
+    boundary_generation: int | None = None
 
 
 def _effect_generations(manager: PrinterManager) -> dict[int, int]:
@@ -165,11 +167,18 @@ def claim_print_start(manager: PrinterManager, printer_id: int, data: dict) -> P
     actual = _normalise_subtask_id(data.get("subtask_id"))
     run = _current(manager).get(printer_id)
     previous = _start_admissions(manager).get(printer_id)
+    observation = data.get("_print_observation")
+    boundary_generation = observation.generation if observation is not None and observation.new_run else None
     if previous is not None:
         same_archive = run is not None and previous.archive_id == run.archive_id
         no_conflict = not (actual and previous.subtask_id and actual != previous.subtask_id)
         same_generation = _effect_generations(manager).get(printer_id) == previous.generation
-        if same_generation and no_conflict and (same_archive or run is None):
+        if (
+            same_generation
+            and no_conflict
+            and (same_archive or run is None)
+            and previous.boundary_generation == boundary_generation
+        ):
             if actual:
                 previous.subtask_id = actual
             return None
@@ -179,6 +188,7 @@ def claim_print_start(manager: PrinterManager, printer_id: int, data: dict) -> P
         actual,
         run.archive_id if run is not None and run.matches_device_subtask(actual) else None,
         resolution.effect_generation,
+        boundary_generation=boundary_generation,
     )
     _start_admissions(manager)[printer_id] = admission
     return admission
@@ -330,9 +340,16 @@ def begin_print_start_resolution(manager: PrinterManager, printer_id: int, data:
 
     subtask_id = _normalise_subtask_id(data.get("subtask_id"))
     run = _current(manager).get(printer_id)
+    observation, decision = data.get("_print_observation"), data.get("_execution_decision")
+    different_execution = bool(
+        observation is not None
+        and observation.new_run
+        and decision is not None
+        and (run is None or decision.current_id != run.archive_id)
+    )
     generation = (
         run.effect_generation
-        if run is not None and run.matches_device_subtask(subtask_id)
+        if run is not None and run.matches_device_subtask(subtask_id) and not different_execution
         else _advance_activity(manager, printer_id)
     )
     sequence = getattr(manager, "_print_start_resolution_sequence", 0) + 1
@@ -412,6 +429,7 @@ def bind_print_run(
     observed_subtask_id: str | None = None,
     client_generation: int | None = None,
     origin: str = "observed",
+    archive_identity: str | None = None,
 ) -> PrintRunBinding:
     """Bind a known run without replacing a same-archive observation.
 
@@ -432,12 +450,17 @@ def bind_print_run(
     if (
         current is not None
         and current.archive_id == archive_id
+        and (
+            archive_identity is None or current.archive_identity is None or archive_identity == current.archive_identity
+        )
+        and (archive_identity is None or current.archive_identity in (None, archive_identity))
         and same_attempt
         and current.matches_device_subtask(observed_subtask_id)
         and current.matches_device_subtask(expected_submission_id)
     ):
         updated = replace(
             current,
+            archive_identity=archive_identity or current.archive_identity,
             queue_item_id=queue_item_id if queue_item_id is not None else current.queue_item_id,
             claim_started_at=claim_started_at if claim_started_at is not None else current.claim_started_at,
             expected_submission_id=(_normalise_subtask_id(expected_submission_id) or current.expected_submission_id),
@@ -467,6 +490,7 @@ def bind_print_run(
         origin=origin,
         sequence=manager._print_run_binding_sequence,
         effect_generation=generation,
+        archive_identity=archive_identity,
     )
     _current(manager)[printer_id] = bound
     admission = _start_admissions(manager).get(printer_id)
@@ -481,6 +505,7 @@ def prepared_print_run_conflicts(
     *,
     archive_id: int | None = None,
     expected_submission_id: str | None = None,
+    archive_identity: str | None = None,
 ) -> bool:
     """Read the current-run veto without reserving or releasing anything.
 
@@ -493,6 +518,7 @@ def prepared_print_run_conflicts(
     return current is not None and (
         archive_id is None
         or current.archive_id != archive_id
+        or bool(archive_identity and current.archive_identity and archive_identity != current.archive_identity)
         or bool(current.observed_subtask_id and not current.matches_device_subtask(expected_submission_id))
     )
 
@@ -506,6 +532,7 @@ def bind_prepared_print_run(
     claim_started_at: datetime | None = None,
     expected_submission_id: str | None = None,
     client_generation: int | None = None,
+    archive_identity: str | None = None,
 ) -> PrintRunBinding | None:
     """Bind an owned pre-publish attempt without displacing an observed run.
 
@@ -516,7 +543,11 @@ def bind_prepared_print_run(
     """
 
     if prepared_print_run_conflicts(
-        manager, printer_id, archive_id=archive_id, expected_submission_id=expected_submission_id
+        manager,
+        printer_id,
+        archive_id=archive_id,
+        expected_submission_id=expected_submission_id,
+        archive_identity=archive_identity,
     ):
         return None
     return bind_print_run(
@@ -527,6 +558,7 @@ def bind_prepared_print_run(
         claim_started_at=claim_started_at,
         expected_submission_id=expected_submission_id,
         client_generation=client_generation,
+        archive_identity=archive_identity,
         origin="dispatch",
     )
 
@@ -689,14 +721,28 @@ def begin_print_run_finishing(manager: PrinterManager, printer_id: int, archive_
 
 
 def discard_print_run(
-    manager: PrinterManager, printer_id: int, archive_id: int, *, sequence: int | None = None
+    manager: PrinterManager,
+    printer_id: int,
+    archive_id: int,
+    *,
+    sequence: int | None = None,
+    expected_identity: str | None = None,
 ) -> None:
     """Release only the named run; a new run on the same printer survives."""
 
     key = (printer_id, archive_id)
     finishing = _finishing(manager).get(key)
-    if finishing is not None and (sequence is None or finishing.sequence == sequence):
+    if (
+        finishing is not None
+        and (sequence is None or finishing.sequence == sequence)
+        and (expected_identity is None or finishing.archive_identity == expected_identity)
+    ):
         _finishing(manager).pop(key, None)
     current = _current(manager).get(printer_id)
-    if current is not None and current.archive_id == archive_id and (sequence is None or current.sequence == sequence):
+    if (
+        current is not None
+        and current.archive_id == archive_id
+        and (sequence is None or current.sequence == sequence)
+        and (expected_identity is None or current.archive_identity == expected_identity)
+    ):
         _current(manager).pop(printer_id, None)

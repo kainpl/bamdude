@@ -31,6 +31,9 @@ ISSUE_CODES = frozenset(
         "dispatch_no_progress",
         "runtime_phase_lingering",
         "queue_paused_by_repair",
+        "terminal_archive_conflicting_claims",
+        "swap_settlement_required",
+        "run_identity_unproven",
     }
 )
 # Unknown future policy/episode reasons remain incomplete evidence, never raw prose.
@@ -73,6 +76,8 @@ REASONS = frozenset(
         "requires_operator_confirmation",
         "action_not_available",
         "unknown",
+        "group_overflow",
+        "run_identity_unproven",
     }
 )
 
@@ -111,6 +116,8 @@ def safe_issue(issue):
             "active",
             "quiet_seconds",
             "age_seconds",
+            "claims_total",
+            "claims_complete",
         )
         if k in issue
     }

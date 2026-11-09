@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Restarting BamDude while a print is paused now joins that print through the same recovery path as a running print, before processing runout signals. A changed filename alone no longer resets its layer, filament or completion memory or merges it with another execution. When a new run is positively identified, its first archive commit also cancels only the older run's stale queue claims, leaving the queue paused for inspection.
+- Print-state diagnostics on the Info page can preview and cancel the complete set of stale active claims belonging to one ended archive. An owed table swap has a separate action for confirming that the operator performed it manually, including when swap mode has been turned off. Both actions require a fresh idle printer, recheck ownership and permissions, preserve pending work and record an audit; they send no printer commands. Retry and Clone refuse claims cancelled by this recovery. A rare filename change without a client-side run identity remains unresolved rather than inventing a new print; a later reconnect can reconcile the older archive when the printer supplies a different identity.
+  Backups preserve the manual swap settlement. Restoring one into an older BamDude version that does not understand it blocks print-state repair; use a version that supports the settlement instead of clearing its recorded state.
+
 - Server-side slicing defaults to OrcaSlicer 2.5.0 and Bambu Studio 02.09.01.70. Rebuild the optional slicer API containers to apply the update; existing installations also need to update their version pins in `slicer-api/.env`.
 
 - Release downloads carry one `bamdude-<version>-SHA256SUMS` for the Windows installer and the AI client packages, written only after each package matches the hashes of its own build. The package build's internal catalog (`packages.json`) and its partial checksum file are no longer attached to the release.

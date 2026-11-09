@@ -53,6 +53,10 @@ async def retry_block(db, queue_id, item_ids, *, actor, granted_scope, key_hash,
                     .execution_options(populate_existing=True)
                 )
             }
+            from backend.app.services.print_execution import STALE_CLAIM_CODES
+
+            if any(row.error_code in STALE_CLAIM_CODES for row in rows.values()):
+                raise HTTPException(409, {"code": "stale_execution_claim"})
             # Foreign rows are never locked under this lane. The result exposes
             # no foreign state, and cannot mutate or steal a different queue's job.
             blobs = {

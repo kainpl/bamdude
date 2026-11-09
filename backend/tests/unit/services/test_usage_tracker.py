@@ -21,6 +21,14 @@ from backend.app.services.usage_tracker import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_database_guard(monkeypatch):
+    # These tests isolate mapping arithmetic with ordered AsyncMock reads.
+    # Real incarnation/lock/reuse behavior is exercised on file SQLite in
+    # test_duplicate_claims_wal, rather than simulated by this math fixture.
+    monkeypatch.setattr("backend.app.services.usage_tracker._lock_usage_archive", AsyncMock())
+
+
 class TestActualFilamentGrams:
     """The weight persisted on the archive must match what inventory was deducted.
 
@@ -977,6 +985,7 @@ class TestSpoolAssignmentSnapshot:
         # then cost aggregation queries
         # NOTE: No assignment in db - it was deleted by on_ams_change mid-print!
         db = AsyncMock()
+        db.get.return_value = archive
         db.execute = AsyncMock(
             side_effect=[
                 # Journal load (m153) answers first — this print has no events.

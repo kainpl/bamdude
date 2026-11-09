@@ -170,6 +170,9 @@ export function PrintStateIssuesPanel({ search = window.location.search }: { sea
                 <p className="text-xs text-bambu-gray">{t(`printStateRecovery.live.${issue.live_mode}`)}</p>
               </>}
           {issue.blocked_reasons.map(reason => <p key={reason} className="text-xs text-bambu-gray">{t(`printStateRecovery.reasons.${reason}`)}</p>)}
+          {!!issue.member_count && issue.member_count > 1 && <p className="text-xs text-bambu-gray">{t('printStateRecovery.memberCount', { count: issue.member_count })}: {issue.members?.map(m => `#${m.id}`).join(', ')}</p>}
+          {issue.kind === 'item' && issue.related?.kind === 'header' && <a className="text-sm text-bambu-green hover:underline"
+            href={`/system?printer_id=${issue.printer_id}&kind=header&target_id=${issue.related.target_id}#print-state`}>{t('printStateRecovery.claimGroup')}</a>}
           <div className="flex flex-wrap gap-2">{issue.actions.map(action => <Button key={action} variant={action === 'delete_stale_item' ? 'danger' : 'secondary'}
             size="sm" onClick={() => setSelection({ issue, action })}>{t(`printStateRecovery.actions.${action}`)}</Button>)}
             <Button variant="ghost" size="sm" onClick={() => void showHistory(issue.printer_id)} disabled={historyBusy}>{t('printStateRecovery.history')}</Button>
@@ -187,6 +190,7 @@ export function PrintStateIssuesPanel({ search = window.location.search }: { sea
         {history.rows.length === 0 && <p>{t('printStateRecovery.historyEmpty')}</p>}
         {history.rows.map(row => <p key={row.id} className="text-sm break-words">{row.created_at ? formatDateTime(row.created_at) : ''}
           {' · '}{row.actor_label}{' · '}{t(`printStateRecovery.actions.${row.action}`)}{' · '}
+          {row.members && row.members.length > 1 && <>{t('printStateRecovery.memberCount', { count: row.members.length })}: {row.members.map(m => `#${m.id}`).join(', ')}{' · '}</>}
           {row.action === RUNTIME_ACTION
             ? t('printStateRecovery.targetArchive', { archive: row.archive_id ?? '—' })
             : t('printStateRecovery.target', { item: row.item_id ?? '—', archive: row.archive_id ?? '—' })}

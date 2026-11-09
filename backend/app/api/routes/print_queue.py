@@ -1952,7 +1952,13 @@ async def retry_failed_item(
     from backend.app.services.filament_policy import restore_routing_source
 
     try:
-        async with reusing_sources(db, [item.queue_source_id]), queue_scope_lock(db, item.queue_id):
+        async with reusing_sources(db, [item.queue_source_id], queue_ids=[item.queue_id]):
+            from backend.app.services.print_execution import require_repeatable
+
+            item = await db.get(PrintQueueItem, item_id, populate_existing=True, with_for_update=True)
+            if item is None or item.status not in ("failed", "cancelled"):
+                raise HTTPException(409, "recovery_changed")
+            await require_repeatable(db, item)
             max_pos = (
                 await db.execute(
                     select(func.max(PrintQueueItem.position))
@@ -2253,9 +2259,16 @@ async def clone_batch_endpoint(
     — on the operator's screen the difference between "the file is unreadable" and
     "BamDude is broken", and the frontend branches on ``detail.code``.
     """
+    from backend.app.services.print_execution import require_repeatable
     from backend.app.services.queue_counters import update_queue_counters
     from backend.app.services.queue_ops import clone_batch, clone_item, get_batch_pending_items
 
+    batch_members = list((await db.scalars(select(PrintQueueItem).where(PrintQueueItem.batch_id == batch_id))).all())
+    try:
+        for member in batch_members:
+            await require_repeatable(db, member, whole_batch=True)
+    except QueueSourceError as exc:
+        raise refusal(exc) from exc
     pending = await get_batch_pending_items(db, batch_id)
     if not pending:
         raise HTTPException(404, "No pending items in batch")

@@ -1272,6 +1272,7 @@ class ArchiveService:
         original_filename: str | None = None,
         *,
         received_name: str | None = None,
+        expected_identity: str | None = None,
     ) -> bool:
         """Prepare a recovered 3MF off-loop, then publish it under a short guard.
 
@@ -1298,9 +1299,12 @@ class ArchiveService:
                 # copying and parsing a potentially huge G-code container.
                 async with archive_write_scope(self.db, archive_id):
                     archive = await load_active_archive_for_write(self.db, archive_id)
-                    if archive is None:
+                    if archive is None or (
+                        expected_identity is not None and archive.recovery_identity != expected_identity
+                    ):
                         await self.db.rollback()
                         return False
+                    expected_identity = archive.recovery_identity
                     printer_folder = str(archive.printer_id) if archive.printer_id is not None else "unassigned"
                     plate_index = archive.plate_index
                     await self.db.commit()
@@ -1332,6 +1336,10 @@ class ArchiveService:
                     prepare_task.add_done_callback(_discard_after_prepare)
                     raise
                 async with archive_write_scope(self.db, archive_id):
+                    current = await load_active_archive_for_write(self.db, archive_id)
+                    if current is None or current.recovery_identity != expected_identity:
+                        await self.db.rollback()
+                        return False
                     return await self._attach_3mf_to_archive_locked(
                         archive_id,
                         source_file,
@@ -1801,7 +1809,9 @@ class ArchiveService:
             if file_reference_scope is not None:
                 await file_reference_scope.__aexit__(None, None, None)
 
-    async def mark_3mf_unavailable(self, archive_id: int, reason: str | None = None) -> bool:
+    async def mark_3mf_unavailable(
+        self, archive_id: int, reason: str | None = None, *, expected_identity: str | None = None
+    ) -> bool:
         """Record a real 3MF recovery failure without overwriting a success.
 
         An empty ``file_path`` while FTP is still in flight is not a failure.
@@ -1817,7 +1827,11 @@ class ArchiveService:
         try:
             async with archive_write_scope(self.db, archive_id):
                 archive = await load_active_archive_for_write(self.db, archive_id)
-                if archive is None or archive.file_path:
+                if (
+                    archive is None
+                    or archive.file_path
+                    or (expected_identity is not None and archive.recovery_identity != expected_identity)
+                ):
                     await self.db.rollback()
                     return False
                 extra = {**(archive.extra_data or {}), "no_3mf_available": True}
@@ -1859,6 +1873,10 @@ class ArchiveService:
         completed_at: datetime | None = None,
         failure_reason: str | None = None,
         error_message: str | None = None,
+        *,
+        expected_identity: str | None = None,
+        expected_epoch: int | None = None,
+        created_by_id: int | None = None,
     ) -> bool:
         """Update the status of an archive.
 
@@ -1866,25 +1884,35 @@ class ArchiveService:
         "Filament runout"); ``error_message`` is the verbose diagnostic text
         (TEXT) carried over from the queue item on failure.
         """
-        archive = await self.get_archive(archive_id)
-        if not archive:
-            return False
+        from backend.app.services import queue_sources
+        from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 
-        archive.status = status
-        if completed_at:
-            archive.completed_at = completed_at
-        if failure_reason:
-            archive.failure_reason = failure_reason
-        elif status == "failed" and not archive.failure_reason:
-            # A new failed record always names a class: the printer gave no known cause (D-R6).
-            from backend.app.utils.failure_reasons import OTHER
+        async with archive_write_scope(self.db, archive_id):
+            archive = await load_active_archive_for_write(self.db, archive_id)
+            if (
+                archive is None
+                or (expected_identity is not None and archive.recovery_identity != expected_identity)
+                or (expected_epoch is not None and queue_sources.current_epoch() != expected_epoch)
+                or not isinstance(archive.extra_data, (dict, type(None)))
+                or "noncurrent_execution" in (archive.extra_data or {})
+            ):
+                await self.db.rollback()
+                return False
+            if created_by_id is not None and archive.created_by_id is None:
+                archive.created_by_id = created_by_id
+            archive.status = status
+            if completed_at:
+                archive.completed_at = completed_at
+            if failure_reason:
+                archive.failure_reason = failure_reason
+            elif status == "failed" and not archive.failure_reason:
+                from backend.app.utils.failure_reasons import OTHER
 
-            archive.failure_reason = OTHER
-        if error_message and not archive.error_message:
-            archive.error_message = error_message
-
-        await self.db.commit()
-        return True
+                archive.failure_reason = OTHER
+            if error_message and not archive.error_message:
+                archive.error_message = error_message
+            await self.db.commit()
+            return True
 
     async def list_archives(
         self,
@@ -2316,6 +2344,9 @@ class ArchiveService:
         archive_id: int,
         timelapse_data: bytes,
         filename: str = "timelapse.mp4",
+        *,
+        expected_identity: str | None = None,
+        expected_epoch: int | None = None,
     ) -> bool:
         """Attach a timelapse video to an archive.
 
@@ -2325,7 +2356,16 @@ class ArchiveService:
         import asyncio
 
         archive = await self.get_archive(archive_id)
-        if not archive:
+        if not archive or (expected_identity is not None and archive.recovery_identity != expected_identity):
+            return False
+        from backend.app.services import queue_sources
+        from backend.app.services.print_execution import NONCURRENT
+
+        if NONCURRENT in (archive.extra_data or {}):
+            return False
+        expected_identity = archive.recovery_identity
+        epoch = queue_sources.current_epoch() if expected_epoch is None else expected_epoch
+        if queue_sources.current_epoch() != epoch:
             return False
 
         # Where this archive's files live — the shared helper, never derived
@@ -2338,7 +2378,7 @@ class ArchiveService:
         # below (upstream #2843).
         from backend.app.utils.archive_paths import archive_dir_for
 
-        archive_dir = archive_dir_for(archive)
+        archive_dir = archive_dir_for(archive) / "timelapse" / expected_identity
 
         # ``filename`` originates from a printer's FTP directory listing (the
         # printer is part of the trust surface — a compromised/malicious printer
@@ -2360,14 +2400,30 @@ class ArchiveService:
         # (timelapse files can be 100MB+, sync write blocks for seconds)
         await asyncio.to_thread(timelapse_file.write_bytes, timelapse_data)
 
-        # Update archive record
-        archive.timelapse_path = str(timelapse_file.relative_to(settings.base_dir))
+        # I/O used a private incarnation directory; a reused numeric id cannot
+        # have its file overwritten, even when deletion raced the write above.
+        from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+
         await self.db.commit()
+        async with queue_sources.storage_mutation(), archive_write_scope(self.db, archive_id):
+            current = await load_active_archive_for_write(self.db, archive_id)
+            if (
+                current is None
+                or current.recovery_identity != expected_identity
+                or queue_sources.current_epoch() != epoch
+                or NONCURRENT in (current.extra_data or {})
+            ):
+                await self.db.rollback()
+                return False
+            current.timelapse_path = str(timelapse_file.relative_to(settings.base_dir))
+            await self.db.commit()
 
         # For non-MP4 videos (e.g. AVI from P1S), kick off background conversion
         if not filename.lower().endswith(".mp4"):
             spawn_background_task(
-                _convert_timelapse_to_mp4(archive_id, timelapse_file),
+                _convert_timelapse_to_mp4(
+                    archive_id, timelapse_file, expected_identity=expected_identity, expected_epoch=epoch
+                ),
                 name=f"timelapse-convert-{archive_id}",
             )
 
@@ -2395,7 +2451,9 @@ def _remove_id_owned_folders(archive_id: int) -> None:
             shutil.rmtree(folder, ignore_errors=True)
 
 
-async def _convert_timelapse_to_mp4(archive_id: int, source_path: Path) -> None:
+async def _convert_timelapse_to_mp4(
+    archive_id: int, source_path: Path, *, expected_identity: str | None = None, expected_epoch: int | None = None
+) -> None:
     """Background task: convert non-MP4 timelapse (e.g. AVI from P1S) to MP4.
 
     Runs with low CPU priority (-threads 1, nice) so it doesn't starve
@@ -2417,6 +2475,20 @@ async def _convert_timelapse_to_mp4(archive_id: int, source_path: Path) -> None:
         )
         return
 
+    from backend.app.services import queue_sources
+    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+    from backend.app.services.print_execution import NONCURRENT
+
+    # The production attach supplies its pre-I/O identity. Legacy direct callers
+    # acquire it before launching the converter, never after it has returned.
+    async with async_session() as db:
+        from backend.app.models.archive import PrintArchive
+
+        archive = await db.get(PrintArchive, archive_id)
+        if archive is None or (expected_identity is not None and archive.recovery_identity != expected_identity):
+            return
+        expected_identity = archive.recovery_identity
+    expected_epoch = queue_sources.current_epoch() if expected_epoch is None else expected_epoch
     mp4_path = source_path.with_suffix(".mp4")
 
     try:
@@ -2469,14 +2541,17 @@ async def _convert_timelapse_to_mp4(archive_id: int, source_path: Path) -> None:
             return
 
         # Update DB path to the new MP4 file
-        async with async_session() as db:
-            from backend.app.models.archive import PrintArchive
-
-            result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
-            archive = result.scalar_one_or_none()
-            if archive:
-                archive.timelapse_path = str(mp4_path.relative_to(settings.base_dir))
-                await db.commit()
+        async with async_session() as db, queue_sources.storage_mutation(), archive_write_scope(db, archive_id):
+            archive = await load_active_archive_for_write(db, archive_id)
+            if (
+                archive is None
+                or archive.recovery_identity != expected_identity
+                or queue_sources.current_epoch() != expected_epoch
+                or NONCURRENT in (archive.extra_data or {})
+            ):
+                return
+            archive.timelapse_path = str(mp4_path.relative_to(settings.base_dir))
+            await db.commit()
 
         # Remove original non-MP4 file
         if source_path.exists():

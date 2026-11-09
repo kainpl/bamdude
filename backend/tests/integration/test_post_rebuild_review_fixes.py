@@ -39,11 +39,9 @@ LONG_AGO = datetime.now(timezone.utc) - timedelta(hours=5)
 # ── 1 · the print-start cleanup never completes an unaccepted attempt by its timer ──
 
 
-@pytest.mark.parametrize("phase, closed", [("prepared", False), ("sending", False), ("sent", False), (None, True)])
-async def test_the_stale_row_cleanup_leaves_an_unaccepted_attempt_to_its_recovery(
-    db_session, printer_factory, phase, closed
-):
-    from backend.app.main import _close_stale_printing_rows
+@pytest.mark.parametrize("phase", ["prepared", "sending", "sent", None])
+async def test_the_stale_row_cleanup_leaves_an_unaccepted_attempt_to_its_recovery(db_session, printer_factory, phase):
+    from backend.app.services.print_execution import ExecutionChanged, decide_start
 
     printer = await printer_factory()
     archive = PrintArchive(
@@ -62,11 +60,12 @@ async def test_the_stale_row_cleanup_leaves_an_unaccepted_attempt_to_its_recover
     await db_session.commit()
     archive_id = archive.id
 
-    await _close_stale_printing_rows(printer.id, "another-file", db_session, logging.getLogger(__name__))
+    with pytest.raises(ExecutionChanged):
+        await decide_start(db_session, printer.id, {"filename": "another-file"})
 
     db_session.expire_all()
     status = await db_session.scalar(select(PrintArchive.status).where(PrintArchive.id == archive_id))
-    assert status == ("completed" if closed else "printing")
+    assert status == "printing"
 
 
 # ── 4 · a print seen running marks its attempt accepted; a checkpoint outranks the veto ──
@@ -113,7 +112,6 @@ async def print_starts(test_engine, monkeypatch, printer_id: int) -> None:
         patch("backend.app.main._send_print_start_notification", new_callable=AsyncMock),
         patch("backend.app.main._load_objects_from_archive"),
         patch("backend.app.main._record_energy_start", new_callable=AsyncMock),
-        patch("backend.app.main.mark_queue_printing_for_printer", new_callable=AsyncMock),
         patch("backend.app.services.macro_trigger.fire_event_macros", new_callable=AsyncMock),
         patch("backend.app.main._capture_timelapse_baseline_at_start", new_callable=AsyncMock),
     ):
@@ -141,6 +139,8 @@ async def test_a_print_seen_starting_marks_its_attempt_accepted(
         file_size=0,
         print_name="widget",
         status="failed" if how == "expected" else "printing",
+        subtask_id="77",
+        extra_data={"dispatch_intent": {"version": 1, "submission_id": "77"}},
         dispatch_phase="sent",
         dispatch_boot_id="this-boot" if how == "expected" else "a-boot-that-ended",
     )
@@ -149,6 +149,15 @@ async def test_a_print_seen_starting_marks_its_attempt_accepted(
     archive_id = archive.id
     if how == "expected":
         main_module._expected_prints[(printer.id, "widget")] = archive_id
+        from backend.app.services.print_run_binding import bind_prepared_print_run
+
+        bind_prepared_print_run(
+            main_module.printer_manager,
+            printer_id=printer.id,
+            archive_id=archive_id,
+            archive_identity=archive.recovery_identity,
+            expected_submission_id="77",
+        )
 
     await print_starts(test_engine, monkeypatch, printer.id)
 

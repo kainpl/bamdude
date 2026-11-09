@@ -213,30 +213,26 @@ class TestAPrintAlreadyRunningClaimsItsRow:
         assert [(r.status, r.archive_id, r.plate_id) for r in rows] == [("printing", adopted.id, 2)]
 
 
-class TestADiscardedArchiveTakesNoRowWithIt:
-    async def test_the_row_is_repointed_at_the_adopted_archive(self, db_session, printer_factory, main_db):
-        from backend.app.main import _discard_provisional_archive
+class TestAmbiguousArchivesKeepTheirOriginalClaims:
+    async def test_no_provisional_transfer_or_deletion(self, db_session, printer_factory, main_db):
+        from backend.app.services.print_execution import ExecutionChanged, decide_start
 
         printer_id = await _printer_with_queue(db_session, printer_factory)
-        stale = PrintArchive(printer_id=printer_id, filename="a.3mf", file_path="", file_size=0, status="printing")
-        adopted = PrintArchive(
-            printer_id=printer_id, filename="a.3mf", file_path="x/a.3mf", file_size=1, status="printing"
-        )
-        db_session.add_all([stale, adopted])
-        await db_session.commit()
-        row = PrintQueueItem(queue_id=printer_id, status="printing", position=0, archive_id=stale.id)
-        db_session.add(row)
-        await db_session.commit()
-        stale_id, adopted_id, row_id = stale.id, adopted.id, row.id
-
-        with patch("backend.app.main.ws_manager", MagicMock(send_archive_updated=AsyncMock())):
-            await _discard_provisional_archive(
-                db_session, stale, logging.getLogger("test"), adopted_archive_id=adopted_id
+        rows = [
+            PrintArchive(
+                printer_id=printer_id, filename="a.3mf", subtask_id="100", file_path="", file_size=0, status="printing"
             )
-
-        db_session.expire_all()
-        assert await db_session.get(PrintArchive, stale_id) is None
-        assert (await db_session.get(PrintQueueItem, row_id)).archive_id == adopted_id
+            for _ in range(2)
+        ]
+        db_session.add_all(rows)
+        await db_session.flush()
+        item = PrintQueueItem(queue_id=printer_id, archive_id=rows[0].id, status="printing")
+        db_session.add(item)
+        await db_session.commit()
+        with pytest.raises(ExecutionChanged):
+            await decide_start(db_session, printer_id, {"subtask_id": "100"})
+        assert item.archive_id == rows[0].id and item.status == "printing"
+        assert len((await db_session.scalars(select(PrintArchive))).all()) == 2
 
 
 class TestTheCompletionFindsTheRowByThePrintersQueue:

@@ -162,6 +162,7 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
         file_path,
         archive.plate_index,
         timeout=1.0,
+        expected_identity=archive.recovery_identity,
     )
     # The child may have taken seconds.  Do not render a finished or replaced
     # run from the archive/state snapshot taken before that wait; the next poll

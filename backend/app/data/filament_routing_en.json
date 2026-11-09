@@ -90,5 +90,6 @@
   "farm_recovery_hold": "New starts are held while the farm recovers. Check the startup banner.",
   "printer_busy_at_start": "The printer became busy just before the print would start, so it was not started.",
   "printer_not_connected": "The printer was not connected when the print would start, so it was not started.",
-  "start_refused": "The printer did not take the start command, so the print was not started."
+  "start_refused": "The printer did not take the start command, so the print was not started.",
+  "stale_execution_claim": "This stale queue claim cannot be retried or cloned. Check its execution archive."
 }

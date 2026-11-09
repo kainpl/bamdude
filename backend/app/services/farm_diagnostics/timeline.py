@@ -28,6 +28,8 @@ RECOVERY_ACTIONS = {
     "delete_stale_item",
     "close_interrupted_attempt",
     "clear_terminal_runtime_context",
+    "cancel_terminal_claims",
+    "settle_swap_by_operator",
 }
 
 

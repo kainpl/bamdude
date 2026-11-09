@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID
 
 from backend.app.i18n import current_language, t
 from backend.app.services import swap_compatibility
@@ -32,6 +33,76 @@ from backend.app.services.archive_write_scope import archive_write_scope, load_a
 START_EFFECT_KEY = "swap_start_effect"
 START_POSSIBLY_FIRED = "possibly_fired"
 START_FIRED = "fired"
+SETTLED_BY_OPERATOR = "settled_by_operator"
+
+
+def operator_settlement(extra, archive_identity=None):
+    """Read only our complete addressed v1 assertion; never interpret it as a command answer."""
+    if not isinstance(extra, Mapping):
+        return None
+    effects = extra.get("bamdude_terminal_effects")
+    record = effects.get("swap_change_table") if isinstance(effects, Mapping) else None
+    if not isinstance(record, dict) or record.get("stage") != SETTLED_BY_OPERATOR:
+        return None
+    try:
+        if type(record.get("version")) is not int or record["version"] != 1:
+            return None
+        UUID(record["archive_identity"])
+        UUID(record["action_identity"])
+        datetime.fromisoformat(record["at"])
+        if not isinstance(record["actor"], str) or not record["actor"]:
+            return None
+        previous = record["previous_effect"]
+        if not isinstance(previous, dict) or previous.get("stage") != "owed" or previous.get("version", 1) != 1:
+            return None
+        hold = record["previous_hold"]
+        if not isinstance(hold, dict) or type(hold.get("present")) is not bool or "value" not in hold:
+            return None
+        if archive_identity is not None and record["archive_identity"] != archive_identity:
+            return None
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return None
+    return record
+
+
+def unsettled_hold(extra, archive_identity=None):
+    if not isinstance(extra, Mapping) or "swap_hold" not in extra:
+        return False
+    settled = operator_settlement(extra, archive_identity)
+    return not (settled and settled["previous_hold"] == {"present": True, "value": extra["swap_hold"]})
+
+
+def settle_by_operator(archive, *, action_identity, actor, at):
+    """Caller proved idle/ownership, holds archive+lane/writer, and owns commit/audit."""
+    extra = dict(archive.extra_data or {})
+    effects = dict(extra.get("bamdude_terminal_effects") or {})
+    previous = effects.get("swap_change_table")
+    pending = extra.get("swap_macro_events_pending")
+    if (
+        not isinstance(previous, dict)
+        or previous.get("stage") != "owed"
+        or previous.get("version", 1) != 1
+        or not isinstance(pending, list)
+        or pending.count("swap_mode_change_table") != 1
+    ):
+        raise ValueError("recovery_changed")
+    record = {
+        "version": 1,
+        "stage": SETTLED_BY_OPERATOR,
+        "archive_identity": archive.recovery_identity,
+        "action_identity": action_identity,
+        "actor": actor,
+        "at": at.isoformat(),
+        "previous_effect": dict(previous),
+        "previous_hold": {"present": "swap_hold" in extra, "value": extra.get("swap_hold")},
+    }
+    effects["swap_change_table"] = record
+    extra["bamdude_terminal_effects"] = effects
+    extra["swap_macro_events_pending"] = [e for e in pending if e != "swap_mode_change_table"]
+    if operator_settlement(extra, archive.recovery_identity) is None:
+        raise ValueError("recovery_changed")
+    archive.extra_data = extra
+
 
 #: What a held run records on its archive: the codes the archive card shows (never a sentence).
 HOLD_KEY = "swap_hold"

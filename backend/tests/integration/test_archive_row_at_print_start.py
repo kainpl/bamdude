@@ -15,11 +15,8 @@ same direction. That is why the ordering assertions here are on the *events*
 and not merely on the final DB shape — "the row eventually exists" was true
 before this change too.
 
-⚠️ **Exactly one row per physical print.** Two branches downstream of the
-download can still conclude the print already had an archive (the
-plate-corrected re-download, and content-hash adoption). Each is a place
-where the speculative row has to be withdrawn rather than left behind, so
-the tests below count rows, not just inspect them.
+An existing execution is adopted by its durable run ID before FTP. Downloaded
+bytes can describe a file but never prove that two executions are the same.
 """
 
 from __future__ import annotations
@@ -292,15 +289,11 @@ class TestTheRowComesFirst:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-class TestTheSpeculativeRowIsWithdrawn:
-    async def test_hash_adoption_leaves_exactly_one_row(
+class TestIdentityPrecedesTheDownload:
+    async def test_durable_identity_adopts_before_ftp(
         self, db_session, test_engine, tmp_path, monkeypatch, printer_factory
     ):
-        """Restart-mid-print: an in-flight row already exists but is named in a
-        way the pre-download name lookup misses. The downloaded bytes identify
-        it by hash — and the row this handler created on the way there has to
-        go, or the print ends up with two archives.
-        """
+        """An unusual name cannot hide a positively identified live execution."""
         printer = await _prepare_printer(printer_factory)
         src = tmp_path / "Plate_3.gcode.3mf"
         payload = _write_3mf(src)
@@ -319,6 +312,7 @@ class TestTheSpeculativeRowIsWithdrawn:
             source_content_hash=content_hash,
             plate_index=3,
             status="printing",
+            subtask_id="sub-42",
             started_at=datetime.now(timezone.utc),
         )
         db_session.add(existing)
@@ -341,12 +335,12 @@ class TestTheSpeculativeRowIsWithdrawn:
         # adopted the row — it returns before the download, so it never creates
         # a second row and never needs one withdrawn. That is a different code
         # path and would leave this one untested.
-        assert "download" in rec.seq, "name-match adopted first — content-hash adoption was never exercised"
+        assert "download" not in rec.seq, "the durable identity should resolve before any FTP"
         assert [r.id for r in rows] == [existing_id], (
             "the print-start row survived alongside the adopted one — one physical print, two archives"
         )
 
-    async def test_no_active_print_key_survives_pointing_at_the_deleted_row(
+    async def test_aliases_keep_the_proven_existing_archive(
         self, db_session, test_engine, tmp_path, monkeypatch, printer_factory
     ):
         """A key left behind on a deleted id reads to the duplicate guard as
@@ -368,6 +362,7 @@ class TestTheSpeculativeRowIsWithdrawn:
             source_content_hash=content_hash,
             plate_index=3,
             status="printing",
+            subtask_id="sub-42",
             started_at=datetime.now(timezone.utc),
         )
         db_session.add(existing)
@@ -386,6 +381,6 @@ class TestTheSpeculativeRowIsWithdrawn:
             recorder=rec,
         )
 
-        assert "download" in rec.seq, "name-match adopted first — content-hash adoption was never exercised"
+        assert "download" not in rec.seq, "the durable identity should resolve before any FTP"
         live_ids = set(_active_prints.values())
-        assert live_ids == {existing_id}, f"stale ids left in _active_prints: {live_ids - {existing_id}}"
+        assert live_ids <= {existing_id}, f"stale ids left in _active_prints: {live_ids - {existing_id}}"

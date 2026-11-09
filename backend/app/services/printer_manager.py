@@ -1306,7 +1306,13 @@ class PrinterManager:
 
         def on_print_start(data: dict):
             if self._on_print_start:
-                self._schedule_for_client(printer_id, session_life, self._on_print_start(printer_id, _with_life(data)))
+                self._schedule_for_client(
+                    printer_id,
+                    session_life,
+                    self._on_print_start(
+                        printer_id, {**_with_life(data), "_bamdude_client_generation": client_generation}
+                    ),
+                )
 
         def on_print_complete(data: dict):
             if self._on_print_complete:
@@ -1325,7 +1331,11 @@ class PrinterManager:
         def on_print_running_observed(data: dict):
             if self._on_print_running_observed:
                 self._schedule_for_client(
-                    printer_id, session_life, self._on_print_running_observed(printer_id, _with_life(data))
+                    printer_id,
+                    session_life,
+                    self._on_print_running_observed(
+                        printer_id, {**_with_life(data), "_bamdude_client_generation": client_generation}
+                    ),
                 )
 
         def on_finish_photo_moment(data: dict):

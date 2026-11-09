@@ -46,7 +46,7 @@ class TestCalibrationPrintFiltering:
 
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock()
+            mock_session.__aexit__ = AsyncMock(return_value=False)
             mock_session.execute = AsyncMock(
                 return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=mock_printer))
             )
@@ -109,7 +109,7 @@ class TestCalibrationPrintFiltering:
 
                 mock_session = AsyncMock()
                 mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-                mock_session.__aexit__ = AsyncMock()
+                mock_session.__aexit__ = AsyncMock(return_value=False)
                 mock_session.execute = AsyncMock(
                     return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=mock_printer))
                 )
@@ -151,13 +151,21 @@ class TestCalibrationPrintFiltering:
 
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock()
+            mock_session.__aexit__ = AsyncMock(return_value=False)
             mock_session.execute = AsyncMock(
                 return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=mock_printer))
             )
             mock_session_maker.return_value = mock_session
 
             from backend.app.main import on_print_start
+            from backend.app.services.print_execution import ExecutionChanged
+
+            # Isolate this filename-filter test before DB admission.
+            decide = patch("backend.app.services.print_execution.decide_start", new_callable=AsyncMock)
+            decide_mock = decide.start()
+            decide_mock.side_effect = ExecutionChanged("unresolved test fixture")
+            record = patch("backend.app.main._record_unproven_start", new_callable=AsyncMock)
+            record.start()
 
             await on_print_start(
                 1,
@@ -167,6 +175,8 @@ class TestCalibrationPrintFiltering:
                 },
             )
 
+        decide.stop()
+        record.stop()
         # Should NOT see "internal printer job" skip message
         skip_msgs = [r for r in capture_logs.records if "internal printer job" in str(r.message)]
         assert not skip_msgs, "User gcode should not be skipped"
@@ -292,7 +302,7 @@ class TestScanForTimelapseWithRetries:
         """Create a mock async session that returns the given printer."""
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
+        mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(
             return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=mock_printer))
         )
@@ -450,7 +460,7 @@ class TestScanForTimelapseWithRetries:
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
+        mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with (
             patch("backend.app.main.async_session", return_value=mock_session),
@@ -474,7 +484,7 @@ class TestScanForTimelapseWithRetries:
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
+        mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with (
             patch("backend.app.main.async_session", return_value=mock_session),
@@ -613,7 +623,7 @@ class TestListTimelapseVideosAvi:
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
+        mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(
             return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=mock_printer))
         )
@@ -644,158 +654,72 @@ class TestListTimelapseVideosAvi:
 
 
 class TestConvertTimelapseToMp4:
-    """Test the background AVI-to-MP4 conversion."""
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("exit_code", [0, 1])
+    async def test_conversion_keeps_source_on_failure_and_updates_only_after_success(
+        self, db_session, test_engine, archive_factory, printer_factory, monkeypatch, tmp_path, exit_code
+    ):
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        from backend.app.core.config import settings
+        from backend.app.services.archive import _convert_timelapse_to_mp4
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, file_path="")
+        source = tmp_path / "video.avi"
+        source.write_bytes(b"avi")
+        output = source.with_suffix(".mp4")
+        output.write_bytes(b"mp4")
+        monkeypatch.setattr(settings, "base_dir", tmp_path)
+        monkeypatch.setattr(
+            "backend.app.core.database.async_session", async_sessionmaker(test_engine, expire_on_commit=False)
+        )
+        monkeypatch.setattr("backend.app.services.camera.get_ffmpeg_path", lambda: "ffmpeg")
+        process = AsyncMock()
+        process.communicate.return_value = (b"", b"failure" if exit_code else b"")
+        process.returncode = exit_code
+        execute = AsyncMock(return_value=process)
+        monkeypatch.setattr("asyncio.create_subprocess_exec", execute)
+        await _convert_timelapse_to_mp4(archive.id, source, expected_identity=archive.recovery_identity)
+        await db_session.refresh(archive)
+        assert source.exists() == bool(exit_code)
+        assert output.exists() == (not exit_code)
+        assert archive.timelapse_path == (None if exit_code else "video.mp4")
+        assert "-threads" in execute.call_args.args
 
     @pytest.mark.asyncio
-    async def test_converts_avi_to_mp4(self, tmp_path):
-        """Should call FFmpeg to convert and update the DB path."""
+    async def test_skips_when_no_ffmpeg(self, tmp_path, monkeypatch):
+        from backend.app.services.archive import _convert_timelapse_to_mp4
+
         source = tmp_path / "video.avi"
-        source.write_bytes(b"fake avi")
-        mp4_path = tmp_path / "video.mp4"
-
-        mock_process = AsyncMock()
-        mock_process.communicate = AsyncMock(return_value=(b"", b""))
-        mock_process.returncode = 0
-
-        mock_archive = MagicMock()
-        mock_archive.id = 42
-        mock_archive.timelapse_path = "archives/42/video.avi"
-
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_archive
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.commit = AsyncMock()
-
-        with (
-            patch("backend.app.services.camera.get_ffmpeg_path", return_value="/usr/bin/ffmpeg"),
-            patch("backend.app.core.database.async_session", return_value=mock_session),
-            patch("backend.app.services.archive.settings") as mock_settings,
-            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-        ):
-            mock_settings.base_dir = tmp_path
-            mock_exec.return_value = mock_process
-            # Create the expected output file (as FFmpeg would)
-            mp4_path.write_bytes(b"fake mp4 output")
-
-            from backend.app.services.archive import _convert_timelapse_to_mp4
-
-            await _convert_timelapse_to_mp4(42, source)
-
-        # FFmpeg should have been called
-        mock_exec.assert_called_once()
-        cmd_args = mock_exec.call_args[0]
-        assert "/usr/bin/ffmpeg" in cmd_args
-        assert "-threads" in cmd_args
-        assert "1" in cmd_args
-
-        # DB should have been updated to .mp4 path
-        mock_session.commit.assert_called_once()
-        assert mock_archive.timelapse_path == "video.mp4"
-
-    @pytest.mark.asyncio
-    async def test_skips_when_no_ffmpeg(self, tmp_path):
-        """Should log and return without converting when FFmpeg is unavailable."""
-        source = tmp_path / "video.avi"
-        source.write_bytes(b"fake avi")
-
-        with patch("backend.app.services.camera.get_ffmpeg_path", return_value=None):
-            from backend.app.services.archive import _convert_timelapse_to_mp4
-
-            await _convert_timelapse_to_mp4(1, source)
-
-        # Source file should still exist (not deleted)
-        assert source.exists()
-
-    @pytest.mark.asyncio
-    async def test_cleans_up_on_ffmpeg_failure(self, tmp_path):
-        """Should remove partial MP4 and keep source on conversion failure."""
-        source = tmp_path / "video.avi"
-        source.write_bytes(b"fake avi")
-        mp4_path = tmp_path / "video.mp4"
-
-        mock_process = AsyncMock()
-        mock_process.communicate = AsyncMock(return_value=(b"", b"conversion error"))
-        mock_process.returncode = 1
-
-        with (
-            patch("backend.app.services.camera.get_ffmpeg_path", return_value="/usr/bin/ffmpeg"),
-            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-        ):
-            mock_exec.return_value = mock_process
-            # Simulate partial output file
-            mp4_path.write_bytes(b"partial")
-
-            from backend.app.services.archive import _convert_timelapse_to_mp4
-
-            await _convert_timelapse_to_mp4(1, source)
-
-        # Partial MP4 should be cleaned up
-        assert not mp4_path.exists()
-        # Source should still exist
+        source.write_bytes(b"avi")
+        monkeypatch.setattr("backend.app.services.camera.get_ffmpeg_path", lambda: None)
+        await _convert_timelapse_to_mp4(1, source)
         assert source.exists()
 
 
 class TestAttachTimelapseBackgroundConversion:
-    """Test that attach_timelapse spawns background conversion for non-MP4."""
-
     @pytest.mark.asyncio
-    async def test_mp4_does_not_spawn_conversion(self, tmp_path):
-        """MP4 files should not trigger background conversion."""
+    @pytest.mark.parametrize("extension", ["mp4", "avi"])
+    async def test_conversion_only_for_non_mp4(
+        self, db_session, archive_factory, printer_factory, monkeypatch, tmp_path, extension
+    ):
+        from backend.app.core.config import settings
         from backend.app.services.archive import ArchiveService
 
-        mock_archive = MagicMock()
-        mock_archive.file_path = "archives/1/file.3mf"
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, file_path="")
+        monkeypatch.setattr(settings, "base_dir", tmp_path)
+        monkeypatch.setattr(settings, "archive_dir", tmp_path / "archive")
+        tasks = []
 
-        mock_db = AsyncMock()
-        service = ArchiveService(mock_db)
-        service.get_archive = AsyncMock(return_value=mock_archive)
+        def spawn(coro, **kwargs):
+            tasks.append(kwargs["name"])
+            coro.close()
 
-        archive_dir = tmp_path / "archives" / "1"
-        archive_dir.mkdir(parents=True)
-
-        with (
-            patch("backend.app.services.archive.settings") as mock_settings,
-            patch("asyncio.create_task") as mock_create_task,
-        ):
-            mock_settings.base_dir = tmp_path
-
-            result = await service.attach_timelapse(1, b"fake mp4 data", "video.mp4")
-
-        assert result is True
-        mock_create_task.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_avi_spawns_background_conversion(self, tmp_path):
-        """AVI files should trigger background conversion task."""
-        from backend.app.services.archive import ArchiveService
-
-        mock_archive = MagicMock()
-        mock_archive.file_path = "archives/1/file.3mf"
-
-        mock_db = AsyncMock()
-        service = ArchiveService(mock_db)
-        service.get_archive = AsyncMock(return_value=mock_archive)
-
-        archive_dir = tmp_path / "archives" / "1"
-        archive_dir.mkdir(parents=True)
-
-        with (
-            patch("backend.app.services.archive.settings") as mock_settings,
-            patch("asyncio.create_task") as mock_create_task,
-        ):
-            mock_settings.base_dir = tmp_path
-
-            result = await service.attach_timelapse(1, b"fake avi data", "video.avi")
-
-        assert result is True
-        mock_create_task.assert_called_once()
-        # Verify task name includes archive ID
-        assert "timelapse-convert-1" in mock_create_task.call_args[1]["name"]
-        # Close the unawaited coroutine to prevent GC warning
-        mock_create_task.call_args[0][0].close()
+        monkeypatch.setattr("backend.app.services.archive.spawn_background_task", spawn)
+        assert await ArchiveService(db_session).attach_timelapse(archive.id, b"video", f"video.{extension}")
+        assert tasks == ([f"timelapse-convert-{archive.id}"] if extension == "avi" else [])
 
 
 class TestDeleteTimelapse:

@@ -60,6 +60,7 @@ async def test_actual_completion_backgrounds_run_after_callback(
         queue_item_id=row.id,
         claim_started_at=row.started_at,
         observed_subtask_id="81",
+        archive_identity=archive.recovery_identity,
     )
     monkeypatch.setattr(main, "printer_manager", manager)
     monkeypatch.setattr(main, "async_session", factory)
@@ -195,7 +196,7 @@ async def test_concurrent_no_archive_starts_share_admission(test_engine, printer
     ws.send_print_start.assert_awaited_once()
 
 
-async def test_unarchived_successor_can_finish_while_old_archive_consumers_remain(monkeypatch):
+async def test_unarchived_successor_can_finish_while_old_archive_consumers_remain(monkeypatch, test_engine):
     from backend.app.services.print_run_binding import (
         begin_print_run_finishing,
         bind_print_run,
@@ -203,6 +204,9 @@ async def test_unarchived_successor_can_finish_while_old_archive_consumers_remai
         finish_print_start,
     )
 
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    monkeypatch.setattr(main, "async_session", factory)
+    monkeypatch.setattr("backend.app.core.database.async_session", factory)
     manager = PrinterManager()
     bind_print_run(manager, printer_id=1, archive_id=80, observed_subtask_id="80")
     begin_print_run_finishing(manager, 1, 80)

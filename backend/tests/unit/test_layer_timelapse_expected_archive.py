@@ -50,6 +50,25 @@ def _clear_dicts():
     _active_prints.clear()
 
 
+@pytest.fixture(autouse=True)
+def _expected_admission(monkeypatch):
+    from types import SimpleNamespace
+
+    from backend.app.services.print_claims import ClaimResult
+
+    # A prepared expected archive was already resolved by the existing writer.
+    async def decide(*args, **kwargs):
+        return SimpleNamespace(
+            current_id=next(iter(_expected_prints.values()), None), current_identity="test-expected-42", old=()
+        )
+
+    monkeypatch.setattr("backend.app.services.print_execution.decide_start", decide)
+    monkeypatch.setattr(
+        "backend.app.main.mark_queue_printing_for_printer",
+        AsyncMock(return_value=ClaimResult("owned", 42, archive_identity="test-expected-42")),
+    )
+
+
 def _build_mocks(*, external_camera_enabled: bool, external_camera_url: str | None):
     """Construct a Printer + PrintArchive pair as the on_print_start path expects."""
     mock_printer = MagicMock()
@@ -69,6 +88,7 @@ def _build_mocks(*, external_camera_enabled: bool, external_camera_url: str | No
     mock_archive.printer_id = 1
     mock_archive.print_name = "Universal Spirit Level Holder"
     mock_archive.status = "pending"
+    mock_archive.recovery_identity = "test-expected-42"
     mock_archive.file_path = "/tmp/fake.3mf"
     mock_archive.print_time_seconds = 0
 
@@ -103,7 +123,7 @@ def _execute_router(mock_printer, mock_archive):
 def _build_session(mock_printer, mock_archive):
     mock_session = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock()
+    mock_session.__aexit__ = AsyncMock(return_value=False)
     mock_session.execute = AsyncMock(side_effect=_execute_router(mock_printer, mock_archive))
     mock_session.commit = AsyncMock()
     mock_session.refresh = AsyncMock()

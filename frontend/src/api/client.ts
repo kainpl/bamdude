@@ -19,7 +19,7 @@ import { farmRead, farmReadBudget } from './farmReadBudget';
 
 export type PrintStateAction =
   | 'align_terminal_item' | 'fill_estimated_end_and_align' | 'release_orphan_header' | 'delete_stale_item'
-  | 'close_interrupted_attempt' | 'clear_terminal_runtime_context';
+  | 'close_interrupted_attempt' | 'clear_terminal_runtime_context' | 'cancel_terminal_claims' | 'settle_swap_by_operator';
 /** A run the printer's process still holds in memory (kind ``runtime``): what the operator reads beside it. */
 export interface PrintStateRuntimeView {
   context: { archive_id: number; queue_item_id: number | null; origin: string } | null;
@@ -31,7 +31,7 @@ export interface PrintStateRuntimeView {
 export interface PrintStateEpisodeView {
   attempts: number; span_seconds: number;
   /** The row that explains it -- the context holding the printer -- when that row is on the page. */
-  related: { kind: 'runtime'; target_id: number } | null;
+  related: { kind: 'runtime' | 'header'; target_id: number } | null;
   /** ``false`` once no new attempt came for a while: inactive, not resolved. */
   active: boolean; quiet_seconds: number;
 }
@@ -66,6 +66,7 @@ export interface PrintStateIssue extends Partial<PrintStateRuntimeView>, Partial
   printer_id: number; printer_name: string; queue_id: number | null;
   kind: 'item' | 'header' | 'archive' | 'runtime' | 'episode' | 'repair';
   target_id: number;
+  members?: {id: number; status: string}[]; member_count?: number | null;
   item_id: number | null; archive_id: number | null; code: string; actions: PrintStateAction[];
   blocked_reasons: string[]; live_mode: 'inactive' | 'successor' | 'unknown';
   observed_at: number | null; started_at: string | null; completed_at: string | null;
@@ -75,7 +76,8 @@ export interface PrintStateIssuePage {
   stall_tracking?: PrintStateStallTracking;
 }
 export interface PrintStatePreviewInput {
-  kind: 'item' | 'header' | 'runtime'; target_id: number; action: PrintStateAction; confirmed_completed: boolean;
+  kind: 'item' | 'header' | 'runtime' | 'archive'; target_id: number; action: PrintStateAction; confirmed_completed: boolean;
+  confirmed_idle?: boolean; confirmed_manual_swap?: boolean;
   note: string;
 }
 /** What an in-memory repair removes: the held run, and whether its start and dispatch's registrations go too. */
@@ -84,10 +86,14 @@ export interface PrintStateRuntimeRelease {
 }
 export interface PrintStatePreview {
   estimate?: { started_at: string; duration_seconds: number; completed_at: string } | null;
+  members?: {id: number; status: string; archive_id: number | null}[];
+  swap_mode_enabled?: boolean | null;
   preview_token: string; action: PrintStateAction; archive_preserved: boolean; expires_in: number;
   before: Record<'queue' | 'item' | 'archive', Record<string, unknown>>;
   after: Record<'queue' | 'item' | 'archive', Record<string, unknown>> & {
     delete_item: boolean; runtime?: PrintStateRuntimeRelease;
+    members?: { id: number; status: string; completed_at: string; error_code: string }[];
+    settlement?: { stage: string; archive_id: number };
   };
   /** Present for the in-memory repair only. */
   runtime?: Omit<PrintStateRuntimeView, 'age_seconds'>;
@@ -100,6 +106,7 @@ export interface PrintStateOutcomeRecord {
   reason: string | null;
 }
 export interface PrintStateAudit {
+  members?: {id: number; archive_id: number | null; before_status: string; after_status: string}[];
   id: string; action: PrintStateAction; printer_id: number; queue_id: number;
   item_id: number | null; archive_id: number | null; note?: string; actor_label?: string; created_at?: string;
   /** Apply of the in-memory repair: its answer. */

@@ -140,6 +140,8 @@ async def claim_printer_for_direct_print(
     project_id: int | None = None,
     project_line_id: int | None = None,
     staged: StagedSource | None = None,
+    commit: bool = True,
+    lane_held: bool = False,
 ) -> PrintQueueItem | None:
     """Take the printer's queue claim for a print being dispatched right now.
 
@@ -175,6 +177,8 @@ async def claim_printer_for_direct_print(
 
     The caller owns the release: see ``background_dispatch``.
     """
+    if origin == "direct" and (lane_held or not commit):
+        raise ValueError("caller-owned observation transactions are external only")
     if origin == "direct" and staged is None:
         # ⚠️ The §2 exemption belongs to the external print alone. This one site
         # writes the claim for both, and it expresses "no snapshot" as a value
@@ -206,9 +210,11 @@ async def claim_printer_for_direct_print(
     columns = {**(options or {}), "plate_id": plate}
 
     async def build(session: AsyncSession, source: QueueSource | None) -> PrintQueueItem:
+        from contextlib import nullcontext
+
         from backend.app.services.printer_queues import ensure_printer_queue
 
-        async with queue_claim_scope(session, printer_id):
+        async with nullcontext() if lane_held else queue_claim_scope(session, printer_id):
             from backend.app.services.order_resources import require_allowed
 
             if origin == "direct":
@@ -280,8 +286,9 @@ async def claim_printer_for_direct_print(
 
     if staged is None:
         item = await build(db, None)
-        await db.commit()
-        await db.refresh(item)
+        if commit:
+            await db.commit()
+            await db.refresh(item)
         return item
 
     claimed: list[int] = []

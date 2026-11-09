@@ -36,6 +36,16 @@ beforeEach(() => {
 });
 
 describe('Print-state diagnostics', () => {
+  it('links an individual conflicting row to its complete addressed group without opening a repair', async () => {
+    vi.mocked(api.getPrintStateIssues).mockResolvedValue({ issues: [{ ...issue,
+      code: 'terminal_archive_conflicting_claims', actions: [], related: { kind: 'header', target_id: 4 },
+    }], next_cursor: null, truncated: false, checked_at: '' });
+    panel();
+    expect(await screen.findByRole('link', { name: /complete group of queue claims/i }))
+      .toHaveAttribute('href', '/system?printer_id=7&kind=header&target_id=4#print-state');
+    expect(api.previewPrintState).not.toHaveBeenCalled();
+    expect(api.applyPrintState).not.toHaveBeenCalled();
+  });
   it('explains an unresolved runtime context without promising a repair', async () => {
     vi.mocked(api.getPrintStateIssues).mockResolvedValue({
       issues: [{ ...issue, kind: 'runtime', code: 'runtime_context_unresolved', actions: [], blocked_reasons: ['archive_missing'] }],
@@ -121,6 +131,36 @@ describe('Print-state diagnostics', () => {
 });
 
 describe('Addressed recovery confirmation', () => {
+  it('requires idle and separate manual-swap assertions before settlement preview', async () => {
+    const user = userEvent.setup();
+    render(<PrintStateRecoveryDialog issue={{ ...issue, kind: 'archive', target_id: 19 }} action="settle_swap_by_operator" onClose={vi.fn()} onApplied={vi.fn()} />);
+    const button = screen.getByRole('button', { name: 'Preview change' });
+    expect(button).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: /I confirm that this printer is idle/ }));
+    expect(button).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: /I manually removed the print/ }));
+    await user.click(button);
+    expect(api.previewPrintState).toHaveBeenCalledWith(7, expect.objectContaining({
+      kind: 'archive', action: 'settle_swap_by_operator', confirmed_idle: true, confirmed_manual_swap: true,
+    }));
+    expect(api.applyPrintState).not.toHaveBeenCalled();
+  });
+  it('shows the entire reviewed group and requires a second confirmation to cancel it', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.previewPrintState).mockResolvedValue({ ...preview, action: 'cancel_terminal_claims',
+      members: [{ id: 11, archive_id: 19, status: 'printing' }, { id: 12, archive_id: 19, status: 'printing' }],
+      after: { ...preview.after, item: {}, members: [
+        {id: 11, status: 'cancelled', completed_at: 'apply', error_code: 'operator_cancelled_stale_claim'},
+        {id: 12, status: 'cancelled', completed_at: 'apply', error_code: 'operator_cancelled_stale_claim'},
+      ] },
+    });
+    render(<PrintStateRecoveryDialog issue={{ ...issue, kind: 'header', target_id: 4 }} action="cancel_terminal_claims" onClose={vi.fn()} onApplied={vi.fn()} />);
+    await user.click(screen.getByRole('checkbox', { name: /I confirm that this printer is idle/ }));
+    await user.click(screen.getByRole('button', { name: 'Preview change' }));
+    expect(await screen.findByText('#12')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Apply this change' })).toBeDisabled();
+    expect(api.applyPrintState).not.toHaveBeenCalled();
+  });
   it('requires completion confirmation before an estimate and a second confirmation of the delta', async () => {
     const user = userEvent.setup();
     render(<PrintStateRecoveryDialog issue={issue} action="fill_estimated_end_and_align" onClose={vi.fn()} onApplied={vi.fn()} />);

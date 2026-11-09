@@ -31,6 +31,12 @@ READ_PERMISSIONS = (
 )
 READ = tuple(require_permission(p) for p in READ_PERMISSIONS)
 WRITE_PERMISSIONS = {
+    "cancel_terminal_claims": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
+    "settle_swap_by_operator": (
+        Permission.QUEUE_UPDATE_ALL,
+        Permission.PRINTERS_CONTROL,
+        Permission.ARCHIVES_UPDATE_ALL,
+    ),
     "align_terminal_item": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
     "release_orphan_header": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
     "fill_estimated_end_and_align": (
@@ -141,6 +147,8 @@ async def preview(
                 data.action,
                 actor,
                 confirmed_completed=data.confirmed_completed,
+                confirmed_idle=data.confirmed_idle,
+                confirmed_manual_swap=data.confirmed_manual_swap,
                 note=data.note,
             )
     except LookupError as exc:

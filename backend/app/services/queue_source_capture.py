@@ -262,7 +262,9 @@ async def staged_requirements(
 
 
 @asynccontextmanager
-async def reusing_sources(db: AsyncSession, source_ids: Iterable[int | None]) -> AsyncIterator[dict[int, QueueSource]]:
+async def reusing_sources(
+    db: AsyncSession, source_ids: Iterable[int | None], *, queue_ids=()
+) -> AsyncIterator[dict[int, QueueSource]]:
     """Hold the storage guard while EXISTING bytes gain an owner (§9, Task 3's C1).
 
     A clone, a retry, an unskip and a plate-repeat capture nothing: they attach, or
@@ -285,18 +287,27 @@ async def reusing_sources(db: AsyncSession, source_ids: Iterable[int | None]) ->
     An empty set of ids (a legacy job, or one of §2's exemptions) takes no guard at
     all, so a farm that has never captured anything pays nothing for this.
     """
+    from contextlib import AsyncExitStack
+
+    from backend.app.services.queue_ops import claim_lanes
+
     ids = sorted({int(source_id) for source_id in source_ids if source_id})
-    if not ids:
+    lanes = sorted(set(queue_ids))
+    if lanes:
+        # End the preflight snapshot before process locks and SQLite's writer.
+        await db.commit()
+    if not ids and not lanes:
         yield {}
         return
-    async with queue_sources.storage_mutation():
-        blobs: dict[int, QueueSource] = {}
+    async with AsyncExitStack() as guards:
+        await guards.enter_async_context(queue_sources.storage_mutation())
+        if lanes:
+            await guards.enter_async_context(claim_lanes(db, lanes))
+        blobs = {}
         for source_id in ids:
             blob = await db.get(QueueSource, source_id, populate_existing=True)
             if blob is None or blob.state != STATE_READY:
-                raise queue_sources.SourceUnreadable(
-                    f"queue source {source_id} is {'gone' if blob is None else blob.state}"
-                )
+                raise queue_sources.SourceUnreadable(f"queue source {source_id} is unavailable")
             blobs[source_id] = blob
         yield blobs
 

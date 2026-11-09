@@ -12,10 +12,8 @@ check / smart-plug action / macros are answers to a start that just happened.
 The spies below are the enforcement: adding a side effect to the adoption
 without deciding about it here is a red test, not a style choice.
 
-⚠️ **The hash twin is asked BEFORE the attach.**
-``_discard_provisional_archive`` may only delete a row with nothing on disk, so
-hashing first is what makes the discard safe — and a print that already had a
-row under a name the lookup could not see must not end up with two.
+File identity is decided at start, not by downloaded bytes. A hash twin is a
+file reuse fact and cannot replace the archive which owns this execution.
 """
 
 from __future__ import annotations
@@ -129,6 +127,23 @@ async def _drive_hook(
     # attribute including the PK, and reading one back in a sync assertion is a
     # lazy load with no greenlet to run it in.
     printer_id = printer.id
+    existing = None
+    if live_archive[0] is not None:
+        existing = PrintArchive(
+            id=live_archive[0],
+            printer_id=printer_id,
+            filename="Кронштейн.3mf",
+            print_name="Кронштейн",
+            file_path="archive/existing.3mf",
+            file_size=1,
+            status="printing",
+            plate_index=live_archive[1],
+        )
+        db_session.add(existing)
+        await db_session.commit()
+        live_resolution = _LiveArchiveResolution(
+            existing.id, existing.plate_index, "unambiguous_name", existing.recovery_identity
+        )
     if pre_seed is not None:
         pre_seed(printer_id)
 
@@ -152,6 +167,10 @@ async def _drive_hook(
         "plug_on_print_start": AsyncMock(),
         "missing_spools": AsyncMock(),
     }
+    if existing is not None:
+        from backend.app.services.print_claims import ClaimResult
+
+        spies["queue_claim"].return_value = ClaimResult("owned", archive_identity=existing.recovery_identity)
     spies["ws_print_start"] = ws.send_print_start
     spawned = _Spawned()
 
@@ -250,7 +269,7 @@ class TestTheHookAdoptsThePrintItFound:
             db_session=db_session, printer_factory=printer_factory, live_archive=(42, 1)
         )
 
-        assert rows == [], "a print that already had an archive must not get a second one"
+        assert [row.id for row in rows] == [42], "a live archive must not get a second execution row"
         spies["queue_claim"].assert_awaited_once()
         assert spies["queue_claim"].await_args.kwargs["archive_id"] == 42
         assert spawned.names == [], "nothing to download — the live archive owns its own file"
@@ -276,16 +295,8 @@ class TestTheHookAdoptsThePrintItFound:
         for name in SILENT:
             assert not spies[name].called
 
-    async def test_a_print_already_tracked_is_not_adopted_twice(self, db_session, printer_factory, main_db):
-        """⚠️ ``_live_archive_for_running_print`` inspects only the 5 newest
-        ``printing`` rows on the printer, so a miss is not proof there is no row.
-
-        Before the adoption existed, such a miss cost nothing but a skipped
-        queue claim; now it would cut a SECOND archive for a print BamDude is
-        already tracking. ``_active_prints`` is the same guard
-        ``on_print_start`` keeps at the top of its handler, and it is the one
-        thing that survives a lookup window too small.
-        """
+    async def test_a_dangling_alias_does_not_veto_downtime_adoption(self, db_session, printer_factory, main_db):
+        """A stale alias cannot stand in for an existing execution archive."""
         from backend.app.main import _active_prints
 
         _pid, rows, spies, spawned = await _drive_hook(
@@ -294,19 +305,13 @@ class TestTheHookAdoptsThePrintItFound:
             pre_seed=lambda pid: _active_prints.__setitem__((pid, "Кронштейн"), 4242),
         )
 
-        assert rows == [], "the print is already tracked as archive 4242 — a second row is a duplicate"
-        spies["queue_claim"].assert_not_awaited()
-        spies["energy_start"].assert_not_awaited()
-        assert spawned.names == [], "and no second FTP session for a file already accounted for"
+        assert len(rows) == 1 and rows[0].id != 4242
+        spies["queue_claim"].assert_awaited_once()
+        spies["energy_start"].assert_awaited_once()
+        assert len(spawned.names) == 1
 
-    async def test_the_key_the_adoption_itself_writes_is_a_guard_key_too(self, db_session, printer_factory, main_db):
-        """The printer reports no ``filename`` and a ``subtask_name`` carrying the
-        ``.gcode.3mf`` suffix — so the row the earlier adoption created is named
-        ``Кронштейн.3mf`` and registered under that key. None of the forms built
-        from ``filename``/``subtask_name`` is that string, so the guard has to
-        derive the row's own name form as well, or the adoption cannot see the
-        row it wrote itself.
-        """
+    async def test_a_dangling_canonical_alias_is_not_execution_authority(self, db_session, printer_factory, main_db):
+        """A stale alias cannot stand in for an existing execution archive."""
         from backend.app.main import _active_prints
 
         _pid, rows, spies, spawned = await _drive_hook(
@@ -316,10 +321,10 @@ class TestTheHookAdoptsThePrintItFound:
             pre_seed=lambda pid: _active_prints.__setitem__((pid, "Кронштейн.3mf"), 4242),
         )
 
-        assert rows == [], "already tracked as 4242 under the name the adoption writes — a second row is a duplicate"
-        spies["queue_claim"].assert_not_awaited()
-        spies["energy_start"].assert_not_awaited()
-        assert spawned.names == []
+        assert len(rows) == 1 and rows[0].id != 4242
+        spies["queue_claim"].assert_awaited_once()
+        spies["energy_start"].assert_awaited_once()
+        assert len(spawned.names) == 1
 
 
 @pytest.mark.asyncio
@@ -470,7 +475,6 @@ async def _run_download(*, printer_id, archive_id, download_result=None, downloa
         patch("backend.app.services.archive_download.try_download_3mf", download),
         patch.object(ArchiveService, "attach_3mf_to_archive", spies["attach"]),
         patch("backend.app.main.ws_manager", MagicMock(send_archive_updated=spies["ws_updated"])),
-        patch("backend.app.main.refresh_archive_parts", spies["parts"]),
         patch("backend.app.main._record_energy_start", spies["energy_start"]),
         patch("backend.app.main._store_spoolman_print_data", spies["spoolman"]),
         patch("backend.app.services.archive_colors.apply_loaded_spool_colors", spies["colors"]),
@@ -483,38 +487,25 @@ async def _run_download(*, printer_id, archive_id, download_result=None, downloa
     return spies
 
 
-class TestTheDownloadDecidesWhoOwnsThePrint:
-    async def test_a_hash_twin_before_the_attach_wins(self, db_session, printer_factory, main_db, tmp_path):
-        """The bytes prove the print already had a row. Our guess goes away —
-        and it can only go away because nothing was ever written under it,
-        which is why the hash is taken BEFORE the attach."""
+class TestDownloadPreservesTheStartExecution:
+    async def test_a_hash_twin_cannot_replace_the_start_execution(self, db_session, printer_factory, main_db, tmp_path):
+        """Downloaded bytes deduplicate files, never physical executions (M13)."""
         from backend.app.main import _active_prints
 
         printer_id, provisional_id, twin_id, temp_path, _hash = await _seed_download_case(
             db_session, printer_factory, tmp_path, with_twin=True
         )
-
         spies = await _run_download(
             printer_id=printer_id, archive_id=provisional_id, download_result=(temp_path, "p.3mf")
         )
-
-        assert not spies["attach"].called, (
-            "attached before asking — _discard_provisional_archive may only delete a row with nothing on disk"
-        )
+        spies["attach"].assert_awaited_once()
+        assert spies["attach"].await_args.args[0] == provisional_id
         db_session.expire_all()
         rows = (await db_session.execute(select(PrintArchive.id).order_by(PrintArchive.id))).scalars().all()
-        assert rows == [twin_id], f"one physical print, archives {rows}"
-        assert set(_active_prints.values()) == {twin_id}, (
-            f"a key still points at the deleted row: {_active_prints}; the duplicate guard reads that as "
-            f"'already tracked' and the next event returns on it"
-        )
-        assert _active_prints.get((printer_id, "Кронштейн")) == twin_id
-        assert _active_prints.get((printer_id, "Кронштейн.3mf")) == twin_id
-        assert not temp_path.exists(), "the temp file outlived the download"
-        # The twin is the one path that does NOT get a tracking row from here:
-        # it has had its own since it was dispatched, and the row we would have
-        # named no longer exists.
-        assert not spies["spoolman"].called
+        assert set(rows) == {twin_id, provisional_id}
+        assert set(_active_prints.values()) == {provisional_id}
+        assert not temp_path.exists()
+        spies["energy_start"].assert_not_awaited()
 
     async def test_no_twin_attaches_the_file(self, db_session, printer_factory, main_db, tmp_path):
         printer_id, provisional_id, _twin, temp_path, _hash = await _seed_download_case(
@@ -526,7 +517,10 @@ class TestTheDownloadDecidesWhoOwnsThePrint:
         )
 
         # The name the download proved travels apart from the display name (swap-source-lifecycle spec r4 §7).
-        spies["attach"].assert_awaited_once_with(provisional_id, temp_path, "p.3mf", received_name="p.3mf")
+        archive = await db_session.get(PrintArchive, provisional_id)
+        spies["attach"].assert_awaited_once_with(
+            provisional_id, temp_path, "p.3mf", received_name="p.3mf", expected_identity=archive.recovery_identity
+        )
         db_session.expire_all()
         rows = (await db_session.execute(select(PrintArchive.id))).scalars().all()
         assert rows == [provisional_id], "the row that was announced at adoption is the row that gets the file"
@@ -685,7 +679,9 @@ class TestTheAdoptedAttachMirrorsOnPrintStartsTail:
         assert call.kwargs["ams_mapping"] == [0, 1]
         assert call.kwargs["plate_id"] == 1, "plate authority is PrintArchive.plate_index"
 
-    async def test_the_adopted_twin_keeps_an_energy_baseline(self, db_session, printer_factory, main_db, tmp_path):
+    async def test_a_hash_twin_does_not_receive_another_runs_energy_baseline(
+        self, db_session, printer_factory, main_db, tmp_path
+    ):
         """The provisional row's plug reading dies with the row, and the twin was
         created before BamDude could take one — so without this the print's
         energy figure is lost rather than merely approximate."""
@@ -697,9 +693,9 @@ class TestTheAdoptedAttachMirrorsOnPrintStartsTail:
             printer_id=printer_id, archive_id=provisional_id, download_result=(temp_path, "p.3mf")
         )
 
-        spies["energy_start"].assert_awaited_once()
-        assert spies["energy_start"].await_args.args[0].id == twin_id
-        assert spies["energy_start"].await_args.kwargs["context"] == "hash-adoption"
+        spies["energy_start"].assert_not_awaited()
+        twin = await db_session.get(PrintArchive, twin_id)
+        assert twin.energy_start_kwh is None  # an unrelated execution is untouched
 
     async def test_a_twin_that_already_has_a_baseline_is_left_alone(
         self, db_session, printer_factory, main_db, tmp_path
