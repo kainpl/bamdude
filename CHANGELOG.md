@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Queue item menus remain visible beyond the queue card and stay within the screen on narrow layouts; card rendering optimizations remain enabled.
+
 - Print-state diagnostics also explain an unproven live run when its preserved printing archive has no queue claim; the diagnostic enables no repair action.
 
 - Reconnect recovery stops when the print has ended, preserving the plate-clear gate. The Info page still names an unclaimed printing archive that blocks repair, without enabling archive-target repair actions. A lost commit response distinguishes a saved publication from a stale callback and hands recovery to the current connection; an unsent attempt closing meanwhile no longer prevents the actual print from being archived. Batch Clone refusals name the archive, and an owed SWAP still pauses the queue if its archive was moved to trash.

@@ -5,6 +5,8 @@ import { UsageProjection } from './UsageProjection';
 import { sharedSlicerTime } from '../utils/slicerTime';
 import { AutoEjectBadge } from './AutoEjectBadge';
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { createPortal } from 'react-dom';
+import { useAnchoredPosition } from '../hooks/useAnchoredPosition';
 import { Link, useNavigate } from 'react-router';
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, useIsMutating } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -1189,6 +1191,17 @@ function PendingItemRow({
   t,
 }: PendingItemRowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuAnchorRef = useRef<HTMLButtonElement>(null);
+  const menuPanelRef = useRef<HTMLDivElement>(null);
+  const menuCoords = useAnchoredPosition(menuAnchorRef, menuOpen, undefined, menuPanelRef);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [menuOpen]);
   const [batchDialog, setBatchDialog] = useState<null | 'cancel' | 'clone'>(null);
   const navigate = useNavigate();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -1341,18 +1354,23 @@ function PendingItemRow({
           )}
           <div className="relative">
             <button
+              ref={menuAnchorRef}
               onClick={() => setMenuOpen(v => !v)}
+              aria-expanded={menuOpen}
               disabled={anyPending}
               className="p-1.5 rounded hover:bg-bambu-dark-tertiary text-bambu-gray-light disabled:opacity-30"
               title={t('queueCard.actions.more')}
             >
               <MoreVertical className="w-3.5 h-3.5" />
             </button>
-            {menuOpen && (
+            {menuOpen && createPortal(
               <>
                 {/* not-a-modal: menu */}
-                <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 z-20 min-w-[180px] rounded-md bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-xl py-1 text-xs">
+                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+                {/* Escape card paint containment and transformed virtual rows. */}
+                <div ref={menuPanelRef}
+                  style={{ position: 'fixed', ...menuCoords, visibility: menuCoords ? 'visible' : 'hidden', overflowY: 'auto' }}
+                  className="z-[49] min-w-[180px] rounded-md bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-xl py-1 text-xs">
                   {[
                     ...(!isFirst ? [
                       { label: t('queueCard.actions.moveUp'), run: () => onMove('up') },
@@ -1462,7 +1480,7 @@ function PendingItemRow({
                     </>
                   )}
                 </div>
-              </>
+              </>, document.body,
             )}
           </div>
 
