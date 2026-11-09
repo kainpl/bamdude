@@ -4706,6 +4706,7 @@ export interface LongLivedTokenCreate {
 // Settings types
 export interface AppSettings {
   mcp_enabled?: boolean;
+  mcp_allow_http?: boolean;
   mcp_endpoint_url?: string;
   mcp_allowed_hosts?: string[];
   mcp_allowed_origins?: string[];
@@ -4923,7 +4924,10 @@ export interface AppSettings {
   obico_enabled_printers: string;
 }
 
-export type AppSettingsUpdate = Partial<AppSettings>;
+export type AppSettingsUpdate = Partial<AppSettings> & {
+  mcp_http_risk_acknowledged?: boolean;
+  mcp_http_trusted_network_acknowledged?: boolean;
+};
 
 // Obico AI failure detection (#172)
 export interface ObicoDetectionEvent {

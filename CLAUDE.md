@@ -300,6 +300,8 @@ MCP diagnostic history correlates archive/job IDs, never filenames, and applies 
 
 **Spoolman no-3MF tracking.** For "Untitled" prints with no `.gcode.3mf`, `spoolman_tracking.py` snapshots each AMS slot's `remain%` + `tray_uuid` at start (`_snapshot_tray_remain`) and writes consumed grams from the drop × curated reference weight — only for slots the 3MF didn't cover, skipping mid-print-swapped slots. Tracking rows store `filament_usage=[]` (not NULL) for this path; all readers use `filament_usage or []` — keep that contract.
 
+**MCP HTTP setup is an explicit transport-risk opt-in, not an authority change.** HTTPS remains the default outside loopback. Enabling HTTP requires both request-only acknowledgements; local connectors require their own opt-in and keep HTTPS verification enabled. Settings update and reset serialize policy reads, validation and writes in one database transaction, including when no setting row exists, so a concurrent stale save cannot undo revocation. SDK Host/Origin allowlists stay aligned with the outer gate while DNS rebinding protection remains enabled. Vault: `40-invariants/inv-mcp-authority-is-request-local.md`.
+
 ## Code Style
 
 - **Python** Ruff (line 120, double quotes, py312); B008 ignored for FastAPI `Depends()`. See `pyproject.toml`.

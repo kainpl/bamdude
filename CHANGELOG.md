@@ -10,6 +10,16 @@
 - Print-state diagnostics on the Info page can preview and cancel the complete set of stale active claims belonging to one ended archive. An owed table swap has a separate action for confirming that the operator performed it manually, including when swap mode has been turned off. Both actions require a fresh idle printer, recheck ownership and permissions, preserve pending work and record an audit; they send no printer commands. Retry and Clone refuse claims cancelled by this recovery. A rare filename change without a client-side run identity remains unresolved rather than inventing a new print; a later reconnect can reconcile the older archive when the printer supplies a different identity.
   Backups preserve the manual swap settlement. Restoring one into an older BamDude version that does not understand it blocks print-state repair; use a version that supports the settlement instead of clearing its recorded state.
 
+MCP setup can optionally accept unencrypted HTTP addresses for a trusted home
+LAN. HTTPS remains the default outside loopback. Enabling the option requires
+two warnings, an explicit network-risk acknowledgement and a settings save;
+the API requires both acknowledgements too. Bundled local connectors have a
+separate default-off HTTP opt-in. HTTPS certificate verification, key scopes,
+host/origin checks and redirect refusal are unchanged. HTTP exposes keys and
+diagnostic data in plain text and is unsuitable for public networks.
+The SDK receives the same explicit host/origin allowlists, so an accepted LAN
+address is no longer rejected by its additional loopback-only default check.
+
 - Server-side slicing defaults to OrcaSlicer 2.5.0 and Bambu Studio 02.09.01.70. Rebuild the optional slicer API containers to apply the update; existing installations also need to update their version pins in `slicer-api/.env`.
 
 - Release downloads carry one `bamdude-<version>-SHA256SUMS` for the Windows installer and the AI client packages, written only after each package matches the hashes of its own build. The package build's internal catalog (`packages.json`) and its partial checksum file are no longer attached to the release.

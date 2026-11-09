@@ -39,10 +39,14 @@ test('build products are deterministic, self-contained and share the canonical s
     if (name.endsWith('.mcpb')) {
       const manifest = MANIFEST_SCHEMAS['0.3'].parse(JSON.parse(Buffer.from(files['manifest.json'])));
       assert.equal(manifest.user_config.ca_file.default, '');
+      assert.equal(manifest.user_config.allow_http.default, false);
+      assert.equal(manifest.server.mcp_config.env.BAMDUDE_MCP_ALLOW_HTTP, '${user_config.allow_http}');
     }
     if (name === 'bamdude-claude-code.zip') {
       const manifest = JSON.parse(Buffer.from(files['.claude-plugin/plugin.json']));
       assert.equal(manifest.userConfig.ca_file.default, '');
+      assert.equal(manifest.userConfig.allow_http.default, false);
+      assert.equal(manifest.mcpServers.bamdude.env.BAMDUDE_MCP_ALLOW_HTTP, '${user_config.allow_http}');
       assert.equal(JSON.parse(Buffer.from(files['.claude-plugin/marketplace.json'])).plugins[0].source, './');
     }
     if (name === 'bamdude-portable-plugin.zip') {
