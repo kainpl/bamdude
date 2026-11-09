@@ -20,6 +20,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import wraps
 from itertools import count
+from uuid import uuid4
 
 import paho.mqtt.client as mqtt
 
@@ -2421,8 +2422,14 @@ class BambuMQTTClient:
         self._last_known_run_id: str | None = None
         self._run_id_unresolved = False
         self._run_boundary_generation = 0
+        self._print_lineage = str(uuid4())
+        self._pending_start_state = None
+        self._pending_start_id = None
+        self._retired_run_id = None
         self._start_observation = None
+        self._unproven_observation = None
         self._inflight_recovery_pending = False
+        self._inflight_recovery_scheduled = False
         # Last time "device is busy" was cleared off this printer (see
         # _clear_device_busy). Per client, so a reconnect starts fresh.
         self._device_busy_cleared_at: float = 0.0
@@ -2664,7 +2671,19 @@ class BambuMQTTClient:
         self._last_known_run_id = prior._last_known_run_id
         self._run_id_unresolved = prior._run_id_unresolved
         self._run_boundary_generation = prior._run_boundary_generation
+        self._print_lineage = prior._print_lineage
+        self._pending_start_state = prior._pending_start_state
+        self._pending_start_id = prior._pending_start_id
+        self._retired_run_id = prior._retired_run_id
+        self._start_observation = prior._start_observation
+        self._unproven_observation = prior._unproven_observation
         self._inflight_recovery_pending = prior._inflight_recovery_pending
+        # A queued callback of the retired connection may never run. Reissue
+        # the same held generation from the replacement, without re-holding it.
+        self._inflight_recovery_scheduled = False
+        self._runout_seeded = prior._runout_seeded
+        self._runout_fired = dict(prior._runout_fired)
+        self._runout_watch = dict(prior._runout_watch)
         self._previous_gcode_file = prior._previous_gcode_file
         self._was_running = prior._was_running
         self._completion_triggered = prior._completion_triggered
@@ -5709,7 +5728,11 @@ class BambuMQTTClient:
             )
 
         # Detect print start (state changes TO RUNNING with a file)
-        current_file = self.state.gcode_file or self.state.current_print
+        current_file = (
+            self.state.gcode_file
+            or self.state.current_print
+            or (self._previous_gcode_file if self._inflight_recovery_pending else None)
+        )
         is_new_print = (
             self.state.state == "RUNNING"
             # ``_previous_gcode_state is None`` means we haven't seen any
@@ -5736,12 +5759,23 @@ class BambuMQTTClient:
             and bool(self._previous_gcode_file)
         )
 
-        observed_start = bool(
-            self.state.state == "RUNNING"
-            and current_file
-            and self._previous_gcode_state in ("IDLE", "FINISH", "FAILED")
-        )
-        current_run_id = run_id(self.state.subtask_id)
+        # PREPARE/SLICING are transparent between an observed terminal/idle
+        # edge and RUNNING. Do not learn B's id into A's lifecycle meanwhile.
+        if self._pending_start_state is None and self._previous_gcode_state in ("IDLE", "FINISH", "FAILED"):
+            self._pending_start_state = self._previous_gcode_state
+        if self.state.state in ("IDLE", "FINISH", "FAILED"):
+            if self._previous_gcode_state != self.state.state:
+                self._pending_start_id = None
+            self._pending_start_state = self.state.state
+        packet_run_id = run_id(data.get("subtask_id"))
+        if self._pending_start_state and packet_run_id and packet_run_id != previous_run_id:
+            self._pending_start_id = packet_run_id
+        observed_start = bool(self.state.state == "RUNNING" and current_file and self._pending_start_state is not None)
+        current_run_id = self._pending_start_id if observed_start else run_id(self.state.subtask_id)
+        if self._retired_run_id and current_run_id == self._retired_run_id:
+            current_run_id = None
+        if observed_start or (self.state.state in ("RUNNING", "PAUSE") and self._retired_run_id):
+            self.state.subtask_id = current_run_id
         changed_run_id = bool(
             self.state.state == "RUNNING" and previous_run_id and current_run_id and previous_run_id != current_run_id
         )
@@ -5753,20 +5787,31 @@ class BambuMQTTClient:
             self._last_known_run_id = current_run_id
             self._run_id_unresolved = False
             self._inflight_recovery_pending = False
+            self._inflight_recovery_scheduled = False
+            self._retired_run_id = previous_run_id if observed_start and not current_run_id else None
         elif is_file_change:
             verdict = "file_change_unproven"
             self._run_id_unresolved = True
-        elif not self._run_id_unresolved and current_run_id:
+        elif not self._run_id_unresolved and current_run_id and self.state.state in ("RUNNING", "PAUSE"):
             self._last_known_run_id = current_run_id
+            self._retired_run_id = None
         observation = PrintObservation(
-            verdict, previous_run_id, current_run_id, self._previous_gcode_state, self._run_boundary_generation
+            verdict,
+            previous_run_id,
+            current_run_id,
+            self._pending_start_state if observed_start else self._previous_gcode_state,
+            self._run_boundary_generation,
+            self._print_lineage,
         )
+        if observed_start:
+            self._pending_start_state = self._pending_start_id = None
         # First PAUSE is as much an in-flight run as RUNNING. Fence detectors
         # before this packet's HMS, including when its filename arrives later.
         if (
             self.state.state in ("RUNNING", "PAUSE")
             and not self._was_running
             and not new_print_boundary
+            and self._pending_start_state is None
             and (current_file or self.on_print_running_observed)
         ):
             self._inflight_recovery_pending = True
@@ -5774,11 +5819,14 @@ class BambuMQTTClient:
                 self._runout_seeded = False
                 with self._journal_lock:
                     self._journal_held = True
+                    self._journal_generation += 1
             self._was_running = True
             if self.state.timelapse:
                 self._timelapse_during_print = True
             self._completion_triggered = False
-        running_first_observed = bool(self._inflight_recovery_pending and current_file)
+        running_first_observed = bool(
+            self._inflight_recovery_pending and not self._inflight_recovery_scheduled and current_file
+        )
         boundary_layer_edge = None
         if new_print_boundary:
             # Clear the previous print BEFORE applying this frame's counters.
@@ -5817,7 +5865,7 @@ class BambuMQTTClient:
             # reported: a "fire at layer N" consumer needs to know whether the
             # print crossed N, and dropped reports mean it can jump over it.
             if new_layer > old_layer and self.on_layer_change:
-                if is_new_print:
+                if new_print_boundary and (observed_start or not is_file_change):
                     boundary_layer_edge = (new_layer, old_layer)
                 elif not is_file_change:
                     self.on_layer_change(new_layer, old_layer)
@@ -7295,24 +7343,6 @@ class BambuMQTTClient:
             )
 
         # Track RUNNING state for more robust completion detection
-        if self.state.state in ("RUNNING", "PAUSE") and current_file:
-            if not self._was_running:
-                logger.debug("[%s] Now tracking RUNNING state for %s", self.serial_number, current_file)
-                # Check if timelapse was enabled in the same message (xcam parsed before this)
-                if self.state.timelapse:
-                    self._timelapse_during_print = True
-                    logger.debug("[%s] Timelapse detected when entering RUNNING state", self.serial_number)
-                # Mark this as the first RUNNING observation of the session.
-                # If is_new_print also fires below, on_print_start handles
-                # baseline capture and we suppress on_print_running_observed
-                # to avoid double-capture. If is_new_print does NOT fire
-                # (BamDude started mid-print — the #1304 guard suppressed it),
-                # main.py needs this hook to catch the restart-recovery case
-                # (#1485 follow-up).
-                running_first_observed = True
-            self._was_running = True
-            self._completion_triggered = False
-
         if new_print_boundary:
             # Clear any old HMS errors when a new print starts
             self.state.hms_errors = []
@@ -7362,8 +7392,10 @@ class BambuMQTTClient:
             else:
                 self._timelapse_during_print = False
 
-        if new_print_boundary or is_file_change:
+        if new_print_boundary:
             self._start_observation = observation
+        elif is_file_change:
+            self._unproven_observation = observation
         if (new_print_boundary or is_file_change) and self.on_print_start:
             logger.info(
                 f"[{self.serial_number}] PRINT START detected - file: {current_file}, "
@@ -7384,7 +7416,7 @@ class BambuMQTTClient:
                 }
             )
         elif running_first_observed and self.on_print_running_observed:
-            self._inflight_recovery_pending = False
+            self._inflight_recovery_scheduled = True
             # ⚠️ We joined a print already in flight, so this client's runout
             # dedup is empty while the printer's HMS status is not — every
             # still-active runout code would fire again, at the CURRENT layer.
@@ -7397,7 +7429,6 @@ class BambuMQTTClient:
             # which must name this print — a seed computed for another one is refused.
             with self._journal_lock:
                 self._journal_held = True
-                self._journal_generation += 1
                 self._journal_after_gap = True
                 # The packet's own tray report is already held (its tray branch ran first): the
                 # held-report count goes on, only another print's binding changes are dropped.
@@ -8148,6 +8179,8 @@ class BambuMQTTClient:
             self._journal_after_gap = True
             pending, self._journal_pending = self._journal_pending, []
             self._replay_held(pending, bindings=bindings)
+            if self._runout_seeded:
+                self._inflight_recovery_pending = False
             return True
 
     def abandon_journal_hold(self, generation: int, *, bindings: dict | None = None) -> bool:
@@ -8179,6 +8212,8 @@ class BambuMQTTClient:
             # A print that already completed is still the print these reports belong to: the
             # completion releases an unseeded hold before it reads the chronology.
             self._replay_held(pending, of_this_print=True, bindings=bindings)
+            if self._runout_seeded:
+                self._inflight_recovery_pending = False
             return True
 
     def _replay_held(self, pending: list, *, of_this_print: bool = False, bindings: dict | None = None) -> None:
@@ -8337,6 +8372,8 @@ class BambuMQTTClient:
         for tray, kind in already_fired.items():
             self._runout_fired.setdefault(tray, kind)
         self._runout_seeded = True
+        if self._journal_held is False:
+            self._inflight_recovery_pending = False
 
     def _detect_runout_signals(self) -> None:
         """Scan active error codes for the runout family and fire events once.

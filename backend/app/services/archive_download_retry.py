@@ -196,6 +196,7 @@ class ArchiveDownloadRetryService:
             subtask_name = print_data.get("subtask_name") or meta.get("original_subtask")
             filename = print_data.get("filename") or archive.filename
             plate_index = archive.plate_index
+            archive_identity = archive.recovery_identity
 
         logger.info(
             "Archive retry: archive %s (printer %s, subtask=%s)",
@@ -210,7 +211,7 @@ class ArchiveDownloadRetryService:
             logger.info("Archive retry: archive %s — download failed", archive_id)
             async with async_session() as marker_db:
                 await ArchiveService(marker_db).mark_3mf_unavailable(
-                    archive_id, reason=last_download_failure_reason(printer.id)
+                    archive_id, reason=last_download_failure_reason(printer.id), expected_identity=archive_identity
                 )
             return "failed"
 
@@ -236,13 +237,19 @@ class ArchiveDownloadRetryService:
                         plate_index,
                     )
                     async with async_session() as marker_db:
-                        await ArchiveService(marker_db).mark_3mf_unavailable(archive_id)
+                        await ArchiveService(marker_db).mark_3mf_unavailable(
+                            archive_id, expected_identity=archive_identity
+                        )
                     return "failed"
 
             async with async_session() as db2:
                 service = ArchiveService(db2)
                 ok = await service.attach_3mf_to_archive(
-                    archive_id, temp_path, downloaded_filename, received_name=downloaded_filename
+                    archive_id,
+                    temp_path,
+                    downloaded_filename,
+                    received_name=downloaded_filename,
+                    expected_identity=archive_identity,
                 )
                 if ok:
                     # Re-fetch with the freshly-attached file_path + push
@@ -255,7 +262,11 @@ class ArchiveDownloadRetryService:
                     refreshed = (
                         await db2.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
                     ).scalar_one_or_none()
-                    if refreshed is not None and archive.printer_id is not None:
+                    if (
+                        refreshed is not None
+                        and refreshed.recovery_identity == archive_identity
+                        and archive.printer_id is not None
+                    ):
                         from backend.app.services.archive import load_objects_from_archive_into_state
                         from backend.app.services.print_file_analysis import notify_print_file_analysis_source_ready
                         from backend.app.services.printer_manager import printer_manager
@@ -268,6 +279,7 @@ class ArchiveDownloadRetryService:
                                 archive_id,
                                 settings.base_dir / refreshed.file_path,
                                 refreshed.plate_index,
+                                expected_identity=archive_identity,
                             )
             if ok:
                 logger.info("Archive retry: recovered 3MF for archive %s", archive_id)
@@ -275,7 +287,8 @@ class ArchiveDownloadRetryService:
                 return "recovered"
             else:
                 logger.warning("Archive retry: attach failed for archive %s", archive_id)
-                await service.mark_3mf_unavailable(archive_id)
+                async with async_session() as marker_db:
+                    await ArchiveService(marker_db).mark_3mf_unavailable(archive_id, expected_identity=archive_identity)
                 return "failed"
         finally:
             try:

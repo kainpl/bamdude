@@ -471,8 +471,13 @@ async def test_failure_during_claim_close_rolls_back_new_and_old_archives(db_ses
 
 @pytest.mark.asyncio
 async def test_lost_commit_acknowledgement_does_not_publish_a_second_execution(
-    db_session, printer_factory, archive_factory, monkeypatch
+    db_session, printer_factory, archive_factory, monkeypatch, test_engine
 ):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from backend.app.core import database
+
+    monkeypatch.setattr(database, "async_session", async_sessionmaker(test_engine, expire_on_commit=False))
     db = db_session
     p, q, a, item = await setup(db, printer_factory, archive_factory)
     data = {
@@ -501,8 +506,8 @@ async def test_lost_commit_acknowledgement_does_not_publish_a_second_execution(
             raise OSError("commit succeeded but its acknowledgement was lost")
 
     monkeypatch.setattr(db, "commit", acknowledge)
-    with pytest.raises(OSError, match="acknowledgement"):
-        await publish_start(db, b, decision)
+    published = await publish_start(db, b, decision)
+    assert published
     assert lost[0]
     retry = await decide_start(db, p.id, data)
     assert retry.current_id == b.id and not retry.old

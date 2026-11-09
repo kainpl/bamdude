@@ -118,6 +118,7 @@ export interface PrintStateAudit {
 
 export class ApiError extends Error {
   printerId?: number;
+  archiveId?: number;
   status: number;
   retryAfterMs?: number;
   /**
@@ -663,6 +664,9 @@ async function handleErrorResponse(response: Response, __isRetry: boolean, signa
     ? seconds * 1000
     : retryAfter ? Math.max(0, Date.parse(retryAfter) - Date.now()) : undefined;
   const refusal = new ApiError(message, response.status, code, Number.isFinite(retryAfterMs) ? retryAfterMs : undefined);
+  if (code === 'stale_execution_claim' && Number.isInteger(error.detail?.params?.archive) && error.detail.params.archive > 0) {
+    refusal.archiveId = error.detail.params.archive;
+  }
   if (code === 'active_claim' && Number.isInteger(error.detail?.printer_id) && error.detail.printer_id > 0) {
     refusal.printerId = error.detail.printer_id;
   }

@@ -2143,6 +2143,7 @@ async def scan_timelapse(
         archive = await ArchiveService(db).get_archive(archive_id)
         if not archive:
             raise HTTPException(404, "Archive not found")
+        archive_identity = archive.recovery_identity
 
         if archive.timelapse_path:
             return {"status": "exists", "message": "Timelapse already attached"}
@@ -2285,7 +2286,9 @@ async def scan_timelapse(
 
     # Attach in a fresh short session (the read session was released before FTP).
     async with async_session() as db:
-        success = await ArchiveService(db).attach_timelapse(archive_id, timelapse_data, matching_file["name"])
+        success = await ArchiveService(db).attach_timelapse(
+            archive_id, timelapse_data, matching_file["name"], expected_identity=archive_identity
+        )
 
     if not success:
         raise HTTPException(500, "Failed to attach timelapse")
@@ -2316,6 +2319,7 @@ async def select_timelapse(
         archive = await ArchiveService(db).get_archive(archive_id)
         if not archive:
             raise HTTPException(404, "Archive not found")
+        archive_identity = archive.recovery_identity
 
         if not archive.printer_id:
             raise HTTPException(400, "Archive has no associated printer")
@@ -2350,7 +2354,9 @@ async def select_timelapse(
 
     # Attach in a fresh short session (the read session was released before FTP).
     async with async_session() as db:
-        success = await ArchiveService(db).attach_timelapse(archive_id, timelapse_data, filename)
+        success = await ArchiveService(db).attach_timelapse(
+            archive_id, timelapse_data, filename, expected_identity=archive_identity
+        )
     if not success:
         raise HTTPException(500, "Failed to attach timelapse")
 
@@ -2375,13 +2381,14 @@ async def upload_timelapse(
     archive = await service.get_archive(archive_id)
     if not archive:
         raise HTTPException(404, "Archive not found")
+    archive_identity = archive.recovery_identity
 
     if not file.filename or not file.filename.endswith((".mp4", ".avi", ".mkv")):
         raise HTTPException(400, "File must be a video file (.mp4, .avi, .mkv)")
 
     content = await file.read()
     safe_name = _safe_filename(file.filename)
-    success = await service.attach_timelapse(archive_id, content, safe_name)
+    success = await service.attach_timelapse(archive_id, content, safe_name, expected_identity=archive_identity)
 
     if not success:
         raise HTTPException(500, "Failed to attach timelapse")

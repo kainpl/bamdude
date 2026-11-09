@@ -582,7 +582,7 @@ def _addressed(f: RecoveryFacts):
     ):
         reasons.add("ambiguous_owner")
     if f.references:
-        reasons.add("delete_has_dependencies")
+        reasons.add("recovery_has_dependencies")
     live, runtime = f.live, f.repair_runtime or {}
     if not live.get("stable_inactive") or live.get("idle") is not True:
         reasons.add("live_unknown")
@@ -636,6 +636,13 @@ def _addressed(f: RecoveryFacts):
 
 
 def classify(f: RecoveryFacts) -> dict | None:
+    if f.target_kind == "archive":
+        addressed = _addressed(f)
+        return (
+            {**addressed, "actions": [a for a in addressed["actions"] if a == "settle_swap_by_operator"]}
+            if addressed
+            else None
+        )
     if f.live.get("observation_unproven") and (not f.archive or f.archive.get("status") == "printing"):
         return {"code": "run_identity_unproven", "actions": [], "blocked_reasons": ["run_identity_unproven"]}
     single = _classify_single(f)
@@ -656,11 +663,7 @@ def classify(f: RecoveryFacts) -> dict | None:
     addressed = _addressed(f)
     if addressed and f.target_kind == "item":
         return {**addressed, "actions": [], "related": {"kind": "header", "target_id": f.queue["id"]}}
-    if addressed and f.target_kind == "archive" and "cancel_terminal_claims" in addressed["actions"]:
-        return single
-    if addressed and (
-        f.target_kind in {"header", "archive"} or len(f.members) > 1 or not single or not single["actions"]
-    ):
+    if addressed and (f.target_kind == "header" or len(f.members) > 1 or not single or not single["actions"]):
         return addressed
     return single
 
@@ -668,6 +671,8 @@ def classify(f: RecoveryFacts) -> dict | None:
 def plan_action(
     f: RecoveryFacts, action: str, *, confirmed_completed=False, confirmed_idle=False, confirmed_manual_swap=False
 ) -> dict:
+    if f.target_kind == "archive" and action != "settle_swap_by_operator":
+        raise ValueError("recovery_not_allowed")
     issue = classify(f)
     if issue is None or action not in issue["actions"]:
         raise ValueError("recovery_not_allowed")

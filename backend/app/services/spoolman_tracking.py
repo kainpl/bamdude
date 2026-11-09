@@ -361,7 +361,10 @@ async def store_print_data(
             .where(PrintQueueItem.archive_id == archive_id)
             .where(PrintQueueItem.status == "printing")
         )
-        queue_item = queue_result.scalar_one_or_none()
+        candidates = list(queue_result.scalars().all())
+        # Duplicate claims do not establish which row supplied options. The
+        # archive/caller still owns its plate; keep accounting with no guess.
+        queue_item = candidates[0] if len(candidates) == 1 else None
         # Caller-supplied plate_id wins (archive.plate_index — our authoritative
         # dispatched-plate record); fall back to the queue item's plate_id. When both
         # are None (external/single-plate prints) the whole-file sum is correct.

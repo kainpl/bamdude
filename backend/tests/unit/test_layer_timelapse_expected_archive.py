@@ -63,6 +63,7 @@ def _expected_admission(monkeypatch):
         )
 
     monkeypatch.setattr("backend.app.services.print_execution.decide_start", decide)
+    monkeypatch.setattr("backend.app.services.print_execution.recheck_start", AsyncMock())
     monkeypatch.setattr(
         "backend.app.main.mark_queue_printing_for_printer",
         AsyncMock(return_value=ClaimResult("owned", 42, archive_identity="test-expected-42")),

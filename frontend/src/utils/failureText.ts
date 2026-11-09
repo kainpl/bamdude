@@ -13,8 +13,9 @@ export function failureText(
   t: (key: string, opts?: Record<string, unknown>) => string,
   code: string | null | undefined,
   detail: string | null | undefined,
+  archiveId?: number | null,
 ): string {
-  if (isStaleClaim(code)) return String(t('printStateRecovery.staleClaim'));
+  if (isStaleClaim(code)) return String(t('printStateRecovery.staleClaim', { archive: archiveId ?? '—' }));
   const label = code ? String(t(`editArchive.failureReasons.${code}`, { defaultValue: code })) : '';
   const text = (detail ?? '').trim();
   if (label && text && label !== text) return `${label}: ${text}`;

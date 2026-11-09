@@ -1430,8 +1430,8 @@ async def _owned_ids(session: AsyncSession) -> set[int]:
 
     Deliberately status-blind. A failed, cancelled or skipped row keeps its bytes
     for Retry/Unskip; a completed row keeps them until the plate is answered for;
-    and a ``printing`` row that the structural noncurrent close closed on
-    age keeps them too, because that closure is the tidying of a stuck row and not
+    and a ``printing`` row that a proven noncurrent-execution close retired
+    keeps them too, because that closure is the tidying of a stuck row and not
     a print ending (§9, added 2026-09-13). The only thing that releases a
     reference is the row going away.
     """

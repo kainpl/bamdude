@@ -68,6 +68,7 @@ _ITEM_FIELDS = (
     "queue_id",
     "archive_id",
     "status",
+    "origin",
     "started_at",
     "completed_at",
     "source_snapshot",
@@ -823,13 +824,24 @@ async def list_issues_page(
     )
     archives = select(PrintArchive.printer_id, literal("archive"), PrintArchive.id).where(
         PrintArchive.printer_id.in_(pids),
-        or_(
-            PrintArchive.status == "printing",
-            and_(
-                PrintArchive.status == "completed",
-                PrintArchive.extra_data["bamdude_terminal_effects"]["swap_change_table"]["stage"].as_string() == "owed",
-            ),
+        PrintArchive.status == "printing",
+        PrintArchive.deleted_at.is_(None),
+    )
+    # Start with indexed queue references, not the printer's archive history.
+    # Keep this separate from the printing branch so the JSON predicate is
+    # evaluated only on addressed terminal archives.
+    owed_archives = select(PrintArchive.printer_id, literal("archive"), PrintArchive.id).where(
+        PrintArchive.id.in_(
+            select(PrintQueueItem.archive_id)
+            .join(PrinterQueue, PrintQueueItem.queue_id == PrinterQueue.id)
+            .where(
+                PrinterQueue.printer_id.in_(pids),
+                or_(PrintQueueItem.status == "printing", PrintQueueItem.id == PrinterQueue.current_item_id),
+            )
         ),
+        PrintArchive.printer_id.in_(pids),
+        PrintArchive.status == "completed",
+        PrintArchive.extra_data["bamdude_terminal_effects"]["swap_change_table"]["stage"].as_string() == "owed",
         PrintArchive.deleted_at.is_(None),
     )
     # A queue an in-memory repair paused stays explained while it is paused, whether or not the run is still held
@@ -844,7 +856,7 @@ async def list_issues_page(
         )
         .exists(),
     )
-    candidates = union_all(headers, items, archives, paused_by_repair).subquery()
+    candidates = union_all(headers, items, archives, owed_archives, paused_by_repair).subquery()
     query = select(candidates).order_by(candidates.c.pid, candidates.c.kind, candidates.c.target)
     if target is not None:
         query = query.where(candidates.c.kind == target[0], candidates.c.target == target[1])

@@ -55,7 +55,7 @@ import { copyableItems, withCurrentPrint } from '../lib/copyQueue';
 import { LibraryPickerModal } from './LibraryPickerModal';
 import { QueueSequencer } from './QueueSequencer';
 import type { SequencedFile } from './QueueSequencer';
-import { api, withMediaToken } from '../api/client';
+import { api, ApiError, withMediaToken } from '../api/client';
 import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay, farmStatusPollInterval } from '../api/farmReadBudget';
 import type { PrinterQueue, PrintQueueItem, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
@@ -1390,7 +1390,7 @@ function PendingItemRow({
                     {t('queueCard.cancelItem')}
                   </button>
                   <button
-                    disabled={!canCreate || isStaleClaim(item.error_code)}
+                    disabled={!canCreate}
                     onClick={() => {
                       setMenuOpen(false);
                       handleClone();
@@ -1439,7 +1439,7 @@ function PendingItemRow({
                         </button>
                       )}
                       <button
-                        disabled={!canCreate || isStaleClaim(item.error_code)}
+                        disabled={!canCreate}
                         onClick={() => {
                           setMenuOpen(false);
                           if (onCloneBatch) onCloneBatch();
@@ -1632,9 +1632,11 @@ function IssuesSection({
       if (result.not_attempted.length) reasons.push(t('queueCard.issues.retryNotAttempted', { count: result.not_attempted.length }));
       showToast([summary, ...reasons].join(' '), complete ? 'success' : 'warning');
     },
-    onError: () => {
+    onError: (error: Error) => {
       if (mounted.current) setConfirmRetryAll(null);
-      showToast(t('queueCard.issues.retryAllUnknown'), 'warning');
+      showToast(error instanceof ApiError && error.code === 'stale_execution_claim'
+        ? t('printStateRecovery.staleClaim', { archive: error.archiveId ?? '—' })
+        : t('queueCard.issues.retryAllUnknown'), 'warning');
     },
     onSettled: () => { retryAllInFlight.current = false; invalidate(); },
   });
@@ -1770,8 +1772,8 @@ function IssuesSection({
                   <p className="text-xs text-white truncate">{name}</p>
                   {(item.error_message || item.error_code) && (
                     // The row's closed class beside its detail (post-rebuild D-R6).
-                    <p className="text-[10px] text-red-700 dark:text-red-400 truncate" title={failureText(t, item.error_code, item.error_message)}>
-                      {failureText(t, item.error_code, item.error_message)}
+                    <p className="text-[10px] text-red-700 dark:text-red-400 truncate" title={failureText(t, item.error_code, item.error_message, item.archive_id)}>
+                      {failureText(t, item.error_code, item.error_message, item.archive_id)}
                     </p>
                   )}
                 </div>
@@ -1810,7 +1812,7 @@ function IssuesSection({
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-white truncate">{name}</p>
                   {(item.error_message || item.error_code) && (
-                    <p className="text-[10px] text-bambu-gray truncate">{failureText(t, item.error_code, item.error_message)}</p>
+                    <p className="text-[10px] text-bambu-gray truncate">{failureText(t, item.error_code, item.error_message, item.archive_id)}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-0.5 flex-shrink-0">

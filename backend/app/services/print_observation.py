@@ -15,6 +15,7 @@ class PrintObservation:
     current_id: str | None
     previous_state: str | None
     generation: int
+    lineage: str | None = None
 
     @property
     def new_run(self) -> bool:
@@ -30,5 +31,9 @@ def observation_is_current(manager, printer_id, observation):
     return (
         client is not None
         and client._run_boundary_generation == observation.generation
-        and client._start_observation is observation
+        and (
+            observation.lineage == client._print_lineage
+            if observation.lineage is not None
+            else observation == client._start_observation
+        )
     )

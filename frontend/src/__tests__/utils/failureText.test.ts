@@ -4,6 +4,10 @@ import { failureText } from '../../utils/failureText';
 
 describe('failureText', () => {
   const t = i18n.getFixedT('en');
+  it.each(['operator_cancelled_stale_claim', 'noncurrent_execution_claim'])('names the execution archive for %s', code => {
+    expect(failureText(t, code, null, 249)).toContain('archive 249');
+    expect(failureText(i18n.getFixedT('uk'), code, null, 249)).toContain('249');
+  });
 
   it('puts the translated class before the detail', () => {
     expect(failureText(t, 'dispatchUploadFailed', 'The printer would not accept the file transfer.')).toBe(

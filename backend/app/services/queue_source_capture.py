@@ -328,4 +328,6 @@ def swap_request(fact, *, execute, events, printer_swap_mode: bool) -> tuple[boo
 
 def refusal(exc: QueueSourceError) -> HTTPException:
     """One mapping for the whole taxonomy — the status lives on the class (§6)."""
-    return HTTPException(exc.http_status, routing_detail(exc.reason))
+    archive_id = getattr(exc, "archive_id", None)
+    params = {"archive": archive_id} if archive_id is not None else {}
+    return HTTPException(exc.http_status, routing_detail(exc.reason, **params))

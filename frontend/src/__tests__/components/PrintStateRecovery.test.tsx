@@ -131,6 +131,24 @@ describe('Print-state diagnostics', () => {
 });
 
 describe('Addressed recovery confirmation', () => {
+  it.each(['preview', 'apply'])('clears both human assertions after a settlement %s conflict', async phase => {
+    const user = userEvent.setup();
+    if (phase === 'preview') vi.mocked(api.previewPrintState).mockRejectedValueOnce(new ApiError('changed', 409));
+    else vi.mocked(api.applyPrintState).mockRejectedValueOnce(new ApiError('changed', 409));
+    render(<PrintStateRecoveryDialog issue={{ ...issue, kind: 'archive', target_id: 19 }} action="settle_swap_by_operator" onClose={vi.fn()} onApplied={vi.fn()} />);
+    const idle = screen.getByRole('checkbox', { name: /I confirm that this printer is idle/ });
+    const manual = screen.getByRole('checkbox', { name: /I manually removed the print/ });
+    await user.click(idle); await user.click(manual);
+    await user.click(screen.getByRole('button', { name: 'Preview change' }));
+    if (phase === 'apply') {
+      await user.click(await screen.findByRole('checkbox', { name: /I reviewed/ }));
+      await user.click(screen.getByRole('button', { name: 'Apply this change' }));
+    }
+    await screen.findByRole('alert');
+    expect(screen.getByRole('checkbox', { name: /I confirm that this printer is idle/ })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /I manually removed the print/ })).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Preview change' })).toBeDisabled();
+  });
   it('requires idle and separate manual-swap assertions before settlement preview', async () => {
     const user = userEvent.setup();
     render(<PrintStateRecoveryDialog issue={{ ...issue, kind: 'archive', target_id: 19 }} action="settle_swap_by_operator" onClose={vi.fn()} onApplied={vi.fn()} />);

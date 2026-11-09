@@ -352,6 +352,14 @@ describe('QueueCard Issues — Retry all failed', () => {
     const dialog = await screen.findByRole('dialog');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' })); return dialog;
   }
+  it('names the execution archive when bulk retry is refused as a stale claim', async () => {
+    server.use(http.post('/api/v1/queue/bulk-retry', () => HttpResponse.json({
+      detail: { code: 'stale_execution_claim', params: { archive: 249 }, message: 'stale' },
+    }, { status: 409 })));
+    renderCard(); await confirm();
+    expect(await screen.findByText(/Check execution archive 249/)).toBeInTheDocument();
+    expect(screen.queryByText(/Retry result could not be confirmed/)).not.toBeInTheDocument();
+  });
   it('offers Retry all for cancelled-only issues and confirms each status count', async () => {
     mockQueue({ cancelled: [row(8, 'cancelled')], skipped: [row(9, 'skipped')] });
     renderCard();

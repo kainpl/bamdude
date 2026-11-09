@@ -204,6 +204,9 @@ async def answer_by_repeating(
     if row is None:
         return None
 
+    from backend.app.services.print_execution import require_repeatable
+
+    await require_repeatable(db, row)
     if row.queue_source_id:
         # Asked under the guard and re-armed under it: a Repeat puts this row back
         # onto bytes the collector is entitled to release, and the state has to be
@@ -341,15 +344,20 @@ async def repeat_available(printer_id: int) -> bool:
 
 def waiting_row_predicate() -> ColumnElement[bool]:
     """Shared held-row eligibility; callers join the queue row to its printer."""
-    return or_(
-        and_(
-            Printer.awaiting_plate_clear_archive_id.is_(None),
-            PrintQueueItem.status == "completed",
-        ),
-        and_(
-            Printer.awaiting_plate_clear.is_(True),
-            PrintQueueItem.archive_id == Printer.awaiting_plate_clear_archive_id,
-            PrintQueueItem.status.in_(("completed", "cancelled", "failed")),
+    from backend.app.services.print_execution import STALE_CLAIM_CODES
+
+    return and_(
+        or_(PrintQueueItem.error_code.is_(None), PrintQueueItem.error_code.not_in(STALE_CLAIM_CODES)),
+        or_(
+            and_(
+                Printer.awaiting_plate_clear_archive_id.is_(None),
+                PrintQueueItem.status == "completed",
+            ),
+            and_(
+                Printer.awaiting_plate_clear.is_(True),
+                PrintQueueItem.archive_id == Printer.awaiting_plate_clear_archive_id,
+                PrintQueueItem.status.in_(("completed", "cancelled", "failed")),
+            ),
         ),
     )
 

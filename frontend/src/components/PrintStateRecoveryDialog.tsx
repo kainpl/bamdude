@@ -57,7 +57,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
   const settlement = action === 'settle_swap_by_operator';
   const shown = (key: string, value: unknown): string => {
     if (value === null || value === undefined) return '—';
-    if ((key === 'error_code' || key === 'failure_reason') && typeof value === 'string') return failureText(t, value, null);
+    if ((key === 'error_code' || key === 'failure_reason') && typeof value === 'string') return failureText(t, value, null, issue.archive_id);
     if (key === 'waiting_reason' && value === true) return t('printStateRecovery.recordedReason');
     if (typeof value === 'boolean') return t(value ? 'common.yes' : 'common.no');
     if (key === 'completed_at' && typeof value === 'string') return formatDateTime(value);
@@ -75,6 +75,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       });
       setPreview(answer);
     } catch (e) {
+      if (e instanceof ApiError && e.status === 409) { setIdle(false); setManualSwap(false); setCompleted(false); }
       setError(e instanceof ApiError && e.status === 409 ? t('printStateRecovery.changed') : t('printStateRecovery.failed'));
     } finally { setBusy(false); }
   };
@@ -90,6 +91,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       else onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
+        setIdle(false); setManualSwap(false); setCompleted(false);
         setPreview(null); setConfirmed(false); setError(t('printStateRecovery.changed'));
       } else {
         // Retain the same token after a lost response: the server's audit makes
