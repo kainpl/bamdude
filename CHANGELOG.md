@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- A layer total reported during print preparation now survives the transition to printing. Aborted preparation cannot lend its total to the next print, and a fresh total in the start message takes precedence. This also keeps the reported total available to last-layer photos and print tracking when the printer does not repeat it.
+
 - Sensitive authentication, integration and backup controls require a real administrator, including accounts in the Administrators group. Delegated settings editors can still save ordinary preferences; restricted fields cannot change as a side effect of a full-form save. Public sign-in provider metadata and ordinary UI preferences use separate limited responses. Git connection tests send credentials in the request body.
 
 - Temporary authentication-storage failures return a retryable service error and preserve browser and kiosk credentials. Removing an SSO link cannot remove the last usable login method, including when two links are removed at once. Deleting a printer keeps an empty API-key printer scope restricted.

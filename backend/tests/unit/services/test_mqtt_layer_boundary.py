@@ -233,3 +233,153 @@ def test_retained_start_total_allows_last_layer_photo_before_same_frame_stage_22
     push(c, gcode_state="FINISH")
     c.on_finish_photo_moment.assert_called_once()
     assert c.on_finish_photo_moment.call_args.args[0]["trigger"] == "last_layer"
+
+
+@pytest.mark.parametrize("terminal", ["IDLE", "FINISH", "FAILED"])
+@pytest.mark.parametrize("preparation", ["PREPARE", "SLICING"])
+@pytest.mark.parametrize("sparse_total", [False, True])
+def test_preparation_total_survives_running_boundary(terminal, preparation, sparse_total):
+    c = running()
+    push(c, gcode_state=terminal)
+    fields = {} if sparse_total else {"total_layer_num": 693}
+    push(c, gcode_state=preparation, gcode_file="new.gcode", subtask_id="200", **fields)
+    if sparse_total:
+        push(c, command="push_status", total_layer_num=693)
+    observed = []
+    c.on_state_change = lambda state: observed.append((state.layer_num, state.total_layers))
+    push(c, gcode_state="RUNNING")
+    push(c, layer_num=29)
+    assert observed[-2:] == [(0, 693), (29, 693)]
+
+
+@pytest.mark.parametrize("boundary_total", [483, 0])
+def test_boundary_total_overrides_preparation_total(boundary_total):
+    c = client()
+    push(c, gcode_state="IDLE")
+    push(c, gcode_state="PREPARE", gcode_file="new.gcode", total_layer_num=693)
+    push(c, gcode_state="RUNNING", layer_num=1, total_layer_num=boundary_total)
+    assert (c.state.layer_num, c.state.total_layers) == (1, boundary_total)
+
+
+@pytest.mark.parametrize("terminal", ["IDLE", "FINISH", "FAILED"])
+def test_aborted_preparation_does_not_seed_next_attempt(terminal):
+    c = client()
+    push(c, gcode_state="IDLE")
+    push(c, gcode_state="PREPARE", gcode_file="new.gcode", total_layer_num=693)
+    push(c, gcode_state=terminal)
+    push(c, gcode_state="PREPARE")
+    push(c, gcode_state="RUNNING", layer_num=1)
+    assert (c.state.layer_num, c.state.total_layers) == (1, 0)
+
+
+@pytest.mark.parametrize("terminal", ["IDLE", "FINISH", "FAILED"])
+def test_total_in_terminal_frame_is_not_preparation_evidence(terminal):
+    c = running()
+    push(c, gcode_state=terminal, total_layer_num=999)
+    push(c, gcode_state="PREPARE", gcode_file="new.gcode")
+    push(c, gcode_state="RUNNING", layer_num=1)
+    assert c.state.total_layers == 0
+
+
+@pytest.mark.parametrize("known_total", [None, 693])
+def test_ack_during_preparation_cannot_supply_or_replace_pending_total(known_total):
+    c = client()
+    push(c, gcode_state="IDLE")
+    push(c, gcode_state="PREPARE", gcode_file="new.gcode")
+    if known_total is not None:
+        push(c, total_layer_num=known_total)
+    push(c, command="project_file", total_layer_num=999)
+    push(c, gcode_state="RUNNING", layer_num=1)
+    assert c.state.total_layers == (known_total or 0)
+
+
+@pytest.mark.parametrize(
+    "later_fields,expected", [({}, 693), ({"total_layer_num": 0}, 0), ({"total_layer_num": 483}, 483)]
+)
+def test_preparation_sparse_zero_and_new_positive(later_fields, expected):
+    c = client()
+    push(c, gcode_state="IDLE")
+    push(c, gcode_state="PREPARE", gcode_file="new.gcode", total_layer_num=693)
+    push(c, gcode_state="SLICING", **later_fields)
+    push(c, gcode_state="RUNNING", layer_num=1)
+    assert c.state.total_layers == expected
+
+
+@pytest.mark.parametrize("boundary_fields,expected", [({}, 693), ({"total_layer_num": 483}, 483)])
+def test_preparation_total_survives_same_lifecycle_client_replacement(boundary_fields, expected):
+    old = client()
+    push(old, gcode_state="IDLE")
+    push(old, gcode_state="PREPARE", gcode_file="new.gcode", subtask_id="200", total_layer_num=693)
+    c = client()
+    c.carry_print_lifecycle_from(old)
+    push(c, gcode_state="RUNNING", gcode_file="new.gcode", subtask_id="200", layer_num=1, **boundary_fields)
+    assert (c.state.layer_num, c.state.total_layers) == (1, expected)
+
+
+def test_cold_preparation_does_not_invent_watched_start():
+    c = client()
+    c.on_print_start = MagicMock()
+    push(c, gcode_state="PREPARE", gcode_file="new.gcode", total_layer_num=693)
+    push(c, gcode_state="RUNNING", layer_num=29)
+    assert c.state.total_layers == 693  # Ordinary catch-up already preserves this value.
+    c.on_print_start.assert_not_called()
+
+
+def test_old_run_id_cannot_supply_preparation_total():
+    c = running()
+    push(c, gcode_state="FINISH")
+    push(c, gcode_state="PREPARE", gcode_file="new.gcode", subtask_id="100", total_layer_num=100)
+    push(c, gcode_state="RUNNING", subtask_id="200", layer_num=1)
+    assert c.state.total_layers == 0
+
+
+@pytest.mark.parametrize("replacement_total,expected", [(None, 0), (483, 483)])
+def test_changed_pending_id_drops_earlier_preparation_total(replacement_total, expected):
+    c = running()
+    push(c, gcode_state="FINISH")
+    push(c, gcode_state="PREPARE", gcode_file="new.gcode", subtask_id="200", total_layer_num=693)
+    fields = {} if replacement_total is None else {"total_layer_num": replacement_total}
+    push(c, subtask_id="300", **fields)
+    push(c, gcode_state="RUNNING", layer_num=1)
+    assert c.state.total_layers == expected
+
+
+def test_first_pending_id_arriving_late_keeps_same_window_total():
+    c = running()
+    push(c, gcode_state="FINISH")
+    push(c, gcode_state="PREPARE", gcode_file="new.gcode", total_layer_num=693)
+    push(c, subtask_id="200")
+    push(c, gcode_state="RUNNING", layer_num=1)
+    assert c.state.total_layers == 693
+
+
+def test_consumed_preparation_total_is_not_inherited_by_next_print_of_same_file():
+    c = client()
+    push(c, gcode_state="IDLE")
+    push(c, gcode_state="PREPARE", gcode_file="same.gcode", total_layer_num=693)
+    push(c, gcode_state="RUNNING", layer_num=1)
+    assert c.state.total_layers == 693
+    push(c, gcode_state="FINISH")
+    push(c, gcode_state="PREPARE")
+    push(c, gcode_state="RUNNING", layer_num=1)
+    assert c.state.total_layers == 0
+
+
+def test_preparation_total_reaches_start_layer_photo_and_terminal_consumers():
+    c = client()
+    push(c, gcode_state="IDLE")
+    push(c, gcode_state="PREPARE", gcode_file="new.gcode", total_layer_num=3)
+    events = []
+    c.on_print_start = lambda _data: events.append(("start", c.state.total_layers))
+    c.on_layer_change = lambda new, old: events.append(("layer", new, old, c.state.total_layers))
+    c.on_finish_photo_moment = MagicMock()
+    c.on_print_complete = MagicMock()
+    push(c, gcode_state="RUNNING", layer_num=1)
+    assert events == [("start", 3), ("layer", 1, 0, 3)]
+    c.on_finish_photo_moment.assert_not_called()
+    push(c, layer_num=3)
+    c.on_finish_photo_moment.assert_called_once()
+    assert c.on_finish_photo_moment.call_args.args[0]["trigger"] == "last_layer"
+    push(c, gcode_state="FINISH", layer_num=0, total_layer_num=0)
+    c.on_finish_photo_moment.assert_called_once()
+    assert c.on_print_complete.call_args.args[0]["terminal_total_layers"] == 3

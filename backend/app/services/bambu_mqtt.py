@@ -2426,6 +2426,7 @@ class BambuMQTTClient:
         self._print_lineage = str(uuid4())
         self._pending_start_state = None
         self._pending_start_id = None
+        self._pending_start_total: int | None = None
         self._retired_run_id = None
         self._start_observation = None
         self._unproven_observation = None
@@ -2675,6 +2676,7 @@ class BambuMQTTClient:
         self._print_lineage = prior._print_lineage
         self._pending_start_state = prior._pending_start_state
         self._pending_start_id = prior._pending_start_id
+        self._pending_start_total = prior._pending_start_total
         self._retired_run_id = prior._retired_run_id
         self._start_observation = prior._start_observation
         self._unproven_observation = prior._unproven_observation
@@ -5775,6 +5777,7 @@ class BambuMQTTClient:
         if self._pending_start_state is None and self._previous_gcode_state in ("IDLE", "FINISH", "FAILED"):
             self._pending_start_state = self._previous_gcode_state
         if self.state.state in ("IDLE", "FINISH", "FAILED"):
+            self._pending_start_total = None
             if self._previous_gcode_state in ("PREPARE", "SLICING"):
                 self._pending_start_id = None
             self._pending_start_state = self.state.state
@@ -5784,7 +5787,21 @@ class BambuMQTTClient:
             self._inflight_recovery_scheduled = False
         packet_run_id = run_id(data.get("subtask_id"))
         if self._pending_start_state and packet_run_id and packet_run_id != previous_run_id:
+            if self._pending_start_id is not None and packet_run_id != self._pending_start_id:
+                self._pending_start_total = None
             self._pending_start_id = packet_run_id
+        if (
+            self._pending_start_state is not None
+            and self.state.state in ("PREPARE", "SLICING")
+            and is_printer_status_frame(data)
+            and "total_layer_num" in data
+            and not (packet_run_id and packet_run_id == previous_run_id)
+        ):
+            # Firmware can report the new total before its first RUNNING
+            # delta. Remember only a value received in this preparation
+            # window, never the cached denominator of the completed print.
+            pending_total = int(data["total_layer_num"])
+            self._pending_start_total = pending_total if pending_total > 0 else None
         observed_start = bool(self.state.state == "RUNNING" and current_file and self._pending_start_state is not None)
         current_run_id = self._pending_start_id if observed_start else run_id(self.state.subtask_id)
         if self._retired_run_id and current_run_id == self._retired_run_id:
@@ -5856,6 +5873,9 @@ class BambuMQTTClient:
                 new_total = int(data["total_layer_num"])
                 if new_total > 0:
                     self.state.total_layers = new_total
+            elif observed_start and self._pending_start_total is not None:
+                self.state.total_layers = self._pending_start_total
+            self._pending_start_total = None
 
         if "mc_percent" in data:
             # Save last non-zero progress for usage tracking (firmware resets to 0 on cancel)
