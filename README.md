@@ -68,6 +68,8 @@ support is a bug report, a translation PR or a star. If you would rather chip in
 
 **Swap farms upgrading from older versions:** review the declaration of older archives before reprinting with BamDude's swap macros — see the [0.7.1 changelog](CHANGELOG.md).
 
+**Access and diagnostics in current development:** sensitive authentication, integration and backup controls require an administrator as well as the usual permission. Temporary authentication-storage outages preserve browser and kiosk credentials. Historical log views and support exports redact credentials before searching or truncating; stopping a bug report restores logging even when its log tail is unavailable. See [authentication](https://docs.bamdude.top/features/authentication/) and [diagnostics](https://docs.bamdude.top/features/system-info/). These changes are not included in stable 0.7.3.
+
 Docker `latest` follows the latest **stable release tag**; `dev` follows the beta channel. Check the release changelog for what your image includes.
 
 ## What's different from Bambuddy?
