@@ -120,6 +120,73 @@ class TestFlush:
 class TestSampling:
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_ha_switch_stops_requests_with_credentials_and_plug_still_saved(
+        self, async_client, db_session, monkeypatch, smart_plug_factory
+    ):
+        import httpx
+
+        from backend.app.services import smart_plug_manager
+        from backend.app.services.homeassistant import HomeAssistantService
+        from backend.app.services.measurement_history import sample_polled_plugs
+
+        monkeypatch.delenv("HA_URL", raising=False)
+        monkeypatch.delenv("HA_TOKEN", raising=False)
+        monkeypatch.setattr(smart_plug_manager, "homeassistant_service", HomeAssistantService())
+        requests = []
+
+        def fake_ha(request):
+            requests.append(request.url.path)
+            return httpx.Response(200, json={"state": "42", "message": "API running"})
+
+        transport = httpx.MockTransport(fake_ha)
+
+        async def handle_request(_transport, request):
+            return await transport.handle_async_request(request)
+
+        monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle_request)
+        plug = await smart_plug_factory(plug_type="homeassistant", ha_power_entity="sensor.plug_power")
+        plug_url = f"/api/v1/smart-plugs/{plug.id}"
+        settings_url = "/api/v1/settings/"
+        ha_config = {"ha_url": "http://127.0.0.1:8123", "ha_token": "test-ha-token"}
+
+        enabled = await async_client.patch(settings_url, json={**ha_config, "ha_enabled": True})
+        assert enabled.status_code == 200, enabled.text
+        assert await sample_polled_plugs(db_session) == 1
+        assert requests == ["/api/states/sensor.plug_power"]
+        requests.clear()
+
+        disabled = await async_client.patch(settings_url, json={"ha_enabled": False})
+        assert disabled.status_code == 200, disabled.text
+        assert disabled.json()["ha_enabled"] is False
+        assert {key: disabled.json()[key] for key in ha_config} == ha_config
+
+        sampled = await sample_polled_plugs(db_session)
+        assert requests == []
+        assert sampled == 0
+        status = await async_client.get(f"{plug_url}/status")
+        assert status.status_code == 200 and status.json()["reachable"] is False
+        control = await async_client.post(f"{plug_url}/control", json={"action": "on"})
+        assert control.status_code == 503
+        for resource in ("entities", "sensors"):
+            discovery = await async_client.get(f"/api/v1/smart-plugs/ha/{resource}")
+            assert discovery.status_code == 400
+        assert requests == []
+
+        # Testing credentials is an explicit setup operation before enabling HA.
+        test_connection = await async_client.post(
+            "/api/v1/smart-plugs/ha/test-connection", json={"url": ha_config["ha_url"], "token": ha_config["ha_token"]}
+        )
+        assert test_connection.status_code == 200 and test_connection.json()["success"] is True
+        assert requests == ["/api/"]
+        requests.clear()
+
+        reenabled = await async_client.patch(settings_url, json={"ha_enabled": True})
+        assert reenabled.status_code == 200, reenabled.text
+        assert await sample_polled_plugs(db_session) == 1
+        assert requests == ["/api/states/sensor.plug_power"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_a_plug_that_never_reports_is_read_and_recorded(self, db_session, monkeypatch):
         """The most important test in the stage. Written inside the Zigbee
         driver, this whole feature would work for one plug type while wearing

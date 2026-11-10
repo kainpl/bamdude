@@ -511,7 +511,7 @@ async def list_ha_entities(
     ha_url = ha_settings["ha_url"]
     ha_token = ha_settings["ha_token"]
 
-    if not ha_url or not ha_token:
+    if not ha_settings["ha_enabled"] or not ha_url or not ha_token:
         raise HTTPException(
             400, "Home Assistant not configured. Please set HA URL and token in Settings → Network → Home Assistant."
         )
@@ -536,7 +536,7 @@ async def list_ha_sensor_entities(
     ha_url = ha_settings["ha_url"]
     ha_token = ha_settings["ha_token"]
 
-    if not ha_url or not ha_token:
+    if not ha_settings["ha_enabled"] or not ha_url or not ha_token:
         raise HTTPException(
             400, "Home Assistant not configured. Please set HA URL and token in Settings → Network → Home Assistant."
         )
