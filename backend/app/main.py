@@ -2285,7 +2285,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     )
     fts_key = _fts_status_key(state)
     status_key = (
-        f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:"
+        f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:{state.total_layers}:"
         f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:"
         f"{state.stg_cur}:{bed_target}:{nozzle_target}:"
         f"{state.cooling_fan_speed}:{state.big_fan1_speed}:{state.big_fan2_speed}:"
