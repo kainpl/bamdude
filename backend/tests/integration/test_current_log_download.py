@@ -38,10 +38,14 @@ async def test_list_current_and_archives_separately(async_client, log_dir):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("lines", [0, 600_000], ids=["empty", "larger-than-bundle-limit"])
+@pytest.mark.parametrize("lines", [0, 220_000], ids=["empty", "larger-than-bundle-limit"])
 async def test_download_full_snapshot_without_debug(async_client, log_dir, monkeypatch, lines):
     """No support-bundle tail cap, and copying never runs on the event loop."""
-    content = ("Поточний лог\n" * lines).encode()
+    # Exercise an uncapped full download using real bounded log records. An
+    # oversized unparented prefix is intentionally omitted as one unsafe record.
+    content = ("2026-11-10 12:00:00,000 INFO [test] Поточний лог\n" * lines).encode()
+    if lines:
+        assert len(content) > 10 * 1024 * 1024
     (log_dir / "bamdude.log").write_bytes(content)
     loop_thread = threading.get_ident()
     real_fstat = os.fstat
@@ -90,7 +94,7 @@ async def test_archive_actions_still_exclude_current_file(async_client, log_dir)
 @pytest.mark.asyncio
 async def test_appends_excluded_and_live_handle_released_before_transfer(log_dir, monkeypatch):
     current = log_dir / "bamdude.log"
-    content = b"before\n" * 20_000
+    content = b"2026-11-10 12:00:00,000 INFO [test] before\n" * 20_000
     current.write_bytes(content)
     real_fstat = os.fstat
 

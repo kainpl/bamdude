@@ -43,8 +43,11 @@ from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.services.discovery import detect_container_runtime, is_running_in_docker
 from backend.app.services.log_reader import (
+    LogReadUnavailable,
     collect_diagnostic_sensitive_strings,
+    file_work,
     read_log_entries,
+    read_sanitized_log_tail,
     sanitize_log_content,
     write_sanitized_log_snapshot,
 )
@@ -211,6 +214,15 @@ async def _log_sensitive_strings() -> dict[str, str]:
         raise HTTPException(503, "Log sanitization is temporarily unavailable") from None
 
 
+async def _run_log_file_work(function, *args, timeout=30.0, **kwargs):
+    try:
+        return await file_work.run(function, *args, timeout=timeout, **kwargs)
+    except (LogReadUnavailable, TimeoutError):
+        raise HTTPException(
+            503, "Log reader is busy or temporarily unavailable", headers={"Retry-After": "2"}
+        ) from None
+
+
 # Log line regex pattern: "2024-01-15 10:30:45,123 INFO [module.name] Message here"
 LOG_LINE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3})\s+(\w+)\s+\[([^\]]+)\]\s+(.*)$")
 
@@ -250,10 +262,13 @@ async def get_logs(
     sensitive_strings: dict[str, str] = Depends(_log_sensitive_strings),
 ):
     """Get recent application log entries with optional filtering."""
-    from starlette.concurrency import run_in_threadpool
-
-    entries, total_lines = await run_in_threadpool(
-        _read_log_entries, limit=limit, level_filter=level, search=search, sensitive_strings=sensitive_strings
+    entries, total_lines = await _run_log_file_work(
+        _read_log_entries,
+        limit=limit,
+        level_filter=level,
+        search=search,
+        sensitive_strings=MappingProxyType(dict(sensitive_strings)),
+        timeout=10.0,
     )
 
     return LogsResponse(
@@ -328,7 +343,6 @@ class _LogSnapshotResponse(StreamingResponse):
             self.snapshot.close()
 
 
-@router.get("/logs/download")
 def download_current_log(
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
     sensitive_strings: dict[str, str] = Depends(_log_sensitive_strings),
@@ -364,6 +378,14 @@ def download_current_log(
         raise
 
 
+@router.get("/logs/download")
+async def download_current_log_response(
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    sensitive_strings: dict[str, str] = Depends(_log_sensitive_strings),
+):
+    return await _run_log_file_work(download_current_log, sensitive_strings=MappingProxyType(dict(sensitive_strings)))
+
+
 @router.get("/log-archives", response_model=LogArchivesResponse)
 async def list_log_archives(
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
@@ -395,7 +417,6 @@ async def list_log_archives(
     return LogArchivesResponse(archives=archives, current=current)
 
 
-@router.get("/log-archives/{filename}/download")
 def download_log_archive(
     filename: str,
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
@@ -428,6 +449,17 @@ def download_log_archive(
     except BaseException:
         snapshot.close()
         raise
+
+
+@router.get("/log-archives/{filename}/download")
+async def download_log_archive_response(
+    filename: str,
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    sensitive_strings: dict[str, str] = Depends(_log_sensitive_strings),
+):
+    return await _run_log_file_work(
+        download_log_archive, filename, sensitive_strings=MappingProxyType(dict(sensitive_strings))
+    )
 
 
 @router.delete("/log-archives/{filename}")
@@ -1556,53 +1588,20 @@ def _sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None
 
 
 def _get_log_content(max_bytes: int = 10 * 1024 * 1024, sensitive_strings: dict[str, str] | None = None) -> bytes:
-    """Get log file content, limited to max_bytes from the end."""
-    log_file = settings.log_dir / "bamdude.log"
-    if not log_file.exists():
-        return b"Log file not found"
-
-    file_size = log_file.stat().st_size
-    if file_size <= max_bytes:
-        content = log_file.read_text(encoding="utf-8", errors="replace")
-    else:
-        # A physical line is not a redaction boundary: a SQL parameter or
-        # quoted/header continuation may have its opener before this tail.
-        # Drop the entire cut logical entry up to the next timestamped parent.
-        with open(log_file, "rb") as f:
-            f.seek(file_size - max_bytes - 1)
-            if f.read(1) != b"\n":
-                f.readline()
-            content = "[omitted partial log entry]\n"
-            while f.tell() < file_size:
-                line = f.readline(file_size - f.tell())
-                decoded = line.decode("utf-8", errors="replace")
-                if LOG_LINE_PATTERN.match(decoded):
-                    content += decoded + f.read(file_size - f.tell()).decode("utf-8", errors="replace")
-                    break
-
-    # Sanitize sensitive data
-    content = _sanitize_log_content(content, sensitive_strings)
-    return content.encode("utf-8")
+    """Bounded logical tail, sanitized entry by entry by the file owner."""
+    return read_sanitized_log_tail(settings.log_dir / "bamdude.log", sensitive_strings, max_bytes=max_bytes)
 
 
 async def _get_recent_sanitized_logs(max_lines: int = 200) -> str:
-    """Get recent log lines, sanitized for inclusion in bug reports."""
-    sensitive_strings = await _log_sensitive_strings()
-
-    log_file = settings.log_dir / "bamdude.log"
-    if not log_file.exists():
-        return ""
-
-    # Read last portion of log file
-    try:
-        content = log_file.read_text(encoding="utf-8", errors="replace")
-        # Sanitize while each continuation still has its credential/SQL
-        # opener. A line-limited display must not become a raw-tail bypass.
-        safe = _sanitize_log_content(content, sensitive_strings)
-        return "\n".join(safe.splitlines()[-max_lines:])
-    except Exception:
-        logger.debug("Failed to read logs for bug report", exc_info=True)
-        return ""
+    """The newest N logical entries, without blocking the event loop."""
+    values = MappingProxyType(dict(await _log_sensitive_strings()))
+    content = await _run_log_file_work(
+        read_sanitized_log_tail,
+        settings.log_dir / "bamdude.log",
+        values,
+        max_entries=max_lines,
+    )
+    return content.decode("utf-8")
 
 
 # Top-level push_status keys that carry user-private data (filenames, cloud IDs).
@@ -1755,7 +1754,9 @@ async def generate_support_bundle(
             zf.writestr(f"push-status/printer-{index}.json", snapshot_json)
 
         # Add log file
-        log_content = _get_log_content(sensitive_strings=sensitive_strings)
+        log_content = await _run_log_file_work(
+            _get_log_content, sensitive_strings=MappingProxyType(dict(sensitive_strings))
+        )
         zf.writestr("bamdude.log", log_content)
 
     zip_buffer.seek(0)

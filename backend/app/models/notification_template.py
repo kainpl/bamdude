@@ -252,7 +252,7 @@ DEFAULT_TEMPLATES = [
         "body_template": (
             "Hello {username},\n\n"
             "Somebody asked to reset the password for your {app_name} account. "
-            "Open the link below to choose a new one:\n\n"
+            "Use the protected reset link at the end of this email to choose a new password.\n\n"
             "The link works once and stops working after {ttl_hours} hour(s).\n\n"
             "If this was not you, ignore this message - your password has not been changed."
         ),

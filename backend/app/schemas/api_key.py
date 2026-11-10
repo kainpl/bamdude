@@ -29,7 +29,11 @@ class APIKeyCreate(BaseModel):
 
 
 class APIKeyUpdate(BaseModel):
-    """Schema for updating an API key."""
+    """Schema for updating an API key.
+
+    Omitted printer_ids keeps the current scope. Explicit null deliberately
+    permits all printers; [] permits none. Only a key manager may request it.
+    """
 
     name: str | None = None
     can_queue: bool | None = None

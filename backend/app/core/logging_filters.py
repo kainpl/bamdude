@@ -122,6 +122,35 @@ _SECRET_SHAPES = tuple(
     )
 )
 _ESCAPED_CHAR = re.compile(r"\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})|\\([/\"'\\nrtbf])")
+_ENTRY_START = re.compile(r"(?m)^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}\s")
+
+
+def _redact_entry_shapes(text: str) -> str:
+    """An unterminated value may consume its entry, never the next parent.
+
+    Re-frame on EVERY decoding pass: percent/JSON escapes can reveal new
+    timestamped parents which were not visible in the original spelling.
+    Keep the separator if an unterminated construct consumed the final LF.
+    """
+    result = []
+    start = 0
+    for match in _ENTRY_START.finditer(text):
+        if match.start() == start:
+            continue
+        part = text[start : match.start()]
+        for pattern in _SECRET_SHAPES:
+            part = pattern.sub("[REDACTED]", part)
+        if text[match.start() - 1] == "\n" and not part.endswith("\n"):
+            part += "\n"
+        result.append(part)
+        start = match.start()
+    part = text[start:]
+    for pattern in _SECRET_SHAPES:
+        part = pattern.sub("[REDACTED]", part)
+    if text.endswith("\n") and not part.endswith("\n"):
+        part += "\n"
+    result.append(part)
+    return "".join(result)
 
 
 def _unescape_log_text(text: str) -> str:
@@ -148,15 +177,14 @@ def redact_log_credentials(text: str) -> str:
     return that sanitized spelling instead. No entropy heuristic is used.
     """
     candidate = text
-    changed = False
     for _ in range(4):
-        sanitized = redact_url_credentials(candidate) or ""
-        for pattern in _SECRET_SHAPES:
-            sanitized = pattern.sub("[REDACTED]", sanitized)
-        changed = changed or sanitized != candidate
-        decoded = _unescape_log_text(sanitized)
-        if decoded == sanitized:
-            return sanitized if changed else text
+        # Decode before matching: escaped quotes/newlines can otherwise hide an
+        # opener or a later timestamp from a multiline credential expression.
+        decoded = _unescape_log_text(candidate)
+        if decoded == candidate:
+            sanitized = redact_url_credentials(candidate) or ""
+            sanitized = _redact_entry_shapes(sanitized)
+            return sanitized if sanitized != candidate else text
         candidate = decoded
     # Unusually deep escaped text must not escape the bounded decoder.
     return "[REDACTED: encoded log value]"

@@ -1,7 +1,9 @@
 """Historical support doors use retained secret collection before publication."""
 
+import asyncio
 import io
 import json
+import threading
 import zipfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -110,3 +112,53 @@ async def test_multiline_credentials_in_historical_http_doors(async_client, tmp_
     response = await async_client.get("/api/v1/support/" + door)
     assert response.status_code == 200
     assert "CANARY" not in response.text
+
+
+@pytest.mark.parametrize("bad", ["[parameters: (CANARY_SQL,)]", 'token="CANARY_QUOTE'])
+@pytest.mark.parametrize("door", ["logs", "logs/download", "log-archives/bamdude-2026-11-09.log/download"])
+async def test_unterminated_value_preserves_newer_entries(async_client, tmp_path, monkeypatch, door, bad):
+    raw = entry(bad) + entry("NEWER useful first") + entry('NEWER status "idle"') + entry("NEWER useful last")
+    monkeypatch.setattr(support.settings, "log_dir", tmp_path)
+    for name in ("bamdude.log", "bamdude-2026-11-09.log"):
+        (tmp_path / name).write_text(raw, encoding="utf-8")
+    response = await async_client.get("/api/v1/support/" + door)
+    assert response.status_code == 200
+    assert "CANARY" not in response.text
+    assert "NEWER useful first" in response.text and "NEWER useful last" in response.text
+    monkeypatch.setattr(support, "_log_sensitive_strings", AsyncMock(return_value={}))
+    assert "NEWER useful last" in await support._get_recent_sanitized_logs()
+    bundle_tail = support._get_log_content().decode()
+    assert "CANARY" not in bundle_tail and "NEWER useful last" in bundle_tail
+
+
+@pytest.mark.parametrize("door", ["logs/download", "log-archives/bamdude-2026-11-09.log/download"])
+async def test_unparented_multiline_prefix_is_not_published(async_client, tmp_path, monkeypatch, door):
+    raw = "password='first\nCANARY_UNPARENTED_SECRET'\n" + entry("newer useful entry")
+    monkeypatch.setattr(support.settings, "log_dir", tmp_path)
+    for name in ("bamdude.log", "bamdude-2026-11-09.log"):
+        (tmp_path / name).write_text(raw, encoding="utf-8")
+    response = await async_client.get("/api/v1/support/" + door)
+    assert response.status_code == 200
+    assert "CANARY" not in response.text and "newer useful entry" in response.text
+
+
+async def test_concurrent_viewer_poll_gets_busy_without_another_file_job(async_client, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def slow_reader(**kwargs):
+        calls.append(kwargs)
+        entered.set()
+        assert release.wait(10)
+        return [], 0
+
+    monkeypatch.setattr(support, "_read_log_entries", slow_reader)
+    first = asyncio.create_task(async_client.get("/api/v1/support/logs"))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        second = await async_client.get("/api/v1/support/logs")
+        assert second.status_code == 503 and second.headers["retry-after"] == "2"
+        assert len(calls) == 1
+    finally:
+        release.set()
+        assert (await first).status_code == 200

@@ -12343,7 +12343,7 @@ async def safe_validation_error_handler(request, exc):
             {
                 "type": kind,
                 "loc": location,
-                "msg": "Invalid value" if kind == "value_error" else error["msg"],
+                "msg": error["msg"],
             }
         )
     return JSONResponse(status_code=422, content={"detail": details})

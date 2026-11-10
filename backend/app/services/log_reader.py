@@ -11,12 +11,16 @@ through this one, so the LDAP-DN redaction added for #2681 would have covered
 the scanner and missed the bundle. This module is the single sanitizer.
 """
 
+import asyncio
 import base64
 import html
 import json
 import logging
 import os
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import BinaryIO
 from urllib.parse import quote, quote_plus, unquote, urlsplit
 
@@ -145,6 +149,158 @@ def parse_log_line(line: str) -> LogEntry | None:
     return None
 
 
+# Each regex sees at most one 64 KiB logical entry, never a whole log file.
+LOG_ENTRY_BUDGET = 64 * 1024
+LOG_IO_CHUNK = 64 * 1024
+_file_context = threading.local()
+
+
+class LogReadUnavailable(RuntimeError):
+    pass
+
+
+def _file_checkpoint():
+    cancelled = getattr(_file_context, "cancelled", None)
+    deadline = getattr(_file_context, "deadline", None)
+    if cancelled is not None and cancelled.is_set() or deadline is not None and time.monotonic() >= deadline:
+        raise LogReadUnavailable("cancelled_or_timeout")
+
+
+class LogFileWork:
+    """One file-only job, no polling backlog; cancellation keeps the real slot.
+
+    Workers cooperate between bounded reads/entries. A blocked OS read cannot
+    be killed: the same future owns its slot until real exit, even after HTTP
+    timeout/disconnect. No DB session is passed into this owner.
+    """
+
+    def __init__(self):
+        self._slot = threading.Lock()
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="support-log")
+        self._future = None
+
+    async def run(self, function, *args, timeout=30.0, **kwargs):
+        if not self._slot.acquire(blocking=False):
+            raise LogReadUnavailable("busy")
+        cancelled = threading.Event()
+
+        def discard(result):
+            snapshot = getattr(result, "snapshot", None)
+            if snapshot is not None:
+                snapshot.close()
+
+        def work():
+            _file_context.cancelled = cancelled
+            _file_context.deadline = time.monotonic() + timeout
+            try:
+                result = function(*args, **kwargs)
+                if cancelled.is_set():
+                    discard(result)
+                return result
+            finally:
+                _file_context.cancelled = None
+                _file_context.deadline = None
+                self._slot.release()
+
+        try:
+            future = self._executor.submit(work)
+        except BaseException:
+            self._slot.release()
+            raise
+
+        def finished(done):
+            if cancelled.is_set() and not done.cancelled() and done.exception() is None:
+                discard(done.result())
+
+        future.add_done_callback(finished)
+        self._future = future
+        wrapped = asyncio.wrap_future(future)
+        wrapped.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        try:
+            return await asyncio.wait_for(asyncio.shield(wrapped), timeout)
+        except (asyncio.CancelledError, TimeoutError):
+            cancelled.set()
+            if future.done() and not future.cancelled() and future.exception() is None:
+                discard(future.result())
+            raise
+
+    async def drain(self):
+        if self._future is not None:
+            try:
+                await asyncio.shield(asyncio.wrap_future(self._future))
+            except Exception:
+                pass
+
+
+file_work = LogFileWork()
+
+
+def _reverse_physical_lines(stream, upper, lower=0):
+    """Yield bounded physical lines backwards; oversized prefixes stay private."""
+    position, carry, carry_big, newest = upper, b"", False, True
+    while position > lower:
+        _file_checkpoint()
+        count = min(LOG_IO_CHUNK, position - lower)
+        position -= count
+        stream.seek(position)
+        block = stream.read(count)
+        if len(block) != count:
+            raise LogReadUnavailable("log_changed")
+        pieces = (block if carry_big else block + carry).split(b"\n")
+        for index in range(len(pieces) - 1, 0, -1):
+            raw = pieces[index]
+            oversized = carry_big and index == len(pieces) - 1 or len(raw) > LOG_ENTRY_BUDGET
+            if newest and not raw and not oversized:
+                newest = False  # trailing LF is not an extra physical line
+                continue
+            complete = not newest
+            newest = False
+            yield raw[:LOG_ENTRY_BUDGET] + (b"\n" if complete else b""), oversized, complete
+        carry_big = carry_big and len(pieces) == 1 or len(pieces[0]) > LOG_ENTRY_BUDGET
+        carry = pieces[0][:LOG_ENTRY_BUDGET]
+        time.sleep(0)  # no long GIL-owning loop when a search matches nothing
+    if lower == 0 and (carry or carry_big):
+        yield carry + (b"\n" if not newest else b""), carry_big, not newest
+
+
+def reverse_log_entries(stream, upper, lower=0):
+    """Frame raw parents+continuations before sanitizing, newest first.
+
+    A cut/incomplete/oversized record and orphan continuations are never
+    exposed. None is an omission, not a truncated secret-bearing prefix.
+    """
+    pending, size, bad = [], 0, False
+    for raw, oversized, _complete in _reverse_physical_lines(stream, upper, lower):
+        _file_checkpoint()
+        text = raw.decode("utf-8", errors="replace")
+        parent = LOG_LINE_PATTERN.match(text) is not None
+        size += len(raw)
+        bad = bad or oversized or size > LOG_ENTRY_BUDGET
+        if parent:
+            yield None if bad else text + "".join(reversed(pending))
+            pending, size, bad = [], 0, False
+        elif not bad:
+            pending.append(text)
+        else:
+            pending.clear()
+    # Unparented prefix is deliberately dropped, also at a byte-tail boundary.
+
+
+def _physical_line_count(stream, upper):
+    count, remaining, last = 0, upper, b""
+    stream.seek(0)
+    while remaining:
+        _file_checkpoint()
+        block = stream.read(min(LOG_IO_CHUNK, remaining))
+        if not block:
+            raise LogReadUnavailable("log_changed")
+        remaining -= len(block)
+        count += block.count(b"\n")
+        last = block[-1:]
+        time.sleep(0)
+    return count + bool(last and last != b"\n")
+
+
 def read_log_entries(
     limit: int = 200,
     level_filter: str | None = None,
@@ -152,89 +308,61 @@ def read_log_entries(
     sensitive_strings: dict[str, str] | None = None,
     log_file=None,
 ) -> tuple[list[LogEntry], int]:
-    """Read and parse log entries from ``bamdude.log``, newest first.
-
-    Continuation lines (tracebacks etc.) are folded into the message of the
-    entry they belong to. Returns ``(entries, total_lines_in_file)``.
-    """
-    log_file = log_file if log_file is not None else settings.log_dir / "bamdude.log"
-    if not log_file.exists():
-        return [], 0
-
-    entries: list[LogEntry] = []
-    total_lines = 0
-
+    """Read only needed bounded logical entries; sanitize before filtering."""
+    path = log_file if log_file is not None else settings.log_dir / "bamdude.log"
+    replace_known = _known_value_replacer(sensitive_strings or {})
+    entries = []
     try:
-        with open(log_file, encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-            total_lines = len(lines)
-            # Whole entries are sanitized before literal search, including
-            # historical tracebacks and encoded credentials. Never search raw.
-            lines = sanitize_log_content("".join(lines), sensitive_strings).splitlines(keepends=True)
-
-            # Parse lines in reverse order (newest first)
-            current_entry: LogEntry | None = None
-            multi_line_buffer: list[str] = []
-
-            for line in reversed(lines):
-                parsed = parse_log_line(line)
-                if parsed:
-                    # Found a new log entry start
-                    if current_entry:
-                        # Apply filters and add previous entry (without multi_line_buffer - it belongs to new entry)
-                        should_include = True
-
-                        # Level filter
-                        if level_filter and current_entry.level.upper() != level_filter.upper():
-                            should_include = False
-
-                        # Search filter (case-insensitive)
-                        if search and should_include:
-                            search_lower = search.lower()
-                            if not (
-                                search_lower in current_entry.message.lower()
-                                or search_lower in current_entry.logger_name.lower()
-                            ):
-                                should_include = False
-
-                        if should_include:
-                            entries.append(current_entry)
-
-                            if len(entries) >= limit:
-                                break
-
-                    # Set new entry and attach any accumulated multi-line content to it
-                    # (in reverse order, continuation lines come before their parent entry)
-                    current_entry = parsed
-                    if multi_line_buffer:
-                        current_entry.message += "\n" + "\n".join(reversed(multi_line_buffer))
-                    multi_line_buffer = []
-                elif line.strip():
-                    # Continuation of multi-line log entry (will be attached to next parsed entry)
-                    multi_line_buffer.append(line.rstrip())
-
-            # Don't forget the last (oldest) entry
-            # Note: any remaining multi_line_buffer would be orphaned lines before the first entry
-            if current_entry and len(entries) < limit:
-                should_include = True
-                if level_filter and current_entry.level.upper() != level_filter.upper():
-                    should_include = False
-                if search and should_include:
-                    search_lower = search.lower()
-                    if not (
-                        search_lower in current_entry.message.lower()
-                        or search_lower in current_entry.logger_name.lower()
-                    ):
-                        should_include = False
-                if should_include:
-                    entries.append(current_entry)
-
-    except Exception as e:
-        logger.error("Error reading log file: %s", e)
+        with open(path, "rb") as stream:
+            upper = os.fstat(stream.fileno()).st_size
+            total = _physical_line_count(stream, upper)  # cheap bytes.count, no regex/decoded copy
+            for raw in reverse_log_entries(stream, upper):
+                if raw is None:
+                    continue
+                header, *continuation = raw.split("\n", 1)
+                match = LOG_LINE_PATTERN.match(header.rstrip("\r"))
+                # Parse structural fields before replacements can alter [logger].
+                continued = continuation[0].rstrip("\r\n") if continuation else ""
+                message = match[4] + ("\n" + continued if continued else "")
+                message = _sanitize_bounded_entry(message, replace_known)
+                name = _sanitize_bounded_entry(match[3], replace_known)
+                entry = LogEntry(timestamp=match[1], level=match[2], logger_name=name, message=message)
+                if level_filter and entry.level.upper() != level_filter.upper():
+                    continue
+                if search and search.casefold() not in (name + "\n" + message).casefold():
+                    continue
+                entries.append(entry)
+                if len(entries) >= limit:
+                    break
+            return entries, total
+    except FileNotFoundError:
         return [], 0
 
-    # Entries are already in newest-first order
-    return entries, total_lines
+
+def read_sanitized_log_tail(path, sensitive_strings=None, *, max_entries=None, max_bytes=10 * 1024 * 1024):
+    """Bounded chronological tail, with a strict sanitized-output byte cap."""
+    replace_known = _known_value_replacer(sensitive_strings or {})
+    selected, output_size = [], 0
+    try:
+        with open(path, "rb") as stream:
+            upper = os.fstat(stream.fileno()).st_size
+            lower = max(0, upper - max_bytes)
+            for raw in reverse_log_entries(stream, upper, lower):
+                safe = (
+                    "[omitted oversized or incomplete log entry]\n"
+                    if raw is None
+                    else _sanitize_bounded_entry(raw, replace_known)
+                )
+                encoded = safe.encode("utf-8")
+                if output_size + len(encoded) > max_bytes:
+                    break
+                selected.append(encoded)
+                output_size += len(encoded)
+                if max_entries is not None and len(selected) >= max_entries:
+                    break
+    except FileNotFoundError:
+        return b""
+    return b"".join(reversed(selected))
 
 
 def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None = None) -> str:
@@ -294,6 +422,28 @@ def _sanitize_log_content(content: str, replace_known) -> str:
     return content
 
 
+class _EntryTooLarge(Exception):
+    pass
+
+
+def _sanitize_bounded_entry(content, replace_known):
+    """Short secrets/invalid UTF-8 must not expand a regex input without bound."""
+
+    def bounded_replace(value):
+        result = replace_known(value)
+        if len(result.encode("utf-8")) > LOG_ENTRY_BUDGET:
+            raise _EntryTooLarge
+        return result
+
+    if len(content.encode("utf-8")) > LOG_ENTRY_BUDGET:
+        return "[omitted oversized log entry]\n"
+    try:
+        result = _sanitize_log_content(content, bounded_replace)
+    except _EntryTooLarge:
+        return "[omitted oversized sanitized log entry]\n"
+    return result if len(result.encode("utf-8")) <= LOG_ENTRY_BUDGET else "[omitted oversized sanitized log entry]\n"
+
+
 def write_sanitized_log_snapshot(
     source: BinaryIO, target: BinaryIO, size: int, sensitive_strings: dict[str, str]
 ) -> int:
@@ -301,12 +451,14 @@ def write_sanitized_log_snapshot(
 
     File size is captured by the owner before this call. A traceback stays
     with its timestamped parent; overlong physical/logical entries are omitted
-    in full, never cut before a secret's terminator and then exposed. Plain
-    non-log text is processed by physical line, preserving ordinary downloads.
+    in full, never cut before a secret's terminator and then exposed.
+    An unparented prefix is one bounded logical entry too, so a multiline
+    credential there cannot be separated from its opener. Ordinary small
+    plaintext downloads retain their content.
     No database session or network transfer is owned by this file-only phase.
     """
-    physical_budget = 64 * 1024
-    entry_budget = 256 * 1024
+    physical_budget = LOG_ENTRY_BUDGET
+    entry_budget = LOG_ENTRY_BUDGET
     remaining = size
     entry: list[str] = []
     entry_size = 0
@@ -319,10 +471,11 @@ def write_sanitized_log_snapshot(
         if omitted:
             target.write(b"[omitted oversized log entry]\n")
         elif entry:
-            target.write(_sanitize_log_content("".join(entry), replace_known).encode("utf-8"))
+            target.write(_sanitize_bounded_entry("".join(entry), replace_known).encode("utf-8"))
         entry, entry_size, omitted = [], 0, False
 
     while remaining:
+        _file_checkpoint()
         raw = source.readline(min(physical_budget + 1, remaining))
         if not raw:
             raise ValueError("log_snapshot_changed")
@@ -341,9 +494,6 @@ def write_sanitized_log_snapshot(
                 entry = [""]
             omitted = True
             discarded_line = not complete
-            continue
-        if not entry and not begins_entry and not omitted:
-            target.write(_sanitize_log_content(text, replace_known).encode("utf-8"))
             continue
         entry_size += len(raw)
         if entry_size > entry_budget:

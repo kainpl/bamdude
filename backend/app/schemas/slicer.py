@@ -266,7 +266,7 @@ class SliceRequest(BaseModel):
                 normalised.append("")
                 continue
             if not _HEX_COLOUR.fullmatch(value):
-                raise ValueError(f"filament_colours[{i}] must be '#RRGGBB' or '#RRGGBBAA', got {colour!r}")
+                raise ValueError(f"filament_colours[{i}] must be '#RRGGBB' or '#RRGGBBAA'")
             normalised.append("#" + value[1:].upper())
         self.filament_colours = normalised
         return self
