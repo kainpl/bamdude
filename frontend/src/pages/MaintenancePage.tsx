@@ -1278,8 +1278,8 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
   });
 
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
   });
 
   const { data, isLoading } = useQuery({

@@ -918,8 +918,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   });
 
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
   });
 
   const dateFormat: DateFormat = settings?.date_format || 'system';
@@ -1534,7 +1534,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const updateThresholdMutation = useMutation({
     mutationFn: (threshold: number) => api.updateSettings({ low_stock_threshold: threshold }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['ui-preferences'] });
       // The low-stock COUNT is served now (task 5), so the threshold is no
       // longer a memo dependency that recomputes it for free — this is the one
       // mutation on the page that changes what the server would answer without

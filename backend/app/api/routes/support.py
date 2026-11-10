@@ -42,7 +42,12 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.services.discovery import detect_container_runtime, is_running_in_docker
-from backend.app.services.log_reader import sanitize_log_content
+from backend.app.services.log_reader import (
+    collect_diagnostic_sensitive_strings,
+    read_log_entries,
+    sanitize_log_content,
+    write_sanitized_log_snapshot,
+)
 from backend.app.services.network_utils import get_network_interfaces
 from backend.app.services.printer_manager import printer_manager
 from backend.app.utils.http import build_content_disposition
@@ -190,6 +195,22 @@ class LogsResponse(BaseModel):
     filtered_count: int
 
 
+async def _log_sensitive_strings() -> dict[str, str]:
+    """Complete the short DB phase before any file reader starts.
+
+    Never fall back to raw historical text if saved opaque secrets cannot be
+    collected. Resolve the current factory at call time (also after restore).
+    """
+    from backend.app.core.database import async_session as session_factory
+
+    try:
+        async with session_factory() as db:
+            return await collect_diagnostic_sensitive_strings(db)
+    except Exception:
+        logger.warning("Log secret collection unavailable", exc_info=True)
+        raise HTTPException(503, "Log sanitization is temporarily unavailable") from None
+
+
 # Log line regex pattern: "2024-01-15 10:30:45,123 INFO [module.name] Message here"
 LOG_LINE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3})\s+(\w+)\s+\[([^\]]+)\]\s+(.*)$")
 
@@ -211,84 +232,13 @@ def _read_log_entries(
     limit: int = 200,
     level_filter: str | None = None,
     search: str | None = None,
+    sensitive_strings: dict[str, str] | None = None,
 ) -> tuple[list[LogEntry], int]:
-    """Read and parse log entries from file with optional filtering."""
-    log_file = settings.log_dir / "bamdude.log"
-    if not log_file.exists():
-        return [], 0
-
-    entries: list[LogEntry] = []
-    total_lines = 0
-
-    try:
-        with open(log_file, encoding="utf-8", errors="replace") as f:
-            # Read all lines and process
-            lines = f.readlines()
-            total_lines = len(lines)
-
-            # Parse lines in reverse order (newest first)
-            current_entry: LogEntry | None = None
-            multi_line_buffer: list[str] = []
-
-            for line in reversed(lines):
-                parsed = _parse_log_line(line)
-                if parsed:
-                    # Found a new log entry start
-                    if current_entry:
-                        # Apply filters and add previous entry (without multi_line_buffer - it belongs to new entry)
-                        should_include = True
-
-                        # Level filter
-                        if level_filter and current_entry.level.upper() != level_filter.upper():
-                            should_include = False
-
-                        # Search filter (case-insensitive)
-                        if search and should_include:
-                            search_lower = search.lower()
-                            if not (
-                                search_lower in current_entry.message.lower()
-                                or search_lower in current_entry.logger_name.lower()
-                            ):
-                                should_include = False
-
-                        if should_include:
-                            entries.append(current_entry)
-
-                            if len(entries) >= limit:
-                                break
-
-                    # Set new entry and attach any accumulated multi-line content to it
-                    # (in reverse order, continuation lines come before their parent entry)
-                    current_entry = parsed
-                    if multi_line_buffer:
-                        current_entry.message += "\n" + "\n".join(reversed(multi_line_buffer))
-                    multi_line_buffer = []
-                elif line.strip():
-                    # Continuation of multi-line log entry (will be attached to next parsed entry)
-                    multi_line_buffer.append(line.rstrip())
-
-            # Don't forget the last (oldest) entry
-            # Note: any remaining multi_line_buffer would be orphaned lines before the first entry
-            if current_entry and len(entries) < limit:
-                should_include = True
-                if level_filter and current_entry.level.upper() != level_filter.upper():
-                    should_include = False
-                if search and should_include:
-                    search_lower = search.lower()
-                    if not (
-                        search_lower in current_entry.message.lower()
-                        or search_lower in current_entry.logger_name.lower()
-                    ):
-                        should_include = False
-                if should_include:
-                    entries.append(current_entry)
-
-    except Exception as e:
-        logger.error("Error reading log file: %s", e)
-        return [], 0
-
-    # Entries are already in newest-first order
-    return entries, total_lines
+    """Use the shared historical sanitizer BEFORE search and projection."""
+    entries, total = read_log_entries(
+        limit, level_filter, search, sensitive_strings, log_file=settings.log_dir / "bamdude.log"
+    )
+    return [LogEntry(**entry.model_dump()) for entry in entries], total
 
 
 @router.get("/logs", response_model=LogsResponse)
@@ -297,9 +247,14 @@ async def get_logs(
     level: str | None = Query(None, description="Filter by log level (DEBUG, INFO, WARNING, ERROR)"),
     search: str | None = Query(None, description="Search in message or logger name"),
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    sensitive_strings: dict[str, str] = Depends(_log_sensitive_strings),
 ):
     """Get recent application log entries with optional filtering."""
-    entries, total_lines = _read_log_entries(limit=limit, level_filter=level, search=search)
+    from starlette.concurrency import run_in_threadpool
+
+    entries, total_lines = await run_in_threadpool(
+        _read_log_entries, limit=limit, level_filter=level, search=search, sensitive_strings=sensitive_strings
+    )
 
     return LogsResponse(
         entries=entries,
@@ -354,13 +309,13 @@ class LogArchivesResponse(BaseModel):
 class _LogSnapshotResponse(StreamingResponse):
     """Own the temporary snapshot, including when the client disconnects."""
 
-    def __init__(self, snapshot: BinaryIO, size: int):
+    def __init__(self, snapshot: BinaryIO, size: int, filename: str = "bamdude.log"):
         self.snapshot = snapshot
         super().__init__(
             iter(lambda: snapshot.read(64 * 1024), b""),
             media_type="text/plain",
             headers={
-                "Content-Disposition": build_content_disposition("bamdude.log"),
+                "Content-Disposition": build_content_disposition(filename),
                 "Content-Length": str(size),
                 "Cache-Control": "no-store",
             },
@@ -376,6 +331,7 @@ class _LogSnapshotResponse(StreamingResponse):
 @router.get("/logs/download")
 def download_current_log(
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    sensitive_strings: dict[str, str] = Depends(_log_sensitive_strings),
 ):
     """Copy the live log in a worker thread, then stream a finite snapshot.
 
@@ -393,19 +349,15 @@ def download_current_log(
     try:
         with source_path.open("rb") as source:
             size = os.fstat(source.fileno()).st_size
-            remaining = size
-            while remaining:
-                chunk = source.read(min(64 * 1024, remaining))
-                if not chunk:
-                    raise HTTPException(status_code=409, detail="Log was cleared during download. Please retry.")
-                snapshot.write(chunk)
-                remaining -= len(chunk)
+            size = write_sanitized_log_snapshot(source, snapshot, size, sensitive_strings)
         snapshot.seek(0)
         return _LogSnapshotResponse(snapshot, size)
     except BaseException as exc:
         snapshot.close()
         if isinstance(exc, FileNotFoundError):
             raise HTTPException(status_code=404, detail="Current log not found") from exc
+        if isinstance(exc, ValueError) and str(exc) == "log_snapshot_changed":
+            raise HTTPException(409, "Log was cleared during download. Please retry.") from exc
         if isinstance(exc, OSError):
             logger.warning("Failed to snapshot current log: %s", exc)
             raise HTTPException(status_code=500, detail="Failed to prepare current log download") from exc
@@ -444,14 +396,13 @@ async def list_log_archives(
 
 
 @router.get("/log-archives/{filename}/download")
-async def download_log_archive(
+def download_log_archive(
     filename: str,
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    sensitive_strings: dict[str, str] = Depends(_log_sensitive_strings),
 ):
     """Download a rotated log archive. Filename must match the strict
     ``bamdude-YYYY-MM-DD.log`` pattern (path-traversal guard)."""
-    from fastapi.responses import FileResponse
-
     if not _ARCHIVE_NAME_RE.match(filename):
         raise HTTPException(status_code=400, detail="Invalid log archive filename")
     target = (
@@ -468,11 +419,15 @@ async def download_log_archive(
         raise HTTPException(status_code=400, detail=f"Invalid path: {e}") from e
     if not target.is_file():
         raise HTTPException(status_code=404, detail="Log archive not found")
-    return FileResponse(
-        path=str(target),
-        filename=filename,
-        media_type="text/plain",
-    )
+    snapshot = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115 — response owns it
+    try:
+        with target.open("rb") as source:
+            size = write_sanitized_log_snapshot(source, snapshot, os.fstat(source.fileno()).st_size, sensitive_strings)
+        snapshot.seek(0)
+        return _LogSnapshotResponse(snapshot, size, filename)
+    except BaseException:
+        snapshot.close()
+        raise
 
 
 @router.delete("/log-archives/{filename}")
@@ -1610,12 +1565,20 @@ def _get_log_content(max_bytes: int = 10 * 1024 * 1024, sensitive_strings: dict[
     if file_size <= max_bytes:
         content = log_file.read_text(encoding="utf-8", errors="replace")
     else:
-        # Read last max_bytes
+        # A physical line is not a redaction boundary: a SQL parameter or
+        # quoted/header continuation may have its opener before this tail.
+        # Drop the entire cut logical entry up to the next timestamped parent.
         with open(log_file, "rb") as f:
-            f.seek(file_size - max_bytes)
-            # Skip partial line at start
-            f.readline()
-            content = f.read().decode("utf-8", errors="replace")
+            f.seek(file_size - max_bytes - 1)
+            if f.read(1) != b"\n":
+                f.readline()
+            content = "[omitted partial log entry]\n"
+            while f.tell() < file_size:
+                line = f.readline(file_size - f.tell())
+                decoded = line.decode("utf-8", errors="replace")
+                if LOG_LINE_PATTERN.match(decoded):
+                    content += decoded + f.read(file_size - f.tell()).decode("utf-8", errors="replace")
+                    break
 
     # Sanitize sensitive data
     content = _sanitize_log_content(content, sensitive_strings)
@@ -1624,29 +1587,7 @@ def _get_log_content(max_bytes: int = 10 * 1024 * 1024, sensitive_strings: dict[
 
 async def _get_recent_sanitized_logs(max_lines: int = 200) -> str:
     """Get recent log lines, sanitized for inclusion in bug reports."""
-    # Collect sensitive strings from DB for redaction
-    sensitive_strings: dict[str, str] = {}
-    async with async_session() as db:
-        result = await db.execute(select(Printer.name, Printer.serial_number, Printer.ip_address, Printer.access_code))
-        for name, serial, ip_address, access_code in result.all():
-            if name:
-                sensitive_strings[name] = "[PRINTER]"
-            if serial:
-                sensitive_strings[serial] = "[SERIAL]"
-            if ip_address:
-                sensitive_strings[ip_address] = "[IP]"
-            if access_code:
-                sensitive_strings[access_code] = "[ACCESS_CODE]"
-
-        result = await db.execute(select(User.username))
-        for (username,) in result.all():
-            if username:
-                sensitive_strings[username] = "[USER]"
-
-        result = await db.execute(select(Settings.value).where(Settings.key == "bambu_cloud_email"))
-        cloud_email = result.scalar_one_or_none()
-        if cloud_email:
-            sensitive_strings[cloud_email] = "[EMAIL]"
+    sensitive_strings = await _log_sensitive_strings()
 
     log_file = settings.log_dir / "bamdude.log"
     if not log_file.exists():
@@ -1655,9 +1596,10 @@ async def _get_recent_sanitized_logs(max_lines: int = 200) -> str:
     # Read last portion of log file
     try:
         content = log_file.read_text(encoding="utf-8", errors="replace")
-        lines = content.splitlines()
-        recent = "\n".join(lines[-max_lines:])
-        return _sanitize_log_content(recent, sensitive_strings)
+        # Sanitize while each continuation still has its credential/SQL
+        # opener. A line-limited display must not become a raw-tail bypass.
+        safe = _sanitize_log_content(content, sensitive_strings)
+        return "\n".join(safe.splitlines()[-max_lines:])
     except Exception:
         logger.debug("Failed to read logs for bug report", exc_info=True)
         return ""
@@ -1739,32 +1681,7 @@ async def generate_support_bundle(
                 "Please enable debug logging, reproduce the issue, then generate the bundle.",
             )
 
-        # Collect known sensitive values for log redaction
-        sensitive_strings: dict[str, str] = {}
-
-        # Printer names, serial numbers, IP addresses, and access codes
-        result = await db.execute(select(Printer.name, Printer.serial_number, Printer.ip_address, Printer.access_code))
-        for name, serial, ip_address, access_code in result.all():
-            if name:
-                sensitive_strings[name] = "[PRINTER]"
-            if serial:
-                sensitive_strings[serial] = "[SERIAL]"
-            if ip_address:
-                sensitive_strings[ip_address] = "[IP]"
-            if access_code:
-                sensitive_strings[access_code] = "[ACCESS_CODE]"
-
-        # Auth usernames
-        result = await db.execute(select(User.username))
-        for (username,) in result.all():
-            if username:
-                sensitive_strings[username] = "[USER]"
-
-        # Bambu Cloud email
-        result = await db.execute(select(Settings.value).where(Settings.key == "bambu_cloud_email"))
-        cloud_email = result.scalar_one_or_none()
-        if cloud_email:
-            sensitive_strings[cloud_email] = "[EMAIL]"
+        sensitive_strings = await collect_diagnostic_sensitive_strings(db)
 
     # Collect support info
     allowed, scope = await _print_state_access(request, creds)
@@ -1785,7 +1702,11 @@ async def generate_support_bundle(
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         # Add support info JSON
-        zf.writestr("support-info.json", json.dumps(support_info, indent=2, default=str))
+        from backend.app.services.diagnostic_snapshot import _sanitize_recursive
+
+        zf.writestr(
+            "support-info.json", json.dumps(_sanitize_recursive(support_info, sensitive_strings), indent=2, default=str)
+        )
 
         # MQTT recordings, only the ones explicitly asked for.
         #
@@ -1830,7 +1751,7 @@ async def generate_support_bundle(
             # Belt-and-suspenders: pass the JSON text through the string-based
             # sanitizer so any user-named string (printer name, serial baked into
             # a tray uuid) the structural pass missed still gets caught.
-            snapshot_json = _sanitize_log_content(json.dumps(snapshot, indent=2, default=str), sensitive_strings)
+            snapshot_json = json.dumps(_sanitize_recursive(snapshot, sensitive_strings), indent=2, default=str)
             zf.writestr(f"push-status/printer-{index}.json", snapshot_json)
 
         # Add log file

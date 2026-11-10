@@ -584,7 +584,7 @@ export function useFilamentMapping(
   const loadedFilaments = useLoadedFilaments(printerStatus);
   // Provisional display honours the preference too; the server preview adds
   // inventory weights and hardware policy before the dialog grants a verdict.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const { data: settings } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences });
   const preferLowest = settings?.prefer_lowest_filament ?? true;
 
   // FTS routes any AMS slot to any extruder, so per-nozzle slot restriction

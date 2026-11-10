@@ -17,7 +17,7 @@ interface PrinterInfoModalProps {
 
 export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: PrinterInfoModalProps) {
   const { t } = useTranslation();
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const { data: settings } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences });
   // Swap profile catalog — only used to resolve the human label of the
   // active ``swap_profile`` id for printers that support a plate swapper
   // (currently A1 / A1 mini in BamDude). Cached for 5 min; small payload.

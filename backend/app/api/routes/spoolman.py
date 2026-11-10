@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool
 from backend.app.api.routes.spoolman_inventory import _clear_stale_tag_links
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireAdmin, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.websocket import ws_manager
@@ -140,7 +140,7 @@ async def get_spoolman_status(
     )
 
 
-@router.post("/connect")
+@router.post("/connect", dependencies=[RequireAdmin()])
 async def connect_spoolman(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
@@ -186,7 +186,7 @@ async def connect_spoolman(
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.post("/disconnect")
+@router.post("/disconnect", dependencies=[RequireAdmin()])
 async def disconnect_spoolman(
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):

@@ -88,7 +88,7 @@ export function AutoQueuePanel() {
   // Shortest-job-first overrides manual positions entirely — with it on, a
   // drag would persist an order the distributor then ignores, so the handles
   // hide and a hint says who is in charge.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const { data: settings } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences });
   const sjfActive = settings?.queue_shortest_first === true;
 
   const cancelMutation = useMutation({

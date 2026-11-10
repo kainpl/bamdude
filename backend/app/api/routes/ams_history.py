@@ -109,7 +109,7 @@ async def delete_old_history(
     printer_id: int,
     days: int = Query(default=30, ge=1, le=365, description="Delete data older than X days"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.AMS_HISTORY_READ),
+    _: User | None = RequirePermission(Permission.PRINTERS_UPDATE),
 ):
     """Delete old AMS history data for a printer."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)

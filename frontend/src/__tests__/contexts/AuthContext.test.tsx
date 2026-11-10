@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router';
 import { http, HttpResponse } from 'msw';
@@ -156,6 +156,7 @@ describe('AuthContext', () => {
 
     it('clears the token on a definitive 401 invalid-token response', async () => {
       server.use(
+        http.post('*/api/v1/auth/refresh', () => HttpResponse.json({ detail: 'expired' }, { status: 401 })),
         http.get('*/api/v1/auth/me', () =>
           HttpResponse.json({ detail: 'Could not validate credentials' }, { status: 401 }),
         ),
@@ -169,6 +170,17 @@ describe('AuthContext', () => {
       // Definitive invalid-token → token cleared from memory + localStorage.
       expect(getAuthToken()).toBeNull();
       expect(localStorage.getItem('auth_token')).toBeNull();
+    });
+
+    it('keeps the current user and token when a profile refresh gets503', async () => {
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+      await waitFor(() => expect(result.current.user).not.toBeNull());
+      const currentUser = result.current.user;
+      server.use(http.get('*/api/v1/auth/me', () => new HttpResponse(null, { status: 503 })));
+      await act(async () => { await result.current.refreshUser(); });
+      expect(result.current.user).toEqual(currentUser);
+      expect(getAuthToken()).toBe('valid-token');
+      expect(localStorage.getItem('auth_token')).toBe('valid-token');
     });
 
     it('loads the user when the stored token is valid', async () => {

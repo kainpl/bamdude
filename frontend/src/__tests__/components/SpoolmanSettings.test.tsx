@@ -20,6 +20,8 @@ vi.mock('../../api/client', () => ({
   getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
     getSettings: vi.fn().mockResolvedValue({}),
+    getUiPreferences: vi.fn().mockResolvedValue({}),
+    getCurrentUser: vi.fn().mockResolvedValue({ id: 1, is_admin: true, permissions: [] }),
     updateSettings: vi.fn().mockResolvedValue({}),
     getSpoolmanSettings: vi.fn(),
     updateSpoolmanSettings: vi.fn(),

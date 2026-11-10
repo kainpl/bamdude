@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from backend.app.core.api_key_scope import key_printer_scope
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireAdmin, RequirePermission
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
 from backend.app.services.obico_detection import obico_detection_service, pop_frame
@@ -189,7 +189,7 @@ async def clear_history(_: User | None = RequirePermission(Permission.SETTINGS_U
         raise HTTPException(503, "Obico history is temporarily unavailable") from exc
 
 
-@router.post("/test-connection")
+@router.post("/test-connection", dependencies=[RequireAdmin()])
 async def test_connection(
     req: TestConnectionRequest,
     _: User = RequirePermission(Permission.SETTINGS_UPDATE),

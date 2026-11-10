@@ -30,7 +30,7 @@ export function PlugPowerHistoryModal({ isOpen, onClose, plugId, plugName }: Pro
   const headingId = useId();
   const [range, setRange] = useState<TimeRange>('24h');
 
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const { data: settings } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences });
   const timeFormat: TimeFormat = settings?.time_format || 'system';
 
   const hours = TIME_RANGES.find((r) => r.value === range)?.hours ?? 24;

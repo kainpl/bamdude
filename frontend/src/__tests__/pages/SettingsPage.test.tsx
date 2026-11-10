@@ -5,10 +5,11 @@
 import { useEffect } from 'react';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { describe, it, expect, beforeEach } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { SettingsPage } from '../../pages/SettingsPage';
+import { useAuth } from '../../contexts/AuthContext';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 
@@ -78,6 +79,37 @@ describe('SettingsPage', () => {
       })
     );
   });
+
+  it('keeps ordinary preferences editable but disables and omits protected fields for a custom settings editor', async () => {
+    const saved: Record<string, unknown>[] = [];
+    server.use(
+      http.get('/api/v1/auth/me', () => HttpResponse.json({ id: 25, username: 'delegated', role: 'user', is_admin: false, is_active: true, groups: [], permissions: ['settings:read', 'settings:update'] })),
+      http.put('/api/v1/settings/', async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>;
+        saved.push(body);
+        return HttpResponse.json({ ...mockSettings, ...body });
+      }),
+    );
+    const user = userEvent.setup();
+    function Actor() { return <span>{useAuth().user?.username}</span>; }
+    render(<><Actor /><SettingsPage /></>);
+    await screen.findByText('delegated');
+    await act(() => new Promise(resolve => setTimeout(resolve, 150)));
+    const label = await screen.findByText('Date Format');
+    const select = label.parentElement!.querySelector('select')!;
+    expect(select).not.toBeDisabled();
+    await user.selectOptions(select, 'iso');
+    expect(select).toHaveValue('iso');
+    await waitFor(() => expect(saved.some(body => body.date_format === 'iso')).toBe(true), { timeout: 5000 });
+    expect(saved.at(-1)).not.toHaveProperty('mqtt_enabled');
+    expect(saved.at(-1)).not.toHaveProperty('external_url');
+    expect(saved.at(-1)).not.toHaveProperty('session_max_hours');
+    expect(screen.queryByRole('button', { name: /^Backup$/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Network' }));
+    const row = (await screen.findByText('Publish events to external MQTT broker')).closest('.flex.items-center.justify-between');
+    expect(row!.querySelector('input')).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'General' }));
+  }, 15_000);
 
   describe('rendering', () => {
     it('renders the page title', async () => {

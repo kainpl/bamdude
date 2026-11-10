@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+- Sensitive authentication, integration and backup controls require a real administrator, including accounts in the Administrators group. Delegated settings editors can still save ordinary preferences; restricted fields cannot change as a side effect of a full-form save. Public sign-in provider metadata and ordinary UI preferences use separate limited responses. Git connection tests send credentials in the request body.
+
+- Temporary authentication-storage failures return a retryable service error and preserve browser and kiosk credentials. Removing an SSO link cannot remove the last usable login method, including when two links are removed at once. Deleting a printer keeps an empty API-key printer scope restricted.
+
+- Library imports refuse hidden matching files without revealing or repairing them. Workshop print summaries preserve permitted counts and status while hiding private file names and links. History clearing, debug logging and plate-reference changes require write permissions.
+
+- Account email credentials are inserted by protected code-owned blocks, outside editable template variables. Live and historical logs redact credential fields and encoded or multiline secrets before search, truncation and support export, while preserving useful firmware and OID diagnostics.
+
 - Disabling Home Assistant stops smart-plug polling and makes its plugs unavailable even when their settings and credentials are still saved. Re-enabling the integration resumes polling without re-adding the plugs.
 
 - Automatic stock spool assignment can recognize an external replacement on an AMS-less P2S when the hotend reports fresh external filament after a runout but the printer reports tray 0.

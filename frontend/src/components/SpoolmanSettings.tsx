@@ -9,9 +9,12 @@ import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 import { Select } from './Select';
 
 export function SpoolmanSettings() {
+  const { isAdmin, hasPermission } = useAuth();
+  const canConfigure = isAdmin && hasPermission('settings:update');
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -67,7 +70,7 @@ export function SpoolmanSettings() {
   // Auto-save when settings change (after initial load)
   // Intentionally omit saveMutation and settings from deps to avoid infinite loops
   useEffect(() => {
-    if (!isInitialized || !settings) return;
+    if (!canConfigure || !isInitialized || !settings) return;
 
     // ⚠️ The mode is not here: it is saved only through the confirmation below.
     const hasChanges =
@@ -84,7 +87,7 @@ export function SpoolmanSettings() {
       return () => clearTimeout(timeoutId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localUrl, localSyncMode, localDisableWeightSync, localReportPartialUsage, localAutoAddUnknownRfid, isInitialized]);
+  }, [localUrl, localSyncMode, localDisableWeightSync, localReportPartialUsage, localAutoAddUnknownRfid, isInitialized, canConfigure]);
 
   // Save mutation
   const saveMutation = useMutation({
@@ -262,7 +265,7 @@ export function SpoolmanSettings() {
           {/* Built-in Inventory */}
           <button
             type="button"
-            onClick={() => requestMode(false)}
+            disabled={!canConfigure} onClick={() => requestMode(false)}
             className={`p-3 rounded-lg border-2 text-left transition-colors ${
               !localEnabled
                 ? 'border-bambu-green bg-bambu-green/10'
@@ -289,7 +292,7 @@ export function SpoolmanSettings() {
           {/* Spoolman */}
           <button
             type="button"
-            onClick={() => requestMode(true)}
+            disabled={!canConfigure} onClick={() => requestMode(true)}
             className={`p-3 rounded-lg border-2 text-left transition-colors ${
               localEnabled
                 ? 'border-bambu-green bg-bambu-green/10'
@@ -326,6 +329,7 @@ export function SpoolmanSettings() {
             <input
               type="checkbox"
               checked={localAutoAddUnknownRfid}
+              disabled={!canConfigure}
               onChange={(e) => setLocalAutoAddUnknownRfid(e.target.checked)}
               className="sr-only peer"
             />
@@ -397,7 +401,7 @@ export function SpoolmanSettings() {
                 type="text"
                 placeholder="http://192.168.1.100:7912"
                 value={localUrl}
-                onChange={(e) => setLocalUrl(e.target.value)}
+                disabled={!canConfigure} onChange={(e) => setLocalUrl(e.target.value)}
                 className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray/50 focus:border-bambu-green focus:outline-none"
               />
               <p className="text-xs text-bambu-gray mt-1">
@@ -413,7 +417,7 @@ export function SpoolmanSettings() {
               <Select
                 className="w-full"
                 value={localSyncMode}
-                onChange={(e) => setLocalSyncMode(e.target.value)}
+                disabled={!canConfigure} onChange={(e) => setLocalSyncMode(e.target.value)}
               >
                 <option value="auto">{t('settings.syncModeAuto')}</option>
                 <option value="manual">{t('settings.syncModeManual')}</option>
@@ -438,6 +442,7 @@ export function SpoolmanSettings() {
                   <input
                     type="checkbox"
                     checked={localDisableWeightSync}
+                    disabled={!canConfigure}
                     onChange={(e) => setLocalDisableWeightSync(e.target.checked)}
                     className="sr-only peer"
                   />
@@ -459,6 +464,7 @@ export function SpoolmanSettings() {
                   <input
                     type="checkbox"
                     checked={localReportPartialUsage}
+                    disabled={!canConfigure}
                     onChange={(e) => setLocalReportPartialUsage(e.target.checked)}
                     className="sr-only peer"
                   />
@@ -497,7 +503,7 @@ export function SpoolmanSettings() {
                     <Button
                       size="sm"
                       onClick={() => connectMutation.mutate()}
-                      disabled={connectMutation.isPending || !localUrl}
+                      disabled={!canConfigure || connectMutation.isPending || !localUrl}
                     >
                       {connectMutation.isPending ? (
                         <Loader2 className="w-4 h-4 animate-spin" />

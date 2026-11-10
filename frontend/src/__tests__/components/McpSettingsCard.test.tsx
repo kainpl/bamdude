@@ -10,7 +10,7 @@ import { McpSettingsCard } from '../../components/settings/McpSettingsCard';
 let denied = new Set<string>();
 vi.mock('../../contexts/AuthContext', async importOriginal => ({
   ...await importOriginal<typeof import('../../contexts/AuthContext')>(),
-  useAuth: () => ({ hasPermission: (permission: string) => !denied.has(permission) }),
+  useAuth: () => ({ isAdmin: true, hasPermission: (permission: string) => !denied.has(permission) }),
 }));
 
 const endpoint = 'https://saved.example/mcp';

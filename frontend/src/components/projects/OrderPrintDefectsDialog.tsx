@@ -74,7 +74,7 @@ export function OrderPrintDefectsDialog({ orderId, archive, onClose }: OrderPrin
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
-  const name = archive.print_name || archive.filename;
+  const name = archive.restricted ? t('orders.prints.restrictedPrint', { id: archive.id }) : archive.print_name || archive.filename;
   const subtitle = [
     name,
     (archive.plate_index ?? 0) > 0 ? t('orders.prints.plate', { n: archive.plate_index }) : null,

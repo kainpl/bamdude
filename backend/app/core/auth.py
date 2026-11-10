@@ -5,7 +5,8 @@ import logging
 import os
 import secrets
 import weakref
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
@@ -16,7 +17,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt.exceptions import PyJWTError as JWTError
 from passlib.context import CryptContext
 from sqlalchemy import delete, func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import (
+    DisconnectionError,
+    IntegrityError,
+    InterfaceError,
+    OperationalError,
+    TimeoutError as SQLAlchemyTimeout,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -30,6 +37,33 @@ from backend.app.models.settings import Settings
 from backend.app.models.user import User
 
 logger = logging.getLogger(__name__)
+
+AUTH_DATABASE_FAILURES = (
+    OperationalError,
+    InterfaceError,
+    DisconnectionError,
+    SQLAlchemyTimeout,
+    TimeoutError,
+    OSError,
+)
+
+
+@asynccontextmanager
+async def _auth_database_errors():
+    """Only auth infrastructure failures are retryable, never handler bugs."""
+    try:
+        yield
+    except AUTH_DATABASE_FAILURES as exc:
+        raise HTTPException(
+            status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "5"}
+        ) from exc
+
+
+async def get_auth_db(db: Annotated[AsyncSession, Depends(get_db)]) -> AsyncIterator[AsyncSession]:
+    """Keep the existing request DB owner while mapping auth-route outages."""
+    async with _auth_database_errors():
+        yield db
+
 
 _api_key_gates: weakref.WeakKeyDictionary[Any, tuple[asyncio.BoundedSemaphore, asyncio.BoundedSemaphore]] = (
     weakref.WeakKeyDictionary()
@@ -275,7 +309,7 @@ async def verify_slicer_download_token(
         AuthEphemeralToken.nonce == expected_key,
         AuthEphemeralToken.expires_at > now,
     )
-    async with async_session() as db:
+    async with _auth_database_errors(), async_session() as db:
         if not single_use:
             result = await db.execute(select(AuthEphemeralToken.id).where(*bound))
             return result.scalar_one_or_none() is not None
@@ -327,7 +361,7 @@ async def verify_camera_stream_token(token: str) -> bool:
     that paste a token once and expect it to keep working for days.
     """
     now = datetime.now(timezone.utc)
-    async with async_session() as db:
+    async with _auth_database_errors(), async_session() as db:
         result = await db.execute(
             select(AuthEphemeralToken).where(
                 AuthEphemeralToken.token == token,
@@ -406,7 +440,7 @@ async def _media_token_authority(token: str) -> JWTAuthority:
     """
     refused = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_MEDIA_TOKEN_REQUIRED)
     now = datetime.now(timezone.utc)
-    async with async_session() as db:
+    async with _auth_database_errors(), async_session() as db:
         row = (
             await db.execute(
                 select(AuthEphemeralToken.username, AuthEphemeralToken.created_at).where(
@@ -1160,7 +1194,12 @@ async def resolve_api_key_authority(request: Request | None, credential: str) ->
         task.add_done_callback(done)
         if cache is not None:
             cache[credential] = task
-    return await asyncio.shield(task)
+    try:
+        return await asyncio.shield(task)
+    except AUTH_DATABASE_FAILURES as exc:
+        raise HTTPException(
+            status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "5"}
+        ) from exc
 
 
 async def _validate_api_key(db: AsyncSession, api_key_value: str, request: Request | None = None) -> APIKey | None:
@@ -1235,7 +1274,12 @@ async def _validate_jwt_authority(token: str) -> JWTAuthority:
 async def resolve_jwt_authority(request: Request | None, token: str) -> JWTAuthority:
     """Validate once per credential per request, never across requests."""
     if request is None:
-        return await _validate_jwt_authority(token)
+        try:
+            return await _validate_jwt_authority(token)
+        except AUTH_DATABASE_FAILURES as exc:
+            raise HTTPException(
+                status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "5"}
+            ) from exc
     cache = getattr(request.state, "_jwt_authority_tasks", None)
     if cache is None:
         cache = {}
@@ -1244,7 +1288,12 @@ async def resolve_jwt_authority(request: Request | None, token: str) -> JWTAutho
     if task is None:
         task = asyncio.create_task(_validate_jwt_authority(token))
         cache[token] = task
-    return await asyncio.shield(task)
+    try:
+        return await asyncio.shield(task)
+    except AUTH_DATABASE_FAILURES as exc:
+        raise HTTPException(
+            status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "5"}
+        ) from exc
 
 
 async def finish_request_auth(request: Request) -> None:
@@ -1739,7 +1788,8 @@ async def resolve_apikey_owner(db: AsyncSession, api_key: APIKey) -> User | None
     """
     if api_key.user_id is None:
         return None
-    result = await db.execute(select(User).where(User.id == api_key.user_id).options(selectinload(User.groups)))
+    async with _auth_database_errors():
+        result = await db.execute(select(User).where(User.id == api_key.user_id).options(selectinload(User.groups)))
     owner = result.scalar_one_or_none()
     if owner is None or not owner.is_active:
         raise HTTPException(
@@ -1999,7 +2049,7 @@ def require_permission(*permissions: str | Permission):
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     ) -> User | None:
-        async with async_session() as db:
+        async with _auth_database_errors(), async_session() as db:
             # Check for API key first (X-API-Key header)
             if x_api_key:
                 key_authority = await _api_key_authority_or_none(request, x_api_key)
@@ -2081,7 +2131,7 @@ def require_energy_cost_update():
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
         request: Request = None,
     ) -> User | None:
-        async with async_session():
+        async with _auth_database_errors(), async_session():
             credentials_exception = HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials",
@@ -2151,7 +2201,7 @@ def require_any_permission(*permissions: str | Permission):
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     ) -> User | None:
-        async with async_session() as db:
+        async with _auth_database_errors(), async_session() as db:
             if x_api_key:
                 key_authority = await _api_key_authority_or_none(request, x_api_key)
                 if key_authority:
@@ -2215,7 +2265,7 @@ async def verify_camwall_token(token: str) -> bool:
     token belongs to a logged-in browser, which reaches the same data through
     the ordinary printers API.
     """
-    async with async_session() as db:
+    async with _auth_database_errors(), async_session() as db:
         from backend.app.services.long_lived_tokens import verify_token as verify_long_lived
 
         record = await verify_long_lived(db, token, scope="camwall")
@@ -2250,7 +2300,7 @@ async def verify_overlay_token(token: str) -> bool:
     a logged-in browser, which reaches the same data through the ordinary
     printers API and has no need of this endpoint.
     """
-    async with async_session() as db:
+    async with _auth_database_errors(), async_session() as db:
         from backend.app.services.long_lived_tokens import verify_token as verify_long_lived
 
         record = await verify_long_lived(db, token, scope="overlay")
@@ -2479,7 +2529,7 @@ def require_ownership_permission(
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     ) -> tuple[User | None, bool]:
         """Returns (user, can_modify_all)."""
-        async with async_session() as db:
+        async with _auth_database_errors(), async_session() as db:
             # Check for API key first (X-API-Key header)
             if x_api_key:
                 key_authority = await _api_key_authority_or_none(request, x_api_key)

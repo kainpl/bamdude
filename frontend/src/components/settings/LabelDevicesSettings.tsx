@@ -41,7 +41,7 @@ export function LabelDevicesSettings() {
   const { showToast } = useToast();
   const qc = useQueryClient();
 
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const { data: settings } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences });
   const [enabled, setEnabled] = useState(false);
   // Seeded once. Without the guard a refetch would flip the switch back under
   // somebody who has just clicked it.
@@ -55,7 +55,7 @@ export function LabelDevicesSettings() {
   const toggle = useMutation({
     mutationFn: (next: boolean) => api.updateSettings({ device_labels_enabled: next }),
     onSuccess: (_data, next) => {
-      qc.invalidateQueries({ queryKey: ['settings'] });
+      qc.invalidateQueries({ queryKey: ['ui-preferences'] });
       qc.invalidateQueries({ queryKey: ['label-devices'] });
       setEnabled(next);
     },

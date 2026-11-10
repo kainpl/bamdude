@@ -169,7 +169,7 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
     effectivePage = 1;
   }
 
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, staleTime: 60_000 });
+  const { data: settings } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences, staleTime: 60_000 });
   const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
   const dateFormat = (settings?.date_format ?? 'system') as DateFormat;
   const currency = getCurrencySymbol(settings?.currency || 'USD');

@@ -63,8 +63,8 @@ export function SpoolDisplayNameSettings() {
   const { showToast } = useToast();
 
   const { data: settings, isLoading } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
   });
 
   // Preview uses a real inventory spool when available so the operator sees the
@@ -90,7 +90,7 @@ export function SpoolDisplayNameSettings() {
   const saveMutation = useMutation({
     mutationFn: (template: string) => api.updateSettings({ spool_display_template: template }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['ui-preferences'] });
       showToast(t('settings.spoolDisplayName.saved'), 'success');
     },
     onError: (err: Error) =>

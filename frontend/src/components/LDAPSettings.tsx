@@ -28,6 +28,11 @@ interface LDAPFormState {
 }
 
 export function LDAPSettings() {
+  const { isAdmin, hasPermission } = useAuth();
+  return isAdmin && hasPermission('settings:read') ? <LDAPSettingsContent /> : null;
+}
+
+function LDAPSettingsContent() {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();

@@ -160,8 +160,8 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
   // Pull system time-format so ETA respects the user's 12h/24h choice.
   // Cached globally — shared with everywhere else that reads settings.
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
     staleTime: 60_000,
   });
   const timeFormat = (settings?.time_format ?? 'system') as 'system' | '12h' | '24h';

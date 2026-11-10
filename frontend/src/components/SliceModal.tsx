@@ -672,8 +672,8 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // the same file defaults to the user's last choice; first-time defaults
   // to the global preferred_slicer.
   const settingsQuery = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
     staleTime: 60_000,
   });
   // Backend caches the health response per (kind, url) for 30 s — these

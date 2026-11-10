@@ -136,8 +136,8 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   });
 
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: () => api.getSettings(),
+    queryKey: ['ui-preferences'],
+    queryFn: () => api.getUiPreferences(),
     enabled: isOpen,
   });
 

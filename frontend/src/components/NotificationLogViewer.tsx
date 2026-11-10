@@ -36,8 +36,8 @@ export function NotificationLogViewer({ onClose }: NotificationLogViewerProps) {
   const [showFailedOnly, setShowFailedOnly] = useState(false);
 
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
   });
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';

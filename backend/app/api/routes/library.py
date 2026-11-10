@@ -103,7 +103,7 @@ from backend.app.services.library_helpers import (
     sliced_by_content,
     sync_system_tags,
 )
-from backend.app.services.library_ingest import IngestResult, find_reusable_row
+from backend.app.services.library_ingest import IngestResult, find_reusable_row, read_access
 from backend.app.services.library_preview import (
     PauseBudget as PreviewPauseBudget,
     Source as PreviewSource,
@@ -623,6 +623,7 @@ async def save_3mf_bytes_to_library(
     extra_metadata: dict | None = None,
     commit: bool = True,
     declared_swap: bool | None = None,
+    authority=None,
 ) -> IngestResult:
     """Persist raw 3MF / gcode bytes as a ``LibraryFile`` row.
 
@@ -656,15 +657,19 @@ async def save_3mf_bytes_to_library(
     for the comparison is removed.
     """
 
+    access = await read_access(db, user_id=created_by_id, authority=authority)
     # Source-URL dedupe: MakerWorld re-imports of the same plate must not
     # download + repack on every click. The route may also have done this
     # check itself; doing it here too keeps the helper safe to call from
     # paths that don't pre-check.
     if source_url:
         existing_by_url = (
-            await db.execute(LibraryFile.active().where(LibraryFile.source_url == source_url).limit(1))
+            await db.execute(
+                LibraryFile.active().where(LibraryFile.source_url == source_url).order_by(LibraryFile.id).limit(1)
+            )
         ).scalar_one_or_none()
         if existing_by_url is not None:
+            access.ensure(existing_by_url)
             return IngestResult(file=existing_by_url, outcome="deduped", superseded_name=filename)
 
     file_type = detect_file_type(filename)
@@ -681,7 +686,11 @@ async def save_3mf_bytes_to_library(
     # one place that answers it; this function used to answer it itself, as a
     # boolean the caller was invited to render as a badge while a second row was
     # created anyway.
-    reusable = await find_reusable_row(db, content_hash=file_hash)
+    try:
+        reusable = await find_reusable_row(db, content_hash=file_hash, access=access)
+    except HTTPException:
+        file_path.unlink(missing_ok=True)
+        raise
     if reusable is not None:
         existing, present = reusable
         if declared_swap is not None and swap_compatibility.library_fact(existing) is not declared_swap:
@@ -3031,6 +3040,7 @@ async def slice_and_persist(
     request,  # SliceRequest
     current_user_id: int | None,
     job_id: int | None = None,
+    ingest_authority=None,
 ):
     """Slice a model and save the result as a new ``LibraryFile`` in
     ``folder_id`` (same folder as the source by convention).
@@ -3133,7 +3143,15 @@ async def slice_and_persist(
     # the one place that decides; an existing row is returned as-is, keeping its
     # name, folder and print history.
     sliced_hash = prepared.digest
-    reusable = await find_reusable_row(db, content_hash=sliced_hash)
+    try:
+        reusable = await find_reusable_row(
+            db,
+            content_hash=sliced_hash,
+            access=await read_access(db, user_id=current_user_id, authority=ingest_authority),
+        )
+    except HTTPException:
+        out_path.unlink(missing_ok=True)
+        raise
     if reusable is not None:
         existing, present = reusable
         if present:
@@ -3413,6 +3431,7 @@ async def slice_and_persist_as_archive(
 async def slice_library_file(
     file_id: int,
     request_body: dict,
+    http_request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
@@ -3451,8 +3470,14 @@ async def slice_library_file(
     # returned 404 — the sliced output was then attributed to and downloadable
     # by the requester. API-key / auth-disabled callers (current_user is None)
     # keep can_read_all=True — no per-row identity.
-    can_read_all = current_user is None or current_user.has_permission(Permission.LIBRARY_READ_ALL.value)
-    lib_file = _ensure_library_file_visible(lib_file, current_user, can_read_all)
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+    from backend.app.core.auth import acting_user, library_name_scope
+
+    actor = await acting_user(http_request, db, current_user)
+    scope = await library_name_scope(http_request, db, actor)
+    if not file_name_visible(lib_file, actor, scope):
+        raise HTTPException(404, "File not found")
+    ingest_authority = await request_authority(http_request, current_user)
 
     src_lower = (lib_file.filename or "").lower()
     if src_lower.endswith(".step") or src_lower.endswith(".stp"):
@@ -3517,6 +3542,7 @@ async def slice_library_file(
                     request=request,
                     current_user_id=user_id,
                     job_id=job_id,
+                    ingest_authority=ingest_authority,
                 )
             except HTTPException as exc:
                 raise http_exception_to_job_error(exc) from exc
@@ -3621,7 +3647,15 @@ async def store_library_upload(
     # trashed sibling was deleted by the user and must not pin a fresh upload to
     # it. ``find_reusable_row`` is the one place that answers this; this function
     # used to answer it separately, as an id it returned and acted on in no way.
-    reusable = await find_reusable_row(db, content_hash=file_hash)
+    try:
+        reusable = await find_reusable_row(
+            db,
+            content_hash=file_hash,
+            access=await read_access(db, user_id=created_by_id, authority=authority),
+        )
+    except HTTPException:
+        file_path.unlink(missing_ok=True)
+        raise
     if reusable is not None:
         existing, present = reusable
         if present:
@@ -3901,6 +3935,7 @@ async def extract_zip_file(
 
             upload_user_id = current_user.id if current_user else None
             for zip_path in file_list:
+                file_path = None
                 pending_folders = {}
                 new_folder_count = 0
                 try:
@@ -3973,7 +4008,11 @@ async def extract_zip_file(
                     # already holds. ``find_reusable_row`` is the one place that
                     # decides; skipping here also spares the metadata and
                     # thumbnail work below for a file we are not going to add.
-                    reusable = await find_reusable_row(db, content_hash=file_hash)
+                    reusable = await find_reusable_row(
+                        db,
+                        content_hash=file_hash,
+                        access=await read_access(db, user_id=upload_user_id, authority=authority),
+                    )
                     if reusable is not None and reusable[1]:
                         # ⚠️ Delete the bytes we just extracted — otherwise every
                         # re-import of the same ZIP leaves another orphan behind.
@@ -4059,8 +4098,16 @@ async def extract_zip_file(
                     await db.commit()
 
                 except Exception as e:
+                    hidden_source = (
+                        isinstance(e, HTTPException)
+                        and e.status_code == 400
+                        and e.detail == {"code": "source_unavailable"}
+                    )
+                    if hidden_source and file_path is not None:
+                        file_path.unlink(missing_ok=True)
                     logger.error("Failed to extract %s: %s", zip_path, e)
-                    errors.append(ZipExtractError(filename=os.path.basename(zip_path), error=str(e)))
+                    error = "source_unavailable" if hidden_source else str(e)
+                    errors.append(ZipExtractError(filename=os.path.basename(zip_path), error=error))
                     # Rollback the failed file but continue with others
                     await db.rollback()
 

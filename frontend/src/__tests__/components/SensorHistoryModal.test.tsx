@@ -69,7 +69,7 @@ describe('SensorHistoryModal', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, 'getSensorHistory').mockResolvedValue(HISTORY);
-    vi.spyOn(api, 'getSettings').mockResolvedValue({ time_format: 'system' } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ time_format: 'system' } as never);
   });
 
   it('opens on the first quantity the sensor measures', async () => {

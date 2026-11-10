@@ -293,17 +293,16 @@ async def update_user(
             )
         user.username = user_data.username
 
-    if user_data.email is not None:
+    if "email" in user_data.model_fields_set:
         # Check if new email already exists (case-insensitive) — any match means it exists, as above.
-        existing_email = await db.execute(
-            select(User).where(func.lower(User.email) == func.lower(user_data.email), User.id != user_id)
-        )
-        if existing_email.scalars().first():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already exists",
+        email = user_data.email.strip() if user_data.email else None
+        if email:
+            existing_email = await db.execute(
+                select(User).where(func.lower(User.email) == func.lower(email), User.id != user_id)
             )
-        user.email = user_data.email
+            if existing_email.scalars().first():
+                raise HTTPException(status_code=400, detail="Email already exists")
+        user.email = email or None
 
     if user_data.password is not None:
         if getattr(user, "auth_source", "local") == "ldap":

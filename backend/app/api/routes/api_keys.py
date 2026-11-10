@@ -28,6 +28,15 @@ def _validate_mcp_scopes(access: bool, logs: bool, owner_user_id: int | None) ->
         raise HTTPException(400, "MCP log access requires MCP access")
 
 
+async def _lock_printer_scope(db: AsyncSession, printer_ids: list[int] | None) -> None:
+    """Serialize explicit scope changes with deletion: printer targets before key writes."""
+    from backend.app.services.sensor_target_lock import lock_sensor_target
+
+    for printer_id in sorted(set(printer_ids or [])):
+        if not await lock_sensor_target(db, "printers", printer_id):
+            raise HTTPException(404, "Printer not found")
+
+
 def _reject_cloud_without_owner(can_access_cloud: bool, owner_user_id: int | None) -> None:
     """Reject ``can_access_cloud=True`` on keys that have no owner.
 
@@ -76,6 +85,7 @@ async def create_api_key(
 
     # Generate the key
     full_key, key_hash, key_prefix = generate_api_key()
+    await _lock_printer_scope(db, data.printer_ids)
 
     api_key = APIKey(
         name=data.name,
@@ -166,6 +176,8 @@ async def update_api_key(
         raise HTTPException(status_code=404, detail="API key not found")
 
     # Update fields if provided
+    if "printer_ids" in data.model_fields_set:
+        await _lock_printer_scope(db, data.printer_ids)
     mcp_access = api_key.can_access_mcp if data.can_access_mcp is None else data.can_access_mcp
     mcp_logs = api_key.can_read_mcp_logs if data.can_read_mcp_logs is None else data.can_read_mcp_logs
     if data.can_access_mcp is False and data.can_read_mcp_logs is not True:
@@ -200,7 +212,7 @@ async def update_api_key(
         api_key.can_manage_projects = data.can_manage_projects
     if data.can_print_labels is not None:
         api_key.can_print_labels = data.can_print_labels
-    if data.printer_ids is not None:
+    if "printer_ids" in data.model_fields_set:
         api_key.printer_ids = data.printer_ids
     if data.enabled is not None:
         api_key.enabled = data.enabled

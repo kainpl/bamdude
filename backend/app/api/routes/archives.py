@@ -3014,6 +3014,7 @@ SAVE_SWAP_SOURCE_UNKNOWN = (
 @router.post("/{archive_id}/save-to-library")
 async def save_archive_to_library(
     archive_id: int,
+    request: Request,
     folder_id: int | None = Query(None, description="Target library folder; root when omitted"),
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
@@ -3048,6 +3049,7 @@ async def save_archive_to_library(
     declaration is the helper's 409 ``swap_source_conflict``.
     """
     from backend.app.api.routes.library import save_3mf_bytes_to_library
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
     from backend.app.models.library import LibraryFolder
 
     user, can_read_all = auth_result
@@ -3092,6 +3094,7 @@ async def save_archive_to_library(
         # necessarily is.
         source_type="archive",
         declared_swap=fact.value,
+        authority=await request_authority(request, user),
     )
     # ⚠️ ``result.file`` may be a row this call did not create — the bytes were
     # already in the library, so that row is what the response points at.

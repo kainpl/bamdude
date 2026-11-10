@@ -17,7 +17,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api, type CamWallPrinter } from '../api/client';
+import { ApiError, api, type CamWallPrinter } from '../api/client';
 import { CameraWall, type CameraWallStatus } from '../components/CameraWall';
 import type { CameraTileStatusMode } from '../components/CameraTile';
 
@@ -95,11 +95,14 @@ export function CamWallPage() {
   }, [kiosk, statusMode]);
 
   // Kiosk path: one token-authenticated call for the whole wall.
-  const { data: kioskPrinters, isError: kioskError } = useQuery({
+  const { data: kioskPrinters, error: kioskError } = useQuery({
     queryKey: ['camwallPrinters', token],
     queryFn: () => api.getCamWallPrinters(token!),
     enabled: kiosk,
-    refetchInterval: KIOSK_POLL_MS,
+    retry: (attempt, error) => !(error instanceof ApiError && (error.status === 401 || error.status === 403)) && attempt < 3,
+    retryDelay: attempt => Math.min(30_000, 1000 * 2 ** attempt),
+    refetchInterval: query => query.state.error instanceof ApiError && (query.state.error.status === 401 || query.state.error.status === 403)
+      ? false : Math.min(30_000, KIOSK_POLL_MS * 2 ** Math.min(query.state.fetchFailureCount, 3)),
   });
 
   // Signed-in path: the ordinary printer list, unchanged. Disabled in kiosk
@@ -117,7 +120,10 @@ export function CamWallPage() {
     queryKey: ['camwallCameras', token],
     queryFn: () => api.getCamWallCameras(token!),
     enabled: kiosk,
-    refetchInterval: KIOSK_POLL_MS,
+    retry: (attempt, error) => !(error instanceof ApiError && (error.status === 401 || error.status === 403)) && attempt < 3,
+    retryDelay: attempt => Math.min(30_000, 1000 * 2 ** attempt),
+    refetchInterval: query => query.state.error instanceof ApiError && (query.state.error.status === 401 || query.state.error.status === 403)
+      ? false : Math.min(30_000, KIOSK_POLL_MS * 2 ** Math.min(query.state.fetchFailureCount, 3)),
   });
   const { data: authedCameras } = useQuery({
     queryKey: ['cameras'],
@@ -146,7 +152,7 @@ export function CamWallPage() {
   if (kiosk && kioskError) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-bambu-dark p-8 text-center">
-        <p className="max-w-md text-sm text-bambu-gray">{t('camWall.tokenRejected')}</p>
+        <p className="max-w-md text-sm text-bambu-gray">{t(kioskError instanceof ApiError && (kioskError.status === 401 || kioskError.status === 403) ? 'camWall.tokenRejected' : 'camWall.temporarilyUnavailable')}</p>
       </div>
     );
   }

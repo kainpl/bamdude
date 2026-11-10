@@ -1141,5 +1141,9 @@
   "History start must precede its end": "Початок періоду історії має передувати його завершенню",
   "Obico history is temporarily unavailable": "Історія Obico тимчасово недоступна",
   "Obico readers and writers have not stopped; retry restore after they finish": "Читачі й записувачі Obico ще не зупинилися; повторіть відновлення після їх завершення",
-  "Saved detection is no longer available": "Збережена детекція більше недоступна"
+  "Saved detection is no longer available": "Збережена детекція більше недоступна",
+  "Authentication temporarily unavailable": "Автентифікація тимчасово недоступна",
+  "Requires admin role for protected settings": "Зміна захищених налаштувань потребує ролі адміністратора",
+  "Cannot remove your last available login method": "Не можна видалити останній доступний спосіб входу",
+  "Failed to send test email. Check the server logs.": "Не вдалося надіслати тестовий лист. Перевірте логи сервера."
 }

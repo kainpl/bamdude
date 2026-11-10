@@ -130,7 +130,7 @@ export function useMultiPrinterFilamentMapping(
 ): UseMultiPrinterFilamentMappingResult {
   // Local provisional display uses the same preference. The dialog replaces it
   // with the server assignment, which also has inventory remaining weights.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const { data: settings } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences });
   const preferLowest = settings?.prefer_lowest_filament ?? true;
 
   // Fetch printer status for all selected printers in parallel

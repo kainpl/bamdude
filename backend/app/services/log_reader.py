@@ -11,17 +11,21 @@ through this one, so the LDAP-DN redaction added for #2681 would have covered
 the scanner and missed the bundle. This module is the single sanitizer.
 """
 
+import base64
+import html
 import json
 import logging
 import os
 import re
+from typing import BinaryIO
+from urllib.parse import quote, quote_plus, unquote, urlsplit
 
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
-from backend.app.core.logging_filters import URL_CREDENTIALS_PATTERN
+from backend.app.core.logging_filters import URL_CREDENTIALS_PATTERN, _unescape_log_text, redact_log_credentials
 from backend.app.core.sensitive_settings import redact_setting_in_log, sensitive_settings_predicate
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
@@ -62,17 +66,61 @@ _LDAP_DN_PATTERN = re.compile(rf"(?i)\b{_LDAP_RDN}(?:\s*,\s*{_LDAP_RDN})+")
 
 # Shape rules complement known-value matching. No entropy heuristic: content
 # hashes are useful diagnostic evidence and must survive.
-_SECRET_SHAPES = (
-    r"(?im)\b(?:authorization\s*[:=]\s*)?bearer\s+[^\s,;\"']+",
-    r"(?im)\b(?:x-api-key|cookie|set-cookie)[\"']?\s*[:=][^\r\n]+",
-    r"\b(?:bd_|bb_)[A-Za-z0-9_-]+",
-    r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
-    r"\b\d{6,12}:[A-Za-z0-9_-]{25,}\b",
-    r"https?://[^\s\"'<>]*(?:/api/webhooks/|hooks\.slack\.com/services/)[^\s\"'<>]+",
-    r"(?i)[\"']?\b(?:password|passwd|secret|token|api_key|apikey|access_code|client_secret)[\"']?\s*[:=]\s*(?:\"(?:\\.|[^\"\\\r\n])*\"|'(?:\\.|[^'\\\r\n])*'|[^\s,;}]+)",
-    r"(?:fernet:)?gAAAAA[A-Za-z0-9_=-]+",
-    r"(?ims)\bDETAIL\s*:.*?(?=\n\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}\s|\Z)",
+# Numeric-dot boundaries matter: a four-component substring of an LDAP OID
+# (1.2.840.113556.1.4.1941) is not an IP. Nor is a zero-padded firmware version.
+IPV4_PATTERN = re.compile(
+    r"(?<![\w.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}"
+    r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?![\w.])"
 )
+
+
+def _known_value_spellings(value: str) -> set[str]:
+    """Common log/transport spellings, not a heuristic for arbitrary prose."""
+    return {
+        value,
+        quote(value, safe=""),
+        quote_plus(value, safe=""),
+        quote(quote(value, safe=""), safe=""),
+        html.escape(value),
+        json.dumps(value, ensure_ascii=True)[1:-1],
+        json.dumps(value, ensure_ascii=False)[1:-1],
+        base64.b64encode(value.encode()).decode(),
+    }
+
+
+def _known_value_replacer(sensitive_strings: dict[str, str]):
+    variants: dict[str, str] = {}
+    for value, label in sensitive_strings.items():
+        if not value or (len(value) < 3 and label != "[REDACTED]"):
+            continue
+        for spelling in _known_value_spellings(value):
+            variants[spelling] = label
+    if not variants:
+        return lambda content: content
+    pattern = re.compile(
+        "|".join(
+            (r"(?<![\w.])" + re.escape(value) + r"(?![\w.])") if variants[value] == "[IP]" else re.escape(value)
+            for value in sorted(variants, key=len, reverse=True)
+        )
+    )
+
+    def replace(content):
+        sanitized = pattern.sub(lambda match: variants[match[0]], content)
+        candidate = sanitized
+        changed = False
+        for _ in range(4):
+            decoded = _unescape_log_text(candidate)
+            if decoded == candidate:
+                break
+            candidate = pattern.sub(lambda match: variants[match[0]], decoded)
+            changed = changed or candidate != decoded
+        return candidate if changed else sanitized
+
+    return replace
+
+
+def redact_known_values(content: str, sensitive_strings: dict[str, str]) -> str:
+    return _known_value_replacer(sensitive_strings)(content)
 
 
 class LogEntry(BaseModel):
@@ -101,13 +149,15 @@ def read_log_entries(
     limit: int = 200,
     level_filter: str | None = None,
     search: str | None = None,
+    sensitive_strings: dict[str, str] | None = None,
+    log_file=None,
 ) -> tuple[list[LogEntry], int]:
     """Read and parse log entries from ``bamdude.log``, newest first.
 
     Continuation lines (tracebacks etc.) are folded into the message of the
     entry they belong to. Returns ``(entries, total_lines_in_file)``.
     """
-    log_file = settings.log_dir / "bamdude.log"
+    log_file = log_file if log_file is not None else settings.log_dir / "bamdude.log"
     if not log_file.exists():
         return [], 0
 
@@ -118,6 +168,9 @@ def read_log_entries(
         with open(log_file, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
             total_lines = len(lines)
+            # Whole entries are sanitized before literal search, including
+            # historical tracebacks and encoded credentials. Never search raw.
+            lines = sanitize_log_content("".join(lines), sensitive_strings).splitlines(keepends=True)
 
             # Parse lines in reverse order (newest first)
             current_entry: LogEntry | None = None
@@ -192,18 +245,14 @@ def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None 
     Regex passes additionally redact credentials in URLs, emails, serials, and
     IP addresses that were not captured by exact matching.
     """
+    return _sanitize_log_content(content, _known_value_replacer(sensitive_strings or {}))
+
+
+def _sanitize_log_content(content: str, replace_known) -> str:
     # First, replace known sensitive values (database-aware exact matching)
     # This catches printer names, usernames, and other arbitrary user-chosen strings
     # that regex patterns cannot detect
-    if sensitive_strings:
-        # Sort by length descending to avoid partial matches (e.g. "My Printer 1" before "My Printer")
-        for value, label in sorted(sensitive_strings.items(), key=lambda x: len(x[0]), reverse=True):
-            if len(value) < 3:
-                continue  # Skip very short strings to prevent over-redaction
-            content = re.sub(re.escape(value), label, content)
-
-    for pattern in _SECRET_SHAPES:
-        content = re.sub(pattern, "[REDACTED]", content)
+    content = replace_known(content)
 
     # Replace credentials in URLs (e.g. http://user:pass@host, rtsps://bblp:code@host).
     #
@@ -219,6 +268,9 @@ def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None 
     # containing one (legal, and plausible in an external camera URL) left its
     # tail in the output.
     content = URL_CREDENTIALS_PATTERN.sub(r"\g<scheme>[CREDENTIALS]@", content)
+    content = redact_log_credentials(content)
+    # The shape pass can decode spelling of another opaque saved credential.
+    content = replace_known(content)
 
     # Replace email addresses
     content = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[EMAIL]", content)
@@ -230,11 +282,7 @@ def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None 
     content = re.sub(r"\b0[0-3][A-Z0-9][A-Z0-9]{9,13}\b", "[SERIAL]", content, flags=re.IGNORECASE)
 
     # Replace IPv4 addresses (skip firmware versions like 01.09.01.00 which have leading zeros)
-    content = re.sub(
-        r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\b",
-        "[IP]",
-        content,
-    )
+    content = IPV4_PATTERN.sub("[IP]", content)
 
     # Replace paths with usernames
     content = re.sub(r"/home/[^/\s]+/", "/home/[user]/", content)
@@ -244,6 +292,67 @@ def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None 
     content = re.sub(r"(/(?:home|Users)/)[^/\r\n\"']+(?=/|$)", r"\1[user]", content)
 
     return content
+
+
+def write_sanitized_log_snapshot(
+    source: BinaryIO, target: BinaryIO, size: int, sensitive_strings: dict[str, str]
+) -> int:
+    """Sanitize a finite file snapshot by complete bounded logical entries.
+
+    File size is captured by the owner before this call. A traceback stays
+    with its timestamped parent; overlong physical/logical entries are omitted
+    in full, never cut before a secret's terminator and then exposed. Plain
+    non-log text is processed by physical line, preserving ordinary downloads.
+    No database session or network transfer is owned by this file-only phase.
+    """
+    physical_budget = 64 * 1024
+    entry_budget = 256 * 1024
+    remaining = size
+    entry: list[str] = []
+    entry_size = 0
+    omitted = False
+    discarded_line = False
+    replace_known = _known_value_replacer(sensitive_strings)
+
+    def flush():
+        nonlocal entry, entry_size, omitted
+        if omitted:
+            target.write(b"[omitted oversized log entry]\n")
+        elif entry:
+            target.write(_sanitize_log_content("".join(entry), replace_known).encode("utf-8"))
+        entry, entry_size, omitted = [], 0, False
+
+    while remaining:
+        raw = source.readline(min(physical_budget + 1, remaining))
+        if not raw:
+            raise ValueError("log_snapshot_changed")
+        remaining -= len(raw)
+        complete = raw.endswith(b"\n") or remaining == 0
+        if discarded_line:
+            discarded_line = not complete
+            continue
+        text = raw.decode("utf-8", errors="replace")
+        begins_entry = LOG_LINE_PATTERN.match(text) is not None
+        if begins_entry:
+            flush()
+        if len(raw) > physical_budget:
+            # Do not publish even the prefix of this entry.
+            if not entry:
+                entry = [""]
+            omitted = True
+            discarded_line = not complete
+            continue
+        if not entry and not begins_entry and not omitted:
+            target.write(_sanitize_log_content(text, replace_known).encode("utf-8"))
+            continue
+        entry_size += len(raw)
+        if entry_size > entry_budget:
+            entry.clear()
+            omitted = True
+        elif not omitted:
+            entry.append(text)
+    flush()
+    return target.tell()
 
 
 async def collect_sensitive_strings(db: AsyncSession) -> dict[str, str]:
@@ -322,6 +431,39 @@ async def collect_diagnostic_sensitive_strings(db: AsyncSession) -> dict[str, st
             # Do not discard short exact credentials like the general PII pass.
             values[value] = "[REDACTED]"
 
+    def add_url(value):
+        add(value)
+        if value:
+            try:
+                parts = urlsplit(value)
+                add(unquote(parts.username or ""))
+                add(unquote(parts.password or ""))
+            except ValueError:
+                pass  # The malformed full value is still protected.
+
+    def add_payload(value):
+        if isinstance(value, str) and redact_setting_in_log("rest_config", value):
+            add(value)
+        if not value:
+            return
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return  # A non-JSON body is a valid existing plug configuration.
+
+        def walk(node):
+            if isinstance(node, str):
+                if redact_setting_in_log("rest_config", node):
+                    add(node)
+            elif isinstance(node, dict):
+                for item in node.values():
+                    walk(item)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(parsed)
+
     for key, value in (
         await db.execute(select(Settings.key, Settings.value).where(sensitive_settings_predicate(Settings.key)))
     ).all():
@@ -337,6 +479,27 @@ async def collect_diagnostic_sensitive_strings(db: AsyncSession) -> dict[str, st
     for username, password in (await db.execute(select(SmartPlug.username, SmartPlug.password))).all():
         add(username)
         add(password)
+    for row in (
+        await db.execute(
+            select(
+                SmartPlug.rest_on_url,
+                SmartPlug.rest_off_url,
+                SmartPlug.rest_status_url,
+                SmartPlug.rest_power_url,
+                SmartPlug.rest_energy_url,
+                SmartPlug.rest_headers,
+                SmartPlug.rest_on_body,
+                SmartPlug.rest_off_body,
+            )
+        )
+    ).all():
+        for value in row[:5]:
+            add_url(value)
+        for value in row[5:]:
+            add_payload(value)
+    for row in (await db.execute(select(Printer.external_camera_url, Printer.external_camera_snapshot_url))).all():
+        for value in row:
+            add_url(value)
     for raw in (await db.scalars(select(NotificationProvider.config))).all():
         config = json.loads(raw)
         if not isinstance(config, dict):

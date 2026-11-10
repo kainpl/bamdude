@@ -169,6 +169,8 @@ export function StreamOverlayPage() {
   const queryClient = useQueryClient();
   const id = parseInt(printerId || '0', 10);
   const [imageKey, setImageKey] = useState(Date.now());
+  const [streamFailures, setStreamFailures] = useState(0);
+  const [retryStream, setRetryStream] = useState(false);
 
   const config = useMemo(() => parseConfig(searchParams), [searchParams]);
   const sizes = getSizeClasses(config.size);
@@ -183,11 +185,14 @@ export function StreamOverlayPage() {
 
   // Kiosk path: one token-authenticated call for name + live status + the one
   // setting the overlay reads. No JWT, so this is the only feed available.
-  const { data: overlay } = useQuery({
+  const { data: overlay, error: overlayError } = useQuery({
     queryKey: ['overlayStatus', id, token],
     queryFn: () => api.getOverlayStatus(id, token!),
     enabled: id > 0 && kiosk,
-    refetchInterval: 2000,
+    retry: (attempt, error) => !(error instanceof ApiError && (error.status === 401 || error.status === 403)) && attempt < 3,
+    retryDelay: attempt => Math.min(30_000, 1000 * 2 ** attempt),
+    refetchInterval: query => query.state.error instanceof ApiError && (query.state.error.status === 401 || query.state.error.status === 403)
+      ? false : Math.min(30_000, 2000 * 2 ** Math.min(query.state.fetchFailureCount, 4)),
   });
 
   // Logged-in path: the ordinary JWT-authenticated queries, unchanged. Disabled
@@ -206,8 +211,8 @@ export function StreamOverlayPage() {
   });
 
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
     enabled: !kiosk,
   });
 
@@ -350,11 +355,21 @@ export function StreamOverlayPage() {
     };
   }, [printer, t]);
 
-  // Refresh stream on error
-  const handleStreamError = () => {
-    setTimeout(() => {
+  const kioskRefused = kiosk && overlayError instanceof ApiError && (overlayError.status === 401 || overlayError.status === 403);
+  // Cancel any pending image retry when the feed definitively refuses the
+  // token. An image error itself has no HTTP status, so transient errors back off.
+  useEffect(() => {
+    if (!retryStream || kioskRefused) return;
+    const timer = setTimeout(() => {
       setImageKey(Date.now());
-    }, 3000);
+      setRetryStream(false);
+    }, Math.min(30_000, 3000 * 2 ** Math.min(Math.max(streamFailures - 1, 0), 4)));
+    return () => clearTimeout(timer);
+  }, [retryStream, kioskRefused, streamFailures]);
+
+  const handleStreamError = () => {
+    setStreamFailures(value => value + 1);
+    setRetryStream(true);
   };
 
   if (!id) {
@@ -389,7 +404,7 @@ export function StreamOverlayPage() {
   return (
     <div className="min-h-screen bg-black relative overflow-hidden">
       {/* Camera feed - fullscreen background (optional) */}
-      {config.showCamera && (
+      {config.showCamera && !kioskRefused && (
         <img
           key={imageKey}
           src={streamUrl}

@@ -173,8 +173,8 @@ export function CalibrationPresetPage({
     enabled: needsPresetPicker,
   });
   const settingsQuery = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
     staleTime: 60_000,
     enabled: needsPresetPicker,
   });

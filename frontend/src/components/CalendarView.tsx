@@ -32,8 +32,8 @@ export function CalendarView({ buckets, printerMap }: CalendarViewProps) {
   // explicit MM/DD/YYYY date_format choices, which would produce harsh
   // numeric output for a calendar header).
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
     staleTime: 60_000,
   });
   const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;

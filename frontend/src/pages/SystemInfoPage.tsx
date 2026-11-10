@@ -144,8 +144,8 @@ export function SystemInfoPage() {
   });
 
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
   });
 
   const { data: libraryStats } = useQuery({

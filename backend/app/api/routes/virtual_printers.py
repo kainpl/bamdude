@@ -5,7 +5,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireAdmin, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.i18n.api_errors import json_error
@@ -187,7 +187,7 @@ async def list_virtual_printers(
     }
 
 
-@router.post("")
+@router.post("", dependencies=[RequireAdmin()])
 async def create_virtual_printer(
     body: VirtualPrinterCreate,
     db: AsyncSession = Depends(get_db),
@@ -394,7 +394,7 @@ async def get_virtual_printer(
     return await _vp_to_dict(vp, db, status)
 
 
-@router.put("/{vp_id}")
+@router.put("/{vp_id}", dependencies=[RequireAdmin()])
 async def update_virtual_printer(
     vp_id: int,
     body: VirtualPrinterUpdate,
@@ -587,7 +587,7 @@ async def update_virtual_printer(
     return await _vp_to_dict(vp, db, status)
 
 
-@router.delete("/{vp_id}")
+@router.delete("/{vp_id}", dependencies=[RequireAdmin()])
 async def delete_virtual_printer(
     vp_id: int,
     db: AsyncSession = Depends(get_db),

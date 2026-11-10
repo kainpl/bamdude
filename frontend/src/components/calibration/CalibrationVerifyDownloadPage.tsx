@@ -67,8 +67,8 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     staleTime: 30_000,
   });
   const settingsQuery = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
     staleTime: 60_000,
   });
 

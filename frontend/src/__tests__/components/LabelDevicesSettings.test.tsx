@@ -64,7 +64,7 @@ beforeEach(() => {
 
 describe('LabelDevicesSettings', () => {
   it('asks nothing about devices while the subsystem is off', async () => {
-    vi.spyOn(api, 'getSettings').mockResolvedValue({ device_labels_enabled: false } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ device_labels_enabled: false } as never);
     const devices = vi.spyOn(api, 'getLabelDevices').mockResolvedValue([]);
 
     renderPanel();
@@ -76,7 +76,7 @@ describe('LabelDevicesSettings', () => {
   });
 
   it('lists a device that has introduced itself as waiting for approval', async () => {
-    vi.spyOn(api, 'getSettings').mockResolvedValue({ device_labels_enabled: true } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ device_labels_enabled: true } as never);
     vi.spyOn(api, 'getLabelDevices').mockResolvedValue([device()]);
 
     renderPanel();
@@ -87,7 +87,7 @@ describe('LabelDevicesSettings', () => {
   });
 
   it('shows the installation id, which is how somebody matches the machine', async () => {
-    vi.spyOn(api, 'getSettings').mockResolvedValue({ device_labels_enabled: true } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ device_labels_enabled: true } as never);
     vi.spyOn(api, 'getLabelDevices').mockResolvedValue([device()]);
 
     renderPanel();
@@ -96,7 +96,7 @@ describe('LabelDevicesSettings', () => {
   });
 
   it('adopting a device is an explicit act, not a side effect of it appearing', async () => {
-    vi.spyOn(api, 'getSettings').mockResolvedValue({ device_labels_enabled: true } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ device_labels_enabled: true } as never);
     vi.spyOn(api, 'getLabelDevices').mockResolvedValue([device()]);
     const update = vi.spyOn(api, 'updateLabelDevice').mockResolvedValue(device({ enabled: true }));
 
@@ -110,7 +110,7 @@ describe('LabelDevicesSettings', () => {
     // ⚠️ Two different failures with two different fixes: the desktop process
     // can be up while the USB cable is out, and only one of those is the
     // operator's to fix here.
-    vi.spyOn(api, 'getSettings').mockResolvedValue({ device_labels_enabled: true } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ device_labels_enabled: true } as never);
     vi.spyOn(api, 'getLabelDevices').mockResolvedValue([
       device({ enabled: true, printer_reachable: false }),
     ]);
@@ -121,7 +121,7 @@ describe('LabelDevicesSettings', () => {
   });
 
   it('says a cassette size is unknown rather than inventing one', async () => {
-    vi.spyOn(api, 'getSettings').mockResolvedValue({ device_labels_enabled: true } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ device_labels_enabled: true } as never);
     vi.spyOn(api, 'getLabelDevices').mockResolvedValue([
       device({ enabled: true, cassette_barcode: '6972842748577' }),
     ]);
@@ -137,7 +137,7 @@ describe('LabelDevicesSettings', () => {
 
   it('offers a loaded barcode nobody has taught yet', async () => {
     // It is exactly what is blocking that printer from being used.
-    vi.spyOn(api, 'getSettings').mockResolvedValue({ device_labels_enabled: true } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ device_labels_enabled: true } as never);
     vi.spyOn(api, 'getLabelDevices').mockResolvedValue([
       device({ enabled: true, cassette_barcode: '6972842748577' }),
     ]);

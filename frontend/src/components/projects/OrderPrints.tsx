@@ -430,7 +430,7 @@ function AssignLineDialog({ archive, order, onClose }: { archive: Archive; order
 
 /** «<file> · plate N» — a dialog's subtitle naming the print. */
 function printSubtitle(archive: Archive, t: ReturnType<typeof useTranslation>['t']): string {
-  const name = archive.print_name || archive.filename;
+  const name = archive.restricted ? t('orders.prints.restrictedPrint', { id: archive.id }) : archive.print_name || archive.filename;
   return (archive.plate_index ?? 0) > 0 ? `${name} · ${t('orders.prints.plate', { n: archive.plate_index })}` : name;
 }
 
@@ -442,7 +442,7 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
   const [dialog, setDialog] = useState<'defects' | 'assign' | 'remove' | null>(null);
 
   const badge = getArchiveStatusBadge(archive.status);
-  const name = archive.print_name || archive.filename;
+  const name = archive.restricted ? t('orders.prints.restrictedPrint', { id: archive.id }) : archive.print_name || archive.filename;
   const lineName = lines.find((line) => line.id === archive.project_line_id)?.product_name;
   const completed = archive.status === 'completed';
   // F(print) (WS-13 E13 O21): the filing right files and unfiles any print; `orders:update`
@@ -477,6 +477,11 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
       {/* ⚠️ `fileName`, not `search` — ArchivesPage reads `printer`, `file` and
           `fileName` off the URL and nothing else, and only `file` FILTERS: without a
           library file id the link goes to the plain list instead. */}
+      {archive.restricted ? (
+        <div className="w-10 h-10 rounded-lg bg-bambu-dark-tertiary flex items-center justify-center flex-shrink-0">
+          <Package className="w-[18px] h-[18px] text-bambu-gray" aria-hidden />
+        </div>
+      ) : (
       <Link
         to={
           archive.library_file_id != null
@@ -491,6 +496,7 @@ function ArchiveCard({ archive, order, lines, canEdit, printerName, when }: Arch
           <Package className="w-[18px] h-[18px] text-bambu-gray" aria-hidden />
         )}
       </Link>
+      )}
 
       <div className="min-w-0 flex-1">
         <p className="font-semibold text-white [overflow-wrap:anywhere]">{name}</p>

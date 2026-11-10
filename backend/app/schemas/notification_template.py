@@ -107,8 +107,10 @@ EVENT_VARIABLES: dict[str, list[str]] = {
     "queue_completed": ["completed_count", "timestamp", "app_name"],
     "printer_queue_completed": ["printer", "timestamp", "app_name"],
     # User management notifications
-    "user_created": ["username", "password", "login_url", "app_name", "timestamp"],
-    "password_reset": ["username", "password", "login_url", "app_name", "timestamp"],
+    # Credentials/links are server-owned blocks, not editable placeholders.
+    "user_created": ["username", "app_name", "timestamp"],
+    "password_reset": ["username", "app_name", "timestamp"],
+    "password_reset_link": ["username", "app_name", "ttl_hours", "timestamp"],
     # User email print notifications
     "user_print_start": ["username", "printer", "filename", "timestamp", "app_name"],
     "user_print_complete": ["username", "printer", "filename", "timestamp", "app_name"],
@@ -307,21 +309,22 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "app_name": "BamDude",
     },
     # User management notifications.
-    # Password fields use placeholder strings (not real-looking credentials) so
-    # secret scanners like GitGuardian / TruffleHog don't flag the preview data
-    # as leaked credentials when this module is grepped.
+    # Preview contains public copy only; credentials and links are appended
+    # by the authentication mail service, never by an editable template.
     "user_created": {
         "username": "john_doe",
-        "password": "<generated-password>",
-        "login_url": "https://bamdude.example.com/login",
         "app_name": "BamDude",
         "timestamp": "2024-01-15 14:30",
     },
     "password_reset": {
         "username": "john_doe",
-        "password": "<new-password>",
-        "login_url": "https://bamdude.example.com/login",
         "app_name": "BamDude",
+        "timestamp": "2024-01-15 14:30",
+    },
+    "password_reset_link": {
+        "username": "john_doe",
+        "app_name": "BamDude",
+        "ttl_hours": "1",
         "timestamp": "2024-01-15 14:30",
     },
     # User email print notifications

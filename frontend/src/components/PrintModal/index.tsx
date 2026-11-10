@@ -446,8 +446,8 @@ export function PrintModal({
 
   // Queries
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
   });
 
   const currencySymbol = getCurrencySymbol(settings?.currency || 'USD');

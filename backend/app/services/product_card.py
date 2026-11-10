@@ -75,7 +75,7 @@ from backend.app.models.product import Product, ProductPart, ProductPlate, produ
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption, variant_key
 from backend.app.schemas.product import CardNote
 from backend.app.services import part_images, product_variants
-from backend.app.services.library_ingest import external_hash_is_stale, find_reusable_row
+from backend.app.services.library_ingest import external_hash_is_stale, find_reusable_row, read_access
 from backend.app.services.order_metrics import grouped_figures, units_delivered
 from backend.app.services.part_names import canonicalize, name_key
 from backend.app.services.product_composition import purchased_name_key
@@ -1113,7 +1113,17 @@ async def import_zip(
             # ⚠️ The digest is COMPUTED, never read out of the manifest — the
             # manifest is the sender's word and the library row it picks is a
             # real file somebody else's product may already be printing.
-            reusable = await find_reusable_row(db, content_hash=digest)
+            try:
+                reusable = await find_reusable_row(
+                    db,
+                    content_hash=digest,
+                    access=await read_access(db, user_id=getattr(user, "id", None), authority=authority),
+                )
+            except HTTPException as exc:
+                if exc.status_code != 400:
+                    raise
+                notes.append(_note("import_file_refused", name=filename or member, detail="source_unavailable"))
+                continue
             if reusable is not None and reusable[1]:
                 row = reusable[0]
             else:

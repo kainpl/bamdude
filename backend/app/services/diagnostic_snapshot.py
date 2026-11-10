@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Any
 
 from sqlalchemy import select
@@ -29,11 +28,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
-# Mirrors the IPv4 pattern in services.log_reader.sanitize_log_content. Kept as
-# a literal here (not imported) so a refactor of that module's internals can't
-# silently change snapshot sanitization. Skips firmware-version-shaped strings
-# (leading-zero octets like "01.09.01.00") via the [1-9]\d|\d alternations.
-_IPV4_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\b")
 
 # Per-diagnostic wall-clock cap. Each underlying probe carries its own (smaller)
 # TCP / HTTP timeouts; this is the outer guard so a hung interface or a wedged
@@ -210,17 +204,17 @@ async def collect_diagnostic_snapshot(
     # (`PrinterDiagnosticResult.ip_address`, network-mode check params, VP
     # `bind_ip`) and the snapshot adds printer names — none of which should
     # leak into a submitted GitHub issue or a shared support ZIP. Use the
-    # same `collect_sensitive_strings` table the log sanitizer already
-    # consults so the replacement labels stay consistent ([PRINTER], [SERIAL],
-    # [IP], [ACCESS_CODE]); the IPv4 regex fallback in `_mask_string` then
-    # catches host / bind IPs that aren't in the DB.
+    # complete retained-secret collector as diagnostic log readers, including
+    # credentials which may be quoted by a failed probe. Shared shape/PII rules
+    # also catch host/bind IPs which aren't in the DB without masking OIDs.
     try:
-        from backend.app.services.log_reader import collect_sensitive_strings
+        from backend.app.services.log_reader import collect_diagnostic_sensitive_strings
 
-        sensitive_strings = await collect_sensitive_strings(db)
+        sensitive_strings = await collect_diagnostic_sensitive_strings(db)
     except Exception:
         logger.warning("Could not collect sensitive strings for snapshot sanitization", exc_info=True)
-        sensitive_strings = {}
+        # Opaque credentials cannot be recovered by shape rules alone.
+        return {"error": "sanitization_unavailable"}
     return _sanitize_recursive(snapshot, sensitive_strings)
 
 
@@ -229,7 +223,7 @@ async def _noop_list() -> list:
 
 
 def _mask_string(value: str, sensitive_strings: dict[str, str]) -> str:
-    """Apply known-value replacement + IPv4 regex masking to a single string.
+    """Apply the shared credential/PII policy to diagnostic strings.
 
     Known values are matched first (longest first so "My Printer 1" beats
     "My Printer"); the regex pass then catches any IPs the sensitive_strings
@@ -237,15 +231,9 @@ def _mask_string(value: str, sensitive_strings: dict[str, str]) -> str:
     IP (returned by ``_host_source_ip`` inside the diagnostic, not in the DB)
     and any virtual-printer ``bind_ip`` the user picked at setup.
     """
-    if not value:
-        return value
-    for raw, label in sorted(sensitive_strings.items(), key=lambda x: len(x[0]), reverse=True):
-        if len(raw) < 3:
-            continue
-        if raw in value:
-            value = value.replace(raw, label)
-    value = _IPV4_RE.sub("[IP]", value)
-    return value
+    from backend.app.services.log_reader import sanitize_log_content
+
+    return sanitize_log_content(value, sensitive_strings)
 
 
 def _sanitize_recursive(node: Any, sensitive_strings: dict[str, str]) -> Any:
@@ -257,7 +245,20 @@ def _sanitize_recursive(node: Any, sensitive_strings: dict[str, str]) -> Any:
     if isinstance(node, str):
         return _mask_string(node, sensitive_strings)
     if isinstance(node, dict):
-        return {k: _sanitize_recursive(v, sensitive_strings) for k, v in node.items()}
+        secret_keys = {"authorization", "proxy-authorization", "x-api-key", "cookie", "set-cookie", "api_key", "apikey"}
+        return {
+            k: "[REDACTED]"
+            if isinstance(k, str)
+            and (
+                k.lower() in secret_keys
+                or k.lower() in {"password", "passwd", "secret", "token", "access_code", "client_secret"}
+                or k.lower().endswith(("_password", "_token", "_secret"))
+            )
+            and v is not None
+            and not isinstance(v, bool)
+            else _sanitize_recursive(v, sensitive_strings)
+            for k, v in node.items()
+        }
     if isinstance(node, list):
         return [_sanitize_recursive(item, sensitive_strings) for item in node]
     return node
