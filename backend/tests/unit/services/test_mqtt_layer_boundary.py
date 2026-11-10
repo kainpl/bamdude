@@ -333,6 +333,67 @@ def test_old_run_id_cannot_supply_preparation_total():
     assert c.state.total_layers == 0
 
 
+@pytest.mark.parametrize("preparation", ["PREPARE", "SLICING"])
+@pytest.mark.parametrize("had_candidate", [False, True])
+def test_old_run_id_blocks_later_sparse_preparation_totals(preparation, had_candidate):
+    c = running()
+    push(c, gcode_state="FINISH")
+    if had_candidate:
+        push(c, gcode_state=preparation, total_layer_num=693)
+    push(c, gcode_state=preparation, subtask_id="100", total_layer_num=100)
+    push(c, total_layer_num=100)
+    push(c, gcode_state="RUNNING", subtask_id="200", layer_num=1)
+    assert (c.state.layer_num, c.state.total_layers) == (1, 0)
+
+
+@pytest.mark.parametrize("sparse_total", [False, True])
+def test_new_pending_id_unblocks_preparation_total(sparse_total):
+    c = running()
+    push(c, gcode_state="FINISH")
+    push(c, gcode_state="PREPARE", subtask_id="100", total_layer_num=100)
+    push(c, total_layer_num=100)
+    fields = {} if sparse_total else {"total_layer_num": 693}
+    push(c, subtask_id="200", **fields)
+    if sparse_total:
+        push(c, total_layer_num=693)
+    push(c, gcode_state="RUNNING", layer_num=1)
+    assert (c.state.layer_num, c.state.total_layers) == (1, 693)
+
+
+@pytest.mark.parametrize("terminal", ["IDLE", "FINISH", "FAILED"])
+def test_terminal_clears_old_id_preparation_block(terminal):
+    c = running()
+    push(c, gcode_state="FINISH")
+    push(c, gcode_state="PREPARE", subtask_id="100", total_layer_num=100)
+    push(c, gcode_state=terminal)
+    push(c, gcode_state="PREPARE", total_layer_num=693)
+    push(c, gcode_state="RUNNING", subtask_id="200", layer_num=1)
+    assert c.state.total_layers == 693
+
+
+def test_old_id_preparation_block_survives_reconnect_and_pause():
+    old = running()
+    push(old, gcode_state="FINISH")
+    push(old, gcode_state="PREPARE", subtask_id="100", total_layer_num=100)
+    c = client()
+    c.carry_print_lifecycle_from(old)
+    push(c, gcode_state="PREPARE", gcode_file="new.gcode", total_layer_num=100)
+    push(c, gcode_state="PAUSE")
+    push(c, gcode_state="PREPARE", total_layer_num=100)
+    push(c, gcode_state="RUNNING", subtask_id="200", layer_num=1)
+    assert c.state.total_layers == 0
+
+
+def test_ack_new_id_cannot_unblock_preparation_total():
+    c = running()
+    push(c, gcode_state="FINISH")
+    push(c, gcode_state="PREPARE", subtask_id="100", total_layer_num=100)
+    push(c, command="project_file", subtask_id="200")
+    push(c, total_layer_num=100)
+    push(c, gcode_state="RUNNING", subtask_id="200", layer_num=1)
+    assert c.state.total_layers == 0
+
+
 @pytest.mark.parametrize("replacement_total,expected", [(None, 0), (483, 483)])
 def test_changed_pending_id_drops_earlier_preparation_total(replacement_total, expected):
     c = running()

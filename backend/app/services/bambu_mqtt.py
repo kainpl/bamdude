@@ -2427,6 +2427,7 @@ class BambuMQTTClient:
         self._pending_start_state = None
         self._pending_start_id = None
         self._pending_start_total: int | None = None
+        self._pending_start_total_blocked = False
         self._retired_run_id = None
         self._start_observation = None
         self._unproven_observation = None
@@ -2677,6 +2678,7 @@ class BambuMQTTClient:
         self._pending_start_state = prior._pending_start_state
         self._pending_start_id = prior._pending_start_id
         self._pending_start_total = prior._pending_start_total
+        self._pending_start_total_blocked = prior._pending_start_total_blocked
         self._retired_run_id = prior._retired_run_id
         self._start_observation = prior._start_observation
         self._unproven_observation = prior._unproven_observation
@@ -5778,6 +5780,7 @@ class BambuMQTTClient:
             self._pending_start_state = self._previous_gcode_state
         if self.state.state in ("IDLE", "FINISH", "FAILED"):
             self._pending_start_total = None
+            self._pending_start_total_blocked = False
             if self._previous_gcode_state in ("PREPARE", "SLICING"):
                 self._pending_start_id = None
             self._pending_start_state = self.state.state
@@ -5790,12 +5793,25 @@ class BambuMQTTClient:
             if self._pending_start_id is not None and packet_run_id != self._pending_start_id:
                 self._pending_start_total = None
             self._pending_start_id = packet_run_id
+            if is_printer_status_frame(data):
+                self._pending_start_total_blocked = False
+        if (
+            self._pending_start_state is not None
+            and self.state.state in ("PREPARE", "SLICING")
+            and is_printer_status_frame(data)
+            and packet_run_id
+            and packet_run_id == previous_run_id
+        ):
+            # Later sparse totals still belong to this old-id window until a
+            # status frame identifies a new run or terminal/idle ends it.
+            self._pending_start_total = None
+            self._pending_start_total_blocked = True
         if (
             self._pending_start_state is not None
             and self.state.state in ("PREPARE", "SLICING")
             and is_printer_status_frame(data)
             and "total_layer_num" in data
-            and not (packet_run_id and packet_run_id == previous_run_id)
+            and not self._pending_start_total_blocked
         ):
             # Firmware can report the new total before its first RUNNING
             # delta. Remember only a value received in this preparation
@@ -5876,6 +5892,7 @@ class BambuMQTTClient:
             elif observed_start and self._pending_start_total is not None:
                 self.state.total_layers = self._pending_start_total
             self._pending_start_total = None
+            self._pending_start_total_blocked = False
 
         if "mc_percent" in data:
             # Save last non-zero progress for usage tracking (firmware resets to 0 on cancel)

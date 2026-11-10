@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Preparation messages that still identify the previous print now block later layer totals without an ID until a new print ID arrives or preparation ends. This prevents the old print's layer count from reaching the next print's photos and tracking.
+
 - Live printer status now updates when only the total layer count changes, including when it becomes unknown again.
 
 - A layer total reported during print preparation now survives the transition to printing. Aborted preparation cannot lend its total to the next print, and a fresh total in the start message takes precedence. This also keeps the reported total available to last-layer photos and print tracking when the printer does not repeat it.
