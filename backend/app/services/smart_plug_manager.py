@@ -95,7 +95,7 @@ class SmartPlugManager:
         raise UnknownPlugTypeError(plug.plug_type)
 
     async def _configure_ha_service(self, db: AsyncSession | None = None):
-        """Configure the HA service with URL and token from settings."""
+        """Use the effective HA switch before handing the driver to a caller."""
         from backend.app.api.routes.settings import get_homeassistant_settings
 
         try:
@@ -109,9 +109,13 @@ class SmartPlugManager:
                 async with async_session() as session:
                     ha_settings = await get_homeassistant_settings(session)
 
-            homeassistant_service.configure(ha_settings["ha_url"], ha_settings["ha_token"])
+            if ha_settings["ha_enabled"]:
+                homeassistant_service.configure(ha_settings["ha_url"], ha_settings["ha_token"])
+                return
         except Exception as e:
             logger.warning("Failed to configure HA service: %s", e)
+        # Drop credentials from the shared driver even if it was used earlier.
+        homeassistant_service.configure("", "")
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop):
         """Set the event loop for async operations."""
