@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,7 +37,7 @@ from backend.app.schemas.library_trash import (
     TrashRestoreConflict,
     TrashSettings,
 )
-from backend.app.services.library_ingest import find_reusable_row
+from backend.app.services.library_ingest import find_reusable_row, read_access
 from backend.app.services.library_trash import (
     MAX_RETENTION_DAYS,
     MIN_RETENTION_DAYS,
@@ -176,7 +176,7 @@ async def _load_trashed_file(
     return file
 
 
-async def _active_twin(db: AsyncSession, file: LibraryFile) -> LibraryFile | None:
+async def _active_twin(db: AsyncSession, file: LibraryFile, access) -> LibraryFile | None:
     """The active row already holding this trashed file's content, if any.
 
     ⚠️ Restoring is the ONE way byte-identical duplicates can come back. Every
@@ -192,7 +192,7 @@ async def _active_twin(db: AsyncSession, file: LibraryFile) -> LibraryFile | Non
     """
     if not file.file_hash:
         return None
-    reusable = await find_reusable_row(db, content_hash=file.file_hash)
+    reusable = await find_reusable_row(db, content_hash=file.file_hash, access=access)
     if reusable is None:
         return None
     twin, _present = reusable
@@ -202,6 +202,7 @@ async def _active_twin(db: AsyncSession, file: LibraryFile) -> LibraryFile | Non
 @router.post("/trash/{file_id}/restore")
 async def restore_from_trash(
     file_id: int,
+    request: Request,
     force: bool = Query(False, description="Restore even when an active file already holds this content"),
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
@@ -219,9 +220,12 @@ async def restore_from_trash(
     """
     user, can_modify_all = auth_result
     file = await _load_trashed_file(db, file_id, user, can_modify_all)
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
+    access = await read_access(db, authority=await request_authority(request, user))
+    twin = await _active_twin(db, file, access)
 
     if not force:
-        twin = await _active_twin(db, file)
         if twin is not None:
             raise HTTPException(
                 status_code=409,
@@ -239,6 +243,7 @@ async def restore_from_trash(
 @router.post("/trash/restore-check", response_model=list[TrashRestoreConflict])
 async def check_restore_conflicts(
     data: TrashRestoreCheckRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -257,13 +262,16 @@ async def check_restore_conflicts(
     answer for the rest.
     """
     user, can_modify_all = auth_result
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
+    access = await read_access(db, authority=await request_authority(request, user))
     conflicts: list[TrashRestoreConflict] = []
     for file_id in data.ids:
         try:
             file = await _load_trashed_file(db, file_id, user, can_modify_all)
         except HTTPException:
             continue
-        twin = await _active_twin(db, file)
+        twin = await _active_twin(db, file, access)
         if twin is not None:
             conflicts.append(
                 TrashRestoreConflict(

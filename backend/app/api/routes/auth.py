@@ -22,6 +22,7 @@ from backend.app.core.auth import (
     SECRET_KEY,
     JWTValidationFailure,
     Permission,
+    RequireAdmin,
     RequireAnyPermission,
     RequirePermission,
     _validate_api_key,
@@ -32,6 +33,7 @@ from backend.app.core.auth import (
     create_media_token,
     create_refresh_token,
     create_websocket_token,
+    get_auth_db,
     get_current_active_user,
     get_password_hash,
     get_user_by_email,
@@ -48,7 +50,6 @@ from backend.app.core.auth import (
     security,
     verify_and_consume_refresh_token,
 )
-from backend.app.core.database import get_db
 from backend.app.core.oidc_env import env_bool
 from backend.app.core.permissions import DEFAULT_GROUPS
 from backend.app.models.group import Group
@@ -410,7 +411,7 @@ async def set_setup_completed(db: AsyncSession, completed: bool) -> None:
 
 
 @router.post("/setup", response_model=SetupResponse)
-async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_db)):
+async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_auth_db)):
     """First-time setup: create the initial admin user and auto-login.
 
     Public endpoint - intentionally unauthenticated, because the system has no
@@ -528,7 +529,7 @@ async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/status")
-async def get_auth_status(db: AsyncSession = Depends(get_db)):
+async def get_auth_status(db: AsyncSession = Depends(get_auth_db)):
     """Get authentication status (public endpoint).
 
     ``requires_setup`` is ``True`` iff no active admin user exists. Auth itself
@@ -544,7 +545,7 @@ async def login(
     request: LoginRequest,
     raw_request: Request,
     response: Response,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Login and get access token.
 
@@ -589,29 +590,26 @@ async def login(
             ldap_config = parse_ldap_config(ldap_settings)
             if ldap_config:
                 ldap_user = authenticate_ldap_user(ldap_config, request.username, request.password)
-                if ldap_user:
-                    # LDAP auth succeeded - find or create local user
-                    user = await get_user_by_username(db, ldap_user.username)
-                    if user and user.auth_source != "ldap":
-                        # Username exists as local user - don't override
-                        user = None
-                        ldap_user = None
-                    elif not user:
-                        if not ldap_config.auto_provision:
-                            # User doesn't exist and auto-provision is off
-                            ldap_user = None
-                        else:
-                            # Auto-provision LDAP user
-                            user = await _provision_ldap_user(db, ldap_user, ldap_config)
-
-                    if user and ldap_user:
-                        # Update email and group mappings on each login
-                        await _sync_ldap_user(db, user, ldap_user, ldap_config)
         except Exception as e:
             import logging
 
             logging.getLogger(__name__).warning("LDAP authentication error, falling back to local: %s", e)
             ldap_user = None
+
+        # Local persistence is outside the directory fallback. Infrastructure
+        # failures are 503 at the auth DB boundary; programming errors stay 500.
+        if ldap_user:
+            user = await get_user_by_username(db, ldap_user.username)
+            if user and user.auth_source != "ldap":
+                user = None
+                ldap_user = None
+            elif not user:
+                if not ldap_config.auto_provision:
+                    ldap_user = None
+                else:
+                    user = await _provision_ldap_user(db, ldap_user, ldap_config)
+            if user and ldap_user:
+                await _sync_ldap_user(db, user, ldap_user, ldap_config)
 
     # #1589: local username/password gate. LDAP keeps its own switch
     # (ldap_enabled) and is not affected — a delegated directory has its own
@@ -730,7 +728,7 @@ async def login(
 async def refresh_access_token(
     request: Request,
     response: Response,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Sliding-session refresh (§18.14).
 
@@ -870,7 +868,7 @@ async def refresh_access_token(
 async def get_current_user_info(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
     x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
     request: Request = None,
 ):
     """Get current user information.
@@ -923,7 +921,7 @@ async def logout(
     request: Request,
     response: Response,
     authorization: str | None = Header(default=None, alias="Authorization"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Logout — revoke the caller's JWT ``jti`` + refresh-token family (§18.4 + §18.14).
 
@@ -1018,11 +1016,11 @@ async def mint_media_token(current_user: User = Depends(get_current_active_user)
 # Advanced Authentication Endpoints
 
 
-@router.post("/smtp/test", response_model=TestSMTPResponse)
+@router.post("/smtp/test", response_model=TestSMTPResponse, dependencies=[RequireAdmin()])
 async def test_smtp_connection(
     test_request: TestSMTPRequest,
     current_user: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Test SMTP connection using saved settings (admin only when auth enabled)."""
     import logging
@@ -1047,15 +1045,14 @@ async def test_smtp_connection(
         return TestSMTPResponse(success=True, message="Test email sent successfully")
     except Exception as e:
         logger.error("Failed to send test email: %s", e)
-        # Note: `message` is surfaced to the admin in the Test SMTP dialog on purpose —
-        # that endpoint is admin-only and the exception text is the diagnostic user needs.
-        return TestSMTPResponse(success=False, message=f"Failed to send test email: {str(e)}")
+        # Driver exceptions can contain credentials; keep the UI response generic.
+        return TestSMTPResponse(success=False, message="Failed to send test email. Check the server logs.")
 
 
-@router.get("/smtp", response_model=SMTPSettings | None)
+@router.get("/smtp", response_model=SMTPSettings | None, dependencies=[RequireAdmin()])
 async def get_smtp_config(
     current_user: User | None = RequirePermission(Permission.SETTINGS_READ),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Get SMTP settings (admin only when auth enabled). Password is not returned."""
     smtp_settings = await get_smtp_settings(db)
@@ -1065,11 +1062,11 @@ async def get_smtp_config(
     return smtp_settings
 
 
-@router.post("/smtp", response_model=dict)
+@router.post("/smtp", response_model=dict, dependencies=[RequireAdmin()])
 async def save_smtp_config(
     smtp_settings: SMTPSettings,
     current_user: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Save SMTP settings (admin only when auth enabled)."""
     import logging
@@ -1093,7 +1090,7 @@ async def save_smtp_config(
 @router.post("/advanced-auth/enable", response_model=dict)
 async def enable_advanced_auth(
     current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Enable advanced authentication (admin only).
 
@@ -1138,7 +1135,7 @@ async def enable_advanced_auth(
 @router.post("/advanced-auth/disable", response_model=dict)
 async def disable_advanced_auth(
     current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Disable advanced authentication (admin only)."""
     import logging
@@ -1170,7 +1167,7 @@ async def disable_advanced_auth(
 
 
 @router.get("/advanced-auth/status")
-async def get_advanced_auth_status(db: AsyncSession = Depends(get_db)):
+async def get_advanced_auth_status(db: AsyncSession = Depends(get_auth_db)):
     """Get advanced authentication status.
 
     Surfaces ``local_login_enabled`` and ``autologin_provider_id`` (#1589) so
@@ -1211,7 +1208,7 @@ async def get_advanced_auth_status(db: AsyncSession = Depends(get_db)):
 async def forgot_password(
     request: ForgotPasswordRequest,
     raw_request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Request password reset via email (advanced auth only).
 
@@ -1307,7 +1304,7 @@ async def forgot_password(
 async def forgot_password_confirm(
     request: ForgotPasswordConfirmRequest,
     raw_request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Spend a reset token from the e-mail link and set the new password.
 
@@ -1367,7 +1364,7 @@ async def forgot_password_confirm(
 async def reset_user_password(
     request: ResetPasswordRequest,
     current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Reset a user's password and send them an email (admin only, advanced auth only)."""
     import logging
@@ -1583,10 +1580,10 @@ async def _sync_ldap_user(db: AsyncSession, user: User, ldap_user, ldap_config) 
         logger.info("Synced LDAP user attributes: %s", user.username)
 
 
-@router.post("/ldap/test")
+@router.post("/ldap/test", dependencies=[RequireAdmin()])
 async def test_ldap(
     current_user: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Test LDAP connection using saved settings (admin only when auth enabled)."""
     import logging
@@ -1628,7 +1625,7 @@ async def test_ldap(
 
 
 @router.get("/ldap/status")
-async def get_ldap_status(db: AsyncSession = Depends(get_db)):
+async def get_ldap_status(db: AsyncSession = Depends(get_auth_db)):
     """Get LDAP authentication status."""
     # Only fetch the minimum keys needed - never load secrets
     ldap_keys = ["ldap_enabled", "ldap_server_url"]
@@ -1648,11 +1645,11 @@ async def get_ldap_status(db: AsyncSession = Depends(get_db)):
 # the new "LDAP" tab in the user-create modal.
 
 
-@router.get("/ldap/search", response_model=list[LDAPSearchResultResponse])
+@router.get("/ldap/search", response_model=list[LDAPSearchResultResponse], dependencies=[RequireAdmin()])
 async def search_ldap_directory(
     q: str,
     _: User | None = RequirePermission(Permission.USERS_CREATE),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Search the LDAP directory for users matching ``q``.
 
@@ -1726,11 +1723,13 @@ async def search_ldap_directory(
     ]
 
 
-@router.post("/ldap/provision", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/ldap/provision", response_model=UserResponse, status_code=status.HTTP_201_CREATED, dependencies=[RequireAdmin()]
+)
 async def provision_ldap_user(
     payload: LDAPProvisionRequest,
     _: User | None = RequirePermission(Permission.USERS_CREATE),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Provision a BamDude user from an existing LDAP directory entry.
 
@@ -1863,7 +1862,7 @@ def _can_manage_long_lived_token(user: User | None, scope: str, action: str) -> 
 async def create_long_lived_camera_token(
     payload: dict,
     current_user: User = RequireAnyPermission(Permission.CAMERA_VIEW, Permission.API_KEYS_CREATE),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Mint a long-lived camera-stream token (#1108).
 
@@ -1924,7 +1923,7 @@ async def create_long_lived_camera_token(
 async def list_long_lived_tokens(
     user_id: int | None = None,
     current_user: User = RequireAnyPermission(Permission.CAMERA_VIEW, Permission.API_KEYS_READ),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """List long-lived tokens.
 
@@ -1959,7 +1958,7 @@ async def list_long_lived_tokens(
 @router.get("/tokens/all", response_model=list[dict])
 async def list_all_long_lived_tokens(
     current_user: User = RequireAnyPermission(Permission.CAMERA_VIEW, Permission.API_KEYS_READ),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Admin-only: every active long-lived token in the system, newest first.
     Used by the leak-triage view in admin settings.
@@ -1987,7 +1986,7 @@ async def list_all_long_lived_tokens(
 async def revoke_long_lived_token(
     token_id: int,
     current_user: User = RequireAnyPermission(Permission.CAMERA_VIEW, Permission.API_KEYS_DELETE),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ):
     """Revoke a long-lived token. Owners can revoke their own; admins any."""
     import logging as _logging
@@ -2028,7 +2027,7 @@ async def revoke_long_lived_token(
 @router.get("/encryption-status", response_model=EncryptionStatusResponse)
 async def get_encryption_status(
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ) -> EncryptionStatusResponse:
     """Report at-rest encryption status for OIDC + TOTP secrets.
 

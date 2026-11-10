@@ -87,7 +87,7 @@ function LanguageSync({ children }: { children: React.ReactNode }) {
     syncedRef.current = true;
     (async () => {
       try {
-        const settings = await api.getSettings();
+        const settings = await api.getUiPreferences();
         const serverLang = settings.language;
         if (serverLang && serverLang !== i18n.language) {
           await i18n.changeLanguage(serverLang);

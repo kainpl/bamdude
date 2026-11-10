@@ -120,16 +120,26 @@ async def start_logging(
 @router.post("/stop-logging", response_model=StopLoggingResponse)
 async def stop_logging(
     was_debug: bool = Query(default=False),
-    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Collect sanitized recent logs and restore the previous log level."""
-    logs = await _get_recent_sanitized_logs()
-
-    if not was_debug:
-        async with async_session() as db:
-            await _set_debug_setting(db, False)
-        _apply_log_level(False)
-        logger.info("Bug report: restored normal logging")
+    try:
+        logs = await _get_recent_sanitized_logs()
+    except Exception:
+        # A report can be submitted without logs. Never return the raw tail or
+        # exception text when collection/sanitization is unavailable.
+        logs = "Recent logs are unavailable. You can still submit this report."
+        logger.warning("Bug report: recent sanitized logs unavailable")
+    finally:
+        if not was_debug:
+            try:
+                async with async_session() as db:
+                    await _set_debug_setting(db, False)
+            finally:
+                # Even a failed persistence write must not leave runtime DEBUG on.
+                # Its failure still propagates: we cannot claim durable restoration.
+                _apply_log_level(False)
+            logger.info("Bug report: restored normal logging")
 
     return StopLoggingResponse(logs=logs)
 

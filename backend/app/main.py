@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, or_, select, text
@@ -316,14 +316,26 @@ root_logger.setLevel(log_level)
 # KeyError on every child-logger record and the stdlib logging machinery
 # silently drops it — exactly the "logs/bamdude.log only shows logs
 # partially" failure mode (audit A.28). See backend/app/core/trace.py.
+from backend.app.core.logging_filters import CredentialSafeFormatter  # noqa: E402
 from backend.app.core.trace import TraceIDFilter  # noqa: E402
 
 _trace_id_filter = TraceIDFilter()
 
+
+def _protect_uvicorn_log_handlers() -> None:
+    # Uvicorn can own non-propagating console handlers and configure them again
+    # after importing the app. Preserve their formatters, sanitize final output.
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        for handler in logging.getLogger(name).handlers:
+            handler.setFormatter(CredentialSafeFormatter.wrap(handler.formatter))
+
+
+_protect_uvicorn_log_handlers()
+
 # Console handler - always enabled
 console_handler = logging.StreamHandler()
 console_handler.setLevel(log_level)
-console_handler.setFormatter(logging.Formatter(log_format))
+console_handler.setFormatter(CredentialSafeFormatter(log_format))
 console_handler.addFilter(_trace_id_filter)
 root_logger.addHandler(console_handler)
 
@@ -361,7 +373,7 @@ if app_settings.log_to_file:
     file_handler.suffix = "%Y-%m-%d"
     file_handler.namer = app_log_filename_namer
     file_handler.setLevel(log_level)
-    file_handler.setFormatter(logging.Formatter(log_format))
+    file_handler.setFormatter(CredentialSafeFormatter(log_format))
     file_handler.addFilter(_trace_id_filter)
     root_logger.addHandler(file_handler)
     set_app_log_handler(file_handler)
@@ -12281,6 +12293,7 @@ async def lifespan(app: FastAPI):
     # ⚠️ First, before the farm guard, the database or any manager: the start-up heap is frozen
     # once per process, and a server that has started must never be (core/process_gc.py).
     process_gc.prepare_startup_heap()
+    _protect_uvicorn_log_handlers()
     farm_startup_guard.start(Path(app_settings.data_dir))
     try:
         async with _application_lifespan(app):
@@ -12310,6 +12323,30 @@ app = FastAPI(
 )
 
 app.add_middleware(FarmReadyMiddleware)
+
+
+from fastapi.exceptions import RequestValidationError  # noqa: E402
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_validation_error_handler(request, exc):
+    """Validation describes the field, never echoes credential-bearing input."""
+    from fastapi.responses import JSONResponse
+
+    details = []
+    for error in exc.errors():
+        kind = error["type"]
+        location = error.get("loc", ())
+        if kind == "extra_forbidden":
+            location = (*location[:-1], "[unknown field]")
+        details.append(
+            {
+                "type": kind,
+                "loc": location,
+                "msg": error["msg"],
+            }
+        )
+    return JSONResponse(status_code=422, content={"detail": details})
 
 
 @app.exception_handler(FarmStartupRefused)
@@ -12667,12 +12704,13 @@ async def auth_middleware(request, call_next):
                 content={"detail": "Invalid token"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        except Exception:
-            # A failed authority DB read must never become anonymous access.
+        except HTTPException as exc:
+            # Infrastructure failure is retryable, not a false credential
+            # refusal that causes clients to discard otherwise valid sessions.
             return JSONResponse(
-                status_code=401,
-                content={"detail": "Invalid token"},
-                headers={"WWW-Authenticate": "Bearer"},
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers=exc.headers,
             )
         return await call_next(request)
     finally:

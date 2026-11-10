@@ -38,8 +38,8 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
   // Pull system date/time format so usage timestamps follow the user's
   // preference instead of the previous hard-coded en-GB.
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
     staleTime: 60_000,
   });
   const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;

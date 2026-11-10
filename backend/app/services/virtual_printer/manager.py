@@ -767,7 +767,7 @@ class VirtualPrinterInstance:
                 skip_objects_supported_from_metadata,
                 sync_system_tags,
             )
-            from backend.app.services.library_ingest import find_reusable_row
+            from backend.app.services.library_ingest import LibraryReadAccess, find_reusable_row
 
             async with self._session_factory() as db_session:
                 filename = file_path.name
@@ -835,7 +835,7 @@ class VirtualPrinterInstance:
                 # The slicer sends the same plate again more often than any
                 # other path — "Send to printer", tweak nothing, send again.
                 # ``find_reusable_row`` is the one place that decides.
-                reusable = await find_reusable_row(db_session, content_hash=file_hash)
+                reusable = await find_reusable_row(db_session, content_hash=file_hash, access=LibraryReadAccess("all"))
                 if reusable is not None and reusable[1]:
                     # ⚠️ Clean up exactly what the success path below cleans up:
                     # the copy written into the library dir, and the staged

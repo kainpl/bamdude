@@ -8,7 +8,7 @@ Keep this module independent of routes and services so both can use it.
 
 from __future__ import annotations
 
-from backend.app.core.logging_filters import redact_url_credentials
+from backend.app.core.logging_filters import redact_log_credentials
 
 # What ffmpeg prints before it has anything to say. Every line of the banner is
 # either the version line or an indented continuation, and a real diagnostic is
@@ -68,7 +68,7 @@ def summarize_ffmpeg_stderr(text: str | bytes | None) -> str:
     # Redaction runs on the whole string before anything is dropped: a
     # credentialed URL that straddles the cut would otherwise leave its tail in
     # the log with no ``@`` left for the pattern to anchor on.
-    text = redact_url_credentials(text) or ""
+    text = redact_log_credentials(text)
     meaningful = [line for line in text.splitlines() if line.strip() and not line.startswith(_BANNER_PREFIXES)]
     summary = "\n".join(meaningful[-_MAX_LINES:])
     if len(summary) > _MAX_CHARACTERS:

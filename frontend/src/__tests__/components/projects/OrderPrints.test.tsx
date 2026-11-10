@@ -84,6 +84,28 @@ describe('OrderPrints', () => {
     ] as never);
   });
 
+  it('renders restricted archive accounting without a filename, thumbnail or archive/library link', async () => {
+    const thumbnail = vi.spyOn(api, 'getArchiveThumbnail');
+    vi.spyOn(api, 'getProjectArchives').mockResolvedValue([{
+      id: 31, restricted: true, status: 'completed', project_id: 1, project_line_id: 10,
+      printer_id: 3, plate_index: 2, quantity: 4, defective_count: 1,
+      created_at: '2026-11-10T12:00:00', started_at: null, completed_at: null, created_by_id: 5,
+    }] as never);
+    render(<OrderPrints order={lineOrder([31])} canEdit />);
+    const title = await screen.findByText('Restricted print #31');
+    const card = title.closest<HTMLElement>('[data-print-card]')!;
+    expect(card).toHaveAttribute('data-status', 'completed');
+    expect(card).toHaveTextContent('P1S-02');
+    expect(card).toHaveTextContent('4 pcs');
+    expect(card).toHaveTextContent('1 defective');
+    expect(card.querySelector('a')).toBeNull();
+    expect(card.querySelector('img')).toBeNull();
+    expect(thumbnail).not.toHaveBeenCalled();
+    expect(card).not.toHaveTextContent('undefined');
+    // The order's accounting action remains available under its own permission.
+    expect(within(card).getByTestId('print-menu-31')).toBeInTheDocument();
+  });
+
   it('groups archives by line from the response and lists the leftovers as other prints', async () => {
     vi.spyOn(api, 'getProjectArchives').mockResolvedValue([
       { id: 1, filename: 'a.3mf', status: 'completed', project_line_id: 10 },

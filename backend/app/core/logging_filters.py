@@ -17,10 +17,13 @@ support-bundle sanitizer in ``services/log_reader.py``.
 from __future__ import annotations
 
 import asyncio
+import copy
+import html
 import logging
 import re
+from urllib.parse import unquote
 
-# ``scheme://user:secret@host`` — the only URL shape that carries a secret.
+# ``scheme://user:secret@host``, empty user, or bare token userinfo.
 #
 # Both userinfo parts exclude ``/`` so a match can never run past the authority
 # into the path, and exclude whitespace so a wrapped log line cannot glue two
@@ -42,12 +45,13 @@ import re
 # registered one is under 20 characters), and a longer pseudo-scheme still gets
 # its secret masked — the match simply starts from a later offset.
 URL_CREDENTIALS_PATTERN = re.compile(
-    r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,63}://)(?P<user>[^/:@\s]+):(?P<secret>[^/\s]+)@"
+    r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,63}://)"
+    r"(?P<user>[^/:@?#\s<>\"']*)(?::(?P<secret>[^/\s<>\"']*))?@"
 )
 
 
 def redact_url_credentials(text: str | None) -> str | None:
-    """Mask the password in every ``scheme://user:secret@host`` URL in *text*.
+    """Mask URL passwords and bare-token userinfo in *text*.
 
     Subprocesses echo their input back at us: ffmpeg prints the RTSP input in its
     ``Input #0`` line, so logging its stderr verbatim publishes the printer
@@ -63,9 +67,151 @@ def redact_url_credentials(text: str | None) -> str | None:
     in the log — the redaction silently becomes a no-op on exactly the long lines
     that most need it.
     """
-    if not text or "://" not in text or "@" not in text:
+    if not text:
         return text
-    return URL_CREDENTIALS_PATTERN.sub(r"\g<scheme>\g<user>:[REDACTED]@", text)
+
+    def mask(match: re.Match) -> str:
+        # A bare userinfo can itself be a token. Only keep a username when
+        # the caller supplied a separate password, as the existing API did.
+        if match["secret"] is None and match["user"] in {"[REDACTED]", "[CREDENTIALS]"}:
+            return match[0]
+        user = match["user"] + ":" if match["secret"] is not None else ""
+        return match["scheme"] + user + "[REDACTED]@"
+
+    candidate = text
+    changed = False
+    for _ in range(4):
+        sanitized = (
+            URL_CREDENTIALS_PATTERN.sub(mask, candidate) if "://" in candidate and "@" in candidate else candidate
+        )
+        changed = changed or sanitized != candidate
+        decoded = _unescape_log_text(sanitized)
+        if decoded == sanitized:
+            return sanitized if changed else text
+        candidate = decoded
+    return "[REDACTED: encoded URL]"
+
+
+# Shape rules work without consulting a database (including on a failed DB
+# connection). Known opaque values are additionally removed by log_reader.
+_QUOTED_LOG_VALUE = r"(?:[bBrRuU]{0,2})?(?:\"(?:\\.|[^\"\\])*(?:\"|\Z)|'(?:\\.|[^'\\])*(?:'|\Z))"
+_HEADER_LOG_VALUE = rf"(?:{_QUOTED_LOG_VALUE}|[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*)"
+_SECRET_SHAPES = tuple(
+    re.compile(pattern)
+    for pattern in (
+        rf"(?ims)\b(?:authorization|proxy-authorization)[\"']?\s*[:=]\s*{_HEADER_LOG_VALUE}",
+        r"(?im)\b(?:bearer|basic)[ \t]+[^\s,;\"'<>]+(?:\r?\n[ \t]+[^\r\n]*)*",
+        rf"(?ims)\b(?:x-api-key|x-auth-token|cookie|set-cookie)[\"']?\s*[:=]\s*{_HEADER_LOG_VALUE}",
+        rf"(?is)\b(?:illegal|invalid) header value\s+{_QUOTED_LOG_VALUE}",
+        r"\b(?:bd_|bb_)[A-Za-z0-9_-]+",
+        r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
+        r"\b\d{6,12}:[A-Za-z0-9_-]{25,}\b",
+        r"https?://[^\s\"'<>]*(?:/api/webhooks/|hooks\.slack\.com/services/)[^\s\"'<>]+",
+        r"https?://(?:open\.feishu\.cn|open\.larksuite\.com)/open-apis/bot/(?:v2/)?hook/[^\s\"'<>]+",
+        r"https?://api\.day\.app/[^\s\"'<>]+",
+        r"(?is)[\"']?\b(?:password|passwd|secret|token|access_token|refresh_token|id_token|"
+        r"reset_token|api_key|apikey|auth_token|access_code|client_secret|signature|sig|"
+        r"credential|credentials)[\"']?\s*[:=]\s*"
+        rf"(?:{_QUOTED_LOG_VALUE}|[^\s,;}}\"'<>]+)",
+        r"(?:fernet:)?gAAAAA[A-Za-z0-9_=-]+",
+        rf"(?ims)\binput_value\s*=\s*(?:{_QUOTED_LOG_VALUE}|[^\r\n]+)",
+        r"(?ims)\[parameters:.*?(?=\n\(Background on this error|\Z)",
+        r"(?i)[?&#](?:code|key|auth|session|sid|access[-_]token|api[-_]key)=[^\s\"'<>]+",
+        r"[a-zA-Z][a-zA-Z0-9+.\-]{0,63}://[^/<>\r\n\"']{0,256}[ \t][^/<>\r\n\"']{0,256}@",
+        r"(?ims)\bDETAIL\s*:.*?(?=\n\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}\s|\Z)",
+    )
+)
+_ESCAPED_CHAR = re.compile(r"\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})|\\([/\"'\\nrtbf])")
+_ENTRY_START = re.compile(r"(?m)^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}\s")
+
+
+def _redact_entry_shapes(text: str) -> str:
+    """An unterminated value may consume its entry, never the next parent.
+
+    Re-frame on EVERY decoding pass: percent/JSON escapes can reveal new
+    timestamped parents which were not visible in the original spelling.
+    Keep the separator if an unterminated construct consumed the final LF.
+    """
+    result = []
+    start = 0
+    for match in _ENTRY_START.finditer(text):
+        if match.start() == start:
+            continue
+        part = text[start : match.start()]
+        for pattern in _SECRET_SHAPES:
+            part = pattern.sub("[REDACTED]", part)
+        if text[match.start() - 1] == "\n" and not part.endswith("\n"):
+            part += "\n"
+        result.append(part)
+        start = match.start()
+    part = text[start:]
+    for pattern in _SECRET_SHAPES:
+        part = pattern.sub("[REDACTED]", part)
+    if text.endswith("\n") and not part.endswith("\n"):
+        part += "\n"
+    result.append(part)
+    return "".join(result)
+
+
+def _unescape_log_text(text: str) -> str:
+    """Decode transport spelling for matching, without interpreting Python code."""
+    if "%" not in text and "&" not in text and "\\" not in text:
+        return text
+
+    def char(match: re.Match) -> str:
+        if match[1] or match[2]:
+            return chr(int(match[1] or match[2], 16))
+        return {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f"}.get(match[3], match[3])
+
+    decoded = unquote(html.unescape(_ESCAPED_CHAR.sub(char, text)), errors="replace")
+    if any(0xD800 <= ord(char) <= 0xDFFF for char in decoded):
+        decoded = decoded.encode("utf-16-le", errors="surrogatepass").decode("utf-16-le", errors="replace")
+    return decoded
+
+
+def redact_log_credentials(text: str) -> str:
+    """Remove credential shapes, including escaped/percent-encoded log text.
+
+    Redact the whole formatted message before truncation. Ordinary encoded
+    diagnostics are returned verbatim; if decoded text reveals credentials,
+    return that sanitized spelling instead. No entropy heuristic is used.
+    """
+    candidate = text
+    for _ in range(4):
+        # Decode before matching: escaped quotes/newlines can otherwise hide an
+        # opener or a later timestamp from a multiline credential expression.
+        decoded = _unescape_log_text(candidate)
+        if decoded == candidate:
+            sanitized = redact_url_credentials(candidate) or ""
+            sanitized = _redact_entry_shapes(sanitized)
+            return sanitized if sanitized != candidate else text
+        candidate = decoded
+    # Unusually deep escaped text must not escape the bounded decoder.
+    return "[REDACTED: encoded log value]"
+
+
+class CredentialSafeFormatter(logging.Formatter):
+    """Sanitize final args/traceback/cached exception text for each handler.
+
+    The original LogRecord remains untouched: other handlers and uvicorn's
+    method filter still see its normal args. In particular, Formatter caches
+    exc_text on its record; do that only on our private copy.
+    """
+
+    @classmethod
+    def wrap(cls, formatter: logging.Formatter | None) -> CredentialSafeFormatter:
+        """Preserve uvicorn's AccessFormatter fields/colors without raw output."""
+        if isinstance(formatter, cls):
+            return formatter
+        wrapper = cls()
+        wrapper._delegate = formatter or logging.Formatter()
+        return wrapper
+
+    def format(self, record: logging.LogRecord) -> str:
+        private_record = copy.copy(record)
+        delegate = getattr(self, "_delegate", None)
+        result = delegate.format(private_record) if delegate is not None else super().format(private_record)
+        return redact_log_credentials(result)
 
 
 class CancelledPoolNoiseFilter(logging.Filter):

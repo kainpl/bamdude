@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Search, Plus, CheckCircle2 } from 'lucide-react';
 import { Button } from './Button';
 import { api } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import type { LDAPSearchResult, UserResponse } from '../api/client';
 
 /**
@@ -21,7 +22,12 @@ interface LdapUserPickerProps {
 const SEARCH_DEBOUNCE_MS = 300;
 const MIN_QUERY_LENGTH = 2;
 
-export function LdapUserPicker({ onSuccess }: LdapUserPickerProps) {
+export function LdapUserPicker(props: LdapUserPickerProps) {
+  const { isAdmin, hasPermission } = useAuth();
+  return isAdmin && hasPermission('users:create') ? <LdapUserPickerContent {...props} /> : null;
+}
+
+function LdapUserPickerContent({ onSuccess }: LdapUserPickerProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [rawQuery, setRawQuery] = useState('');

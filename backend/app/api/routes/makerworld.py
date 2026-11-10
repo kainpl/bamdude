@@ -52,6 +52,7 @@ from backend.app.schemas.makerworld import (
     MakerWorldResolveRequest,
     MakerWorldStatus,
 )
+from backend.app.services.library_ingest import read_access
 from backend.app.services.model_providers import makerworld_provider, registry
 from backend.app.services.model_providers.base import (
     ModelProvider,
@@ -308,6 +309,10 @@ async def resolve_url(
     # Every library row that belongs to this model — the provider's
     # ``source_url_filter`` owns what "belongs" means (the whole-model key
     # plus every ``#profileId-{n}`` plate key for MakerWorld).
+    from backend.app.api.routes.library import library_file_name_visible
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
+    access = await read_access(db, authority=await request_authority(request, current_user))
     existing_q = await db.execute(
         select(
             LibraryFile.id,
@@ -317,6 +322,7 @@ async def resolve_url(
         ).where(
             provider.source_url_filter(LibraryFile.source_url, str(model_id)),
             LibraryFile.deleted_at.is_(None),
+            library_file_name_visible(access.scope, access.user_id),
         )
     )
     already_imported_rows = list(existing_q.all())
@@ -373,6 +379,8 @@ async def import_instance(
     was imported before, that existing LibraryFile is returned and no new
     download happens.
     """
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
     # The provider first: an unknown ``source_type`` is a 400 before the
     # default folder gets auto-created as a side effect, and the permission
     # that applies on top of the route's is the resolved provider's.
@@ -449,9 +457,12 @@ async def import_instance(
         source_url = provider.canonical_url(info.ref)
 
         # Dedupe check upfront so we don't burn bandwidth re-downloading.
-        existing_q = await db.execute(LibraryFile.active().where(LibraryFile.source_url == source_url).limit(1))
+        existing_q = await db.execute(
+            LibraryFile.active().where(LibraryFile.source_url == source_url).order_by(LibraryFile.id).limit(1)
+        )
         existing_row = existing_q.scalar_one_or_none()
         if existing_row is not None:
+            (await read_access(db, authority=await request_authority(request, current_user))).ensure(existing_row)
             return MakerWorldImportResponse(
                 library_file_id=existing_row.id,
                 filename=existing_row.filename,
@@ -490,6 +501,7 @@ async def import_instance(
             created_by_id=cloud_token_user.id if cloud_token_user else None,
             source_type=provider.source_type,
             source_url=source_url,
+            authority=await request_authority(request, current_user),
         )
         # ⚠️ ``result.file`` may be a row this import did not create — either
         # the same source_url was imported before, or another row already
@@ -680,6 +692,7 @@ async def redownload_import(
 
 @router.get("/recent-imports", response_model=list[MakerWorldRecentImport])
 async def recent_imports(
+    request: Request,
     limit: int = 10,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(makerworld_provider.view_permission),
@@ -690,11 +703,15 @@ async def recent_imports(
     paginated :func:`list_imports` endpoint below instead. ``limit`` is
     clamped to ``[1, 50]`` to keep payloads sensible.
     """
-    _ = current_user  # permission gate only
+    from backend.app.api.routes.library import library_file_name_visible
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
+    access = await read_access(db, authority=await request_authority(request, current_user))
     capped = max(1, min(50, int(limit)))
     result = await db.execute(
         LibraryFile.active()
         .where(LibraryFile.source_type == _SOURCE_TYPE)
+        .where(library_file_name_visible(access.scope, access.user_id))
         .order_by(LibraryFile.created_at.desc())
         .limit(capped)
     )
@@ -712,12 +729,13 @@ async def recent_imports(
 
 @router.get("/imports", response_model=MakerWorldImportsPage)
 async def list_imports(
+    request: Request,
     page: int = Query(1, ge=1),
     per_page: int = Query(24, ge=1, le=200),
     search: str | None = Query(None, description="Match against filename / meta title / author"),
     sort_by: str = Query("date-desc", description="One of date-desc / date-asc / name-asc / name-desc"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(makerworld_provider.view_permission),
+    current_user: User | None = RequirePermission(makerworld_provider.view_permission),
 ):
     """Paginated, searchable, sortable MakerWorld import history.
 
@@ -732,6 +750,11 @@ async def list_imports(
         LibraryFile.source_type == _SOURCE_TYPE,
         LibraryFile.deleted_at.is_(None),
     ]
+    from backend.app.api.routes.library import library_file_name_visible
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
+    access = await read_access(db, authority=await request_authority(request, current_user))
+    base_filters.append(library_file_name_visible(access.scope, access.user_id))
 
     if search:
         like = f"%{search.strip()}%"

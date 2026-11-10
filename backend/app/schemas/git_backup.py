@@ -24,6 +24,17 @@ class ProviderType(StrEnum):
     FORGEJO = "forgejo"
 
 
+class GitTestConnectionRequest(BaseModel):
+    """Credentials belong in the request body, never in a URL or access log."""
+
+    model_config = {"extra": "forbid"}
+
+    repo_url: str = Field(min_length=1, max_length=2048)
+    token: str = Field(min_length=1, max_length=4096, repr=False)
+    provider: ProviderType = ProviderType.GITHUB
+    api_base_url: str | None = Field(default=None, max_length=2048)
+
+
 # URL patterns per provider
 _GITHUB_PATTERNS = [
     r"^https://github\.com/[\w.-]+/[\w.-]+(?:\.git)?$",

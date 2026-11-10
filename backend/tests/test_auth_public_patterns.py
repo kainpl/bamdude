@@ -242,7 +242,9 @@ def _gate_dependencies(route: APIRoute) -> list[str]:
     for dependency in route.dependant.dependencies:
         call = dependency.call
         name = getattr(call, "__qualname__", None) or getattr(call, "__name__", None) or type(call).__name__
-        if name.split(".")[0] != "get_db":
+        # Both own the same request DB; get_auth_db only maps storage outages
+        # and never authenticates a caller or grants access to the route.
+        if name.split(".")[0] not in {"get_db", "get_auth_db"}:
             names.append(name)
     return names
 

@@ -59,6 +59,7 @@ from backend.app.models.finished_stock import StockItem
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
+from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate
 from backend.app.models.project import Project, ProjectEvent
 from backend.app.models.project_line import ProjectLine, ProjectProcurement
@@ -2624,6 +2625,7 @@ async def update_procurement(
 @router.get("/{project_id}/archives")
 async def list_project_archives(
     project_id: int,
+    request: Request,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -2665,6 +2667,9 @@ async def list_project_archives(
         .limit(limit)
         .offset(offset)
     )
+    printer_scope = key_printer_scope(request)
+    if printer_scope is not None:
+        query = query.where(PrintArchive.printer_id.in_(printer_scope))
     result = await db.execute(query)
     archives = result.scalars().all()
 
@@ -2672,15 +2677,20 @@ async def list_project_archives(
     from backend.app.api.routes.archives import archive_to_response
 
     reads_all, reads_own = await _owner_reads(creds, _archives_read_all, _archives_read_own)
+    from backend.app.core.auth import acting_user
+
+    actor = await acting_user(request, db, user)
 
     def visible(archive: PrintArchive) -> bool:
-        return reads_all or (reads_own and user is not None and archive.created_by_id == user.id)
+        return reads_all or (reads_own and actor is not None and archive.created_by_id == actor.id)
 
     out = []
     for archive in archives:
-        row = archive_to_response(archive)
-        if not visible(archive):
-            row = {key: row.get(key) for key in _ARCHIVE_SUMMARY} | {"restricted": True}
+        row = (
+            archive_to_response(archive)
+            if visible(archive)
+            else {key: getattr(archive, key, None) for key in _ARCHIVE_SUMMARY} | {"restricted": True}
+        )
         out.append(row)
     return out
 
@@ -2699,9 +2709,6 @@ _ARCHIVE_SUMMARY = (
     "printer_id",
     "project_id",
     "project_line_id",
-    "library_file_id",
-    "filename",
-    "print_name",
     "plate_index",
     "status",
     "quantity",
@@ -3393,7 +3400,7 @@ def _archive_event_timestamp(archive: PrintArchive) -> datetime:
     return archive.completed_at or archive.started_at or archive.created_at
 
 
-def _queue_display_name(item, name_visible) -> str:
+def _queue_display_name(item, name_visible, archive_visible=lambda _archive: True) -> str:
     """Best-effort name for a queue row, which has no name of its own.
 
     Works for both queue tables: each references an archive and/or a library
@@ -3403,8 +3410,8 @@ def _queue_display_name(item, name_visible) -> str:
     """
     library_name = item.library_file.filename if item.library_file and name_visible(item.library_file) else None
     return (
-        (item.archive.print_name if item.archive else None)
-        or (item.archive.filename if item.archive else None)
+        (item.archive.print_name if item.archive and archive_visible(item.archive) else None)
+        or (item.archive.filename if item.archive and archive_visible(item.archive) else None)
         or library_name
         or "(unnamed queue item)"
     )
@@ -3417,6 +3424,7 @@ async def get_project_timeline(
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
     user: User | None = RequirePermission(Permission.ORDERS_READ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
     """Everything that happened to a project, newest first.
 
@@ -3438,6 +3446,16 @@ async def get_project_timeline(
         raise HTTPException(status_code=404, detail="Project not found")
 
     events: list[TimelineEvent] = []
+    from backend.app.core.auth import acting_user
+
+    actor = await acting_user(request, db, user)
+    reads_all, reads_own = await _owner_reads(creds, _archives_read_all, _archives_read_own)
+    printer_scope = key_printer_scope(request)
+
+    def archive_visible(archive):
+        return (printer_scope is None or archive.printer_id in printer_scope) and (
+            reads_all or (reads_own and actor is not None and archive.created_by_id == actor.id)
+        )
 
     # Prints, in every state that says something happened.
     archive_order = func.coalesce(PrintArchive.completed_at, PrintArchive.started_at, PrintArchive.created_at)
@@ -3447,6 +3465,7 @@ async def get_project_timeline(
                 select(PrintArchive)
                 .where(PrintArchive.project_id == project_id)
                 .where(PrintArchive.deleted_at.is_(None))
+                .where(True if printer_scope is None else PrintArchive.printer_id.in_(printer_scope))
                 .where(PrintArchive.status.in_(list(_ARCHIVE_EVENT_BY_STATUS)))
                 .order_by(archive_order.desc())
                 .limit(limit)
@@ -3464,14 +3483,16 @@ async def get_project_timeline(
             metadata["print_time_hours"] = round(archive.print_time_seconds / 3600, 2)
         if archive.filament_used_grams:
             metadata["filament_grams"] = round(archive.filament_used_grams, 1)
-        if archive.failure_reason:
+        if archive.failure_reason and archive_visible(archive):
             metadata["failure_reason"] = archive.failure_reason
+        if not archive_visible(archive):
+            metadata["restricted"] = True
         events.append(
             TimelineEvent(
                 event_type=_ARCHIVE_EVENT_BY_STATUS[archive.status],
                 timestamp=_archive_event_timestamp(archive),
                 title=_EVENT_TITLES[_ARCHIVE_EVENT_BY_STATUS[archive.status]],
-                description=archive.print_name or archive.filename,
+                description=(archive.print_name or archive.filename) if archive_visible(archive) else None,
                 metadata=metadata,
             )
         )
@@ -3485,8 +3506,10 @@ async def get_project_timeline(
         (
             await db.execute(
                 select(PrintQueueItem)
+                .join(PrinterQueue, PrinterQueue.id == PrintQueueItem.queue_id)
                 .options(selectinload(PrintQueueItem.archive), selectinload(PrintQueueItem.library_file))
                 .where(PrintQueueItem.project_id == project_id, *queued_printer_row_conditions())
+                .where(True if printer_scope is None else PrinterQueue.printer_id.in_(printer_scope))
                 .order_by(PrintQueueItem.created_at.desc())
                 .limit(limit)
             )
@@ -3508,7 +3531,7 @@ async def get_project_timeline(
                 event_type="queued",
                 timestamp=item.created_at,
                 title=_EVENT_TITLES["queued"],
-                description=_queue_display_name(item, name_visible),
+                description=_queue_display_name(item, name_visible, archive_visible),
                 metadata={"queue_item_id": item.id},
             )
         )
@@ -3523,6 +3546,7 @@ async def get_project_timeline(
                 select(AutoQueueItem)
                 .options(selectinload(AutoQueueItem.archive), selectinload(AutoQueueItem.library_file))
                 .where(AutoQueueItem.project_id == project_id, *awaiting_auto_row_conditions())
+                .where(printer_scope is None)
                 .order_by(AutoQueueItem.created_at.desc())
                 .limit(limit)
             )
@@ -3539,7 +3563,7 @@ async def get_project_timeline(
                 event_type="auto_queued",
                 timestamp=item.created_at,
                 title=_EVENT_TITLES["auto_queued"],
-                description=_queue_display_name(item, name_visible),
+                description=_queue_display_name(item, name_visible, archive_visible),
                 metadata={"auto_queue_item_id": item.id, "target_model": item.target_model},
             )
         )

@@ -63,6 +63,7 @@ import { useState, useEffect, useId, useRef, useCallback, useMemo } from 'react'
 import { Palette, Search, Settings } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
 import { mcpKeyPreset } from '../lib/mcpKeyPreset';
+import { ADMIN_SETTING_FIELDS } from '../lib/adminSettings';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
 import { ArchivedPrintersPanel } from '../components/settings/ArchivedPrintersPanel';
@@ -737,6 +738,7 @@ export function SettingsPage() {
   const { data: gitBackupStatus } = useQuery<GitBackupStatus>({
     queryKey: ['git-backup-status'],
     queryFn: api.getGitBackupStatus,
+    enabled: isAdmin && hasPermission('git:backup'),
   });
 
   // Cloud auth status for Backup tab indicator
@@ -1117,7 +1119,7 @@ export function SettingsPage() {
       // Auto-detect external_url from browser if not set
       const settingsWithExternalUrl = {
         ...settings,
-        external_url: settings.external_url || window.location.origin,
+        external_url: settings.external_url || (isAdmin ? window.location.origin : settings.external_url),
       };
       // The baseline is the RAW server row, not this adjusted copy: a detected
       // external_url has to read as a local change so it still gets persisted.
@@ -1128,7 +1130,7 @@ export function SettingsPage() {
         isInitialLoadRef.current = false;
       }, 100);
     }
-  }, [settings, localSettings]);
+  }, [settings, localSettings, isAdmin]);
 
   // #2716: reconcile a moved server snapshot into the local copy. A field the
   // user has not touched since the last reconcile takes the server's value; a
@@ -1374,6 +1376,11 @@ export function SettingsPage() {
     if (!hasChanges) {
       return;
     }
+    // A demotion or server refresh can leave a restricted local draft behind;
+    // it must not keep autosaving empty preference patches on every response.
+    if (!isAdmin && !Object.entries(localSettings).some(([key, value]) =>
+      !ADMIN_SETTING_FIELDS.has(key) && value !== baseline[key as keyof AppSettings])) return;
+
 
     // Don't queue more saves while one is in progress
     if (isSavingRef.current) {
@@ -1497,6 +1504,13 @@ export function SettingsPage() {
         session_max_hours: localSettings.session_max_hours,
         user_notifications_enabled: localSettings.user_notifications_enabled,
       };
+      // A preference edit must not submit stale/restricted configuration from
+      // the full form, even if the user's role changed while it was open.
+      if (!isAdmin) {
+        for (const key of Object.keys(settingsToSave)) {
+          if (ADMIN_SETTING_FIELDS.has(key)) delete (settingsToSave as Record<string, unknown>)[key];
+        }
+      }
       updateMutation.mutate(settingsToSave);
     }, 500);
 
@@ -1506,19 +1520,19 @@ export function SettingsPage() {
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [localSettings, settings, updateMutation, hasPermission, showToast, t]);
+  }, [localSettings, settings, updateMutation, hasPermission, isAdmin, showToast, t]);
 
   const updateSetting = useCallback(<K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     // Gate at the point of user interaction (not in the debounced-save
     // effect — that runs on every render and would fire the toast
     // repeatedly). One toast per attempt; no local-state divergence for a
     // read-only delegated user.
-    if (!hasPermission('settings:update')) {
+    if (!hasPermission('settings:update') || (!isAdmin && ADMIN_SETTING_FIELDS.has(key))) {
       showToast(t('settings.toast.noPermissionUpdate'), 'error');
       return;
     }
     setLocalSettings(prev => prev ? { ...prev, [key]: value } : null);
-  }, [hasPermission, showToast, t]);
+  }, [hasPermission, isAdmin, showToast, t]);
 
   // With a split on, the concurrent cap is per group, not farm-wide — so the
   // field has to say so, or the same number reads as a very different promise.
@@ -1789,6 +1803,7 @@ export function SettingsPage() {
               <span className="w-2 h-2 rounded-full bg-green-400" />
             )}
           </button>
+          {isAdmin && (
           <button
             onClick={() => handleTabChange('backup')}
             className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
@@ -1801,6 +1816,7 @@ export function SettingsPage() {
             {t('settings.tabs.backup')}
             <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && gitBackupStatus?.configured && gitBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
           </button>
+          )}
         </div>
     </>
   );
@@ -3129,7 +3145,7 @@ export function SettingsPage() {
                         </label>
                         <SlicerHealthIndicator slicer="orcaslicer" variant="inline" />
                       </div>
-                      <input
+                      <input disabled={!isAdmin || !hasPermission('settings:update')}
                         type="text"
                         value={localSettings.orcaslicer_api_url ?? ''}
                         onChange={(e) => updateSetting('orcaslicer_api_url', e.target.value)}
@@ -3150,7 +3166,7 @@ export function SettingsPage() {
                         </label>
                         <SlicerHealthIndicator slicer="bambu_studio" variant="inline" />
                       </div>
-                      <input
+                      <input disabled={!isAdmin || !hasPermission('settings:update')}
                         type="text"
                         value={localSettings.bambu_studio_api_url ?? ''}
                         onChange={(e) => updateSetting('bambu_studio_api_url', e.target.value)}
@@ -4218,7 +4234,7 @@ export function SettingsPage() {
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('settings.bamdudeUrl')}
                 </label>
-                <input
+                <input disabled={!isAdmin || !hasPermission('settings:update')}
                   type="text"
                   value={localSettings.external_url ?? ''}
                   onChange={(e) => updateSetting('external_url', e.target.value)}
@@ -4360,7 +4376,7 @@ export function SettingsPage() {
                     type="checkbox"
                     checked={localSettings.ha_enabled ?? false}
                     onChange={(e) => updateSetting('ha_enabled', e.target.checked)}
-                    disabled={localSettings.ha_env_managed}
+                    disabled={!isAdmin || !hasPermission('settings:update') || (localSettings.ha_env_managed)}
                     className="sr-only peer"
                   />
                   <div className={`w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green ${
@@ -4386,7 +4402,7 @@ export function SettingsPage() {
                         value={localSettings.ha_url ?? ''}
                         onChange={(e) => updateSetting('ha_url', e.target.value)}
                         placeholder="http://192.168.1.100:8123"
-                        disabled={localSettings.ha_url_from_env}
+                        disabled={!isAdmin || !hasPermission('settings:update') || (localSettings.ha_url_from_env)}
                         className={`w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none ${
                           localSettings.ha_url_from_env ? 'opacity-60 cursor-not-allowed' : ''
                         }`}
@@ -4417,7 +4433,7 @@ export function SettingsPage() {
                         value={localSettings.ha_token ?? ''}
                         onChange={(e) => updateSetting('ha_token', e.target.value)}
                         placeholder="eyJ0eXAiOiJKV1QiLC..."
-                        disabled={localSettings.ha_token_from_env}
+                        disabled={!isAdmin || !hasPermission('settings:update') || (localSettings.ha_token_from_env)}
                         className={`w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none ${
                           localSettings.ha_token_from_env ? 'opacity-60 cursor-not-allowed' : ''
                         }`}
@@ -4497,7 +4513,7 @@ export function SettingsPage() {
                   </p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">
-                  <input
+                  <input disabled={!isAdmin || !hasPermission('settings:update')}
                     type="checkbox"
                     checked={localSettings.mqtt_enabled ?? false}
                     onChange={(e) => updateSetting('mqtt_enabled', e.target.checked)}
@@ -4513,7 +4529,7 @@ export function SettingsPage() {
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.brokerHostname')}
                     </label>
-                    <input
+                    <input disabled={!isAdmin || !hasPermission('settings:update')}
                       type="text"
                       value={localSettings.mqtt_broker ?? ''}
                       onChange={(e) => updateSetting('mqtt_broker', e.target.value)}
@@ -4527,7 +4543,7 @@ export function SettingsPage() {
                       <label className="block text-sm text-bambu-gray mb-1">
                         {t('settings.port')}
                       </label>
-                      <input
+                      <input disabled={!isAdmin || !hasPermission('settings:update')}
                         type="number"
                         min="1"
                         max="65535"
@@ -4538,7 +4554,7 @@ export function SettingsPage() {
                     </div>
                     <div className="flex items-center gap-3 pb-2">
                       <label className="relative inline-flex items-center cursor-pointer">
-                        <input
+                        <input disabled={!isAdmin || !hasPermission('settings:update')}
                           type="checkbox"
                           checked={localSettings.mqtt_use_tls ?? false}
                           onChange={(e) => {
@@ -4564,7 +4580,7 @@ export function SettingsPage() {
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.usernameOptional')}
                     </label>
-                    <input
+                    <input disabled={!isAdmin || !hasPermission('settings:update')}
                       type="text"
                       value={localSettings.mqtt_username ?? ''}
                       onChange={(e) => updateSetting('mqtt_username', e.target.value)}
@@ -4577,7 +4593,7 @@ export function SettingsPage() {
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.passwordOptional')}
                     </label>
-                    <input
+                    <input disabled={!isAdmin || !hasPermission('settings:update')}
                       type="password"
                       value={localSettings.mqtt_password ?? ''}
                       onChange={(e) => updateSetting('mqtt_password', e.target.value)}
@@ -4590,7 +4606,7 @@ export function SettingsPage() {
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.topicPrefix')}
                     </label>
-                    <input
+                    <input disabled={!isAdmin || !hasPermission('settings:update')}
                       type="text"
                       value={localSettings.mqtt_topic_prefix ?? 'bamdude'}
                       onChange={(e) => updateSetting('mqtt_topic_prefix', e.target.value)}
@@ -4643,7 +4659,7 @@ export function SettingsPage() {
                   <p className="text-xs text-bambu-gray">{t('settings.prometheusDescription')}</p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">
-                  <input
+                  <input disabled={!isAdmin || !hasPermission('settings:update')}
                     type="checkbox"
                     checked={localSettings.prometheus_enabled ?? false}
                     onChange={(e) => updateSetting('prometheus_enabled', e.target.checked)}
@@ -4659,7 +4675,7 @@ export function SettingsPage() {
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.bearerTokenOptional')}
                     </label>
-                    <input
+                    <input disabled={!isAdmin || !hasPermission('settings:update')}
                       type="password"
                       value={localSettings.prometheus_token ?? ''}
                       onChange={(e) => updateSetting('prometheus_token', e.target.value)}
@@ -6548,6 +6564,7 @@ export function SettingsPage() {
               <Users className="w-4 h-4" />
               {t('settings.tabs.users')}
             </button>
+            {isAdmin && hasPermission('settings:read') && (
             <button
               onClick={() => setUsersSubTab('email')}
               className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
@@ -6562,6 +6579,8 @@ export function SettingsPage() {
                 <span className="w-2 h-2 rounded-full bg-green-400" />
               )}
             </button>
+            )}
+            {isAdmin && hasPermission('settings:read') && (
             <button
               onClick={() => setUsersSubTab('ldap')}
               className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
@@ -6572,10 +6591,11 @@ export function SettingsPage() {
             >
               <Shield className="w-4 h-4" />
               {t('settings.tabs.ldap') || 'LDAP'}
-              {ldapStatus?.ldap_enabled && (
+              {isAdmin && hasPermission('users:create') && ldapStatus?.ldap_enabled && (
                 <span className="w-2 h-2 rounded-full bg-green-400" />
               )}
             </button>
+            )}
             <button
               onClick={() => setUsersSubTab('twofa')}
               className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
@@ -6673,7 +6693,7 @@ export function SettingsPage() {
                       {t('settings.sessionPolicy.description')}
                     </p>
                     {(() => {
-                      const sessionDisabled = authEnabled && !hasPermission('settings:update');
+                      const sessionDisabled = !isAdmin || !hasPermission('settings:update');
                       const currentHours = localSettings?.session_max_hours ?? 720;
                       const presets: { hours: number; labelKey: string }[] = [
                         { hours: 24, labelKey: 'settings.sessionPolicy.preset24h' },
@@ -6710,7 +6730,7 @@ export function SettingsPage() {
                                 min={1}
                                 max={720}
                                 step={1}
-                                disabled={sessionDisabled}
+                                disabled={!isAdmin || !hasPermission('settings:update') || (sessionDisabled)}
                                 value={currentHours}
                                 onChange={(e) => {
                                   const raw = parseInt(e.target.value, 10);
@@ -6958,13 +6978,13 @@ export function SettingsPage() {
           )}
 
           {/* Email Auth Sub-tab */}
-          {usersSubTab === 'email' && (
+          {usersSubTab === 'email' && isAdmin && hasPermission('settings:read') && (
             <div className="max-w-2xl">
               <EmailSettings />
             </div>
           )}
 
-          {usersSubTab === 'ldap' && (
+          {usersSubTab === 'ldap' && isAdmin && hasPermission('settings:read') && (
             <div className="max-w-2xl">
               <LDAPSettings />
             </div>
@@ -6981,7 +7001,7 @@ export function SettingsPage() {
               <Card>
                 <CardContent className="space-y-3 p-4">
                   <label className="flex items-start gap-3 cursor-pointer">
-                    <input
+                    <input disabled={!isAdmin || !hasPermission('settings:update')}
                       type="checkbox"
                       checked={localSettings.local_login_enabled === false}
                       onChange={(e) => updateSetting('local_login_enabled', !e.target.checked)}
@@ -7024,7 +7044,7 @@ export function SettingsPage() {
                 of the local-create form is hidden and replaced by the
                 directory picker; the picker calls our onSuccess handler
                 to close the modal + invalidate the users query. */}
-            {ldapStatus?.ldap_enabled && (
+            {isAdmin && hasPermission('users:create') && ldapStatus?.ldap_enabled && (
               <div className="flex gap-2 mb-4 border-b border-bambu-dark-tertiary">
                 <button
                   type="button"
@@ -7051,7 +7071,7 @@ export function SettingsPage() {
               </div>
             )}
 
-            {createUserAuthSource === 'ldap' ? (
+            {isAdmin && hasPermission('users:create') && createUserAuthSource === 'ldap' ? (
               <LdapUserPicker
                 onSuccess={() => {
                   setShowCreateUserModal(false);
@@ -7467,7 +7487,7 @@ export function SettingsPage() {
       )}
 
       {/* ══════ BACKUP TAB ══════ */}
-      {activeTab === 'backup' && (
+      {activeTab === 'backup' && isAdmin && (
         <GitBackupSettings />
       )}
       {/* ══════ /BACKUP TAB ══════ */}

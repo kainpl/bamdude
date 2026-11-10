@@ -17,7 +17,8 @@ export function FailureDetectionSettings() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasPermission } = useAuth();
+  const { isAdmin, hasPermission } = useAuth();
+  const canConfigure = isAdmin && hasPermission('settings:update');
 
   const [enabled, setEnabled] = useState(false);
   const [saveDetections, setSaveDetections] = useState(false);
@@ -69,10 +70,8 @@ export function FailureDetectionSettings() {
   const saveMutation = useMutation({
     mutationFn: () =>
       api.updateSettings({
-        obico_enabled: enabled,
+        ...(isAdmin ? { obico_enabled: enabled, obico_ml_url: mlUrl, obico_ml_token: mlToken } : {}),
         obico_save_detections: saveDetections,
-        obico_ml_url: mlUrl,
-        obico_ml_token: mlToken,
         obico_sensitivity: sensitivity,
         obico_action: action,
         obico_poll_interval: pollInterval,
@@ -99,7 +98,7 @@ export function FailureDetectionSettings() {
 
   // Auto-save on change (debounced)
   useEffect(() => {
-    if (!hasUnsavedChanges) return;
+    if (!hasUnsavedChanges || !hasPermission('settings:update')) return;
     const id = setTimeout(() => saveMutation.mutate(), 500);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -154,7 +153,7 @@ export function FailureDetectionSettings() {
                 <ScanEye className="w-5 h-5 text-bambu-green" />
                 <h2 className="text-lg font-semibold text-white">{t('failureDetection.title')}</h2>
               </div>
-              <Toggle checked={enabled} onChange={setEnabled} />
+              <Toggle checked={enabled} onChange={setEnabled} disabled={!canConfigure} />
             </div>
             <p className="text-sm text-bambu-gray mt-2">{t('failureDetection.description')}</p>
           </CardHeader>
@@ -175,11 +174,11 @@ export function FailureDetectionSettings() {
                   onChange={(e) => setMlUrl(e.target.value)}
                   placeholder="http://192.168.1.10:3333"
                   className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
-                  disabled={!enabled}
+                  disabled={!enabled || !canConfigure}
                 />
                 <Button
                   onClick={handleTest}
-                  disabled={!mlUrl || saveMutation.isPending}
+                  disabled={!canConfigure || !mlUrl || saveMutation.isPending}
                   variant="secondary"
                 >
                   {t('failureDetection.test')}
@@ -198,7 +197,7 @@ export function FailureDetectionSettings() {
                 onChange={(e) => setMlToken(e.target.value)}
                 autoComplete="off"
                 className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
-                disabled={!enabled}
+                disabled={!enabled || !canConfigure}
               />
               <p className="text-xs text-bambu-gray mt-1">{t('failureDetection.mlTokenHint')}</p>
               {testResult && (

@@ -228,10 +228,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (mountedRef.current) {
           setUser(currentUser);
         }
-      } catch {
-        setAuthToken(null);
-        if (mountedRef.current) {
-          setUser(null);
+      } catch (error) {
+        // Updating a profile while auth storage is unavailable must not erase
+        // its session. Only the server's explicit401 invalidates credentials.
+        if (error instanceof ApiError && error.status === 401) {
+          setAuthToken(null);
+          if (mountedRef.current) setUser(null);
         }
       }
     }

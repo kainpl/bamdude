@@ -190,7 +190,7 @@ export function LabelTemplatePickerModal({
 
   // Devices are only asked for while the modal is open, and only listed when
   // adopted — an unadopted one would be an option that silently refuses.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings, enabled: isOpen });
+  const { data: settings } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences, enabled: isOpen });
   const deviceLabels = Boolean(settings?.device_labels_enabled);
   const { data: allDevices } = useQuery({
     queryKey: ['label-devices'],

@@ -34,10 +34,10 @@ export function McpSettingsCard() {
 
 function McpSettingsContent() {
   const { t, i18n } = useTranslation();
-  const { hasPermission } = useAuth();
+  const { isAdmin, hasPermission } = useAuth();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
-  const canEdit = hasPermission('settings:update');
+  const canEdit = isAdmin && hasPermission('settings:update');
   const canCreate = hasPermission('api_keys:create');
   const canObserve = hasPermission('api_keys:update');
   const [dirty, setDirty] = useState(false);

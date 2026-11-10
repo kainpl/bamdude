@@ -24,6 +24,11 @@ const PORT_SECURITY_MAP: Record<number, string> = {
 };
 
 export function EmailSettings() {
+  const { isAdmin, hasPermission } = useAuth();
+  return isAdmin && hasPermission('settings:read') ? <EmailSettingsContent /> : null;
+}
+
+function EmailSettingsContent() {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const queryClient = useQueryClient();

@@ -540,6 +540,17 @@ class OIDCProviderUpdate(BaseModel):
         return self
 
 
+class OIDCProviderPublicResponse(BaseModel):
+    """Only the display metadata needed to choose a login provider."""
+
+    id: int
+    name: str
+    has_icon: bool = False
+    is_autologin: bool = False
+
+    model_config = {"from_attributes": True}
+
+
 class OIDCProviderResponse(BaseModel):
     id: int
     name: str

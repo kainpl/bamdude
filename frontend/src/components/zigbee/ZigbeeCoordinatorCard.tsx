@@ -25,6 +25,7 @@ import { Card, CardContent, CardHeader } from '../Card';
 import { Button } from '../Button';
 import { ConfirmModal } from '../ConfirmModal';
 import { useToast } from '../../contexts/ToastContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { usePairingProgress } from './usePairingProgress';
 import { Select } from '../Select';
 
@@ -49,6 +50,8 @@ interface Props {
 }
 
 export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
+  const { isAdmin, hasPermission } = useAuth();
+  const canConfigure = isAdmin && hasPermission('settings:update');
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -80,7 +83,7 @@ export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
   const { data: portList, refetch: refetchPorts } = useQuery({
     queryKey: ['zigbee-ports'],
     queryFn: api.getZigbeePorts,
-    enabled: transport === 'usb',
+    enabled: canConfigure && transport === 'usb',
   });
 
   const connect = useMutation({
@@ -211,7 +214,7 @@ export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
           <input
             type="checkbox"
             checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
+            disabled={!canConfigure} onChange={(e) => setEnabled(e.target.checked)}
             className="w-4 h-4 accent-bambu-green"
           />
           <span className="text-sm text-white">{t('settings.zigbee.enabled')}</span>
@@ -224,7 +227,7 @@ export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
               <button
                 key={option}
                 type="button"
-                onClick={() => setTransport(option)}
+                disabled={!canConfigure} onClick={() => setTransport(option)}
                 className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg font-medium transition-colors ${
                   transport === option
                     ? 'bg-bambu-green text-white'
@@ -245,7 +248,7 @@ export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
               <Select
                 className="flex-1"
                 value={path}
-                onChange={(e) => setPath(e.target.value)}
+                disabled={!canConfigure} onChange={(e) => setPath(e.target.value)}
               >
                 <option value="">{t('settings.zigbee.pickPort')}</option>
                 {ports.map((port) => (
@@ -262,7 +265,7 @@ export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
             <input
               type="text"
               value={path}
-              onChange={(e) => setPath(e.target.value)}
+              disabled={!canConfigure} onChange={(e) => setPath(e.target.value)}
               placeholder="192.168.1.50:6638"
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             />
@@ -278,7 +281,7 @@ export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
         </div>
 
         <div className="flex gap-2">
-          <Button onClick={() => connect.mutate()} disabled={connect.isPending}>
+          <Button onClick={() => connect.mutate()} disabled={!canConfigure || connect.isPending}>
             {connect.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
             {state === 'up' ? t('settings.zigbee.reconnect') : t('settings.zigbee.connect')}
           </Button>
@@ -292,7 +295,7 @@ export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
           {/* Only offered while there is something to disconnect. A button that
               stops an already-stopped radio is noise. */}
           {state === 'up' || state === 'starting' ? (
-            <Button variant="secondary" onClick={() => disconnect.mutate()} disabled={disconnect.isPending}>
+            <Button variant="secondary" onClick={() => disconnect.mutate()} disabled={!canConfigure || disconnect.isPending}>
               {disconnect.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <PowerOff className="w-4 h-4" />}
               {t('settings.zigbee.disconnect')}
             </Button>
@@ -427,7 +430,7 @@ export function ZigbeeCoordinatorCard({ onAdoptSensor }: Props = {}) {
               <p className="text-sm font-medium text-white">{t('settings.zigbee.forgetTitle')}</p>
               <p className="text-sm text-bambu-gray">{t('settings.zigbee.forgetHint')}</p>
             </div>
-            <Button variant="danger" onClick={() => setForgetting(true)} disabled={forget.isPending}>
+            <Button variant="danger" onClick={() => setForgetting(true)} disabled={!canConfigure || forget.isPending}>
               {forget.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
               {t('settings.zigbee.forgetAction')}
             </Button>

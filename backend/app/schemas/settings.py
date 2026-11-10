@@ -734,6 +734,8 @@ class AppSettings(BaseModel):
 class AppSettingsUpdate(BaseModel):
     """Schema for updating settings (all fields optional)."""
 
+    model_config = {"extra": "forbid"}
+
     mcp_enabled: bool | None = None
     mcp_allow_http: bool | None = None
     # Request-only acknowledgements; never persisted or returned with settings.

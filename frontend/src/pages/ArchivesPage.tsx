@@ -227,7 +227,7 @@ function ArchiveCard({
   const navigate = useNavigate();
   const { showToast } = useToast();
   const { hasPermission, canModify } = useAuth();
-  const { data: cardSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const { data: cardSettings } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences });
   const useSlicerApi: boolean = !!(cardSettings as Record<string, unknown> | undefined)?.use_slicer_api;
   const [showViewer, setShowViewer] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
@@ -1705,7 +1705,7 @@ function ArchiveListRow({
   const navigate = useNavigate();
   const { showToast } = useToast();
   const { hasPermission, canModify } = useAuth();
-  const { data: rowSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const { data: rowSettings } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences });
   const timeFormat: TimeFormat = (rowSettings as Record<string, string> | undefined)?.time_format as TimeFormat || 'system';
   const dateFormat: DateFormat = (rowSettings as Record<string, string> | undefined)?.date_format as DateFormat || 'system';
   const rowCurrency = getCurrencySymbol((rowSettings as Record<string, string> | undefined)?.currency || 'USD');
@@ -3118,8 +3118,8 @@ export function ArchivesPage() {
   });
 
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
   });
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';

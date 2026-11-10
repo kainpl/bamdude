@@ -40,6 +40,22 @@ describe('monitor polling lifecycle', () => {
     await act(() => vi.advanceTimersByTimeAsync(60000));
     expect(read).toHaveBeenCalledTimes(2);
   });
+  it('keeps its kiosk data on503, backs off and recovers without replacing the credential', async () => {
+    const read = vi.fn().mockResolvedValue('private snapshot');
+    const { result, unmount } = renderHook(() => useMonitorResource(read, 5000, true, false));
+    await act(async () => {});
+    read.mockRejectedValue(new ApiError('unavailable', 503));
+    await act(() => vi.advanceTimersByTimeAsync(5000));
+    expect(result.current.data).toBe('private snapshot');
+    expect(result.current.terminal).toBe(false);
+    await act(() => vi.advanceTimersByTimeAsync(9999));
+    expect(read).toHaveBeenCalledTimes(2);
+    read.mockResolvedValue('recovered snapshot');
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(result.current.data).toBe('recovered snapshot');
+    expect(result.current.error).toBeNull();
+    unmount();
+  });
   it.each([401, 403])('erases protected data and stops after HTTP %s', async status => {
     const read = vi.fn().mockResolvedValue('private data');
     const { result, unmount } = renderHook(() => useMonitorResource(read, 5000, true, false));

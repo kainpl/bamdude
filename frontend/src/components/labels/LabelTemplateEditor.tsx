@@ -324,7 +324,7 @@ export function LabelTemplateEditor() {
 
   // Only adopted devices, and only when the subsystem is on — offering a test
   // print with nowhere to send it is a button that can only disappoint.
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const { data: settings } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences });
   const { data: allDevices } = useQuery({
     queryKey: ['label-devices'],
     queryFn: api.getLabelDevices,

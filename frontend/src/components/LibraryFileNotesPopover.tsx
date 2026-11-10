@@ -49,8 +49,8 @@ export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCo
   // Pull system date/time format so note timestamps follow the user's
   // preference instead of falling through to the browser locale.
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
     staleTime: 60_000,
   });
   const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;

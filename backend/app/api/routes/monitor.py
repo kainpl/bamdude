@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.core.api_key_scope import key_printer_scope
-from backend.app.core.auth import require_ownership_permission, require_permission, security
+from backend.app.core.auth import _auth_database_errors, require_ownership_permission, require_permission, security
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
@@ -62,10 +62,15 @@ async def kiosk_access(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> MonitorAccess:
-    record = await verify_token(db, credentials.credentials, scope="monitor") if credentials else None
+    async with _auth_database_errors():
+        record = await verify_token(db, credentials.credentials, scope="monitor") if credentials else None
+        owner = (
+            await db.scalar(select(User).where(User.id == record.user_id).options(selectinload(User.groups)))
+            if record
+            else None
+        )
     if record is None:
         raise HTTPException(401, detail="monitor_token_invalid")
-    owner = await db.scalar(select(User).where(User.id == record.user_id).options(selectinload(User.groups)))
     if (
         owner is None
         or not owner.is_active

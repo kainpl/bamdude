@@ -17,6 +17,7 @@ vi.mock('../../api/client', () => ({
     getSystemInfo: vi.fn(),
     getDatabaseHealth: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({}),
+    getUiPreferences: vi.fn().mockResolvedValue({}),
     updateSettings: vi.fn().mockResolvedValue({}),
     // Defaults to disabled so the existing tests see the page they always saw:
     // the Zigbee section is absent unless an install actually uses Zigbee.

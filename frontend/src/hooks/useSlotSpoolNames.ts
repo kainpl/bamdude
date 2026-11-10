@@ -11,7 +11,7 @@ import { slotSpoolNames } from '../utils/slotSpoolNames';
  * slots NOW, and a spool assigned a moment ago must not keep its old name.
  */
 export function useSlotSpoolNames(printerId: number | null | undefined): Map<number, string> {
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const { data: settings } = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences });
   const { data: spoolmanStatus } = useQuery({
     queryKey: ['spoolman-status'],
     queryFn: api.getSpoolmanStatus,

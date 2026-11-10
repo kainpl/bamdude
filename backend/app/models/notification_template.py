@@ -233,13 +233,13 @@ DEFAULT_TEMPLATES = [
         "event_type": "user_created",
         "name": "Welcome Email",
         "title_template": "Welcome to {app_name}",
-        "body_template": "Welcome {username}!\n\nYour account has been created.\nUsername: {username}\nPassword: {password}\n\nLogin at: {login_url}",
+        "body_template": "Welcome {username}!\n\nYour account has been created. Your sign-in details are added securely below.",
     },
     {
         "event_type": "password_reset",
         "name": "Password Reset",
         "title_template": "{app_name} - Password Reset",
-        "body_template": "Hello {username},\n\nYour password has been reset.\nNew Password: {password}\n\nLogin at: {login_url}",
+        "body_template": "Hello {username},\n\nYour password has been reset. Your new sign-in details are added securely below.",
     },
     # Self-service recovery. Carries a one-time LINK, never a password: the
     # account is not touched until somebody proves they read the message.
@@ -252,8 +252,7 @@ DEFAULT_TEMPLATES = [
         "body_template": (
             "Hello {username},\n\n"
             "Somebody asked to reset the password for your {app_name} account. "
-            "Open the link below to choose a new one:\n\n"
-            "{reset_url}\n\n"
+            "Use the protected reset link at the end of this email to choose a new password.\n\n"
             "The link works once and stops working after {ttl_hours} hour(s).\n\n"
             "If this was not you, ignore this message - your password has not been changed."
         ),

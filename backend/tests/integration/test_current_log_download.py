@@ -38,10 +38,14 @@ async def test_list_current_and_archives_separately(async_client, log_dir):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("lines", [0, 600_000], ids=["empty", "larger-than-bundle-limit"])
+@pytest.mark.parametrize("lines", [0, 220_000], ids=["empty", "larger-than-bundle-limit"])
 async def test_download_full_snapshot_without_debug(async_client, log_dir, monkeypatch, lines):
     """No support-bundle tail cap, and copying never runs on the event loop."""
-    content = ("Поточний лог\n" * lines).encode()
+    # Exercise an uncapped full download using real bounded log records. An
+    # oversized unparented prefix is intentionally omitted as one unsafe record.
+    content = ("2026-11-10 12:00:00,000 INFO [test] Поточний лог\n" * lines).encode()
+    if lines:
+        assert len(content) > 10 * 1024 * 1024
     (log_dir / "bamdude.log").write_bytes(content)
     loop_thread = threading.get_ident()
     real_fstat = os.fstat
@@ -90,7 +94,7 @@ async def test_archive_actions_still_exclude_current_file(async_client, log_dir)
 @pytest.mark.asyncio
 async def test_appends_excluded_and_live_handle_released_before_transfer(log_dir, monkeypatch):
     current = log_dir / "bamdude.log"
-    content = b"before\n" * 20_000
+    content = b"2026-11-10 12:00:00,000 INFO [test] before\n" * 20_000
     current.write_bytes(content)
     real_fstat = os.fstat
 
@@ -101,7 +105,7 @@ async def test_appends_excluded_and_live_handle_released_before_transfer(log_dir
         return result
 
     monkeypatch.setattr(support.os, "fstat", append_after_stat)
-    response = support.download_current_log()
+    response = support.download_current_log(sensitive_strings={})
     # On Windows this fails if the download still holds the live file open.
     current.rename(log_dir / "bamdude-2026-09-13.log")
     current.write_bytes(b"new day's log\n")
@@ -120,7 +124,7 @@ async def test_appends_excluded_and_live_handle_released_before_transfer(log_dir
 @pytest.mark.parametrize("failure", [OSError("Client disconnected"), asyncio.CancelledError()])
 async def test_snapshot_closed_on_interrupted_transfer(log_dir, failure):
     (log_dir / "bamdude.log").write_bytes(b"log\n")
-    response = support.download_current_log()
+    response = support.download_current_log(sensitive_strings={})
     with pytest.raises((ClientDisconnect, asyncio.CancelledError)):
         await response(
             {"type": "http", "asgi": {"spec_version": "2.4"}},
@@ -134,7 +138,7 @@ async def test_snapshot_closed_on_interrupted_transfer(log_dir, failure):
 async def test_snapshot_closed_after_disconnect_during_stream(log_dir):
     """Exercise the ASGI disconnect listener used by older HTTP servers."""
     (log_dir / "bamdude.log").write_bytes(b"x" * 200_000)
-    response = support.download_current_log()
+    response = support.download_current_log(sensitive_strings={})
     body_started = asyncio.Event()
 
     async def receive():
@@ -171,7 +175,7 @@ def test_snapshot_removed_when_copy_fails(log_dir, monkeypatch):
     monkeypatch.setattr(support.tempfile, "TemporaryFile", track_snapshot)
     monkeypatch.setattr(support.os, "fstat", truncate_after_stat)
     with pytest.raises(HTTPException) as error:
-        support.download_current_log()
+        support.download_current_log(sensitive_strings={})
     assert error.value.status_code == 409
     assert snapshots[0].closed
 
@@ -186,5 +190,5 @@ def test_current_log_cannot_escape_log_directory(log_dir, monkeypatch):
 
     monkeypatch.setattr(Path, "resolve", outside_log_dir)
     with pytest.raises(HTTPException) as error:
-        support.download_current_log()
+        support.download_current_log(sensitive_strings={})
     assert error.value.status_code == 403

@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, Path
 from fastapi.responses import FileResponse, JSONResponse
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireAdmin, RequirePermission
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
 from backend.app.services.local_backup import local_backup_service
@@ -18,13 +18,21 @@ router = APIRouter(prefix="/local-backup", tags=["local-backup"])
 
 @router.get("/status")
 async def get_status(
-    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    current_user: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get local backup scheduler status and configuration."""
     from backend.app.services.local_backup import _local_zone
 
     settings = await local_backup_service._load_settings()
     status = local_backup_service.get_status()
+    if current_user is None or not current_user.is_admin:
+        # A scoped status read is not deployment-path/configuration access.
+        return {
+            "enabled": settings["enabled"],
+            "is_running": status.get("is_running", False),
+            "last_backup_at": status.get("last_backup_at"),
+            "last_backup_status": status.get("last_backup_status"),
+        }
     return {
         **status,
         "enabled": settings["enabled"],
@@ -40,7 +48,7 @@ async def get_status(
     }
 
 
-@router.get("/path-check")
+@router.get("/path-check", dependencies=[RequireAdmin()])
 async def check_path(
     _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
 ):
@@ -58,7 +66,7 @@ async def check_path(
     return await asyncio.to_thread(local_backup_service.check_path, settings["path"])
 
 
-@router.post("/run")
+@router.post("/run", dependencies=[RequireAdmin()])
 async def trigger_backup(
     _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
 ):
@@ -66,7 +74,7 @@ async def trigger_backup(
     return await local_backup_service.run_backup()
 
 
-@router.get("/backups")
+@router.get("/backups", dependencies=[RequireAdmin()])
 async def list_backups(
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
@@ -75,10 +83,10 @@ async def list_backups(
     return local_backup_service.list_backups(settings["path"])
 
 
-@router.get("/backups/{filename}/download")
+@router.get("/backups/{filename}/download", dependencies=[RequireAdmin()])
 async def download_backup(
     filename: str = Path(..., description="Backup filename to download"),
-    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
 ):
     """Download a specific backup file."""
     settings = await local_backup_service._load_settings()
@@ -92,7 +100,7 @@ async def download_backup(
     )
 
 
-@router.post("/backups/{filename}/restore")
+@router.post("/backups/{filename}/restore", dependencies=[RequireAdmin()])
 async def restore_backup(
     filename: str = Path(..., description="Backup filename to restore"),
     _: User | None = RequirePermission(Permission.SETTINGS_RESTORE),
@@ -117,7 +125,7 @@ async def restore_backup(
         return await settings_restore_backup(file=upload, db=db)
 
 
-@router.delete("/backups/{filename}")
+@router.delete("/backups/{filename}", dependencies=[RequireAdmin()])
 async def delete_backup(
     filename: str = Path(..., description="Backup filename to delete"),
     _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),

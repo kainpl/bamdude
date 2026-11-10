@@ -115,9 +115,7 @@ def read_tail(args, secrets, position):
         entries, next_before, output_bytes = [], None, 0
         for offset, text in reversed(groups):
             # Exact secrets of any length, then the shared shape/PII sanitizer.
-            for value in sorted(secrets, key=len, reverse=True):
-                text = text.replace(value, secrets[value])
-            safe = log_reader.sanitize_log_content(text)
+            safe = log_reader.sanitize_log_content(text, secrets)
             if len(safe.encode("utf-8")) > ENTRY_BUDGET:
                 dropped += 1
                 continue

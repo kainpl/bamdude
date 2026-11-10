@@ -1,0 +1,54 @@
+{
+  "source_revision": "ecf1c4bcc8824acb656b0c15dad52b5fb0a1e176",
+  "en": {
+    "user_created": {
+      "name": "Welcome Email",
+      "title_template": "Welcome to {app_name}",
+      "body_template": "Welcome {username}!\n\nYour account has been created.\nUsername: {username}\nPassword: {password}\n\nLogin at: {login_url}"
+    },
+    "password_reset": {
+      "name": "Password Reset",
+      "title_template": "{app_name} - Password Reset",
+      "body_template": "Hello {username},\n\nYour password has been reset.\nNew Password: {password}\n\nLogin at: {login_url}"
+    },
+    "password_reset_link": {
+      "name": "Password Reset Link",
+      "title_template": "{app_name} - Reset your password",
+      "body_template": "Hello {username},\n\nSomebody asked to reset the password for your {app_name} account. Open the link below to choose a new one:\n\n{reset_url}\n\nThe link works once and stops working after {ttl_hours} hour(s).\n\nIf this was not you, ignore this message — your password has not been changed."
+    }
+  },
+  "uk": {
+    "user_created": {
+      "name": "Лист привітання",
+      "title_template": "Ласкаво просимо до {app_name}",
+      "body_template": "Вітаємо, {username}!\n\nВаш обліковий запис створено.\nІм'я користувача: {username}\nПароль: {password}\n\nУвійти: {login_url}"
+    },
+    "password_reset": {
+      "name": "Скидання пароля",
+      "title_template": "{app_name} - Скидання пароля",
+      "body_template": "Привіт, {username}!\n\nВаш пароль було скинуто.\nНовий пароль: {password}\n\nУвійти: {login_url}"
+    },
+    "password_reset_link": {
+      "name": "Посилання для скидання пароля",
+      "title_template": "{app_name} — скидання пароля",
+      "body_template": "Вітаємо, {username}!\n\nХтось попросив скинути пароль для вашого облікового запису {app_name}. Відкрийте посилання нижче, щоб задати новий:\n\n{reset_url}\n\nПосилання спрацює один раз і перестає діяти через {ttl_hours} год.\n\nЯкщо це були не ви — просто знехтуйте цим листом: пароль не змінився."
+    }
+  },
+  "en_seed": {
+    "user_created": {
+      "name": "Welcome Email",
+      "title_template": "Welcome to {app_name}",
+      "body_template": "Welcome {username}!\n\nYour account has been created.\nUsername: {username}\nPassword: {password}\n\nLogin at: {login_url}"
+    },
+    "password_reset": {
+      "name": "Password Reset",
+      "title_template": "{app_name} - Password Reset",
+      "body_template": "Hello {username},\n\nYour password has been reset.\nNew Password: {password}\n\nLogin at: {login_url}"
+    },
+    "password_reset_link": {
+      "name": "Password Reset Link",
+      "title_template": "{app_name} - Reset your password",
+      "body_template": "Hello {username},\n\nSomebody asked to reset the password for your {app_name} account. Open the link below to choose a new one:\n\n{reset_url}\n\nThe link works once and stops working after {ttl_hours} hour(s).\n\nIf this was not you, ignore this message - your password has not been changed."
+    }
+  }
+}

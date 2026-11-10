@@ -252,8 +252,8 @@ export function Layout() {
   });
 
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 

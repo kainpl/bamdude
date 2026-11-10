@@ -92,7 +92,7 @@ export function ThemeProvider({ children, syncServer = true }: { children: React
   // Sync from API on mount
   useEffect(() => {
     if (!syncServer) return;
-    api.getSettings().then((settings) => {
+    api.getUiPreferences().then((settings) => {
       // Dark settings
       if (settings.dark_style) {
         setDarkStyleState(settings.dark_style as ThemeStyle);

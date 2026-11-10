@@ -61,8 +61,8 @@ export function AMSHistoryModal({
   const isDark = themeMode === 'dark';
 
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
   });
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';

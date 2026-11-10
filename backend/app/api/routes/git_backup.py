@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireAdmin, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
@@ -23,6 +23,7 @@ from backend.app.schemas.git_backup import (
     GitRestorePreview,
     GitRestoreRequest,
     GitRestoreResponse,
+    GitTestConnectionRequest,
     GitTestConnectionResponse,
     RestoreCategory,
 )
@@ -101,7 +102,7 @@ def _config_to_response(config: GitBackupConfig) -> dict:
     }
 
 
-@router.get("/config", response_model=GitBackupConfigResponse | None)
+@router.get("/config", response_model=GitBackupConfigResponse | None, dependencies=[RequireAdmin()])
 async def get_config(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
@@ -116,7 +117,7 @@ async def get_config(
     return _config_to_response(config)
 
 
-@router.post("/config", response_model=GitBackupConfigResponse)
+@router.post("/config", response_model=GitBackupConfigResponse, dependencies=[RequireAdmin()])
 async def save_config(
     config_data: GitBackupConfigCreate,
     db: AsyncSession = Depends(get_db),
@@ -192,7 +193,7 @@ async def save_config(
     return _config_to_response(config)
 
 
-@router.patch("/config", response_model=GitBackupConfigResponse)
+@router.patch("/config", response_model=GitBackupConfigResponse, dependencies=[RequireAdmin()])
 async def update_config(
     update_data: GitBackupConfigUpdate,
     db: AsyncSession = Depends(get_db),
@@ -240,7 +241,7 @@ async def update_config(
     return _config_to_response(config)
 
 
-@router.delete("/config")
+@router.delete("/config", dependencies=[RequireAdmin()])
 async def delete_config(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
@@ -260,20 +261,19 @@ async def delete_config(
     return {"message": "Configuration deleted"}
 
 
-@router.post("/test", response_model=GitTestConnectionResponse)
+@router.post("/test", response_model=GitTestConnectionResponse, dependencies=[RequireAdmin()])
 async def test_connection(
-    repo_url: str = Query(..., description="Repository URL"),
-    token: str = Query(..., description="Personal Access Token"),
-    provider: str = Query(default="github", description="Git provider: github, gitlab, gitea, or forgejo"),
-    api_base_url: str | None = Query(default=None, description="API base URL for self-hosted GitLab"),
+    body: GitTestConnectionRequest,
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Test Git provider connection with provided credentials."""
-    result = await git_backup_service.test_connection(repo_url, token, provider=provider, api_base_url=api_base_url)
+    result = await git_backup_service.test_connection(
+        body.repo_url, body.token, provider=body.provider.value, api_base_url=body.api_base_url
+    )
     return GitTestConnectionResponse(**result)
 
 
-@router.post("/test-stored", response_model=GitTestConnectionResponse)
+@router.post("/test-stored", response_model=GitTestConnectionResponse, dependencies=[RequireAdmin()])
 async def test_stored_connection(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
@@ -294,7 +294,7 @@ async def test_stored_connection(
     return GitTestConnectionResponse(**test_result)
 
 
-@router.post("/run", response_model=GitBackupTriggerResponse)
+@router.post("/run", response_model=GitBackupTriggerResponse, dependencies=[RequireAdmin()])
 async def trigger_backup(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
@@ -350,7 +350,7 @@ async def get_status(
     )
 
 
-@router.get("/logs", response_model=list[GitBackupLogResponse])
+@router.get("/logs", response_model=list[GitBackupLogResponse], dependencies=[RequireAdmin()])
 async def get_logs(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -389,7 +389,7 @@ async def get_logs(
     ]
 
 
-@router.delete("/logs")
+@router.delete("/logs", dependencies=[RequireAdmin()])
 async def clear_logs(
     keep_last: int = Query(default=10, ge=0, le=100, description="Number of recent logs to keep"),
     db: AsyncSession = Depends(get_db),
@@ -451,7 +451,7 @@ _CATEGORY_WRITE_PERMISSION = {
 }
 
 
-@router.get("/commits", response_model=GitCommitListResponse)
+@router.get("/commits", response_model=GitCommitListResponse, dependencies=[RequireAdmin()])
 async def list_commits(
     limit: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -468,7 +468,7 @@ async def list_commits(
     return GitCommitListResponse(**commit_result)
 
 
-@router.get("/restore/preview", response_model=GitRestorePreview)
+@router.get("/restore/preview", response_model=GitRestorePreview, dependencies=[RequireAdmin()])
 async def preview_restore(
     ref: str = Query(default="HEAD", pattern=REF_PATTERN),
     db: AsyncSession = Depends(get_db),
@@ -485,7 +485,7 @@ async def preview_restore(
     return GitRestorePreview(**preview)
 
 
-@router.post("/restore", response_model=GitRestoreResponse)
+@router.post("/restore", response_model=GitRestoreResponse, dependencies=[RequireAdmin()])
 async def restore_backup(
     request: GitRestoreRequest,
     db: AsyncSession = Depends(get_db),

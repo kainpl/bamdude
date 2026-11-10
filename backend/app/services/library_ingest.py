@@ -32,6 +32,94 @@ from backend.app.models.library import LibraryFile
 IngestOutcome = Literal["created", "deduped", "restored"]
 
 
+@dataclass(frozen=True, slots=True)
+class LibraryReadAccess:
+    """The library's read decision, carried explicitly into its shared writer."""
+
+    scope: Literal["all", "own", "none"]
+    user_id: int | None = None
+
+    def allows(self, row: LibraryFile) -> bool:
+        return self.scope == "all" or (
+            self.scope == "own" and self.user_id is not None and row.created_by_id == self.user_id
+        )
+
+    def ensure(self, row: LibraryFile) -> None:
+        if not self.allows(row):
+            from fastapi import HTTPException
+
+            raise HTTPException(400, detail={"code": "source_unavailable"})
+
+
+async def read_access(db: AsyncSession, *, user_id: int | None = None, authority=None) -> LibraryReadAccess:
+    """Current library read policy for a writer's actor, not its upload right.
+
+    An explicit thumbnail authority also covers header API keys and Telegram
+    uploads. Calls without any actor are existing trusted server-owned ingest
+    (VP/canned assets/internal transfer), never a substitute for a request actor.
+    """
+    from fastapi import HTTPException
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from backend.app.core.permissions import Permission
+    from backend.app.models.user import User
+
+    if authority is not None and authority.kind == "api_key":
+        from backend.app.core.auth import authorize_api_key
+        from backend.app.models.api_key import APIKey
+
+        key = await db.get(APIKey, authority.key_id, populate_existing=True)
+        if key is None or not key.enabled:
+            return LibraryReadAccess("none")
+        if key.expires_at is not None:
+            expires = key.expires_at if key.expires_at.tzinfo else key.expires_at.replace(tzinfo=timezone.utc)
+            if expires <= datetime.now(timezone.utc):
+                return LibraryReadAccess("none")
+        try:
+            await authorize_api_key(db, key, [Permission.LIBRARY_READ_ALL])
+        except HTTPException:
+            return LibraryReadAccess("none")
+        return LibraryReadAccess("all", key.user_id)
+    if authority is not None and authority.kind == "telegram_chat":
+        from backend.app.models.telegram_chat import TelegramChat
+
+        chat = (
+            await db.execute(
+                select(TelegramChat)
+                .where(TelegramChat.id == authority.chat_row_id)
+                .options(selectinload(TelegramChat.group))
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        allowed = bool(chat and chat.is_active and chat.has_permission(Permission.LIBRARY_READ_ALL.value))
+        return LibraryReadAccess("all" if allowed else "none")
+    if authority is not None:
+        if authority.kind != "user":
+            return LibraryReadAccess("none")
+        user_id = authority.user_id
+    if user_id is None:
+        return LibraryReadAccess("all")
+    user = (
+        await db.execute(
+            select(User)
+            .where(User.id == user_id)
+            .options(selectinload(User.groups))
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if user is None or not user.is_active:
+        return LibraryReadAccess("none", user_id)
+    scope = (
+        "all"
+        if user.has_permission(Permission.LIBRARY_READ_ALL.value)
+        else "own"
+        if user.has_permission(Permission.LIBRARY_READ_OWN.value)
+        else "none"
+    )
+    return LibraryReadAccess(scope, user_id)
+
+
 @dataclass(slots=True)
 class IngestResult:
     """What happened, and the row to use from here on.
@@ -54,7 +142,9 @@ async def _rows_with_hash(db: AsyncSession, content_hash: str) -> list[LibraryFi
     ⚠️ Active only. A trashed sibling was deleted by the user and must not pin a
     fresh arrival to itself — the rule the upload paths have always applied.
     """
-    result = await db.execute(LibraryFile.active().where(LibraryFile.file_hash == content_hash))
+    result = await db.execute(
+        LibraryFile.active().where(LibraryFile.file_hash == content_hash).execution_options(populate_existing=True)
+    )
     return list(result.scalars().all())
 
 
@@ -73,7 +163,9 @@ def _file_present(row: LibraryFile) -> bool:
     return bool(absolute) and Path(absolute).is_file()
 
 
-async def find_reusable_row(db: AsyncSession, *, content_hash: str) -> tuple[LibraryFile, bool] | None:
+async def find_reusable_row(
+    db: AsyncSession, *, content_hash: str, access: LibraryReadAccess
+) -> tuple[LibraryFile, bool] | None:
     """The row a new arrival with this content should become, plus whether its
     bytes are on disk. ``None`` when the arrival must become a row of its own.
 
@@ -91,6 +183,9 @@ async def find_reusable_row(db: AsyncSession, *, content_hash: str) -> tuple[Lib
         return None
 
     for candidate in sorted(rows, key=lambda r: (bool(r.is_external), r.id)):
+        # Refuse the canonical hidden row before probing/repairing its bytes.
+        # Skipping it would create a duplicate or let another caller adopt it.
+        access.ensure(candidate)
         present = _file_present(candidate)
         if present or not candidate.is_external:
             return candidate, present

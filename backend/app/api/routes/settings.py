@@ -12,7 +12,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import query_timing
-from backend.app.core.auth import RequirePermission, get_current_user_optional, require_energy_cost_update
+from backend.app.core.auth import RequireAdmin, RequirePermission, get_current_user_optional, require_energy_cost_update
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -28,6 +28,83 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 # Default settings
 DEFAULT_SETTINGS = AppSettings()
+
+# Auth policy, credential/destination pairs and deployment/backup controls are
+# administrative even when a custom group has settings:update. Other preferences
+# keep that permission's existing behavior. Unchanged full-form values may pass.
+ADMIN_SETTING_FIELDS = frozenset(
+    {
+        "local_login_enabled",
+        "session_max_hours",
+        "telegram_registration_open",
+        "mcp_enabled",
+        "mcp_allow_http",
+        "mcp_endpoint_url",
+        "mcp_allowed_hosts",
+        "mcp_allowed_origins",
+        "mqtt_enabled",
+        "mqtt_broker",
+        "mqtt_port",
+        "mqtt_username",
+        "mqtt_password",
+        "mqtt_topic_prefix",
+        "mqtt_use_tls",
+        "ldap_enabled",
+        "ldap_server_url",
+        "ldap_bind_dn",
+        "ldap_bind_password",
+        "ldap_search_base",
+        "ldap_user_filter",
+        "ldap_security",
+        "ldap_group_mapping",
+        "ldap_auto_provision",
+        "ldap_default_group",
+        "ha_enabled",
+        "ha_url",
+        "ha_token",
+        "prometheus_enabled",
+        "prometheus_token",
+        "local_backup_enabled",
+        "local_backup_schedule",
+        "local_backup_time",
+        "local_backup_retention",
+        "local_backup_path",
+        "virtual_printer_enabled",
+        "virtual_printer_access_code",
+        "virtual_printer_mode",
+        "virtual_printer_archive_name_source",
+        "docker_compose_dir",
+        "external_url",
+        "zigbee_enabled",
+        "zigbee_transport",
+        "zigbee_path",
+        "spoolman_enabled",
+        "spoolman_url",
+        "spoolman_sync_mode",
+        "orcaslicer_api_url",
+        "bambu_studio_api_url",
+        "obico_enabled",
+        "obico_ml_url",
+        "obico_ml_token",
+    }
+)
+
+
+async def _enforce_admin_settings(db: AsyncSession, changes: dict, user: User | None) -> None:
+    protected = ADMIN_SETTING_FIELDS & changes.keys()
+    if not protected or (user is not None and user.is_admin):
+        return
+    current = (await get_settings(db=db, _=None)).model_dump()
+    # The read DTO intentionally hides the LDAP password. Compare the real
+    # stored value so submitting the read mask cannot clear it as a "no-op".
+    if "ldap_bind_password" in protected:
+        current["ldap_bind_password"] = await get_setting(db, "ldap_bind_password") or ""
+    if any(changes[key] != current.get(key) for key in protected):
+        raise HTTPException(status_code=403, detail="Requires admin role for protected settings")
+    # Equal protected fields are accepted as read-only full-form baggage. Do
+    # not persist them: another administrator may change policy after our read.
+    for key in protected:
+        changes.pop(key)
 
 
 async def get_setting(db: AsyncSession, key: str) -> str | None:
@@ -220,6 +297,7 @@ async def update_settings(
 ):
     """Update application settings."""
     update_data = settings_update.model_dump(exclude_unset=True)
+    await _enforce_admin_settings(db, update_data, current_user)
     risk_ack = update_data.pop("mcp_http_risk_acknowledged", False)
     network_ack = update_data.pop("mcp_http_trusted_network_acknowledged", False)
     if {"mcp_allow_http", "mcp_endpoint_url"} & update_data.keys():
@@ -438,7 +516,7 @@ async def update_electricity_price(
     return await get_settings(db, _)
 
 
-@router.post("/reset", response_model=AppSettings)
+@router.post("/reset", response_model=AppSettings, dependencies=[RequireAdmin()])
 async def reset_settings(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
@@ -476,6 +554,27 @@ _UI_PREFERENCE_FIELDS: tuple[str, ...] = (
     "ams_humidity_fair",
     "ams_temp_good",
     "ams_temp_fair",
+    "language",
+    "dark_style",
+    "dark_background",
+    "dark_accent",
+    "light_style",
+    "light_background",
+    "light_accent",
+    "open_in_slicer",
+    "preferred_slicer",
+    "disable_filament_warnings",
+    "prefer_lowest_filament",
+    "per_printer_mapping_expanded",
+    "default_filament_cost",
+    "auto_order_for_batches",
+    "queue_shortest_first",
+    "low_stock_threshold",
+    "library_all_files_recursive",
+    "library_disk_warning_gb",
+    "device_labels_enabled",
+    "user_notifications_enabled",
+    "check_updates",
     # ams_temp_alarm deliberately NOT here: this endpoint serves the colour
     # bands without SETTINGS_READ, and the alarm threshold colours nothing —
     # only the settings page reads it, behind the settings permissions.
@@ -579,7 +678,7 @@ async def spoolman_mode_switch_preview(
     }
 
 
-@router.put("/spoolman")
+@router.put("/spoolman", dependencies=[RequireAdmin()])
 async def update_spoolman_settings(
     settings: dict,
     db: AsyncSession = Depends(get_db),
@@ -752,7 +851,7 @@ async def _create_backup_zip(output_path: Path | None) -> tuple[Path, str]:
     return zip_file, filename
 
 
-@router.get("/backup")
+@router.get("/backup", dependencies=[RequireAdmin()])
 async def create_backup(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
@@ -791,7 +890,7 @@ async def create_backup(
         )
 
 
-@router.post("/restore")
+@router.post("/restore", dependencies=[RequireAdmin()])
 async def restore_backup(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
@@ -1116,7 +1215,7 @@ async def get_virtual_printer_settings(
     }
 
 
-@router.put("/virtual-printer")
+@router.put("/virtual-printer", dependencies=[RequireAdmin()])
 async def update_virtual_printer_settings(
     enabled: bool = None,
     access_code: str = None,

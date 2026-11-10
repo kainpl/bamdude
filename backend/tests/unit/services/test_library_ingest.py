@@ -13,7 +13,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from backend.app.services.library_ingest import find_reusable_row
+from backend.app.services.library_ingest import LibraryReadAccess, find_reusable_row as _find_reusable_row
+
+
+async def find_reusable_row(db, *, content_hash):
+    # These winner-selection tests represent trusted installation-owned ingest.
+    return await _find_reusable_row(db, content_hash=content_hash, access=LibraryReadAccess("all"))
 
 
 def _row(*, id: int, is_external: bool = False, file_path: str = "a/b.3mf") -> MagicMock:

@@ -6941,6 +6941,7 @@ export default {
       remaining: 'Remaining',
     },
     prints: {
+      restrictedPrint: 'Restricted print #{{id}}',
       otherPrints: 'Other prints',
       unlisted: 'Not filed under any group',
       partsGroup: 'parts',
@@ -11845,6 +11846,7 @@ export default {
     noHistory: 'No detections yet.'
   },
   camWall: {
+    temporarilyUnavailable: 'Connection temporarily unavailable. Retrying automatically…',
     pageTitle: 'Cam Wall',
     tokenRejected: 'This Cam Wall link was rejected. The token may have expired or been revoked - create a new one under Settings > API Keys with the "Cam Wall" scope.',
   },

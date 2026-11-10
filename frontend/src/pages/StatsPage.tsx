@@ -1190,8 +1190,8 @@ export function StatsPage() {
   });
 
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
   });
 
   const handleExport = async (format: 'csv' | 'xlsx') => {

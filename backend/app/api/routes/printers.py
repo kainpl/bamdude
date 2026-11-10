@@ -1086,6 +1086,17 @@ async def _delete_printer_rows(printer_id: int, printer: Printer, delete_archive
     await db.execute(
         update(VirtualPrinter).where(VirtualPrinter.target_printer_id == printer_id).values(target_printer_id=None)
     )
+    # JSON printer scopes have no FK action on either dialect. Remove this
+    # lifetime before its integer id can name another printer. An emptied
+    # list stays [] (no printers), never None (all printers).
+    from backend.app.models.api_key import APIKey
+
+    keys = (
+        await db.execute(select(APIKey).where(APIKey.printer_ids.isnot(None)).order_by(APIKey.id).with_for_update())
+    ).scalars()
+    for key in keys:
+        if key.printer_ids is not None and printer_id in key.printer_ids:
+            key.printer_ids = [pid for pid in key.printer_ids if pid != printer_id]
     await db.delete(printer)
     await db.commit()
 
@@ -2521,6 +2532,7 @@ async def download_printer_files_as_zip(
 async def import_printer_files_to_library(
     printer_id: int,
     request: dict,
+    http_request: Request,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(require_permission(Permission.PRINTERS_FILES, Permission.LIBRARY_UPLOAD)),
 ):
@@ -2599,6 +2611,9 @@ async def import_printer_files_to_library(
         if folder.is_external and folder.external_readonly:
             raise HTTPException(400, "Folder is read-only")
 
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
+    ingest_authority = await request_authority(http_request, current_user)
     imported: list[dict] = []
     skipped: list[dict] = []
 
@@ -2641,6 +2656,7 @@ async def import_printer_files_to_library(
                 folder=folder,
                 created_by_id=current_user.id if current_user else None,
                 source_type=detected_source_type,
+                authority=ingest_authority,
             )
             # ⚠️ ``result.file`` may be a row this import did not create — the
             # SD card can hold a file the library already has.

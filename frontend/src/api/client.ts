@@ -242,7 +242,7 @@ function scheduleProactiveRefresh() {
     // Fire-and-forget: a successful refresh re-arms via setAuthToken; a
     // failed one falls through to the next request's reactive 401 handler
     // which dispatches ``bamdude:auth-invalidated``.
-    refreshAccessToken();
+    void refreshAccessToken().catch(() => { /* Transient auth outage: retain the token for the next request. */ });
   }, Math.min(delay, MAX_TIMEOUT_MS));
 }
 
@@ -497,27 +497,25 @@ async function doRefresh(): Promise<boolean> {
   // Another tab may have rotated while we queued on the lock; taking its token
   // is both cheaper and safer than spending our cookie on a second rotation.
   if (adoptSiblingToken()) return true;
-  try {
-    const response = await fetch(`${API_BASE}/auth/refresh`, {
-      method: 'POST',
-      cache: 'no-store',
-      credentials: 'include',
-    });
-    if (!response.ok) {
-      // A lost race still 401s. The winner has already stored its token, so
-      // check once more before reporting failure — this is what keeps a tab
-      // that raced (or a browser with no Web Locks) from bouncing to /login.
-      return adoptSiblingToken();
-    }
-    const body = await response.json().catch(() => null);
-    if (body?.access_token) {
-      setAuthToken(body.access_token);
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
+  const response = await fetch(`${API_BASE}/auth/refresh`, {
+    method: 'POST',
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    // A definitive refusal may be a lost race with another tab's rotation.
+    if (adoptSiblingToken()) return true;
+    if (response.status === 401) return false;
+    // Infrastructure failure is not an invalid session. Propagate it instead
+    // of letting the original expired-token response erase the saved token.
+    throw new ApiError('Authentication is temporarily unavailable', response.status);
   }
+  const body = await response.json().catch(() => null);
+  if (typeof body?.access_token === 'string' && body.access_token) {
+    setAuthToken(body.access_token);
+    return true;
+  }
+  throw new ApiError('Authentication is temporarily unavailable', 503);
 }
 
 async function refreshAccessToken(): Promise<boolean> {
@@ -1665,6 +1663,8 @@ function swapSourcePath(kind: SwapSourceKind, id: number): string {
 }
 
 export interface Archive {
+  /** Workshop accounting projection; archive names, paths and file links are withheld. */
+  restricted?: boolean;
   end_time_source?: 'slicer_estimate' | null;
   id: number;
   printer_id: number | null;
@@ -9070,7 +9070,15 @@ export interface TwoFAVerifyRequest {
   remember_me?: boolean;
 }
 
-// OIDC interfaces (§18.2)
+// Public login projection; administration-only fields never enter this DTO.
+export interface OIDCLoginProvider {
+  id: number;
+  name: string;
+  has_icon: boolean;
+  is_autologin: boolean;
+}
+
+// OIDC administration interfaces (§18.2)
 export interface OIDCProvider {
   id: number;
   name: string;
@@ -9933,7 +9941,7 @@ export const api = {
     }),
 
   // OIDC (§18.2)
-  getOIDCProviders: () => request<OIDCProvider[]>('/auth/oidc/providers'),
+  getOIDCProviders: () => request<OIDCLoginProvider[]>('/auth/oidc/providers'),
   getOIDCProvidersAll: () => request<OIDCProvider[]>('/auth/oidc/providers/all'),
   createOIDCProvider: (data: OIDCProviderCreate) =>
     request<OIDCProvider>('/auth/oidc/providers', {
@@ -14516,13 +14524,10 @@ export const api = {
     request<{ message: string }>('/git-backup/config', { method: 'DELETE' }),
 
   testGitConnection: (repoUrl: string, token: string, provider?: string, apiBaseUrl?: string) => {
-    const params = new URLSearchParams({ repo_url: repoUrl, token });
-    if (provider) params.set('provider', provider);
-    if (apiBaseUrl) params.set('api_base_url', apiBaseUrl);
-    return request<GitTestConnectionResponse>(
-      `/git-backup/test?${params.toString()}`,
-      { method: 'POST' }
-    );
+    return request<GitTestConnectionResponse>('/git-backup/test', {
+      method: 'POST',
+      body: JSON.stringify({ repo_url: repoUrl, token, provider, api_base_url: apiBaseUrl }),
+    });
   },
 
   testStoredGitConnection: () =>

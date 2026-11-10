@@ -99,6 +99,11 @@ function StatusBadge({ status }: StatusBadgeProps) {
 }
 
 export function GitBackupSettings() {
+  const { isAdmin, hasPermission } = useAuth();
+  return isAdmin && hasPermission('settings:read') ? <GitBackupSettingsContent /> : null;
+}
+
+function GitBackupSettingsContent() {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { t } = useTranslation();
@@ -111,8 +116,8 @@ export function GitBackupSettings() {
   // Pull system time/date format so backup status timestamps follow the
   // user's preference instead of falling through to the browser locale.
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
     staleTime: 60_000,
   });
   const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;

@@ -19,6 +19,7 @@ import {
     Plus
 } from 'lucide-react';
 import {api} from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import {formatDateOnly, parseUTCDate, type DateFormat} from '../utils/date';
 import type {NotificationProvider, NotificationProviderUpdate, TelegramChat} from '../api/client';
 import {Card, CardContent} from './Card';
@@ -31,6 +32,11 @@ import {TelegramChatCard} from './TelegramChatCard';
 import {AddTelegramChatModal} from './AddTelegramChatModal';
 
 function RegistrationModeToggle() {
+    const { isAdmin, hasPermission } = useAuth();
+    return isAdmin && hasPermission('settings:update') ? <RegistrationModeControl /> : null;
+}
+
+function RegistrationModeControl() {
     const { t } = useTranslation();
     const queryClient = useQueryClient();
 
@@ -83,8 +89,8 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
     // Pull system date_format so the "last success" timestamp follows the
     // user's preference. Cached globally — shared with other settings reads.
     const {data: settings} = useQuery({
-        queryKey: ['settings'],
-        queryFn: api.getSettings,
+        queryKey: ['ui-preferences'],
+        queryFn: api.getUiPreferences,
         staleTime: 60_000,
     });
     const dateFormat = (settings?.date_format ?? 'system') as DateFormat;

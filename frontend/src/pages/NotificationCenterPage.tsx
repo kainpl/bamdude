@@ -42,8 +42,8 @@ export function NotificationCenterPage() {
     staleTime: 5 * 60 * 1000,
   });
   const { data: settings, isLoading: isSettingsLoading } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
     staleTime: 5 * 60 * 1000,
   });
 

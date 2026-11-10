@@ -54,7 +54,8 @@ class TestEmailTemplateFormatting:
         # Verify text body has newlines
         assert "\n\n" in text_body
         assert "Hello testuser!" in text_body
-        assert "Your password is: testpass123" in text_body
+        assert "Your password is: testpass123" not in text_body
+        assert "Password: testpass123" in text_body  # server-owned block
 
         # Verify HTML body has <br> tags instead of relying on CSS
         assert "<br>" in html_body
@@ -66,7 +67,8 @@ class TestEmailTemplateFormatting:
 
         # Verify that escaped content is present (XSS protection)
         assert "Hello testuser!<br>" in html_body
-        assert "Your password is: testpass123<br>" in html_body
+        assert 'data-auth-credentials="true"' in html_body
+        assert "<code>testpass123</code>" in html_body
 
     @pytest.mark.asyncio
     async def test_password_reset_email_newlines_converted_to_br(self):

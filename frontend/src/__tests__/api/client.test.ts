@@ -130,6 +130,7 @@ describe('API Client Auth Header', () => {
 
   it('clears token on 401 with invalid token message', async () => {
     server.use(
+      http.post('/api/v1/auth/refresh', () => HttpResponse.json({ detail: 'expired' }, { status: 401 })),
       http.get('/api/v1/settings/spoolman', () => {
         return HttpResponse.json(
           { detail: 'Could not validate credentials' },
@@ -713,5 +714,51 @@ describe('rebalanceAutoQueueItems (spec 2026-09-10)', () => {
 
     expect(calls).toBe(1);
     expect(result).toEqual({ converted: 1, created: 0, cancelled: 0, moved_parts: 2, skipped: [] });
+  });
+});
+
+
+describe('G01 A auth infrastructure and credential transport', () => {
+  it.each(['503', 'offline', 'malformed'] as const)('retains the session when refresh is %s after an expired access token', async failure => {
+    const invalidated = vi.fn();
+    window.addEventListener('bamdude:auth-invalidated', invalidated);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async url => {
+      if (String(url).endsWith('/auth/refresh')) {
+        if (failure === 'offline') throw new TypeError('Failed to fetch');
+        return new Response(JSON.stringify(failure === 'malformed' ? {} : { detail: 'temporarily unavailable' }), { status: failure === '503' ? 503 : 200 });
+      }
+      return new Response(JSON.stringify({ detail: 'Token has expired' }), { status: 401 });
+    });
+    try {
+      setAuthToken('expired-but-recoverable');
+      await expect(api.getCurrentUser()).rejects.toBeDefined();
+      expect(getAuthToken()).toBe('expired-but-recoverable');
+      expect(localStorageMock.getItem('auth_token')).toBe('expired-but-recoverable');
+      expect(invalidated).not.toHaveBeenCalled();
+      // The same saved credential recovers on a later request without login.
+      fetchSpy.mockImplementation(async (url, init) => String(url).endsWith('/auth/refresh')
+        ? new Response(JSON.stringify({ access_token: 'recovered-token' }))
+        : new Headers(init?.headers).get('Authorization') === 'Bearer recovered-token'
+          ? new Response(JSON.stringify({ id: 5 })) : new Response(JSON.stringify({ detail: 'Token has expired' }), { status: 401 }));
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: 5 });
+      expect(getAuthToken()).toBe('recovered-token');
+    } finally {
+      fetchSpy.mockRestore();
+      window.removeEventListener('bamdude:auth-invalidated', invalidated);
+    }
+  });
+
+  it('keeps Git draft credentials out of the URL and sends the existing fields only in JSON', async () => {
+    let body: unknown;
+    let query = '';
+    server.use(http.post('/api/v1/git-backup/test', async ({ request }) => {
+      query = new URL(request.url).search;
+      body = await request.json();
+      expect(request.headers.get('Content-Type')).toBe('application/json');
+      return HttpResponse.json({ success: true });
+    }));
+    await api.testGitConnection('https://git.example/team/private', 'canary-secret&unicode-ї', 'gitlab', 'https://git.example/api/v4');
+    expect(query).toBe('');
+    expect(body).toEqual({ repo_url: 'https://git.example/team/private', token: 'canary-secret&unicode-ї', provider: 'gitlab', api_base_url: 'https://git.example/api/v4' });
   });
 });

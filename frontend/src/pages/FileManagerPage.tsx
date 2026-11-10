@@ -1907,8 +1907,8 @@ export function FileManagerPage() {
 
   // Queries
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: () => api.getSettings() as Promise<AppSettings>,
+    queryKey: ['ui-preferences'],
+    queryFn: () => api.getUiPreferences() as Promise<AppSettings>,
   });
   const timeFormat: TimeFormat = settings?.time_format || 'system';
   const dateFormat: DateFormat = settings?.date_format || 'system';

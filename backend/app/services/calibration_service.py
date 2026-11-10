@@ -245,7 +245,7 @@ async def _persist_calibration_slice_to_library(
     from backend.app.models.library import LibraryFile
     from backend.app.services.library_file_runtime import get_library_file_runtime
     from backend.app.services.library_helpers import skip_objects_supported_from_metadata, sync_system_tags
-    from backend.app.services.library_ingest import find_reusable_row
+    from backend.app.services.library_ingest import LibraryReadAccess, find_reusable_row
 
     unique_name = f"{uuid.uuid4().hex}.gcode.3mf"
     out_path = (
@@ -285,7 +285,7 @@ async def _persist_calibration_slice_to_library(
         # fixed settings — running the same calibration twice produces the same
         # bytes every time, so this path duplicates readily. There is no
         # ``restored`` branch to write: a match means the asset is already here.
-        reusable = await find_reusable_row(db, content_hash=content_hash)
+        reusable = await find_reusable_row(db, content_hash=content_hash, access=LibraryReadAccess("all"))
         if reusable is not None and reusable[1]:
             out_path.unlink(missing_ok=True)
             return reusable[0].id
