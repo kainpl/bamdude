@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from backend.app.core.database import take_write_lock
+from backend.app.models.print_usage_event import PrintUsageEvent
 from backend.app.models.printer import Printer
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
@@ -30,11 +31,32 @@ def policy_for(printer) -> AutoStockSpoolPolicy:
         return AutoStockSpoolPolicy()  # unreadable persisted policy never admits a claim
 
 
-def _external_feed_loaded(state, global_tray: int) -> bool:
+def _external_feed_loaded(state, runout: PrintUsageEvent, printer_model: str | None) -> bool:
     # H2's normalized per-extruder snow distinguishes Ext-R (255) from the
     # legacy tray_now=255 sentinel for an unloaded single-nozzle machine.
     snow = getattr(state, "h2d_extruder_snow", {}) or {}
-    return global_tray in snow.values() or (global_tray == 254 and getattr(state, "tray_now", None) == 254)
+    global_tray = runout.global_tray_id
+    tray_now = getattr(state, "tray_now", None)
+    if global_tray in snow.values() or (global_tray == 254 and tray_now == 254):
+        return True
+    if printer_model != "P2S" or global_tray != 254 or tray_now != 0:
+        return False
+    # An AMS-less P2S can report tray_now=0 while its sole hotend names the
+    # external holder (255, 0) explicitly. A cached UI slot or a command echo
+    # cannot prove that the replacement filament was loaded after this runout.
+    feed = getattr(state, "feed_telemetry", None)
+    if feed is None or not feed.ams_known or feed.ams_present:
+        return False
+    slot = (getattr(state, "extruder_slots", {}) or {}).get(0)
+    if slot is None or not slot.holds(255, 0) or not slot.has_filament or slot.status_observation is None:
+        return False
+    generation, observed_at = slot.status_observation
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return (
+        generation == state.connection_generation
+        and observed_at > runout.created_at
+        and 0 <= (now - observed_at).total_seconds() <= 30
+    )
 
 
 def available_filters():
@@ -88,7 +110,7 @@ async def available_groups(db):
 
 
 async def claim_on_insertion(
-    db, *, printer_id: int, event: dict, manager, external_runout_id: int | None = None
+    db, *, printer_id: int, event: dict, manager, external_runout: PrintUsageEvent | None = None
 ) -> dict:
     """One already-deduplicated, locally witnessed insertion; commit with its journal boundary.
 
@@ -119,7 +141,8 @@ async def claim_on_insertion(
         or not 0 <= (now - event["observed_at"]).total_seconds() <= 30
     ):
         return {"reason": "stale_insertion"}
-    external = external_runout_id is not None and ams_id == 255 and tray_id in (0, 1)
+    external = external_runout is not None and ams_id == 255 and tray_id in (0, 1)
+    printer_model = event.get("printer_model")
 
     def loading_tray(current):
         if external:
@@ -139,7 +162,9 @@ async def claim_on_insertion(
         or (
             external
             and (
-                state.state != "RUNNING" or not _external_feed_loaded(state, 254 + tray_id) or not tray.get("tray_type")
+                state.state != "RUNNING"
+                or not _external_feed_loaded(state, external_runout, printer_model)
+                or not tray.get("tray_type")
             )
         )
         or (not external and (ams_id >= 254 or spool_present(tray) is not True))
@@ -192,7 +217,7 @@ async def claim_on_insertion(
         ):
             return {"reason": "assignment_priority"}
         if external and (
-            last.id != external_runout_id
+            last.id != external_runout.id
             or archive_id != event["archive_id"]
             or any(e.event == EVENT_RESUME and e.id > last.id for e in events)
         ):
@@ -233,7 +258,9 @@ async def claim_on_insertion(
         or (
             external
             and (
-                state.state != "RUNNING" or not _external_feed_loaded(state, 254 + tray_id) or not tray.get("tray_type")
+                state.state != "RUNNING"
+                or not _external_feed_loaded(state, external_runout, printer_model)
+                or not tray.get("tray_type")
             )
         )
         or (not external and spool_present(tray) is not True)
@@ -314,13 +341,13 @@ async def claim_on_external_resume(db, *, printer_id: int, event: dict, manager)
     # Explicitly loading an AMS after runout does not mean an external reel was
     # replaced. The runout's full code names the holder; never infer its side
     # from the filename, colour, active extruder or a default external index.
-    if state is None or not _external_feed_loaded(state, runout.global_tray_id):
+    if state is None or not _external_feed_loaded(state, runout, event.get("printer_model")):
         return {"reason": "external_feed_not_confirmed"}
     outcome = await claim_on_insertion(
         db,
         printer_id=printer_id,
         event={**event, "ams_id": 255, "tray_id": runout.global_tray_id - 254, "archive_id": archive_id},
         manager=manager,
-        external_runout_id=runout.id,
+        external_runout=runout,
     )
     return {**outcome, "ams_id": 255, "tray_id": runout.global_tray_id - 254}

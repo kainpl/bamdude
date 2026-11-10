@@ -2,6 +2,8 @@
 
 - Disabling Home Assistant stops smart-plug polling and makes its plugs unavailable even when their settings and credentials are still saved. Re-enabling the integration resumes polling without re-adding the plugs.
 
+- Automatic stock spool assignment can recognize an external replacement on an AMS-less P2S when the hotend reports fresh external filament after a runout but the printer reports tray 0.
+
 - Queue item menus remain visible beyond the queue card and stay within the screen on narrow layouts; card rendering optimizations remain enabled.
 
 - Print-state diagnostics also explain an unproven live run when its preserved printing archive has no queue claim; the diagnostic enables no repair action.
