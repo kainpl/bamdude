@@ -10,6 +10,8 @@
 
 - Account email credentials are inserted by protected code-owned blocks, outside editable template variables. Live and historical logs redact credential fields and encoded or multiline secrets before search, truncation and support export, while preserving useful firmware and OID diagnostics.
 
+  Stopping bug-report recording restores normal logging even if recent logs cannot be collected; the report receives a notice instead. Log-processing time limits explain how to use a support bundle or narrower search, separately from a busy reader.
+
 - Upgrades refresh unchanged standard welcome and password-reset email bodies to avoid empty credential labels. Custom email text is preserved; operators with customized account templates should remove `{password}`, `{login_url}` and `{reset_url}` placeholders and their surrounding labels. The server appends the actual credentials and links in a protected block.
 
 - Disabling Home Assistant stops smart-plug polling and makes its plugs unavailable even when their settings and credentials are still saved. Re-enabling the integration resumes polling without re-adding the plugs.

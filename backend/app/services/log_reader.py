@@ -159,11 +159,17 @@ class LogReadUnavailable(RuntimeError):
     pass
 
 
+class LogReadDeadlineExceeded(LogReadUnavailable):
+    """The work budget expired; repeating the same large request may not help."""
+
+
 def _file_checkpoint():
     cancelled = getattr(_file_context, "cancelled", None)
     deadline = getattr(_file_context, "deadline", None)
-    if cancelled is not None and cancelled.is_set() or deadline is not None and time.monotonic() >= deadline:
-        raise LogReadUnavailable("cancelled_or_timeout")
+    if cancelled is not None and cancelled.is_set():
+        raise LogReadUnavailable("cancelled")
+    if deadline is not None and time.monotonic() >= deadline:
+        raise LogReadDeadlineExceeded("deadline")
 
 
 class LogFileWork:

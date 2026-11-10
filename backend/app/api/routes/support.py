@@ -43,6 +43,7 @@ from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.services.discovery import detect_container_runtime, is_running_in_docker
 from backend.app.services.log_reader import (
+    LogReadDeadlineExceeded,
     LogReadUnavailable,
     collect_diagnostic_sensitive_strings,
     file_work,
@@ -217,7 +218,11 @@ async def _log_sensitive_strings() -> dict[str, str]:
 async def _run_log_file_work(function, *args, timeout=30.0, **kwargs):
     try:
         return await file_work.run(function, *args, timeout=timeout, **kwargs)
-    except (LogReadUnavailable, TimeoutError):
+    except (LogReadDeadlineExceeded, TimeoutError):
+        raise HTTPException(
+            503, "Log processing exceeded the time limit. Use a support bundle or narrow your search."
+        ) from None
+    except LogReadUnavailable:
         raise HTTPException(
             503, "Log reader is busy or temporarily unavailable", headers={"Retry-After": "2"}
         ) from None

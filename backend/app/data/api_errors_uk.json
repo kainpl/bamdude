@@ -1145,7 +1145,8 @@
   "Authentication temporarily unavailable": "Автентифікація тимчасово недоступна",
   "Requires admin role for protected settings": "Зміна захищених налаштувань потребує ролі адміністратора",
   "Cannot remove your last available login method": "Не можна видалити останній доступний спосіб входу",
-  "Failed to send test email. Check the server logs.": "Не вдалося надіслати тестовий лист. Перевірте логи сервера.",
+  "Enabling MCP HTTP requires both explicit risk acknowledgements": "Увімкнення HTTP для MCP потребує обох явних підтверджень ризику",
   "Log sanitization is temporarily unavailable": "Очищення логів тимчасово недоступне",
-  "Log reader is busy or temporarily unavailable": "Читання логів зайняте або тимчасово недоступне"
+  "Log reader is busy or temporarily unavailable": "Читання логів зайняте або тимчасово недоступне",
+  "Log processing exceeded the time limit. Use a support bundle or narrow your search.": "Перевищено ліміт часу обробки логу. Скористайтеся пакетом підтримки або звузьте пошук."
 }
