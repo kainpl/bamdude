@@ -1476,6 +1476,7 @@ class ExtruderSlot:
     ams_id: int | None = None
     slot_id: int | None = None
     has_filament: bool = False
+    status_observation: tuple[int, datetime] | None = field(default=None, compare=False)
 
     def holds(self, ams_id: int, slot_id: int) -> bool:
         return self.ams_id == ams_id and self.slot_id == slot_id
@@ -5493,6 +5494,11 @@ class BambuMQTTClient:
         info = extruder.get("info") if isinstance(extruder, dict) else None
         if not isinstance(info, list) or not info:
             return
+        observation = (
+            (self.state.connection_generation, datetime.now(timezone.utc).replace(tzinfo=None))
+            if is_printer_status_frame(data)
+            else None
+        )
         slots: dict[int, ExtruderSlot] = {}
         for entry in info:
             if not isinstance(entry, dict) or "id" not in entry:
@@ -5507,7 +5513,12 @@ class BambuMQTTClient:
                 ams_id = slot_id = None
             else:
                 ams_id, slot_id = (snow >> 8) & 0xFF, snow & 0xFF
-            slots[ext_id] = ExtruderSlot(ams_id=ams_id, slot_id=slot_id, has_filament=bool(flags & 0b10))
+            slots[ext_id] = ExtruderSlot(
+                ams_id=ams_id,
+                slot_id=slot_id,
+                has_filament=bool(flags & 0b10),
+                status_observation=observation if 0 <= snow < _EXTRUDER_SLOT_EMPTY else None,
+            )
         if slots:
             self.state.extruder_slots = slots
 

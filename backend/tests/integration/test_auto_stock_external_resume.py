@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -20,7 +21,8 @@ from backend.app.models.print_usage_event import (
 )
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.services.auto_stock_spool import claim_on_external_resume
-from backend.app.services.print_usage_journal import record_event
+from backend.app.services.bambu_mqtt import BambuMQTTClient
+from backend.app.services.print_usage_journal import load_events, record_event
 from backend.tests.unit.services.test_auto_stock_spool import GROUP, printer, spool
 from backend.tests.unit.services.test_usage_tracker_runout import _journal, _make_archive
 
@@ -69,7 +71,6 @@ async def setup(db, factory, tmp_path, slot=0):
 async def test_external_resume_replaces_once_and_closes_old_balance(
     db_session, printer_factory, tmp_path, slot, label, consumed
 ):
-    from backend.app.services.print_usage_journal import load_events
     from backend.app.services.usage_tracker import apply_runout_zero_corrections
 
     p, old, new, archive, pm, state, event = await setup(db_session, printer_factory, tmp_path, slot)
@@ -92,6 +93,99 @@ async def test_external_resume_replaces_once_and_closes_old_balance(
     assert (await claim_on_external_resume(db_session, printer_id=p.id, event=event, manager=pm))[
         "reason"
     ] == "no_unambiguous_external_runout"
+
+
+def _report_p2s_feed(state, *, snow=0xFF00, flags=2, command="push_status", ams_units=()):
+    # Synthetic report of the observed P2S field values, not a runout capture.
+    client = BambuMQTTClient(ip_address="192.0.2.1", serial_number="TESTP2S", access_code="12345678")
+    client.state.connection_generation = state.connection_generation
+    report = {
+        "command": command,
+        "device": {"extruder": {"info": [{"id": 0, "snow": snow, "info": flags}]}},
+    }
+    if ams_units is not None:
+        report["ams"] = {"ams": list(ams_units)}
+    client.state.feed_telemetry.observe({"print": report}, "P2S")
+    client._parse_extruder_slots(report)
+    state.tray_now = 0
+    state.extruder_slots = client.state.extruder_slots
+    state.feed_telemetry = client.state.feed_telemetry
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "case",
+    [
+        "external",
+        "ams_slot",
+        "unloaded",
+        "empty_sentinel",
+        "command_ack",
+        "before_runout",
+        "stale",
+        "previous_connection",
+        "ams_present",
+        "ams_unknown",
+        "other_model",
+        "feed_changed_during_claim",
+    ],
+)
+async def test_p2s_tray_zero_external_resume(db_session, printer_factory, tmp_path, case):
+    p, old, new, archive, pm, state, event = await setup(db_session, printer_factory, tmp_path)
+    event["printer_model"] = "P1S" if case == "other_model" else "P2S"
+    _report_p2s_feed(
+        state,
+        snow={"ams_slot": 0, "empty_sentinel": 0xFFFF}.get(case, 0xFF00),
+        flags=0 if case == "unloaded" else 2,
+        command="project_file" if case == "command_ack" else "push_status",
+        ams_units={"ams_present": ({"id": 0},), "ams_unknown": None}.get(case, ()),
+    )
+    if case == "command_ack":
+        # Keep the independently established absence of an AMS. Only the
+        # source observation itself is from a command echo.
+        state.feed_telemetry.observe({"print": {"ams": {"ams": []}}}, "P2S")
+    if case in ("before_runout", "stale", "previous_connection"):
+        runout = (await load_events(db_session, p.id, archive.id))[0]
+        generation, observed_at = state.extruder_slots[0].status_observation
+        if case == "before_runout":
+            observed_at = runout.created_at - timedelta(microseconds=1)
+        elif case == "stale":
+            observed_at -= timedelta(seconds=31)
+            runout.created_at -= timedelta(seconds=60)
+            await db_session.commit()
+        else:
+            generation -= 1
+        state.extruder_slots[0] = replace(state.extruder_slots[0], status_observation=(generation, observed_at))
+    if case == "feed_changed_during_claim":
+        reads = 0
+
+        def current(_):
+            nonlocal reads
+            reads += 1
+            if reads == 3:
+                _report_p2s_feed(state, flags=0)
+            return state
+
+        pm.get_status = current
+
+    outcome = await claim_on_external_resume(db_session, printer_id=p.id, event=event, manager=pm)
+    if case == "external":
+        assert outcome == {"reason": "assigned", "spool_id": new.id, "ams_id": 255, "tray_id": 0}
+        assert (await db_session.execute(select(SpoolAssignment.spool_id))).scalar_one() == new.id
+        events = await load_events(db_session, p.id, archive.id)
+        assert [(e.event, e.global_tray_id, e.spool_id, e.layer_num) for e in events] == [
+            (EVENT_RUNOUT, 254, old.id, 140),
+            (EVENT_SPOOL_LOADED, 254, new.id, 140),
+        ]
+        assert (await claim_on_external_resume(db_session, printer_id=p.id, event=event, manager=pm))[
+            "reason"
+        ] == "no_unambiguous_external_runout"
+    else:
+        expected = "presence_unknown" if case == "feed_changed_during_claim" else "external_feed_not_confirmed"
+        assert outcome["reason"] == expected
+        assert (await db_session.execute(select(SpoolAssignment.spool_id))).scalar_one() == old.id
+        assert [e.event for e in await load_events(db_session, p.id, archive.id)] == [EVENT_RUNOUT]
 
 
 @pytest.mark.asyncio
@@ -205,10 +299,13 @@ async def test_external_resume_does_not_guess(db_session, printer_factory, tmp_p
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+@pytest.mark.parametrize("model", ["P1S", "P2S"])
 async def test_resume_callback_uses_current_runout_without_sending_printer_commands(
-    db_session, printer_factory, tmp_path
+    db_session, printer_factory, tmp_path, model
 ):
     p, old, new, archive, pm, state, event = await setup(db_session, printer_factory, tmp_path)
+    if model == "P2S":
+        _report_p2s_feed(state)
 
     @asynccontextmanager
     async def session():
@@ -219,6 +316,7 @@ async def test_resume_callback_uses_current_runout_without_sending_printer_comma
         patch.object(main, "async_session", session),
         patch.object(main.printer_manager, "get_status", pm.get_status),
         patch.object(main.printer_manager, "get_printer", return_value=SimpleNamespace(name="Product A printer")),
+        patch.object(main.printer_manager, "effective_model_for", return_value=model),
         patch.object(main.ws_manager, "broadcast", AsyncMock()),
         patch.object(main.ws_manager, "send_print_resumed", AsyncMock()),
         patch.object(main.notification_service, "on_print_resume", AsyncMock()),
@@ -231,7 +329,8 @@ async def test_resume_callback_uses_current_runout_without_sending_printer_comma
     assert (await db_session.execute(select(SpoolAssignment.spool_id))).scalar_one() == new.id
     events = (await db_session.execute(select(PrintUsageEvent).order_by(PrintUsageEvent.id))).scalars().all()
     assert sum(e.event == EVENT_SPOOL_LOADED for e in events) == 1
-    assert events[-1].event == EVENT_RESUME and events[-1].spool_id == new.id
+    first_resume = next(e for e in events if e.event == EVENT_RESUME)
+    assert (first_resume.global_tray_id, first_resume.spool_id) == (254, new.id)
     publisher.assert_not_awaited()
 
 

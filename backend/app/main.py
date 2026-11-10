@@ -2047,7 +2047,11 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_res
                         await claim_on_external_resume(
                             db,
                             printer_id=printer_id,
-                            event={"observed_at": observed_at, "generation": generation},
+                            event={
+                                "observed_at": observed_at,
+                                "generation": generation,
+                                "printer_model": printer_manager.effective_model_for(printer_id),
+                            },
                             manager=printer_manager,
                         )
                         if stock_resume_witnessed
@@ -2075,7 +2079,10 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_res
                         generation,
                         outcome["reason"],
                     )
-                    tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)
+                    if outcome["reason"] == "assigned":
+                        tray, spool_id, spoolman_spool_id = 254 + outcome["tray_id"], outcome["spool_id"], None
+                    else:
+                        tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)
                     # As the pause edge: written under the record's hold, proved again under it.
                     if await printer_manager.hold_record(db, printer_id):
                         await record_event(
