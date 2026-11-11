@@ -1,10 +1,13 @@
 ## [Unreleased]
 
+MQTT and metrics credentials now use explicit connection saves, preventing partial passwords from being saved during typing. Metrics cannot be enabled without a token. LDAP connection tests preserve the configured CA certificate, SMTP authentication can be disabled without resubmitting a password, and older smart plugs remain editable. Standalone cameras now keep complete source URLs private on read and require editor rights to test saved sources. Diagnostic logs preserve useful messages while omitting REST capabilities and HTTP wire payloads, including in debug mode.
+
+
 - Integration credentials and external-camera URLs are write-only, including for administrators. Editors show whether a value is configured and distinguish keeping, replacing and clearing it. Keeping a credential while changing its effective destination is refused before sending a request. Notification providers, application integrations, SMTP, smart plugs, Git backup and OIDC use the same edit rules while preserving each adapter's authentication modes.
 
   Connection tests use a frozen draft without saving it or holding configuration locks during network I/O. Legacy SMTP blank passwords still mean keep. Home Assistant environment credentials remain private and cannot be redirected by changing only the stored URL. Partial Git restores preserve local credential destinations; private full backups retain their credentials.
 
-  External-camera tests and the legacy global virtual-printer configuration writer now use JSON bodies. Camera stream and snapshot URLs are separate opaque values; testing a saved URL requires printer-editing rights. Clearing the external stream URL also requires disabling that source. API clients should follow [the credential-editing contract](docs/development/credential-edits.md).
+  Printer external-camera tests and the legacy global virtual-printer configuration writer now use JSON bodies. Printer camera stream and snapshot URLs are separate opaque values; testing a saved printer URL requires printer-editing rights. Clearing the external stream URL also requires disabling that source. API clients should follow [the credential-editing contract](docs/development/credential-edits.md).
 
 - Sensitive authentication, integration and backup controls require a real administrator, including accounts in the Administrators group. Delegated settings editors can still save ordinary preferences; restricted fields cannot change as a side effect of a full-form save. Public sign-in provider metadata and ordinary UI preferences use separate limited responses. Git connection tests send credentials in the request body.
 

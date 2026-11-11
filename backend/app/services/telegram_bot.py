@@ -523,7 +523,7 @@ async def send_message(provider_id: int, chat_id: str | int, text: str, **kwargs
         await bot.send_message(chat_id=chat_id, text=text, **kwargs)
         return True
     except Exception as e:
-        logger.error("Failed to send Telegram message: %s", e)
+        logger.error("Failed to send Telegram message (%s)", type(e).__name__)
         return False
 
 
@@ -539,5 +539,5 @@ async def send_photo(provider_id: int, chat_id: str | int, photo: bytes, caption
         await bot.send_photo(chat_id=chat_id, photo=file, caption=caption, **kwargs)
         return True
     except Exception as e:
-        logger.error("Failed to send Telegram photo: %s", e)
+        logger.error("Failed to send Telegram photo (%s)", type(e).__name__)
         return False

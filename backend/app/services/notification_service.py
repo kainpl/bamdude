@@ -23,7 +23,13 @@ from backend.app.core.config import APP_VERSION
 from backend.app.models.notification import NotificationDigestQueue, NotificationLog, NotificationProvider
 from backend.app.models.notification_template import NotificationTemplate
 from backend.app.services import notification_inbox
-from backend.app.services.notification_credentials import credential_safe_sender, safe_provider_message
+from backend.app.services.notification_credentials import (
+    config_dict,
+    credential_safe_sender,
+    email_auth_enabled,
+    ntfy_server,
+    safe_provider_message,
+)
 from backend.app.services.notification_events import SENSOR_ALERT_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -306,7 +312,7 @@ class NotificationService:
         event_type: str | None = None,
     ) -> tuple[bool, str]:
         """Send notification via ntfy."""
-        server = config.get("server", "https://ntfy.sh").rstrip("/")
+        server = ntfy_server(config)
         topic = config.get("topic", "").strip()
         auth_token = config.get("auth_token", "").strip()
 
@@ -776,7 +782,13 @@ class NotificationService:
                     extra_data,
                 )
 
-                if image_data:
+                # Keyboard construction awaited DB work: a restart may have
+                # swapped the registry meanwhile. Check immediately before the
+                # helper captures its bot, with no intervening await.
+                live_bot = get_bot(provider_id)
+                if live_bot is None or getattr(live_bot, "token", None) != bot_token:
+                    ok = False
+                elif image_data:
                     ok = await send_photo(
                         provider_id, chat_id, image_data, caption=md2_message, reply_markup=reply_markup
                     )
@@ -867,7 +879,7 @@ class NotificationService:
         # Security: "starttls" (port 587), "ssl" (port 465), "none" (port 25)
         security = config.get("security", "starttls")
         # Authentication: "true" or "false"
-        auth_enabled = config.get("auth_enabled", "true").lower() == "true"
+        auth_enabled = email_auth_enabled(config)
 
         if not all([smtp_server, from_email, to_email]):
             return False, "SMTP server, from email, and to email are required"
@@ -1705,8 +1717,9 @@ class NotificationService:
                 else:
                     logger.warning("Failed to send notification via %s: %s", provider.name, error)
             except Exception as e:
-                logger.exception("Error sending notification via %s", provider.name)
-                await self._update_provider_status(db, provider.id, False, str(e))
+                error = safe_provider_message(str(e), provider.provider_type, config_dict(provider.config))
+                logger.warning("Error sending notification via %s (%s)", provider.name, type(e).__name__)
+                await self._update_provider_status(db, provider.id, False, error)
                 await self._log_notification(
                     db=db,
                     provider_id=provider.id,
@@ -1714,7 +1727,7 @@ class NotificationService:
                     title=title,
                     message=message,
                     success=False,
-                    error_message=str(e),
+                    error_message=error,
                     printer_id=printer_id,
                     printer_name=printer_name,
                 )

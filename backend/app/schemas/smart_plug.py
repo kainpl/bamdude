@@ -247,6 +247,30 @@ class SmartPlugUpdate(BaseModel):
 
 
 class SmartPlugResponse(SmartPlugBase):
+    # Reads must also serialize values accepted by historical PATCH writers.
+    # New/changed values are checked against SmartPlugBase by the write resolver.
+    name: str
+    ip_address: str | None = None
+    ha_entity_id: str | None = None
+    ha_power_entity: str | None = None
+    ha_energy_today_entity: str | None = None
+    ha_energy_total_entity: str | None = None
+    mqtt_topic: str | None = None
+    mqtt_power_topic: str | None = None
+    mqtt_power_path: str | None = None
+    mqtt_energy_topic: str | None = None
+    mqtt_energy_path: str | None = None
+    mqtt_state_topic: str | None = None
+    mqtt_state_path: str | None = None
+    mqtt_state_on_value: str | None = None
+    mqtt_energy_total_topic: str | None = None
+    mqtt_energy_total_path: str | None = None
+    mqtt_command_topic: str | None = None
+    rest_status_path: str | None = None
+    rest_status_on_value: str | None = None
+    rest_power_path: str | None = None
+    rest_energy_path: str | None = None
+    rest_energy_total_path: str | None = None
     password: str | None = Field(default=None, exclude=True, repr=False)
     rest_headers: str | None = Field(default=None, exclude=True, repr=False)
     rest_on_url: str | None = Field(default=None, exclude=True, repr=False)

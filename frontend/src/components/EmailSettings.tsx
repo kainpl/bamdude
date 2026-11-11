@@ -94,7 +94,6 @@ function EmailSettingsContent() {
     setSMTPSettings({
       ...smtpSettings,
       smtp_auth_enabled: enabled,
-      ...(!enabled ? { smtp_username: '', smtp_password: '' } : {}),
     });
   };
 

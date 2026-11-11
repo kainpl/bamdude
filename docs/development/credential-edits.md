@@ -89,3 +89,28 @@ Tests do not persist drafts. They release the configuration transaction before
 calling the existing sender or camera worker. Partial Git restore cannot change
 local credential destinations around a retained secret; edit those integrations
 locally. Full private backups continue to preserve their credentials.
+
+
+Standalone cameras use the same opaque-source contract. `/cameras/` reads omit
+`url` and `snapshot_url`, returning `url_configured`, `snapshot_url_configured`
+and `source_host`. Their editor keeps blank source inputs private, tests drafts
+without persistence and saves only on explicit Save. Saved-source tests use
+`POST /cameras/{id}/test` with optional draft fields, `secret_actions` and
+`source: "stream" | "snapshot"`; they require `settings:update` and
+`camera:view`. New, explicitly supplied sources can still use `/cameras/test`
+with the existing camera-view permission. Clearing the primary source requires
+a disabled camera; changing its type requires an explicit replacement source.
+
+MQTT connection fields and Prometheus exposure/token edits also require explicit
+Save connection. Ordinary preference autosave never carries those drafts.
+Enabling metrics now requires a nonblank token; clear it only while disabled.
+SMTP authentication can be turned off while retaining the unused password for
+the same host/account, and no login/password is sent in that mode. LDAP tests
+preserve the operator's stored CA verification policy; partial Git restore cannot
+replace or remove that CA path around a retained bind password.
+
+Legacy smart-plug fields accepted by older PATCH writers remain editable when
+unchanged, while actual changed values obey create-time field constraints.
+HTTP client wire INFO/DEBUG logging stays disabled even in application debug
+mode because complete URLs and headers may carry opaque credentials; adapter
+logs retain safe endpoint hosts and typed failure categories.

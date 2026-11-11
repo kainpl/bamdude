@@ -23,3 +23,24 @@ def resolve_camera_credentials(stored, changes, actions=None, *, creating=False)
     ):
         raise HTTPException(400, "Disable the external camera before clearing its stream URL")
     return resolved
+
+
+STANDALONE_SECRET_FIELDS = frozenset({"url", "snapshot_url"})
+
+
+def resolve_standalone_camera_credentials(stored, changes, actions=None, *, creating=False):
+    """Standalone rows own their sources; never borrow a printer's identity."""
+    if any(key in changes and changes[key] is None for key in ("name", "url", "camera_type", "rotation", "enabled")):
+        raise HTTPException(422, "Required camera fields cannot be null")
+    resolved = merge_secret_fields(
+        stored,
+        changes,
+        STANDALONE_SECRET_FIELDS,
+        actions,
+        creating=creating,
+        clear_values={"url": "", "snapshot_url": None},
+        scope={"url": lambda config: config.get("camera_type")},
+    )
+    if resolved.get("enabled", True) and not resolved.get("url"):
+        raise HTTPException(400, "Disable the camera before clearing its source URL")
+    return resolved

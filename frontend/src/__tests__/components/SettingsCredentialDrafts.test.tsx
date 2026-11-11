@@ -49,6 +49,24 @@ describe('Settings credential draft tests', () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  it('disables SMTP authentication without automatically clearing the account or retained credential', async () => {
+    vi.spyOn(api, 'getSMTPSettings').mockResolvedValue({ smtp_host: 'mail.old', smtp_port: 587,
+      smtp_username: 'operator', smtp_security: 'starttls', smtp_auth_enabled: true,
+      smtp_from_email: 'from@example.org', smtp_from_name: 'BamDude', smtp_password_configured: true });
+    vi.spyOn(api, 'getAdvancedAuthStatus').mockResolvedValue({ advanced_auth_enabled: false, smtp_configured: true } as never);
+    const save = vi.spyOn(api, 'saveSMTPSettings').mockResolvedValue({ message: 'ok' });
+    render(<EmailSettings />);
+    await screen.findByDisplayValue('operator');
+    fireEvent.change(screen.getByDisplayValue('Enabled'), { target: { value: 'false' } });
+    await act(() => new Promise(resolve => setTimeout(resolve, 750)));
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Settings' }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save.mock.calls[0][0]).toMatchObject({ smtp_auth_enabled: false, smtp_username: 'operator',
+      secret_actions: { smtp_password: 'keep' } });
+    expect(save.mock.calls[0][0]).not.toHaveProperty('smtp_password');
+  });
+
   it('keeps an opaque legacy LDAP URL together with its bind credential without reconstructing either', async () => {
     vi.spyOn(api, 'getSettings').mockResolvedValue({ ldap_enabled: true, ldap_server_url: '',
       ldap_server_url_opaque: true, ldap_server_url_configured: true, ldap_bind_dn: 'cn=operator',

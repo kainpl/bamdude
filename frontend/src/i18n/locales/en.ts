@@ -3063,6 +3063,9 @@ export default {
   },
   settings: {
     credentials: {
+      destinationChanged: 'The connection destination changed. Replace or explicitly clear its credential before saving.',
+      metricsToken: 'Bearer token',
+      metricsTokenRequired: 'A bearer token is required to enable the metrics endpoint.',
       configured: 'Credential configured',
       notConfigured: 'No credential configured',
       action: 'Credential action',

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -106,8 +106,22 @@ def _resolve_plug(plug: SmartPlug | None, changes: dict, actions: dict | None = 
         if any(getattr(plug, field) and not resolved.get(field) for field in active):
             raise HTTPException(400, "Disable the smart plug when removing an authentication credential")
     try:
-        SmartPlugBase.model_validate(resolved)
-    except ValidationError as exc:
+        if plug is None:
+            SmartPlugBase.model_validate(resolved)
+        else:
+            # Old PATCH writers accepted hostnames, other HA domains and longer
+            # strings. Keep those stored values usable, including an editor
+            # resubmitting the identical value; every actual change obeys the
+            # same field constraints as a new plug.
+            for field, value in resolved.items():
+                if value != getattr(plug, field):
+                    definition = SmartPlugBase.model_fields[field]
+                    resolved[field] = TypeAdapter(definition.rebuild_annotation()).validate_python(value)
+            # Required fields depend on the complete effective type/mode, even
+            # when only one field changed. Do not reapply field constraints to
+            # untouched legacy values here.
+            SmartPlugBase.model_construct(**resolved).validate_plug_type_fields()
+    except (ValidationError, ValueError) as exc:
         raise HTTPException(
             422, "Invalid effective smart plug configuration; check the required fields for its type"
         ) from exc

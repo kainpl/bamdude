@@ -37,6 +37,7 @@ CREDENTIAL_SETTING_KEYS = frozenset(
         "ldap_security",
         "ldap_bind_dn",
         "ldap_bind_password",
+        "ldap_ca_cert_path",
         "prometheus_token",
         "virtual_printer_access_code",
         "smtp_host",

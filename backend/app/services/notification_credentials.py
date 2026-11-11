@@ -103,6 +103,20 @@ def provider_projection(kind: str, value) -> tuple[dict, dict[str, bool], dict[s
     return safe, secret_presence(config, fields), display
 
 
+def ntfy_server(config: dict) -> str:
+    """Match the sender default without activating broken legacy endpoints.
+
+    Only an absent key selects the public service. Explicit empty/null legacy
+    values stay unusable, and cannot be rebound there with retained secrets.
+    """
+    value = config.get("server", "https://ntfy.sh")
+    return value.rstrip("/") if isinstance(value, str) else ""
+
+
+def email_auth_enabled(config: dict) -> bool:
+    return str(config.get("auth_enabled", "true")).lower() == "true"
+
+
 def _scope(kind: str, field: str, config: dict):
     kind = config.get("_provider_type", kind)
 
@@ -112,7 +126,7 @@ def _scope(kind: str, field: str, config: dict):
     if kind == "callmebot":
         return kind, text("phone")
     if kind == "ntfy":
-        server = canonical_url(config.get("server"), default="https://ntfy.sh")
+        server = canonical_url(ntfy_server(config))
         return (kind, server) if field == "topic" else (kind, server, text("topic"))
     if kind == "bark":
         return kind, canonical_url(config.get("server"), default="https://api.day.app")
@@ -126,7 +140,6 @@ def _scope(kind: str, field: str, config: dict):
             text("smtp_server").lower(),
             port,
             config.get("security", "starttls"),
-            str(config.get("auth_enabled", "true")).lower(),
             text("username"),
         )
     if kind in {"webhook", "discord"}:
@@ -167,6 +180,16 @@ def resolve_provider_config(
     for field in fields:
         if field in changes and changes[field] is not None and not isinstance(changes[field], str):
             raise HTTPException(422, f"{field}: expected a string")
+    # These senders trim headers before deciding whether to authenticate.
+    # Resolve that same value before validating an anonymous transition.
+    for field in ("auth_token", "auth_header"):
+        if field in fields and isinstance(changes.get(field), str):
+            changes[field] = changes[field].strip()
+    if kind == "email" and "auth_enabled" in changes:
+        mode = str(changes["auth_enabled"]).lower()
+        if mode not in {"true", "false"}:
+            raise HTTPException(422, "auth_enabled: invalid authentication mode")
+        changes["auth_enabled"] = mode
     resolved = merge_secret_fields(
         {**old, "_provider_type": kind},
         {**changes, "_provider_type": kind},
@@ -185,7 +208,7 @@ def resolve_provider_config(
         if (
             field in fields
             and (old.get(field) or (actions or {}).get(field) == "clear")
-            and not resolved.get(field)
+            and not str(resolved.get(field) or "").strip()
             and enabled
         ):
             if resolved.get("auth_mode") != "anonymous":
@@ -198,9 +221,9 @@ def resolve_provider_config(
             raise HTTPException(422, "auth_mode: invalid authentication mode")
         if enabled and mode == "authenticated":
             required.add(auth_field)
-        if enabled and mode == "anonymous" and resolved.get(auth_field):
+        if enabled and mode == "anonymous" and str(resolved.get(auth_field) or "").strip():
             raise HTTPException(422, f"{auth_field}: clear the credential to select anonymous authentication")
-    if kind == "email" and str(resolved.get("auth_enabled", "true")).lower() != "false":
+    if kind == "email" and email_auth_enabled(resolved):
         required.add("password")
     # Existing malformed/disabled legacy rows remain editable in metadata.
     credential_edit = (
@@ -229,8 +252,12 @@ def safe_provider_message(message: str, kind: str, config: dict, *, extra_secret
         value = config.get(field)
         if isinstance(value, str) and value:
             values[value] = "[REDACTED]"
-            if field == "auth_header" and value.lower().startswith(("bearer ", "basic ")):
-                values[value.split(None, 1)[1]] = "[REDACTED]"
+            normalized = value.strip()
+            if normalized:
+                values[normalized] = "[REDACTED]"
+            header = normalized.split(None, 1)
+            if field == "auth_header" and len(header) == 2 and header[0].lower() in {"bearer", "basic"}:
+                values[header[1]] = "[REDACTED]"
             if field == "bot_token" and ":" in value:
                 values[value.split(":", 1)[1]] = "[REDACTED]"
             try:
@@ -240,8 +267,12 @@ def safe_provider_message(message: str, kind: str, config: dict, *, extra_secret
                         values[unquote(part)] = "[REDACTED]"
                 if parts.scheme and parts.netloc:
                     for part in parts.path.split("/"):
-                        if part:
-                            values[unquote(part)] = "[REDACTED]"
+                        # The complete URL is always confidential. Generic
+                        # short path words are not standalone credentials:
+                        # masking /print/a would destroy ordinary diagnostics.
+                        decoded = unquote(part)
+                        if len(decoded) >= 12:
+                            values[decoded] = "[REDACTED]"
                     for _, part in parse_qsl(parts.query):
                         if part:
                             values[part] = "[REDACTED]"

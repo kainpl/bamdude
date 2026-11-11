@@ -564,6 +564,7 @@ PROVIDER_SECRET_FIELDS = frozenset(
         "password",
         "username",
         "auth_token",
+        "auth_header",
         "apikey",
         "api_key",
         "user_key",
@@ -574,7 +575,9 @@ PROVIDER_SECRET_FIELDS = frozenset(
 
 
 async def collect_diagnostic_sensitive_strings(db: AsyncSession) -> dict[str, str]:
+    from backend.app.core.credential_config import CONFIG_GUARD_KEY
     from backend.app.core.encryption import mfa_decrypt
+    from backend.app.models.camera import Camera
     from backend.app.models.cloud_link import CloudLink
     from backend.app.models.notification import NotificationProvider
     from backend.app.models.oidc_provider import OIDCProvider
@@ -621,7 +624,14 @@ async def collect_diagnostic_sensitive_strings(db: AsyncSession) -> dict[str, st
         walk(parsed)
 
     for key, value in (
-        await db.execute(select(Settings.key, Settings.value).where(sensitive_settings_predicate(Settings.key)))
+        await db.execute(
+            select(Settings.key, Settings.value).where(
+                sensitive_settings_predicate(Settings.key),
+                # This reserved lock row is infrastructure, never a credential.
+                # Its constant '1' must not mask every timestamp/OID digit.
+                Settings.key != CONFIG_GUARD_KEY,
+            )
+        )
     ).all():
         if isinstance(value, str) and redact_setting_in_log(key, value):
             add(value)
@@ -656,15 +666,23 @@ async def collect_diagnostic_sensitive_strings(db: AsyncSession) -> dict[str, st
     for row in (await db.execute(select(Printer.external_camera_url, Printer.external_camera_snapshot_url))).all():
         for value in row:
             add_url(value)
-    for raw in (await db.scalars(select(NotificationProvider.config))).all():
+    for row in (await db.execute(select(Camera.url, Camera.snapshot_url))).all():
+        for value in row:
+            add_url(value)
+    for provider_type, raw in (
+        await db.execute(select(NotificationProvider.provider_type, NotificationProvider.config))
+    ).all():
         config = json.loads(raw)
         if not isinstance(config, dict):
             raise ValueError("invalid_secret_configuration")
         for name in PROVIDER_SECRET_FIELDS:
             add(config.get(name))
         # ntfy topic is a capability path; redact the configured complete URL too.
-        if config.get("server") and config.get("topic"):
-            add(str(config["server"]).rstrip("/") + "/" + str(config["topic"]))
+        if provider_type == "ntfy" and config.get("topic"):
+            add(config["topic"])
+            server = config.get("server", "https://ntfy.sh")
+            if isinstance(server, str) and server:
+                add(server.rstrip("/") + "/" + str(config["topic"]))
     for encrypted in (await db.scalars(select(OIDCProvider._client_secret_enc))).all():
         add(mfa_decrypt(encrypted) if encrypted.startswith("fernet:") else encrypted)
     return values

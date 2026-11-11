@@ -1170,7 +1170,7 @@ export function SettingsPage() {
 
   const updateMutation = useMutation({
     mutationFn: api.updateSettings,
-    onSuccess: (data, submitted) => {
+    onSuccess: (data) => {
       const previous = serverBaselineRef.current;
       if (previous && (
         previous.forecast_operator_absence_enabled !== data.forecast_operator_absence_enabled ||
@@ -1188,20 +1188,6 @@ export function SettingsPage() {
       // only if react-query hands back a new object — setting it here means the
       // baseline never lags behind a save regardless.
       serverBaselineRef.current = data;
-      // Clear only the acknowledged secret draft. A newer edit made during
-      // the request remains local and will be saved by the next debounce.
-      setLocalSettings(previous => {
-        if (!previous) return previous;
-        const next = { ...previous };
-        for (const field of ['mqtt_password', 'prometheus_token'] as const) {
-          if (submitted.secret_actions?.[field] && (previous[field] ?? '') === (submitted[field] ?? '')) {
-            next[field] = '';
-            next[`${field}_configured`] = data[`${field}_configured`];
-          }
-        }
-        return next;
-      });
-      setSecretActions(previous => Object.fromEntries(Object.entries(previous).filter(([field, action]) => submitted.secret_actions?.[field] !== action)));
       queryClient.setQueryData(['settings'], data);
       // The curated copy every non-settings page renders with (dates, times, currency).
       queryClient.invalidateQueries({ queryKey: ['ui-preferences'] });
@@ -1365,13 +1351,6 @@ export function SettingsPage() {
       baseline.ftp_retry_count !== localSettings.ftp_retry_count ||
       baseline.ftp_retry_delay !== localSettings.ftp_retry_delay ||
       baseline.ftp_timeout !== localSettings.ftp_timeout ||
-      baseline.mqtt_enabled !== localSettings.mqtt_enabled ||
-      baseline.mqtt_broker !== localSettings.mqtt_broker ||
-      baseline.mqtt_port !== localSettings.mqtt_port ||
-      baseline.mqtt_username !== localSettings.mqtt_username ||
-      (localSettings.mqtt_password ?? '') !== '' ||
-      baseline.mqtt_topic_prefix !== localSettings.mqtt_topic_prefix ||
-      baseline.mqtt_use_tls !== localSettings.mqtt_use_tls ||
       baseline.external_url !== localSettings.external_url ||
       baseline.ha_enabled !== localSettings.ha_enabled ||
       Number(baseline.library_disk_warning_gb ?? 5) !== Number(localSettings.library_disk_warning_gb ?? 5) ||
@@ -1384,8 +1363,6 @@ export function SettingsPage() {
       (baseline.orcaslicer_api_url ?? '') !== (localSettings.orcaslicer_api_url ?? '') ||
       (baseline.bambu_studio_api_url ?? '') !== (localSettings.bambu_studio_api_url ?? '') ||
       (baseline.slicer_stall_timeout_minutes ?? 15) !== (localSettings.slicer_stall_timeout_minutes ?? 15) ||
-      baseline.prometheus_enabled !== localSettings.prometheus_enabled ||
-      (localSettings.prometheus_token ?? '') !== '' || ['mqtt_password', 'prometheus_token'].some(field => field in secretActions) ||
       (baseline.session_max_hours ?? 720) !== (localSettings.session_max_hours ?? 720) ||
       (baseline.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true);
 
@@ -1494,13 +1471,6 @@ export function SettingsPage() {
         ftp_retry_count: localSettings.ftp_retry_count,
         ftp_retry_delay: localSettings.ftp_retry_delay,
         ftp_timeout: localSettings.ftp_timeout,
-        mqtt_enabled: localSettings.mqtt_enabled,
-        mqtt_broker: localSettings.mqtt_broker,
-        mqtt_port: localSettings.mqtt_port,
-        mqtt_username: localSettings.mqtt_username,
-        mqtt_password: localSettings.mqtt_password,
-        mqtt_topic_prefix: localSettings.mqtt_topic_prefix,
-        mqtt_use_tls: localSettings.mqtt_use_tls,
         external_url: localSettings.external_url,
         ha_enabled: localSettings.ha_enabled,
         ha_url: localSettings.ha_url,
@@ -1515,8 +1485,6 @@ export function SettingsPage() {
         orcaslicer_api_url: localSettings.orcaslicer_api_url,
         bambu_studio_api_url: localSettings.bambu_studio_api_url,
         slicer_stall_timeout_minutes: localSettings.slicer_stall_timeout_minutes,
-        prometheus_enabled: localSettings.prometheus_enabled,
-        prometheus_token: localSettings.prometheus_token,
         session_max_hours: localSettings.session_max_hours,
         user_notifications_enabled: localSettings.user_notifications_enabled,
       };
@@ -1531,13 +1499,6 @@ export function SettingsPage() {
       // Blank inputs keep by omission; explicit clear/replace carry actions.
       delete settingsToSave.ha_url;
       delete settingsToSave.ha_token;
-      for (const field of ['mqtt_password', 'prometheus_token'] as const) {
-        delete settingsToSave[field];
-        if (isAdmin) {
-          const draft = credentialDraft(field, localSettings[field], secretActions[field], localSettings[`${field}_configured`]);
-          Object.assign(settingsToSave, { ...draft, secret_actions: { ...settingsToSave.secret_actions, ...draft.secret_actions } });
-        }
-      }
       updateMutation.mutate(settingsToSave);
     }, 500);
 
@@ -1591,6 +1552,49 @@ export function SettingsPage() {
         return next;
       });
       setSecretActions(previous => Object.fromEntries(Object.entries(previous).filter(([field, action]) => submitted.secret_actions?.[field] !== action)));
+      queryClient.setQueryData(['settings'], data);
+      showToast(t('settings.toast.settingsSaved'), 'success');
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+
+  const mqttConnectionFields = ['mqtt_enabled', 'mqtt_broker', 'mqtt_port', 'mqtt_use_tls', 'mqtt_username', 'mqtt_topic_prefix'] as const;
+  const mqttConnectionChanged = !!localSettings && !!settings && (mqttConnectionFields.some(field => localSettings[field] !== settings[field]) ||
+    !!localSettings.mqtt_password || !!secretActions.mqtt_password);
+  const mqttNeedsReplacement = !!localSettings?.mqtt_password_configured && (secretActions.mqtt_password ?? 'keep') === 'keep' &&
+    ['mqtt_broker', 'mqtt_port', 'mqtt_use_tls', 'mqtt_username'].some(field => localSettings?.[field as keyof AppSettings] !== settings?.[field as keyof AppSettings]);
+  const prometheusConnectionChanged = !!localSettings && !!settings && (localSettings.prometheus_enabled !== settings.prometheus_enabled ||
+    !!localSettings.prometheus_token || !!secretActions.prometheus_token);
+  const invalidReplacement = (field: 'mqtt_password' | 'prometheus_token') => secretActions[field] === 'replace' && !localSettings?.[field]?.trim();
+  const prometheusHasToken = secretActions.prometheus_token === 'replace' ? !!localSettings?.prometheus_token?.trim() :
+    secretActions.prometheus_token !== 'clear' && !!localSettings?.prometheus_token_configured;
+  const manualConnectionDraft = (kind: 'mqtt' | 'prometheus'): AppSettingsUpdate => {
+    if (!localSettings) return {};
+    if (kind === 'prometheus') return { prometheus_enabled: localSettings.prometheus_enabled,
+      ...credentialDraft('prometheus_token', localSettings.prometheus_token, secretActions.prometheus_token, localSettings.prometheus_token_configured) };
+    return { mqtt_enabled: localSettings.mqtt_enabled, mqtt_broker: localSettings.mqtt_broker, mqtt_port: localSettings.mqtt_port,
+      mqtt_use_tls: localSettings.mqtt_use_tls, mqtt_username: localSettings.mqtt_username, mqtt_topic_prefix: localSettings.mqtt_topic_prefix,
+      ...credentialDraft('mqtt_password', localSettings.mqtt_password, secretActions.mqtt_password, localSettings.mqtt_password_configured) };
+  };
+  const saveManualConnection = useMutation({
+    mutationFn: ({ draft }: { kind: 'mqtt' | 'prometheus'; draft: AppSettingsUpdate }) => api.updateSettings(draft),
+    onSuccess: (data, { kind, draft }) => {
+      serverBaselineRef.current = data;
+      const secret = kind === 'mqtt' ? 'mqtt_password' : 'prometheus_token';
+      setLocalSettings(previous => {
+        if (!previous) return previous;
+        const next = { ...previous };
+        for (const field of kind === 'mqtt' ? mqttConnectionFields : ['prometheus_enabled'] as const) {
+          if (previous[field] === draft[field]) Object.assign(next, { [field]: data[field] });
+        }
+        if ((previous[secret] ?? '') === (draft[secret] ?? '')) {
+          next[secret] = '';
+          next[`${secret}_configured`] = data[`${secret}_configured`];
+        }
+        return next;
+      });
+      setSecretActions(previous => previous[secret] === draft.secret_actions?.[secret] &&
+        (localSettings?.[secret] ?? '') === (draft[secret] ?? '') ? Object.fromEntries(Object.entries(previous).filter(([field]) => field !== secret)) : previous);
       queryClient.setQueryData(['settings'], data);
       showToast(t('settings.toast.settingsSaved'), 'success');
     },
@@ -4591,7 +4595,7 @@ export function SettingsPage() {
                 </label>
               </div>
 
-              {localSettings.mqtt_enabled && (
+              {(localSettings.mqtt_enabled || localSettings.mqtt_password_configured) && (
                 <div className="space-y-4 pt-2 border-t border-bambu-dark-tertiary">
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
@@ -4661,7 +4665,7 @@ export function SettingsPage() {
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.passwordOptional')}
                     </label>
-                    <SecretInput disabled={!isAdmin || !hasPermission('settings:update')}
+                    <SecretInput disabled={!isAdmin || !hasPermission('settings:update') || saveManualConnection.isPending}
                       value={localSettings.mqtt_password ?? ''} action={secretActions.mqtt_password}
                       configured={localSettings.mqtt_password_configured}
                       onChange={value => updateSetting('mqtt_password', value)}
@@ -4701,6 +4705,11 @@ export function SettingsPage() {
                   )}
                 </div>
               )}
+              {mqttNeedsReplacement && <p className="text-sm text-amber-400">{t('settings.credentials.destinationChanged')}</p>}
+              <Button onClick={() => saveManualConnection.mutate({ kind: 'mqtt', draft: manualConnectionDraft('mqtt') })}
+                disabled={!isAdmin || !hasPermission('settings:update') || !mqttConnectionChanged || mqttNeedsReplacement || invalidReplacement('mqtt_password') || saveManualConnection.isPending}>
+                {t('settings.credentials.saveConnection')}
+              </Button>
             </CardContent>
           </Card>
         </div>
@@ -4739,15 +4748,15 @@ export function SettingsPage() {
                 <div className="space-y-4 pt-2 border-t border-bambu-dark-tertiary">
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
-                      {t('settings.bearerTokenOptional')}
+                      {t('settings.credentials.metricsToken')}
                     </label>
-                    <SecretInput disabled={!isAdmin || !hasPermission('settings:update')}
+                    <SecretInput disabled={!isAdmin || !hasPermission('settings:update') || saveManualConnection.isPending}
                       value={localSettings.prometheus_token ?? ''} action={secretActions.prometheus_token}
                       configured={localSettings.prometheus_token_configured}
                       onChange={value => updateSetting('prometheus_token', value)}
                       onActionChange={action => setSecretActions(previous => ({ ...previous, prometheus_token: action }))} />
                     <p className="text-xs text-bambu-gray mt-1">
-                      {t('settings.bearerTokenHint')}
+                      {t('settings.credentials.metricsTokenRequired')}
                     </p>
                   </div>
 
@@ -4765,6 +4774,11 @@ export function SettingsPage() {
                   </div>
                 </div>
               )}
+              {localSettings.prometheus_enabled && !prometheusHasToken && <p className="text-sm text-amber-400">{t('settings.credentials.metricsTokenRequired')}</p>}
+              <Button onClick={() => saveManualConnection.mutate({ kind: 'prometheus', draft: manualConnectionDraft('prometheus') })}
+                disabled={!isAdmin || !hasPermission('settings:update') || !prometheusConnectionChanged || invalidReplacement('prometheus_token') || (!!localSettings.prometheus_enabled && !prometheusHasToken) || saveManualConnection.isPending}>
+                {t('settings.credentials.saveConnection')}
+              </Button>
             </CardContent>
           </Card>
 

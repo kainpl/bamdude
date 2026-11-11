@@ -185,7 +185,6 @@ async def test_smtp_read_and_saved_actions(async_client, db_session):
         {"smtp_port": 465},
         {"smtp_security": "none"},
         {"smtp_username": "other"},
-        {"smtp_auth_enabled": False},
         {"smtp_use_tls": False},
     ]:
         body = {**SMTP, **changed}
@@ -641,3 +640,170 @@ async def test_rs3_invalid_effective_destination_refuses_before_any_write_or_run
     await db_session.rollback()
     read = await async_client.get("/api/v1/settings/")
     assert read.status_code == 200, read.text
+
+
+@pytest.mark.parametrize("draft", [False, True])
+@pytest.mark.parametrize("with_ca", [False, True])
+async def test_ba1_ldap_test_preserves_runtime_tls_verification(db_session, monkeypatch, tmp_path, draft, with_ca):
+    import ssl
+
+    from backend.app.services import ldap_service
+
+    ca = tmp_path / "directory-ca.pem"
+    ca.write_text("operator-managed-certificate")
+    await seed(
+        db_session,
+        {
+            "ldap_enabled": True,
+            "ldap_server_url": "ldaps://directory.local",
+            "ldap_bind_password": "bind-canary",
+            "ldap_ca_cert_path": str(ca) if with_ca else "",
+        },
+    )
+    runtime = ldap_service.parse_ldap_config(await auth._get_ldap_settings(db_session))
+    await db_session.rollback()
+    captured = []
+
+    def send(config):
+        assert not db_session.in_transaction()
+        captured.append(config)
+        server = ldap_service._create_server(config)
+        assert config.ca_cert_path == runtime.ca_cert_path
+        assert server.tls.validate == (ssl.CERT_REQUIRED if with_ca else ssl.CERT_NONE)
+        assert server.tls.ca_certs_file == (str(ca) if with_ca else None)
+        return True, "ok"
+
+    monkeypatch.setattr(ldap_service, "test_ldap_connection", send)
+    result = await auth.test_ldap(AppSettingsUpdate(ldap_search_base="dc=draft") if draft else None, None, db_session)
+    assert result["success"] and len(captured) == 1
+    assert captured[0].bind_password == "bind-canary"
+    assert await settings.get_setting(db_session, "ldap_search_base") is None
+
+
+async def test_ba8_delegated_secret_guesses_always_forbidden_including_equal_and_absent(async_client, db_session):
+    from backend.app.core.auth import create_access_token
+    from backend.app.models.group import Group
+    from backend.app.models.user import User
+
+    user = User(
+        username="ba8-delegated",
+        role="user",
+        is_active=True,
+        groups=[Group(name="BA8 settings editor", permissions=["settings:read", "settings:update"])],
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await seed(db_session, {key: "12345678" for key in settings.SETTINGS_SECRETS if key != "ha_token"})
+    headers = {"Authorization": "Bearer " + create_access_token({"sub": user.username})}
+    for field in settings.SETTINGS_SECRETS:
+        for value in ["wrong-guess", "12345678", "", None]:
+            response = await async_client.put(
+                "/api/v1/settings/", headers=headers, json={field: value, "currency": "EUR"}
+            )
+            assert response.status_code == 403, (field, value, response.text)
+    opaque = "http://user:opaque-canary@legacy.local"
+    await seed(db_session, dict.fromkeys(settings.SERVICE_CREDENTIAL_URL_FIELDS, opaque))
+    for field in settings.SERVICE_CREDENTIAL_URL_FIELDS:
+        for value in [opaque, "http://wrong.local", ""]:
+            response = await async_client.put(
+                "/api/v1/settings/", headers=headers, json={field: value, "currency": "EUR"}
+            )
+            # The schema rejects credential-bearing base URL literals for
+            # every caller before dispatch; valid guesses all hit the 403 gate.
+            assert response.status_code == (422 if value == opaque else 403), (field, response.text)
+            assert "canary" not in response.text
+    assert await settings.get_setting(db_session, "currency") is None
+
+
+async def test_ba9_metrics_cannot_reenable_after_disabled_clear_or_enable_with_blank(async_client, db_session):
+    await seed(db_session, {"prometheus_enabled": True, "prometheus_token": "metrics-canary"})
+    cleared = await async_client.put(
+        "/api/v1/settings/", json={"prometheus_enabled": False, "secret_actions": {"prometheus_token": "clear"}}
+    )
+    assert cleared.status_code == 200, cleared.text
+    for payload in [{"prometheus_enabled": True}, {"prometheus_enabled": True, "prometheus_token": "   "}]:
+        response = await async_client.put("/api/v1/settings/", json=payload)
+        assert response.status_code == 400, response.text
+        assert "canary" not in response.text
+    assert await settings.get_setting(db_session, "prometheus_enabled") == "false"
+    assert await settings.get_setting(db_session, "prometheus_token") == ""
+    await db_session.rollback()
+    enabled = await async_client.put(
+        "/api/v1/settings/",
+        json={
+            "prometheus_enabled": True,
+            "prometheus_token": "new-canary",
+            "secret_actions": {"prometheus_token": "replace"},
+        },
+    )
+    assert enabled.status_code == 200, enabled.text
+
+
+async def test_ba10_legacy_ldap_unknown_scheme_allows_metadata_but_new_and_test_refuse(
+    async_client, db_session, monkeypatch
+):
+    from backend.app.services import ldap_service
+
+    await seed(db_session, {"ldap_server_url": "foo://directory.local", "ldap_bind_password": "bind-canary"})
+    probe = AsyncMock()
+    monkeypatch.setattr(ldap_service, "test_ldap_connection", probe)
+    response = await async_client.put(
+        "/api/v1/settings/",
+        json={"ldap_server_url": "foo://directory.local", "ldap_default_group": "Viewers", "currency": "EUR"},
+    )
+    assert response.status_code == 200, response.text
+    for payload in [
+        {"ldap_server_url": "foo://other.local", "ldap_bind_password": "new-canary"},
+        {"ldap_server_url": "ldap://host.local:not-a-port", "ldap_bind_password": "new-canary"},
+    ]:
+        response = await async_client.put("/api/v1/settings/", json=payload)
+        assert 400 <= response.status_code < 500, response.text
+        assert "canary" not in response.text
+    response = await async_client.post("/api/v1/auth/ldap/test")
+    assert response.status_code == 422, response.text
+    probe.assert_not_called()
+    assert await settings.get_setting(db_session, "ldap_server_url") == "foo://directory.local"
+    assert await settings.get_setting(db_session, "ldap_bind_password") == "bind-canary"
+
+
+async def test_ba11_auth_smtp_auth_off_retains_password_without_transmitting_or_rebinding(
+    async_client, db_session, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    from backend.app.services import email_service
+
+    await seed(db_session, SMTP)
+    body = {key: value for key, value in SMTP.items() if key != "smtp_password"}
+    sender = MagicMock()
+    monkeypatch.setattr(email_service.smtplib, "SMTP", sender)
+
+    def send(**kwargs):
+        assert not db_session.in_transaction()
+        assert not kwargs["smtp_settings"].smtp_auth_enabled
+        assert kwargs["smtp_settings"].smtp_password == SMTP["smtp_password"]
+        email_service.send_email(**kwargs)
+
+    monkeypatch.setattr(auth, "send_email", send)
+    draft_result = await auth.test_smtp_connection(
+        SMTPProbe(test_recipient="recipient@example.org", settings={**body, "smtp_auth_enabled": False}),
+        None,
+        db_session,
+    )
+    assert draft_result.success
+    assert await settings.get_setting(db_session, "smtp_auth_enabled") == "true"
+    await db_session.rollback()
+    response = await async_client.post("/api/v1/auth/smtp", json={**body, "smtp_auth_enabled": False})
+    assert response.status_code == 200, response.text
+    saved = await email_service.get_smtp_settings(db_session)
+    assert not saved.smtp_auth_enabled and saved.smtp_password == SMTP["smtp_password"]
+    assert saved.smtp_username == SMTP["smtp_username"]
+    await db_session.rollback()
+    email_service.send_email(saved, "recipient@example.org", "Test", "Body")
+    sender.return_value.__enter__.return_value.login.assert_not_called()
+    assert sender.return_value.__enter__.return_value.send_message.call_count == 2
+    for payload in [{"smtp_host": "other.local"}, {"smtp_username": "other"}]:
+        response = await async_client.post("/api/v1/auth/smtp", json={**body, "smtp_auth_enabled": False, **payload})
+        assert response.status_code == 400, response.text
+    response = await async_client.post("/api/v1/auth/smtp", json={**body, "smtp_auth_enabled": True})
+    assert response.status_code == 200, response.text

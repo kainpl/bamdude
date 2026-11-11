@@ -101,4 +101,24 @@ describe('Notification secret editing', () => {
     expect(draft!.secret_actions).toEqual({device_key: 'keep', server: 'keep'});
     expect(draft!.config).not.toHaveProperty('server');
   });
+
+  it('turns email authentication off while preserving the bound username and stored password', async () => {
+    let saved: Record<string, unknown> | undefined;
+    server.use(http.patch('*/api/v1/notifications/17', async ({ request }) => {
+      saved = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({ id: 17 });
+    }));
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={provider({
+      provider_type: 'email',
+      config: { smtp_server: 'smtp.example', username: 'sender', auth_enabled: 'true', from_email: 'from@example.com', to_email: 'to@example.com' },
+      secrets_configured: { password: true },
+    })} onClose={() => undefined} />);
+    await user.selectOptions(screen.getByDisplayValue('Enabled'), 'false');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(saved).toBeDefined());
+    expect(saved!.config).toMatchObject({ auth_enabled: 'false', username: 'sender' });
+    expect(saved!.config).not.toHaveProperty('password');
+    expect(saved!.secret_actions).toEqual({ password: 'keep' });
+  });
 });

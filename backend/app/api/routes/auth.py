@@ -1034,12 +1034,13 @@ async def _resolve_smtp_draft(db: AsyncSession, draft: SMTPSettingsUpdate | None
         changes["smtp_security"] = "starttls" if changes["smtp_use_tls"] else "ssl"
 
     def scope(c):
+        # Auth-off never transmits the retained password. Its destination and
+        # account remain bound, including while disabled, for safe re-enabling.
         return (
             str(c.get("smtp_host") or "").strip().lower(),
             c.get("smtp_port", 587),
             c.get("smtp_security", "starttls"),
             c.get("smtp_username") or "",
-            c.get("smtp_auth_enabled", True),
         )
 
     merged = merge_secret_fields(
@@ -1641,7 +1642,7 @@ async def test_ldap(
 
     logger = logging.getLogger(__name__)
 
-    from backend.app.api.routes.settings import resolve_settings_credentials
+    from backend.app.api.routes.settings import _validate_ldap_destination, get_setting, resolve_settings_credentials
     from backend.app.core.credential_config import lock_credential_config
 
     changes = draft.model_dump(exclude_unset=True) if draft else {}
@@ -1658,6 +1659,10 @@ async def test_ldap(
         if key.startswith("ldap_")
     }
     ldap_settings["ldap_enabled"] = "true"
+    # Runtime-only restored/operator CA settings are deliberately not draftable.
+    # Preserve them so Test verifies exactly as login does.
+    ldap_settings["ldap_ca_cert_path"] = await get_setting(db, "ldap_ca_cert_path") or ""
+    _validate_ldap_destination(merged)
     await db.rollback()
 
     config = parse_ldap_config(ldap_settings)

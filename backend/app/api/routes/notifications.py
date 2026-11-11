@@ -722,10 +722,17 @@ async def test_provider_draft(
     config = resolve_provider_config(
         kind, draft.config, draft.secret_actions, stored=provider.config, stored_type=provider.provider_type
     )
-    await db.commit()
-    success, message = await notification_service.send_test_notification(
-        kind, config, db, provider_id=provider_id if kind == "telegram" and provider.provider_type == kind else None
+    # A running bot owns the stored token, not an arbitrary replacement draft.
+    # Only an unchanged effective token can reuse its addressed chat set/bot.
+    reuse_provider = (
+        provider_id
+        if kind == "telegram"
+        and provider.provider_type == kind
+        and _telegram_bot_token(config) == _telegram_bot_token(provider.config)
+        else None
     )
+    await db.commit()
+    success, message = await notification_service.send_test_notification(kind, config, db, provider_id=reuse_provider)
     return NotificationTestResponse(success=success, message=safe_provider_message(message, kind, config))
 
 

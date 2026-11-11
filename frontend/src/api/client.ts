@@ -848,15 +848,24 @@ export interface Camera {
   id: number;
   name: string;
   camera_type: 'mjpeg' | 'rtsp' | 'snapshot' | 'usb';
-  url: string;
-  snapshot_url: string | null;
+  /** Older servers may send these; current reads omit them. Never prefill. */
+  url?: string;
+  snapshot_url?: string | null;
+  url_configured?: boolean;
+  snapshot_url_configured?: boolean;
+  source_host?: string | null;
   rotation: number;
   enabled: boolean;
   location_id: number | null;
   location_name: string | null;
 }
 
-export type CameraCreate = Omit<Camera, 'id' | 'location_name'>;
+export type CameraSecretActions = Partial<Record<'url' | 'snapshot_url', 'keep' | 'clear' | 'replace'>>;
+export type CameraCreate = Omit<Camera, 'id' | 'location_name' | 'url_configured' | 'snapshot_url_configured' | 'source_host'> & {
+  url: string;
+  snapshot_url: string | null;
+  secret_actions?: CameraSecretActions;
+};
 export type CameraUpdate = Partial<CameraCreate>;
 
 /** `printers.camera_light_auto`: the per-printer answer, or defer to the farm's toggle. */
@@ -11786,9 +11795,7 @@ export const api = {
   deleteZigbeeSensorBinding: (sensorId: number, bindingId: number) =>
     request<{ deleted: number }>(`/zigbee/sensors/${sensorId}/bindings/${bindingId}`, { method: 'DELETE' }),
 
-  // Cameras that belong to no printer. The list carries the URL because it
-  // feeds the settings screen where that URL is typed; the wall's own feeds
-  // (below and in the kiosk call) never do.
+  // Standalone camera sources are opaque; only owning editors may test stored URLs.
   getCameras: () => request<Camera[]>('/cameras/'),
   createCamera: (data: CameraCreate) =>
     request<Camera>('/cameras/', { method: 'POST', body: JSON.stringify(data) }),
@@ -11800,6 +11807,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  testSavedCamera: (id: number, data: CameraUpdate & { source?: 'stream' | 'snapshot' } = {}) =>
+    request<{ success?: boolean; error?: string }>(`/cameras/${id}/test`, { method: 'POST', body: JSON.stringify(data) }),
   getCamWallCameras: (token: string) =>
     request<{ id: number; name: string; rotation: number; location_id: number | null }[]>(
       `/camwall/cameras?token=${encodeURIComponent(token)}`,

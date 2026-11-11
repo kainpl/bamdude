@@ -24,6 +24,20 @@ class RESTSmartPlugService:
         self.timeout = timeout
 
     @staticmethod
+    def _log_destination(url: str) -> str:
+        """Capability paths, userinfo, queries and fragments never enter logs."""
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+            if parsed.scheme.lower() not in ("http", "https") or not hostname:
+                return "<invalid endpoint>"
+            if ":" in hostname:
+                hostname = f"[{hostname}]"
+            return f"{parsed.scheme.lower()}://{hostname}"
+        except ValueError:
+            return "<invalid endpoint>"
+
+    @staticmethod
     def _validate_url(url: str) -> bool:
         """Block cloud-metadata, loopback and link-local destinations.
 
@@ -39,10 +53,13 @@ class RESTSmartPlugService:
         """
         from backend.app.api.routes._url_safety import CLOUD_METADATA_IPS, NUMERIC_IP_RE, unwrap_ipv4_mapped
 
-        parsed = urlparse(url)
+        try:
+            parsed = urlparse(url)
+            hostname = (parsed.hostname or "").lower()
+        except ValueError:
+            return False
         if parsed.scheme.lower() not in ("http", "https"):
             return False
-        hostname = (parsed.hostname or "").lower()
         if not hostname:
             return False
         # Numeric-encoded forms resolve for libc and browsers but raise in
@@ -73,7 +90,7 @@ class RESTSmartPlugService:
             if isinstance(headers, dict):
                 return {str(k): str(v) for k, v in headers.items()}
         except (json.JSONDecodeError, TypeError):
-            logger.warning("Failed to parse REST headers JSON: %s", headers_json)
+            logger.warning("Failed to parse REST headers JSON")
         return {}
 
     @staticmethod
@@ -102,7 +119,7 @@ class RESTSmartPlugService:
     ) -> httpx.Response | None:
         """Send an HTTP request and return the response."""
         if not self._validate_url(url):
-            logger.warning("Blocked REST request to invalid URL: %s", url)
+            logger.warning("Blocked REST request to invalid endpoint: %s", self._log_destination(url))
             return None
 
         try:
@@ -122,16 +139,16 @@ class RESTSmartPlugService:
                 response.raise_for_status()
                 return response
         except httpx.TimeoutException:
-            logger.warning("REST smart plug at %s timed out", url)
+            logger.warning("REST smart plug at %s timed out", self._log_destination(url))
             return None
         except httpx.HTTPStatusError as e:
-            logger.warning("REST smart plug at %s returned error: %s", url, e)
+            logger.warning("REST smart plug at %s returned HTTP %s", self._log_destination(url), e.response.status_code)
             return None
-        except httpx.RequestError as e:
-            logger.warning("Failed to connect to REST smart plug at %s: %s", url, e)
+        except httpx.RequestError:
+            logger.warning("Failed to connect to REST smart plug at %s", self._log_destination(url))
             return None
-        except Exception as e:
-            logger.error("Unexpected error communicating with REST smart plug at %s: %s", url, e)
+        except Exception:
+            logger.error("Unexpected error communicating with REST smart plug at %s", self._log_destination(url))
             return None
 
     async def turn_on(self, plug: "SmartPlug") -> bool:
@@ -145,7 +162,9 @@ class RESTSmartPlugService:
         response = await self._send_request(plug.rest_on_url, method, headers, plug.rest_on_body)
 
         if response is not None:
-            logger.info("Turned ON REST smart plug '%s' via %s %s", plug.name, method, plug.rest_on_url)
+            logger.info(
+                "Turned ON REST smart plug '%s' via %s %s", plug.name, method, self._log_destination(plug.rest_on_url)
+            )
             return True
 
         logger.warning("Failed to turn ON REST smart plug '%s'", plug.name)
@@ -162,7 +181,9 @@ class RESTSmartPlugService:
         response = await self._send_request(plug.rest_off_url, method, headers, plug.rest_off_body)
 
         if response is not None:
-            logger.info("Turned OFF REST smart plug '%s' via %s %s", plug.name, method, plug.rest_off_url)
+            logger.info(
+                "Turned OFF REST smart plug '%s' via %s %s", plug.name, method, self._log_destination(plug.rest_off_url)
+            )
             return True
 
         logger.warning("Failed to turn OFF REST smart plug '%s'", plug.name)
@@ -319,11 +340,11 @@ class RESTSmartPlugService:
         except httpx.TimeoutException:
             return {"success": False, "error": "Connection timed out"}
         except httpx.HTTPStatusError as e:
-            return {"success": False, "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}"}
-        except httpx.RequestError as e:
-            return {"success": False, "error": f"Connection failed: {e}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": f"HTTP {e.response.status_code}"}
+        except httpx.RequestError:
+            return {"success": False, "error": "Connection failed"}
+        except Exception:
+            return {"success": False, "error": "REST connection failed"}
 
 
 # Singleton instance

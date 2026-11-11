@@ -9,8 +9,9 @@ open path runs, so a URL this schema accepts is one the opener accepts too.
 
 from datetime import datetime
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 CameraType = Literal["mjpeg", "rtsp", "snapshot", "usb"]
 
@@ -74,6 +75,8 @@ class CameraBase(BaseModel):
 
 
 class CameraCreate(CameraBase):
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
+
     @field_validator("url")
     @classmethod
     def _source(cls, v: str, info) -> str:
@@ -88,6 +91,8 @@ class CameraUpdate(BaseModel):
     schema deciding with half the answer.
     """
 
+    model_config = {"extra": "forbid"}
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
     name: str | None = Field(default=None, min_length=1, max_length=100)
     camera_type: CameraType | None = None
     url: str | None = Field(default=None, max_length=500)
@@ -118,8 +123,27 @@ class CameraOut(BaseModel):
     id: int
     name: str
     camera_type: str
-    url: str
-    snapshot_url: str | None = None
+    url: str = Field(exclude=True, repr=False)
+    snapshot_url: str | None = Field(default=None, exclude=True, repr=False)
+
+    @computed_field
+    @property
+    def url_configured(self) -> bool:
+        return bool(self.url)
+
+    @computed_field
+    @property
+    def snapshot_url_configured(self) -> bool:
+        return bool(self.snapshot_url)
+
+    @computed_field
+    @property
+    def source_host(self) -> str | None:
+        try:
+            return urlsplit(self.url).hostname
+        except ValueError:
+            return None
+
     rotation: int = 0
     enabled: bool = True
     location_id: int | None = None
@@ -148,3 +172,13 @@ class CameraWallCamera(BaseModel):
 class CameraTestRequest(BaseModel):
     url: str = Field(max_length=500)
     camera_type: CameraType
+
+
+class CameraDraftTestRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    url: str | None = Field(default=None, max_length=500)
+    snapshot_url: str | None = Field(default=None, max_length=500)
+    camera_type: CameraType | None = None
+    enabled: bool | None = None
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
+    source: Literal["stream", "snapshot"] = "stream"

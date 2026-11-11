@@ -21,6 +21,7 @@ from backend.app.services.git_restore import SETTINGS_PATH, GitRestoreService, _
         ("smtp_security", "smtp_password"),
         ("smtp_auth_enabled", "smtp_password"),
         ("ldap_server_url", "ldap_bind_password"),
+        ("ldap_ca_cert_path", "ldap_bind_password"),
     ],
 )
 @pytest.mark.parametrize("has_local_destination", [True, False])
@@ -61,3 +62,22 @@ async def test_env_only_ha_token_cannot_be_rebound_by_partial_restore(db_session
     await db_session.commit()
     assert await db_session.scalar(select(Settings.value).where(Settings.key == "ha_url")) is None
     assert await db_session.scalar(select(Settings.value).where(Settings.key == "ha_token")) is None
+
+
+async def test_partial_restore_cannot_remove_operator_ca_verification(db_session):
+    db_session.add_all(
+        [
+            Settings(key="ldap_bind_password", value="retained-bind-password"),
+            Settings(key="ldap_ca_cert_path", value="/operator/ca.pem"),
+        ]
+    )
+    await db_session.commit()
+    service = GitRestoreService()
+    payload = {"settings": {"ldap_ca_cert_path": ""}}
+    preview, _ = await service._count_items(db_session, RestoreCategory.SETTINGS, {SETTINGS_PATH: payload})
+    tally = _CategoryTally()
+    await service._restore_settings(db_session, payload, True, tally)
+    await db_session.commit()
+    assert preview == tally.restored == 0
+    rows = dict((await db_session.execute(select(Settings.key, Settings.value))).all())
+    assert rows["ldap_ca_cert_path"] == "/operator/ca.pem" and rows["ldap_bind_password"] == "retained-bind-password"

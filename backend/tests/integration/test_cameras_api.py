@@ -59,8 +59,9 @@ class TestCameraCrud:
         listed = await async_client.get("/api/v1/cameras/")
         assert listed.status_code == 200
         assert [c["name"] for c in listed.json()] == ["Shelf"]
-        # The settings list carries the URL — it is the screen where it is typed.
-        assert listed.json()[0]["url"] == MJPEG["url"]
+        # Settings reads expose presence; the worker retains the actual source.
+        assert "url" not in listed.json()[0]
+        assert listed.json()[0]["url_configured"] is True
 
         patched = await async_client.patch(f"/api/v1/cameras/{camera_id}", json={"name": "Lobby", "rotation": 180})
         assert patched.status_code == 200
@@ -112,7 +113,9 @@ class TestCameraCrud:
             await async_client.patch(f"/api/v1/cameras/{camera_id}", json={"url": "/dev/video1"})
         ).status_code == 200
         # Now MJPEG: the same device path is not a URL any more.
-        refused = await async_client.patch(f"/api/v1/cameras/{camera_id}", json={"camera_type": "mjpeg"})
+        refused = await async_client.patch(
+            f"/api/v1/cameras/{camera_id}", json={"camera_type": "mjpeg", "url": "/dev/video1"}
+        )
         assert refused.status_code == 422
 
     @pytest.mark.asyncio

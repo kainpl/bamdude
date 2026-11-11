@@ -32,12 +32,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import database
 from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
+from backend.app.core.credential_config import lock_credential_config
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.camera import Camera
 from backend.app.models.printer_location import PrinterLocation
 from backend.app.models.user import User
-from backend.app.schemas.camera import CameraCreate, CameraOut, CameraTestRequest, CameraUpdate, _validated_source
+from backend.app.schemas.camera import (
+    CameraCreate,
+    CameraDraftTestRequest,
+    CameraOut,
+    CameraTestRequest,
+    CameraUpdate,
+    _validated_source,
+)
+from backend.app.services.camera_credentials import resolve_standalone_camera_credentials
 from backend.app.services.camera_fanout import MjpegBroadcaster, get_or_create_broadcaster, iter_subscriber
 
 logger = logging.getLogger(__name__)
@@ -148,7 +157,7 @@ async def list_cameras(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
-    """Every camera, in name order. Carries the URL: this is the settings list."""
+    """Every camera, with source presence and a safe host instead of credentials."""
     rows = (await db.execute(select(Camera).order_by(Camera.name))).scalars().all()
     return [_out(camera) for camera in rows]
 
@@ -159,9 +168,12 @@ async def create_camera(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
+    await lock_credential_config(db)
+    data = payload.model_dump(exclude={"secret_actions"})
+    data = resolve_standalone_camera_credentials({}, data, payload.secret_actions, creating=True)
     await _require_free_name(db, payload.name)
     await _require_known_location(db, payload.location_id)
-    camera = Camera(**payload.model_dump())
+    camera = Camera(**data)
     db.add(camera)
     await db.commit()
     await db.refresh(camera)
@@ -176,8 +188,17 @@ async def update_camera(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
+    await lock_credential_config(db)
     camera = await _get_camera_or_404(camera_id, db)
-    data = payload.model_dump(exclude_unset=True)
+    data = payload.model_dump(exclude_unset=True, exclude={"secret_actions"})
+    resolved = resolve_standalone_camera_credentials(
+        {key: getattr(camera, key) for key in ("url", "snapshot_url", "camera_type", "enabled")},
+        data,
+        payload.secret_actions,
+    )
+    for key in ("url", "snapshot_url"):
+        if key in data or key in (payload.secret_actions or {}):
+            data[key] = resolved.get(key)
 
     if "name" in data:
         await _require_free_name(db, data["name"], exclude_id=camera_id)
@@ -186,7 +207,7 @@ async def update_camera(
     # The URL's validity depends on the type, and either may be the one that
     # changed — so the pair is checked against what the row will BE, not what
     # the payload happens to carry.
-    if "url" in data or "camera_type" in data:
+    if ("url" in data or "camera_type" in data) and resolved.get("url"):
         camera_type = data.get("camera_type", camera.camera_type)
         try:
             data["url"] = _validated_source(data.get("url", camera.url), camera_type)
@@ -217,6 +238,7 @@ async def delete_camera(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
+    await lock_credential_config(db)
     camera = await _get_camera_or_404(camera_id, db)
     await db.delete(camera)
     await db.commit()
@@ -234,21 +256,51 @@ async def test_camera_source(
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Open the source once, confirm a frame, disconnect. For a camera not yet saved."""
+    return await _test_source(payload.url, payload.camera_type)
+
+
+async def _test_source(url: str, camera_type: str) -> dict:
     from backend.app.services.camera_runtime import test_external_connection
 
-    return await test_external_connection(payload.url, payload.camera_type)
+    try:
+        result = await test_external_connection(url, camera_type)
+    except Exception as exc:
+        logger.warning("Standalone camera test failed (%s)", type(exc).__name__)
+        return {"success": False, "error": "Camera connection test failed"}
+    if result.get("success"):
+        return {"success": True, "resolution": result.get("resolution")}
+    return {"success": False, "error": "Camera connection test failed"}
 
 
 @router.post("/{camera_id}/test")
 async def test_saved_camera(
     camera_id: int,
+    payload: CameraDraftTestRequest | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
+    _editor: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
+    await lock_credential_config(db)
     camera = await _get_camera_or_404(camera_id, db)
-    from backend.app.services.camera_runtime import test_external_connection
-
-    return await test_external_connection(camera.url, camera.camera_type)
+    payload = payload or CameraDraftTestRequest()
+    changes = payload.model_dump(exclude_unset=True, exclude={"secret_actions", "source"})
+    resolved = resolve_standalone_camera_credentials(
+        {key: getattr(camera, key) for key in ("url", "snapshot_url", "camera_type", "enabled")},
+        changes,
+        payload.secret_actions,
+    )
+    if payload.source == "snapshot":
+        url, camera_type = resolved.get("snapshot_url"), "snapshot"
+    else:
+        url, camera_type = resolved.get("url"), resolved["camera_type"]
+    if not url:
+        raise HTTPException(400, "Camera source is not configured")
+    try:
+        url = _validated_source(url, camera_type)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    await db.rollback()
+    return await _test_source(url, camera_type)
 
 
 # ---------------------------------------------------------------- stream

@@ -3076,6 +3076,9 @@ export default {
   },
   settings: {
     credentials: {
+      destinationChanged: 'Адресу підключення змінено. Замініть або явно очистьте облікові дані перед збереженням.',
+      metricsToken: 'Bearer-токен',
+      metricsTokenRequired: 'Для ввімкнення метрик потрібен bearer-токен.',
       configured: 'Облікові дані налаштовано',
       notConfigured: 'Облікові дані не налаштовано',
       action: 'Дія з обліковими даними',

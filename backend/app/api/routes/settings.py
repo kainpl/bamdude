@@ -103,7 +103,13 @@ async def _enforce_admin_settings(db: AsyncSession, changes: dict, user: User | 
     protected = ADMIN_SETTING_FIELDS & changes.keys()
     if not protected or (user is not None and user.is_admin):
         return
+    # A write-only value has no legitimate equal-value full-form baggage.
+    # Refuse before reading/comparing it, including empty and null guesses.
+    if protected & SETTINGS_SECRETS:
+        raise HTTPException(status_code=403, detail="Requires admin role for protected settings")
     current = (await _load_settings(db, effective_env=False)).model_dump()
+    if any(key in protected and opaque_service_url(current.get(key)) for key in SERVICE_CREDENTIAL_URL_FIELDS):
+        raise HTTPException(status_code=403, detail="Requires admin role for protected settings")
     if any(changes[key] != current.get(key) for key in protected):
         raise HTTPException(status_code=403, detail="Requires admin role for protected settings")
     # Equal protected fields are accepted as read-only full-form baggage. Do
@@ -188,9 +194,12 @@ async def _apply_mqtt_runtime(db: AsyncSession, *, smart_plug_only: bool = False
 
 
 def _ldap_credential_scope(config: dict) -> tuple:
+    from ldap3.core.exceptions import LDAPException
+
     from backend.app.services.ldap_service import _create_server, parse_ldap_config
 
-    if opaque_service_url(config.get("ldap_server_url")):
+    url = str(config.get("ldap_server_url") or "").strip()
+    if opaque_service_url(url) or ("://" in url and url.split("://", 1)[0] not in {"ldap", "ldaps"}):
         # Preserve opaque/malformed legacy tuples for unrelated metadata edits.
         # Any destination/security change still differs and requires reissue.
         return (
@@ -209,8 +218,10 @@ def _ldap_credential_scope(config: dict) -> tuple:
         return ("", None, None, str(config.get("ldap_bind_dn") or "").strip())
     try:
         server = _create_server(ldap)  # Parses the sender's defaults; no connection or I/O.
-    except (ValueError, TypeError):
-        raise HTTPException(422, "Invalid LDAP destination") from None
+    except (ValueError, TypeError, LDAPException):
+        # Malformed pre-existing tuples may still be disabled or renamed.
+        # A newly supplied/tested destination is validated separately below.
+        return (url, config.get("ldap_security"), str(config.get("ldap_bind_dn") or "").strip())
     transport = (
         "ldaps"
         if server.ssl
@@ -219,6 +230,33 @@ def _ldap_credential_scope(config: dict) -> tuple:
         else "plain"
     )
     return (server.host.lower(), server.port, transport, str(config.get("ldap_bind_dn") or "").strip())
+
+
+def _validate_ldap_destination(config: dict) -> None:
+    """Validate a new/tested destination without weakening legacy metadata edits."""
+    from ldap3.core.exceptions import LDAPException
+
+    from backend.app.services.ldap_service import _create_server, parse_ldap_config
+
+    url = str(config.get("ldap_server_url") or "").strip()
+    if "://" in url and url.split("://", 1)[0] not in {"ldap", "ldaps"}:
+        raise HTTPException(422, "Invalid LDAP destination")
+    if opaque_service_url(url):
+        # Only a retained legacy value can reach this path: new opaque base
+        # URL writes are refused by the resolver. Keep its sender semantics.
+        return
+    try:
+        ldap = parse_ldap_config(
+            {
+                "ldap_enabled": "true",
+                "ldap_server_url": url,
+                "ldap_security": str(config.get("ldap_security") or "starttls"),
+            }
+        )
+        if ldap:
+            _create_server(ldap)
+    except (ValueError, TypeError, LDAPException):
+        raise HTTPException(422, "Invalid LDAP destination") from None
 
 
 @router.get("", response_model=AppSettingsRead)
@@ -402,6 +440,8 @@ async def resolve_settings_credentials(db: AsyncSession, changes: dict, actions:
     if os.environ.get("HA_TOKEN") and effective_actions.get("ha_token") == "keep" and "ha_token" not in changes:
         effective_actions.pop("ha_token")
     merged = merge_secret_fields(stored, changes, SETTINGS_SECRETS | opaque_fields, effective_actions, scope=scopes)
+    if any(key in touched and merged.get(key) != stored.get(key) for key in ("ldap_server_url", "ldap_security")):
+        _validate_ldap_destination(merged)
     if os.environ.get("HA_TOKEN") and ha_scope(stored) != ha_scope(merged):
         raise HTTPException(400, "ha_token: environment credential requires an unchanged effective destination")
     effective_ha_token = os.environ.get("HA_TOKEN") or merged.get("ha_token")
@@ -425,8 +465,12 @@ async def resolve_settings_credentials(db: AsyncSession, changes: dict, actions:
         and not merged.get("ldap_bind_password")
     ):
         raise HTTPException(400, "ldap_bind_password: authenticated LDAP requires a credential")
-    if "prometheus_token" in touched and merged.get("prometheus_enabled") and not merged.get("prometheus_token"):
-        raise HTTPException(400, "prometheus_token: disable metrics before clearing its credential")
+    if (
+        {"prometheus_enabled", "prometheus_token"} & touched
+        and merged.get("prometheus_enabled")
+        and not str(merged.get("prometheus_token") or "").strip()
+    ):
+        raise HTTPException(400, "prometheus_token: enabled metrics requires a credential")
     code = merged.get("virtual_printer_access_code")
     if "virtual_printer_access_code" in touched and code and len(code) != 8:
         raise HTTPException(400, "virtual_printer_access_code: access code must be exactly 8 characters")
