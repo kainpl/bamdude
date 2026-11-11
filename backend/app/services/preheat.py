@@ -95,6 +95,26 @@ DEFAULT_PREHEAT_FILAMENT_TARGETS: dict[str, int] = {
 _BED_TOLERANCE = 2.0  # °C — floating-point + heater hysteresis slack
 _CHAMBER_TOLERANCE = 2.0
 _POLL_INTERVAL = 3.0  # seconds — frequent enough for responsive logging + cancel
+# X2D firmware drops a bed/chamber setpoint 300 s after it is CHANGED when no print is
+# running (hardware, 2026-11-10: both targets go to 0 exactly 300 s after the last
+# change, with no command on the request topic). Re-sending the same value does not
+# restart that timer; a different value does. A chamber ramp plus the soak outlasts
+# 300 s, so refresh every minute, alternating the setpoint by 1 °C.
+_REFRESH_INTERVAL = 60.0  # seconds — well inside the 300 s expiry
+
+
+def _refresh_targets(client: Any, printer_id: int, bed_target: int, chamber_target: int, count: int) -> None:
+    """Re-publish the setpoints. Odd ``count`` sends 1 °C below target, even sends the target.
+
+    ``chamber_target`` 0 means no chamber phase.
+    """
+    dip = count % 2
+    try:
+        client.set_bed_temperature(bed_target - dip)
+        if chamber_target > 0:
+            client.set_chamber_temperature(chamber_target - dip)
+    except Exception:  # noqa: BLE001 — best-effort, the next refresh retries
+        logger.debug("Preheat setpoint refresh failed on printer %s", printer_id, exc_info=True)
 
 
 # Bed temperature used to drive the chamber when the file names none of its
@@ -497,6 +517,9 @@ async def preheat_and_soak(
     # chamber via bed radiation can take 20+. "Converged" = bed reached target AND
     # (no chamber phase, no sensor, or sensor reached target).
     deadline = asyncio.get_event_loop().time() + max_wait
+    refresh_chamber = chamber_target if do_chamber and has_heater else 0
+    since_refresh = 0.0
+    refreshes = 0
     while True:
         if cancel_check is not None:
             cancel_check()
@@ -538,6 +561,11 @@ async def preheat_and_soak(
             break
 
         await asyncio.sleep(_POLL_INTERVAL)
+        since_refresh += _POLL_INTERVAL
+        if since_refresh >= _REFRESH_INTERVAL:
+            refreshes += 1
+            _refresh_targets(client, printer.id, bed_target, refresh_chamber, refreshes)
+            since_refresh = 0.0
 
     # Credit the soak the chamber has already had. Back-to-back prints in a
     # chamber-heated material used to pay a full soak from a chamber that never
@@ -569,5 +597,10 @@ async def preheat_and_soak(
             chunk = min(_POLL_INTERVAL, remaining)
             await asyncio.sleep(chunk)
             remaining -= chunk
+            since_refresh += chunk
+            if since_refresh >= _REFRESH_INTERVAL:
+                refreshes += 1
+                _refresh_targets(client, printer.id, bed_target, refresh_chamber, refreshes)
+                since_refresh = 0.0
 
     logger.info("Preheat complete on printer %s — proceeding to start", printer.id)

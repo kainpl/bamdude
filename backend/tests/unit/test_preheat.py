@@ -248,15 +248,33 @@ async def test_the_skip_sends_nothing_when_the_flap_is_already_right_or_absent(m
 async def test_an_explicit_request_still_heats_the_bed(options):
     client, _sleep = await _run(options)
 
-    client.set_bed_temperature.assert_called_once_with(60)
+    assert client.set_bed_temperature.call_args_list[0].args == (60,)  # initial set; refreshes follow
 
 
 @pytest.mark.asyncio
 async def test_a_print_that_wants_the_chamber_still_runs_the_stage():
     client, _sleep = await _run({"ams_mapping": [1]}, chamber=50)  # the ASA
 
-    client.set_bed_temperature.assert_called_once_with(60)
-    client.set_chamber_temperature.assert_called_once_with(45)
+    assert client.set_bed_temperature.call_args_list[0].args == (60,)
+    assert client.set_chamber_temperature.call_args_list[0].args == (45,)
+
+
+@pytest.mark.asyncio
+async def test_setpoints_are_re_sent_every_minute_through_the_soak():
+    # X2D firmware drops a setpoint ~300 s after it is set; the 300 s soak alone outlasts that.
+    client, _sleep = await _run({"ams_mapping": [1]}, chamber=50)  # ASA: set once, then 300 s soak
+
+    assert client.set_bed_temperature.call_count == 1 + 5
+    assert client.set_chamber_temperature.call_count == 1 + 5
+
+
+@pytest.mark.asyncio
+async def test_refreshes_alternate_the_setpoint_because_a_repeat_does_not_restart_the_firmware_timer():
+    # Same value re-sent leaves the X2D's 300 s expiry running; a changed value restarts it.
+    client, _sleep = await _run({"ams_mapping": [1]}, chamber=50)  # ASA: chamber target 45
+
+    assert [c.args[0] for c in client.set_chamber_temperature.call_args_list] == [45, 44, 45, 44, 45, 44]
+    assert [c.args[0] for c in client.set_bed_temperature.call_args_list] == [60, 59, 60, 59, 60, 59]
 
 
 # --- preheat_and_soak: override resolution ----------------------------------
