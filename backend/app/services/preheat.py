@@ -103,11 +103,17 @@ _POLL_INTERVAL = 3.0  # seconds — frequent enough for responsive logging + can
 _REFRESH_INTERVAL = 60.0  # seconds — well inside the 300 s expiry
 
 
-def _refresh_targets(client: Any, printer_id: int, bed_target: int, chamber_target: int, count: int) -> None:
+def _refresh_targets(printer_id: int, bed_target: int, chamber_target: int, count: int) -> None:
     """Re-publish the setpoints. Odd ``count`` sends 1 °C below target, even sends the target.
 
-    ``chamber_target`` 0 means no chamber phase.
+    ``chamber_target`` 0 means no chamber phase. The client is looked up on every refresh:
+    a reconnect replaces it, and the retired one only answers "not connected", so a
+    client captured at the start of the stage would let the setpoints expire again.
     """
+    client = printer_manager.get_client(printer_id)
+    if client is None:
+        logger.debug("Preheat setpoint refresh skipped on printer %s — client unavailable", printer_id)
+        return
     dip = count % 2
     try:
         client.set_bed_temperature(bed_target - dip)
@@ -564,7 +570,7 @@ async def preheat_and_soak(
         since_refresh += _POLL_INTERVAL
         if since_refresh >= _REFRESH_INTERVAL:
             refreshes += 1
-            _refresh_targets(client, printer.id, bed_target, refresh_chamber, refreshes)
+            _refresh_targets(printer.id, bed_target, refresh_chamber, refreshes)
             since_refresh = 0.0
 
     # Credit the soak the chamber has already had. Back-to-back prints in a
@@ -600,7 +606,12 @@ async def preheat_and_soak(
             since_refresh += chunk
             if since_refresh >= _REFRESH_INTERVAL:
                 refreshes += 1
-                _refresh_targets(client, printer.id, bed_target, refresh_chamber, refreshes)
+                _refresh_targets(printer.id, bed_target, refresh_chamber, refreshes)
                 since_refresh = 0.0
+
+    # The last refresh may have been a dip: never hand the print a setpoint 1 °C under
+    # its target. The exact value is a change too, so it restarts the expiry as well.
+    if refreshes % 2:
+        _refresh_targets(printer.id, bed_target, refresh_chamber, refreshes + 1)
 
     logger.info("Preheat complete on printer %s — proceeding to start", printer.id)

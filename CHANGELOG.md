@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-- Preheat no longer lets the bed and chamber setpoints lapse partway through. X2D firmware clears a bed or chamber target 300 s after its last change while no print is running, so a chamber ramp plus soak longer than 5 minutes ended with the heaters off and the job starting into a cooling chamber, while the queue still showed "preheating". Preheat now re-sends both setpoints every minute, alternating them by 1 °C, because a repeat of the same value does not restart the firmware's timer.
+- Preheat no longer lets the bed and chamber setpoints lapse partway through. X2D firmware clears a bed or chamber target 300 s after its last change while no print is running, so a chamber ramp plus soak longer than 5 minutes ended with the heaters off and the job starting into a cooling chamber, while the queue still showed "preheating". Preheat now re-sends both setpoints every minute, alternating them by 1 °C, because a repeat of the same value does not restart the firmware's timer; the refresh keeps reaching the printer across a reconnect, and the stage always ends on the exact targets.
 
 ## [0.7.3] - 2026-11-04
 
