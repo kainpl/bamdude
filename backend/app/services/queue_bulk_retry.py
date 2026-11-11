@@ -70,6 +70,11 @@ async def retry_block(db, queue_id, item_ids, *, actor, granted_scope, key_hash,
                     .execution_options(populate_existing=True)
                 )
             }
+            from backend.app.services.plate_hold import plate_gate_owner_ids
+
+            # A row its printer's plate gate waits on is answered on the printer card,
+            # never re-armed here (spec plate-gate-owner-requeue A2).
+            gate_owners = await plate_gate_owner_ids(db, rows)
             left = []
             eligible = []
             for item_id in ids:
@@ -79,6 +84,8 @@ async def retry_block(db, queue_id, item_ids, *, actor, granted_scope, key_hash,
                     if row is None
                     else "not_failed"
                     if row.status != ("cancelled" if item_id in cancelled else "failed")
+                    else "plate_answer_required"
+                    if item_id in gate_owners
                     else "source_unavailable"
                     if row.queue_source_id
                     and (row.queue_source_id not in blobs or blobs[row.queue_source_id].state != STATE_READY)

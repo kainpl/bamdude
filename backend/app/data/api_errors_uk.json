@@ -967,6 +967,7 @@
   "The plug did not acknowledge the setting — is it powered and in range?": "Розетка не підтвердила налаштування — чи ввімкнено її живлення і чи вона в зоні дії?",
   "The printer did not answer, so its recordings could not be listed. Check that it is on the network and try again.": "Принтер не відповів, тож його записи не вдалося перелічити. Перевірте, що він у мережі, і спробуйте ще раз.",
   "the printer is busy and cannot switch AMS type": "принтер зайнятий і не може змінити тип AMS",
+  "The printer is waiting for a plate answer about this print. Answer on the printer card: Repeat print runs it again": "Принтер чекає відповіді про стіл щодо цього друку. Дайте відповідь на картці принтера: «Повторити друк» запустить його знову",
   "The printer job is no longer available.": "Завдання принтера більше недоступне.",
   "The product has finished goods in stock": "Цей виріб є на складі готових",
   "The proposal is no longer valid. Read a new proposal before moving the job.": "Пропозиція більше не чинна. Прочитайте нову пропозицію перед перенесенням завдання.",

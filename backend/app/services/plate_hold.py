@@ -342,6 +342,40 @@ async def repeat_available(printer_id: int) -> bool:
         return await has_waiting_row(db, printer_id)
 
 
+def plate_gate_owner_predicate() -> ColumnElement[bool]:
+    """The queue row its printer's armed plate gate waits on; callers join the row to its printer.
+
+    Only the plate answer may move that row out of its finished state: Repeat print re-arms it
+    and releases the gate in one transaction. A Retry that re-armed it left the gate pointing at
+    a row that was no longer finished, and every answer was refused while the queue could not
+    start (incident 2026-11-11, spec plate-gate-owner-requeue).
+    """
+    return and_(
+        Printer.awaiting_plate_clear.is_(True),
+        Printer.awaiting_plate_clear_archive_id.is_not(None),
+        PrintQueueItem.archive_id == Printer.awaiting_plate_clear_archive_id,
+    )
+
+
+async def plate_gate_owner_ids(db: AsyncSession, item_ids) -> set[int]:
+    """Which of ``item_ids`` an armed plate gate waits on, read in the caller's transaction.
+
+    Read, not locked: both finishers arm the gate before the row turns terminal
+    (``tests/unit/test_plate_gate_arms_before_the_row_ends.py``), so a row a Retry
+    door sees finished already has its gate in the database.
+    """
+    ids = list(dict.fromkeys(item_ids))
+    if not ids:
+        return set()
+    rows = await db.scalars(
+        select(PrintQueueItem.id)
+        .join(PrinterQueue, PrintQueueItem.queue_id == PrinterQueue.id)
+        .join(Printer, PrinterQueue.printer_id == Printer.id)
+        .where(PrintQueueItem.id.in_(ids), plate_gate_owner_predicate())
+    )
+    return set(rows)
+
+
 def waiting_row_predicate() -> ColumnElement[bool]:
     """Shared held-row eligibility; callers join the queue row to its printer."""
     from backend.app.services.print_execution import STALE_CLAIM_CODES
@@ -354,8 +388,7 @@ def waiting_row_predicate() -> ColumnElement[bool]:
                 PrintQueueItem.status == "completed",
             ),
             and_(
-                Printer.awaiting_plate_clear.is_(True),
-                PrintQueueItem.archive_id == Printer.awaiting_plate_clear_archive_id,
+                plate_gate_owner_predicate(),
                 PrintQueueItem.status.in_(("completed", "cancelled", "failed")),
             ),
         ),

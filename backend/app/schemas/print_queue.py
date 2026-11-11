@@ -288,6 +288,10 @@ class PrintQueueItemResponse(BaseModel):
     # True when the linked archive has been soft-deleted (trashed): its files
     # are gone, so the archive-derived fields above are suppressed (#1348).
     archive_deleted: bool = False
+    # True when this row's printer has an armed plate gate waiting on this row's archive: the
+    # answer belongs on the printer card (Repeat print / Clear plate), and Retry refuses it
+    # (spec plate-gate-owner-requeue A4). False when the reader did not load the gate.
+    plate_answer_required: bool = False
     library_file_name: str | None = None
     library_file_thumbnail: str | None = None
     printer_name: str | None = None
