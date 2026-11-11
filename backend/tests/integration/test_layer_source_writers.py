@@ -14,8 +14,11 @@ def sliced(path, *, patched=False, hidden_header=False):
     with zipfile.ZipFile(path, "w") as z:
         for index, total in [(1, 693), (2, 91)]:
             prefix = "; padding\n" * 600 if hidden_header else ""
+            # Equal fixture contents must have equal hashes across ZIP's
+            # two-second timestamp boundary, including on slow CI workers.
+            entry = zipfile.ZipInfo(f"Metadata/plate_{index}.gcode", date_time=(2026, 1, 1, 0, 0, 0))
             z.writestr(
-                f"Metadata/plate_{index}.gcode",
+                entry,
                 prefix + f"; total layer number: {total}\n" + ("; M970\n" if patched else "M970\n"),
             )
     return path
