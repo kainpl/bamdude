@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, func
@@ -21,6 +22,11 @@ class Printer(Base):
     __tablename__ = "printers"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Immutable, opaque, new on every creation (OrcaBamDude spec r2 §8.1, m216). The numeric id is reused on
+    # SQLite after a delete and the serial number is treated as sensitive, so a connector names THIS record by it.
+    connector_identity: Mapped[str] = mapped_column(
+        String(36), nullable=False, unique=True, index=True, default=lambda: str(uuid.uuid4())
+    )
     name: Mapped[str] = mapped_column(String(100))
     serial_number: Mapped[str] = mapped_column(String(50), unique=True)
     ip_address: Mapped[str] = mapped_column(String(253))
@@ -48,6 +54,17 @@ class Printer(Base):
         """What a form posts back. A property so ``model_validate(printer)`` finds it —
         the list route validates straight off the ORM row."""
         return [tag.id for tag in self.tags]
+
+    @property
+    def model_code(self) -> str | None:
+        """The Bambu Studio ``model_id`` of this printer's mirrored config (``BL-P001``, ``C12``, ``N1``…), or
+        None when the model has no mirrored config. A slicer connector names its device by it, and OrcaSlicer
+        compares it with the printer preset's model, so it is never guessed from the nearest name."""
+        from backend.app.utils.printer_configs import load_printer_config
+
+        config = load_printer_config(self.model) if self.model else None
+        code = config.get("model_id") if config else None
+        return code if isinstance(code, str) and code else None
 
     @property
     def plate_detection_roi(self) -> dict[str, float] | None:

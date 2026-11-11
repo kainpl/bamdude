@@ -115,3 +115,24 @@ async def test_batch_route_validates_ids_auth_and_preserves_missing_offline_stat
     ).status_code == 422
     unauthorized = await async_client.get("/api/v1/printers/status/batch?ids=1", headers={"Authorization": ""})
     assert unauthorized.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reachable", [True, False])
+async def test_a_status_names_its_printer_by_identity(printer_factory, db_session, reachable):
+    """A slicer connector holds a printer by its identity and reads the status by id; SQLite gives a deleted
+    printer's id to the next one, so the status itself says which printer it describes (OrcaBamDude H2)."""
+    printer = await printer_factory()
+    state = None
+    if reachable:
+        state = PrinterState()
+        state.state = "IDLE"
+        state.connected = True
+    with patch("backend.app.api.routes.printers.printer_manager") as pm:
+        pm.get_status.return_value = state
+        pm.is_awaiting_plate_clear.return_value = False
+        single = await get_printer_status(printer.id, None, db_session)
+        batch = await get_printer_status_batch([printer.id], None, db_session)
+    assert printer.connector_identity
+    assert single.connector_identity == printer.connector_identity
+    assert batch[printer.id].connector_identity == printer.connector_identity

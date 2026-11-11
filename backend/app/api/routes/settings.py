@@ -305,6 +305,7 @@ async def _load_settings(db: AsyncSession, *, effective_env: bool = True) -> App
                 "include_beta_updates",
                 "telemetry_enabled",
                 "virtual_printer_enabled",
+                "connector_enabled",
                 "ftp_retry_enabled",
                 "mqtt_enabled",
                 "mqtt_use_tls",
@@ -381,6 +382,7 @@ async def _load_settings(db: AsyncSession, *, effective_env: bool = True) -> App
                 "forecast_plate_clear_minutes",
                 "firmware_batch_concurrency",
                 "session_max_hours",
+                "connector_max_upload_bytes",
             ]:
                 settings_dict[setting.key] = int(setting.value)
             elif setting.key == "default_printer_id":
@@ -1126,7 +1128,10 @@ async def _quiesce_library_previews() -> None:
     and sliced-source publications -- is closed and proven quiet before the storage guard and any file work,
     or the restore ends here with nothing replaced."""
     from backend.app.services import library_preview_jobs
+    from backend.app.services.library_file_runtime import upload_writes
 
+    if not await upload_writes.quiesce():
+        raise HTTPException(409, "Library upload writers have not stopped; retry restore after they finish")
     if not await library_preview_jobs.quiesce_library_previews_for_restore():
         raise HTTPException(409, {"error": "preview_quiesce_unproven", "message": PREVIEW_QUIESCE_UNPROVEN})
 
@@ -1149,6 +1154,7 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
     from backend.app.core.paths import resolve_data_dir
     from backend.app.services import queue_sources
     from backend.app.services.backup_files import FileRestore, extract_zip, validate_staged_queue_spool
+    from backend.app.services.connector_runtime import connector_runtime
     from backend.app.services.farm_startup_guard import farm_startup_guard
 
     if not file.filename or not file.filename.endswith(".zip"):
@@ -1210,6 +1216,9 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
 
                 if not await mcp_runtime.quiesce_for_restore():
                     raise HTTPException(409, "MCP readers have not stopped; retry restore after they finish")
+                # Admission closes before the first await; submissions and uploads drain before any storage moves.
+                if not await connector_runtime.quiesce_for_restore():
+                    raise HTTPException(409, "Slicer connector work has not stopped; retry restore after it finishes")
                 from backend.app.services.obico_detection import obico_detection_service
 
                 try:
@@ -1248,6 +1257,9 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
                 async with queue_sources.storage_mutation():
                     await _file_work(files.prepare)
                     queue_sources.invalidate_receipts()
+                    # Durable, outside the storage being replaced: until the restored database has a new
+                    # storage epoch, no start may answer the connector's old namespace (spec r2 §8.4).
+                    await _file_work(connector_runtime.write_restore_fence)
                     await db.close()
                     await close_all_connections()
                     await _file_work(files.apply)
@@ -1270,6 +1282,9 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
                         files.committed = True  # No await between DB success and this flag.
             finally:
                 await _file_work(files.finish)
+                if not files.committed:
+                    # Nothing was replaced: the old storage and its storage epoch stand.
+                    await _file_work(connector_runtime.clear_restore_fence)
 
             import backend.app.core.encryption as _enc_mod
 
@@ -1280,6 +1295,9 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
             # failure must not put old files beside the already replaced database.
             await reinitialize_database()
             await init_db()
+            # The restored database's epoch is new before anything reopens; a failure keeps the fence for the
+            # next start. The connector itself stays closed until that restart.
+            await connector_runtime.finish_restore()
             await mcp_runtime.reload(after_restore=True)
             logger.info("Restore complete - restart required")
             return {

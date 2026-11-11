@@ -661,7 +661,7 @@ class TestCameraLightHooks:
         async def fake_get_or_create(key, factory):
             return FakeBroadcaster()
 
-        async def fake_iter(broadcaster, queue, *, is_disconnected, on_unsubscribe):
+        async def fake_iter(broadcaster, queue, *, is_disconnected, on_unsubscribe, before_yield=None):
             for _ in range(2):
                 events.append("frame")
                 yield b"--frame\r\n"

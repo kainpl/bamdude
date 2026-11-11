@@ -237,6 +237,12 @@ class PrintArchive(Base):
     # queues do.
     from_auto_queue: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # The lineage of this execution (m217): the recovery_identity of the queue row the dispatch launched and, for a
+    # promoted row, of its AutoQueue job. Written only by job_lineage.stamp_execution in the transaction that creates
+    # the archive; empty for every archive no dispatch of a queue row produced.
+    queue_item_identity: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    source_auto_identity: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+
     @classmethod
     def active(cls) -> "Select[tuple[PrintArchive]]":
         """Select statement that excludes trashed archives.

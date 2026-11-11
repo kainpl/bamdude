@@ -504,6 +504,9 @@ class TestACloneCarriesEveryPrintOption:
         # it would give two queue items one router row, and deleting either
         # would take the other's link with it.
         "source_auto_item_id",
+        # ⚠️ The lineage of the row that was promoted (m217). A clone is a new job, not a descendant of that
+        # AutoQueue job: inheriting it would make an old connector receipt follow a print it never queued.
+        "source_auto_identity",
         # ⚠️ Deliberately dropped, both of them. A clone is a normal print, not
         # a second run of that calibration session: carrying the flag without
         # the session breaks the completion hook that looks for one, and

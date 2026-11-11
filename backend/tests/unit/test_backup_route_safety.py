@@ -136,6 +136,8 @@ async def test_failed_database_swap_restores_previous_key_and_keeps_identity(tmp
     assert not (live / "custom-archive/restored.3mf").exists()
     assert (live / "icons/old.png").read_bytes() == b"old-icon"
     assert not list(live.rglob(".bamdude-restore-*"))
+    # Nothing was replaced: the slicer connector's old storage epoch stands, no fence for the next start.
+    assert not (live / ".connector-restore-pending").exists()
 
 
 @pytest.mark.asyncio

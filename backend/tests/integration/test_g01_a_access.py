@@ -368,7 +368,11 @@ async def test_kiosk_auth_database_failure_is_safe_503(async_client, monkeypatch
     )
     # Monitor imports this validator directly; the other doors load it lazily.
     monkeypatch.setattr("backend.app.api.routes.monitor.verify_token", long_lived_tokens.verify_token)
-    response = await async_client.get("/api/v1" + path, headers={"Authorization": "Bearer opaque"})
+    # Camera headers choose ordinary auth without falling back to a query token.
+    request = async_client.build_request("GET", "/api/v1" + path, headers={"Authorization": "Bearer opaque"})
+    if "/camera/" in path:
+        request.headers.pop("Authorization", None)  # Also remove the fixture client's default JWT.
+    response = await async_client.send(request)
     assert response.status_code == 503, response.text
     assert response.headers["retry-after"] == "5"
     assert "kiosk-secret" not in response.text

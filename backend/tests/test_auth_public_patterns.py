@@ -73,6 +73,9 @@ from backend.app.main import PUBLIC_API_PATTERNS, app
 #: its stream token for an ordinary permission still read as gated.
 _GATE_DEPENDENCY: dict[str, tuple[str, ...]] = {
     "stream-token": ("require_camera_stream_token",),
+    # A printer camera for an <img> (the token) or for a header-authenticated client such as the slicer
+    # connector (addendum C4): one dependency, two doors, no fallback between them.
+    "token-or-headers": ("require_camera_token_or_headers",),
     "overlay-token": ("require_overlay_token",),
     "camwall-token": ("require_camwall_token",),
     "monitor-token": ("kiosk_access",),
@@ -129,8 +132,8 @@ PUBLIC_ROUTES: dict[str, tuple[str, str]] = {
     "/api/v1/external-links/{link_id}/icon": ("anonymous", "external-link favicon"),
     "/api/v1/auth/oidc/providers/{provider_id}/icon": ("anonymous", "OIDC button icon on the login page"),
     # Camera surface — long-lived scoped tokens in the URL, no session.
-    "/api/v1/printers/{printer_id}/camera/stream": ("stream-token", "MJPEG stream"),
-    "/api/v1/printers/{printer_id}/camera/snapshot": ("stream-token", "snapshot"),
+    "/api/v1/printers/{printer_id}/camera/stream": ("token-or-headers", "MJPEG stream"),
+    "/api/v1/printers/{printer_id}/camera/snapshot": ("token-or-headers", "snapshot"),
     # A standalone camera — one that belongs to no printer — serves the same two
     # things through its own routes, behind the same stream token. Its CRUD is
     # settings work and is deliberately absent from this table.

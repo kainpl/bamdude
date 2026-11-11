@@ -2357,6 +2357,63 @@ def require_camera_stream_token():
 RequireCameraStreamToken = Depends(require_camera_stream_token())
 
 
+@dataclass(frozen=True, repr=False)
+class CameraKeyIdentity:
+    """An authenticated incarnation, without the raw credential or a request/session reference."""
+
+    key_id: int
+    identity: str
+    key_hash: str
+    owner_id: int | None
+
+
+@dataclass(frozen=True)
+class CameraAccess:
+    """How a printer camera request was let in: ``api_key`` streams run on a lease (OrcaBamDude spec r2 §11)."""
+
+    via: str  # "token" | "headers"
+    api_key: bool = False
+    key_identity: CameraKeyIdentity | None = None
+
+
+def require_camera_token_or_headers():
+    """A printer camera stream/snapshot gate with two doors, never one falling back on the other.
+
+    With auth headers (``X-API-Key``, or ``Authorization``): the ordinary ``camera:view`` gate -- an API key's
+    ``can_read_status`` scope, its owner's ceiling and its printer list hold, and an invalid header is refused even
+    when a valid ``?token=`` rides along. Without headers: the existing ``?token=`` from
+    ``POST /printers/camera/stream-token``, for ``<img>`` tags that cannot send headers.
+    """
+    # Named in the closure, as every permission gate's is: the scope-coverage walk reads it there.
+    perm_strings = [Permission.CAMERA_VIEW.value]
+    token_checker = require_camera_stream_token()
+
+    async def checker(
+        request: Request,
+        token: str | None = None,
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+        x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    ) -> CameraAccess:
+        key_header = "x-api-key" in request.headers or x_api_key is not None
+        if key_header or "authorization" in request.headers or credentials is not None:
+            header_checker = require_permission(*perm_strings)
+            # Header presence selects the door even when HTTPBearer parsed a malformed value as None.
+            # An explicit key header owns this attempt; it cannot fall back to another credential.
+            await header_checker(request=request, credentials=None if key_header else credentials, x_api_key=x_api_key)
+            bearer = credentials.credentials if credentials is not None else None
+            credential = x_api_key if key_header else (bearer if is_api_key_token(bearer) else None)
+            identity = None
+            if credential:
+                # The permission gate completed this request's cached validation; no second hash/audit write.
+                key = (await resolve_api_key_authority(request, credential)).key
+                identity = CameraKeyIdentity(key.id, key.connector_identity, key.key_hash, key.user_id)
+            return CameraAccess(via="headers", api_key=credential is not None, key_identity=identity)
+        await token_checker(token=token)
+        return CameraAccess(via="token")
+
+    return checker
+
+
 def require_media_permission(*permissions: str | Permission):
     """Media-route dependency for a resource with no per-row ownership (audit D9 a2).
 

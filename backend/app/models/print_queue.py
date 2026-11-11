@@ -243,6 +243,10 @@ class PrintQueueItem(Base):
     # User tracking
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
+    # The recovery_identity of the AutoQueue row this row was promoted from (m217), written only by the promotion:
+    # the lineage a slicer connector follows, where the numeric id below may name a different row after a reuse.
+    source_auto_identity: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+
     # Auto-queue traceability — set when this item was created by AutoQueueScheduler
     # via assignment from auto_queue_items. NULL for items added directly to a
     # specific printer's queue (the existing flow).

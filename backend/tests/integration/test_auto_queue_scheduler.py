@@ -213,6 +213,8 @@ class TestAutoQueueSchedulerTick:
         pq_items = result.scalars().all()
         assert len(pq_items) == 1
         assert pq_items[0].source_auto_item_id == item.id
+        # The lineage a slicer connector follows: the AutoQueue job's immutable identity, not its reusable id.
+        assert item.recovery_identity and pq_items[0].source_auto_identity == item.recovery_identity
         assert pq_items[0].auto_eject is True
         assert pq_items[0].auto_eject_settings == {"difference_threshold": 2.5, "skip_check": True}
         assert pq_items[0].position == 1

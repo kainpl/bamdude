@@ -957,6 +957,8 @@ class AutoQueueScheduler:
                     batch_id=item.batch_id,
                     created_by_id=item.created_by_id,
                     source_auto_item_id=item.id,
+                    # The lineage a reader follows by identity; the numeric id above may later name another row.
+                    source_auto_identity=item.recovery_identity,
                 )
                 db.add(new_item)
                 await db.flush()

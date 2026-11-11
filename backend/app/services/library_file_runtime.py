@@ -22,6 +22,46 @@ _REQUEST_SECONDS = 180
 BUCKET_BYTES = 256 * 1024 * 1024
 
 
+class UploadWritesClosed(RuntimeError):
+    pass
+
+
+class UploadWriteOwner:
+    """Own raw upload writes until the actual syscall ends; restore closes admission before draining."""
+
+    def __init__(self):
+        self.closed = False
+        self.tasks: set[asyncio.Task] = set()
+
+    def reopen(self):
+        if self.tasks:
+            raise RuntimeError("library upload writes are still running")
+        self.closed = False
+
+    def _finished(self, task):
+        self.tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    async def run(self, function, *args):
+        if self.closed:
+            raise UploadWritesClosed
+        task = asyncio.create_task(asyncio.to_thread(function, *args))
+        self.tasks.add(task)  # No await between admission and registration.
+        task.add_done_callback(self._finished)
+        return await owned(task)
+
+    async def quiesce(self, seconds=30.0) -> bool:
+        self.closed = True
+        if not self.tasks:
+            return True
+        _, remaining = await asyncio.wait(set(self.tasks), timeout=seconds)
+        return not remaining  # A timeout neither cancels writers nor reopens admission.
+
+
+upload_writes = UploadWriteOwner()
+
+
 class LibraryFileRuntime:
     def __init__(self, base: Path, broker):
         self.base = base
@@ -277,10 +317,13 @@ async def start_library_file_runtime(base: Path):
         raise RuntimeError("local worker broker unavailable")
     runtime = LibraryFileRuntime(base, broker)
     await runtime.start()
+    upload_writes.reopen()  # Lifespan start only, never a worker restart after restore.
 
 
 async def stop_library_file_runtime():
     global runtime
+    if not await upload_writes.quiesce():
+        raise RuntimeError("library upload writes have not stopped")
     if runtime:
         await runtime.stop()
         runtime = None

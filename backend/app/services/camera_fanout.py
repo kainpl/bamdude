@@ -379,6 +379,7 @@ async def iter_subscriber(
     queue: asyncio.Queue[bytes],
     *,
     is_disconnected: Callable[[], Awaitable[bool]] | None = None,
+    before_yield: Callable[[], Awaitable[bool]] | None = None,
     on_unsubscribe: Callable[[int], None] | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Yield chunks from a subscriber queue until upstream ends or client leaves.
@@ -405,6 +406,9 @@ async def iter_subscriber(
                     break
                 continue
             if chunk == _UPSTREAM_GONE:
+                break
+            # A resumed slow viewer must recheck before releasing a queued private frame, not after it.
+            if before_yield is not None and await before_yield():
                 break
             yield chunk
             if is_disconnected is not None and await is_disconnected():

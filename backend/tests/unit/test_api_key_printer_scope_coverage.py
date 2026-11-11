@@ -35,6 +35,8 @@ NOT_A_PRINTER = {
     "printer_models": "model names a maintenance type applies to, not printers",
     "printer_model": "a model name, not a printer",
     "printer_name": "a preset's printer-model name, not a printer",
+    "controls_printer_power": "a boolean describing the plug's power role, not a printer reference",
+    "show_on_printer_card": "a boolean display preference, not a printer reference",
 }
 
 READ_BY_THE_SCOPE = api_key_scope._PRINTER_KEYS | api_key_scope._PRINTER_CSV_QUERY | api_key_scope._QUEUE_ITEM_KEYS
@@ -98,6 +100,11 @@ def test_the_walk_sees_the_routes_we_know():
         ("GET", "/api/v1/printers/{printer_id}/status"),
         ("POST", "/api/v1/printers/{printer_id}/print/stop"),
         ("GET", "/api/v1/queue/"),
+        # The camera's header door (addendum C4): an API key reaches it, so its printer must be read.
+        ("GET", "/api/v1/printers/{printer_id}/camera/stream"),
+        ("GET", "/api/v1/printers/{printer_id}/camera/snapshot"),
+        ("POST", "/api/v1/connector/submissions"),
+        ("POST", "/api/v1/connector/files"),
     } <= seen
 
 
