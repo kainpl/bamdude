@@ -4,7 +4,7 @@ trigger one.
 Three separate projections of one printer state are maintained by hand:
 
 ======================================  ==========================================
-``main.on_printer_status_change``'s status_key  what counts as "a change worth broadcasting"
+``main._printer_status_effect_key``     what counts as "a change worth broadcasting"
 ``printer_manager.printer_state_to_dict``  what the WebSocket message carries
 ``api/routes/printers`` status response  what the card actually reads
 ======================================  ==========================================
@@ -45,7 +45,7 @@ def _code_only(src: str) -> str:
 
 
 _STATUS_KEY = _code_only(
-    inspect.getsource(main_module.on_printer_status_change).split("status_key = (", 1)[1].split("\n    )", 1)[0]
+    inspect.getsource(main_module._printer_status_effect_key).split("return (", 1)[1].split("\n    )", 1)[0]
 )
 _WS_PAYLOAD = _code_only(inspect.getsource(pm_module.printer_state_to_dict))
 
@@ -133,7 +133,7 @@ class TestTheTraySignatureNoticesAnAdvertisedProfile:
         published, and that echo moves ``tray_color`` / ``tray_info_idx`` —
         nothing else in this key. Without them the badge and the real spool
         behind it waited for the next unrelated push."""
-        source = inspect.getsource(main_module.on_printer_status_change)
+        source = inspect.getsource(main_module._printer_status_effect_key)
         tray_key = _code_only(source.split("ams_tray_key = ", 1)[1].split("airduct_key = ", 1)[0])
         assert '"tray_color"' in tray_key and '"tray_info_idx"' in tray_key
         assert '"state"' in tray_key  # the load/unload transition of #784 stays
@@ -143,11 +143,11 @@ class TestTheFanSignatureIsAboutSpeeds:
     def test_it_covers_the_part_state(self) -> None:
         """Part id alone would not notice a speed change; the state is the value
         the badge shows."""
-        source = inspect.getsource(main_module.on_printer_status_change)
-        assert 'get("state")' in source.split("airduct_key = ", 1)[1].split("\n    status_key", 1)[0]
+        source = inspect.getsource(main_module._printer_status_effect_key)
+        assert 'get("state")' in source.split("airduct_key = ", 1)[1].split("\n    return (", 1)[0]
 
     def test_it_is_ordered(self) -> None:
         """Dict order follows whatever the printer sent, so an unsorted tuple
         would differ between two identical states and broadcast on every push."""
-        source = inspect.getsource(main_module.on_printer_status_change)
-        assert "sorted(" in source.split("airduct_key = ", 1)[1].split("\n    status_key", 1)[0]
+        source = inspect.getsource(main_module._printer_status_effect_key)
+        assert "sorted(" in source.split("airduct_key = ", 1)[1].split("\n    return (", 1)[0]
