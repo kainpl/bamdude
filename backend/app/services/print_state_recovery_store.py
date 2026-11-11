@@ -1311,17 +1311,26 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                 extra = plan["archive"]["extra_data"]
                 extra["operator_recovery_end"]["action_id"] = nonce
                 archive.extra_data = json.loads(previews.canonical(extra))
-            if plan["item"] and not plan["item"].get("close"):
+            after = public_plan(plan)
+            if plan["item"] and not plan["item"].get("close") and payload["action"] == GATE_OWNER_ACTION:
+                # B4: the archive's own end, else this apply's one clock -- the row and the audit carry the same
+                # moment. The waiting and error fields stay empty, as the preview showed; the archive is untouched.
+                completed = ended_at if plan["item"]["completed_at"] == "apply" else plan["item"]["completed_at"]
+                item.status = plan["item"]["status"]
+                item.completed_at = completed
+                item.waiting_reason = None
+                item.error_code, item.error_message = None, None
+                after = {**after, "item": {**plan["item"], "completed_at": completed}}
+                # A pending row became finished again: the queue's counts follow it.
+                from backend.app.services.queue_counters import update_queue_counters
+
+                await db.flush()
+                await update_queue_counters(db, queue_id)
+            elif plan["item"] and not plan["item"].get("close"):
                 item.status = plan["item"]["status"]
                 item.completed_at = plan["item"]["completed_at"]
                 item.waiting_reason = None
                 item.error_code = row_class(item.status, archive.failure_reason if archive is not None else None)
-                if payload["action"] == GATE_OWNER_ACTION:
-                    # A pending row became finished again: the queue's counts follow it.
-                    from backend.app.services.queue_counters import update_queue_counters
-
-                    await db.flush()
-                    await update_queue_counters(db, queue_id)
             if plan["delete_item"]:
                 await db.delete(item)
             if plan["queue"] and not plan["archive"].get("close") and "settlement" not in plan:
@@ -1348,7 +1357,7 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                             "completed_at": (f.archive or {}).get("completed_at"),
                             "queue": f.queue,
                         },
-                        "after": public_plan(plan),
+                        "after": after,
                         "note": payload["note"],
                         "members": [
                             {

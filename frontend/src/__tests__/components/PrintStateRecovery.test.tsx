@@ -179,6 +179,21 @@ describe('Addressed recovery confirmation', () => {
     expect(screen.getByRole('button', { name: 'Apply this change' })).toBeDisabled();
     expect(api.applyPrintState).not.toHaveBeenCalled();
   });
+  it('shows a restore without a recorded end as taking the time of applying, with empty error fields', async () => {
+    // Spec plate-gate-owner-requeue B4: the apply's own clock, which the preview cannot know yet.
+    const user = userEvent.setup();
+    vi.mocked(api.previewPrintState).mockResolvedValue({ ...preview, action: 'restore_gate_owner_row',
+      before: { queue: {}, item: { status: 'pending', completed_at: null }, archive: {} },
+      after: { queue: {}, archive: {}, delete_item: false,
+        item: { status: 'cancelled', completed_at: 'apply', waiting_reason: null, error_code: null, error_message: null } },
+    });
+    render(<PrintStateRecoveryDialog issue={{ ...issue, code: 'plate_gate_owner_requeued', actions: ['restore_gate_owner_row'] }}
+      action="restore_gate_owner_row" onClose={vi.fn()} onApplied={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: 'Preview change' }));
+    expect((await screen.findByText('Queue item: End time')).closest('tr')).toHaveTextContent('Time of applying');
+    expect(screen.getByText('Queue item: Error message').closest('tr')).toHaveTextContent('Queue item: Error message——');
+    expect(screen.getByText('Queue item: Failure class').closest('tr')).toHaveTextContent('Queue item: Failure class——');
+  });
   it('requires completion confirmation before an estimate and a second confirmation of the delta', async () => {
     const user = userEvent.setup();
     render(<PrintStateRecoveryDialog issue={issue} action="fill_estimated_end_and_align" onClose={vi.fn()} onApplied={vi.fn()} />);

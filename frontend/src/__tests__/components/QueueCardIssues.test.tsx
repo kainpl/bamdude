@@ -371,9 +371,20 @@ describe('QueueCard Issues — Retry all failed', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Retry all…' }));
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveTextContent('failed: 1, cancelled: 0');
+    // Not sent, but said: the confirmation and the result both name the row left for its plate answer.
+    expect(dialog).toHaveTextContent('Waiting for a plate answer on the printer card: 1.');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(requests).toHaveLength(1));
     expect(requests[0]).toEqual({ queue_id: 7, item_ids: [1] });
+    expect(await screen.findByText(/1 returned to the queue Waiting for a plate answer on the printer card: 1\./)).toBeInTheDocument();
+  });
+  it('says why Retry all has nothing to send when every row waits for its plate answer', async () => {
+    mockQueue({ cancelled: [{ ...row(3, 'cancelled'), plate_answer_required: true }] });
+    renderCard();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry all…' }));
+    expect(await screen.findByText(/every failed or cancelled job waits for a plate answer on the printer card \(1\)/)).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(requests).toEqual([]);
   });
   it('names a row left for its plate answer in the Retry all result', async () => {
     server.use(http.post('/api/v1/queue/bulk-retry', () => HttpResponse.json({

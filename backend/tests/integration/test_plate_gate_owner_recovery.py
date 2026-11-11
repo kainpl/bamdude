@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.print_state_recovery_action import PrintStateRecoveryAction
 from backend.app.models.printer import Printer
@@ -92,6 +93,7 @@ async def test_restore_then_the_card_answers_again(
     restored = await db_session.get(PrintQueueItem, row_id)
     assert restored.status == "cancelled"
     assert restored.completed_at.replace(tzinfo=timezone.utc) == completed.replace(tzinfo=timezone.utc)
+    assert result["after"]["item"]["completed_at"] == tokens.json_value(completed)  # B4: the archive's own end
     gate = await db_session.get(Printer, pid)
     assert (gate.awaiting_plate_clear, gate.awaiting_plate_clear_archive_id) == (True, aid)  # the gate is untouched
     q = await db_session.get(PrinterQueue, qid)
@@ -105,6 +107,57 @@ async def test_restore_then_the_card_answers_again(
     assert not (await db_session.get(Printer, pid)).awaiting_plate_clear
     if answer == "repeat-print":
         assert (await db_session.get(PrintQueueItem, row_id)).status == "pending"
+
+
+async def test_without_an_archive_end_the_row_and_its_audit_take_one_apply_time(
+    db_session, test_engine, printer_factory, archive_factory, telemetry
+):
+    # B4: the row takes the apply's own clock, recorded in the audit; the archive keeps its missing end.
+    printer, _queue, archive, row = await requeued_owner(db_session, printer_factory, archive_factory)
+    archive.completed_at = None
+    await db_session.commit()
+    pid, aid, row_id = printer.id, archive.id, row.id
+
+    preview = await store.make_preview(db_session, pid, "item", row_id, GATE_OWNER_ACTION, "user:1")
+    assert preview["after"]["item"]["completed_at"] == "apply"
+    result = await store.apply_preview(
+        factory(test_engine), tokens.verify(preview["preview_token"]), "user:1", "Operator"
+    )
+
+    db_session.expire_all()
+    restored = await db_session.get(PrintQueueItem, row_id)
+    assert restored.status == "cancelled"
+    assert tokens.json_value(restored.completed_at) == result["applied_at"] == result["after"]["item"]["completed_at"]
+    audit = await db_session.get(PrintStateRecoveryAction, result["id"])
+    assert audit.result["after"]["item"]["completed_at"] == result["applied_at"]
+    assert (await db_session.get(PrintArchive, aid)).completed_at is None
+
+
+@pytest.mark.parametrize("outcome", ["failed", "cancelled"])
+async def test_the_restored_row_keeps_its_error_fields_empty(
+    db_session, test_engine, printer_factory, archive_factory, telemetry, outcome
+):
+    # B4: waiting_reason, error_code and error_message stay empty, as the preview shows -- a failed run with no
+    # recorded reason included, which an ordinary alignment would classify.
+    printer, _queue, _archive, row = await requeued_owner(db_session, printer_factory, archive_factory, outcome=outcome)
+    pid, row_id = printer.id, row.id
+
+    preview = await store.make_preview(db_session, pid, "item", row_id, GATE_OWNER_ACTION, "user:1")
+    shown = preview["after"]["item"]
+    assert (shown["error_code"], shown["error_message"], shown["waiting_reason"]) == (None, None, None)
+    result = await store.apply_preview(
+        factory(test_engine), tokens.verify(preview["preview_token"]), "user:1", "Operator"
+    )
+
+    db_session.expire_all()
+    restored = await db_session.get(PrintQueueItem, row_id)
+    assert (restored.status, restored.error_code, restored.error_message, restored.waiting_reason) == (
+        outcome,
+        None,
+        None,
+        None,
+    )
+    assert result["after"]["item"]["error_code"] is None
 
 
 @pytest.mark.parametrize("change", ["gate_answered", "gate_rearmed", "row_cancelled", "row_dispatched"])

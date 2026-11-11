@@ -189,11 +189,12 @@ async def answer_plate_run(
     if action not in {"clear", "repeat"}:
         raise ValueError(f"Unsupported plate answer: {action}")
 
+    from backend.app.services import queue_sources
     from backend.app.services.printer_manager import printer_manager
 
     async with _printer_locks[printer_id], AsyncExitStack() as write_scopes:
 
-        async def guard_archive(archive_id):
+        async def enter_guard(scope):
             # A caller that may own SQLite's writer must never wait for a
             # process guard. locked() alone misses an unlocked lock handing off
             # to a queued waiter. With an active SQLite transaction the scope's
@@ -202,11 +203,23 @@ async def answer_plate_run(
             if db.get_bind().dialect.name == "sqlite" and db.in_transaction():
                 try:
                     async with asyncio.timeout(0):
-                        await write_scopes.enter_async_context(archive_write_scope(db, archive_id))
+                        await write_scopes.enter_async_context(scope)
                 except TimeoutError as exc:
                     raise PlateAnswerBusy("This print is being changed; try clearing the plate again") from exc
             else:
-                await write_scopes.enter_async_context(archive_write_scope(db, archive_id))
+                await write_scopes.enter_async_context(scope)
+
+        async def guard_archive(archive_id):
+            await enter_guard(archive_write_scope(db, archive_id))
+
+        # A Repeat may put its row back onto captured bytes, which needs the storage
+        # guard. It is taken FIRST, before any archive guard: storage -> archive ->
+        # lane is the order every writer of both keeps, operator recovery's apply
+        # among them, and taking it under the archive (inside ``reusing_sources``)
+        # deadlocked against that apply (spec plate-gate-owner-requeue RG-1). Held
+        # until the answer's commit, as the re-arm's own guard always was.
+        if action == "repeat":
+            await enter_guard(queue_sources.storage_mutation())
 
         # SQLite must become the writer before receipt/gate/row reads.  When an
         # expected archive is present its archive scope does this; legacy calls
@@ -338,6 +351,7 @@ async def answer_plate_run(
                     expected_archive_id=expected_archive_id,
                     commit=False,
                     source_guards=source_guards,
+                    storage_held=True,
                 )
                 if row is None:
                     raise StalePlateAnswer("No finished print is waiting on this printer")

@@ -203,6 +203,7 @@ async def answer_by_repeating(
     expected_archive_id: int | None = None,
     commit: bool = True,
     source_guards: AsyncExitStack | None = None,
+    storage_held: bool = False,
 ) -> PrintQueueItem | None:
     """The operator took the part off and wants another: re-arm the same row.
 
@@ -223,6 +224,12 @@ async def answer_by_repeating(
     blob's state — never on the routing intent's provenance, which records
     ``id: None`` for a job whose original references were already NULL when it was
     last edited, and so cannot answer it.
+
+    ⚠️ ``storage_held``: the plate answer took that guard itself, BEFORE the
+    archive's (``plate_answers.answer_plate_run``). Taking it here, under the
+    archive, inverted the order every other storage + archive writer keeps and
+    deadlocked against an operator recovery apply (spec plate-gate-owner-requeue
+    RG-1); then the blob is only asked about here.
     """
     from backend.app.services.queue_source_capture import reusing_sources
     from backend.app.services.queue_sources import QueueSourceError
@@ -244,13 +251,15 @@ async def answer_by_repeating(
         # here cannot swallow anything else.
         try:
             if source_guards is None:
-                async with reusing_sources(db, [row.queue_source_id]):
+                async with reusing_sources(db, [row.queue_source_id], storage_held=storage_held):
                     await _rearm(db, row, commit=commit)
             else:
                 # The outer plate answer commits defects, receipt, gate and
                 # re-arm together.  Holding the source guard until that commit
                 # stops the collector from deleting bytes in the tiny gap.
-                await source_guards.enter_async_context(reusing_sources(db, [row.queue_source_id]))
+                await source_guards.enter_async_context(
+                    reusing_sources(db, [row.queue_source_id], storage_held=storage_held)
+                )
                 await _rearm(db, row, commit=commit)
         except QueueSourceError as exc:
             raise RepeatNotPossible(

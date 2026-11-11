@@ -686,8 +686,7 @@ def _classify_requeued_gate_owner(f: RecoveryFacts) -> dict:
     claim, start = utc(i.get("started_at")), utc((a or {}).get("started_at"))
     if not claim or not start or start < claim:
         reasons.append("invalid_run_times")
-    if a is not None and a.get("completed_at") is None:
-        reasons.append("missing_run_times")
+    # A missing archive end is no veto: the row then takes the apply's own clock, recorded in the audit (B4).
     if i.get("dispatch_attempts") != 0:
         reasons.append("dispatch_started")
     if (
@@ -757,7 +756,15 @@ def plan_action(
     plan = {"item": {}, "archive": {}, "queue": {}, "delete_item": False}
     if action == GATE_OWNER_ACTION:
         # The row only: the gate, the archive, the queue's pause and every other row stay as they are (B4, B5).
-        plan["item"] = {"status": OUTCOMES[a["status"]], "completed_at": a["completed_at"], "waiting_reason": None}
+        # Without an archive end the row takes the apply's one clock ("apply", as a stale-claim group's members),
+        # outside the plan so the preview's hash holds; the waiting and error fields are left empty.
+        plan["item"] = {
+            "status": OUTCOMES[a["status"]],
+            "completed_at": a["completed_at"] or "apply",
+            "waiting_reason": None,
+            "error_code": None,
+            "error_message": None,
+        }
         return plan
     if action in {"cancel_terminal_claims", "settle_swap_by_operator"}:
         if f.target_kind != ("header" if action == "cancel_terminal_claims" else "archive"):

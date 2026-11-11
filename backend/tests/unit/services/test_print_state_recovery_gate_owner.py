@@ -73,11 +73,24 @@ def test_the_requeued_row_can_be_returned_to_its_runs_outcome(outcome, row_statu
     assert issue == {"code": "plate_gate_owner_requeued", "actions": [GATE_OWNER_ACTION], "blocked_reasons": []}
     plan = plan_action(f, GATE_OWNER_ACTION)
     assert plan == {
-        "item": {"status": row_status, "completed_at": f.archive["completed_at"], "waiting_reason": None},
+        "item": {
+            "status": row_status,
+            "completed_at": f.archive["completed_at"],
+            "waiting_reason": None,
+            "error_code": None,
+            "error_message": None,
+        },
         "archive": {},
         "queue": {},
         "delete_item": False,
     }
+
+
+def test_a_run_without_a_recorded_end_takes_the_apply_clock():
+    # B4: no archive end is no veto; the row takes the apply's own time, which the plan cannot know yet.
+    f = facts(archive__completed_at=None)
+    assert classify(f) == {"code": "plate_gate_owner_requeued", "actions": [GATE_OWNER_ACTION], "blocked_reasons": []}
+    assert plan_action(f, GATE_OWNER_ACTION)["item"]["completed_at"] == "apply"
 
 
 @pytest.mark.parametrize(
@@ -95,7 +108,6 @@ def test_the_requeued_row_can_be_returned_to_its_runs_outcome(outcome, row_statu
         ({"item__started_at": None}, "invalid_run_times"),
         ({"archive__started_at": None}, "invalid_run_times"),
         ({"item__started_at": datetime.now(timezone.utc)}, "invalid_run_times"),  # the archive began before its claim
-        ({"archive__completed_at": None}, "missing_run_times"),
         ({"item__dispatch_attempts": 1}, "dispatch_started"),
         ({"item__dispatch_attempts": None}, "dispatch_started"),
         ({"queue__status": "printing"}, "ambiguous_owner"),
