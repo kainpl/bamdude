@@ -109,38 +109,44 @@ async def test_body_stall_obeys_capture_deadline_and_closes_response():
 
 
 @pytest.mark.asyncio
-async def test_four_http_operations_wait_deadline_and_cancel_restores_capacity(monkeypatch):
-    # Hold actual bodies; the fifth call waits out its budget without I/O.
+async def test_four_body_consumers_wait_deadline_and_cancel_restores_capacity(monkeypatch):
+    # Headers may arrive; the fifth call must wait before consuming its body.
     monkeypatch.setattr(ec, "_SNAPSHOT_HTTP_SLOTS", ec.SnapshotAdmission(4))
-    reached = 0
+    reached = readers = 0
     ready, release = asyncio.Event(), asyncio.Event()
+    replacement_reader = asyncio.Event()
+    original_read = ec.read_snapshot_body
+    data = image_bytes("JPEG")
 
     async def handler(request):
         nonlocal reached
         reached += 1
-        response = web.StreamResponse(headers={"Content-Type": "image/jpeg"})
-        await response.prepare(request)
-        if reached == 4:
-            ready.set()
-        await release.wait()
-        return response
+        return web.Response(body=data, content_type="image/jpeg")
 
+    async def held_body(response):
+        nonlocal readers
+        readers += 1
+        if readers == 4:
+            ready.set()
+        if readers == 5:
+            replacement_reader.set()
+        await release.wait()
+        return await original_read(response)
+
+    monkeypatch.setattr(ec, "read_snapshot_body", held_body)
     async with endpoint(handler) as url:
         tasks = [asyncio.create_task(ec._capture_snapshot(f"{url}/{index}", 2)) for index in range(4)]
         try:
             await asyncio.wait_for(ready.wait(), 1)
             assert await ec._capture_snapshot(f"{url}/fifth", 0.03) is None
-            assert reached == 4
+            assert reached == 5 and readers == 4
             tasks[0].cancel()
             with pytest.raises(asyncio.CancelledError):
                 await tasks[0]
             sixth = asyncio.create_task(ec._capture_snapshot(f"{url}/sixth", 1))
             tasks.append(sixth)
-            for _ in range(100):
-                if reached == 5:
-                    break
-                await asyncio.sleep(0.005)
-            assert reached == 5
+            await asyncio.wait_for(replacement_reader.wait(), 1)
+            assert reached == 6 and readers == 5
         finally:
             for task in tasks:
                 task.cancel()

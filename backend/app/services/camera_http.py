@@ -150,6 +150,7 @@ async def _validated_camera_get(session: aiohttp.ClientSession, url: str, *, tim
                     "cookie_jar": aiohttp.DummyCookieJar(),
                     "trust_env": False,
                     "auto_decompress": getattr(session, "_auto_decompress", True),
+                    "read_bufsize": getattr(session, "_read_bufsize", 64 * 1024),
                     "headers": {"Accept-Encoding": "identity"},
                 }
                 if connector := getattr(session, "connector", None):

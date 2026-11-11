@@ -36,29 +36,52 @@ async def endpoint(handler):
         await runner.cleanup()
 
 
-async def test_six_distinct_valid_http_snapshots_wait_then_all_publish():
+@pytest.mark.parametrize("hold_phase", ["body", "decode"])
+async def test_six_headers_allow_only_four_body_consumers_then_all_publish(monkeypatch, hold_phase):
     data = encoded_image()
-    ready, release = asyncio.Event(), asyncio.Event()
-    reached = active = peak = 0
+    headers_ready, bodies_ready, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    reached = active = peak = reads = 0
+    original_read = camera.read_snapshot_body
+    original_decode = camera.decode_snapshot
 
     async def handler(request):
-        nonlocal reached, active, peak
+        nonlocal reached
         reached += 1
+        if reached == 6:
+            headers_ready.set()
+        return web.Response(body=data, content_type="image/jpeg")
+
+    async def hold_consumer():
+        nonlocal active, peak
         active += 1
         peak = max(peak, active)
-        if reached == 4:
-            ready.set()
+        if active == 4:
+            bodies_ready.set()
         try:
             await release.wait()
-            return web.Response(body=data, content_type="image/jpeg")
         finally:
             active -= 1
 
+    async def held_body(response):
+        nonlocal reads
+        reads += 1
+        if hold_phase == "body":
+            await hold_consumer()
+        return await original_read(response)
+
+    async def held_decode(source, timeout):
+        if hold_phase == "decode":
+            await hold_consumer()
+        return await original_decode(source, timeout)
+
+    monkeypatch.setattr(camera, "read_snapshot_body", held_body)
+    monkeypatch.setattr(camera, "decode_snapshot", held_decode)
     async with endpoint(handler) as url:
         tasks = [asyncio.create_task(camera._capture_snapshot(f"{url}/{index}", 3)) for index in range(6)]
         try:
-            await asyncio.wait_for(ready.wait(), 2)
-            assert reached == 4
+            await asyncio.wait_for(headers_ready.wait(), 2)
+            await asyncio.wait_for(bodies_ready.wait(), 2)
+            assert reached == 6 and reads == active == 4
             assert all(not task.done() for task in tasks)
             release.set()
             results = await asyncio.wait_for(asyncio.gather(*tasks), 3)
@@ -71,49 +94,164 @@ async def test_six_distinct_valid_http_snapshots_wait_then_all_publish():
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def test_http_admission_wait_timeout_and_cancel_do_no_outbound_then_recover():
+async def test_six_stalled_headers_do_not_starve_two_healthy_cameras_and_one_shot(monkeypatch):
     data = encoded_image()
-    ready, release = asyncio.Event(), asyncio.Event()
-    reached = active = peak = 0
+    stalled_ready, release = asyncio.Event(), asyncio.Event()
+    stalled = 0
+    reads = []
+    original_read = camera.read_snapshot_body
 
     async def handler(request):
-        nonlocal reached, active, peak
-        reached += 1
+        nonlocal stalled
+        if request.path.startswith("/stalled"):
+            stalled += 1
+            if stalled == 6:
+                stalled_ready.set()
+            await release.wait()  # no response headers until cleanup
+        return web.Response(body=data, content_type="image/jpeg")
+
+    async def observed_body(response):
+        reads.append(response.url.path)
+        return await original_read(response)
+
+    monkeypatch.setattr(camera, "read_snapshot_body", observed_body)
+    async with endpoint(handler) as url:
+        tasks = [asyncio.create_task(camera._capture_snapshot(f"{url}/stalled/{i}", 5)) for i in range(6)]
+        try:
+            await asyncio.wait_for(stalled_ready.wait(), 2)
+            assert all(not task.done() for task in tasks)
+            healthy = [camera._capture_snapshot(f"{url}/healthy/{i}", 1) for i in range(2)]
+            one_shot = camera.capture_frame(f"{url}/one-shot", "snapshot", timeout=1)
+            assert await asyncio.wait_for(asyncio.gather(*healthy, one_shot), 1.5) == [data] * 3
+            assert all(not task.done() for task in tasks)
+            assert len(reads) == 3 and not any(path.startswith("/stalled") for path in reads)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            release.set()
+        assert await camera._capture_snapshot(f"{url}/recovery", 1) == data
+
+
+async def test_headers_body_admission_and_decode_share_original_capture_budget(monkeypatch):
+    ordinary, target = encoded_image(), encoded_image(progressive=True)
+    holders_ready, release_holders = asyncio.Event(), asyncio.Event()
+    target_request, release_headers, target_headers = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    target_body, release_body = asyncio.Event(), asyncio.Event()
+    readers = 0
+    original_read, original_decode = camera.read_snapshot_body, camera.decode_snapshot
+    decode_budgets = []
+
+    async def handler(request):
+        if request.path == "/target":
+            target_request.set()
+            await release_headers.wait()
+            target_headers.set()
+            return web.Response(body=target, content_type="image/jpeg")
+        return web.Response(body=ordinary, content_type="image/jpeg")
+
+    async def held_body(response):
+        nonlocal readers
+        if response.url.path == "/target":
+            target_body.set()
+            await release_body.wait()
+        else:
+            readers += 1
+            if readers == 4:
+                holders_ready.set()
+            await release_holders.wait()
+        return await original_read(response)
+
+    async def observed_decode(source, timeout):
+        if source == target:
+            decode_budgets.append((asyncio.get_running_loop().time(), timeout))
+        return await original_decode(source, timeout)
+
+    monkeypatch.setattr(camera, "read_snapshot_body", held_body)
+    monkeypatch.setattr(camera, "decode_snapshot", observed_decode)
+    async with endpoint(handler) as url:
+        tasks = [asyncio.create_task(camera._capture_snapshot(f"{url}/hold/{i}", 5)) for i in range(4)]
+        try:
+            await asyncio.wait_for(holders_ready.wait(), 2)
+            started = asyncio.get_running_loop().time()
+            capture = asyncio.create_task(camera._capture_snapshot(f"{url}/target", 3))
+            tasks.append(capture)
+            await asyncio.wait_for(target_request.wait(), 1)
+            await asyncio.sleep(0.08)
+            release_headers.set()
+            await asyncio.wait_for(target_headers.wait(), 1)
+            await asyncio.sleep(0.08)
+            assert not target_body.is_set()  # admission still belongs to four holders
+            release_holders.set()
+            await asyncio.wait_for(target_body.wait(), 1)
+            await asyncio.sleep(0.08)
+            release_body.set()
+            assert await asyncio.wait_for(capture, 1) == target
+            assert len(decode_budgets) == 1
+            decoded_at, remaining = decode_budgets[0]
+            assert remaining == pytest.approx(3 - (decoded_at - started), abs=0.03)
+            assert remaining < 2.85  # neither headers nor body wait resets the budget
+        finally:
+            release_headers.set()
+            release_holders.set()
+            release_body.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_body_admission_timeout_cancel_reads_nothing_then_recovers(monkeypatch):
+    data = encoded_image()
+    ready, release = asyncio.Event(), asyncio.Event()
+    cancel_headers, recovery_headers = asyncio.Event(), asyncio.Event()
+    requests, reads = [], []
+    active = peak = 0
+    original_read = camera.read_snapshot_body
+
+    async def handler(request):
+        requests.append(request.path)
+        if request.path == "/cancel":
+            cancel_headers.set()
+        if request.path == "/recovery":
+            recovery_headers.set()
+        return web.Response(body=data, content_type="image/jpeg")
+
+    async def held_body(response):
+        nonlocal active, peak
+        reads.append(response.url.path)
         active += 1
         peak = max(peak, active)
-        if reached == 4:
+        if len(reads) == 4:
             ready.set()
         try:
             await release.wait()
-            return web.Response(body=data, content_type="image/jpeg")
+            return await original_read(response)
         finally:
             active -= 1
 
+    monkeypatch.setattr(camera, "read_snapshot_body", held_body)
     async with endpoint(handler) as url:
         tasks = [asyncio.create_task(camera._capture_snapshot(f"{url}/{index}", 3)) for index in range(4)]
         try:
             await asyncio.wait_for(ready.wait(), 2)
-            # All four operations are held; this deadline expires in admission.
+            # Headers are allowed; the deadline expires before body consumption.
             assert await asyncio.wait_for(camera._capture_snapshot(f"{url}/deadline", 0.05), 0.5) is None
-            assert reached == 4 and all(not task.done() for task in tasks)
-            entered = asyncio.Event()
-
-            async def cancelled_waiter():
-                entered.set()
-                return await camera._capture_snapshot(f"{url}/cancel", 3)
-
-            waiter = asyncio.create_task(cancelled_waiter())
+            assert "/deadline" in requests and "/deadline" not in reads
+            assert len(reads) == active == 4 and all(not task.done() for task in tasks)
+            waiter = asyncio.create_task(camera._capture_snapshot(f"{url}/cancel", 3))
             tasks.append(waiter)
-            await asyncio.wait_for(entered.wait(), 1)
+            await asyncio.wait_for(cancel_headers.wait(), 1)
             waiter.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await waiter
-            assert reached == 4
+            assert "/cancel" not in reads and active == 4
             recovery = asyncio.create_task(camera._capture_snapshot(f"{url}/recovery", 3))
             tasks.append(recovery)
+            await asyncio.wait_for(recovery_headers.wait(), 1)
+            assert "/recovery" not in reads
             release.set()
             assert await asyncio.wait_for(asyncio.gather(*tasks[:4], recovery), 3) == [data] * 5
-            assert reached == 5 and peak <= 4
+            assert len(requests) == 7 and peak <= 4
         finally:
             release.set()
             for task in tasks:

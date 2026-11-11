@@ -43,12 +43,18 @@ _SNAPSHOT_HTTP_SLOTS = SnapshotAdmission(4)
 _snapshot_warnings: dict[str, tuple[float, int]] = {}
 
 
-def _snapshot_warning(message: str) -> None:
-    """Aggregate repeated failures across cameras; never include source URLs."""
+def _snapshot_warning(message: str, *, source_host: str | None = None) -> None:
+    """Aggregate by category; show a sample host, never URL userinfo/path/query."""
     now = time.monotonic()
     last, suppressed = _snapshot_warnings.get(message, (float("-inf"), 0))
     if now - last >= 60:
-        logger.warning("%s (suppressed since prior report: %s)", message, suppressed)
+        logger.warning(
+            "%s (suppressed since prior report: %s; events=%s; sample_host=%s)",
+            message,
+            suppressed,
+            suppressed + 1,
+            source_host or "<unavailable>",
+        )
         _snapshot_warnings[message] = (now, 0)
     else:
         _snapshot_warnings[message] = (last, suppressed + 1)
@@ -558,26 +564,19 @@ async def _capture_snapshot(url: str, timeout: int) -> bytes | None:
         _snapshot_warning("Invalid snapshot URL format")
         return None
 
-    # Waiting starts before I/O and shares the caller's original deadline.
-    # Only four admitted operations can retain a body while waiting to decode.
-    deadline = asyncio.get_running_loop().time() + timeout
-    if not await _SNAPSHOT_HTTP_SLOTS.acquire(deadline):
-        _snapshot_warning("Camera snapshot capacity deadline exceeded")
-        return None
-    try:
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            _snapshot_warning("Camera snapshot capacity deadline exceeded")
-            return None
-        return await _fetch_snapshot(safe_url, remaining)
-    finally:
-        _SNAPSHOT_HTTP_SLOTS.release()
+    return await _fetch_snapshot(safe_url, timeout)
 
 
 async def _fetch_snapshot(safe_url: str, timeout: int) -> bytes | None:
-    """Own one bounded HTTP snapshot operation inside the camera worker."""
+    """Connect under the caller deadline, admitting only body/decode work."""
 
     deadline = asyncio.get_running_loop().time() + timeout
+    parsed = urlparse(safe_url)
+    host = parsed.hostname or "<unavailable>"
+    host = f"[{host}]" if ":" in host else host
+    source_host = f"{host}:{parsed.port}" if parsed.port is not None else host
+    body_admitted = False
+    phase = "headers"
     try:
         async with asyncio.timeout_at(deadline):
             async with (
@@ -585,31 +584,45 @@ async def _fetch_snapshot(safe_url: str, timeout: int) -> bytes | None:
                     timeout=aiohttp.ClientTimeout(total=timeout),
                     auto_decompress=False,
                     headers={"Accept-Encoding": "identity"},
+                    read_bufsize=64 * 1024,
                 ) as session,
                 _validated_camera_get(session, safe_url, timeout=timeout) as response,
             ):
                 if response.status != 200:
-                    _snapshot_warning("Snapshot URL returned status " + str(response.status))
+                    _snapshot_warning("Snapshot URL returned status " + str(response.status), source_host=source_host)
                     return None
+                # A missing connect/header response must not occupy another
+                # camera's body capacity. aiohttp prefetch is separately bounded
+                # by its reader high-water; application buffers start here.
+                phase = "body admission"
+                if not await _SNAPSHOT_HTTP_SLOTS.acquire(deadline):
+                    _snapshot_warning("Snapshot body admission deadline exceeded", source_host=source_host)
+                    return None
+                body_admitted = True
+                phase = "body"
                 data = await read_snapshot_body(response)
             if data is None:
-                _snapshot_warning("Camera snapshot body was rejected")
+                _snapshot_warning("Camera snapshot body was rejected", source_host=source_host)
                 return None
             camera_metrics.record_frame(data, output=False)
+            phase = "decode"
             frame = await decode_snapshot(data, deadline - asyncio.get_running_loop().time())
             if frame is None:
-                _snapshot_warning("Camera snapshot decode unavailable or rejected")
+                _snapshot_warning("Camera snapshot decode unavailable or rejected", source_host=source_host)
                 return None
             return camera_metrics.captured_frame(frame)
     except TimeoutError:
-        _snapshot_warning("Snapshot capture exceeded its deadline")
+        _snapshot_warning(f"Snapshot {phase} deadline exceeded", source_host=source_host)
         return None
     except ValueError:
-        _snapshot_warning("Snapshot camera URL or redirect was rejected")
+        _snapshot_warning("Snapshot camera URL or redirect was rejected", source_host=source_host)
         return None
     except (aiohttp.ClientError, OSError) as exc:
-        _snapshot_warning("Snapshot transport failed (" + type(exc).__name__ + ")")
+        _snapshot_warning("Snapshot transport failed (" + type(exc).__name__ + ")", source_host=source_host)
         return None
+    finally:
+        if body_admitted:
+            _SNAPSHOT_HTTP_SLOTS.release()
 
 
 async def test_connection(url: str, camera_type: str) -> dict:
