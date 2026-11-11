@@ -199,7 +199,7 @@ def _ldap_credential_scope(config: dict) -> tuple:
     from backend.app.services.ldap_service import _create_server, parse_ldap_config
 
     url = str(config.get("ldap_server_url") or "").strip()
-    if opaque_service_url(url) or ("://" in url and url.split("://", 1)[0] not in {"ldap", "ldaps"}):
+    if opaque_service_url(url) or ("://" in url and url.split("://", 1)[0].lower() not in {"ldap", "ldaps"}):
         # Preserve opaque/malformed legacy tuples for unrelated metadata edits.
         # Any destination/security change still differs and requires reissue.
         return (
@@ -239,7 +239,7 @@ def _validate_ldap_destination(config: dict) -> None:
     from backend.app.services.ldap_service import _create_server, parse_ldap_config
 
     url = str(config.get("ldap_server_url") or "").strip()
-    if "://" in url and url.split("://", 1)[0] not in {"ldap", "ldaps"}:
+    if "://" in url and url.split("://", 1)[0].lower() not in {"ldap", "ldaps"}:
         raise HTTPException(422, "Invalid LDAP destination")
     if opaque_service_url(url):
         # Only a retained legacy value can reach this path: new opaque base

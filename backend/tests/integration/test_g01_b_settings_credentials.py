@@ -680,6 +680,37 @@ async def test_ba1_ldap_test_preserves_runtime_tls_verification(db_session, monk
     assert await settings.get_setting(db_session, "ldap_search_base") is None
 
 
+@pytest.mark.parametrize("scheme,expected_status", [("LDAPS", 200), ("LdApS", 200), ("foo", 422)])
+async def test_rb1_saved_ldap_test_matches_login_scheme_handling(
+    async_client, db_session, monkeypatch, scheme, expected_status
+):
+    from backend.app.services import ldap_service
+
+    url = f"{scheme}://directory.local"
+    await seed(db_session, {"ldap_server_url": url, "ldap_bind_password": "bind-canary"})
+    captured = []
+
+    def send(config):
+        captured.append(ldap_service._create_server(config))
+        return True, "ok"
+
+    monkeypatch.setattr(ldap_service, "test_ldap_connection", send)
+    response = await async_client.post("/api/v1/auth/ldap/test")
+    assert response.status_code == expected_status, response.text
+    if expected_status == 200:
+        assert response.json()["success"]
+        assert len(captured) == 1
+        assert (captured[0].host, captured[0].port, captured[0].ssl) == ("directory.local", 636, True)
+        config = {"ldap_server_url": url, "ldap_security": "starttls"}
+        assert settings._ldap_credential_scope(config) == settings._ldap_credential_scope(
+            {**config, "ldap_server_url": "ldaps://directory.local"}
+        )
+    else:
+        assert not captured
+    assert await settings.get_setting(db_session, "ldap_server_url") == url
+    assert await settings.get_setting(db_session, "ldap_bind_password") == "bind-canary"
+
+
 async def test_ba8_delegated_secret_guesses_always_forbidden_including_equal_and_absent(async_client, db_session):
     from backend.app.core.auth import create_access_token
     from backend.app.models.group import Group

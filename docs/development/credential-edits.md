@@ -100,6 +100,8 @@ without persistence and saves only on explicit Save. Saved-source tests use
 `camera:view`. New, explicitly supplied sources can still use `/cameras/test`
 with the existing camera-view permission. Clearing the primary source requires
 a disabled camera; changing its type requires an explicit replacement source.
+`PATCH /api/v1/cameras/{id}` rejects unknown or read-only fields with 422; send
+only editable fields and `secret_actions`, not an object copied from GET.
 
 MQTT connection fields and Prometheus exposure/token edits also require explicit
 Save connection. Ordinary preference autosave never carries those drafts.
