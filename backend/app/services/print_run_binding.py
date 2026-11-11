@@ -119,6 +119,9 @@ def _advance_activity(manager: PrinterManager, printer_id: int) -> int:
     sequence = previous + 1 if isinstance(previous, int) else 1
     manager._print_effect_sequence = sequence
     _effect_generations(manager)[printer_id] = sequence
+    from backend.app.services.layer_projection import clear_layer_grant
+
+    clear_layer_grant(manager, printer_id)
     return sequence
 
 
@@ -279,6 +282,9 @@ def retire_printer_runtime(
     current = _current(manager).get(printer_id)
     if current is not None and current.effect_generation < effect_boundary:
         _current(manager).pop(printer_id, None)
+        from backend.app.services.layer_projection import clear_layer_grant
+
+        clear_layer_grant(manager, printer_id)
     for key, run in list(_finishing(manager).items()):
         if key[0] == printer_id and run.effect_generation < effect_boundary:
             _finishing(manager).pop(key, None)
@@ -668,6 +674,9 @@ def release_runtime_context(manager: PrinterManager, expected: RunContextExpecta
     advanced: a late unbound terminal of this run must stay a duplicate (``accept_unbound_completion``)."""
     pid = expected.printer_id
     _current(manager).pop(pid, None)
+    from backend.app.services.layer_projection import clear_layer_grant
+
+    clear_layer_grant(manager, pid)
     if expected.admission is not None:
         _start_admissions(manager).pop(pid, None)
     accepted = getattr(manager, "_print_terminal_generations", None)
@@ -714,6 +723,9 @@ def begin_print_run_finishing(manager: PrinterManager, printer_id: int, archive_
     current = _current(manager).get(printer_id)
     if current is not None and current.archive_id == archive_id:
         _current(manager).pop(printer_id, None)
+        from backend.app.services.layer_projection import clear_layer_grant
+
+        clear_layer_grant(manager, printer_id)
         _finishing(manager)[key] = current
         retire_print_start(manager, printer_id, archive_id)
         return current
@@ -746,3 +758,6 @@ def discard_print_run(
         and (expected_identity is None or current.archive_identity == expected_identity)
     ):
         _current(manager).pop(printer_id, None)
+        from backend.app.services.layer_projection import clear_layer_grant
+
+        clear_layer_grant(manager, printer_id)

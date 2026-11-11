@@ -1256,6 +1256,7 @@ export interface PrinterStatus {
   remaining_time: number | null;
   layer_num: number | null;
   total_layers: number | null;
+  total_layers_source?: 'mqtt' | 'file' | 'unknown';
   temperatures: {
     bed?: number;
     bed_target?: number;
@@ -5064,6 +5065,7 @@ export interface CamWallPrinter {
   remaining_time: number | null;
   layer_num: number | null;
   total_layers: number | null;
+  total_layers_source?: 'mqtt' | 'file' | 'unknown';
   hms_errors: HMSError[];
   // Stack entries the operator hid on this printer until the printer drops
   // them — excluded from hms_errors, listed here so the modal can un-hide.
@@ -5086,6 +5088,7 @@ export interface OverlayStatus {
   remaining_time: number | null;
   layer_num: number | null;
   total_layers: number | null;
+  total_layers_source?: 'mqtt' | 'file' | 'unknown';
   stg_cur_name: string | null;
   /** ⚠️ An ALLOW-LIST, not the printer's temperature dict: that one doubles as
    *  the MQTT client's working memory and carries derived flags and private
@@ -9824,6 +9827,7 @@ export interface UsageProjection {
   print_name?: string | null;
   layer_num?: number;
   total_layers?: number;
+  total_layers_source?: 'mqtt' | 'file' | 'unknown';
   slots?: UsageProjectionSlot[];
 }
 

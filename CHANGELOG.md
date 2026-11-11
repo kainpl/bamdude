@@ -9,6 +9,14 @@ MQTT and metrics credentials now use explicit connection saves, preventing parti
 
   Printer external-camera tests and the legacy global virtual-printer configuration writer now use JSON bodies. Printer camera stream and snapshot URLs are separate opaque values; testing a saved printer URL requires printer-editing rights. Clearing the external stream URL also requires disabling that source. API clients should follow [the credential-editing contract](docs/development/credential-edits.md).
 
+- When a printer omits its layer total, live views and filament estimates can use the selected plate's verified archive metadata after an accepted print start. Late file downloads, including retries, update the display without waiting for another layer or periodically hiding the count. The first-layer notification can use the same verified total; photo timing, runout detection and final accounting retain their existing raw telemetry. Cold reconnect recovery and older archives without source proof may still show an unknown total.
+
+- Preparation messages that still identify the previous print now block later layer totals without an ID until a new print ID arrives or preparation ends. This prevents the old print's layer count from reaching the next print's photos and tracking.
+
+- Live printer status now updates when only the total layer count changes, including when it becomes unknown again.
+
+- A layer total reported during print preparation now survives the transition to printing. Aborted preparation cannot lend its total to the next print, and a fresh total in the start message takes precedence. This also keeps the reported total available to last-layer photos and print tracking when the printer does not repeat it.
+
 - Sensitive authentication, integration and backup controls require a real administrator, including accounts in the Administrators group. Delegated settings editors can still save ordinary preferences; restricted fields cannot change as a side effect of a full-form save. Public sign-in provider metadata and ordinary UI preferences use separate limited responses. Git connection tests send credentials in the request body.
 
 - Temporary authentication-storage failures return a retryable service error and preserve browser and kiosk credentials. Removing an SSO link cannot remove the last usable login method, including when two links are removed at once. Deleting a printer keeps an empty API-key printer scope restricted.

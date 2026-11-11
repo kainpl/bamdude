@@ -498,6 +498,7 @@ class PrinterStatus(BaseModel):
     remaining_time: int | None = None
     layer_num: int | None = None
     total_layers: int | None = None
+    total_layers_source: Literal["mqtt", "file", "unknown"] = "unknown"
     temperatures: dict | None = None
     cover_url: str | None = None
     hms_errors: list[HMSErrorResponse] = []

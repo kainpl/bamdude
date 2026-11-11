@@ -47,6 +47,7 @@ export interface CameraWallStatus {
   remaining_time?: number | null;
   layer_num?: number | null;
   total_layers?: number | null;
+  total_layers_source?: 'mqtt' | 'file' | 'unknown';
   subtask_name?: string | null;
   current_print?: string | null;
   gcode_file?: string | null;

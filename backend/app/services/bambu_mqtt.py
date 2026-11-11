@@ -2424,8 +2424,14 @@ class BambuMQTTClient:
         self._run_id_unresolved = False
         self._run_boundary_generation = 0
         self._print_lineage = str(uuid4())
+        self._layer_identity_revision = 0
+        self._layer_snapshot_lock = threading.Lock()
+        self._layer_snapshot = None
+        self._layer_frame_observation = None
         self._pending_start_state = None
         self._pending_start_id = None
+        self._pending_start_total: int | None = None
+        self._pending_start_total_blocked = False
         self._retired_run_id = None
         self._start_observation = None
         self._unproven_observation = None
@@ -2673,8 +2679,11 @@ class BambuMQTTClient:
         self._run_id_unresolved = prior._run_id_unresolved
         self._run_boundary_generation = prior._run_boundary_generation
         self._print_lineage = prior._print_lineage
+        self._layer_identity_revision = prior._layer_identity_revision
         self._pending_start_state = prior._pending_start_state
         self._pending_start_id = prior._pending_start_id
+        self._pending_start_total = prior._pending_start_total
+        self._pending_start_total_blocked = prior._pending_start_total_blocked
         self._retired_run_id = prior._retired_run_id
         self._start_observation = prior._start_observation
         self._unproven_observation = prior._unproven_observation
@@ -5775,6 +5784,8 @@ class BambuMQTTClient:
         if self._pending_start_state is None and self._previous_gcode_state in ("IDLE", "FINISH", "FAILED"):
             self._pending_start_state = self._previous_gcode_state
         if self.state.state in ("IDLE", "FINISH", "FAILED"):
+            self._pending_start_total = None
+            self._pending_start_total_blocked = False
             if self._previous_gcode_state in ("PREPARE", "SLICING"):
                 self._pending_start_id = None
             self._pending_start_state = self.state.state
@@ -5784,7 +5795,34 @@ class BambuMQTTClient:
             self._inflight_recovery_scheduled = False
         packet_run_id = run_id(data.get("subtask_id"))
         if self._pending_start_state and packet_run_id and packet_run_id != previous_run_id:
+            if self._pending_start_id is not None and packet_run_id != self._pending_start_id:
+                self._pending_start_total = None
             self._pending_start_id = packet_run_id
+            if is_printer_status_frame(data):
+                self._pending_start_total_blocked = False
+        if (
+            self._pending_start_state is not None
+            and self.state.state in ("PREPARE", "SLICING")
+            and is_printer_status_frame(data)
+            and packet_run_id
+            and packet_run_id == previous_run_id
+        ):
+            # Later sparse totals still belong to this old-id window until a
+            # status frame identifies a new run or terminal/idle ends it.
+            self._pending_start_total = None
+            self._pending_start_total_blocked = True
+        if (
+            self._pending_start_state is not None
+            and self.state.state in ("PREPARE", "SLICING")
+            and is_printer_status_frame(data)
+            and "total_layer_num" in data
+            and not self._pending_start_total_blocked
+        ):
+            # Firmware can report the new total before its first RUNNING
+            # delta. Remember only a value received in this preparation
+            # window, never the cached denominator of the completed print.
+            pending_total = int(data["total_layer_num"])
+            self._pending_start_total = pending_total if pending_total > 0 else None
         observed_start = bool(self.state.state == "RUNNING" and current_file and self._pending_start_state is not None)
         current_run_id = self._pending_start_id if observed_start else run_id(self.state.subtask_id)
         if self._retired_run_id and current_run_id == self._retired_run_id:
@@ -5806,6 +5844,7 @@ class BambuMQTTClient:
             self._retired_run_id = previous_run_id if observed_start and not current_run_id else None
         elif is_file_change:
             verdict = "file_change_unproven"
+            self._layer_identity_revision += 1
             self._run_id_unresolved = True
         elif not self._run_id_unresolved and current_run_id and self.state.state in ("RUNNING", "PAUSE"):
             self._last_known_run_id = current_run_id
@@ -5817,7 +5856,9 @@ class BambuMQTTClient:
             self._pending_start_state if observed_start else self._previous_gcode_state,
             self._run_boundary_generation,
             self._print_lineage,
+            self._layer_identity_revision,
         )
+        self._layer_frame_observation = observation
         if observed_start:
             self._pending_start_state = self._pending_start_id = None
         # First PAUSE is as much an in-flight run as RUNNING. Fence detectors
@@ -5856,6 +5897,10 @@ class BambuMQTTClient:
                 new_total = int(data["total_layer_num"])
                 if new_total > 0:
                     self.state.total_layers = new_total
+            elif observed_start and self._pending_start_total is not None:
+                self.state.total_layers = self._pending_start_total
+            self._pending_start_total = None
+            self._pending_start_total_blocked = False
 
         if "mc_percent" in data:
             # Save last non-zero progress for usage tracking (firmware resets to 0 on cancel)
@@ -7613,8 +7658,25 @@ class BambuMQTTClient:
         if current_file:
             self._previous_gcode_file = current_file
 
+        # Publish only a completed frame. Physical callbacks above keep their
+        # established ordering and never execute under this lock.
+        from backend.app.services.layer_projection import LayerAddress, LayerSnapshot
+
+        snapshot = LayerSnapshot(
+            LayerAddress(self._print_lineage, self._run_boundary_generation, self._layer_identity_revision),
+            self.state.state,
+            self.state.layer_num,
+            self.state.total_layers,
+            self._run_id_unresolved,
+        )
+        with self._layer_snapshot_lock:
+            self._layer_snapshot = snapshot
         if self.on_state_change:
             self.on_state_change(self.state)
+
+    def get_layer_snapshot(self):
+        with self._layer_snapshot_lock:
+            return self._layer_snapshot
 
     def _probe_developer_mode(self):
         """Probe developer mode by sending an ams_filament_setting for the external slot.

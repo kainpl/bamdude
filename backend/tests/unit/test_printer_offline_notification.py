@@ -39,6 +39,7 @@ def _state(connected: bool, state: str = "IDLE") -> SimpleNamespace:
         state=state,
         progress=0,
         layer_num=0,
+        total_layers=0,
         temperatures={},
         raw_data={},
         stg_cur=0,

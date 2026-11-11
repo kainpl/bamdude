@@ -16,6 +16,7 @@ class PrintObservation:
     previous_state: str | None
     generation: int
     lineage: str | None = None
+    layer_identity_revision: int | None = None
 
     @property
     def new_run(self) -> bool:
