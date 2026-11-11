@@ -7,13 +7,62 @@ same complaint in a longer form.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 MOD = "backend.app.services.mqtt_recorder"
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_toggle_publishes_live_badge_without_another_mqtt_frame(
+    async_client, printer_factory, db_session, monkeypatch, enabled
+):
+    from backend.app.api.routes import printers
+    from backend.app.core.websocket import ws_manager
+    from backend.app.services.bambu_mqtt import PrinterState
+    from backend.app.services.printer_manager import PrinterManager, printer_state_to_dict
+
+    printer = await printer_factory()
+    manager = PrinterManager()
+    state = PrinterState(connected=True)
+    monkeypatch.setattr(printers, "printer_manager", manager)
+    monkeypatch.setattr(manager, "get_status", lambda _: state)
+    monkeypatch.setattr("backend.app.services.plate_hold.repeat_available", AsyncMock(return_value=False))
+    recording = not enabled
+
+    def start(_):
+        nonlocal recording
+        recording = True
+
+    def stop(_):
+        nonlocal recording
+        recording = False
+
+    async def sent(printer_id, payload):
+        await db_session.refresh(printer)
+        assert printer.mqtt_recording is enabled  # publish only after commit
+        assert printer_id == printer.id
+        assert payload["mqtt_recording"] is enabled
+        assert payload["mqtt_recording_bytes"] == (4096 if enabled else 0)
+
+    send = AsyncMock(side_effect=sent)
+    monkeypatch.setattr(ws_manager, "send_printer_status", send)
+    with (
+        patch(f"{MOD}.mqtt_recorder.start", side_effect=start),
+        patch(f"{MOD}.mqtt_recorder.stop", side_effect=stop),
+        patch(f"{MOD}.mqtt_recorder.is_recording", side_effect=lambda _: recording),
+        patch(f"{MOD}.mqtt_recorder.size_bytes", side_effect=lambda _: 4096 if recording else 0),
+    ):
+        resp = await async_client.post(f"/api/v1/printers/{printer.id}/mqtt-recording", json={"enabled": enabled})
+        assert resp.status_code == 200
+        send.assert_awaited_once()
+        # Ordinary status/bootstrap serialization must agree with the toggle.
+        payload = printer_state_to_dict(state, printer.id)
+        assert payload["mqtt_recording"] is enabled
+        assert payload["mqtt_recording_bytes"] == (4096 if enabled else 0)
 
 
 def _point_at_the_test_database(monkeypatch, test_engine):

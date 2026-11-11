@@ -41,7 +41,13 @@ export function MQTTDebugModal({ printerId, printerName, onClose }: MQTTDebugMod
     refetchInterval: 1000,
   });
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['mqtt-recording', printerId] });
+  const invalidate = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['mqtt-recording', printerId] }),
+    // The card reads a separate status query. Refresh it even if WebSocket
+    // is disconnected, and refresh the saved intent used by support bundles.
+    queryClient.invalidateQueries({ queryKey: ['printerStatus', printerId] }),
+    queryClient.invalidateQueries({ queryKey: ['printers'] }),
+  ]);
 
   const enableMutation = useMutation({
     mutationFn: () => api.setMQTTRecording(printerId, true),

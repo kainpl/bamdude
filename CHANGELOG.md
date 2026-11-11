@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Starting or stopping MQTT recording updates the printer card's recording badge immediately, including other open browser sessions. Live status also carries the recording size, and the initiating dialog refreshes the card when WebSocket is unavailable.
+
 MQTT and metrics credentials now use explicit connection saves, preventing partial passwords from being saved during typing. Metrics cannot be enabled without a token. LDAP connection tests preserve the configured CA certificate, SMTP authentication can be disabled without resubmitting a password, and older smart plugs remain editable. Standalone cameras now keep complete source URLs private on read and require editor rights to test saved sources. Diagnostic logs preserve useful messages while omitting REST capabilities and HTTP wire payloads, including in debug mode.
 
 

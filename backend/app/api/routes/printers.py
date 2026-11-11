@@ -703,6 +703,9 @@ async def set_mqtt_recording(
         printer.mqtt_recording = False
 
     await db.commit()
+    # Recording is BamDude-owned state: no new MQTT frame is needed to
+    # update the badge, and MQTT's effects dedup must not swallow the change.
+    await printer_manager._broadcast_status_change(printer_id)
     return {"enabled": printer.mqtt_recording, "file": str(mqtt_recorder.file_for(printer_id) or "")}
 
 

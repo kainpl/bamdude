@@ -1039,9 +1039,9 @@ class PrinterManager:
     async def _broadcast_status_change(self, printer_id: int) -> None:
         """Emit a ``printer_status`` WebSocket update for this printer (#1128).
 
-        Used for state changes that don't come from MQTT — currently just
-        the ``awaiting_plate_clear`` flag, but any future BamDude-side flag
-        added to ``printer_state_to_dict`` should plumb through here too.
+        Used for state changes that don't come from MQTT, including plate
+        clearance, HMS muting and MQTT recording. BamDude-side flags added
+        to ``printer_state_to_dict`` should plumb through here too.
         The existing MQTT-driven broadcast in ``main.on_printer_status_change``
         deduplicates on a status_key that intentionally excludes BamDude
         flags, so flags need their own emit. Lazy-imports ``ws_manager`` to
@@ -2400,6 +2400,7 @@ def printer_state_to_dict(
             BambuMQTTClient cache so the badge can display "PETG @ 65°C".
     """
     from backend.app.services.layer_projection import resolve_layer_pair
+    from backend.app.services.mqtt_recorder import mqtt_recorder
 
     layer_pair = layer_pair or resolve_layer_pair(printer_manager, printer_id, state)
     # Parse AMS data from raw_data
@@ -2601,6 +2602,8 @@ def printer_state_to_dict(
 
     result = {
         "connected": state.connected,
+        "mqtt_recording": mqtt_recorder.is_recording(printer_id) if printer_id is not None else False,
+        "mqtt_recording_bytes": mqtt_recorder.size_bytes(printer_id) if printer_id is not None else 0,
         "effective_model": effective_model_for_state(model, state),
         "state": state.state,
         "current_print": state.current_print,
