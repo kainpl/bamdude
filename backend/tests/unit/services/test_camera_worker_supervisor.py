@@ -5,16 +5,27 @@ import socket
 import subprocess
 import sys
 import uuid
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import psutil
 import pytest
+from PIL import Image
 
 from backend.app.services.camera_runtime import CameraCaptureRequest, WorkerCameraRuntime
 from backend.app.services.camera_worker_supervisor import CameraWorkerSupervisor, CameraWorkerUnavailable
 
-_JPEG = b"\xff\xd8camera-worker-test\xff\xd9"
+
+def _jpeg_fixture():
+    # Exercise real decoding in the child, while preserving byte-exact relay
+    # assertions in the parent (SOI/EOI alone is no longer an image).
+    with Image.new("RGB", (24, 16), "red") as image, BytesIO() as output:
+        image.save(output, format="JPEG")
+        return output.getvalue()
+
+
+_JPEG = _jpeg_fixture()
 
 
 @pytest.mark.asyncio
